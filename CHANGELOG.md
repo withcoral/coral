@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.14.0](https://github.com/withcoral/coral/compare/v0.13.0...v0.14.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** remove embedded browser UI ([#2200](https://github.com/withcoral/coral/issues/2200))
+* **spec:** import OpenAPI array query parameters ([#2195](https://github.com/withcoral/coral/issues/2195))
+
+### Features
+
+* **app:** let trusted OAuth clients skip the approval page ([#2206](https://github.com/withcoral/coral/issues/2206)) ([5cbc60d](https://github.com/withcoral/coral/commit/5cbc60d005773f436b91633016ee4bdaf4419a3f))
+* **desktop:** isolate Coral state ([#2198](https://github.com/withcoral/coral/issues/2198)) ([472aae7](https://github.com/withcoral/coral/commit/472aae7bbafd8ffa0c66f9e7f01348a1184964b8))
+* **mcp-http:** allow auth-disabled non-loopback serving behind explicit opt-in ([#2213](https://github.com/withcoral/coral/issues/2213)) ([1b829bd](https://github.com/withcoral/coral/commit/1b829bd04eedd303a75a3c2bcececa07ab22f2c4))
+* **reef:** skip onboarding after completion ([#1914](https://github.com/withcoral/coral/issues/1914)) ([4fd964a](https://github.com/withcoral/coral/commit/4fd964a89c0286231e39a957fcd5a932055bb5b9))
+* **spec:** import OpenAPI array query parameters ([#2195](https://github.com/withcoral/coral/issues/2195)) ([29520b3](https://github.com/withcoral/coral/commit/29520b36a7a08436d979e1f298fb9cfa645472dd))
+* **ui:** Add search to MCP clients page ([#2214](https://github.com/withcoral/coral/issues/2214)) ([4626811](https://github.com/withcoral/coral/commit/46268114181ed857c47a778971d6f8445fd1e95e))
+
+
+### Code Refactoring
+
+* **cli:** remove embedded browser UI ([#2200](https://github.com/withcoral/coral/issues/2200)) ([ed285fb](https://github.com/withcoral/coral/commit/ed285fb450d32485f84d6b89ee5c70e98289e23c))
+
 ## [0.13.0](https://github.com/withcoral/coral/compare/v0.12.0...v0.13.0) (2026-08-17)
 
 
