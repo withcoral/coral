@@ -6,6 +6,7 @@ import type { AppUpdater } from 'electron-updater'
 import { releaseTarget } from '../shared/release-targets'
 import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/types'
 import {
+  appImagePath,
   createDesktopUpdater,
   UNSUPPORTED_UPDATE_DETAIL,
   type DesktopUpdater,
@@ -28,17 +29,6 @@ declare const __CORAL_DESKTOP_RELEASE__: boolean
 const isReleaseBuild =
   typeof __CORAL_DESKTOP_RELEASE__ !== 'undefined' && __CORAL_DESKTOP_RELEASE__
 
-// The path electron-updater's AppImageUpdater operates on: it downloads against
-// this file, unlinks it, and moves the new image over it (doInstall). It reads
-// the value straight from the environment and refuses to run when it is unset
-// or relative, so this gate matches the updater's own precondition rather than
-// trying to detect an AppImage independently. An extracted AppDir does not set
-// it — the AppRun template assigns a fallback without exporting it.
-function runningAppImagePath(): string | null {
-  const path = process.env.APPIMAGE?.trim()
-  return path ? path : null
-}
-
 // Updates need a release build of a package that can replace itself in place.
 // The platform half of that is the shared release-target table; the rest is
 // local: an unsigned QA or local build never polls, and on Linux only the
@@ -47,7 +37,7 @@ function runningAppImagePath(): string | null {
 export function desktopUpdatesSupported(): boolean {
   if (!isReleaseBuild || !app.isPackaged) return false
   if (!releaseTarget(process.platform)) return false
-  return process.platform !== 'linux' || runningAppImagePath() !== null
+  return process.platform !== 'linux' || appImagePath(process.env) !== null
 }
 
 // Runs once the updater has moved the new image over the old path and is about
@@ -56,12 +46,12 @@ export function desktopUpdatesSupported(): boolean {
 // for why the updater itself starts nothing.
 function scheduleAppImageRelaunch(): void {
   if (process.platform !== 'linux') return
-  const appImagePath = runningAppImagePath()
-  if (!appImagePath) return
+  const imagePath = appImagePath(process.env)
+  if (!imagePath) return
 
   // Empty args, not Electron's default `process.argv.slice(1)`: that carries
   // the flags AppRun added for this launch, and AppRun adds them again.
-  app.relaunch({ execPath: appImagePath, args: [] })
+  app.relaunch({ execPath: imagePath, args: [] })
 }
 
 let updater: DesktopUpdater | null = null

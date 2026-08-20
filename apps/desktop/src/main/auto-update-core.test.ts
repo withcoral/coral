@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   PERIODIC_UPDATE_CHECK_INTERVAL_MS,
   STARTUP_UPDATE_CHECK_DELAY_MS,
+  appImagePath,
   createDesktopUpdater,
   type DesktopUpdaterDeps,
   type UpdateCheckResultLike,
@@ -109,6 +110,34 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
+})
+
+describe('appImagePath', () => {
+  it('accepts the absolute path an AppImage run exports', () => {
+    expect(appImagePath({ APPIMAGE: '/opt/coral-desktop-linux-x86_64.AppImage' })).toBe(
+      '/opt/coral-desktop-linux-x86_64.AppImage',
+    )
+  })
+
+  it.each([
+    ['unset', {}],
+    ['empty', { APPIMAGE: '' }],
+    // AppImageUpdater.doInstall rejects each of these and throws
+    // ERR_UPDATER_OLD_FILE_NOT_FOUND, which would land after the download.
+    // Refusing here keeps the build out of the updater entirely.
+    ['relative', { APPIMAGE: 'coral-desktop.AppImage' }],
+    ['dot-relative', { APPIMAGE: './coral-desktop.AppImage' }],
+    ['blank', { APPIMAGE: '   ' }],
+    ['NUL-bearing', { APPIMAGE: '/opt/coral\0.AppImage' }],
+  ])('rejects a %s APPIMAGE', (_label, env) => {
+    expect(appImagePath(env)).toBe(null)
+  })
+
+  it('passes a leading space through rather than trimming it', () => {
+    // doInstall reads process.env.APPIMAGE verbatim, so a value it would
+    // reject must not be repaired into one this accepts.
+    expect(appImagePath({ APPIMAGE: ' /opt/coral.AppImage' })).toBe(null)
+  })
 })
 
 describe('install', () => {
