@@ -26,6 +26,51 @@ const dataSources = [
   { label: 'desktop host access', pattern: /\bcoralDesktopApi\b|\bwindow\.coralDesktop\b/ },
 ]
 
+const testFile = /\.(?:test|spec)\.tsx?$/
+// Coral UI takes no new Vitest coverage, so every test file it still carries is
+// named here. Adding one is then a deliberate edit to this list, not a side
+// effect of writing a feature.
+const allowedTests = [
+  '__tests__/architecture.test.ts',
+  'auth/config.server.test.ts',
+  'auth/coral-oauth.server.test.ts',
+  'auth/csrf.server.test.ts',
+  'auth/response.server.test.ts',
+  'auth/safe-path.server.test.ts',
+  'auth/session.server.test.ts',
+  'lib/coral-endpoint.server.test.ts',
+  'lib/coral-request-boundary.server.test.ts',
+  'lib/coral-request.server.test.ts',
+  'lib/mcp-connection.server.test.ts',
+  'lib/onboarding-query.server.test.ts',
+  'lib/runtime-config.server.test.ts',
+  'lib/schema-explorer.test.ts',
+  'lib/source-install-form.server.test.ts',
+  'lib/source-oauth-install-flow.server.test.tsx',
+  'lib/source-oauth-install-stream.test.ts',
+  'lib/utils.test.ts',
+  'lib/workspace-name.test.ts',
+  'lib/workspace-routing.test.ts',
+  'routes.test.ts',
+  'routes/_protected.server.test.tsx',
+  'routes/auth.callback.server.test.tsx',
+  'routes/functions.server.test.ts',
+  'routes/healthz.server.test.ts',
+  'routes/login.server.test.tsx',
+  'routes/logout.server.test.tsx',
+  'routes/oauth-client-metadata.server.test.ts',
+  'routes/onboarding.server.test.ts',
+  'routes/readyz.server.test.ts',
+  'routes/settings.server.test.ts',
+  'routes/settings/runtime-features.server.test.ts',
+  'routes/source-detail.server.test.tsx',
+  'routes/source-discovery.server.test.ts',
+  'routes/source-oauth-import.server.test.ts',
+  'routes/source-oauth-install.server.test.ts',
+  'routes/traces-loader.server.test.ts',
+  'utils/format-time.test.ts',
+]
+
 function filesUnder(directory: string, matches: (name: string) => boolean): string[] {
   if (!fs.existsSync(directory)) return []
 
@@ -34,6 +79,12 @@ function filesUnder(directory: string, matches: (name: string) => boolean): stri
     if (entry.isDirectory()) return filesUnder(entryPath, matches)
     return entry.isFile() && matches(entry.name) ? [entryPath] : []
   })
+}
+
+function appTestFiles(): string[] {
+  return filesUnder(appDir, (name) => testFile.test(name)).map((file) =>
+    path.relative(appDir, file).split(path.sep).join('/'),
+  )
 }
 
 function importsFrom(source: string): string[] {
@@ -135,6 +186,43 @@ describe('architecture', () => {
         'it still has no caching, no pending state, and no revalidation. Nor is dropping the ' +
         'await while keeping the effect: a subscription belongs in an atom, and a request ' +
         'belongs in a handler.',
+    ).toEqual([])
+  })
+
+  it('keeps test files out of presentation modules', () => {
+    const violations = presentationDirs
+      .flatMap((directory) => filesUnder(directory, (name) => testFile.test(name)))
+      .map((file) => path.relative(appDir, file))
+
+    expect(
+      violations,
+      'presentation modules are covered by Storybook and Chromatic, not Vitest. Delete the ' +
+        'test rather than moving it: a single-use helper pulled into its own module so it has ' +
+        'something to assert against is the shape this rule exists to stop, and relocating it ' +
+        'to app/lib keeps the cost without adding the coverage. Write a Vitest case here only ' +
+        'when asked, and put it beside the module that owns the behaviour.',
+    ).toEqual([])
+  })
+
+  it('adds no Vitest coverage beyond the recorded set', () => {
+    const recorded = new Set(allowedTests)
+
+    expect(
+      appTestFiles().filter((file) => !recorded.has(file)),
+      'apps/coral-ui takes no new Vitest coverage. Delete the test: Storybook and Chromatic ' +
+        'cover presentation, and the recorded suite already covers auth, session, discovery, ' +
+        'and the formatting edges. Keep it only for a regression you can name, and add the ' +
+        'path to allowedTests in the same commit that names it.',
+    ).toEqual([])
+  })
+
+  it('records no test file that has been deleted', () => {
+    const present = new Set(appTestFiles())
+
+    expect(
+      allowedTests.filter((file) => !present.has(file)),
+      'allowedTests names a test file that no longer exists. Drop the entry so the list keeps ' +
+        'describing the suite.',
     ).toEqual([])
   })
 

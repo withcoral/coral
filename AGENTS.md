@@ -49,10 +49,16 @@
   server smoke test consumes the build output and runs on every Coral UI CI job.
 - Desktop changes must pass `npm run check --prefix apps/desktop` and
   `npm test --prefix apps/desktop` before submitting.
-- Keep Coral UI Vitest coverage Node-only and focused on atomic deterministic
-  functions and policies or explicit architectural invariants. Do not add broad
-  browser, router, or framework-plumbing tests without a named contract or
-  regression they protect.
+- Do not add Vitest coverage to `apps/coral-ui` for new work. The app is exempt
+  from the repo test-writing expectation. Existing tests stay and must keep
+  passing. Add a test there only when the user asks for it, or to lock an
+  explicit architectural invariant such as `app/routes.test.ts` and
+  `app/__tests__/architecture.test.ts`. Never extract a single-use helper into
+  its own module so that a test has something to assert against. The
+  architecture test rejects any test file under `app/components`, `app/views`,
+  and `app/wax/components` at zero violations, and holds `allowedTests`, the
+  recorded list of every other test file the app carries. A new test anywhere
+  under `app/` fails until someone adds its path to that list.
 - Use Storybook and Chromatic for Coral UI component visual states.
 - Coral UI styling uses vanilla-extract; do not introduce Tailwind.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
