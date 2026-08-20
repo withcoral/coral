@@ -122,19 +122,6 @@ export function Sidebar({
     </>
   )
 
-  // Temporary: re-entry point into the onboarding flow.
-  const onboardingButton = (
-    <SidebarButton
-      aria-label="Onboarding"
-      as={Link}
-      icon="Sparkles"
-      isMinimized={isMinimized}
-      to={routePath('onboarding')}
-    >
-      Onboarding
-    </SidebarButton>
-  )
-
   const handleToggleSidebar = (event: KeyboardEvent) => {
     event.preventDefault()
     toggleSidebar()
@@ -316,13 +303,6 @@ export function Sidebar({
           )
         })}
       </div>
-      {isMinimized ? (
-        <Tooltip content="Onboarding" side="right">
-          {onboardingButton}
-        </Tooltip>
-      ) : (
-        onboardingButton
-      )}
       {updateState.status !== 'idle' && updateState.status !== 'unsupported' && (
         <DesktopUpdateIndicator
           isMinimized={isMinimized}
