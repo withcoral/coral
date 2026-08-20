@@ -80,14 +80,17 @@ use coral_spec::ValidatedSourceManifest;
 pub(crate) mod common;
 mod composite;
 pub(crate) use common::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CompiledBackendSource, RegisteredInput, RegisteredSource,
-    RegisteredTable, RegisteredTableFunction, RegisteredTableFunctionArgument,
-    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
+    BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
+    BackendRegistrationContext, BackendSchemaRegistration, BoundSourceFunctionArg,
+    BoundSourceFunctionValue, CatalogColumnFetcher, ColumnInventoryFilter, CompiledBackendSource,
+    DatabaseColumnFetcher, DatabaseColumnRow, RegisteredInput, RegisteredSource, RegisteredTable,
+    RegisteredTableFunction, RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
+    SourceQualifiedName, build_registered_inputs, build_registered_table,
     build_registered_table_function, registered_columns_from_schema, registered_columns_from_specs,
     required_filter_names, schema_from_columns, validate_lookup_key_filter_backend_support,
 };
 
+pub(crate) mod database;
 pub(crate) mod file;
 pub(crate) mod http;
 pub(crate) mod mcp;
@@ -96,6 +99,7 @@ pub(crate) mod shared;
 pub(crate) fn compile_query_source(
     source: &QuerySource,
     runtime_context: &crate::QueryRuntimeContext,
+    database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_observation_publishers: &[Arc<dyn SourceObservationPublisher>],
@@ -110,6 +114,7 @@ pub(crate) fn compile_query_source(
     let request = BackendCompileRequest {
         source,
         runtime_context,
+        database_pool_registry,
         source_secrets: source.secrets().clone(),
         source_variables: source.variables().clone(),
         request_authenticators,
@@ -133,6 +138,9 @@ fn compile_component(
     request: &BackendCompileRequest<'_>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     match component {
+        RuntimeSourceComponent::Database(manifest) => {
+            Ok(database::compile_manifest(manifest, request))
+        }
         RuntimeSourceComponent::Http(manifest) => {
             let request_identity_http_authenticator = request
                 .source
@@ -179,6 +187,7 @@ pub(crate) fn compile_source_manifest(
         &BackendCompileRequest {
             source: &source,
             runtime_context,
+            database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             source_secrets,
             source_variables,
             request_authenticators: &request_authenticators,

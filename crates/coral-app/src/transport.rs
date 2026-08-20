@@ -9,11 +9,11 @@ use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_TASK_ID_METADATA_KEY, grpc_response_status_code,
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
-        ColumnSearchResult as ProtoColumnSearchResult,
-        DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, SearchLimits, Source, Table, TableFunction,
-        TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
-        ValidateSourceResponse, Workspace, catalog_item, query_test_result,
+        ColumnSearchResult as ProtoColumnSearchResult, DescribeCatalogSurfaceResponse,
+        MissingCatalogSurface, PaginationResponse, QueryTestFailure, QueryTestResult,
+        QueryTestSuccess, SearchLimits, Source, Table, TableFunction, TableFunctionArgument,
+        TableFunctionKind, TableFunctionResultColumn, TableSummary, ValidateSourceResponse,
+        Workspace, catalog_item, describe_catalog_surface_response, query_test_result,
     },
 };
 use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
@@ -31,11 +31,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::{AppError, app_status, core_status, status_with_bounded_detail};
 use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
-    ColumnSearchResult, DescribeTableResult,
+    ColumnSearchResult, DescribeCatalogSurfaceResult,
 };
-use crate::identity::{
-    UserPrincipalProvider, UserPrincipalProviderError, UserPrincipalProviderErrorKind,
-};
+use crate::identity::{PrincipalProvider, PrincipalProviderError, PrincipalProviderErrorKind};
 use crate::query::manager::QueryManagerError;
 use crate::request_context::RequestContext;
 use crate::task::id::TaskId;
@@ -43,7 +41,7 @@ use crate::workspaces::WorkspaceName;
 
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
 
-const USER_PRINCIPAL_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
+const PRINCIPAL_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct GrpcServerSpan(tracing::Span);
@@ -78,14 +76,12 @@ impl Extractor for MetadataExtractor<'_> {
 /// covered by the same principal-selection path.
 #[derive(Clone)]
 pub(crate) struct GrpcRequestContextLayer {
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    principal_provider: Arc<dyn PrincipalProvider>,
 }
 
 impl GrpcRequestContextLayer {
-    pub(crate) fn new(user_principal_provider: Arc<dyn UserPrincipalProvider>) -> Self {
-        Self {
-            user_principal_provider,
-        }
+    pub(crate) fn new(principal_provider: Arc<dyn PrincipalProvider>) -> Self {
+        Self { principal_provider }
     }
 }
 
@@ -95,7 +91,7 @@ impl<S> Layer<S> for GrpcRequestContextLayer {
     fn layer(&self, inner: S) -> Self::Service {
         GrpcRequestContextService {
             inner,
-            user_principal_provider: Arc::clone(&self.user_principal_provider),
+            principal_provider: Arc::clone(&self.principal_provider),
         }
     }
 }
@@ -103,7 +99,7 @@ impl<S> Layer<S> for GrpcRequestContextLayer {
 #[derive(Clone)]
 pub(crate) struct GrpcRequestContextService<S> {
     inner: S,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    principal_provider: Arc<dyn PrincipalProvider>,
 }
 
 impl<S, B, ResBody> Service<http::Request<B>> for GrpcRequestContextService<S>
@@ -126,13 +122,13 @@ where
     }
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
-        annotate_request_context(&mut request);
+        let task_id = annotate_request_context(&mut request);
         let method_metadata = request.extensions().get::<GrpcServerMethod>().map_or_else(
             || GrpcMethodMetadata::new("coral.v1.UnknownService", "Unknown"),
             |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
         );
         let request_metadata = MetadataMap::from_headers(request.headers().clone());
-        let user_principal_provider = Arc::clone(&self.user_principal_provider);
+        let principal_provider = Arc::clone(&self.principal_provider);
         let span = grpc_span_for_metadata(&method_metadata, &request_metadata);
         request
             .extensions_mut()
@@ -145,20 +141,27 @@ where
         Box::pin(
             async move {
                 match principal_for_request(
-                    user_principal_provider.as_ref(),
+                    principal_provider.as_ref(),
                     &request_metadata,
-                    USER_PRINCIPAL_PROVIDER_TIMEOUT,
+                    PRINCIPAL_PROVIDER_TIMEOUT,
                 )
                 .await
                 {
                     Ok(principal) => {
+                        let task_id = match task_id {
+                            Ok(task_id) => task_id,
+                            Err(status) => {
+                                record_grpc_status(&span, status.code(), Some(&status));
+                                return Ok(status.into_http());
+                            }
+                        };
                         request
                             .extensions_mut()
-                            .insert(RequestContext::new(principal));
+                            .insert(RequestContext::new(principal).with_task_id(task_id));
                         inner.call(request).await
                     }
                     Err(error) => {
-                        let status = user_principal_provider_status(&error);
+                        let status = principal_provider_status(&error);
                         record_grpc_status(&span, status.code(), Some(&status));
                         Ok(status.into_http())
                     }
@@ -170,26 +173,24 @@ where
 }
 
 async fn principal_for_request(
-    provider: &dyn UserPrincipalProvider,
+    provider: &dyn PrincipalProvider,
     metadata: &MetadataMap,
     timeout: Duration,
-) -> Result<crate::identity::UserPrincipal, UserPrincipalProviderError> {
+) -> Result<crate::identity::Principal, PrincipalProviderError> {
     tokio::time::timeout(timeout, provider.principal_for_metadata(metadata))
         .await
         .unwrap_or_else(|_| {
-            Err(UserPrincipalProviderError::unavailable(
-                "user principal provider timed out",
+            Err(PrincipalProviderError::unavailable(
+                "principal provider timed out",
             ))
         })
 }
 
-fn user_principal_provider_status(error: &UserPrincipalProviderError) -> Status {
+fn principal_provider_status(error: &PrincipalProviderError) -> Status {
     let (code, prefix) = match error.kind() {
-        UserPrincipalProviderErrorKind::Unauthenticated => {
-            (Code::Unauthenticated, "unauthenticated")
-        }
-        UserPrincipalProviderErrorKind::Unavailable => (Code::Unavailable, "unavailable"),
-        UserPrincipalProviderErrorKind::Internal => (Code::Internal, "internal"),
+        PrincipalProviderErrorKind::Unauthenticated => (Code::Unauthenticated, "unauthenticated"),
+        PrincipalProviderErrorKind::Unavailable => (Code::Unavailable, "unavailable"),
+        PrincipalProviderErrorKind::Internal => (Code::Internal, "internal"),
     };
     status_with_bounded_detail(code, format!("{prefix}: {}", error.client_message()))
 }
@@ -280,28 +281,34 @@ fn grpc_method<T>(request: &Request<T>) -> GrpcMethodMetadata {
     )
 }
 
-fn annotate_request_context<B>(request: &mut http::Request<B>) {
+fn annotate_request_context<B>(request: &mut http::Request<B>) -> Result<Option<TaskId>, Status> {
     if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
         request.extensions_mut().insert(method);
     }
-    if let Some(task_id) = request
-        .headers()
-        .get(CORAL_TASK_ID_METADATA_KEY)
-        .and_then(task_id_from_header_value)
-    {
-        request.extensions_mut().insert(task_id);
+    let mut task_ids = request.headers().get_all(CORAL_TASK_ID_METADATA_KEY).iter();
+    let Some(task_id) = task_ids.next() else {
+        return Ok(None);
+    };
+    if task_ids.next().is_some() {
+        return Err(Status::invalid_argument(
+            "coral-task-id metadata must contain exactly one value",
+        ));
     }
+    task_id_from_header_value(task_id).map(Some)
 }
 
-fn task_id_from_header_value(value: &http::HeaderValue) -> Option<TaskId> {
-    let value = value.to_str().ok()?;
-    match TaskId::parse(value) {
-        Ok(task_id) => Some(task_id),
-        Err(error) => {
-            tracing::debug!(%error, "ignoring malformed coral-task-id metadata");
-            None
-        }
-    }
+fn task_id_from_header_value(value: &http::HeaderValue) -> Result<TaskId, Status> {
+    let value = value
+        .to_str()
+        .map_err(|_error| Status::invalid_argument("coral-task-id metadata must be ASCII"))?;
+    TaskId::parse(value).map_err(app_status)
+}
+
+pub(crate) fn request_context<T>(request: &Request<T>) -> Result<&RequestContext, Status> {
+    request
+        .extensions()
+        .get::<RequestContext>()
+        .ok_or_else(|| Status::internal("request context is unavailable"))
 }
 
 pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
@@ -371,6 +378,7 @@ pub(crate) fn table_to_proto(
 
     Table {
         workspace: Some(workspace_to_proto(workspace_name)),
+        catalog_name: table.catalog_name.unwrap_or_default(),
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,
@@ -386,6 +394,7 @@ pub(crate) fn table_summary_to_proto(
 ) -> TableSummary {
     TableSummary {
         workspace: Some(workspace_to_proto(workspace_name)),
+        catalog_name: table.catalog_name.unwrap_or_default(),
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,
@@ -447,6 +456,7 @@ pub(crate) fn table_function_to_proto(
                 name: argument.name,
                 required: argument.required,
                 values: argument.values,
+                data_type: argument.data_type,
             })
             .collect(),
         result_columns: function
@@ -461,6 +471,7 @@ pub(crate) fn table_function_to_proto(
             .collect(),
         kind: table_function_kind_to_proto(function.kind) as i32,
         search_limits: function.search_limits.as_ref().map(search_limits_to_proto),
+        guide: function.guide,
     }
 }
 
@@ -482,30 +493,26 @@ fn search_limits_to_proto(limits: &SearchLimitsSpec) -> SearchLimits {
     }
 }
 
-pub(crate) fn describe_table_response_to_proto(
+pub(crate) fn describe_catalog_surface_response_to_proto(
     workspace_name: &WorkspaceName,
-    result: DescribeTableResult,
-) -> ProtoDescribeTableResponse {
+    result: DescribeCatalogSurfaceResult,
+) -> DescribeCatalogSurfaceResponse {
+    use describe_catalog_surface_response::Result;
+
     match result {
-        DescribeTableResult::Found(table) => ProtoDescribeTableResponse {
-            table: Some(table_to_proto(workspace_name, table)),
-            suggestions: Vec::new(),
-            available_schemas: Vec::new(),
-            same_schema_tables: Vec::new(),
+        DescribeCatalogSurfaceResult::Table(table) => DescribeCatalogSurfaceResponse {
+            result: Some(Result::Table(table_to_proto(workspace_name, table))),
         },
-        DescribeTableResult::Missing(context) => ProtoDescribeTableResponse {
-            table: None,
-            suggestions: context
-                .suggestions
-                .into_iter()
-                .map(|table| table_summary_to_proto(workspace_name, table))
-                .collect(),
-            available_schemas: context.available_schemas,
-            same_schema_tables: context
-                .same_schema_tables
-                .into_iter()
-                .map(|table| table_summary_to_proto(workspace_name, table))
-                .collect(),
+        DescribeCatalogSurfaceResult::TableFunction(table_function) => {
+            DescribeCatalogSurfaceResponse {
+                result: Some(Result::TableFunction(table_function_to_proto(
+                    workspace_name,
+                    table_function,
+                ))),
+            }
+        }
+        DescribeCatalogSurfaceResult::Missing => DescribeCatalogSurfaceResponse {
+            result: Some(Result::Missing(MissingCatalogSurface {})),
         },
     }
 }
@@ -614,15 +621,13 @@ mod tests {
 
     use super::{
         GRPC_REQUEST_ERROR_MESSAGE, GrpcMethodMetadata, GrpcServerMethod, annotate_request_context,
-        grpc_method, grpc_span_for_metadata, instrument_grpc, query_status,
-        query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
-        table_to_proto, user_principal_provider_status, workspace_name_from_proto,
-        workspace_to_proto,
+        grpc_method, grpc_span_for_metadata, instrument_grpc, principal_provider_status,
+        query_status, query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
+        table_to_proto, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
-    use crate::identity::UserPrincipalProviderError;
+    use crate::identity::PrincipalProviderError;
     use crate::query::manager::QueryManagerError;
-    use crate::task::id::TaskId;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
@@ -754,26 +759,26 @@ mod tests {
     }
 
     #[test]
-    fn user_principal_provider_status_preserves_failure_class() {
+    fn principal_provider_status_preserves_failure_class() {
         let cases = [
             (
-                UserPrincipalProviderError::unauthenticated("bad token"),
+                PrincipalProviderError::unauthenticated("bad token"),
                 Code::Unauthenticated,
                 "unauthenticated: bad token",
             ),
             (
-                UserPrincipalProviderError::unavailable("key service offline"),
+                PrincipalProviderError::unavailable("key service offline"),
                 Code::Unavailable,
                 "unavailable: key service offline",
             ),
             (
-                UserPrincipalProviderError::internal("invalid principal selection"),
+                PrincipalProviderError::internal("invalid principal selection"),
                 Code::Internal,
                 "internal: invalid principal selection",
             ),
         ];
         for (error, code, message) in cases {
-            let status = user_principal_provider_status(&error);
+            let status = principal_provider_status(&error);
             assert_eq!(status.code(), code);
             assert_eq!(status.message(), message);
         }
@@ -829,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn annotate_request_context_extracts_valid_task_id() {
+    fn annotate_request_context_parses_valid_task_id() {
         let mut request = tonic::codegen::http::Request::builder()
             .uri("/coral.v1.QueryService/ExecuteSql")
             .header(
@@ -839,25 +844,21 @@ mod tests {
             .body(())
             .expect("request");
 
-        annotate_request_context(&mut request);
-
-        let task_id = request
-            .extensions()
-            .get::<TaskId>()
-            .expect("task id extension");
+        let task_id = annotate_request_context(&mut request)
+            .expect("valid metadata")
+            .expect("task id");
         assert_eq!(task_id.to_string(), "750e8400-e29b-41d4-a716-446655440000");
     }
 
     #[test]
-    fn annotate_request_context_ignores_absent_and_malformed_task_id() {
+    fn annotate_request_context_accepts_absent_and_rejects_malformed_task_id() {
         let mut absent = tonic::codegen::http::Request::builder()
             .uri("/coral.v1.QueryService/ExecuteSql")
             .body(())
             .expect("request");
-        annotate_request_context(&mut absent);
-        assert!(
-            absent.extensions().get::<TaskId>().is_none(),
-            "a missing coral-task-id yields no attribution"
+        assert_eq!(
+            annotate_request_context(&mut absent).expect("absent metadata"),
+            None
         );
 
         let mut malformed = tonic::codegen::http::Request::builder()
@@ -865,10 +866,37 @@ mod tests {
             .header(CORAL_TASK_ID_METADATA_KEY, "has space")
             .body(())
             .expect("request");
-        annotate_request_context(&mut malformed);
-        assert!(
-            malformed.extensions().get::<TaskId>().is_none(),
-            "a malformed id is ignored, not surfaced"
+        let status =
+            annotate_request_context(&mut malformed).expect_err("reject malformed metadata");
+        assert_eq!(status.code(), Code::InvalidArgument);
+    }
+
+    #[test]
+    fn annotate_request_context_rejects_repeated_task_id_metadata() {
+        assert_repeated_task_id_metadata_rejected("750e8400-e29b-41d4-a716-446655440001");
+    }
+
+    #[test]
+    fn annotate_request_context_rejects_valid_and_malformed_repeated_task_id_metadata() {
+        assert_repeated_task_id_metadata_rejected("not-a-task-id");
+    }
+
+    fn assert_repeated_task_id_metadata_rejected(second_value: &str) {
+        let mut request = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header(
+                CORAL_TASK_ID_METADATA_KEY,
+                "750e8400-e29b-41d4-a716-446655440000",
+            )
+            .header(CORAL_TASK_ID_METADATA_KEY, second_value)
+            .body(())
+            .expect("request");
+
+        let status = annotate_request_context(&mut request).expect_err("reject repeated metadata");
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(
+            status.message(),
+            "coral-task-id metadata must contain exactly one value"
         );
     }
 
@@ -876,10 +904,12 @@ mod tests {
     fn table_to_proto_preserves_table_metadata() {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
+            catalog_name: None,
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
             guide: "Filter by org_id.".to_string(),
+            require_guide_read: true,
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
@@ -914,10 +944,12 @@ mod tests {
     fn table_summary_to_proto_preserves_table_metadata_without_columns() {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
+            catalog_name: None,
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
             guide: "Filter by org_id.".to_string(),
+            require_guide_read: true,
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
@@ -947,8 +979,11 @@ mod tests {
             schema_name: "demo".to_string(),
             function_name: "search".to_string(),
             description: "Search demo records".to_string(),
+            guide: "Prefer search for record lookup.".to_string(),
+            require_guide_read: true,
             arguments: vec![coral_engine::TableFunctionArgumentInfo {
                 name: "payload".to_string(),
+                data_type: "Utf8".to_string(),
                 required: true,
                 values: Vec::new(),
             }],
@@ -963,8 +998,10 @@ mod tests {
         assert_eq!(proto.schema_name, "demo");
         assert_eq!(proto.name, "search");
         assert_eq!(proto.description, "Search demo records");
+        assert_eq!(proto.guide, "Prefer search for record lookup.");
         assert_eq!(proto.arguments.len(), 1);
         assert_eq!(proto.arguments[0].name, "payload");
+        assert_eq!(proto.arguments[0].data_type, "Utf8");
         assert!(proto.arguments[0].required);
         assert!(proto.arguments[0].values.is_empty());
     }

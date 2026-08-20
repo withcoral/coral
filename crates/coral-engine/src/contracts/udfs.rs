@@ -1,63 +1,58 @@
-//! Engine runtime UDF contracts supplied by the app layer.
+//! Executable Coral SQL function contracts supplied by the app layer.
 
 use coral_spec::ManifestDataType;
 
-/// Typed UDF signature inferred by planning its SQL body.
+/// Typed function signature inferred by planning its Coral SQL query.
 #[derive(Debug, Clone)]
-pub struct UdfRuntimeSignature {
-    /// Arguments referenced by the UDF SQL body.
-    pub arguments: Vec<UdfRuntimeArgument>,
-    /// Columns returned by the UDF SQL body.
-    pub result_columns: Vec<UdfRuntimeResultColumn>,
+pub struct CoralSqlFunctionSignature {
+    /// Arguments referenced by the function query.
+    pub arguments: Vec<CoralSqlFunctionArgument>,
+    /// Columns returned by the function query.
+    pub result_columns: Vec<CoralSqlResultColumn>,
+    /// Canonical installed source names referenced by the function query.
+    pub source_names: Vec<String>,
 }
 
-/// One SQL UDF body to validate before runtime registration.
+/// One Coral SQL query to validate before runtime registration.
 #[derive(Debug, Clone)]
-pub struct UdfRuntimeSqlDefinition {
-    /// Stable UDF id within one workspace.
+pub struct CoralSqlFunctionInferenceDefinition {
+    /// Stable function id within one workspace.
     pub name: String,
-    /// Executable UDF implementation.
-    pub implementation: UdfRuntimeImplementation,
+    /// Read-only Coral SQL query using `DataFusion` value parameters like `$argument`.
+    pub query: String,
 }
 
-impl UdfRuntimeSqlDefinition {
-    /// Returns the SQL body for this definition.
-    #[must_use]
-    pub fn sql(&self) -> &str {
-        let UdfRuntimeImplementation::CoralSql { query } = &self.implementation;
-        query
-    }
-}
-
-/// One validated UDF made available to the query runtime.
+/// One executable Coral SQL function made available to the query runtime.
 #[derive(Debug, Clone)]
-pub struct UdfRuntimeDefinition {
-    /// Stable UDF id within one workspace.
+pub struct CoralSqlFunctionDefinition {
+    /// Stable function id within one workspace.
     pub name: String,
-    /// User-facing UDF description.
+    /// User-facing function description.
     pub description: String,
-    /// Typed arguments accepted by the UDF.
-    pub arguments: Vec<UdfRuntimeArgument>,
-    /// Executable UDF implementation.
-    pub implementation: UdfRuntimeImplementation,
-    /// Public surfaces requested by the UDF.
-    pub publish: UdfRuntimePublish,
-    /// Columns inferred by planning the UDF SQL body.
-    pub result_columns: Vec<UdfRuntimeResultColumn>,
+    /// Typed arguments accepted by the function.
+    pub arguments: Vec<CoralSqlFunctionArgument>,
+    /// Read-only Coral SQL query executed after typed argument binding.
+    pub query: String,
+    /// Public SQL table-function target.
+    pub publish: CoralSqlTableFunctionPublish,
+    /// Columns inferred by planning the function query.
+    pub result_columns: Vec<CoralSqlResultColumn>,
+    /// Canonical installed source names referenced by the function query.
+    pub source_names: Vec<String>,
 }
 
-/// One typed UDF argument.
+/// One typed Coral SQL function argument.
 #[derive(Debug, Clone)]
-pub struct UdfRuntimeArgument {
+pub struct CoralSqlFunctionArgument {
     /// Argument name.
     pub name: String,
     /// Argument type in manifest spelling.
     pub data_type: ManifestDataType,
 }
 
-/// One column returned by a UDF table function.
+/// One column returned by a Coral SQL table function.
 #[derive(Debug, Clone)]
-pub struct UdfRuntimeResultColumn {
+pub struct CoralSqlResultColumn {
     /// Column name.
     pub name: String,
     /// Arrow/DataFusion type expected for the column.
@@ -66,31 +61,15 @@ pub struct UdfRuntimeResultColumn {
     pub nullable: bool,
 }
 
-/// Executable UDF implementation.
+/// Canonical SQL table-function surface for one Coral SQL function.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum UdfRuntimeImplementation {
-    /// Read-only Coral SQL using `DataFusion` value parameters like `$argument`.
-    CoralSql {
-        /// SQL query executed by Coral after typed argument binding.
-        query: String,
-    },
-}
-
-/// Public surfaces requested by one UDF.
-#[derive(Debug, Clone)]
-pub struct UdfRuntimePublish {
-    /// Canonical public SQL table-function wrapper.
-    pub table_function: UdfRuntimeTableFunctionPublish,
-}
-
-/// Canonical SQL table-function surface for one UDF.
-#[derive(Debug, Clone)]
-pub struct UdfRuntimeTableFunctionPublish {
+pub struct CoralSqlTableFunctionPublish {
     /// SQL schema.
     pub schema: String,
     /// SQL function name.
     pub name: String,
     /// Optional publish-target-specific description.
     pub description: String,
+    /// Query guidance for the published table function.
+    pub guide: String,
 }

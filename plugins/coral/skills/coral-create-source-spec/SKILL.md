@@ -71,7 +71,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - repo sources or already-named sources: `coral source test <name>`
 6. Inspect the exposed shape:
    - inspect `coral.tables` for visible tables, descriptions, guides, and required filters; keep metadata queries bounded with `LIMIT`/`OFFSET`
-   - inspect `coral.table_functions` for source-scoped functions, arguments, result columns, kind, and search limits
+   - inspect `coral.table_functions` for source-scoped functions, descriptions, guides, arguments, result columns, kind, and search limits
    - inspect `coral.columns` for canonical column metadata, including `is_virtual` and `is_required_filter`; filter by one table or page large column sets
    - inspect `coral.filters` for normalized table filter names, types, modes, required flags, and descriptions
    - inspect `coral.inputs` to verify variables, secrets, defaults, hints, and required flags
@@ -168,12 +168,19 @@ Use this loop during authoring:
 coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
 coral source test my_source
-coral sql "SELECT schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY schema_name, table_name LIMIT 50 OFFSET 0"
+coral sql "SELECT catalog_name, schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY catalog_name, schema_name, table_name LIMIT 50 OFFSET 0"
 coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
-coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
-coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
-coral sql "SELECT key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' ORDER BY key"
+coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
+coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
+coral sql "SELECT catalog_name, key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY key"
 ```
+
+Each `WHERE` clause matches on both qualifiers because a source is addressed
+either by schema or by catalog. Schema-addressed sources carry the source name in
+`schema_name` and leave `catalog_name` empty; database sources put the source name
+in `catalog_name`, and their `coral.inputs` rows have an empty `schema_name`.
+Filtering on `schema_name` alone returns zero rows for a database source without
+reporting an error, which reads as "this source declares nothing".
 
 For repo sources or already-named sources, add `test_queries` for a basic smoke/connection check and run:
 

@@ -10,7 +10,7 @@ use crate::sources::SourceName;
 use crate::sources::materialization::{
     DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, OPERATION_METADATA_FILENAME, PROJECTIONS_FILENAME,
 };
-use crate::storage::fs::ensure_dir;
+use crate::storage::fs::{ensure_dir, remove_file_if_exists};
 use crate::workspaces::{WorkspaceName, WorkspacePaths};
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
@@ -103,6 +103,22 @@ impl AppStateLayout {
         self.config_dir.join("workspaces")
     }
 
+    pub(crate) fn remove_legacy_task_event_logs(&self) -> Result<(), std::io::Error> {
+        let workspace_entries = match std::fs::read_dir(self.workspaces_root()) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        for entry in workspace_entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            remove_file_if_exists(&entry.path().join("tasks").join("tasks.jsonl"))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspaces_root().join(workspace_name.as_str())
     }
@@ -151,13 +167,6 @@ impl AppStateLayout {
 
     pub(crate) fn search_sqlite_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.search_dir(workspace_name).join("search.sqlite3")
-    }
-
-    /// Per-workspace task lifecycle event log (JSONL).
-    pub(crate) fn task_events_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
-        self.workspace_dir(workspace_name)
-            .join("tasks")
-            .join("tasks.jsonl")
     }
 
     pub(crate) fn source_dir(
@@ -367,17 +376,46 @@ mod tests {
                 .join("search.sqlite3")
         );
         assert_eq!(
-            layout.task_events_file(&workspace_name),
-            config_dir
-                .join("workspaces")
-                .join("default")
-                .join("tasks")
-                .join("tasks.jsonl")
-        );
-        assert_eq!(
             layout.local_trace_store_dir(),
             config_dir.join("telemetry").join("traces")
         );
+    }
+
+    #[test]
+    fn removes_legacy_task_event_logs_for_each_workspace() {
+        let temp = tempdir().expect("tempdir");
+        let config_dir = temp.path().join("coral-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        layout
+            .remove_legacy_task_event_logs()
+            .expect("missing workspace root is already clean");
+
+        let default_task_log = config_dir.join("workspaces/default/tasks/tasks.jsonl");
+        let analytics_task_log = config_dir.join("workspaces/analytics/tasks/tasks.jsonl");
+        for path in [&default_task_log, &analytics_task_log] {
+            fs::create_dir_all(path.parent().expect("task directory"))
+                .expect("create task directory");
+            fs::write(path, "sensitive task intent").expect("write legacy task log");
+        }
+        let unrelated = config_dir.join("workspaces/default/tasks/notes.jsonl");
+        fs::write(&unrelated, "keep").expect("write unrelated file");
+        let non_workspace_entry = config_dir.join("workspaces/README");
+        fs::write(&non_workspace_entry, "keep").expect("write non-workspace entry");
+
+        layout
+            .remove_legacy_task_event_logs()
+            .expect("remove legacy task logs");
+
+        assert!(!default_task_log.exists());
+        assert!(!analytics_task_log.exists());
+        assert!(unrelated.exists());
+        assert!(non_workspace_entry.exists());
+
+        fs::write(&default_task_log, "reappeared").expect("recreate legacy task log");
+        layout
+            .remove_legacy_task_event_logs()
+            .expect("remove recreated legacy task log");
+        assert!(!default_task_log.exists());
     }
 
     #[test]

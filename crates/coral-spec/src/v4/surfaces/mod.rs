@@ -1,4 +1,4 @@
-mod json_schema;
+pub(in crate::v4) mod json_schema;
 mod mcp;
 mod openapi;
 

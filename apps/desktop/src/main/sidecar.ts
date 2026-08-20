@@ -4,6 +4,7 @@ import { constants } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app } from 'electron'
+import { ensureDesktopCoralConfig } from './coral-config'
 
 export interface CoralSidecar {
   url: string
@@ -13,7 +14,7 @@ export interface CoralSidecar {
 
 // Only trust a loopback endpoint — the sidecar is a local process, so a
 // non-loopback URL in its output should not be adopted as the runtime address.
-const READY_RE = /Coral UI listening on (http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?)/
+const READY_RE = /Coral gRPC server listening on (http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?)/
 const PACKAGED_STARTUP_TIMEOUT_MS = 30_000
 const OUTPUT_TAIL_LIMIT = 8000
 
@@ -59,16 +60,6 @@ export async function externalCoralPath(): Promise<string> {
   throw new Error('No Coral binary is available yet. Run `npm run stage:coral --prefix apps/desktop` first.')
 }
 
-// Dev binds a known port (default 8778, overridable) because the Reef React
-// Router server receives CORAL_ENDPOINT before the Electron sidecar exists.
-// Packaged builds keep `--port 0` (dynamic) because the app protocol resolves
-// the live endpoint before each React Router request.
-function devSidecarPort(): string {
-  // `||` (not `??`) so an empty CORAL_DEV_SIDECAR_PORT also falls back — an empty
-  // string would otherwise become `--port ""` and the sidecar would fail to start.
-  return process.env.CORAL_DEV_SIDECAR_PORT || '8778'
-}
-
 function devSidecarCommand(): { command: string; args: string[]; cwd: string } {
   return {
     command: 'cargo',
@@ -80,10 +71,7 @@ function devSidecarCommand(): { command: string; args: string[]; cwd: string } {
       '-p',
       'coral-cli',
       '--',
-      'ui',
-      '--no-open',
-      '--port',
-      devSidecarPort(),
+      'server',
     ],
     cwd: repoRoot(),
   }
@@ -92,7 +80,7 @@ function devSidecarCommand(): { command: string; args: string[]; cwd: string } {
 function packagedSidecarCommand(): { command: string; args: string[]; cwd: string } {
   return {
     command: bundledCoralPath(),
-    args: ['ui', '--no-open', '--port', '0'],
+    args: ['server'],
     cwd: process.resourcesPath,
   }
 }
@@ -105,8 +93,8 @@ function startupTimeoutMs(): number | null {
   return app.isPackaged ? PACKAGED_STARTUP_TIMEOUT_MS : null
 }
 
-function envWithLoopbackNoProxy(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, CORAL_DESKTOP: '1' }
+function envWithLoopbackNoProxy(configDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, CORAL_CONFIG_DIR: configDir, CORAL_DESKTOP: '1' }
   for (const key of ['NO_PROXY', 'no_proxy']) {
     const existing = env[key]
       ?.split(',')
@@ -131,12 +119,19 @@ export function killAllTrackedChildren(): void {
   }
 }
 
-export function startCoralSidecar(): Promise<CoralSidecar> {
+export async function startCoralSidecar(): Promise<CoralSidecar> {
+  const devPort = process.env.CORAL_DEV_SIDECAR_PORT || '8778'
+  const configDir = app.isPackaged
+    ? await ensureDesktopCoralConfig(app.getPath('userData'))
+    : await ensureDesktopCoralConfig(app.getPath('userData'), {
+        bindAddr: `127.0.0.1:${devPort}`,
+        directory: `coral-dev-${devPort}`,
+      })
   const command = sidecarCommand()
   const child = spawn(command.command, command.args, {
     cwd: command.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: envWithLoopbackNoProxy(),
+    env: envWithLoopbackNoProxy(configDir),
   })
   liveChildren.add(child)
   child.once('exit', () => liveChildren.delete(child))

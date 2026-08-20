@@ -49,6 +49,31 @@ impl McpToolCaller for FakeMcpCaller {
     }
 }
 
+#[derive(Debug)]
+struct SchemaValidatingMcpCaller;
+
+#[async_trait]
+impl McpToolCaller for SchemaValidatingMcpCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        _tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        let include_archived = arguments
+            .get("include_archived")
+            .cloned()
+            .unwrap_or(Value::Null);
+        serde_json::from_value::<bool>(include_archived.clone()).map_err(|error| {
+            DataFusionError::Plan(format!(
+                "MCP tool expected boolean argument include_archived, got \
+                 {include_archived}: {error}"
+            ))
+        })?;
+        Ok(json!({ "items": [] }))
+    }
+}
+
 /// Records each MCP tool call and returns a fixed payload for table tests.
 #[derive(Debug)]
 struct FakeMcpTableCaller {
@@ -216,6 +241,8 @@ fn mcp_manifest() -> coral_spec::ValidatedSourceManifest {
         },
         "functions": [{
             "name": "search",
+            "guide": "Use search for exact issue lookup.",
+            "require_guide_read": true,
             "tool": "search_tool",
             "args": [{
                 "name": "query",
@@ -271,6 +298,11 @@ fn mcp_typed_args_manifest() -> coral_spec::ValidatedSourceManifest {
                     "type": "Float64",
                     "required": true,
                     "bind": { "arg": "threshold" }
+                },
+                {
+                    "name": "workflow_runs_filter",
+                    "type": "Json",
+                    "bind": { "arg": "workflow_runs_filter" }
                 }
             ],
             "response": {
@@ -427,7 +459,7 @@ async fn mcp_table_function_declared_arg_types_keep_existing_call_behavior() {
              query => 'issue', \
              limit => 10, \
              include_archived => true, \
-             threshold => 0.75)",
+             threshold => 1)",
         )
         .await
         .expect("typed function query should plan")
@@ -445,7 +477,65 @@ async fn mcp_table_function_declared_arg_types_keep_existing_call_behavior() {
     );
     assert_eq!(call.1.get("limit"), Some(&Value::from(10)));
     assert_eq!(call.1.get("include_archived"), Some(&Value::Bool(true)));
-    assert_eq!(call.1.get("threshold"), Some(&json!(0.75)));
+    assert_eq!(call.1.get("threshold"), Some(&json!(1.0)));
+}
+
+#[tokio::test]
+async fn mcp_table_function_coerces_compatible_string_to_declared_boolean() {
+    let ctx = SessionContext::new();
+    register_test_sources(
+        &ctx,
+        compile_sources(
+            mcp_typed_args_manifest(),
+            Arc::new(SchemaValidatingMcpCaller),
+        ),
+    );
+
+    ctx.sql(
+        "SELECT title FROM test_mcp.typed_search(\
+         query => 'issue', \
+         limit => 10, \
+         include_archived => 'true', \
+         threshold => 0.75)",
+    )
+    .await
+    .expect("typed function query should plan")
+    .collect()
+    .await
+    .expect("MCP tool should receive include_archived as a JSON boolean");
+}
+
+#[tokio::test]
+async fn mcp_table_function_parses_declared_json_object_argument() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_typed_args_manifest(), caller.clone()),
+    );
+
+    ctx.sql(
+        "SELECT title FROM test_mcp.typed_search(\
+         query => 'issue', \
+         limit => 10, \
+         include_archived => true, \
+         threshold => 0.75, \
+         workflow_runs_filter => '{\"status\":\"completed\"}')",
+    )
+    .await
+    .expect("typed function query should plan")
+    .collect()
+    .await
+    .expect("MCP tool should receive workflow_runs_filter as a JSON object");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    let call = calls.first().expect("one MCP call should be recorded");
+    assert_eq!(
+        call.1.get("workflow_runs_filter"),
+        Some(&json!({ "status": "completed" }))
+    );
 }
 
 #[tokio::test]
@@ -484,7 +574,14 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
 
 fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
-    catalog::register(ctx, &registration.active_sources, &[]).expect("catalog should register");
+    catalog::register(
+        ctx,
+        &registration.active_sources,
+        &registration.column_fetchers,
+        &[],
+        catalog::CatalogColumnFetchFailures::default(),
+    )
+    .expect("catalog should register");
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources
@@ -506,6 +603,8 @@ fn mcp_table_manifest() -> coral_spec::ValidatedSourceManifest {
         "tables": [{
             "name": "issues",
             "description": "Open issues",
+            "guide": "Use search for issue lookup.",
+            "require_guide_read": true,
             "tool": "list_issues",
             "tool_args": {
                 "owner": { "from": "literal", "value": "acme" }

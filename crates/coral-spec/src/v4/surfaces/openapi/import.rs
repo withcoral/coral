@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use serde_json::Value;
@@ -5,12 +6,15 @@ use serde_json::Value;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrType, SemanticIr};
 use crate::v4::manifest::{V4SourceManifest, V4Surface};
-use crate::v4::surfaces::json_schema::{RefError, resolve_local_ref};
+use crate::v4::surfaces::json_schema::{RefError, SchemaRoot, resolve_local_ref};
 use crate::v4::{
     ImportedSurface, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
     OperationMetadataCatalog, V4_ARTIFACT_SCHEMA_VERSION,
 };
 use crate::{ManifestError, Result};
+
+use super::document::validate_supported_openapi_version;
+use super::normalize::normalized_schema;
 
 pub fn import_openapi_surface(
     manifest: &V4SourceManifest,
@@ -19,15 +23,7 @@ pub fn import_openapi_surface(
 ) -> Result<ImportedSurface> {
     let document: Value =
         serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
-    let openapi = document
-        .get("openapi")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
-    if !openapi.starts_with("3.0.") {
-        return Err(ManifestError::validation(format!(
-            "OpenAPI document uses unsupported version '{openapi}'"
-        )));
-    }
+    validate_supported_openapi_version(&document)?;
 
     let mut importer = OpenApiImporter::new(manifest, surface, &document);
     importer.import()
@@ -41,7 +37,7 @@ pub(super) struct OpenApiImporter<'a> {
     pub(super) diagnostics: Vec<Diagnostic>,
 }
 
-enum RefDiagnosticContext<'a> {
+pub(super) enum RefDiagnosticContext<'a> {
     Operation { path: &'a str, method_name: &'a str },
     OperationId(&'a str),
 }
@@ -124,14 +120,39 @@ impl<'a> OpenApiImporter<'a> {
         })
     }
 
+    /// The document a walk should read this surface's schemas through.
+    ///
+    /// Every schema the importer reads comes from here or from
+    /// [`Self::resolve_ref`], so the 3.1 nullability spellings are rewritten
+    /// wherever a reader would otherwise misread them — and nowhere else. The
+    /// document itself is left as parsed, so every `$ref` keeps resolving,
+    /// including one that points into a subschema.
+    pub(super) fn schema_root(&self) -> SchemaRoot<'a> {
+        SchemaRoot::normalized_by(self.document, normalized_schema)
+    }
+
+    /// One schema, in the spelling this importer's readers understand.
+    ///
+    /// Every read of a schema's own keywords goes through here or through the
+    /// shared walk, which is what replaces rewriting the document: a reader
+    /// that reached into the parsed tree directly would still see the 3.1
+    /// spelling.
+    pub(super) fn read_schema<'s>(&self, schema: &'s Value) -> Cow<'s, Value> {
+        self.schema_root().read(schema)
+    }
+
     pub(super) fn resolve_ref(
         &self,
         value: &Value,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<Value> {
-        match resolve_local_ref(self.document, value) {
-            Ok(resolved) => Some(resolved.clone()),
+        // Normalized before resolving as well as after: a nullable `$ref` union
+        // only becomes a `$ref` once it is unwrapped, and resolving the union
+        // itself would hand back the union.
+        let value = self.read_schema(value);
+        match resolve_local_ref(self.document, &value) {
+            Ok(resolved) => Some(self.read_schema(resolved).into_owned()),
             Err(error) => {
                 diagnostics.push(Self::ref_error_diagnostic(
                     error,
@@ -142,18 +163,19 @@ impl<'a> OpenApiImporter<'a> {
         }
     }
 
-    fn ref_error_diagnostic(error: RefError<'_>, context: &RefDiagnosticContext<'_>) -> Diagnostic {
-        let (code, message) = match error {
-            RefError::External(reference) => (
-                "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
+    pub(super) fn ref_error_diagnostic(
+        error: RefError<'_>,
+        context: &RefDiagnosticContext<'_>,
+    ) -> Diagnostic {
+        let message = match error {
+            RefError::External(reference) => {
                 format!(
                     "external reference '{reference}' is unsupported; Coral currently requires dereferenced or bundled OpenAPI documents"
-                ),
-            ),
-            RefError::NotFound(reference) => (
-                "OPENAPI_REF_NOT_FOUND",
-                format!("reference '{reference}' was not found"),
-            ),
+                )
+            }
+            RefError::NotFound(reference) => {
+                format!("reference '{reference}' was not found")
+            }
         };
         let (message, operation_id) = match context {
             RefDiagnosticContext::Operation { path, method_name } => (
@@ -164,6 +186,6 @@ impl<'a> OpenApiImporter<'a> {
                 (message, Some(operation_id.to_string()))
             }
         };
-        Diagnostic::warning(code, message, operation_id)
+        Diagnostic::new(message, operation_id)
     }
 }

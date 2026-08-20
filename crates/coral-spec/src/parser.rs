@@ -48,6 +48,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::V4(manifest) => match manifest.surface.surface_type {
                 crate::v4::SurfaceType::OpenApi => SourceBackend::Http,
                 crate::v4::SurfaceType::Mcp => SourceBackend::Mcp,
+                crate::v4::SurfaceType::Database => SourceBackend::Database,
             },
         }
     }
@@ -240,6 +241,9 @@ pub fn parse_source_manifest_value(value: Value) -> Result<ValidatedSourceManife
         SourceBackend::Mcp => Ok(ValidatedSourceManifest {
             inner: ValidatedManifestKind::Mcp(McpSourceManifest::parse_manifest_value(value)?),
         }),
+        SourceBackend::Database => Err(ManifestError::validation(
+            "database sources require dsl_version 4",
+        )),
     }
 }
 
@@ -330,9 +334,10 @@ tables:
 
     #[test]
     fn reserved_source_name_is_rejected() {
-        let error = parse_source_manifest_yaml(
-            r"
-name: public
+        for name in ["coral", "coral_admin", "datafusion", "public"] {
+            let raw = format!(
+                r"
+name: {name}
 version: 1.0.0
 dsl_version: 3
 backend: file
@@ -345,16 +350,53 @@ tables:
     columns:
       - name: kind
         type: Utf8
-",
-        )
-        .expect_err("reserved source name should fail");
+"
+            );
+            let error =
+                parse_source_manifest_yaml(&raw).expect_err("reserved source name should fail");
 
-        assert!(
-            error
-                .to_string()
-                .contains("source name 'public' is reserved"),
-            "unexpected error: {error}"
-        );
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("source name '{name}' is reserved")),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_datafusion_source_name_is_rejected_in_any_case() {
+        // The engine refuses to register `datafusion` (it is `DataFusion`'s
+        // default catalog) and folds that name case-insensitively. Validation
+        // has to reject the same spellings, or a legacy manifest passes lint and
+        // then fails at runtime with "cannot be used by manifests".
+        for name in ["datafusion", "DataFusion"] {
+            let error = parse_source_manifest_yaml(&format!(
+                r"
+name: {name}
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+"
+            ))
+            .expect_err("reserved source name should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("source name '{name}' is reserved")),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

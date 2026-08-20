@@ -20,7 +20,8 @@ use crate::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
-    validate_identifier, validate_source_name, validate_test_queries, validate_unique_values,
+    validate_identifier, validate_required_guide, validate_source_name, validate_test_queries,
+    validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -123,6 +124,10 @@ struct RawMcpTableFunctionSpec {
     #[serde(default)]
     description: String,
     #[serde(default)]
+    guide: String,
+    #[serde(default)]
+    require_guide_read: bool,
+    #[serde(default)]
     fetch_limit_default: Option<usize>,
     #[serde(default)]
     args: Vec<TableFunctionArgSpec>,
@@ -152,6 +157,8 @@ struct RawMcpTableSpec {
     pub description: String,
     #[serde(default)]
     guide: String,
+    #[serde(default)]
+    require_guide_read: bool,
     #[serde(default)]
     pub fetch_limit_default: Option<usize>,
     #[serde(default)]
@@ -332,6 +339,8 @@ impl RawMcpTableFunctionSpec {
                 name: self.name,
                 kind: SourceTableFunctionKind::default(),
                 description: self.description,
+                guide: self.guide,
+                require_guide_read: self.require_guide_read,
                 fetch_limit_default: self.fetch_limit_default,
                 search_limits: None,
                 detail_hints: Vec::new(),
@@ -363,6 +372,7 @@ impl RawMcpTableSpec {
                 self.name,
                 self.description,
                 self.guide,
+                self.require_guide_read,
                 filters,
                 self.fetch_limit_default,
                 None,
@@ -591,6 +601,11 @@ fn validate_server_env_value_source(source_name: &str, env: &McpEnvSpec) -> Resu
 }
 
 fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) -> Result<()> {
+    validate_required_guide(
+        &format!("source '{source_name}' function '{}'", function.name),
+        &function.guide,
+        function.require_guide_read,
+    )?;
     if function.tool.trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' function '{}' must define a non-empty tool",
@@ -659,6 +674,11 @@ fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) 
 }
 
 fn validate_mcp_table(source_name: &str, table: &RawMcpTableSpec) -> Result<()> {
+    validate_required_guide(
+        &format!("source '{source_name}' table '{}'", table.name),
+        &table.guide,
+        table.require_guide_read,
+    )?;
     if table.tool.trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' table '{}' must define a non-empty tool",
@@ -811,6 +831,7 @@ fn validate_table_tool_arg_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgStringArray { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => Err(ManifestError::validation(format!(
             "{context} uses function argument '{key}' but tables do not take arguments",
@@ -878,6 +899,7 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgStringArray { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => Err(ManifestError::validation(format!(
             "{context} uses function argument '{key}' but the value is source-scoped",

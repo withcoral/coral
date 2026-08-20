@@ -1,14 +1,18 @@
 use std::sync::Arc;
 
-use coral_app::{AwsEngineExtensionsProvider, features::FeatureOverrides};
+use coral_app::{
+    AwsEngineExtensionsProvider,
+    features::{Feature, FeatureOverrides, FeatureStore},
+};
 use coral_client::{
     AppClient, ClientError,
-    local::{LocalServerError, RunningServer, ServerBuilder},
+    local::{LocalServerError, RunningServer as AppRunningServer, ServerBuilder},
 };
+use coral_mcp::McpOptions;
 
 pub(crate) struct Bootstrap {
     pub(crate) app: AppClient,
-    server: Option<RunningServer>,
+    server: Option<AppRunningServer>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -31,6 +35,8 @@ pub(crate) enum BootstrapError {
     Startup(#[from] LocalServerError),
     #[error(transparent)]
     Connect(#[from] ClientError),
+    #[error(transparent)]
+    Serve(#[from] crate::serve::ServeError),
 }
 
 pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, BootstrapError> {
@@ -51,36 +57,25 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
     })
 }
 
-#[cfg(feature = "embedded-ui")]
-pub(crate) async fn start_ui_server(
-    port: u16,
-    feature_overrides: FeatureOverrides,
-) -> Result<RunningServer, BootstrapError> {
-    let server = configure_server_builder(
-        ServerBuilder::embedded_ui_loopback(port, crate::embedded_ui_assets()),
-        BootstrapOptions {
-            feature_overrides,
-            ..BootstrapOptions::default()
-        },
-    )
-    .start()
-    .await?;
-    Ok(server)
-}
-
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
-) -> Result<RunningServer, BootstrapError> {
-    let server = configure_server_builder(
+) -> Result<crate::serve::RunningServer, BootstrapError> {
+    let features = FeatureStore::discover(None)?.load_with_overrides(&feature_overrides)?;
+    let mcp_options = McpOptions {
+        feedback_enabled: features.enabled(Feature::Feedback),
+        observed_values_search_enabled: features.enabled(Feature::ObservedValuesSearch),
+        ..McpOptions::default()
+    };
+    let builder = configure_server_builder(
         ServerBuilder::configured_standalone_grpc(),
         BootstrapOptions {
             feature_overrides,
             ..BootstrapOptions::default()
         },
-    )
-    .start()
-    .await?;
-    Ok(server)
+    );
+    crate::serve::start(builder, mcp_options)
+        .await
+        .map_err(Into::into)
 }
 
 fn configure_server_builder(builder: ServerBuilder, options: BootstrapOptions) -> ServerBuilder {

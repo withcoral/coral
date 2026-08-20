@@ -5,6 +5,17 @@ package coral.v1;
 import "coral/v1/catalog.proto";
 import "coral/v1/resources.proto";
 
+// The Coral surface that wrote the current installed function definition.
+enum FunctionWriteSurface {
+  // The write surface is not known, including functions installed before this
+  // metadata was recorded.
+  FUNCTION_WRITE_SURFACE_UNSPECIFIED = 0;
+  // The function was written through the Coral CLI.
+  FUNCTION_WRITE_SURFACE_CLI = 1;
+  // The function was written through Coral's MCP server.
+  FUNCTION_WRITE_SURFACE_MCP = 2;
+}
+
 // One scalar function argument.
 message FunctionArgument {
   // Argument name.
@@ -22,6 +33,8 @@ message FunctionTableFunctionPublish {
   string name = 2;
   // User-facing description.
   string description = 3;
+  // Query guidance for the published table function.
+  string guide = 4;
 }
 
 // Runtime metadata for an installed function that currently plans and executes.
@@ -34,6 +47,10 @@ message FunctionRuntimeReady {
   FunctionTableFunctionPublish table_function = 3;
   // Result columns inferred from the planned function SQL.
   repeated TableFunctionResultColumn result_columns = 4;
+  // Executable SQL body parsed from the installed artifact.
+  string sql_body = 5;
+  // Canonical installed sources referenced by the planned function SQL.
+  repeated string source_names = 6;
 }
 
 // Validation failure for an installed function that is not currently queryable.
@@ -56,6 +73,8 @@ message Function {
     // The function is installed but is not currently queryable.
     FunctionRuntimeInvalid invalid = 4;
   }
+  // The Coral surface that wrote the current function definition.
+  FunctionWriteSurface write_surface = 5;
 }
 
 // Installs or replaces one user function after validation.
@@ -64,12 +83,20 @@ message AddFunctionRequest {
   Workspace workspace = 1;
   // Raw function SQL artifact, including SQL comment frontmatter.
   string sql = 2;
+  // Reject the install when a function with the same name already exists.
+  // Defaults to false so callers written before this field was added retain
+  // the original replace-existing behavior.
+  bool fail_if_exists = 3;
+  // The Coral surface issuing this write. Omit when unknown.
+  FunctionWriteSurface write_surface = 4;
 }
 
 // Function install response.
 message AddFunctionResponse {
   // Installed runtime-ready function.
   Function function = 1;
+  // Whether this install replaced an existing function with the same name.
+  bool replaced = 2;
 }
 
 // Lists installed functions and their current runtime status in one workspace.

@@ -9,14 +9,22 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Test-only session-token minting for sibling crates' integration tests.
+# Production builds must leave this off.
+test-session-tokens = []
+
 [dependencies]
 arrow.workspace = true
-axum.workspace = true
+async-trait.workspace = true
+async-lock.workspace = true
+axum = { workspace = true, features = ["http1", "tokio"] }
 base64.workspace = true
 chrono.workspace = true
 etcetera.workspace = true
 fs2.workspace = true
 keyring-core.workspace = true
+jsonwebtoken.workspace = true
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry-otlp.workspace = true
@@ -40,14 +48,13 @@ toml_edit.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
 tonic-types.workspace = true
-tonic-web.workspace = true
 tower.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
-zeroize.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
 
 coral-api.workspace = true
 coral-auth-aws = { path = "../auth/aws" }
@@ -70,7 +77,7 @@ prost.workspace = true
 opentelemetry-proto.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 
 [build-dependencies]

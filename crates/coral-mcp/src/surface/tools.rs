@@ -1,16 +1,16 @@
 use rmcp::model::{CallToolResult, Tool};
 use serde_json::Value;
 
-use super::catalog::{describe_table_tool, list_catalog_tool, list_columns_tool};
+use super::catalog::{describe_tool, list_catalog_tool, list_columns_tool};
 use super::context::ToolDescriptionContext;
 use super::feedback::feedback_tool;
+use super::function::add_function_tool;
 use super::search::search_tool;
 use super::sql::sql_tool;
 use super::task::{end_task_tool, start_task_tool, with_task_context_arguments};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ToolAvailability {
-    pub(crate) tasks_enabled: bool,
     pub(crate) feedback_enabled: bool,
     pub(crate) observed_values_search_enabled: bool,
 }
@@ -19,26 +19,22 @@ pub(crate) fn available_tools(
     context: &ToolDescriptionContext,
     availability: ToolAvailability,
 ) -> Vec<Tool> {
-    let mut tools = vec![
-        sql_tool(context),
-        search_tool(context, availability.observed_values_search_enabled),
-        list_catalog_tool(context),
-        describe_table_tool(),
-        list_columns_tool(),
-    ];
-    if availability.tasks_enabled {
-        tools = tools.into_iter().map(with_task_context_arguments).collect();
-        tools.push(start_task_tool());
-        tools.push(end_task_tool());
-    }
+    let mut tools = vec![start_task_tool()];
+    tools.extend(
+        [
+            sql_tool(context),
+            add_function_tool(),
+            search_tool(context, availability.observed_values_search_enabled),
+            list_catalog_tool(context),
+            describe_tool(),
+            list_columns_tool(),
+        ]
+        .into_iter()
+        .map(with_task_context_arguments),
+    );
+    tools.push(end_task_tool());
     if availability.feedback_enabled {
-        let feedback = feedback_tool();
-        let feedback = if availability.tasks_enabled {
-            with_task_context_arguments(feedback)
-        } else {
-            feedback
-        };
-        tools.push(feedback);
+        tools.push(with_task_context_arguments(feedback_tool()));
     }
     tools
 }
@@ -56,28 +52,15 @@ mod tests {
 
     use super::{ToolAvailability, ToolDescriptionContext, available_tools, build_tool_result};
 
-    const BASE_TOOLS: ToolAvailability = ToolAvailability {
-        tasks_enabled: false,
+    const DEFAULT_TOOLS: ToolAvailability = ToolAvailability {
         feedback_enabled: false,
         observed_values_search_enabled: false,
     };
     const OBSERVED_VALUES_TOOLS: ToolAvailability = ToolAvailability {
-        tasks_enabled: false,
         feedback_enabled: false,
         observed_values_search_enabled: true,
     };
-    const TASK_TOOLS: ToolAvailability = ToolAvailability {
-        tasks_enabled: true,
-        feedback_enabled: false,
-        observed_values_search_enabled: false,
-    };
     const FEEDBACK_TOOLS: ToolAvailability = ToolAvailability {
-        tasks_enabled: false,
-        feedback_enabled: true,
-        observed_values_search_enabled: false,
-    };
-    const TASK_AND_FEEDBACK_TOOLS: ToolAvailability = ToolAvailability {
-        tasks_enabled: true,
         feedback_enabled: true,
         observed_values_search_enabled: false,
     };
@@ -151,7 +134,7 @@ mod tests {
     #[test]
     fn search_tool_advertises_observed_values_only_when_enabled() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let disabled_tools = available_tools(&context, BASE_TOOLS);
+        let disabled_tools = available_tools(&context, DEFAULT_TOOLS);
         let enabled_tools = available_tools(&context, OBSERVED_VALUES_TOOLS);
         let disabled_search = tool_by_name(&disabled_tools, "search");
         let enabled_search = tool_by_name(&enabled_tools, "search");
@@ -178,7 +161,7 @@ mod tests {
     #[test]
     fn available_tools_decorate_task_aware_tools() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, TASK_TOOLS);
+        let tools = available_tools(&context, DEFAULT_TOOLS);
         let sql_tool = tool_by_name(&tools, "sql");
         let task_id_schema = sql_tool
             .input_schema
@@ -243,7 +226,7 @@ mod tests {
     #[test]
     fn available_tools_add_feedback_last_when_enabled() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, TASK_AND_FEEDBACK_TOOLS);
+        let tools = available_tools(&context, FEEDBACK_TOOLS);
 
         assert_eq!(
             tools.last().map(|tool| tool.name.as_ref()),
@@ -263,7 +246,7 @@ mod tests {
     #[test]
     fn available_tools_keep_default_order() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, BASE_TOOLS);
+        let tools = available_tools(&context, DEFAULT_TOOLS);
         let names = tools
             .iter()
             .map(|tool| tool.name.as_ref())
@@ -272,11 +255,14 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "start_task",
                 "sql",
+                "add_function",
                 "search",
                 "list_catalog",
-                "describe_table",
-                "list_columns"
+                "describe",
+                "list_columns",
+                "end_task"
             ]
         );
     }
@@ -288,7 +274,7 @@ mod tests {
             .collect::<Vec<_>>();
         let context = ToolDescriptionContext::new(1, 0, names);
 
-        let tools = available_tools(&context, BASE_TOOLS);
+        let tools = available_tools(&context, DEFAULT_TOOLS);
         let description = tool_by_name(&tools, "sql")
             .description
             .as_deref()
@@ -302,30 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn available_tools_do_not_mutate_base_tool_schemas() {
-        let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let default_tools = available_tools(&context, BASE_TOOLS);
-        let task_tools = available_tools(&context, TASK_TOOLS);
-
-        let default_properties = tool_by_name(&default_tools, "sql")
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("default properties");
-        let task_properties = tool_by_name(&task_tools, "sql")
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("task properties");
-
-        assert!(!default_properties.contains_key("task_id"));
-        assert!(!default_properties.contains_key("intent"));
-        assert!(task_properties.contains_key("task_id"));
-        assert!(task_properties.contains_key("intent"));
-    }
-
-    #[test]
-    fn feedback_tool_is_not_decorated_when_tasks_are_disabled() {
+    fn feedback_tool_always_requires_task_context() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
         let tools = available_tools(&context, FEEDBACK_TOOLS);
         let feedback = tools.last().expect("feedback tool");
@@ -336,15 +299,15 @@ mod tests {
             .expect("feedback properties");
 
         assert_eq!(feedback.name, "feedback");
-        assert!(!properties.contains_key("task_id"));
-        assert!(!properties.contains_key("intent"));
+        assert!(properties.contains_key("task_id"));
+        assert!(properties.contains_key("intent"));
     }
 
     #[test]
     fn all_advertised_tools_have_object_input_schemas() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
 
-        for tool in available_tools(&context, TASK_AND_FEEDBACK_TOOLS) {
+        for tool in available_tools(&context, FEEDBACK_TOOLS) {
             assert_eq!(
                 tool.input_schema.get("type"),
                 Some(&Value::String("object".into()))

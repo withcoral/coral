@@ -1,11 +1,13 @@
-use crate::v4::ir::{
-    IrEntityCandidate, IrExecutionAttachment, IrOperation, McpExecutionAttachment,
-};
+use crate::v4::ir::{IrExecutionAttachment, IrOperation, McpExecutionAttachment};
+use crate::v4::surfaces::json_schema::SchemaRoot;
+use crate::v4::wrapped_lists::{WrappedListInferenceContext, infer_wrapped_list_row_path};
 use crate::v4::{McpOperationPagination, OperationMetadata};
 
 use super::import::McpImporter;
 use super::model::McpToolDescriptor;
-use super::pagination::infer_mcp_pagination_contracts;
+use super::pagination::{
+    McpPaginationContracts, detect_mcp_pagination_contracts, is_list_like_output,
+};
 
 impl McpImporter<'_> {
     pub(super) fn import_tool(
@@ -23,12 +25,26 @@ impl McpImporter<'_> {
 
         let inputs = imported_inputs.inputs;
         let output = self.import_output(operation_id, tool.output_schema.as_ref());
-        let (pagination, offset_pagination) = infer_mcp_pagination_contracts(
+        let contracts = detect_mcp_pagination_contracts(
             &inputs,
-            &output,
             tool.output_schema.as_ref(),
             &tool.input_schema,
         );
+        let row_path = tool.output_schema.as_ref().map_or_else(Vec::new, |schema| {
+            infer_wrapped_list_row_path(WrappedListInferenceContext {
+                operation_name: &tool.name,
+                paginated_operation: contracts.is_paginated(),
+                schema_root: SchemaRoot::new(schema),
+                response_schema: schema,
+            })
+        });
+        // A contract only becomes this tool's pagination once Coral reads its
+        // result as a list, whether by declaration or by row path.
+        let contracts = if is_list_like_output(&output, &row_path) {
+            contracts
+        } else {
+            McpPaginationContracts::default()
+        };
         let operation = IrOperation {
             id: operation_id.to_string(),
             method_name: "tools/call".to_string(),
@@ -42,11 +58,7 @@ impl McpImporter<'_> {
             naming: None,
             inputs,
             output,
-            entity: Some(IrEntityCandidate {
-                name: operation_id.to_string(),
-                type_ref: format!("{operation_id}_row"),
-                identity_fields: Vec::new(),
-            }),
+            entity_name: Some(operation_id.to_string()),
             execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                 tool_name: tool.name.clone(),
             }),
@@ -55,9 +67,10 @@ impl McpImporter<'_> {
         Some((
             operation,
             OperationMetadata::Mcp {
+                row_path,
                 pagination: McpOperationPagination {
-                    cursor: pagination,
-                    offset: offset_pagination,
+                    cursor: contracts.cursor,
+                    offset: contracts.offset,
                 },
             },
         ))

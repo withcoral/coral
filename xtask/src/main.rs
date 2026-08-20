@@ -9,13 +9,15 @@
 //!   - `export-skills` exports installable agent skills from the canonical
 //!     plugin tree into a distribution checkout.
 //!   - `perf-check` runs command-level performance regression checks.
-//!   - `benchmark` runs representation-efficiency benchmarks.
+//!   - `benchmark` runs developer benchmarks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
 //!     artifacts.
 //!   - `release-desktop-macos-package` packages, signs, notarizes, and verifies
 //!     the prepared macOS desktop app.
-//!   - `openapi-hydrate` produces a self-contained JSON `OpenAPI` descriptor.
+//!   - `openapi-hydrate` produces a self-contained JSON OpenAPI descriptor.
+//!   - `v4-metadata-report` reports inferred row paths and pagination contracts
+//!     for the v4 source catalog, for diffing across inference changes.
 
 #![allow(
     clippy::print_stderr,
@@ -36,6 +38,7 @@ mod benchmarks;
 mod detect;
 mod docs;
 mod env;
+mod metadata_report;
 mod openapi;
 mod perf;
 mod release;
@@ -63,7 +66,7 @@ enum Command {
     ExportSkills(ExportSkillsArgs),
     /// Run command-level performance regression checks.
     PerfCheck(perf::Args),
-    /// Run representation-efficiency benchmarks.
+    /// Run developer benchmarks.
     Benchmark(benchmarks::Args),
     /// Regenerate checked-in generated JSON schemas.
     GenerateSchemas(schemas::Args),
@@ -71,8 +74,10 @@ enum Command {
     ReleaseMacosSignNotarize(release::MacosSignNotarizeArgs),
     /// Package, sign, notarize, and verify the prepared macOS desktop app.
     ReleaseDesktopMacosPackage(release::DesktopMacosPackageArgs),
-    /// Hydrate reachable external `OpenAPI` references into JSON.
+    /// Hydrate reachable external OpenAPI references into JSON.
     OpenapiHydrate(openapi::HydrateArgs),
+    /// Report inferred row paths and pagination contracts for v4 sources.
+    V4MetadataReport(metadata_report::Args),
 }
 
 #[derive(Debug, clap::Args)]
@@ -125,5 +130,6 @@ fn run(command: &Command) -> Result<bool> {
         Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),
         Command::ReleaseDesktopMacosPackage(args) => release::desktop_macos_package(args),
         Command::OpenapiHydrate(args) => openapi::hydrate(args),
+        Command::V4MetadataReport(args) => metadata_report::run(args),
     }
 }

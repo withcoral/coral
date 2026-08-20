@@ -1,6 +1,6 @@
 //! Heuristic inference of lookup key joinability for REST surfaces.
 //!
-//! During `OpenAPI` import Coral guesses which REST query parameters are
+//! During OpenAPI import Coral guesses which REST query parameters are
 //! complete exact lookups and records the positive allowlist in operation
 //! metadata. Other parameters stay pushdown filters; they just cannot anchor dependent joins
 //! (`FilterSpec.lookup_key` stays false). MCP pagination is handled separately
@@ -55,6 +55,11 @@ pub(in crate::v4) fn infer_rest_lookup_keys(
         .iter()
         .filter(|input| input.location == IrInputLocation::Query)
         .filter(|input| !pagination_params.contains(input.name.as_str()))
+        // A multi-valued parameter is never an exact lookup: its SQL value is a
+        // JSON array, while a dependent join binds a bare scalar. Letting one
+        // through would push `alice` where `["alice"]` is expected and fail the
+        // scan at execution time.
+        .filter(|input| input.collection_encoding.is_none())
         .filter(|input| joinable_param_name(&input.name))
         .map(|input| input.name.clone())
         .collect()
@@ -142,6 +147,7 @@ mod tests {
                 location: IrInputLocation::Query,
                 required: false,
                 data_type: IrScalarType::String,
+                collection_encoding: None,
                 default_value: None,
                 description: String::new(),
             })

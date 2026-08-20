@@ -43,13 +43,28 @@ pub struct OperationMetadataCatalog {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OperationMetadata {
     Rest {
+        #[serde(default)]
+        row_path: Vec<String>,
         #[serde(serialize_with = "serialize_rest_operation_pagination")]
         pagination: PaginationSpec,
         lookup_keys: Vec<String>,
     },
     Mcp {
+        #[serde(default)]
+        row_path: Vec<String>,
         pagination: McpOperationPagination,
     },
+}
+
+impl OperationMetadata {
+    /// Path from the response root to the property holding this operation's
+    /// rows. Empty when the response root is already the row collection.
+    #[must_use]
+    pub fn row_path(&self) -> &[String] {
+        match self {
+            Self::Rest { row_path, .. } | Self::Mcp { row_path, .. } => row_path,
+        }
+    }
 }
 
 fn serialize_rest_operation_pagination<S>(
@@ -89,6 +104,7 @@ pub(super) fn rest_pagination_is_canonical_none(pagination: &PaginationSpec) -> 
         && pagination.offset_step.is_none()
         && !pagination.link_header_require_results
         && pagination.next_url_header.is_none()
+        && pagination.next_url_path.is_empty()
         && pagination.max_pages.is_none()
 }
 

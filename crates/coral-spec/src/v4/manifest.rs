@@ -11,8 +11,10 @@ use crate::inputs::{
     validate_oauth_endpoint_templates_with_scope,
 };
 use crate::{
-    HeaderSpec, ManifestError, ManifestInputKind, ManifestInputSpec, ParsedTemplate, Result,
-    TemplateNamespace, validate_identifier, validate_source_name, validate_test_queries,
+    DatabaseConnectionSpec, DatabaseProvider, HeaderSpec, ManifestError, ManifestInputKind,
+    ManifestInputSpec, MySqlConnectionSpec, ParsedTemplate, PostgresConnectionSpec, Result,
+    SqliteConnectionSpec, TemplateNamespace, validate_identifier, validate_source_name,
+    validate_test_queries,
 };
 
 #[derive(Debug, Clone)]
@@ -44,6 +46,7 @@ pub struct V4Surface {
 pub enum SurfaceType {
     OpenApi,
     Mcp,
+    Database,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +54,7 @@ pub enum SurfaceDescriptor {
     Url { url: String },
     File { file: PathBuf },
     McpServer { location: String },
+    Database { provider: DatabaseProvider },
 }
 
 impl SurfaceDescriptor {
@@ -59,6 +63,7 @@ impl SurfaceDescriptor {
             Self::Url { .. } => "url",
             Self::File { .. } => "file",
             Self::McpServer { .. } => "mcp_server",
+            Self::Database { .. } => "database",
         }
     }
 
@@ -67,6 +72,7 @@ impl SurfaceDescriptor {
             Self::Url { url, .. } => url.clone(),
             Self::File { file, .. } => file.display().to_string(),
             Self::McpServer { location } => location.clone(),
+            Self::Database { provider } => provider.as_str().to_string(),
         }
     }
 }
@@ -75,6 +81,7 @@ impl SurfaceDescriptor {
 pub enum SurfaceRuntimeConfig {
     OpenApi(OpenApiRuntimeConfig),
     Mcp(McpRuntimeConfig),
+    Database(DatabaseRuntimeConfig),
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +95,11 @@ pub struct OpenApiRuntimeConfig {
 #[derive(Debug, Clone)]
 pub struct McpRuntimeConfig {
     pub server: McpServerSpec,
+}
+
+#[derive(Debug, Clone)]
+pub struct DatabaseRuntimeConfig {
+    pub connection: DatabaseConnectionSpec,
 }
 
 /// Identity authentication contract declared by a DSL v4 source.
@@ -117,14 +129,21 @@ impl V4Surface {
     pub fn openapi_runtime(&self) -> Option<&OpenApiRuntimeConfig> {
         match &self.runtime {
             SurfaceRuntimeConfig::OpenApi(runtime) => Some(runtime),
-            SurfaceRuntimeConfig::Mcp(_) => None,
+            SurfaceRuntimeConfig::Mcp(_) | SurfaceRuntimeConfig::Database(_) => None,
         }
     }
 
     pub fn mcp_runtime(&self) -> Option<&McpRuntimeConfig> {
         match &self.runtime {
             SurfaceRuntimeConfig::Mcp(runtime) => Some(runtime),
-            SurfaceRuntimeConfig::OpenApi(_) => None,
+            SurfaceRuntimeConfig::OpenApi(_) | SurfaceRuntimeConfig::Database(_) => None,
+        }
+    }
+
+    pub fn database_runtime(&self) -> Option<&DatabaseRuntimeConfig> {
+        match &self.runtime {
+            SurfaceRuntimeConfig::Database(runtime) => Some(runtime),
+            SurfaceRuntimeConfig::OpenApi(_) | SurfaceRuntimeConfig::Mcp(_) => None,
         }
     }
 }
@@ -166,6 +185,10 @@ struct RawV4Surface {
     rate_limit: RateLimitSpec,
     #[serde(default)]
     server: Option<McpServerSpec>,
+    #[serde(default)]
+    provider: Option<DatabaseProvider>,
+    #[serde(default)]
+    connection: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +197,8 @@ enum RawSurfaceType {
     OpenApi,
     #[serde(rename = "mcp")]
     Mcp,
+    #[serde(rename = "database")]
+    Database,
 }
 
 impl V4SourceManifest {
@@ -243,6 +268,7 @@ fn parse_surface(
     match raw_surface.surface_type {
         RawSurfaceType::OpenApi => parse_openapi_surface(source_name, raw_surface, inputs),
         RawSurfaceType::Mcp => parse_mcp_surface(source_name, raw_surface, surface_value, inputs),
+        RawSurfaceType::Database => parse_database_surface(source_name, raw_surface, surface_value),
     }
 }
 
@@ -251,9 +277,12 @@ fn parse_openapi_surface(
     raw_surface: RawV4Surface,
     inputs: &[ManifestInputSpec],
 ) -> Result<V4Surface> {
-    if raw_surface.server.is_some() {
+    if raw_surface.server.is_some()
+        || raw_surface.provider.is_some()
+        || raw_surface.connection.is_some()
+    {
         return Err(ManifestError::validation(format!(
-            "source '{source_name}' OpenAPI surface must not declare server"
+            "source '{source_name}' OpenAPI surface must not declare server, provider, or connection"
         )));
     }
     if let Some(base_url) = raw_surface.base_url.as_ref() {
@@ -285,6 +314,11 @@ fn parse_mcp_surface(
             "source '{source_name}' MCP surface must not declare url or file"
         )));
     }
+    if raw_surface.provider.is_some() || raw_surface.connection.is_some() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' MCP surface must not declare provider or connection"
+        )));
+    }
     for field in ["base_url", "auth", "request_headers", "rate_limit"] {
         if surface_value.get(field).is_some() {
             return Err(ManifestError::validation(format!(
@@ -304,6 +338,126 @@ fn parse_mcp_surface(
             location: mcp_server_location(&server),
         },
         runtime: SurfaceRuntimeConfig::Mcp(McpRuntimeConfig { server }),
+    })
+}
+
+fn parse_database_surface(
+    source_name: &str,
+    raw_surface: RawV4Surface,
+    surface_value: &Value,
+) -> Result<V4Surface> {
+    if raw_surface.url.is_some() || raw_surface.file.is_some() || raw_surface.server.is_some() {
+        return Err(ManifestError::validation(format!(
+            "source '{source_name}' database surface must not declare url, file, or server"
+        )));
+    }
+    for field in ["base_url", "auth", "request_headers", "rate_limit"] {
+        if surface_value.get(field).is_some() {
+            return Err(ManifestError::validation(format!(
+                "source '{source_name}' database surface must not declare OpenAPI field '{field}'"
+            )));
+        }
+    }
+    let provider = raw_surface.provider.ok_or_else(|| {
+        ManifestError::validation(format!(
+            "source '{source_name}' database surface must declare provider"
+        ))
+    })?;
+    let connection = raw_surface.connection.ok_or_else(|| {
+        ManifestError::validation(format!(
+            "source '{source_name}' database surface must declare connection"
+        ))
+    })?;
+    let connection = parse_database_connection(source_name, provider, connection)?;
+    validate_database_connection_templates(source_name, &connection)?;
+    Ok(V4Surface {
+        surface_type: SurfaceType::Database,
+        descriptor: SurfaceDescriptor::Database { provider },
+        runtime: SurfaceRuntimeConfig::Database(DatabaseRuntimeConfig { connection }),
+    })
+}
+
+fn validate_database_connection_templates(
+    source_name: &str,
+    connection: &DatabaseConnectionSpec,
+) -> Result<()> {
+    visit_database_connection_templates(connection, |field, template| {
+        validate_database_connection_template(source_name, field, template)
+    })
+}
+
+fn visit_database_connection_templates(
+    connection: &DatabaseConnectionSpec,
+    mut visit: impl FnMut(&str, &ParsedTemplate) -> Result<()>,
+) -> Result<()> {
+    match connection {
+        DatabaseConnectionSpec::Postgres(connection) => {
+            for (field, template) in [
+                ("host", &connection.host),
+                ("port", &connection.port),
+                ("database", &connection.database),
+                ("user", &connection.user),
+                ("password", &connection.password),
+            ] {
+                visit(field, template)?;
+            }
+            if let Some(sslmode) = &connection.sslmode {
+                visit("sslmode", sslmode)?;
+            }
+        }
+        DatabaseConnectionSpec::MySql(connection) => {
+            for (field, template) in [
+                ("host", &connection.host),
+                ("port", &connection.port),
+                ("database", &connection.database),
+                ("user", &connection.user),
+                ("password", &connection.password),
+            ] {
+                visit(field, template)?;
+            }
+        }
+        DatabaseConnectionSpec::Sqlite(connection) => visit("path", &connection.path)?,
+    }
+    Ok(())
+}
+
+fn validate_database_connection_template(
+    source_name: &str,
+    field: &str,
+    template: &ParsedTemplate,
+) -> Result<()> {
+    for token in template.tokens() {
+        match token.namespace() {
+            TemplateNamespace::Input => {}
+            _ => {
+                return Err(ManifestError::validation(format!(
+                    "source '{source_name}' database surface connection.{field} may only reference top-level inputs; unsupported template token '{{{{{}}}}}'",
+                    token.raw()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_database_connection(
+    source_name: &str,
+    provider: DatabaseProvider,
+    connection: Value,
+) -> Result<DatabaseConnectionSpec> {
+    match provider {
+        DatabaseProvider::Postgres => serde_json::from_value::<PostgresConnectionSpec>(connection)
+            .map(DatabaseConnectionSpec::Postgres),
+        DatabaseProvider::MySql => serde_json::from_value::<MySqlConnectionSpec>(connection)
+            .map(DatabaseConnectionSpec::MySql),
+        DatabaseProvider::Sqlite => serde_json::from_value::<SqliteConnectionSpec>(connection)
+            .map(DatabaseConnectionSpec::Sqlite),
+    }
+    .map_err(|error| {
+        ManifestError::validation(format!(
+            "source '{source_name}' database surface connection is invalid for provider '{}': {error}",
+            provider.as_str()
+        ))
     })
 }
 

@@ -25,8 +25,8 @@ use datafusion::prelude::SessionContext;
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    build_registered_inputs, build_registered_table, registered_columns_from_schema,
-    registered_columns_from_specs, required_filter_names,
+    SourceQualifiedName, build_registered_inputs, build_registered_table,
+    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
     validate_lookup_key_filter_backend_support,
 };
 use coral_spec::SourceBackend;
@@ -71,8 +71,8 @@ pub(crate) fn compile_manifest(
 
 #[async_trait]
 impl CompiledBackendSource for FileCompiledSource {
-    fn schema_name(&self) -> &str {
-        &self.manifest.common.name
+    fn qualified_name(&self) -> SourceQualifiedName {
+        SourceQualifiedName::Schema(self.manifest.common.name.clone())
     }
 
     fn source_name(&self) -> &str {
@@ -145,17 +145,17 @@ impl CompiledBackendSource for FileCompiledSource {
             &secret_keys,
         );
 
-        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
             schemas: vec![BackendSchemaRegistration {
                 tables,
                 source: RegisteredSource {
-                    schema_name,
+                    qualified_name: SourceQualifiedName::Schema(self.manifest.common.name.clone()),
                     tables: table_infos,
                     table_functions: vec![],
                     inputs,
                 },
             }],
+            catalogs: Vec::new(),
         })
     }
 }

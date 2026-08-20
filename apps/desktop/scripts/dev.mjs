@@ -12,7 +12,7 @@ const electronViteBin = resolve(
   process.platform === 'win32' ? 'electron-vite.cmd' : 'electron-vite',
 )
 
-// Shared between the Reef React Router server (through CORAL_ENDPOINT) and the
+// Shared between the Coral UI React Router server (through CORAL_ENDPOINT) and the
 // sidecar spawn in the Electron main process. The fixed port lets the server
 // know its endpoint before Electron finishes starting the sidecar.
 // `||` (not `??`) so an empty CORAL_DEV_SIDECAR_PORT also falls back to the
@@ -119,7 +119,7 @@ process.once('SIGTERM', () => shutdown('SIGTERM'))
 // run doesn't get most of the way up only to die on "Electron uninstall".
 ensureElectronBinary()
 
-const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'apps/reef'], {
+const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'apps/coral-ui'], {
   cwd: repoRoot,
   env: {
     ...process.env,
@@ -132,11 +132,11 @@ const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'apps/reef'], 
 try {
   const appUrl = await waitForAppUrl(appDevServer)
 
-  // If Reef exits after startup, tear down Electron rather than leaving it
+  // If Coral UI exits after startup, tear down Electron rather than leaving it
   // pointed at a dead renderer endpoint.
   appDevServer.once('exit', (code, signal) => {
     if (shuttingDown) return
-    console.error(`[desktop-dev] Reef dev server exited (code=${code}, signal=${signal}).`)
+    console.error(`[desktop-dev] Coral UI dev server exited (code=${code}, signal=${signal}).`)
     shutdown()
     process.exitCode = code ?? 1
   })

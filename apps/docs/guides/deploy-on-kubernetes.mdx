@@ -1,0 +1,408 @@
+---
+title: "Deploy Coral on Kubernetes"
+description: "Run the Coral server and Coral UI on Kubernetes behind a TLS-terminating Ingress with authentication."
+---
+
+This guide deploys the `ghcr.io/withcoral/coral` and
+`ghcr.io/withcoral/coral-ui` images on Kubernetes with authentication enabled
+and TLS terminated at the Ingress. It assumes you have read
+[Self-host Coral with Docker](/guides/self-host-with-docker), which explains
+the listeners, auth modes, and image behavior that this guide builds on.
+
+TLS termination is mandatory: every Coral listener is cleartext, and with
+`[auth]` enabled bearer tokens would otherwise cross the wire unprotected. A
+Kubernetes deployment is remote by definition, so this guide does not use
+`CORAL_UI_AUTH_MODE=disabled`; if you need a login-less lab setup, use the
+[local Docker Compose topology](/guides/self-host-with-docker#local-deployment)
+instead.
+
+The example uses the same three hostnames as the Compose guide:
+`coral.example.com` (Coral UI), `auth.coral.example.com` (OAuth issuer), and
+`mcp.coral.example.com` (MCP).
+
+## Prerequisites
+
+- A cluster with an Ingress controller (the manifests use ingress-nginx
+  annotations) and [cert-manager](https://cert-manager.io) or another way to
+  provision TLS certificates that chain to system roots.
+- DNS records for the three hostnames pointing at the Ingress.
+- An OIDC client registered with your identity provider, with redirect URI
+  `https://auth.coral.example.com/auth/oidc/callback`.
+- A default StorageClass for the Coral state volume.
+
+<Note>
+  During login, the Coral server fetches `https://coral.example.com/.well-known/oauth-client` and Coral UI fetches the issuer's discovery and token endpoints. From inside the cluster both `coral.example.com` and `auth.coral.example.com` must resolve to a **public** address (Coral rejects client-metadata hosts that resolve to private or loopback addresses), and the certificates must chain to system CA roots — Let's Encrypt works, a private CA does not.
+</Note>
+
+## Namespace and secrets
+
+```shellscript
+kubectl create namespace coral
+```
+
+```shellscript
+kubectl -n coral create secret generic coral-auth \
+  --from-literal=session-signing-key="$(openssl ecparam -genkey -name prime256v1 -noout | openssl pkcs8 -topk8 -nocrypt -outform DER | base64 | tr -d '\n')" \
+  --from-literal=oidc-client-secret="your-idp-client-secret"
+```
+
+```shellscript
+kubectl -n coral create secret generic coral-ui \
+  --from-literal=session-secret="$(openssl rand -base64 48)"
+```
+
+## Coral server
+
+The server is stateful — SQLite, workspace and source state, and credential
+material all live on one volume — so it runs as a single replica with the
+`Recreate` strategy. This stays true with a
+[Postgres backend](/reference/configuration#database), which moves the
+database but not the workspace files.
+
+The seed config below is applied on the **first** boot only; an existing
+`config.toml` on the volume is never rewritten. See
+[changing the configuration](#changing-the-configuration-later).
+
+Save the following as `coral.yaml`, replacing hostnames and the
+`[auth.provider]` issuer and client ID with yours:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coral-seed-config
+  namespace: coral
+data:
+  config.toml: |
+    [server]
+    bind_addr = "0.0.0.0:14555"
+
+    [server.mcp_http]
+    enabled = true
+    bind = "0.0.0.0:14556"
+    public_url = "https://mcp.coral.example.com/mcp"
+
+    [auth]
+    http_bind_addr = "0.0.0.0:8081"
+    allowed_audiences = ["https://coral.example.com"]
+
+    [auth.session]
+    signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+
+    [auth.authorization_server]
+    issuer = "https://auth.coral.example.com"
+    trusted_clients = ["https://coral.example.com/.well-known/oauth-client"]
+
+    [auth.provider]
+    issuer = "https://your-idp.example.com"
+    client_id = "your-oidc-client-id"
+    client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+    redirect_uri = "https://auth.coral.example.com/auth/oidc/callback"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: coral-data
+  namespace: coral
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: coral
+  template:
+    metadata:
+      labels:
+        app: coral
+    spec:
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: coral
+          image: ghcr.io/withcoral/coral:0.13.0
+          ports:
+            - name: grpc
+              containerPort: 14555
+            - name: mcp
+              containerPort: 14556
+            - name: oauth
+              containerPort: 8081
+          env:
+            - name: CORAL_SEED_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: coral-seed-config
+                  key: config.toml
+            - name: CORAL_SESSION_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coral-auth
+                  key: session-signing-key
+            - name: CORAL_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: coral-auth
+                  key: oidc-client-secret
+          livenessProbe:
+            grpc:
+              port: 14555
+            periodSeconds: 10
+          readinessProbe:
+            grpc:
+              port: 14555
+              service: coral.readiness
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/coral
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: coral-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  selector:
+    app: coral
+  ports:
+    - name: grpc
+      port: 14555
+      targetPort: grpc
+    - name: mcp
+      port: 14556
+      targetPort: mcp
+    - name: oauth
+      port: 8081
+      targetPort: oauth
+```
+
+The image runs as user `65532` with group `0`; `fsGroup: 65532` makes the
+volume writable for it. The probes use the gRPC health service directly:
+service `""` is liveness (always serving while the process runs) and
+`coral.readiness` reports whether the engine has resolved its catalog.
+
+## Coral UI
+
+Coral UI is stateless — sessions live in encrypted cookies — so you can raise
+`replicas` beyond the example's single replica as needed; no sticky sessions
+are required. It talks native gRPC to the `coral` Service inside the cluster;
+`CORAL_UI_ALLOW_INSECURE_CORAL_ENDPOINT=1` is the explicit opt-in for that
+cleartext in-cluster leg.
+
+Save as `coral-ui.yaml`, replacing the two `https://` hostnames with yours:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coral-ui
+  namespace: coral
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coral-ui
+  template:
+    metadata:
+      labels:
+        app: coral-ui
+    spec:
+      containers:
+        - name: coral-ui
+          image: ghcr.io/withcoral/coral-ui:0.13.0
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: CORAL_ENDPOINT
+              value: http://coral:14555
+            - name: CORAL_UI_ALLOW_INSECURE_CORAL_ENDPOINT
+              value: "1"
+            - name: CORAL_UI_AUTH_MODE
+              value: required
+            - name: CORAL_UI_AUTH_ISSUER
+              value: https://auth.coral.example.com
+            - name: CORAL_UI_PUBLIC_URL
+              value: https://coral.example.com
+            - name: CORAL_UI_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: coral-ui
+                  key: session-secret
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coral-ui
+  namespace: coral
+spec:
+  selector:
+    app: coral-ui
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+```
+
+## Ingress
+
+One Ingress terminates TLS for all three hostnames. MCP Streamable HTTP holds
+long-lived streaming responses, so response buffering is disabled and the read
+timeout raised.
+
+Save as `ingress.yaml`, replacing the hostnames and the
+`cert-manager.io/cluster-issuer` annotation with your issuer's name:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: coral
+  namespace: coral
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - coral.example.com
+        - auth.coral.example.com
+        - mcp.coral.example.com
+      secretName: coral-tls
+  rules:
+    - host: coral.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: coral-ui
+                port:
+                  name: http
+    - host: auth.coral.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: coral
+                port:
+                  name: oauth
+    - host: mcp.coral.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: coral
+                port:
+                  name: mcp
+```
+
+The OAuth listener has no health endpoint of its own; the Deployment's gRPC
+probes cover the whole server process, and
+`GET https://auth.coral.example.com/.well-known/oauth-authorization-server`
+serves as an external check if you monitor each hostname.
+
+## Deploy and verify
+
+```shellscript
+kubectl apply -f coral.yaml -f coral-ui.yaml -f ingress.yaml
+```
+
+```shellscript
+kubectl -n coral rollout status deploy/coral
+```
+
+```shellscript
+kubectl -n coral rollout status deploy/coral-ui
+```
+
+Then verify the public surfaces exactly as in the
+[Compose guide](/guides/self-host-with-docker#start-and-verify):
+`https://coral.example.com/readyz` returns ready, `https://mcp.coral.example.com/mcp`
+returns `401` with a `WWW-Authenticate` challenge, and opening
+`https://coral.example.com` signs you in through your identity provider —
+without Coral's approval page, since Coral UI's client ID is listed in
+`trusted_clients`.
+
+## Operations
+
+### Administration
+
+Day-to-day administration happens in the Coral UI. For the rest, run the CLI
+inside the pod — it shares the server's state safely:
+
+```shellscript
+kubectl -n coral exec -it deploy/coral -- coral source add --interactive github
+```
+
+```shellscript
+kubectl -n coral exec deploy/coral -- coral sql "select * from coral.tables"
+```
+
+The workstation CLI cannot target a remote server; CLI commands always operate
+on local state.
+
+### Changing the configuration later
+
+The seed config applies only on first boot. To change configuration
+afterwards, edit the file on the volume and restart:
+
+```shellscript
+kubectl -n coral cp coral/$(kubectl -n coral get pod -l app=coral -o jsonpath='{.items[0].metadata.name}'):/var/lib/coral/config/config.toml ./config.toml
+```
+
+```shellscript
+kubectl -n coral cp ./config.toml coral/$(kubectl -n coral get pod -l app=coral -o jsonpath='{.items[0].metadata.name}'):/var/lib/coral/config/config.toml && kubectl -n coral rollout restart deploy/coral
+```
+
+Unlike `docker compose cp`, `kubectl cp` writes through `tar` running inside
+the container as the container user, so file ownership stays correct.
+
+Updating the ConfigMap alone does nothing once `config.toml` exists.
+
+### Backup and upgrades
+
+Back up the `coral-data` PersistentVolumeClaim; it holds everything the server
+owns. For upgrades, pin matching image versions for `coral` and `coral-ui`
+(release tags of the two images move together) and roll the Deployments:
+
+```shellscript
+kubectl -n coral set image deploy/coral coral=ghcr.io/withcoral/coral:0.14.0
+```
+
+```shellscript
+kubectl -n coral set image deploy/coral-ui coral-ui=ghcr.io/withcoral/coral-ui:0.14.0
+```

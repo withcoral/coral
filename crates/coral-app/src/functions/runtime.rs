@@ -1,7 +1,7 @@
 use coral_engine::{
-    CoralQuery, PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
-    UdfRuntimeTableFunctionPublish,
+    CoralQuery, CoralSqlFunctionDefinition, CoralSqlFunctionInferenceDefinition,
+    CoralSqlFunctionSignature, CoralSqlTableFunctionPublish, PreparedQueryRuntime,
+    QueryRuntimeConfig, QuerySource,
 };
 use coral_spec::{FunctionImplementationSpec, FunctionSpec};
 
@@ -9,12 +9,13 @@ use crate::bootstrap::AppError;
 
 pub(crate) async fn infer_runtime_function(
     selected_sources: &[QuerySource],
-    runtime_config: QueryRuntimeConfig,
+    mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
     spec: &FunctionSpec,
-) -> Result<UdfRuntimeDefinition, AppError> {
-    let runtime_function = runtime_function_without_signature(spec);
+) -> Result<CoralSqlFunctionDefinition, AppError> {
+    let runtime_function = lower_runtime_function_without_signature(spec)?;
     let mut results =
-        infer_runtime_functions(selected_sources, runtime_config, vec![runtime_function]).await?;
+        infer_runtime_functions(selected_sources, runtime_config()?, vec![runtime_function])
+            .await?;
     results.pop().ok_or_else(|| {
         AppError::FailedPrecondition("function runtime validation returned no result".to_string())
     })?
@@ -23,8 +24,8 @@ pub(crate) async fn infer_runtime_function(
 pub(crate) async fn infer_runtime_functions(
     selected_sources: &[QuerySource],
     runtime_config: QueryRuntimeConfig,
-    runtime_functions: Vec<UdfRuntimeDefinition>,
-) -> Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError> {
+    runtime_functions: Vec<CoralSqlFunctionDefinition>,
+) -> Result<Vec<Result<CoralSqlFunctionDefinition, AppError>>, AppError> {
     let sql_definitions = runtime_functions
         .iter()
         .map(runtime_sql_definition)
@@ -44,8 +45,8 @@ pub(crate) async fn infer_runtime_functions(
 
 pub(crate) async fn infer_runtime_functions_in_prepared_runtime(
     runtime: &PreparedQueryRuntime,
-    runtime_functions: Vec<UdfRuntimeDefinition>,
-) -> Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError> {
+    runtime_functions: Vec<CoralSqlFunctionDefinition>,
+) -> Result<Vec<Result<CoralSqlFunctionDefinition, AppError>>, AppError> {
     let sql_definitions = runtime_functions
         .iter()
         .map(runtime_sql_definition)
@@ -59,9 +60,9 @@ pub(crate) async fn infer_runtime_functions_in_prepared_runtime(
 }
 
 fn apply_signatures(
-    runtime_functions: Vec<UdfRuntimeDefinition>,
-    signatures: Vec<Result<UdfRuntimeSignature, coral_engine::CoreError>>,
-) -> Vec<Result<UdfRuntimeDefinition, AppError>> {
+    runtime_functions: Vec<CoralSqlFunctionDefinition>,
+    signatures: Vec<Result<CoralSqlFunctionSignature, coral_engine::CoreError>>,
+) -> Vec<Result<CoralSqlFunctionDefinition, AppError>> {
     runtime_functions
         .into_iter()
         .zip(signatures)
@@ -69,6 +70,7 @@ fn apply_signatures(
             let signature = signature.map_err(|error| runtime_validation_error(&error))?;
             function.arguments = signature.arguments;
             function.result_columns = signature.result_columns;
+            function.source_names = signature.source_names;
             Ok(function)
         })
         .collect()
@@ -78,36 +80,44 @@ fn runtime_validation_error(error: &coral_engine::CoreError) -> AppError {
     AppError::FailedPrecondition(format!("function failed runtime validation: {error}"))
 }
 
-pub(crate) fn runtime_function_without_signature(spec: &FunctionSpec) -> UdfRuntimeDefinition {
-    UdfRuntimeDefinition {
-        name: spec.name().to_string(),
-        description: spec.description().to_string(),
-        arguments: Vec::new(),
-        implementation: runtime_implementation(spec.implementation()),
-        publish: runtime_publish(spec),
-        result_columns: Vec::new(),
-    }
-}
-
-fn runtime_sql_definition(function: &UdfRuntimeDefinition) -> UdfRuntimeSqlDefinition {
-    UdfRuntimeSqlDefinition {
-        name: function.name.clone(),
-        implementation: function.implementation.clone(),
-    }
-}
-
-fn runtime_implementation(spec: &FunctionImplementationSpec) -> UdfRuntimeImplementation {
-    UdfRuntimeImplementation::CoralSql {
-        query: spec.coral_sql.query.clone(),
-    }
-}
-
-fn runtime_publish(spec: &FunctionSpec) -> UdfRuntimePublish {
-    UdfRuntimePublish {
-        table_function: UdfRuntimeTableFunctionPublish {
-            schema: spec.schema().to_string(),
+pub(crate) fn lower_runtime_function_without_signature(
+    spec: &FunctionSpec,
+) -> Result<CoralSqlFunctionDefinition, AppError> {
+    match spec.implementation() {
+        FunctionImplementationSpec::CoralSql(implementation) => Ok(CoralSqlFunctionDefinition {
             name: spec.name().to_string(),
-            description: String::new(),
-        },
+            description: spec.description().to_string(),
+            arguments: Vec::new(),
+            query: implementation.query.clone(),
+            publish: runtime_publish(spec),
+            result_columns: Vec::new(),
+            source_names: Vec::new(),
+        }),
+        FunctionImplementationSpec::TypeScript(_) => Err(unsupported_typescript_error()),
     }
+}
+
+fn runtime_sql_definition(
+    function: &CoralSqlFunctionDefinition,
+) -> CoralSqlFunctionInferenceDefinition {
+    CoralSqlFunctionInferenceDefinition {
+        name: function.name.clone(),
+        query: function.query.clone(),
+    }
+}
+
+fn runtime_publish(spec: &FunctionSpec) -> CoralSqlTableFunctionPublish {
+    CoralSqlTableFunctionPublish {
+        schema: spec.group().to_string(),
+        name: spec.name().to_string(),
+        description: String::new(),
+        guide: spec.guide().to_string(),
+    }
+}
+
+fn unsupported_typescript_error() -> AppError {
+    AppError::FailedPrecondition(
+        "TypeScript functions are not supported by this Coral build because no TypeScript executor is available"
+            .to_string(),
+    )
 }

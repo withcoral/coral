@@ -1,4 +1,4 @@
-//! Representation-efficiency benchmarks for MCP results.
+//! Isolated developer benchmarks.
 
 #![allow(
     clippy::print_stderr,
@@ -6,49 +6,74 @@
     reason = "benchmark binary intentionally writes results and errors"
 )]
 
-use std::env;
 use std::fs;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, ensure};
+use clap::{Parser, Subcommand};
 use coral_api::v1::{ImportSourceRequest, import_source_response};
 use coral_client::{AppClient, default_workspace, local::ServerBuilder};
-use coral_mcp::{CoralMcpServerFactory, McpOptions};
-use rmcp::{
-    RoleClient, ServerHandler, ServiceExt, model::CallToolRequestParams, service::RunningService,
+use coral_mcp::{
+    McpOptions,
+    http::{McpHttpConfig, start_auth_disabled},
 };
+use rmcp::{ServiceExt, model::CallToolRequestParams, transport::StreamableHttpClientTransport};
 use serde_json::{Map, Value};
 use tempfile::TempDir;
 use tiktoken_rs::o200k_base_singleton;
 use tonic::Request;
 use url::Url;
 
+mod universal_search;
+
 const SCHEMA: &str = "benchmark_columns";
 const TABLE: &str = "wide_table";
 const COLUMN_COUNT: usize = 50;
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "coral-benchmarks",
+    about = "Isolated developer benchmarks for Coral"
+)]
+struct Cli {
+    #[command(subcommand)]
+    benchmark: Benchmark,
+}
+
+#[derive(Debug, Subcommand)]
+enum Benchmark {
+    /// Measure the token cost of the current `list_columns` response.
+    ListColumns,
+    /// Build, collect, replay, and report Universal Search relevance corpora.
+    UniversalSearch(universal_search::Args),
+}
+
 fn main() -> ExitCode {
     match run() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::from(1),
         Err(error) => {
             eprintln!("coral-benchmarks: {error:#}");
-            ExitCode::FAILURE
+            ExitCode::from(2)
         }
     }
 }
 
-fn run() -> Result<()> {
-    ensure!(
-        env::args().nth(1).as_deref() == Some("list-columns"),
-        "usage: coral-benchmarks list-columns"
-    );
-    tokio::runtime::Runtime::new()
-        .context("creating benchmark runtime")?
-        .block_on(run_benchmark())
+fn run() -> Result<bool> {
+    match Cli::parse().benchmark {
+        Benchmark::ListColumns => {
+            tokio::runtime::Runtime::new()
+                .context("creating benchmark runtime")?
+                .block_on(run_list_columns_benchmark())?;
+            Ok(true)
+        }
+        Benchmark::UniversalSearch(args) => universal_search::run(&args),
+    }
 }
 
-async fn run_benchmark() -> Result<()> {
+async fn run_list_columns_benchmark() -> Result<()> {
     let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("fixtures/list-columns/data")
         .canonicalize()
@@ -73,15 +98,20 @@ async fn run_benchmark() -> Result<()> {
         .context("connecting benchmark Coral client")?;
     import_fixture(&app, manifest_yaml).await?;
 
-    let handler = CoralMcpServerFactory::new(
+    let mcp_server = start_auth_disabled(
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .context("configuring benchmark MCP HTTP server")?,
         app,
         McpOptions {
             source_names: vec![SCHEMA.to_string()],
             ..McpOptions::default()
         },
     )
-    .create();
-    let (client, mcp_task) = start_mcp_session(handler).await?;
+    .await
+    .context("starting benchmark MCP HTTP server")?;
+    let transport =
+        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", mcp_server.local_addr()));
+    let client = ().serve(transport).await.context("starting benchmark MCP client")?;
     let response = client
         .call_tool(
             CallToolRequestParams::new("list_columns").with_arguments(Map::from_iter([
@@ -125,7 +155,10 @@ async fn run_benchmark() -> Result<()> {
     );
 
     client.cancel().await.context("stopping MCP client")?;
-    mcp_task.await.context("joining MCP server task")??;
+    mcp_server
+        .shutdown()
+        .await
+        .context("stopping benchmark MCP HTTP server")?;
     app_server
         .shutdown()
         .await
@@ -159,22 +192,4 @@ async fn import_fixture(app: &AppClient, manifest_yaml: String) -> Result<()> {
         }
     }
     anyhow::bail!("benchmark source import ended without installing the source")
-}
-
-async fn start_mcp_session(
-    server: impl ServerHandler + Clone,
-) -> Result<(
-    RunningService<RoleClient, ()>,
-    tokio::task::JoinHandle<Result<()>>,
-)> {
-    let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
-    let task = tokio::spawn(async move {
-        let server = Box::pin(server.serve(server_transport))
-            .await
-            .context("starting MCP server")?;
-        server.waiting().await.context("running MCP server")?;
-        Ok(())
-    });
-    let client = ().serve(client_transport).await.context("starting MCP client")?;
-    Ok((client, task))
 }

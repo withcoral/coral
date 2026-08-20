@@ -9,6 +9,19 @@ use crate::common::{
 };
 use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
+pub(crate) fn validate_required_guide(
+    context: &str,
+    guide: &str,
+    require_guide_read: bool,
+) -> Result<()> {
+    if require_guide_read && guide.trim().is_empty() {
+        return Err(ManifestError::validation(format!(
+            "{context} sets require_guide_read but has an empty guide"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeclaredRelationKind {
     Table,
@@ -170,6 +183,11 @@ pub(crate) fn validate_http_function(
     source_name: &str,
     function: &SourceTableFunctionSpec,
 ) -> Result<()> {
+    validate_required_guide(
+        &format!("source '{source_name}' function '{}'", function.name),
+        &function.guide,
+        function.require_guide_read,
+    )?;
     validate_identifier(
         &function.name,
         &format!("source '{source_name}' function name"),
@@ -578,6 +596,7 @@ fn validate_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgStringArray { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => {
             return Err(ManifestError::validation(format!(
@@ -692,6 +711,7 @@ fn validate_arg_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgStringArray { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. }
             if !request_arg_names.contains(key.as_str()) =>
@@ -920,6 +940,7 @@ mod tests {
     use super::{
         DeclaredRelation, HttpTableValidation, validate_declared_relation_namespace,
         validate_filters_and_column_exprs, validate_http_function, validate_http_table,
+        validate_required_guide,
     };
     use crate::common::{
         ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
@@ -1123,6 +1144,8 @@ mod tests {
             name: "search".to_string(),
             kind: SourceTableFunctionKind::Table,
             description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
             fetch_limit_default: None,
             search_limits: None,
             detail_hints: Vec::new(),
@@ -1138,6 +1161,7 @@ mod tests {
             request: RequestSpec {
                 path: ParsedTemplate::parse("/search").expect("request path"),
                 query: vec![QueryParamSpec {
+                    explode: true,
                     name: "q".to_string(),
                     value,
                 }],
@@ -1147,6 +1171,19 @@ mod tests {
             pagination: PaginationSpec::default(),
             columns: vec![],
         }
+    }
+
+    #[test]
+    fn required_guide_must_not_be_empty() {
+        let error = validate_required_guide("table 'demo.items'", "  ", true)
+            .expect_err("required guide should reject whitespace-only content");
+
+        assert_eq!(
+            error.to_string(),
+            "table 'demo.items' sets require_guide_read but has an empty guide"
+        );
+        validate_required_guide("table 'demo.items'", "", false)
+            .expect("optional empty guide should remain valid");
     }
 
     #[test]
@@ -1365,6 +1402,7 @@ mod tests {
     fn validate_http_table_rejects_unknown_filter_in_default_request_bindings() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "user_id".to_string(),
                 value: ValueSourceSpec::Filter {
                     key: "missing".to_string(),
@@ -1390,6 +1428,7 @@ mod tests {
             when_filters: vec!["id".to_string()],
             request: RequestSpec {
                 query: vec![QueryParamSpec {
+                    explode: true,
                     name: "cursor".to_string(),
                     value: ValueSourceSpec::Filter {
                         key: "missing".to_string(),
@@ -1414,6 +1453,7 @@ mod tests {
     fn validate_http_table_rejects_unknown_filter_split_bindings() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "team_key".to_string(),
                 value: ValueSourceSpec::FilterSplit {
                     key: "missing".to_string(),
@@ -1438,6 +1478,7 @@ mod tests {
     fn validate_http_table_rejects_unknown_filter_split_int_bindings() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "issue_number".to_string(),
                 value: ValueSourceSpec::FilterSplitInt {
                     key: "missing".to_string(),
@@ -1488,6 +1529,7 @@ mod tests {
         for value in cases {
             let request = RequestSpec {
                 query: vec![QueryParamSpec {
+                    explode: true,
                     name: "value".to_string(),
                     value,
                 }],
@@ -1525,6 +1567,7 @@ mod tests {
     fn validate_http_table_rejects_function_arg_one_of_value_sources() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "value".to_string(),
                 value: ValueSourceSpec::OneOf {
                     values: vec![
@@ -1555,6 +1598,7 @@ mod tests {
     fn validate_http_table_rejects_unknown_filter_one_of_value_sources() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "value".to_string(),
                 value: ValueSourceSpec::OneOf {
                     values: vec![

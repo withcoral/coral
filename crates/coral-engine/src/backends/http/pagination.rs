@@ -67,7 +67,11 @@ pub(super) fn apply_pagination_query_pairs(
     match &pagination.mode {
         ValidatedPaginationMode::None
         | ValidatedPaginationMode::Auto
-        | ValidatedPaginationMode::CursorBody => {}
+        | ValidatedPaginationMode::CursorBody
+        // The next URL carries the whole query the server wants repeated, so
+        // page two onwards contributes nothing here. Page one still gets the
+        // page-size parameter applied above.
+        | ValidatedPaginationMode::NextUrlBody(_) => {}
         ValidatedPaginationMode::LinkHeader => {
             if let Some(name) = &pagination.page_param {
                 params.push((name.clone(), state.page.to_string()));
@@ -230,6 +234,45 @@ pub(super) fn advance_pagination_state(
                 }
                 None => Ok(PageAdvance::Stop),
             }
+        }
+        ValidatedPaginationMode::NextUrlBody(next_url_body) => {
+            // Read here rather than in `extract_response_pagination_hints`,
+            // which is a header-only helper and is not given the body.
+            let next_raw = get_path_value(context.payload, next_url_body.path())
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|next| !next.is_empty());
+            let Some(next_raw) = next_raw else {
+                return Ok(PageAdvance::Stop);
+            };
+            // Deliberately no row-count test, matching `link_header` and
+            // `next_url_header`: for a URL-following mode the link is the
+            // authority on whether more pages exist, not the size of this one.
+            // Microsoft Graph documents that "a page of results might contain
+            // zero or more results" and that a client must keep following
+            // `@odata.nextLink` until it stops being returned, so stopping on
+            // an empty page would silently truncate the collection this mode
+            // exists to read. Only `page` and `offset` can use
+            // `page_is_exhausted`, because there the client drives the offset
+            // and an empty page really is the end.
+            let base = pagination_request_url(context.request_url)?;
+            let next = resolve_pagination_next_url(&base, next_raw, "next URL body value")?;
+            // So does a link back to the page that carried it. This mode is
+            // inferred from a property *name*, so unlike `link_header` — where
+            // the server must explicitly say `rel="next"` — the field may not
+            // be a next-page link at all: a related-resource URL the heuristic
+            // picked up, or an API that echoes the collection URL instead of
+            // omitting the link on its last page. Nothing else bounds the
+            // loop, so that would be `max_pages` credentialed requests and
+            // `max_pages` pages of duplicate rows before the query errors.
+            //
+            // From page two on `request_url` is the previous next link, so a
+            // constant link stops on its second appearance.
+            if next == context.request_url {
+                return Ok(PageAdvance::Stop);
+            }
+            state.next_url = Some(next);
+            Ok(PageAdvance::Continue)
         }
     }
 }
@@ -395,7 +438,7 @@ fn link_param_matches(item: &str, name: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use reqwest::header::{HeaderMap, HeaderValue};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
         PageAdvance, PageAdvanceContext, PageState, advance_pagination_state,
@@ -751,5 +794,176 @@ mod tests {
         {
             assert_eq!(page_is_exhausted(rows_on_page, page_size), expected);
         }
+    }
+
+    fn next_url_body_pagination(path: &[&str]) -> coral_spec::ValidatedPagination {
+        PaginationSpec {
+            mode: PaginationMode::NextUrlBody,
+            next_url_path: path.iter().map(|segment| (*segment).to_string()).collect(),
+            ..PaginationSpec::default()
+        }
+        .validated("demo", "items")
+        .unwrap()
+    }
+
+    fn advance_next_url_body(
+        path: &[&str],
+        payload: &Value,
+    ) -> datafusion::error::Result<(PageAdvance, PageState)> {
+        advance_next_url_body_with_rows(path, payload, 10)
+    }
+
+    fn advance_next_url_body_with_rows(
+        path: &[&str],
+        payload: &Value,
+        rows_on_page: usize,
+    ) -> datafusion::error::Result<(PageAdvance, PageState)> {
+        let pagination = next_url_body_pagination(path);
+        let mut state = PageState::default();
+        let advance = advance_pagination_state(
+            &mut state,
+            &pagination,
+            PageAdvanceContext {
+                payload,
+                response_headers: &HeaderMap::new(),
+                request_url: "https://api.example.com/v1.0/me/chats",
+                rows_on_page,
+                page_size: Some(10),
+                source_schema: "demo",
+                table_name: "items",
+            },
+        )?;
+        Ok((advance, state))
+    }
+
+    #[test]
+    fn advance_next_url_body_follows_absolute_and_relative_values() {
+        // OData nests the link under a dotted key, which is one path segment.
+        let (advance, state) = advance_next_url_body(
+            &["@odata.nextLink"],
+            &json!({"@odata.nextLink": "https://api.example.com/v1.0/me/chats?$skiptoken=abc"}),
+        )
+        .unwrap();
+        assert_eq!(advance, PageAdvance::Continue);
+        assert_eq!(
+            state.next_url.as_deref(),
+            Some("https://api.example.com/v1.0/me/chats?$skiptoken=abc")
+        );
+
+        // A bare query string resolves against the request path, matching the
+        // Link-header behaviour.
+        let (advance, state) =
+            advance_next_url_body(&["next_page_url"], &json!({"next_page_url": "?page=2"}))
+                .unwrap();
+        assert_eq!(advance, PageAdvance::Continue);
+        assert_eq!(
+            state.next_url.as_deref(),
+            Some("https://api.example.com/v1.0/me/chats?page=2")
+        );
+    }
+
+    #[test]
+    fn advance_next_url_body_stops_when_the_link_is_absent_or_blank() {
+        for payload in [
+            json!({"value": []}),
+            json!({"@odata.nextLink": ""}),
+            json!({"@odata.nextLink": "   "}),
+            json!({"@odata.nextLink": null}),
+        ] {
+            let (advance, state) = advance_next_url_body(&["@odata.nextLink"], &payload).unwrap();
+            assert_eq!(
+                advance,
+                PageAdvance::Stop,
+                "a missing next link ends the crawl: {payload}"
+            );
+            assert!(state.next_url.is_none());
+        }
+    }
+
+    #[test]
+    fn advance_next_url_body_stops_on_a_link_back_to_the_page_that_carried_it() {
+        // This mode is inferred from a property name, so the field may be a
+        // related-resource URL or a collection link an API echoes on its last
+        // page rather than omitting. Without this stop nothing bounds the
+        // loop: `max_pages` requests, all returning the same rows.
+        for next in [
+            // Absolute, exactly the request URL.
+            "https://api.example.com/v1.0/me/chats",
+            // Relative, resolving to it.
+            "chats",
+        ] {
+            let (advance, state) = advance_next_url_body_with_rows(
+                &["@odata.nextLink"],
+                &json!({ "@odata.nextLink": next }),
+                10,
+            )
+            .unwrap();
+
+            assert_eq!(
+                advance,
+                PageAdvance::Stop,
+                "a next link pointing at the current page is not progress: {next}"
+            );
+            assert!(state.next_url.is_none());
+        }
+    }
+
+    #[test]
+    fn advance_next_url_body_follows_a_link_whatever_the_page_held() {
+        // The link is the authority, not the row count. Microsoft Graph
+        // documents that "a page of results might contain zero or more
+        // results" and that a client must follow `@odata.nextLink` until it
+        // stops being returned, so an empty or short intermediate page must
+        // not end the walk — `page_is_exhausted` would end it at both 0 and 3.
+        for rows_on_page in [0, 3, 10] {
+            let (advance, state) = advance_next_url_body_with_rows(
+                &["@odata.nextLink"],
+                &json!({"@odata.nextLink": "https://api.example.com/v1.0/me/chats?$skiptoken=abc"}),
+                rows_on_page,
+            )
+            .unwrap();
+
+            assert_eq!(
+                advance,
+                PageAdvance::Continue,
+                "a declared next link outranks a {rows_on_page}-row page"
+            );
+            assert_eq!(
+                state.next_url.as_deref(),
+                Some("https://api.example.com/v1.0/me/chats?$skiptoken=abc")
+            );
+        }
+    }
+
+    #[test]
+    fn advance_next_url_body_rejects_cross_origin_values() {
+        // The URL comes from the response body, so an origin check is the only
+        // thing standing between a compromised response and an exfiltrated
+        // Authorization header.
+        let err = advance_next_url_body(
+            &["@odata.nextLink"],
+            &json!({"@odata.nextLink": "https://attacker.example/steal"}),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("pagination next URL body value must stay on origin"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn apply_pagination_query_pairs_adds_nothing_for_next_url_body() {
+        let pagination = next_url_body_pagination(&["@odata.nextLink"]);
+        let mut params = Vec::new();
+
+        apply_pagination_query_pairs(&mut params, &pagination, &PageState::default(), None)
+            .unwrap();
+
+        assert!(
+            params.is_empty(),
+            "the next URL carries the server's own query; Coral must not add to it"
+        );
     }
 }

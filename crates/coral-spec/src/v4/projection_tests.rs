@@ -1,11 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::test_support::github_openapi;
 use super::*;
+use crate::backends::mcp::McpPaginationSpec;
 use crate::{
-    ManifestDataType, PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml,
+    CollectionEncoding, ManifestDataType, PaginationMode, SourceTableFunctionKind,
+    parse_source_manifest_yaml,
 };
 
 #[test]
@@ -419,7 +420,7 @@ components:
         catalog
             .diagnostics
             .iter()
-            .all(|diagnostic| diagnostic.code != "PROJECTION_NAME_COLLISION_RESOLVED"),
+            .all(|diagnostic| !diagnostic.message.contains("projection name collision")),
         "tag-grouped names should not need collision diagnostics: {:?}",
         catalog.diagnostics
     );
@@ -575,13 +576,9 @@ paths:
         .expect("projection");
     assert_eq!(projection.visibility, ProjectionVisibility::Hidden);
     assert!(
-        projection
-            .diagnostics
-            .iter()
-            .any(
-                |diagnostic| diagnostic.code == "PROJECTION_INPUT_UNSUPPORTED"
-                    && diagnostic.message.contains("Header")
-            ),
+        projection.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("required Header input 'page' cannot be exposed in SQL")),
         "required header sharing the pagination param name must stay unsupported: {:?}",
         projection.diagnostics
     );
@@ -627,8 +624,7 @@ paths:
     for dropped in ["Header input 'X-Api-Version'", "Cookie input 'session'"] {
         assert!(
             projection.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "PROJECTION_INPUT_UNSUPPORTED"
-                    && diagnostic.message.contains(dropped)
+                diagnostic.message.contains(dropped)
                     && diagnostic
                         .message
                         .contains("not sent by generated requests")
@@ -1201,14 +1197,14 @@ components:
     let catalog_collision_diagnostics = catalog
         .diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+        .filter(|diagnostic| diagnostic.message.contains("projection name collision"))
         .collect::<Vec<_>>();
     assert_eq!(catalog_collision_diagnostics.len(), 3);
     let projection_collision_diagnostics = catalog
         .projections
         .iter()
         .flat_map(|projection| &projection.diagnostics)
-        .filter(|diagnostic| diagnostic.code == "PROJECTION_NAME_COLLISION_RESOLVED")
+        .filter(|diagnostic| diagnostic.message.contains("projection name collision"))
         .count();
     assert_eq!(
         projection_collision_diagnostics,
@@ -1359,7 +1355,7 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
 }
 
 #[test]
-fn generated_mcp_projection_exposes_cursor_without_pagination_metadata() {
+fn generated_mcp_projection_keeps_an_inferred_cursor_internal() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1414,16 +1410,17 @@ fn generated_mcp_projection_exposes_cursor_without_pagination_metadata() {
         .find(|input| input.wire_name == "cursor")
         .expect("cursor input");
 
-    assert_eq!(cursor.sql_exposure, SqlInputExposure::FunctionArg);
+    // Pagination owns the cursor of a wrapped-list tool, so SQL never binds it.
+    assert_eq!(cursor.sql_exposure, SqlInputExposure::Internal);
     assert!(
         mcp_projection_arg_specs(projection)
             .iter()
-            .any(|arg| arg.bind.arg == "cursor")
+            .all(|arg| arg.bind.arg != "cursor")
     );
 }
 
 #[test]
-fn generated_mcp_projection_with_only_cursor_is_table_function_without_pagination_metadata() {
+fn generated_mcp_projection_with_only_an_inferred_cursor_is_a_table() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1471,17 +1468,16 @@ fn generated_mcp_projection_with_only_cursor_is_table_function_without_paginatio
         .find(|projection| projection.operation_id == "list_items")
         .expect("mcp projection");
 
-    assert!(matches!(
-        projection.kind,
-        ProjectionKind::TableFunction { .. }
-    ));
+    // The cursor is the tool's only argument and pagination owns it, so the
+    // projection has nothing left to take as a function argument.
+    assert!(matches!(projection.kind, ProjectionKind::Table));
     assert_eq!(
         projection
             .inputs
             .iter()
-            .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
+            .filter(|input| input.sql_exposure != SqlInputExposure::Internal)
             .count(),
-        1
+        0
     );
 }
 
@@ -1584,8 +1580,559 @@ paths:
     (manifest, imported)
 }
 
+fn imported_mcp_items_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = mcp_manifest().as_v4().expect("v4").clone();
+    let catalog = McpToolCatalog {
+        tools: vec![McpToolDescriptor {
+            name: "list_items".to_string(),
+            title: None,
+            description: None,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cursor": {"type": "string"},
+                    "query": {"type": "string"}
+                }
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"id": {"type": "string"}}
+                        }
+                    },
+                    "meta": {
+                        "type": "object",
+                        "properties": {"nextCursor": {"type": ["string", "null"]}}
+                    }
+                }
+            })),
+            read_only_hint: Some(true),
+        }],
+    };
+    let mut imported =
+        import_mcp_surface(&manifest, &manifest.surface, &catalog).expect("MCP import");
+    let OperationMetadata::Mcp { pagination, .. } = imported
+        .operation_metadata
+        .operations
+        .get_mut("list_items")
+        .expect("list_items metadata")
+    else {
+        panic!("expected MCP metadata");
+    };
+    pagination.cursor = Some(McpPaginationSpec {
+        cursor_arg: "cursor".to_string(),
+        response_cursor_path: vec!["meta".to_string(), "nextCursor".to_string()],
+        max_pages: None,
+    });
+    (manifest, imported)
+}
+
+fn imported_wrapped_items_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        title: {type: string}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+/// An envelope offering row paths of three different shapes: `items` yields
+/// objects, `tags` yields scalars, and `blobs` yields rows whose item type the
+/// importer could not resolve.
+fn imported_mixed_row_shapes_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  tags:
+                    type: array
+                    items: {type: string}
+                  blobs:
+                    type: array
+                    items: {$ref: '#/components/schemas/Missing'}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        title: {type: string}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+/// Rows whose fields cover every `IrTypeShape` a nested source path can be
+/// walked through: an object, a list, a map, an opaque payload, and a scalar.
+fn imported_nested_row_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        owner:
+                          type: object
+                          properties:
+                            login: {type: string}
+                            '0': {type: string}
+                        tags:
+                          type: array
+                          items: {type: string}
+                        extra: {}
+                        labels:
+                          type: object
+                          additionalProperties: {type: string}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+/// Replaces the catalog's columns with a single column reading `source_path`,
+/// standing in for a hand-authored projection override.
+fn compatibility_of_source_path(
+    catalog: &ProjectionCatalog,
+    source_path: &[&str],
+) -> ProjectionCatalog {
+    let mut catalog = catalog.clone();
+    let projection = catalog.projections.first_mut().expect("projection");
+    projection.columns = vec![ProjectionColumn {
+        name: "probe".to_string(),
+        data_type: ManifestDataType::Json,
+        source_path: source_path
+            .iter()
+            .map(|segment| (*segment).to_string())
+            .collect(),
+        nullable: true,
+        description: String::new(),
+        do_not_index: false,
+    }];
+    catalog
+}
+
+fn override_row_path(imported: &mut ImportedSurface, operation_id: &str, path: &[&str]) {
+    let OperationMetadata::Rest { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .get_mut(operation_id)
+        .expect("operation metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    *row_path = path.iter().map(|segment| (*segment).to_string()).collect();
+}
+
+fn imported_required_account_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: account, in: query, required: true, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+fn imported_shadowed_header_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+        - {name: state, in: header, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+fn projection_input_mut<'a>(
+    catalog: &'a mut ProjectionCatalog,
+    wire_name: &str,
+) -> &'a mut ProjectionInput {
+    catalog
+        .projections
+        .first_mut()
+        .expect("projection")
+        .inputs
+        .iter_mut()
+        .find(|input| input.wire_name == wire_name)
+        .expect("projection input")
+}
+
+fn projection_input_at_mut<'a>(
+    catalog: &'a mut ProjectionCatalog,
+    wire_name: &str,
+    location: IrInputLocation,
+) -> &'a mut ProjectionInput {
+    catalog
+        .projections
+        .first_mut()
+        .expect("projection")
+        .inputs
+        .iter_mut()
+        .find(|input| input.wire_name == wire_name && input.source_location == location)
+        .expect("projection input")
+}
+
 #[test]
-fn projection_sync_rejects_input_missing_from_operation() {
+fn generated_projection_columns_come_from_the_wrapped_list_row_type() {
+    let (manifest, imported) = imported_wrapped_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    assert_eq!(plan.output_row_path("items_list"), ["items"]);
+
+    let catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    let projection = catalog.projections.first().expect("projection");
+    assert_eq!(
+        projection
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "title"]
+    );
+}
+
+#[test]
+fn projection_compatibility_rejects_columns_the_effective_row_path_cannot_yield() {
+    let (manifest, mut imported) = imported_wrapped_items_surface();
+    let catalog = generate_projection_catalog(&manifest, &imported.validated_plan().expect("plan"))
+        .expect("projections");
+
+    // Overriding the row path back to the envelope root leaves the snapshot's
+    // columns describing rows the operation no longer yields.
+    let OperationMetadata::Rest { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .get_mut("items_list")
+        .expect("items_list metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    row_path.clear();
+    let plan = imported.validated_plan().expect("plan");
+
+    let error =
+        validate_projection_compatibility(&plan, &catalog).expect_err("stale columns must fail");
+
+    assert!(
+        error.to_string().contains("column 'id' reads field 'id'"),
+        "unexpected error: {error}"
+    );
+}
+
+/// A row path may legitimately select an array of scalars, so the plan accepts
+/// the override. The snapshot's field columns cannot survive it: a source path
+/// against a string row resolves to null on every row rather than failing.
+#[test]
+fn projection_compatibility_rejects_field_columns_when_the_rows_are_scalars() {
+    let (manifest, mut imported) = imported_mixed_row_shapes_surface();
+    let catalog = generate_projection_catalog(&manifest, &imported.validated_plan().expect("plan"))
+        .expect("projections");
+    override_row_path(&mut imported, "items_list", &["tags"]);
+    let plan = imported.validated_plan().expect("plan");
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("field columns must not survive a scalar row path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("is not an object and names no fields"),
+        "unexpected error: {error}"
+    );
+}
+
+/// The same hole one step earlier: a row type the semantic IR carries no entry
+/// for names no fields either, and an unresolved item type reaches exactly that
+/// state through the `json` sentinel.
+#[test]
+fn projection_compatibility_rejects_field_columns_when_the_row_type_is_absent() {
+    let (manifest, mut imported) = imported_mixed_row_shapes_surface();
+    let catalog = generate_projection_catalog(&manifest, &imported.validated_plan().expect("plan"))
+        .expect("projections");
+    override_row_path(&mut imported, "items_list", &["blobs"]);
+    let plan = imported.validated_plan().expect("plan");
+    assert_eq!(plan.rest_output_type_ref("items_list"), "json");
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("field columns must not survive an opaque row path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("is not an object and names no fields"),
+        "unexpected error: {error}"
+    );
+}
+
+/// The rule is about source paths, not row shapes: a catalog generated for
+/// non-object rows projects them whole, and stays compatible.
+#[test]
+fn projection_compatibility_accepts_whole_row_columns_for_non_object_rows() {
+    for row_path in [["tags"], ["blobs"]] {
+        let (manifest, mut imported) = imported_mixed_row_shapes_surface();
+        override_row_path(&mut imported, "items_list", &row_path);
+        let plan = imported.validated_plan().expect("plan");
+        let catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+        assert!(
+            catalog
+                .projections
+                .iter()
+                .flat_map(|projection| &projection.columns)
+                .all(|column| column.source_path.is_empty()),
+            "non-object rows are projected whole"
+        );
+
+        validate_projection_compatibility(&plan, &catalog)
+            .expect("a catalog generated for these rows is compatible with them");
+    }
+}
+
+/// The generator never nests a source path, but an authored override may, and
+/// runtime follows every segment. Each case is the shape reached *before* the
+/// final segment deciding whether that segment is selectable.
+#[test]
+fn projection_compatibility_walks_every_segment_of_a_nested_source_path() {
+    let (manifest, imported) = imported_nested_row_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let generated = generate_projection_catalog(&manifest, &plan).expect("projections");
+
+    for (source_path, expected) in [
+        // An object names its fields, so a real one resolves and a bogus one
+        // cannot.
+        (&["owner", "login"][..], Ok(())),
+        (
+            &["owner", "nope"][..],
+            Err("type 'items_list_row_items_item_owner' has no field 'nope'"),
+        ),
+        // A scalar has nothing below it at all.
+        (
+            &["id", "nope"][..],
+            Err("names no fields, so segment 'nope' cannot be selected"),
+        ),
+        // `get_path_value` indexes arrays numerically, and only numerically.
+        (&["tags", "0"][..], Ok(())),
+        (
+            &["tags", "name"][..],
+            Err("is a list, so segment 'name' must be a numeric index"),
+        ),
+        // A map admits any key, and an opaque payload admits anything at all.
+        (&["labels", "any_key"][..], Ok(())),
+        (&["extra", "anything", "deep"][..], Ok(())),
+        // ...but not a numeric one: runtime reads that as an array index, so it
+        // selects nothing however the payload is shaped. `owner` really does
+        // declare a field named `0`, so this is the numeric rule rejecting it
+        // rather than the missing-field rule.
+        (
+            &["owner", "0"][..],
+            Err("is read as an array index and so selects nothing"),
+        ),
+        (
+            &["labels", "0"][..],
+            Err("is read as an array index and so selects nothing"),
+        ),
+        // The first segment is still checked as before.
+        (&["nope", "deeper"][..], Err("which has no such field")),
+    ] {
+        let catalog = compatibility_of_source_path(&generated, source_path);
+        let outcome = validate_projection_compatibility(&plan, &catalog);
+        match expected {
+            Ok(()) => {
+                outcome.unwrap_or_else(|error| {
+                    panic!("source path {source_path:?} should be compatible: {error}")
+                });
+            }
+            Err(fragment) => {
+                let error =
+                    outcome.expect_err(&format!("source path {source_path:?} should be rejected"));
+                assert!(
+                    error.to_string().contains(fragment),
+                    "source path {source_path:?}: unexpected error: {error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn projection_compatibility_rejects_missing_operation() {
+    let (manifest, imported) = imported_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    let projection = catalog.projections.first_mut().expect("projection");
+    projection.operation_id = "items/missing".to_string();
+    let projection_name = projection.name.clone();
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("missing operation must fail");
+
+    assert_eq!(
+        error.to_string(),
+        format!("projection '{projection_name}' references missing operation 'items/missing'")
+    );
+}
+
+#[test]
+fn projection_compatibility_rejects_input_missing_from_operation() {
     let (manifest, imported) = imported_items_surface();
     let plan = imported.validated_plan().expect("plan");
     let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
@@ -1595,12 +2142,8 @@ fn projection_sync_rejects_input_missing_from_operation() {
     stale.wire_name = "renamed_upstream".to_string();
     projection.inputs.push(stale);
 
-    let error = sync_projection_inputs(
-        &plan,
-        &mut catalog,
-        ProjectionInputSyncMode::PreserveExistingExposure,
-    )
-    .expect_err("stale override input must fail");
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("stale projection input must fail");
 
     assert!(
         error
@@ -1611,43 +2154,506 @@ fn projection_sync_rejects_input_missing_from_operation() {
 }
 
 #[test]
-fn projection_override_identity_survives_policy_reconciliation() {
+fn projection_compatibility_rejects_public_rest_pagination_input() {
+    let (manifest, imported) = imported_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    projection_input_mut(&mut catalog, "page").sql_exposure = SqlInputExposure::Filter;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("public pagination input must fail");
+
+    assert!(
+        error.to_string().contains(
+            "input 'page' on operation 'items_list' is owned by pagination but has sql_exposure 'filter'"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_compatibility_rejects_public_mcp_pagination_input() {
+    let (manifest, imported) = imported_mcp_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    projection_input_mut(&mut catalog, "cursor").sql_exposure = SqlInputExposure::FunctionArg;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("public MCP pagination input must fail");
+
+    assert!(
+        error.to_string().contains(
+            "input 'cursor' on operation 'list_items' is owned by pagination but has sql_exposure 'function_arg'"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_compatibility_accepts_internal_pagination_input() {
+    let (manifest, imported) = imported_mcp_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+
+    assert_eq!(
+        catalog
+            .projections
+            .first()
+            .expect("projection")
+            .inputs
+            .iter()
+            .find(|input| input.wire_name == "cursor")
+            .expect("cursor")
+            .sql_exposure,
+        SqlInputExposure::Internal
+    );
+    validate_projection_compatibility(&plan, &catalog)
+        .expect("internal pagination input must remain compatible");
+}
+
+#[test]
+fn projection_compatibility_rejects_unauthorised_lookup_key() {
+    let (manifest, mut imported) = imported_items_surface();
+    let OperationMetadata::Rest { lookup_keys, .. } = imported
+        .operation_metadata
+        .operations
+        .get_mut("items_list")
+        .expect("items_list metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    lookup_keys.clear();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    projection_input_mut(&mut catalog, "state").lookup_key = true;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("unauthorised lookup key must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("wire input 'state' is not authorised"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_compatibility_rejects_non_filter_lookup_key() {
+    let (manifest, imported) = imported_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    let input = projection_input_mut(&mut catalog, "state");
+    input.sql_exposure = SqlInputExposure::FunctionArg;
+    assert!(input.lookup_key, "state should be an inferred lookup key");
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("non-filter lookup key must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("lookup_key=true with sql_exposure 'function_arg'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_compatibility_rejects_non_rest_lookup_key() {
+    let (manifest, imported) = imported_mcp_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    projection_input_mut(&mut catalog, "query").lookup_key = true;
+
+    let error =
+        validate_projection_compatibility(&plan, &catalog).expect_err("MCP lookup key must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("lookup keys are only valid for REST inputs"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_compatibility_accepts_conservative_choices_without_mutation() {
     let (manifest, imported) = imported_items_surface();
     let plan = imported.validated_plan().expect("plan");
     let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
     let projection = catalog.projections.first_mut().expect("projection");
     projection.name = "authored_items".to_string();
     projection.guide = "Keep this guide".to_string();
-    projection.inputs.iter_mut().for_each(|input| {
-        input.sql_exposure = SqlInputExposure::FunctionArg;
-    });
+    let input = projection
+        .inputs
+        .iter_mut()
+        .find(|input| input.wire_name == "state")
+        .expect("state");
+    input.sql_exposure = SqlInputExposure::Internal;
+    input.lookup_key = false;
+    let before = serde_yaml::to_string(&catalog).expect("serialize before validation");
 
-    sync_projection_inputs(
-        &plan,
-        &mut catalog,
-        ProjectionInputSyncMode::PreserveExistingExposure,
-    )
-    .expect("sync");
+    validate_projection_compatibility(&plan, &catalog).expect("conservative policy is compatible");
 
-    let projection = catalog.projections.first().expect("projection");
-    assert_eq!(projection.name, "authored_items");
-    assert_eq!(projection.guide, "Keep this guide");
+    let after = serde_yaml::to_string(&catalog).expect("serialize after validation");
+    assert_eq!(after, before);
+}
+
+#[test]
+fn projection_compatibility_rejects_published_required_internal_input() {
+    let (manifest, imported) = imported_required_account_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
     assert_eq!(
-        projection
-            .inputs
-            .iter()
-            .find(|input| input.wire_name == "page")
-            .expect("page")
-            .sql_exposure,
-        SqlInputExposure::Internal
+        catalog.projections.first().expect("projection").visibility,
+        ProjectionVisibility::Published,
+        "generator should publish a projection whose required input is exposable"
     );
+    projection_input_mut(&mut catalog, "account").sql_exposure = SqlInputExposure::Internal;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("published projection must not internalize a required input");
+
+    assert!(
+        error.to_string().contains(
+            "input 'account' on operation 'items_list' is required by the operation but has sql_exposure 'internal'"
+        ),
+        "unexpected error: {error}"
+    );
+
+    // Hiding the projection is the generator's own escape hatch for a required
+    // input that SQL cannot bind, so it stays compatible.
+    catalog
+        .projections
+        .first_mut()
+        .expect("projection")
+        .visibility = ProjectionVisibility::Hidden;
+    validate_projection_compatibility(&plan, &catalog)
+        .expect("hidden projections may internalize required inputs");
+}
+
+#[test]
+fn projection_compatibility_rejects_exposure_mismatched_with_projection_kind() {
+    let (manifest, imported) = imported_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    assert!(matches!(
+        catalog.projections.first().expect("projection").kind,
+        ProjectionKind::Table
+    ));
+    let state = projection_input_mut(&mut catalog, "state");
+    state.sql_exposure = SqlInputExposure::FunctionArg;
+    state.lookup_key = false;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("function argument on a table must fail");
+
+    assert!(
+        error.to_string().contains(
+            "input 'state' on operation 'items_list' has sql_exposure 'function_arg'; table projections expose non-internal inputs as filters"
+        ),
+        "unexpected error: {error}"
+    );
+
+    let (tool_manifest, tool_imported) = imported_mcp_items_surface();
+    let tool_plan = tool_imported.validated_plan().expect("plan");
+    let mut tool_catalog =
+        generate_projection_catalog(&tool_manifest, &tool_plan).expect("projections");
+    assert!(matches!(
+        tool_catalog.projections.first().expect("projection").kind,
+        ProjectionKind::TableFunction { .. }
+    ));
+    projection_input_mut(&mut tool_catalog, "query").sql_exposure = SqlInputExposure::Filter;
+
+    let error = validate_projection_compatibility(&tool_plan, &tool_catalog)
+        .expect_err("filter on a table function must fail");
+
+    assert!(
+        error.to_string().contains(
+            "input 'query' on operation 'list_items' has sql_exposure 'filter'; table function projections expose non-internal inputs as function arguments"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_compatibility_rejects_non_query_lookup_key() {
+    let (manifest, imported) = imported_shadowed_header_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    assert!(
+        plan.input_is_lookup_key("items_list", "state"),
+        "the query input named 'state' should be allowlisted"
+    );
+    let header = projection_input_at_mut(&mut catalog, "state", IrInputLocation::Header);
+    header.sql_exposure = SqlInputExposure::Filter;
+    header.lookup_key = true;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("header lookup key sharing an allowlisted query name must fail");
+
+    assert!(
+        error.to_string().contains(
+            "has lookup_key=true with source location Header; lookup keys are only valid for query inputs"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_compatibility_accepts_empty_operation_and_projection_catalogs() {
+    let (manifest, mut imported) = imported_items_surface();
+    imported.semantic_ir.operations.clear();
+    imported.operation_metadata.operations.clear();
+    let plan = imported.validated_plan().expect("empty plan");
+    let catalog = generate_projection_catalog(&manifest, &plan).expect("empty projections");
+
+    assert!(catalog.projections.is_empty());
+    validate_projection_compatibility(&plan, &catalog)
+        .expect("empty operation and projection catalogs are compatible");
+}
+
+fn collection_catalog() -> ProjectionCatalog {
+    collection_surface().0
+}
+
+fn collection_surface() -> (ProjectionCatalog, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: collections_api
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    // `list_items` has no required input, so it is a table whose inputs are
+    // filters; `list_project_items` requires a path input, so it is a table
+    // function whose inputs are arguments. Both exposures matter.
+    let spec = r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: list_items
+      parameters:
+        - name: exclude
+          in: query
+          schema: {type: array, items: {type: string}}
+        - name: $select
+          in: query
+          explode: false
+          schema: {type: array, items: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
+  /projects/{project_id}/items:
+    get:
+      operationId: list_project_items
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+        - name: exclude
+          in: query
+          schema: {type: array, items: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
+";
+    let ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    (catalog, ir)
+}
+
+fn projection<'a>(catalog: &'a ProjectionCatalog, operation_id: &str) -> &'a Projection {
+    catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == operation_id)
+        .expect("projection")
+}
+
+fn input<'a>(projection: &'a Projection, name: &str) -> &'a ProjectionInput {
+    projection
+        .inputs
+        .iter()
+        .find(|input| input.name == name)
+        .unwrap_or_else(|| panic!("input '{name}' is missing"))
+}
+
+#[test]
+fn collection_inputs_bind_as_utf8_and_keep_their_encoding() {
+    let catalog = collection_catalog();
+    let items = projection(&catalog, "list_items");
+
+    // Utf8, not Json: `bind_function_arg` requires a Json argument's literal to
+    // parse as JSON before the value source runs, which would reject the bare
+    // single-value form that `parse_string_array_value` exists to accept.
+    let exclude = input(items, "exclude");
+    assert_eq!(exclude.sql_exposure, SqlInputExposure::Filter);
+    assert_eq!(exclude.data_type, ManifestDataType::Utf8);
     assert_eq!(
-        projection
-            .inputs
-            .iter()
-            .find(|input| input.wire_name == "state")
-            .expect("state")
-            .sql_exposure,
+        exclude.collection_encoding,
+        Some(CollectionEncoding::Repeated)
+    );
+
+    let select = input(items, "select");
+    assert_eq!(select.wire_name, "$select");
+    assert_eq!(select.data_type, ManifestDataType::Utf8);
+    assert_eq!(select.collection_encoding, Some(CollectionEncoding::Comma));
+
+    let state = input(items, "state");
+    assert_eq!(state.data_type, ManifestDataType::Utf8);
+    assert_eq!(state.collection_encoding, None);
+}
+
+#[test]
+fn collection_inputs_document_the_json_array_convention() {
+    let catalog = collection_catalog();
+    let items = projection(&catalog, "list_items");
+
+    assert!(
+        input(items, "exclude").description.contains("JSON array"),
+        "{:?}",
+        input(items, "exclude").description
+    );
+
+    // Function arguments carry no description of their own, so the guide is
+    // the only place a caller of the table-function form can learn this.
+    let project_items = projection(&catalog, "list_project_items");
+    assert_eq!(
+        input(project_items, "exclude").sql_exposure,
         SqlInputExposure::FunctionArg
+    );
+    assert!(
+        project_items.guide.contains("JSON array"),
+        "{:?}",
+        project_items.guide
+    );
+}
+
+#[test]
+fn collection_guide_sentence_agrees_in_number() {
+    let catalog = collection_catalog();
+
+    // Two collection inputs.
+    assert!(
+        projection(&catalog, "list_items")
+            .guide
+            .contains("select and exclude take a JSON array"),
+        "{:?}",
+        projection(&catalog, "list_items").guide
+    );
+    // One collection input.
+    assert!(
+        projection(&catalog, "list_project_items")
+            .guide
+            .contains("exclude takes a JSON array"),
+        "{:?}",
+        projection(&catalog, "list_project_items").guide
+    );
+}
+
+#[test]
+fn collection_inputs_stay_out_of_the_most_useful_filters_hint() {
+    let catalog = collection_catalog();
+    let items = projection(&catalog, "list_items");
+
+    // `$select`/`exclude` sort ahead of `state`, so without the exclusion they
+    // would crowd the only genuinely selective filter out of the hint.
+    assert!(
+        items.guide.contains("Most useful optional filters: state."),
+        "{:?}",
+        items.guide
+    );
+}
+
+#[test]
+fn collection_filters_are_not_indexed_as_observed_values() {
+    let catalog = collection_catalog();
+    let items = projection(&catalog, "list_items");
+    let columns = projection_column_specs(items);
+
+    let exclude = columns
+        .iter()
+        .find(|column| column.name == "exclude")
+        .expect("virtual column");
+    assert!(exclude.r#virtual);
+    assert!(exclude.do_not_index);
+
+    let state = columns
+        .iter()
+        .find(|column| column.name == "state")
+        .expect("virtual column");
+    assert!(!state.do_not_index);
+}
+
+#[test]
+fn collection_query_params_lower_to_array_value_sources() {
+    let (catalog, ir) = collection_surface();
+
+    let items = projection(&catalog, "list_items");
+    let items_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == "list_items")
+        .expect("operation");
+    let request = request_spec_for_projection(items, items_operation).expect("request");
+
+    let exclude = request
+        .query
+        .iter()
+        .find(|param| param.name == "exclude")
+        .expect("exclude query param");
+    assert!(exclude.explode);
+    assert!(
+        matches!(
+            &exclude.value,
+            crate::ValueSourceSpec::FilterStringArray { key, .. } if key == "exclude"
+        ),
+        "{:?}",
+        exclude.value
+    );
+
+    let select = request
+        .query
+        .iter()
+        .find(|param| param.name == "$select")
+        .expect("$select query param");
+    assert!(!select.explode);
+
+    // A scalar filter keeps the single-valued value source, and its `explode`
+    // is inert.
+    let state = request
+        .query
+        .iter()
+        .find(|param| param.name == "state")
+        .expect("state query param");
+    assert!(matches!(
+        &state.value,
+        crate::ValueSourceSpec::Filter { .. }
+    ));
+
+    // The table-function form binds the same parameter as an argument.
+    let project_items = projection(&catalog, "list_project_items");
+    let project_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == "list_project_items")
+        .expect("operation");
+    let request = request_spec_for_projection(project_items, project_operation).expect("request");
+    let exclude = request
+        .query
+        .iter()
+        .find(|param| param.name == "exclude")
+        .expect("exclude query param");
+    assert!(
+        matches!(
+            &exclude.value,
+            crate::ValueSourceSpec::ArgStringArray { key, .. } if key == "exclude"
+        ),
+        "{:?}",
+        exclude.value
     );
 }

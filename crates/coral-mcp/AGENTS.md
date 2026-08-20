@@ -3,15 +3,17 @@
 ## Purpose
 
 `coral-mcp` is the shared MCP handler/tool core over `coral-client`, with stdio
-as its built-in transport adapter.
+and Streamable HTTP transport adapters.
 
 ## Owns
 
-- MCP SDK integration and stdio transport wiring
-- the narrow public handler factory consumed by sibling transport crates
+- MCP SDK integration and transport wiring
+- the shared per-session handler factory
 - tool/resource definitions and adapter-local shaping
 - MCP-facing discovery and guide surfaces
 - end-to-end MCP session tests
+- HTTP routing, host protection, health, session lifecycle, and request
+  authentication policy
 
 ## Does Not Own
 
@@ -19,22 +21,28 @@ as its built-in transport adapter.
 - query-runtime internals
 - hand-rolled JSON-RPC or initialize-state tracking
 - standalone process bootstrap
-- HTTP listener, session-management, and request-authentication policy
 
 ## Invariants
 
 - Keep MCP thin over app/query RPCs.
 - Keep `coral-cli` as the canonical launch surface; this crate stays a library
   adapter over an existing client.
-- Keep alternate transports behind `CoralMcpServerFactory`; construct one fresh
-  handler per protocol session and leave transport lifecycle outside this crate.
+- Keep transports behind `CoralMcpServerFactory` and construct one fresh handler
+  per protocol session. Keep standalone process launch outside this crate.
 - Configure tool availability through `McpOptions` consistently across stdio
   and alternate transports; transport choice is not a capability boundary.
-- In auth-disabled loopback mode, an HTTP transport may share an unauthenticated
-  local `AppClient` across sessions. In auth-required serving mode, validate
-  initialize, construct a per-session `AppClient` that forwards that bearer for
-  gRPC to validate again, and require the same bearer on later requests; never
-  fall back to a shared unauthenticated client. Stdio may also use its
+- Keep HTTP tools and resources in the shared MCP surface. The HTTP adapter owns
+  routing, host protection, health, and lifecycle; keep `/livez` process-only,
+  while `/readyz` may probe reachability without requiring authentication.
+- In auth-disabled mode, an HTTP transport may share an unauthenticated local
+  `AppClient` across sessions. That mode binds loopback only, except through
+  the constructor that names the exposure
+  (`McpHttpConfig::allow_unauthenticated_non_loopback`), which exists solely to
+  honor an explicit operator opt-in from configuration — never call it on any
+  other authority. In auth-required serving mode, validate the bearer presented
+  on initialize, construct a per-session `AppClient` that forwards it for gRPC
+  to validate again, and require the same bearer on later requests; never fall
+  back to a shared unauthenticated client. Stdio may also use its
   unauthenticated local client.
 - Prefer typed discovery from app/query APIs over scraping SQL metadata when a
   direct RPC already exists.

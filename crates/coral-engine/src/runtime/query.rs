@@ -20,13 +20,13 @@ use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::{RegisteredSource, compile_query_source};
+use crate::backends::{CatalogColumnFetcher, RegisteredSource, compile_query_source};
 use crate::runtime::catalog;
 use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
 use crate::runtime::dependent_join::planner::DependentJoinExtensionPlanner;
 use crate::runtime::error::{
-    datafusion_to_core, datafusion_to_core_with_sql_and_table_functions,
+    datafusion_to_core, datafusion_to_core_with_sql_and_table_functions, missing_table_reference,
     query_result_observer_error_to_core,
 };
 use crate::runtime::json::register_json_support;
@@ -44,15 +44,15 @@ use crate::runtime::udf_calls::{
 };
 use crate::runtime::udfs::published_table_functions;
 use crate::{
-    BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoreError, DependentJoinConfig,
-    DescribeTableInfo, MemorySize, QueryExecution, QueryExecutionProvenance, QueryMemoryConfig,
-    QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver, QueryResultObserverError,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
-    RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
-    RequestIdentitySelectionError, RequestIdentitySelector, SelectedRequestIdentity,
-    SourceDecorator, SourceInputResolver, SourceObservationPublisher, TableFunctionInfo, TableInfo,
-    UdfRuntimeDefinition,
+    BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoralSqlFunctionDefinition, CoreError,
+    DependentJoinConfig, DescribeCatalogSurfaceInfo, MemorySize, QueryExecution,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
+    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator,
+    RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
+    RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
+    ResolvedQueryResources, SelectedRequestIdentity, SourceDecorator, SourceInputResolver,
+    SourceObservationPublisher, TableFunctionInfo, TableInfo, normalize_catalog_name,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -60,12 +60,16 @@ pub(crate) struct QueryRuntimeAdapter {
     fallback_runtime: Option<FallbackRuntime>,
     memory: QueryMemoryConfig,
     active_sources: Vec<RegisteredSource>,
+    column_fetchers: Vec<CatalogColumnFetcher>,
     source_function_names: HashSet<ScopedTableFunctionName>,
     udfs_installed: bool,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
-    schema_to_source: HashMap<String, String>,
+    column_fetch_failures: catalog::CatalogColumnFetchFailures,
+    /// Source name keyed by top-level SQL name (schema for two-part sources,
+    /// catalog for database sources).
+    name_to_source: HashMap<String, String>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
 
@@ -73,6 +77,20 @@ pub(crate) struct InferredSqlSignature {
     pub(crate) parameter_fields: HashMap<String, Option<FieldRef>>,
     pub(crate) declared_parameter_types: HashMap<String, ManifestDataType>,
     pub(crate) planned_schema: Arc<arrow::datatypes::Schema>,
+    pub(crate) source_names: Vec<String>,
+}
+
+pub(crate) struct PreparedSql {
+    dataframe: DataFrame,
+    sql: String,
+    params: QueryParameters,
+    resources: ResolvedQueryResources,
+}
+
+impl PreparedSql {
+    pub(crate) fn resources(&self) -> &ResolvedQueryResources {
+        &self.resources
+    }
 }
 
 type BoundRequestIdentityHttpAuthenticators =
@@ -94,9 +112,10 @@ struct RuntimeExtensionHooks {
 struct FallbackRuntimeConfig {
     sources: Vec<QuerySource>,
     runtime_context: QueryRuntimeContext,
+    database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     dependent_join: DependentJoinConfig,
     memory: QueryMemoryConfig,
-    udfs: Vec<UdfRuntimeDefinition>,
+    udfs: Vec<CoralSqlFunctionDefinition>,
     extension_hooks: RuntimeExtensionHooks,
     request_identity_http_authenticators: BoundRequestIdentityHttpAuthenticators,
 }
@@ -104,21 +123,24 @@ struct FallbackRuntimeConfig {
 struct RegisteredRuntime {
     ctx: Arc<SessionContext>,
     active_sources: Vec<RegisteredSource>,
+    column_fetchers: Vec<CatalogColumnFetcher>,
     source_function_names: HashSet<ScopedTableFunctionName>,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
+    column_fetch_failures: catalog::CatalogColumnFetchFailures,
 }
 
 struct RuntimeBuildInputs<'a> {
     sources: &'a [QuerySource],
     runtime_context: &'a QueryRuntimeContext,
+    database_pool_registry: &'a Arc<crate::DatabasePoolRegistry>,
     extension_hooks: &'a RuntimeExtensionHooks,
     request_identity_http_authenticators: &'a BoundRequestIdentityHttpAuthenticators,
     source_decorators: &'a mut [Box<dyn SourceDecorator>],
     dependent_join: &'a DependentJoinConfig,
     memory: &'a QueryMemoryConfig,
-    udfs: &'a [UdfRuntimeDefinition],
+    udfs: &'a [CoralSqlFunctionDefinition],
 }
 
 enum SqlExecutionFailure {
@@ -132,7 +154,7 @@ pub(crate) async fn build_runtime(
     runtime: QueryRuntimeConfig,
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let span = info_span!("coral.engine.runtime.build", source.count = sources.len());
-    build_runtime_inner(sources, runtime).instrument(span).await
+    Box::pin(build_runtime_inner(sources, runtime).instrument(span)).await
 }
 
 async fn build_runtime_inner(
@@ -141,6 +163,7 @@ async fn build_runtime_inner(
 ) -> Result<QueryRuntimeAdapter, CoreError> {
     let QueryRuntimeConfig {
         context: runtime_context,
+        database_pool_registry,
         memory,
         dependent_join,
         mut extensions,
@@ -171,6 +194,7 @@ async fn build_runtime_inner(
         FallbackRuntime::new(FallbackRuntimeConfig {
             sources: sources.to_vec(),
             runtime_context: runtime_context.clone(),
+            database_pool_registry: Arc::clone(&database_pool_registry),
             dependent_join: dependent_join.clone(),
             memory: memory.clone(),
             udfs: udfs.clone(),
@@ -182,6 +206,7 @@ async fn build_runtime_inner(
     let primary = build_registered_runtime(RuntimeBuildInputs {
         sources,
         runtime_context: &runtime_context,
+        database_pool_registry: &database_pool_registry,
         extension_hooks: &extension_hooks,
         request_identity_http_authenticators: &request_identity_http_authenticators,
         source_decorators: extensions.source_decorators.as_mut_slice(),
@@ -196,12 +221,14 @@ async fn build_runtime_inner(
         fallback_runtime,
         memory,
         active_sources: primary.active_sources,
+        column_fetchers: primary.column_fetchers,
         source_function_names: primary.source_function_names,
         udfs_installed,
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
-        schema_to_source: schema_to_source_names(sources),
+        column_fetch_failures: primary.column_fetch_failures,
+        name_to_source: name_to_source_names(sources),
         query_result_observers: extensions.query_result_observers,
     })
 }
@@ -312,6 +339,7 @@ async fn build_registered_runtime(
         &ctx,
         config.sources,
         config.runtime_context,
+        config.database_pool_registry,
         config.extension_hooks,
         config.request_identity_http_authenticators,
         config.source_decorators,
@@ -326,11 +354,19 @@ async fn build_registered_runtime(
     let source_function_names = source_functions.names();
     let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
-    catalog::register(&ctx, &registration.active_sources, &udf_table_functions)
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_tables(&registration.active_sources);
+    let tables = catalog::collect_static_tables(&registration.active_sources);
     let table_functions =
         catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
+    validate_catalog_surface_namespace(&tables, &table_functions)?;
+    let column_fetch_failures = catalog::CatalogColumnFetchFailures::default();
+    catalog::register(
+        &ctx,
+        &registration.active_sources,
+        &registration.column_fetchers,
+        &udf_table_functions,
+        column_fetch_failures.clone(),
+    )
+    .map_err(|err| datafusion_to_core(&err, &[]))?;
     install_table_function_call_planners(
         &ctx,
         source_functions,
@@ -350,10 +386,12 @@ async fn build_registered_runtime(
     Ok(RegisteredRuntime {
         ctx,
         active_sources: registration.active_sources,
+        column_fetchers: registration.column_fetchers,
         source_function_names,
         tables,
         table_functions,
         failures: registration.failures,
+        column_fetch_failures,
     })
 }
 
@@ -361,7 +399,7 @@ async fn install_table_function_call_planners(
     ctx: &SessionContext,
     source_functions: SourceFunctionRegistry,
     source_table_function_names: HashSet<ScopedTableFunctionName>,
-    udfs: &[UdfRuntimeDefinition],
+    udfs: &[CoralSqlFunctionDefinition],
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
     match (!source_functions.is_empty(), !udfs.is_empty()) {
@@ -385,9 +423,32 @@ async fn install_table_function_call_planners(
     }
 }
 
+fn validate_catalog_surface_namespace(
+    tables: &[TableInfo],
+    table_functions: &[TableFunctionInfo],
+) -> Result<(), CoreError> {
+    let two_part_tables = tables
+        .iter()
+        .filter(|table| table.catalog_name.is_none())
+        .map(|table| ScopedTableFunctionName::from_parts(&table.schema_name, &table.table_name))
+        .collect::<HashSet<_>>();
+    if let Some(function) = table_functions.iter().find(|function| {
+        two_part_tables.contains(&ScopedTableFunctionName::from_parts(
+            &function.schema_name,
+            &function.function_name,
+        ))
+    }) {
+        return Err(CoreError::FailedPrecondition(format!(
+            "catalog surface '{}.{}' is registered as both a table and a table function",
+            function.schema_name, function.function_name
+        )));
+    }
+    Ok(())
+}
+
 async fn install_udf_call_planner(
     ctx: &SessionContext,
-    udfs: &[UdfRuntimeDefinition],
+    udfs: &[CoralSqlFunctionDefinition],
     source_table_function_names: HashSet<ScopedTableFunctionName>,
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
@@ -454,6 +515,7 @@ async fn register_runtime_sources(
     ctx: &SessionContext,
     sources: &[QuerySource],
     runtime_context: &QueryRuntimeContext,
+    database_pool_registry: &Arc<crate::DatabasePoolRegistry>,
     extension_hooks: &RuntimeExtensionHooks,
     request_identity_http_authenticators: &BoundRequestIdentityHttpAuthenticators,
     source_decorators: &mut [Box<dyn SourceDecorator>],
@@ -463,6 +525,7 @@ async fn register_runtime_sources(
         match compile_query_source(
             source,
             runtime_context,
+            Arc::clone(database_pool_registry),
             &extension_hooks.request_authenticators,
             extension_hooks.source_input_resolver.clone(),
             &extension_hooks.source_observation_publishers,
@@ -488,7 +551,7 @@ async fn register_runtime_sources(
 impl QueryRuntimeAdapter {
     pub(crate) async fn install_udfs(
         &mut self,
-        udfs: Vec<UdfRuntimeDefinition>,
+        udfs: Vec<CoralSqlFunctionDefinition>,
     ) -> Result<(), CoreError> {
         if udfs.is_empty() {
             return Ok(());
@@ -511,6 +574,9 @@ impl QueryRuntimeAdapter {
 
         let udf_table_functions = published_table_functions(&udfs, &self.source_function_names)
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        let table_functions =
+            catalog::collect_table_functions(&self.active_sources, &udf_table_functions);
+        validate_catalog_surface_namespace(&self.tables, &table_functions)?;
         let udf_calls = Box::pin(UdfCallRegistry::new(
             &self.ctx,
             &udfs,
@@ -518,14 +584,19 @@ impl QueryRuntimeAdapter {
         ))
         .await
         .map_err(|err| datafusion_to_core(&err, &self.tables))?;
-        catalog::register(&self.ctx, &self.active_sources, &udf_table_functions)
-            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        catalog::register(
+            &self.ctx,
+            &self.active_sources,
+            &self.column_fetchers,
+            &udf_table_functions,
+            self.column_fetch_failures.clone(),
+        )
+        .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         udf_calls
             .install(&self.ctx)
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
 
-        self.table_functions =
-            catalog::collect_table_functions(&self.active_sources, &udf_table_functions);
+        self.table_functions = table_functions;
         if let Some(fallback_runtime) = &mut self.fallback_runtime {
             fallback_runtime.config.udfs = udfs;
         }
@@ -533,17 +604,27 @@ impl QueryRuntimeAdapter {
         Ok(())
     }
 
-    pub(crate) fn list_tables(
+    pub(crate) async fn list_tables(
         &self,
-        source_filter: Option<&str>,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
         table_filter: Option<&str>,
-    ) -> Vec<TableInfo> {
-        self.tables
-            .iter()
-            .filter(|table| source_filter.is_none_or(|value| table.schema_name == value))
-            .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
-            .cloned()
-            .collect()
+    ) -> Result<Vec<TableInfo>, CoreError> {
+        let tables =
+            catalog::collect_tables(&self.ctx, catalog_filter, schema_filter, table_filter)
+                .await
+                .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        if table_filter.is_some()
+            && tables.len() == 1
+            && let Some(table) = tables.first()
+            && let Some(catalog_name) = table.catalog_name.as_deref()
+            && let Some(detail) = self.column_fetch_failures.failure(catalog_name)
+        {
+            return Err(CoreError::FailedPrecondition(format!(
+                "column metadata is unavailable for database catalog '{catalog_name}': {detail}; retry the metadata request or query the table directly"
+            )));
+        }
+        Ok(tables)
     }
 
     fn list_table_functions(
@@ -559,59 +640,100 @@ impl QueryRuntimeAdapter {
             .collect()
     }
 
-    pub(crate) fn catalog_info(&self, source_filter: Option<&str>) -> CatalogInfo {
-        CatalogInfo {
-            tables: self.list_tables(source_filter, None),
-            table_functions: self.list_table_functions(source_filter, None),
-        }
+    pub(crate) async fn catalog_info(
+        &self,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
+    ) -> Result<CatalogInfo, CoreError> {
+        let includes_schema_sources =
+            catalog_filter.is_none_or(|value| normalize_catalog_name(Some(value)).is_none());
+        // Catalog summaries never surface columns, so skip the coral.columns
+        // expansion (and the remote database inventory fetches behind it).
+        let tables =
+            catalog::collect_table_metadata(&self.ctx, catalog_filter, schema_filter, None)
+                .await
+                .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        Ok(CatalogInfo {
+            tables,
+            table_functions: if includes_schema_sources {
+                self.list_table_functions(schema_filter, None)
+            } else {
+                Vec::new()
+            },
+        })
     }
 
-    pub(crate) fn catalog_info_for_schemas(&self, schema_filters: &[&str]) -> CatalogInfo {
-        CatalogInfo {
-            tables: self
-                .tables
-                .iter()
-                .filter(|table| {
-                    schema_filters
-                        .iter()
-                        .any(|schema| table.schema_name == *schema)
-                })
-                .cloned()
-                .collect(),
+    /// Catalog metadata restricted to the sources publishing the given
+    /// schema and catalog names. Schema names never match database-internal
+    /// schemas, which are addressed through their catalog.
+    pub(crate) async fn catalog_info_for_sources(
+        &self,
+        schema_names: &[&str],
+        catalog_names: &[&str],
+    ) -> Result<CatalogInfo, CoreError> {
+        let mut tables = Vec::new();
+        for schema_name in schema_names {
+            tables.extend(self.list_tables(Some(""), Some(schema_name), None).await?);
+        }
+        for catalog_name in catalog_names {
+            tables.extend(self.list_tables(Some(catalog_name), None, None).await?);
+        }
+        tables.sort_by(|left, right| {
+            (&left.catalog_name, &left.schema_name, &left.table_name).cmp(&(
+                &right.catalog_name,
+                &right.schema_name,
+                &right.table_name,
+            ))
+        });
+        tables.dedup_by(|left, right| {
+            left.catalog_name == right.catalog_name
+                && left.schema_name == right.schema_name
+                && left.table_name == right.table_name
+        });
+        Ok(CatalogInfo {
+            tables,
             table_functions: self
                 .table_functions
                 .iter()
-                .filter(|function| {
-                    schema_filters
-                        .iter()
-                        .any(|schema| function.schema_name == *schema)
-                })
+                .filter(|function| schema_names.contains(&function.schema_name.as_str()))
                 .cloned()
                 .collect(),
-        }
+        })
     }
 
-    pub(crate) fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
-        if let Some(table) = self
-            .tables
-            .iter()
-            .find(|table| table.schema_name == schema_name && table.table_name == table_name)
-            .cloned()
-        {
-            return DescribeTableInfo {
-                table: Some(table),
-                missing_context_tables: Vec::new(),
-            };
-        }
+    pub(crate) async fn describe_catalog_surface(
+        &self,
+        catalog_name: Option<&str>,
+        schema_name: &str,
+        surface_name: &str,
+    ) -> Result<DescribeCatalogSurfaceInfo, CoreError> {
+        let normalized_catalog_name = normalize_catalog_name(catalog_name);
+        let table_catalog_filter = Some(catalog_name.unwrap_or_default());
+        let table = self
+            .list_tables(table_catalog_filter, Some(schema_name), Some(surface_name))
+            .await?
+            .into_iter()
+            .find(|table| table.catalog_name.as_deref() == normalized_catalog_name);
+        let table_function = if catalog_name.is_none() {
+            self.table_functions
+                .iter()
+                .find(|function| {
+                    function.schema_name == schema_name && function.function_name == surface_name
+                })
+                .cloned()
+        } else {
+            None
+        };
 
-        let missing_context_tables = self
-            .tables
-            .iter()
-            .map(table_metadata_without_columns)
-            .collect();
-        DescribeTableInfo {
-            table: None,
-            missing_context_tables,
+        match (table, table_function) {
+            (Some(_), Some(_)) => Err(CoreError::FailedPrecondition(format!(
+                "catalog surface '{schema_name}.{surface_name}' is registered as both a table and a table function"
+            ))),
+            (Some(table), None) => Ok(DescribeCatalogSurfaceInfo::Table(table)),
+            (None, Some(table_function)) => {
+                Ok(DescribeCatalogSurfaceInfo::TableFunction(table_function))
+            }
+            (None, None) => Ok(DescribeCatalogSurfaceInfo::Missing),
         }
     }
 
@@ -629,7 +751,28 @@ impl QueryRuntimeAdapter {
         sql: &str,
         params: &QueryParameters,
     ) -> Result<QueryExecution, CoreError> {
-        match self.execute_sql_once(&self.ctx, sql, params).await {
+        let prepared = self.prepare_sql(sql, params.clone()).await?;
+        self.execute_prepared(prepared).await
+    }
+
+    pub(crate) async fn prepare_sql(
+        &self,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<PreparedSql, CoreError> {
+        match self.prepare_sql_once(&self.ctx, sql, params).await {
+            Ok(prepared) => Ok(prepared),
+            Err(error) => Err(self.sql_execution_failure_to_core(error, sql).await),
+        }
+    }
+
+    pub(crate) async fn execute_prepared(
+        &self,
+        prepared: PreparedSql,
+    ) -> Result<QueryExecution, CoreError> {
+        let sql = prepared.sql.clone();
+        let params = prepared.params.clone();
+        match self.execute_prepared_once(prepared).await {
             Ok(execution) => Ok(execution),
             Err(SqlExecutionFailure::Collection(error)) => {
                 // Resolver-row overflow is a dependent-join buffering limit, not
@@ -658,18 +801,24 @@ impl QueryRuntimeAdapter {
                     .get_or_build_without_dependent_join()
                     .await?;
 
-                match self.execute_sql_once(&fallback.ctx, sql, params).await {
+                let prepared = match self.prepare_sql_once(&fallback.ctx, &sql, params).await {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        return Err(self.sql_execution_failure_to_core(error, &sql).await);
+                    }
+                };
+                match self.execute_prepared_once(prepared).await {
                     Ok(execution) => Ok(execution),
                     Err(error) => {
                         if is_missing_required_filter_failure(&error) {
                             return Err(cap_core_error);
                         }
-                        let fallback_error = self.sql_execution_failure_to_core(error, sql);
+                        let fallback_error = self.sql_execution_failure_to_core(error, &sql).await;
                         Err(fallback_error)
                     }
                 }
             }
-            Err(error) => Err(self.sql_execution_failure_to_core(error, sql)),
+            Err(error) => Err(self.sql_execution_failure_to_core(error, &sql).await),
         }
     }
 
@@ -703,30 +852,61 @@ impl QueryRuntimeAdapter {
             &mut declared_parameter_types,
         )
         .map_err(plan_error)?;
+        let source_names = self
+            .resolve_query_resources(df.logical_plan())
+            .map_err(plan_error)?
+            .sources()
+            .iter()
+            .filter(|source_name| {
+                self.name_to_source
+                    .values()
+                    .any(|installed_name| installed_name == *source_name)
+            })
+            .cloned()
+            .collect();
 
         Ok(InferredSqlSignature {
             parameter_fields,
             declared_parameter_types,
             planned_schema: Arc::new(df.logical_plan().schema().as_arrow().clone()),
+            source_names,
         })
     }
 
-    async fn execute_sql_once(
+    async fn prepare_sql_once(
         &self,
         ctx: &SessionContext,
         sql: &str,
-        params: &QueryParameters,
-    ) -> Result<QueryExecution, SqlExecutionFailure> {
+        params: QueryParameters,
+    ) -> Result<PreparedSql, SqlExecutionFailure> {
         let df = ctx
             .sql_with_options(sql, read_only_sql_options())
             .await
             .map_err(SqlExecutionFailure::Planning)?;
-        let df = apply_query_parameters(df, params).map_err(SqlExecutionFailure::Planning)?;
-        let provenance = self
-            .query_provenance(sql, df.logical_plan())
+        let df = apply_query_parameters(df, &params).map_err(SqlExecutionFailure::Planning)?;
+        let resources = self
+            .resolve_query_resources(df.logical_plan())
             .map_err(SqlExecutionFailure::Planning)?;
-        let task_ctx = Arc::new(df.task_ctx());
-        let physical_plan = df
+        Ok(PreparedSql {
+            dataframe: df,
+            sql: sql.to_string(),
+            params,
+            resources,
+        })
+    }
+
+    async fn execute_prepared_once(
+        &self,
+        prepared: PreparedSql,
+    ) -> Result<QueryExecution, SqlExecutionFailure> {
+        let PreparedSql {
+            dataframe,
+            sql,
+            resources,
+            ..
+        } = prepared;
+        let task_ctx = Arc::new(dataframe.task_ctx());
+        let physical_plan = dataframe
             .create_physical_plan()
             .await
             .map_err(SqlExecutionFailure::Collection)?;
@@ -734,9 +914,9 @@ impl QueryRuntimeAdapter {
         let batches = collect(physical_plan, task_ctx)
             .await
             .map_err(SqlExecutionFailure::Collection)?;
-        let execution = QueryExecution::new(arrow_schema, batches, provenance);
+        let execution = QueryExecution::new(arrow_schema, batches, &sql, resources);
         self.observe_query_result(
-            sql,
+            &sql,
             execution.arrow_schema().as_ref(),
             execution.batches(),
             execution.provenance(),
@@ -745,12 +925,17 @@ impl QueryRuntimeAdapter {
         Ok(execution)
     }
 
-    fn sql_execution_failure_to_core(&self, error: SqlExecutionFailure, sql: &str) -> CoreError {
+    async fn sql_execution_failure_to_core(
+        &self,
+        error: SqlExecutionFailure,
+        sql: &str,
+    ) -> CoreError {
         match error {
             SqlExecutionFailure::Planning(error) => {
+                let tables = self.table_context_for_planning_error(&error, sql).await;
                 datafusion_to_core_with_sql_and_table_functions(
                     &error,
-                    &self.tables,
+                    &tables,
                     &self.table_functions,
                     Some(sql),
                 )
@@ -769,6 +954,57 @@ impl QueryRuntimeAdapter {
         datafusion_to_core(error, &self.tables)
     }
 
+    async fn table_context_for_planning_error(
+        &self,
+        error: &DataFusionError,
+        sql: &str,
+    ) -> Vec<TableInfo> {
+        let filters = missing_table_reference(error, Some(sql))
+            .map(|reference| table_context_filters(reference.parts.as_slice()))
+            .unwrap_or_default();
+        if filters.is_empty() {
+            return self.tables.clone();
+        }
+        match self.table_metadata_for_error_context(&filters).await {
+            Ok(tables) => tables,
+            Err(error) => {
+                tracing::debug!(
+                    detail = %error,
+                    "failed to collect dynamic table metadata for error context"
+                );
+                self.tables.clone()
+            }
+        }
+    }
+
+    async fn table_metadata_for_error_context(
+        &self,
+        filters: &TableContextFilters,
+    ) -> Result<Vec<TableInfo>, CoreError> {
+        let mut tables = Vec::new();
+        for (catalog_name, schema_name) in &filters.0 {
+            tables.extend(
+                catalog::collect_table_metadata(
+                    &self.ctx,
+                    catalog_name.as_deref(),
+                    Some(schema_name),
+                    None,
+                )
+                .await
+                .map_err(|error| datafusion_to_core(&error, &self.tables))?,
+            );
+        }
+        let mut seen = HashSet::new();
+        tables.retain(|table| {
+            seen.insert((
+                table.catalog_name.clone(),
+                table.schema_name.clone(),
+                table.table_name.clone(),
+            ))
+        });
+        Ok(tables)
+    }
+
     fn observe_query_result(
         &self,
         sql: &str,
@@ -784,33 +1020,31 @@ impl QueryRuntimeAdapter {
         Ok(())
     }
 
-    fn query_provenance(
+    fn resolve_query_resources(
         &self,
-        sql: &str,
         plan: &LogicalPlan,
-    ) -> Result<QueryExecutionProvenance, DataFusionError> {
+    ) -> Result<ResolvedQueryResources, DataFusionError> {
         let mut tables = BTreeSet::new();
         let mut table_functions = BTreeSet::new();
-        self.collect_plan_provenance(plan, &mut tables, &mut table_functions)?;
+        self.collect_plan_resources(plan, &mut tables, &mut table_functions)?;
 
         let mut sources = BTreeSet::new();
         sources.extend(tables.iter().map(|usage| usage.source_name().to_string()));
         sources.extend(
             table_functions
                 .iter()
-                .filter(|usage| self.schema_to_source.contains_key(usage.schema_name()))
+                .filter(|usage| self.name_to_source.contains_key(usage.schema_name()))
                 .map(|usage| usage.source_name().to_string()),
         );
 
-        Ok(QueryExecutionProvenance::new(
-            sql,
+        Ok(ResolvedQueryResources::new(
             sources.into_iter().collect(),
             tables.into_iter().collect(),
             table_functions.into_iter().collect(),
         ))
     }
 
-    fn collect_plan_provenance(
+    fn collect_plan_resources(
         &self,
         plan: &LogicalPlan,
         tables: &mut BTreeSet<QueryTableUsage>,
@@ -836,11 +1070,7 @@ impl QueryRuntimeAdapter {
                             function.table_reference(),
                             table_functions,
                         );
-                        self.collect_plan_provenance(
-                            function.body_plan(),
-                            tables,
-                            table_functions,
-                        )?;
+                        self.collect_plan_resources(function.body_plan(), tables, table_functions)?;
                     }
                 }
                 _ => {}
@@ -858,13 +1088,15 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, table_name)) = relation_parts(table_reference) else {
             return;
         };
-        if self
-            .tables
-            .iter()
-            .any(|table| table.schema_name == schema_name && table.table_name == table_name)
-        {
+        let catalog_name = normalize_catalog_name(table_reference.catalog());
+        if self.tables.iter().any(|table| {
+            table.catalog_name.as_deref() == catalog_name
+                && table.schema_name == schema_name
+                && table.table_name == table_name
+        }) {
             tables.insert(QueryTableUsage::new(
-                self.source_name_for_schema(schema_name),
+                self.source_name_for(catalog_name.unwrap_or(schema_name)),
+                catalog_name,
                 schema_name,
                 table_name,
             ));
@@ -896,18 +1128,19 @@ impl QueryRuntimeAdapter {
             return false;
         };
         table_functions.insert(QueryTableFunctionUsage::new(
-            self.source_name_for_schema(schema_name),
+            self.source_name_for(schema_name),
             schema_name,
             function_name,
         ));
         true
     }
 
-    fn source_name_for_schema(&self, schema_name: &str) -> String {
-        self.schema_to_source
-            .get(schema_name)
+    /// Resolves the source owning a top-level SQL name (schema or catalog).
+    fn source_name_for(&self, name: &str) -> String {
+        self.name_to_source
+            .get(name)
             .cloned()
-            .unwrap_or_else(|| schema_name.to_string())
+            .unwrap_or_else(|| name.to_string())
     }
 
     pub(crate) async fn explain_sql(
@@ -1239,6 +1472,7 @@ impl FallbackRuntimeConfig {
         build_registered_runtime(RuntimeBuildInputs {
             sources: &self.sources,
             runtime_context: &self.runtime_context,
+            database_pool_registry: &self.database_pool_registry,
             extension_hooks: &self.extension_hooks,
             request_identity_http_authenticators: &self.request_identity_http_authenticators,
             source_decorators: source_decorators.as_mut_slice(),
@@ -1276,7 +1510,7 @@ pub(crate) fn read_only_sql_options() -> SQLOptions {
         .with_allow_statements(false)
 }
 
-fn schema_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
+fn name_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
     sources
         .iter()
         .flat_map(|source| {
@@ -1284,25 +1518,42 @@ fn schema_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
             source
                 .schema_names()
                 .into_iter()
-                .map(move |schema_name| (schema_name.to_string(), source_name.clone()))
+                .chain(source.catalog_names())
+                .map(move |name| (name.to_string(), source_name.clone()))
         })
         .collect()
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TableContextFilters(Vec<(Option<String>, String)>);
+
+impl TableContextFilters {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+fn table_context_filters(parts: &[String]) -> TableContextFilters {
+    let body = match parts {
+        [catalog, rest @ ..] if catalog == "datafusion" => rest,
+        _ => parts,
+    };
+    match body {
+        [] | [_] => TableContextFilters::default(),
+        [schema_name, _table_name] => TableContextFilters(vec![(None, schema_name.clone())]),
+        [catalog_name, schema @ .., _table_name] => {
+            let schema_name = schema.join(".");
+            TableContextFilters(vec![
+                (None, format!("{catalog_name}.{schema_name}")),
+                (Some(catalog_name.clone()), schema_name),
+            ])
+        }
+    }
 }
 
 fn relation_parts(table_reference: &TableReference) -> Option<(&str, &str)> {
     let schema_name = table_reference.schema()?;
     Some((schema_name, table_reference.table()))
-}
-
-fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
-    TableInfo {
-        schema_name: table.schema_name.clone(),
-        table_name: table.table_name.clone(),
-        description: table.description.clone(),
-        guide: table.guide.clone(),
-        columns: Vec::new(),
-        required_filters: table.required_filters.clone(),
-    }
 }
 
 fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> CoreError {
@@ -1326,64 +1577,320 @@ mod tests {
     use datafusion::execution::memory_pool::MemoryConsumer;
 
     use super::*;
+    use crate::backends::common::RegisteredColumn;
+    use crate::backends::{RegisteredTable, SourceQualifiedName};
     use crate::{
-        ColumnInfo, DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
-        UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
-        UdfRuntimeTableFunctionPublish,
+        CoralSqlResultColumn, CoralSqlTableFunctionPublish, DependentJoinConfig, MemorySize,
+        QueryMemoryConfig, QueryRuntimeContext,
     };
 
-    fn adapter_with_table() -> QueryRuntimeAdapter {
+    fn adapter_with_sources(active_sources: Vec<RegisteredSource>) -> QueryRuntimeAdapter {
+        let ctx = Arc::new(SessionContext::new());
+        let column_fetch_failures = catalog::CatalogColumnFetchFailures::default();
+        catalog::register(
+            &ctx,
+            &active_sources,
+            &[],
+            &[],
+            column_fetch_failures.clone(),
+        )
+        .expect("catalog should register");
+        let tables = catalog::collect_static_tables(&active_sources);
         QueryRuntimeAdapter {
-            ctx: Arc::new(SessionContext::new()),
+            ctx,
             fallback_runtime: None,
             memory: QueryMemoryConfig::default(),
-            active_sources: Vec::new(),
+            active_sources,
+            column_fetchers: Vec::new(),
             source_function_names: HashSet::new(),
             udfs_installed: false,
-            tables: vec![TableInfo {
-                schema_name: "demo".to_string(),
+            tables,
+            table_functions: Vec::new(),
+            failures: Vec::new(),
+            column_fetch_failures,
+            name_to_source: HashMap::new(),
+            query_result_observers: Vec::new(),
+        }
+    }
+
+    fn demo_source() -> RegisteredSource {
+        RegisteredSource {
+            qualified_name: SourceQualifiedName::Schema("demo".to_string()),
+            tables: vec![RegisteredTable {
+                schema_name: None,
                 table_name: "events".to_string(),
                 description: "Event rows".to_string(),
                 guide: "Query event rows.".to_string(),
-                columns: vec![ColumnInfo {
+                require_guide_read: false,
+                columns: vec![RegisteredColumn {
                     name: "event_id".to_string(),
                     data_type: "Utf8".to_string(),
                     nullable: false,
                     is_virtual: false,
                     is_required_filter: false,
+                    filter_mode: None,
                     description: "Event ID".to_string(),
-                    ordinal_position: 0,
                 }],
+                filters: Vec::new(),
                 required_filters: vec!["owner".to_string()],
+                search_limits: None,
             }],
             table_functions: Vec::new(),
-            failures: Vec::new(),
-            schema_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
-            query_result_observers: Vec::new(),
+            inputs: Vec::new(),
         }
     }
 
-    #[test]
-    fn describe_table_hit_returns_full_table_without_missing_context() {
-        let result = adapter_with_table().describe_table("demo", "events");
-
-        let table = result.table.expect("exact table");
-        assert_eq!(table.columns.len(), 1);
-        assert!(result.missing_context_tables.is_empty());
+    fn adapter_with_table() -> QueryRuntimeAdapter {
+        let mut adapter = adapter_with_sources(vec![demo_source()]);
+        adapter.table_functions.push(TableFunctionInfo {
+            schema_name: "demo".to_string(),
+            function_name: "search_events".to_string(),
+            description: "Search events.".to_string(),
+            guide: String::new(),
+            require_guide_read: false,
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: coral_spec::SourceTableFunctionKind::Table,
+            search_limits: None,
+        });
+        adapter
     }
 
-    #[test]
-    fn describe_table_miss_returns_columnless_context_tables() {
-        let result = adapter_with_table().describe_table("demo", "missing");
+    fn catalog_source(catalog_name: &str, schema_name: &str) -> RegisteredSource {
+        RegisteredSource {
+            qualified_name: SourceQualifiedName::Catalog(catalog_name.to_string()),
+            tables: vec![RegisteredTable {
+                schema_name: Some(schema_name.to_string()),
+                table_name: "events".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                require_guide_read: false,
+                columns: Vec::new(),
+                filters: Vec::new(),
+                required_filters: Vec::new(),
+                search_limits: None,
+            }],
+            table_functions: Vec::new(),
+            inputs: Vec::new(),
+        }
+    }
 
-        assert!(result.table.is_none());
-        assert_eq!(result.missing_context_tables.len(), 1);
-        let context_table = result
-            .missing_context_tables
+    #[tokio::test]
+    async fn describe_catalog_surface_table_hit_returns_full_table() {
+        let result = adapter_with_table()
+            .describe_catalog_surface(None, "demo", "events")
+            .await
+            .expect("describe catalog surface");
+
+        let DescribeCatalogSurfaceInfo::Table(table) = result else {
+            panic!("expected exact table");
+        };
+        assert_eq!(table.columns.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn targeted_table_metadata_reports_database_column_fetch_failure() {
+        let adapter = adapter_with_sources(vec![catalog_source("warehouse", "public")]);
+        adapter.column_fetch_failures.record_failure(
+            "warehouse",
+            "Execution error: column inventory failed".to_string(),
+        );
+
+        let error = adapter
+            .describe_catalog_surface(Some("warehouse"), "public", "events")
+            .await
+            .expect_err("failed inventory must not look like an empty table");
+        let CoreError::FailedPrecondition(detail) = error else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(detail.contains("database catalog 'warehouse'"));
+        assert!(detail.contains("column inventory failed"));
+        assert!(detail.contains("retry"));
+
+        let tables = adapter
+            .list_tables(Some("warehouse"), Some("public"), None)
+            .await
+            .expect("broad metadata discovery should remain queryable");
+        assert_eq!(tables.len(), 1);
+        assert!(tables.first().expect("catalog table").columns.is_empty());
+    }
+
+    #[tokio::test]
+    async fn describe_catalog_surface_miss_returns_missing() {
+        let result = adapter_with_table()
+            .describe_catalog_surface(None, "demo", "missing")
+            .await
+            .expect("describe catalog surface miss");
+
+        assert!(matches!(result, DescribeCatalogSurfaceInfo::Missing));
+    }
+
+    #[tokio::test]
+    async fn describe_catalog_surface_resolves_function_without_listing_schema() {
+        let result = adapter_with_table()
+            .describe_catalog_surface(None, "demo", "search_events")
+            .await
+            .expect("describe catalog surface function");
+
+        let DescribeCatalogSurfaceInfo::TableFunction(function) = result else {
+            panic!("expected exact table function");
+        };
+        assert_eq!(function.function_name, "search_events");
+    }
+
+    #[tokio::test]
+    async fn describe_catalog_surface_rejects_table_function_name_collision() {
+        let mut adapter = adapter_with_table();
+        let mut function = adapter
+            .table_functions
             .first()
-            .expect("missing context table");
-        assert!(context_table.columns.is_empty());
-        assert_eq!(context_table.required_filters, ["owner".to_string()]);
+            .expect("table function")
+            .clone();
+        function.function_name = "events".to_string();
+        adapter.table_functions.push(function);
+
+        let registration_error =
+            validate_catalog_surface_namespace(&adapter.tables, &adapter.table_functions)
+                .expect_err("runtime should reject a catalog surface collision");
+        assert!(matches!(
+            registration_error,
+            CoreError::FailedPrecondition(_)
+        ));
+
+        let error = adapter
+            .describe_catalog_surface(None, "demo", "events")
+            .await
+            .expect_err("describe should reject a catalog surface collision");
+
+        assert!(matches!(error, CoreError::FailedPrecondition(_)));
+        assert!(error.to_string().contains("demo.events"));
+    }
+
+    #[tokio::test]
+    async fn describe_catalog_surface_rejects_case_only_name_collision() {
+        let mut adapter = adapter_with_table();
+        let mut function = adapter
+            .table_functions
+            .first()
+            .expect("table function")
+            .clone();
+        function.schema_name = "DEMO".to_string();
+        function.function_name = "EVENTS".to_string();
+        adapter.table_functions.push(function);
+
+        let error = validate_catalog_surface_namespace(&adapter.tables, &adapter.table_functions)
+            .expect_err("runtime should reject a case-only catalog surface collision");
+
+        assert!(matches!(error, CoreError::FailedPrecondition(_)));
+    }
+
+    #[tokio::test]
+    async fn describe_catalog_surface_catalog_qualifier_excludes_functions() {
+        let result = adapter_with_table()
+            .describe_catalog_surface(Some("warehouse"), "demo", "search_events")
+            .await
+            .expect("describe catalog-qualified surface");
+
+        let DescribeCatalogSurfaceInfo::Missing = result else {
+            panic!("catalog-qualified function name must not resolve");
+        };
+    }
+
+    #[tokio::test]
+    async fn explicit_datafusion_catalog_filters_schema_metadata() {
+        let mut adapter = adapter_with_sources(vec![demo_source()]);
+        adapter.table_functions.push(TableFunctionInfo {
+            schema_name: "demo".to_string(),
+            function_name: "search_events".to_string(),
+            description: "Search events.".to_string(),
+            guide: String::new(),
+            require_guide_read: false,
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: coral_spec::SourceTableFunctionKind::Table,
+            search_limits: None,
+        });
+
+        let tables = adapter
+            .list_tables(
+                Some(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+                Some("demo"),
+                None,
+            )
+            .await
+            .expect("list tables");
+        assert_eq!(tables.len(), 1);
+
+        let catalog = adapter
+            .catalog_info(
+                Some(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+                Some("demo"),
+            )
+            .await
+            .expect("catalog info");
+        assert_eq!(catalog.tables.len(), 1);
+        assert_eq!(catalog.table_functions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn describe_catalog_surface_without_catalog_excludes_three_part_tables() {
+        let result = adapter_with_sources(vec![
+            catalog_source("analytics", "public"),
+            catalog_source("warehouse", "public"),
+        ])
+        .describe_catalog_surface(None, "public", "events")
+        .await
+        .expect("unqualified three-part table lookup");
+
+        let DescribeCatalogSurfaceInfo::Missing = result else {
+            panic!("unqualified target must not match a three-part table");
+        };
+    }
+
+    #[tokio::test]
+    async fn describe_catalog_surface_without_catalog_skips_database_column_fetch_failures() {
+        let adapter = adapter_with_sources(vec![catalog_source("warehouse", "public")]);
+        adapter.column_fetch_failures.record_failure(
+            "warehouse",
+            "Execution error: column inventory failed".to_string(),
+        );
+
+        let result = adapter
+            .describe_catalog_surface(None, "public", "events")
+            .await
+            .expect("unqualified target must not inspect database catalogs");
+
+        assert!(matches!(result, DescribeCatalogSurfaceInfo::Missing));
+    }
+
+    #[tokio::test]
+    async fn catalog_info_for_source_schema_excludes_database_internal_schema() {
+        let schema_source = RegisteredSource {
+            qualified_name: SourceQualifiedName::Schema("public".to_string()),
+            tables: vec![RegisteredTable {
+                schema_name: None,
+                table_name: "events".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                require_guide_read: false,
+                columns: Vec::new(),
+                filters: Vec::new(),
+                required_filters: Vec::new(),
+                search_limits: None,
+            }],
+            table_functions: Vec::new(),
+            inputs: Vec::new(),
+        };
+        let catalog =
+            adapter_with_sources(vec![schema_source, catalog_source("warehouse", "public")])
+                .catalog_info_for_sources(&["public"], &[])
+                .await
+                .expect("source-scoped catalog info");
+
+        assert_eq!(catalog.tables.len(), 1);
+        let table = catalog.tables.first().expect("source-scoped table");
+        assert!(table.catalog_name.is_none());
+        assert_eq!(table.schema_name, "public");
     }
 
     #[test]
@@ -1458,6 +1965,7 @@ mod tests {
         let fallback = FallbackRuntimeConfig {
             sources: Vec::new(),
             runtime_context: QueryRuntimeContext::default(),
+            database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             dependent_join: DependentJoinConfig::default(),
             memory: QueryMemoryConfig {
                 limit: Some(MemorySize::from_str("1Ki").unwrap()),
@@ -1497,25 +2005,23 @@ mod tests {
             .await
             .expect("primary runtime");
         runtime
-            .install_udfs(vec![UdfRuntimeDefinition {
+            .install_udfs(vec![CoralSqlFunctionDefinition {
                 name: "constant_value".to_string(),
                 description: "Returns one value".to_string(),
                 arguments: Vec::new(),
-                implementation: UdfRuntimeImplementation::CoralSql {
-                    query: "select 1 as value".to_string(),
+                query: "select 1 as value".to_string(),
+                publish: CoralSqlTableFunctionPublish {
+                    schema: "functions".to_string(),
+                    name: "constant_value".to_string(),
+                    description: "Returns one value".to_string(),
+                    guide: String::new(),
                 },
-                publish: UdfRuntimePublish {
-                    table_function: UdfRuntimeTableFunctionPublish {
-                        schema: "functions".to_string(),
-                        name: "constant_value".to_string(),
-                        description: "Returns one value".to_string(),
-                    },
-                },
-                result_columns: vec![UdfRuntimeResultColumn {
+                result_columns: vec![CoralSqlResultColumn {
                     name: "value".to_string(),
                     data_type: DataType::Int64,
                     nullable: false,
                 }],
+                source_names: Vec::new(),
             }])
             .await
             .expect("late UDF install");

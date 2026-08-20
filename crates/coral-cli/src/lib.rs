@@ -10,11 +10,10 @@
 mod bootstrap;
 mod branding;
 mod browser;
-#[cfg(feature = "embedded-ui")]
-mod embedded_ui;
 pub mod env;
 mod onboard;
 mod query_error;
+mod serve;
 mod source_ops;
 
 use std::borrow::Cow;
@@ -22,8 +21,6 @@ use std::fmt::Write as _;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-#[cfg(feature = "embedded-ui")]
-use std::sync::Arc;
 
 use clap::{
     Arg, ArgAction, ArgGroup, ArgMatches, Args, CommandFactory, Error as ClapError, FromArgMatches,
@@ -33,12 +30,12 @@ use clap_complete::{Shell, generate};
 use coral_api::v1::{
     AddFunctionRequest, ClearSearchDataRequest, CreateWorkspaceRequest, DeleteFunctionRequest,
     DeleteWorkspaceRequest, DrainSearchQueueRequest, ExecuteSqlRequest, Function,
-    FunctionRuntimeReady, ListFunctionsRequest, ListWorkspacesRequest, RebuildSearchIndexRequest,
-    SearchClearTarget, SearchDataScope, SearchIndexProvider, SearchProvider, SearchRequest,
-    Workspace, function, search_clear_target, search_maintenance_result,
+    FunctionRuntimeReady, FunctionWriteSurface, ListFunctionsRequest, ListWorkspacesRequest,
+    RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope, SearchIndexProvider,
+    SearchProvider, SearchRequest, Workspace, function, search_clear_target,
+    search_maintenance_result,
 };
-#[cfg(feature = "embedded-ui")]
-use coral_app::StaticAssetsProvider;
+use coral_app::bootstrap::is_loopback_ip;
 use coral_client::{
     AppClient, DEFAULT_WORKSPACE_ID, decode_execute_sql_response, format_batches_json,
     format_batches_table, format_search_response_json, format_search_response_text,
@@ -50,10 +47,6 @@ use tonic::Request;
 #[cfg(test)]
 use tempfile as _;
 
-/// Default loopback port used by `coral ui` to expose a browser-facing
-/// gRPC-Web surface.
-#[cfg(feature = "embedded-ui")]
-const DEFAULT_SERVER_PORT: u16 = 1457;
 const MCP_INITIAL_QUERY_EXAMPLE_LIMIT: usize = 5;
 const DEFAULT_SEARCH_LIMIT: u32 = 10;
 const MIN_SEARCH_LIMIT: u32 = 1;
@@ -98,9 +91,6 @@ enum Command {
     Server,
     /// Inspect and manage experimental runtime features
     Features(FeaturesArgs),
-    #[cfg(feature = "embedded-ui")]
-    /// Start the local gRPC-Web server with the embedded Coral UI
-    Ui(UiArgs),
     /// Generate shell completion scripts
     Completion(CompletionArgs),
 }
@@ -110,18 +100,6 @@ enum Command {
 enum RequiredRuntime {
     AppClient,
     None,
-}
-
-#[cfg(feature = "embedded-ui")]
-#[derive(Debug, Clone, Copy, Args)]
-/// Local browser-facing server options
-struct UiArgs {
-    /// Port to bind on 127.0.0.1 for the local gRPC-Web server
-    #[arg(long = "port", value_name = "PORT", default_value_t = DEFAULT_SERVER_PORT)]
-    port: u16,
-    /// Start the server without opening a browser
-    #[arg(long = "no-open")]
-    no_open: bool,
 }
 
 #[derive(Debug, Args)]
@@ -211,7 +189,7 @@ struct SearchClearArgs {
     /// Search data scope to clear
     #[arg(long, value_enum)]
     scope: SearchClearScope,
-    /// Installed source owner whose runtime schemas and surfaces should be cleared
+    /// Installed source whose local search state is cleared
     #[arg(long, value_name = "SOURCE")]
     source: Option<String>,
     /// Set when an explicit global `--workspace NAME` selector is present.
@@ -542,8 +520,6 @@ impl Command {
             Command::Features(_) | Command::Completion(_) | Command::Server => {
                 RequiredRuntime::None
             }
-            #[cfg(feature = "embedded-ui")]
-            Command::Ui(_) => RequiredRuntime::None,
         }
     }
 
@@ -695,89 +671,122 @@ fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<
         .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string())
 }
 
-/// Returns the embedded Coral UI assets for the local server to serve.
-#[cfg(feature = "embedded-ui")]
-#[must_use]
-pub fn embedded_ui_assets() -> Arc<dyn StaticAssetsProvider> {
-    Arc::new(embedded_ui::EmbeddedUi)
-}
-
-/// Opens the given URL in the user's default browser.
-///
-/// # Errors
-///
-/// Returns an error if the platform browser opener fails.
-#[cfg(feature = "embedded-ui")]
-pub fn open_url(url: &str) -> Result<(), std::io::Error> {
-    browser::open_url(url)
-}
-
-#[cfg(feature = "embedded-ui")]
-async fn run_ui(
-    args: UiArgs,
-    feature_overrides: coral_app::features::FeatureOverrides,
-) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_ui_server(args.port, feature_overrides).await?;
-    let endpoint = server.endpoint_uri().to_string();
-
-    println!("Coral UI listening on {endpoint}");
-    if args.no_open {
-        println!("Open {endpoint} manually.");
-    } else {
-        match open_url(&endpoint) {
-            Ok(()) => println!("Opened {endpoint}"),
-            Err(error) => {
-                eprintln!("Could not open browser: {error}");
-                eprintln!("Open {endpoint} manually.");
-            }
-        }
-    }
-    println!("Press Ctrl-C to stop the UI.");
-
-    run_until_server_stops(server, tokio::signal::ctrl_c()).await
-}
-
 async fn run_server(
     feature_overrides: coral_app::features::FeatureOverrides,
 ) -> Result<(), anyhow::Error> {
     let server = bootstrap::start_standalone_server(feature_overrides).await?;
     let endpoint = server.endpoint_uri().to_string();
 
-    if !server_endpoint_is_loopback(&endpoint) {
+    // An endpoint that does not parse back to an address is treated as exposed:
+    // of the two ways to be wrong here, staying silent is the worse one.
+    if server_endpoint_address(&endpoint).is_none_or(server_requires_security_warning) {
         eprintln!(
-            "Warning: the native gRPC server at {endpoint} does not authenticate clients; \
-             any client that can reach the server can access Coral and its configured sources. \
-             Protect it with a trusted network boundary or authenticating proxy."
+            "{}",
+            grpc_exposure_warning(&endpoint, server.grpc_authentication_enabled())
         );
     }
     println!("Coral gRPC server listening on {endpoint}");
+    if let Some(address) = server.mcp_http_addr() {
+        let mcp_endpoint = format!("http://{address}/mcp");
+        if server_requires_security_warning(address) {
+            eprintln!(
+                "{}",
+                mcp_http_exposure_warning(&mcp_endpoint, server.mcp_http_authentication_enabled())
+            );
+        }
+        println!("Coral MCP HTTP server listening on {mcp_endpoint}");
+    }
     println!("Connect clients with CORAL_ENDPOINT={endpoint}");
     println!("Press Ctrl-C to stop the server.");
 
-    run_until_server_stops(server, wait_for_server_shutdown_signal()).await
-}
-
-async fn run_until_server_stops(
-    server: coral_app::RunningServer,
-    shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
-) -> Result<(), anyhow::Error> {
-    let signal = tokio::select! {
-        result = shutdown_signal => Some(result),
-        () = server.wait_for_exit() => None,
-    };
+    let wait = wait_for_shutdown_signal_or_server_exit(
+        server.wait_for_exit(),
+        wait_for_server_shutdown_signal(),
+    )
+    .await;
     let shutdown = server.shutdown().await;
-    if let Some(signal) = signal {
-        signal?;
-    }
+    wait?;
     shutdown?;
     Ok(())
 }
 
-fn server_endpoint_is_loopback(endpoint: &str) -> bool {
+async fn wait_for_shutdown_signal_or_server_exit(
+    server_exit: impl Future<Output = ()>,
+    shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
+) -> Result<(), std::io::Error> {
+    tokio::select! {
+        result = shutdown_signal => result,
+        () = server_exit => Ok(()),
+    }
+}
+
+/// The socket address a listener's endpoint URI names, when it names one.
+fn server_endpoint_address(endpoint: &str) -> Option<SocketAddr> {
     endpoint
         .strip_prefix("http://")
         .and_then(|authority| authority.parse::<SocketAddr>().ok())
-        .is_some_and(|address| address.ip().is_loopback())
+}
+
+/// Reports whether the operator should be told the listener at `address` is exposed.
+///
+/// Binding off loopback is the operator's decision: nothing gates the gRPC
+/// listener, and configuration lets MCP HTTP bind remotely once `[auth]` is set
+/// or the operator opts in with `allow_unauthenticated_non_loopback`. So this
+/// line on stderr is the only notice they get — which is why it fires whether
+/// or not authentication is configured. Coral terminates no TLS: without
+/// `[auth]` anyone reachable gets in, and with it the bearer tokens cross the wire
+/// in cleartext. Both served surfaces run this check because both can end up
+/// exposed; [`grpc_exposure_warning`] and [`mcp_http_exposure_warning`] word each
+/// listener's case.
+///
+/// Loopback is judged by coral-app's [`is_loopback_ip`] rather than by a rule
+/// restated here, IPv4-mapped IPv6 included. That is the same helper the
+/// auth-disabled `server.mcp_http.bind` guard rejects an unconsented remote
+/// bind with — the remote binds that survive resolution are precisely the ones
+/// this warning exists to report — so a bind bootstrap accepts as local is
+/// never reported as exposed, and the notice cannot drift out of step with the
+/// rejection.
+fn server_requires_security_warning(address: SocketAddr) -> bool {
+    !is_loopback_ip(address.ip())
+}
+
+/// The exposure warning for a non-loopback gRPC listener.
+fn grpc_exposure_warning(endpoint: &str, authentication_enabled: bool) -> String {
+    let exposure = if authentication_enabled {
+        "it serves cleartext h2c, so the bearer tokens clients send can be read off the wire"
+    } else {
+        "it does not authenticate clients, so anything that can reach it can access Coral and its configured sources"
+    };
+    format!(
+        "Warning: the native gRPC server at {endpoint} is not bound to loopback and {exposure}. \
+         Terminate TLS in front of Coral and keep untrusted clients off the listener."
+    )
+}
+
+/// The exposure warning for a non-loopback MCP HTTP listener.
+///
+/// The unauthenticated case exists only through the explicit
+/// `server.mcp_http.allow_unauthenticated_non_loopback` opt-in, so the warning
+/// restates what the operator signed up for rather than asking them to stop:
+/// with no credential check on the listener, reachability is the whole access
+/// control, and narrowing reachability (a loopback-only Docker port publish,
+/// a trusted network boundary) is the only thing left to get right.
+fn mcp_http_exposure_warning(endpoint: &str, authentication_enabled: bool) -> String {
+    if authentication_enabled {
+        format!(
+            "Warning: the MCP HTTP server at {endpoint} is not bound to loopback and it serves \
+             cleartext HTTP, so the bearer tokens clients send can be read off the wire. Terminate \
+             TLS in front of Coral and keep untrusted clients off the listener."
+        )
+    } else {
+        format!(
+            "Warning: the MCP HTTP server at {endpoint} is not bound to loopback and does not \
+             authenticate clients, so anything that can reach it can access Coral and its \
+             configured sources with the local user's full authority. Keep the listener \
+             reachable only from trusted machines — in Docker, publish the port to loopback \
+             only (-p 127.0.0.1:PORT:PORT) — or configure [auth] instead."
+        )
+    }
 }
 
 #[cfg(unix)]
@@ -819,11 +828,7 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
-        Command::Server => run_server(feature_overrides.clone())
-            .await
-            .map_err(Into::into),
-        #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => run_ui(args, feature_overrides.clone())
+        Command::Server => Box::pin(run_server(feature_overrides.clone()))
             .await
             .map_err(Into::into),
         Command::Sql(_)
@@ -853,6 +858,8 @@ async fn run_app_command(
                 .execute_sql(Request::new(ExecuteSqlRequest {
                     workspace: Some(workspace.clone()),
                     sql: args.sql,
+                    guide_read_context: None,
+                    task_attribution: None,
                 }))
                 .await
             {
@@ -920,7 +927,6 @@ async fn run_app_command(
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
                     observed_values_search_enabled: features
                         .enabled(coral_app::features::Feature::ObservedValuesSearch),
-                    tasks_enabled: features.enabled(coral_app::features::Feature::Tasks),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
                     query_examples,
@@ -931,10 +937,6 @@ async fn run_app_command(
             .map_err(anyhow::Error::from)?;
         }
         Command::Completion(_) | Command::Features(_) | Command::Server => {
-            unreachable!("no-runtime commands are routed without an app client")
-        }
-        #[cfg(feature = "embedded-ui")]
-        Command::Ui(_) => {
             unreachable!("no-runtime commands are routed without an app client")
         }
     }
@@ -1159,6 +1161,8 @@ async fn run_function(
                 .add_function(Request::new(AddFunctionRequest {
                     workspace: Some(workspace.clone()),
                     sql,
+                    fail_if_exists: false,
+                    write_surface: FunctionWriteSurface::Cli as i32,
                 }))
                 .await
                 .map_err(anyhow::Error::from)?
@@ -1696,6 +1700,8 @@ async fn run_source_add(
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use clap::{CommandFactory, Parser};
     use coral_api::v1::{
         Function, FunctionRuntimeInvalid, FunctionRuntimeReady, TableFunctionResultColumn, function,
@@ -1703,7 +1709,8 @@ mod tests {
 
     use super::{
         Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary,
-        function_status_summary, server_endpoint_is_loopback,
+        function_status_summary, grpc_exposure_warning, mcp_http_exposure_warning,
+        server_endpoint_address, server_requires_security_warning,
     };
 
     #[test]
@@ -1724,38 +1731,72 @@ mod tests {
         }
     }
 
+    /// How `run_server` decides whether the gRPC endpoint warrants a warning.
+    fn endpoint_requires_security_warning(endpoint: &str) -> bool {
+        server_endpoint_address(endpoint).is_none_or(server_requires_security_warning)
+    }
+
+    fn bind_addr(address: &str) -> SocketAddr {
+        address.parse().expect("test address should parse")
+    }
+
     #[test]
     fn server_security_warning_targets_non_loopback_endpoints() {
-        for endpoint in ["http://127.0.0.1:14555", "http://[::1]:14555"] {
+        // Loopback in any spelling coral-app accepts, including the IPv4-mapped
+        // form its `is_loopback_ip` treats as local.
+        for endpoint in [
+            "http://127.0.0.1:14555",
+            "http://[::1]:14555",
+            "http://[::ffff:127.0.0.1]:14555",
+        ] {
             assert!(
-                server_endpoint_is_loopback(endpoint),
+                !endpoint_requires_security_warning(endpoint),
                 "endpoint: {endpoint}"
             );
         }
+        // A remote bind is warned about either way: nothing gates it once auth is
+        // configured, so this is the only notice the operator gets.
         for endpoint in [
             "http://0.0.0.0:14555",
             "http://[::]:14555",
             "http://192.168.1.10:14555",
+            "http://[::ffff:192.168.1.10]:14555",
+            // An endpoint that names no address is warned about rather than
+            // silently trusted.
+            "unix:///tmp/coral.sock",
         ] {
             assert!(
-                !server_endpoint_is_loopback(endpoint),
+                endpoint_requires_security_warning(endpoint),
                 "endpoint: {endpoint}"
             );
         }
-    }
 
-    #[cfg(feature = "embedded-ui")]
-    #[test]
-    fn ui_command_uses_custom_port_without_required_runtime() {
-        let cli = Cli::try_parse_from(["coral", "ui", "--port", "1459", "--no-open"])
-            .expect("ui args should parse");
+        // The MCP HTTP listener carries the same tokens and runs the same check.
+        assert!(server_requires_security_warning(bind_addr("0.0.0.0:14556")));
+        assert!(!server_requires_security_warning(bind_addr(
+            "127.0.0.1:14556"
+        )));
+        assert!(!server_requires_security_warning(bind_addr(
+            "[::ffff:127.0.0.1]:14556"
+        )));
 
-        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
-        let super::Command::Ui(args) = cli.command else {
-            panic!("expected ui command");
-        };
-        assert_eq!(args.port, 1459);
-        assert!(args.no_open);
+        // The wording has to name the right exposure for each case.
+        let unauthenticated = grpc_exposure_warning("http://0.0.0.0:14555", false);
+        assert!(
+            unauthenticated.contains("does not authenticate clients"),
+            "{unauthenticated}"
+        );
+        let authenticated = grpc_exposure_warning("http://0.0.0.0:14555", true);
+        assert!(authenticated.contains("bearer tokens"), "{authenticated}");
+        let mcp = mcp_http_exposure_warning("http://0.0.0.0:14556/mcp", true);
+        assert!(mcp.contains("MCP HTTP server"), "{mcp}");
+        assert!(mcp.contains("cleartext"), "{mcp}");
+        assert!(mcp.contains("bearer tokens"), "{mcp}");
+        // The opted-in unauthenticated bind warns about open access, not tokens
+        // no client sends.
+        let mcp = mcp_http_exposure_warning("http://0.0.0.0:14556/mcp", false);
+        assert!(mcp.contains("does not authenticate clients"), "{mcp}");
+        assert!(mcp.contains("127.0.0.1:PORT"), "{mcp}");
     }
 
     #[test]
@@ -2061,6 +2102,16 @@ mod tests {
         .expect_err("conflicting feature overrides should fail");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn retired_task_feature_flags_are_rejected() {
+        for flag in ["--enable-tasks", "--disable-tasks"] {
+            let error = Cli::try_parse_from(["coral", flag, "mcp-stdio"])
+                .expect_err("retired task feature flag should be rejected");
+
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
     }
 
     #[test]

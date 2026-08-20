@@ -11,8 +11,8 @@ use coral_api::v1::{
     AddFunctionRequest, CatalogItem, CatalogItemKind, ClearSearchDataRequest,
     CreateWorkspaceRequest, DeleteWorkspaceRequest, DrainSearchQueueRequest, ListCatalogRequest,
     PaginationRequest, RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope,
-    SearchFieldRole, SearchIndexProvider, SearchMaintenanceState, SearchProvider,
-    SearchProviderState, SearchRequest, SearchSurfaceKind, TableFunctionKind,
+    SearchIndexProvider, SearchMaintenanceState, SearchProvider, SearchProviderState,
+    SearchRequest, SearchResult as ProtoSearchResult, SearchSurfaceRef, TableFunctionKind,
     ValidateSourceRequest, Workspace, catalog_item, search_clear_target, search_maintenance_result,
     search_result,
 };
@@ -21,8 +21,11 @@ use coral_client::default_workspace;
 use coral_engine::{
     EngineExtensions, QuerySource, SourceDecorator, SourceDecoratorError, SourceTables,
 };
+use rusqlite::OptionalExtension as _;
 use serde_json::json;
 use tonic::{Code, Request};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::harness::{GrpcHarness, manifest_yaml, source_dir};
 
@@ -48,6 +51,10 @@ struct PausingCatalogDecorator {
 impl SourceDecorator for PausingCatalogDecorator {
     fn name(&self) -> &'static str {
         "pausing_catalog_resolution"
+    }
+
+    fn supports_catalog_sources(&self) -> bool {
+        true
     }
 
     fn prepare(&mut self, _selected_sources: &[QuerySource]) -> Result<(), SourceDecoratorError> {
@@ -120,6 +127,7 @@ fn review_queue_function_sql() -> String {
 name: get_review_queue
 schema: github
 description: Get the current viewer's review queue.
+guide: Use this function for review queue lookups.
 */
 
 select
@@ -140,6 +148,7 @@ async fn list_catalog_item(
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(workspace.clone()),
+            catalog_name: String::new(),
             schema_name: schema_name.to_string(),
             kind: kind as i32,
             pagination: Some(PaginationRequest {
@@ -155,35 +164,60 @@ async fn list_catalog_item(
         .find(|item| catalog_item_matches(item, schema_name, item_name))
 }
 
-async fn search_catalog_item(
+async fn search_entry(
     harness: &GrpcHarness,
     workspace: &Workspace,
     schema_name: &str,
     item_name: &str,
-) -> Option<CatalogItem> {
+) -> Option<SearchSurfaceRef> {
+    search_results(harness, workspace, &format!("{schema_name}.{item_name}"))
+        .await
+        .into_iter()
+        .filter_map(|result| result.surface)
+        .find(|entry| entry.schema_name == schema_name && entry.name == item_name)
+}
+
+async fn search_results(
+    harness: &GrpcHarness,
+    workspace: &Workspace,
+    query: &str,
+) -> Vec<ProtoSearchResult> {
     harness
         .search_client()
         .search(Request::new(SearchRequest {
             workspace: Some(workspace.clone()),
-            query: format!("{schema_name}.{item_name}"),
+            query: query.to_string(),
             limit: 50,
         }))
         .await
         .expect("search catalog")
         .into_inner()
         .results
-        .into_iter()
-        .find_map(|result| match result.payload? {
-            search_result::Payload::CatalogMetadata(metadata)
-                if metadata
-                    .item
-                    .as_ref()
-                    .is_some_and(|item| catalog_item_matches(item, schema_name, item_name)) =>
-            {
-                metadata.item
-            }
-            _ => None,
-        })
+}
+
+fn entry_references(results: &[ProtoSearchResult]) -> Vec<String> {
+    results
+        .iter()
+        .filter_map(|result| result.surface.as_ref())
+        .map(|entry| format!("{}.{}", entry.schema_name, entry.name))
+        .collect()
+}
+
+fn field_names(result: &ProtoSearchResult) -> Vec<&str> {
+    match result.shape.as_ref() {
+        Some(search_result::Shape::Table(table)) => table
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect(),
+        Some(search_result::Shape::Function(function)) => function
+            .arguments
+            .iter()
+            .chain(function.returns.iter())
+            .map(|field| field.name.as_str())
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 fn catalog_item_matches(item: &CatalogItem, schema_name: &str, item_name: &str) -> bool {
@@ -221,10 +255,15 @@ async fn search_and_list_catalog_share_runtime_catalog_items() {
         let listed = list_catalog_item(&harness, &workspace, schema_name, item_name, kind)
             .await
             .expect("listed catalog item");
-        let searched = search_catalog_item(&harness, &workspace, schema_name, item_name)
+        let searched = search_entry(&harness, &workspace, schema_name, item_name)
             .await
-            .expect("searched catalog item");
-        assert_eq!(searched, listed, "catalog item {schema_name}.{item_name}");
+            .expect("searched catalog entry");
+        // Search returns an identity the caller can query; list_catalog owns
+        // the full metadata for it.
+        assert!(
+            catalog_item_matches(&listed, &searched.schema_name, &searched.name),
+            "catalog item {schema_name}.{item_name}"
+        );
     }
 }
 
@@ -233,7 +272,7 @@ async fn search_and_list_catalog_share_installed_udf_metadata() {
     let harness = GrpcHarness::new().await;
     let workspace = default_workspace();
 
-    search_catalog_item(&harness, &workspace, "coral", "tables")
+    search_entry(&harness, &workspace, "coral", "tables")
         .await
         .expect("prime catalog search projection");
 
@@ -242,6 +281,8 @@ async fn search_and_list_catalog_share_installed_udf_metadata() {
         .add_function(Request::new(AddFunctionRequest {
             workspace: Some(workspace.clone()),
             sql: review_queue_function_sql(),
+            fail_if_exists: false,
+            write_surface: 0,
         }))
         .await
         .expect("add review queue function");
@@ -269,18 +310,23 @@ async fn search_and_list_catalog_share_installed_udf_metadata() {
     )
     .await
     .expect("listed review queue function");
-    let searched = search_catalog_item(&harness, &workspace, "github", "get_review_queue")
+    let searched = search_entry(&harness, &workspace, "github", "get_review_queue")
         .await
         .expect("searched review queue function");
 
-    assert_eq!(searched, listed);
-    match searched.item {
+    assert_eq!(searched.schema_name, "github");
+    assert_eq!(searched.name, "get_review_queue");
+    // Full function metadata stays with list_catalog; search returns identity.
+    match listed.item {
         Some(catalog_item::Item::TableFunction(function)) => {
+            assert_eq!(
+                function.guide,
+                "Use this function for review queue lookups."
+            );
             assert_eq!(function.arguments[0].name, "viewer");
             assert_eq!(function.result_columns[0].name, "reviewer");
-            assert_eq!(function.result_columns[1].name, "default_queue");
         }
-        Some(catalog_item::Item::Table(_)) | None => panic!("expected table function"),
+        _ => panic!("expected a table function"),
     }
 }
 
@@ -292,6 +338,8 @@ async fn natural_language_review_queue_query_ranks_installed_udf_in_top_three() 
         .add_function(Request::new(AddFunctionRequest {
             workspace: Some(default_workspace()),
             sql: review_queue_function_sql(),
+            fail_if_exists: false,
+            write_surface: 0,
         }))
         .await
         .expect("add review queue function");
@@ -310,13 +358,9 @@ async fn natural_language_review_queue_query_ranks_installed_udf_in_top_three() 
         .results
         .iter()
         .position(|result| {
-            matches!(
-                result.payload.as_ref(),
-                Some(search_result::Payload::CatalogMetadata(metadata))
-                    if metadata.item.as_ref().is_some_and(|item| {
-                        catalog_item_matches(item, "github", "get_review_queue")
-                    })
-            )
+            result.surface.as_ref().is_some_and(|entry| {
+                entry.schema_name == "github" && entry.name == "get_review_queue"
+            })
         })
         .expect("review queue function in default search window");
 
@@ -349,11 +393,15 @@ async fn unified_catalog_keeps_source_metadata_isolated_by_workspace() {
     )
     .await
     .expect("listed default workspace table");
-    let default_searched = search_catalog_item(&harness, &default, "table_preview", "messages")
+    let default_searched = search_entry(&harness, &default, "table_preview", "messages")
         .await
         .expect("searched default workspace table");
 
-    assert_eq!(default_searched, default_listed);
+    assert!(catalog_item_matches(
+        &default_listed,
+        &default_searched.schema_name,
+        &default_searched.name
+    ));
     assert!(
         list_catalog_item(
             &harness,
@@ -366,7 +414,7 @@ async fn unified_catalog_keeps_source_metadata_isolated_by_workspace() {
         .is_none()
     );
     assert!(
-        search_catalog_item(&harness, &work, "table_preview", "messages")
+        search_entry(&harness, &work, "table_preview", "messages")
             .await
             .is_none()
     );
@@ -375,10 +423,14 @@ async fn unified_catalog_keeps_source_metadata_isolated_by_workspace() {
         list_catalog_item(&harness, &work, "coral", "tables", CatalogItemKind::Table)
             .await
             .expect("listed work system table");
-    let searched_work_system_table = search_catalog_item(&harness, &work, "coral", "tables")
+    let searched_work_system_table = search_entry(&harness, &work, "coral", "tables")
         .await
         .expect("searched work system table");
-    assert_eq!(searched_work_system_table, work_system_table);
+    assert!(catalog_item_matches(
+        &work_system_table,
+        &searched_work_system_table.schema_name,
+        &searched_work_system_table.name
+    ));
     match work_system_table.item {
         Some(catalog_item::Item::Table(table)) => {
             assert_eq!(table.workspace.as_ref(), Some(&work));
@@ -427,6 +479,39 @@ async fn search_service_returns_structured_shell_response() {
         SearchProviderState::NotEnabled,
     );
     assert_no_coverage(native_status);
+}
+
+#[test]
+fn search_completes_with_one_blocking_thread() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("build constrained Tokio runtime");
+    let search = runtime.block_on(async {
+        let harness = GrpcHarness::new().await;
+        let search = tokio::time::timeout(
+            Duration::from_secs(5),
+            harness.search_client().search(Request::new(SearchRequest {
+                workspace: Some(default_workspace()),
+                query: "github issue".to_string(),
+                limit: 10,
+            })),
+        )
+        .await;
+        drop(harness);
+        search
+    });
+    // A failed regression must not leave the test process waiting forever for
+    // a blocked task while Tokio tears down its constrained blocking pool.
+    runtime.shutdown_timeout(Duration::from_secs(1));
+
+    let response = search
+        .expect("search should not starve the blocking pool")
+        .expect("search")
+        .into_inner();
+    assert_eq!(response.provider_statuses.len(), 3);
 }
 
 #[tokio::test]
@@ -563,10 +648,38 @@ async fn table_function_proto_exposes_search_metadata() {
         TableFunctionKind::try_from(function.kind).expect("kind"),
         TableFunctionKind::Search
     );
+    assert_eq!(
+        function.guide,
+        "Prefer this provider route for message lookup."
+    );
     let search_limits = function.search_limits.as_ref().expect("search limits");
     assert_eq!(search_limits.default_top_k, 5);
     assert_eq!(search_limits.max_top_k, 20);
     assert_eq!(search_limits.max_calls_per_query, 2);
+}
+
+#[tokio::test]
+async fn search_matches_table_function_guide() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "provider route".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search table function guide")
+        .into_inner();
+
+    assert!(
+        entry_references(&response.results).contains(&"searchable.search_messages".to_string()),
+        "guide match should return the function as a queryable entry"
+    );
 }
 
 #[tokio::test]
@@ -619,35 +732,22 @@ async fn search_returns_catalog_metadata_for_search_functions_and_column_hints()
             .exists(),
         "search should create the workspace SQLite search database"
     );
-    assert!(response.results.iter().any(|result| matches!(
-        result.payload.as_ref(),
-        Some(search_result::Payload::CatalogMetadata(metadata))
-            if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some_and(|item| {
-                match item {
-                    catalog_item::Item::TableFunction(function) =>
-                        function.name == "search_messages"
-                            && TableFunctionKind::try_from(function.kind)
-                                .is_ok_and(|kind| kind == TableFunctionKind::Search)
-                            && function.search_limits.as_ref().is_some_and(|limits| {
-                                limits.default_top_k == 5
-                                    && limits.max_top_k == 20
-                                    && limits.max_calls_per_query == 2
-                            }),
-                    catalog_item::Item::Table(_) => false,
-                }
-            })
-    )));
-    assert!(response.results.iter().any(|result| matches!(
-        result.payload.as_ref(),
-        Some(search_result::Payload::ColumnHint(hint))
-            if hint.surface_name == "search_messages"
-                && hint.name == "title"
-                && SearchSurfaceKind::try_from(hint.surface_kind)
-                    .is_ok_and(|kind| kind == SearchSurfaceKind::TableFunction)
-                && SearchFieldRole::try_from(hint.field_role)
-                    .is_ok_and(|role| role == SearchFieldRole::TableFunctionResultColumn)
-                && hint.data_type == "Utf8"
-    )));
+    let function_result = response
+        .results
+        .iter()
+        .find(|result| {
+            result
+                .surface
+                .as_ref()
+                .is_some_and(|entry| entry.name == "search_messages")
+        })
+        .expect("search function returned as a queryable entry");
+    // The matching result column arrives as a field on the function that owns
+    // it rather than as a peer result.
+    assert!(
+        field_names(function_result).contains(&"title"),
+        "matched result column should nest under its function: {function_result:?}"
+    );
 }
 
 #[tokio::test]
@@ -676,13 +776,10 @@ async fn search_reports_partial_catalog_coverage_and_recovers_after_source_repai
         .expect("search healthy source")
         .into_inner();
     assert!(degraded.results.iter().any(|result| {
-        matches!(
-            result.payload.as_ref(),
-            Some(search_result::Payload::CatalogMetadata(metadata))
-                if metadata.item.as_ref().is_some_and(|item| {
-                    catalog_item_matches(item, "table_preview", "messages")
-                })
-        )
+        result
+            .surface
+            .as_ref()
+            .is_some_and(|entry| entry.schema_name == "table_preview" && entry.name == "messages")
     }));
     let status = assert_provider_state(
         &degraded,
@@ -707,13 +804,9 @@ async fn search_reports_partial_catalog_coverage_and_recovers_after_source_repai
         .expect("search repaired catalog")
         .into_inner();
     assert!(recovered.results.iter().any(|result| {
-        matches!(
-            result.payload.as_ref(),
-            Some(search_result::Payload::CatalogMetadata(metadata))
-                if metadata.item.as_ref().is_some_and(|item| {
-                    catalog_item_matches(item, "searchable", "search_messages")
-                })
-        )
+        result.surface.as_ref().is_some_and(|entry| {
+            entry.schema_name == "searchable" && entry.name == "search_messages"
+        })
     }));
     let status = assert_provider_state(
         &recovered,
@@ -790,13 +883,10 @@ surface:
         .into_inner();
 
     assert!(response.results.iter().any(|result| {
-        matches!(
-            result.payload.as_ref(),
-            Some(search_result::Payload::CatalogMetadata(metadata))
-                if metadata.item.as_ref().is_some_and(|item| {
-                    catalog_item_matches(item, "table_preview", "messages")
-                })
-        )
+        result
+            .surface
+            .as_ref()
+            .is_some_and(|entry| entry.schema_name == "table_preview" && entry.name == "messages")
     }));
     let status = assert_provider_state(
         &response,
@@ -1213,11 +1303,10 @@ async fn clear_search_data_removes_catalog_projection_and_next_search_recreates_
         SearchProviderState::ResultsFound,
     );
     assert!(
-        response.results.iter().any(|result| matches!(
-            result.payload.as_ref(),
-            Some(search_result::Payload::CatalogMetadata(metadata))
-                if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some()
-        )),
+        response
+            .results
+            .iter()
+            .any(|result| result.surface.is_some()),
         "next search should recreate and use the catalog projection"
     );
 }
@@ -1284,6 +1373,76 @@ async fn source_scoped_all_clear_does_not_load_manifest_and_bumps_generation() {
 }
 
 #[tokio::test]
+async fn source_scoped_clear_leaves_the_other_installed_source_intact() {
+    // `github_v4` and `github_mcp_v4` are the two-interfaces-one-provider shape
+    // that #1791 made two independent sources. Clearing one must not disturb
+    // the other, all the way out through the public RPC.
+    let harness = GrpcHarness::new_with_observed_values_search().await;
+    for source_name in ["github_v4", "github_mcp_v4"] {
+        harness
+            .import_source(
+                named_searchable_manifest_yaml(source_name),
+                Vec::new(),
+                Vec::new(),
+            )
+            .await;
+    }
+    harness
+        .search_client()
+        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
+            workspace: Some(default_workspace()),
+            provider: SearchIndexProvider::Catalog as i32,
+            force: false,
+        }))
+        .await
+        .expect("seed catalog projection");
+    let sqlite_path = harness
+        .config_dir()
+        .join("workspaces/default/search/search.sqlite3");
+    let initial_cleared = source_generation(&sqlite_path, "github_v4");
+    let initial_untouched = source_generation(&sqlite_path, "github_mcp_v4");
+
+    let clear = harness
+        .search_client()
+        .clear_search_data(Request::new(ClearSearchDataRequest {
+            workspace: Some(default_workspace()),
+            scope: SearchDataScope::All as i32,
+            target: Some(SearchClearTarget {
+                target: Some(search_clear_target::Target::SourceName(
+                    "github_v4".to_string(),
+                )),
+            }),
+        }))
+        .await
+        .expect("source-scoped clear")
+        .into_inner();
+
+    assert_eq!(clear.results.len(), 2);
+    assert_eq!(
+        source_generation(&sqlite_path, "github_v4"),
+        initial_cleared + 1
+    );
+    assert_eq!(
+        source_generation(&sqlite_path, "github_mcp_v4"),
+        initial_untouched,
+        "clearing github_v4 must not advance the github_mcp_v4 epoch"
+    );
+    let connection = rusqlite::Connection::open(&sqlite_path).expect("open search sqlite");
+    let surviving_catalog_sources: Vec<String> = connection
+        .prepare(
+            "SELECT DISTINCT source_name FROM catalog_documents \
+             WHERE workspace = 'default' AND source_name IN ('github_v4', 'github_mcp_v4') \
+             ORDER BY source_name",
+        )
+        .expect("prepare catalog sources")
+        .query_map([], |row| row.get(0))
+        .expect("query catalog sources")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect catalog sources");
+    assert_eq!(surviving_catalog_sources, ["github_mcp_v4"]);
+}
+
+#[tokio::test]
 async fn search_table_preview_columns_do_not_inherit_table_matched_fields() {
     let harness = GrpcHarness::new().await;
     harness
@@ -1301,43 +1460,102 @@ async fn search_table_preview_columns_do_not_inherit_table_matched_fields() {
         .expect("search")
         .into_inner();
 
-    let metadata = response
+    let result = response
         .results
         .iter()
-        .find_map(|result| {
-            let Some(search_result::Payload::CatalogMetadata(metadata)) = result.payload.as_ref()
-            else {
-                return None;
-            };
-            metadata
-                .item
+        .find(|result| {
+            result
+                .surface
                 .as_ref()
-                .and_then(|item| item.item.as_ref())
-                .is_some_and(|item| {
-                    matches!(item, catalog_item::Item::Table(table) if table.name == "messages")
-                })
-                .then_some(metadata)
+                .is_some_and(|entry| entry.name == "messages")
         })
-        .expect("messages table metadata");
+        .expect("messages table entry");
+    // The table matched on its description, not on any column, so no column is
+    // reported as matching evidence.
     assert!(
-        metadata
-            .matched_fields
-            .iter()
-            .any(|field| field == "description"),
-        "table metadata should explain that the table description matched"
+        field_names(result).is_empty(),
+        "a description match must not present columns as matched evidence: {result:?}"
     );
-    let preview = metadata
-        .table_column_preview
-        .as_ref()
-        .expect("table column preview");
-    assert_eq!(preview.column_count, 2);
+    assert_eq!(
+        result.omitted_matching_field_count, 0,
+        "no matching fields were omitted because none matched"
+    );
+}
+
+#[tokio::test]
+async fn search_groups_observed_values_under_their_table() {
+    let harness = GrpcHarness::new_with_observed_values_search().await;
+    let source = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{ "text": "world" }]
+        })))
+        .mount(&source)
+        .await;
+    harness
+        .import_source(
+            observed_values_manifest_yaml(&source.uri()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    harness
+        .execute_sql_rows("SELECT text FROM observed_fixture.messages")
+        .await;
+
+    let sqlite_path = harness
+        .config_dir()
+        .join("workspaces/default/search/search.sqlite3");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let queued = rusqlite::Connection::open(&sqlite_path)
+                .ok()
+                .and_then(|connection| {
+                    connection
+                        .query_row("SELECT COUNT(*) FROM observed_queue_jobs", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .ok()
+                })
+                .unwrap_or_default();
+            if queued > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("observed-value job should reach the durable queue");
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "world".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search observed values")
+        .into_inner();
+    let result = response
+        .results
+        .iter()
+        .find(|result| {
+            result.surface.as_ref().is_some_and(|surface| {
+                surface.schema_name == "observed_fixture" && surface.name == "messages"
+            })
+        })
+        .expect("observed value should elect its table");
+
     assert!(
-        preview
-            .columns
-            .iter()
-            .all(|column| column.matched_fields.is_empty()),
-        "preview columns should not inherit table-level matched fields"
+        result
+            .providers
+            .contains(&(SearchProvider::ObservedValues as i32))
     );
+    assert!(result.matching_values.iter().any(|values| {
+        values.field == "text" && values.values.iter().any(|value| value == "world")
+    }));
 }
 
 #[tokio::test]
@@ -1362,18 +1580,32 @@ async fn search_provider_coverage_counts_mapped_candidates() {
         .expect("search")
         .into_inner();
 
-    let catalog_status = assert_provider_state(
-        &response,
-        SearchProvider::CatalogMetadata,
-        SearchProviderState::Partial,
-    );
-    let coverage = catalog_status.coverage.as_ref().expect("coverage");
+    // Five columns match, but they belong to one table, so the response holds
+    // one queryable entry rather than one result per matching column.
+    assert_eq!(response.results.len(), 1);
+    let result = response.results.first().expect("records entry");
     assert_eq!(
-        coverage.returned_count,
-        u32::try_from(response.results.len()).expect("result count"),
-        "coverage should count mapped provider candidates, not raw SQLite hits"
+        result.surface.as_ref().map(|entry| entry.name.as_str()),
+        Some("records")
     );
-    assert_eq!(coverage.returned_count, 4);
+
+    let mut matched = field_names(result);
+    matched.sort_unstable();
+    assert_eq!(
+        matched,
+        [
+            "alpha_five",
+            "alpha_four",
+            "alpha_one",
+            "alpha_three",
+            "alpha_two"
+        ],
+        "every matching column should nest under the table that owns it"
+    );
+    assert_eq!(
+        result.omitted_matching_field_count, 0,
+        "five matching fields fit inside the per-entry cap"
+    );
 }
 
 #[tokio::test]
@@ -1564,9 +1796,26 @@ fn catalog_clear_detail(
         .expect("catalog clear detail")
 }
 
+fn source_generation(sqlite_path: &std::path::Path, source_name: &str) -> i64 {
+    rusqlite::Connection::open(sqlite_path)
+        .expect("open search sqlite")
+        .query_row(
+            "SELECT generation FROM observed_source_generations WHERE workspace = 'default' AND source_name = ?1",
+            [source_name],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("source generation query")
+        .unwrap_or(0)
+}
+
 fn searchable_manifest_yaml() -> String {
+    named_searchable_manifest_yaml("searchable")
+}
+
+fn named_searchable_manifest_yaml(source_name: &str) -> String {
     manifest_yaml(&json!({
-        "name": "searchable",
+        "name": source_name,
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
@@ -1575,6 +1824,7 @@ fn searchable_manifest_yaml() -> String {
             "name": "search_messages",
             "kind": "search",
             "description": "Search messages",
+            "guide": "Prefer this provider route for message lookup.",
             "args": [{
                 "name": "query",
                 "required": true,
@@ -1625,6 +1875,29 @@ fn table_preview_manifest_yaml() -> String {
                     "expr": { "kind": "path", "path": ["author"] }
                 }
             ]
+        }]
+    }))
+}
+
+fn observed_values_manifest_yaml(base_url: &str) -> String {
+    manifest_yaml(&json!({
+        "name": "observed_fixture",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "messages",
+            "description": "Observed-value fixture",
+            "request": { "method": "GET", "path": "/messages" },
+            "response": { "rows_path": ["items"] },
+            "pagination": { "mode": "none" },
+            "columns": [{
+                "name": "text",
+                "type": "Utf8",
+                "nullable": false,
+                "expr": { "kind": "path", "path": ["text"] }
+            }]
         }]
     }))
 }

@@ -4,14 +4,16 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use coral_engine::{PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition};
-use coral_spec::{FunctionSpec, parse_function_sql};
+use coral_engine::{
+    CoralSqlFunctionDefinition, PreparedQueryRuntime, QueryRuntimeConfig, QuerySource,
+};
+use coral_spec::{FunctionSpec, parse_function_artifact as parse_authored_function_artifact};
 
 use crate::bootstrap::AppError;
-use crate::functions::model::{FunctionName, InstalledFunction};
+use crate::functions::model::{FunctionName, FunctionWriteSurface, InstalledFunction};
 use crate::functions::runtime::{
     infer_runtime_function, infer_runtime_functions, infer_runtime_functions_in_prepared_runtime,
-    runtime_function_without_signature,
+    lower_runtime_function_without_signature,
 };
 use crate::functions::store::{FsFunctionArtifactStore, FunctionArtifactStore};
 use crate::functions::validation::{
@@ -30,6 +32,7 @@ pub(crate) struct FunctionManager {
 
 struct FunctionArtifact {
     name: FunctionName,
+    write_surface: FunctionWriteSurface,
     content: FunctionArtifactContent,
 }
 
@@ -42,17 +45,25 @@ enum FunctionArtifactContent {
 pub(crate) struct FunctionListing {
     /// Stable installed inventory name.
     pub(crate) name: FunctionName,
+    /// Coral surface that wrote the current function definition.
+    pub(crate) write_surface: FunctionWriteSurface,
     /// Current runtime state for this installed function.
     pub(crate) runtime: FunctionRuntimeStatus,
 }
 
 pub(crate) enum FunctionRuntimeStatus {
-    Ready(UdfRuntimeDefinition),
+    Ready(Box<CoralSqlFunctionDefinition>),
     Invalid(String),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum FunctionInstallMode {
+    CreateOnly,
+    ReplaceExisting,
+}
+
 pub(crate) enum ValidatedFunctionInstall {
-    Installed,
+    Installed { replaced: bool },
     WorkspaceChanged,
 }
 
@@ -60,7 +71,8 @@ enum FunctionCandidate {
     Listing(FunctionListing),
     Pending {
         name: FunctionName,
-        definition: UdfRuntimeDefinition,
+        write_surface: FunctionWriteSurface,
+        definition: Box<CoralSqlFunctionDefinition>,
     },
 }
 
@@ -86,30 +98,52 @@ impl FunctionManager {
     pub(crate) fn install_validated_user_function(
         &self,
         workspace_name: &WorkspaceName,
-        raw_sql: &str,
-        runtime_function: &UdfRuntimeDefinition,
+        artifact: &str,
+        runtime_function: &CoralSqlFunctionDefinition,
     ) -> Result<InstalledFunction, AppError> {
-        let function_name = validated_function_name(raw_sql, runtime_function)?;
-        self.install_user_function_artifact(workspace_name, &function_name, raw_sql)
-    }
-
-    pub(crate) fn install_validated_user_function_if_unchanged(
-        &self,
-        workspace_name: &WorkspaceName,
-        raw_sql: &str,
-        runtime_function: &UdfRuntimeDefinition,
-        revision: WorkspaceLifecycleRevision,
-    ) -> Result<ValidatedFunctionInstall, AppError> {
-        let function_name = validated_function_name(raw_sql, runtime_function)?;
-        let Some(_lifecycle_guard) = self.lifecycle_lock.lock_if_unchanged(revision) else {
-            return Ok(ValidatedFunctionInstall::WorkspaceChanged);
-        };
-        self.install_user_function_artifact_with_lifecycle_lock(
+        let function_name = validated_function_name(artifact, runtime_function)?;
+        self.install_user_function_artifact(
             workspace_name,
             &function_name,
-            raw_sql,
+            artifact,
+            FunctionInstallMode::ReplaceExisting,
+            FunctionWriteSurface::Unknown,
         )?;
-        Ok(ValidatedFunctionInstall::Installed)
+        Ok(InstalledFunction {
+            name: function_name,
+            write_surface: FunctionWriteSurface::Unknown,
+        })
+    }
+
+    pub(crate) async fn install_validated_user_function_if_unchanged(
+        &self,
+        workspace_name: &WorkspaceName,
+        artifact: &str,
+        runtime_function: &CoralSqlFunctionDefinition,
+        revision: WorkspaceLifecycleRevision,
+        mode: FunctionInstallMode,
+        write_surface: FunctionWriteSurface,
+    ) -> Result<ValidatedFunctionInstall, AppError> {
+        let function_name = validated_function_name(artifact, runtime_function)?;
+        let manager = self.clone();
+        let operation_workspace_name = workspace_name.clone();
+        let artifact = artifact.to_string();
+        let Some(replaced) = self
+            .lifecycle_lock
+            .run_blocking_workspace_write_if_unchanged(revision, workspace_name, move || {
+                manager.install_user_function_artifact_with_lifecycle_lock(
+                    &operation_workspace_name,
+                    &function_name,
+                    &artifact,
+                    mode,
+                    write_surface,
+                )
+            })
+            .await?
+        else {
+            return Ok(ValidatedFunctionInstall::WorkspaceChanged);
+        };
+        Ok(ValidatedFunctionInstall::Installed { replaced })
     }
 
     #[cfg(test)]
@@ -117,13 +151,17 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
-        raw_sql: &str,
-    ) -> Result<InstalledFunction, AppError> {
+        artifact: &str,
+        mode: FunctionInstallMode,
+        write_surface: FunctionWriteSurface,
+    ) -> Result<bool, AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
         self.install_user_function_artifact_with_lifecycle_lock(
             workspace_name,
             function_name,
-            raw_sql,
+            artifact,
+            mode,
+            write_surface,
         )
     }
 
@@ -131,43 +169,61 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
-        raw_sql: &str,
-    ) -> Result<InstalledFunction, AppError> {
+        artifact: &str,
+        mode: FunctionInstallMode,
+        write_surface: FunctionWriteSurface,
+    ) -> Result<bool, AppError> {
         let _state_lock = self.config_store.state_lock_exclusive()?;
+        if matches!(mode, FunctionInstallMode::CreateOnly) {
+            match self
+                .config_store
+                .get_function_unlocked(workspace_name, function_name)
+            {
+                Ok(_existing) => {
+                    return Err(AppError::FunctionAlreadyExists(function_name.to_string()));
+                }
+                Err(AppError::FunctionNotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let installed = InstalledFunction {
             name: function_name.clone(),
+            write_surface,
         };
 
         let previous_artifact =
             self.artifacts
-                .write_user_function_artifact(workspace_name, function_name, raw_sql)?;
-        if let Err(error) = self
+                .write_user_function_artifact(workspace_name, function_name, artifact)?;
+        let replaced = match self
             .config_store
-            .upsert_function_unlocked(workspace_name, installed.clone())
+            .upsert_function_unlocked(workspace_name, installed)
         {
-            if let Err(restore_error) = self.artifacts.restore_user_function_artifact(
-                workspace_name,
-                function_name,
-                &previous_artifact,
-            ) {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to install function '{function_name}': {error}; failed to restore function artifact: {restore_error}"
-                )));
+            Ok(replaced) => replaced,
+            Err(error) => {
+                if let Err(restore_error) = self.artifacts.restore_user_function_artifact(
+                    workspace_name,
+                    function_name,
+                    &previous_artifact,
+                ) {
+                    return Err(AppError::FailedPrecondition(format!(
+                        "failed to install function '{function_name}': {error}; failed to restore function artifact: {restore_error}"
+                    )));
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
 
-        Ok(installed)
+        Ok(replaced)
     }
 
-    pub(crate) async fn validate_user_function_sql(
+    pub(crate) async fn validate_user_function_artifact(
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
         mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
-        raw_sql: &str,
-    ) -> Result<UdfRuntimeDefinition, AppError> {
-        let function = parse_function_sql(raw_sql).map_err(|error| {
+        artifact: &str,
+    ) -> Result<CoralSqlFunctionDefinition, AppError> {
+        let function = parse_authored_function_artifact(artifact).map_err(|error| {
             AppError::InvalidInput(format!("function validation failed: {error}"))
         })?;
         let function_name = FunctionName::parse(function.name())?;
@@ -178,7 +234,7 @@ impl FunctionManager {
             &mut sql_publish_targets,
         )?;
         let runtime_function =
-            infer_runtime_function(selected_sources, runtime_config()?, &function).await?;
+            infer_runtime_function(selected_sources, &mut runtime_config, &function).await?;
         record_sql_publish_target(&runtime_function, &mut sql_publish_targets)?;
         Ok(runtime_function)
     }
@@ -200,7 +256,7 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
         runtime: &PreparedQueryRuntime,
-    ) -> Result<Vec<UdfRuntimeDefinition>, AppError> {
+    ) -> Result<Vec<CoralSqlFunctionDefinition>, AppError> {
         let listings = self
             .evaluate_function_listings(workspace_name, selected_sources, |pending| {
                 infer_runtime_functions_in_prepared_runtime(runtime, pending)
@@ -209,7 +265,7 @@ impl FunctionManager {
         let mut definitions = Vec::new();
         for listing in listings {
             match listing.runtime {
-                FunctionRuntimeStatus::Ready(definition) => definitions.push(definition),
+                FunctionRuntimeStatus::Ready(definition) => definitions.push(*definition),
                 FunctionRuntimeStatus::Invalid(error) => tracing::warn!(
                     function = %listing.name,
                     detail = %error,
@@ -227,8 +283,9 @@ impl FunctionManager {
         infer: Infer,
     ) -> Result<Vec<FunctionListing>, AppError>
     where
-        Infer: FnOnce(Vec<UdfRuntimeDefinition>) -> InferFuture,
-        InferFuture: Future<Output = Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError>>,
+        Infer: FnOnce(Vec<CoralSqlFunctionDefinition>) -> InferFuture,
+        InferFuture:
+            Future<Output = Result<Vec<Result<CoralSqlFunctionDefinition, AppError>>, AppError>>,
     {
         let artifacts = self.load_function_artifacts(workspace_name)?;
         if artifacts.is_empty() {
@@ -244,12 +301,23 @@ impl FunctionManager {
                 Err(error) => {
                     candidates.push(FunctionCandidate::Listing(invalid_listing(
                         artifact.name,
+                        artifact.write_surface,
                         error,
                     )));
                     continue;
                 }
             };
-            let runtime_function = runtime_function_without_signature(&spec);
+            let runtime_function = match lower_runtime_function_without_signature(&spec) {
+                Ok(runtime_function) => runtime_function,
+                Err(error) => {
+                    candidates.push(FunctionCandidate::Listing(invalid_listing(
+                        artifact.name,
+                        artifact.write_surface,
+                        error.to_string(),
+                    )));
+                    continue;
+                }
+            };
             let unchecked_source_schemas =
                 unchecked_source_publish_schemas(&runtime_function, &checked_source_schemas);
             if !unchecked_source_schemas.is_empty() {
@@ -261,14 +329,15 @@ impl FunctionManager {
             }
             candidates.push(FunctionCandidate::Pending {
                 name: artifact.name,
-                definition: runtime_function,
+                write_surface: artifact.write_surface,
+                definition: Box::new(runtime_function),
             });
         }
 
         let pending = candidates
             .iter()
             .filter_map(|candidate| match candidate {
-                FunctionCandidate::Pending { definition, .. } => Some(definition.clone()),
+                FunctionCandidate::Pending { definition, .. } => Some(definition.as_ref().clone()),
                 FunctionCandidate::Listing(_) => None,
             })
             .collect::<Vec<_>>();
@@ -283,14 +352,20 @@ impl FunctionManager {
             .into_iter()
             .map(|candidate| match candidate {
                 FunctionCandidate::Listing(listing) => Ok(listing),
-                FunctionCandidate::Pending { name, .. } => match inferred.next() {
+                FunctionCandidate::Pending {
+                    name,
+                    write_surface,
+                    ..
+                } => match inferred.next() {
                     Some(Ok(definition)) => {
                         match record_sql_publish_target(&definition, &mut sql_publish_targets) {
-                            Ok(()) => Ok(ready_listing(name, definition)),
-                            Err(error) => Ok(invalid_listing(name, error.to_string())),
+                            Ok(()) => Ok(ready_listing(name, write_surface, definition)),
+                            Err(error) => {
+                                Ok(invalid_listing(name, write_surface, error.to_string()))
+                            }
                         }
                     }
-                    Some(Err(error)) => Ok(invalid_listing(name, error.to_string())),
+                    Some(Err(error)) => Ok(invalid_listing(name, write_surface, error.to_string())),
                     None => Err(AppError::FailedPrecondition(
                         "function runtime validation returned too few results".to_string(),
                     )),
@@ -299,12 +374,26 @@ impl FunctionManager {
             .collect()
     }
 
-    pub(crate) fn remove_user_function(
+    pub(crate) async fn remove_user_function(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
     ) -> Result<(), AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let manager = self.clone();
+        let workspace_name = workspace_name.clone();
+        let function_name = function_name.clone();
+        self.lifecycle_lock
+            .run_blocking_write(move || {
+                manager.remove_user_function_with_lifecycle_lock(&workspace_name, &function_name)
+            })
+            .await
+    }
+
+    fn remove_user_function_with_lifecycle_lock(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<(), AppError> {
         let _state_lock = self.config_store.state_lock_exclusive()?;
         self.config_store
             .get_function_unlocked(workspace_name, function_name)?;
@@ -354,6 +443,7 @@ impl FunctionManager {
             let function_name = installed.name;
             artifacts.push(FunctionArtifact {
                 name: function_name,
+                write_surface: installed.write_surface,
                 content,
             });
         }
@@ -383,7 +473,17 @@ impl FunctionManager {
                     continue;
                 }
             };
-            let runtime_function = runtime_function_without_signature(&spec);
+            let runtime_function = match lower_runtime_function_without_signature(&spec) {
+                Ok(runtime_function) => runtime_function,
+                Err(error) => {
+                    tracing::warn!(
+                        function = %artifact.name,
+                        detail = %error,
+                        "ignoring unsupported installed function during publish collision validation"
+                    );
+                    continue;
+                }
+            };
             record_sql_publish_target(&runtime_function, publish_targets)?;
         }
         Ok(())
@@ -391,10 +491,10 @@ impl FunctionManager {
 }
 
 fn validated_function_name(
-    raw_sql: &str,
-    runtime_function: &UdfRuntimeDefinition,
+    artifact: &str,
+    runtime_function: &CoralSqlFunctionDefinition,
 ) -> Result<FunctionName, AppError> {
-    let function = parse_function_sql(raw_sql)
+    let function = parse_authored_function_artifact(artifact)
         .map_err(|error| AppError::InvalidInput(format!("function validation failed: {error}")))?;
     let function_name = FunctionName::parse(function.name())?;
     if function_name.as_str() != runtime_function.name {
@@ -407,12 +507,12 @@ fn validated_function_name(
 }
 
 fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, String> {
-    let raw_sql = match &artifact.content {
-        FunctionArtifactContent::Sql(raw_sql) => raw_sql,
+    let content = match &artifact.content {
+        FunctionArtifactContent::Sql(content) => content,
         FunctionArtifactContent::Unavailable(error) => return Err(error.clone()),
     };
-    let spec =
-        parse_function_sql(raw_sql).map_err(|error| format!("function is invalid: {error}"))?;
+    let spec = parse_authored_function_artifact(content)
+        .map_err(|error| format!("function is invalid: {error}"))?;
     let declared_name = FunctionName::parse(spec.name()).map_err(|error| error.to_string())?;
     if declared_name != artifact.name {
         return Err(format!(
@@ -423,16 +523,26 @@ fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, 
     Ok(spec)
 }
 
-fn ready_listing(name: FunctionName, definition: UdfRuntimeDefinition) -> FunctionListing {
+fn ready_listing(
+    name: FunctionName,
+    write_surface: FunctionWriteSurface,
+    definition: CoralSqlFunctionDefinition,
+) -> FunctionListing {
     FunctionListing {
         name,
-        runtime: FunctionRuntimeStatus::Ready(definition),
+        write_surface,
+        runtime: FunctionRuntimeStatus::Ready(Box::new(definition)),
     }
 }
 
-fn invalid_listing(name: FunctionName, error: String) -> FunctionListing {
+fn invalid_listing(
+    name: FunctionName,
+    write_surface: FunctionWriteSurface,
+    error: String,
+) -> FunctionListing {
     FunctionListing {
         name,
+        write_surface,
         runtime: FunctionRuntimeStatus::Invalid(error),
     }
 }
@@ -493,9 +603,32 @@ select 1 as id
         )
     }
 
-    fn validated_function(raw_sql: &str) -> UdfRuntimeDefinition {
-        let spec = parse_function_sql(raw_sql).expect("function spec");
-        runtime_function_without_signature(&spec)
+    fn typescript_function(name: &str) -> String {
+        format!(
+            r"/*
+name: {name}
+schema: functions
+description: Test TypeScript function
+language: typescript
+signature:
+  arguments:
+    - name: owner
+      data_type: Utf8
+  result_columns:
+    - name: title
+      data_type: Utf8
+*/
+
+export async function run(owner: string): Promise<string> {{
+  return `queue for ${{owner}}`;
+}}
+"
+        )
+    }
+
+    fn validated_function(artifact: &str) -> CoralSqlFunctionDefinition {
+        let spec = parse_authored_function_artifact(artifact).expect("function spec");
+        lower_runtime_function_without_signature(&spec).expect("supported function")
     }
 
     #[derive(Clone)]
@@ -611,6 +744,94 @@ select 1 as id
         assert_eq!(runtime_builds.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn sql_lowering_uses_generic_group_as_sql_schema() {
+        let artifact = function_sql_with_publish("review_queue", "github.review_queue");
+        let spec = parse_authored_function_artifact(&artifact).expect("function spec");
+
+        let definition =
+            lower_runtime_function_without_signature(&spec).expect("SQL lowering should succeed");
+
+        assert_eq!(spec.group(), "github");
+        assert_eq!(definition.publish.schema, "github");
+        assert_eq!(definition.publish.name, "review_queue");
+    }
+
+    #[tokio::test]
+    async fn unsupported_function_does_not_enter_inference_or_persistence() {
+        let (_temp, layout, config_store, manager) = fixture();
+        let workspace = workspace();
+        let artifact = typescript_function("review_queue");
+        let runtime_builds = std::sync::atomic::AtomicUsize::new(0);
+
+        let error = manager
+            .validate_user_function_artifact(
+                &workspace,
+                &[],
+                || {
+                    runtime_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(QueryRuntimeConfig::default())
+                },
+                &artifact,
+            )
+            .await
+            .expect_err("TypeScript should be rejected before inference");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no TypeScript executor is available")
+        );
+        assert_eq!(runtime_builds.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            config_store
+                .list_workspace_functions(&workspace)
+                .expect("list inventory")
+                .is_empty()
+        );
+        let function_name = FunctionName::parse("review_queue").expect("function name");
+        assert!(!layout.function_dir(&workspace, &function_name).exists());
+    }
+
+    #[tokio::test]
+    async fn manually_present_unsupported_function_is_invalid_without_inference() {
+        let (_temp, _layout, config_store, manager) = fixture();
+        let workspace = workspace();
+        let function_name = FunctionName::parse("review_queue").expect("function name");
+        manager
+            .install_user_function_artifact(
+                &workspace,
+                &function_name,
+                &typescript_function("review_queue"),
+                FunctionInstallMode::ReplaceExisting,
+                FunctionWriteSurface::Unknown,
+            )
+            .expect("manually install artifact");
+        let runtime_builds = std::sync::atomic::AtomicUsize::new(0);
+
+        let listed = manager
+            .list_functions(&workspace, &[], || {
+                runtime_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(QueryRuntimeConfig::default())
+            })
+            .await
+            .expect("list functions");
+
+        assert_eq!(runtime_builds.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let listing = listed.first().expect("installed function remains visible");
+        let FunctionRuntimeStatus::Invalid(error) = &listing.runtime else {
+            panic!("unsupported function should be invalid");
+        };
+        assert!(error.contains("no TypeScript executor is available"));
+        assert_eq!(
+            config_store
+                .list_workspace_functions(&workspace)
+                .expect("list inventory")
+                .len(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn list_functions_keeps_runtime_invalid_artifacts_visible() {
         let (_temp, layout, _config_store, manager) = fixture();
@@ -664,6 +885,7 @@ select 1 as id
         assert!(error.contains("declares name 'renamed'"));
         manager
             .remove_user_function(&workspace, &installed.name)
+            .await
             .expect("inventory name remains removable");
     }
 
@@ -677,7 +899,7 @@ select 1 as id
             .expect("remove existing artifact");
 
         let validated = manager
-            .validate_user_function_sql(
+            .validate_user_function_artifact(
                 &workspace,
                 &[],
                 || Ok(QueryRuntimeConfig::default()),
@@ -710,8 +932,8 @@ select 1 as id
         assert_eq!(runtime_function.result_columns.len(), 1);
     }
 
-    #[test]
-    fn remove_user_function_removes_inventory_and_artifacts() {
+    #[tokio::test]
+    async fn remove_user_function_removes_inventory_and_artifacts() {
         let (_temp, layout, config_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
@@ -719,6 +941,7 @@ select 1 as id
 
         manager
             .remove_user_function(&workspace, &installed.name)
+            .await
             .expect("remove function");
 
         assert!(
@@ -733,13 +956,14 @@ select 1 as id
         );
     }
 
-    #[test]
-    fn remove_user_function_reports_typed_missing_function() {
+    #[tokio::test]
+    async fn remove_user_function_reports_typed_missing_function() {
         let (_temp, _layout, _config_store, manager) = fixture();
         let function_name = FunctionName::parse("missing").expect("function name");
 
         let error = manager
             .remove_user_function(&workspace(), &function_name)
+            .await
             .expect_err("missing function should fail");
 
         assert!(matches!(

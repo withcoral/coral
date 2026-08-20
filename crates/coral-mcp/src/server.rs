@@ -1,16 +1,19 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
+use std::sync::Arc;
+
 use coral_api::v1::{
-    CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
-    EndTaskRequest, ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, PaginationRequest, SearchRequest, Source, StartTaskRequest,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
-    catalog_item,
+    AddFunctionRequest, CatalogItemKind as ProtoCatalogItemKind, DescribeCatalogSurfaceRequest,
+    DescribeCatalogSurfaceResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
+    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
+    PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
+    SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    TaskAttribution as ProtoTaskAttribution, TaskStatus as ProtoTaskStatus, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient, TaskClient,
-    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
-    search_response_json_value, with_task_metadata,
+    AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchClient,
+    SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
+    default_workspace, search_response_json_value, with_task_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -27,19 +30,23 @@ use tonic::{
     Request,
     metadata::{Ascii, MetadataValue},
 };
+use tracing::Instrument as _;
 
 use crate::{
     McpOptions, McpQueryExample,
+    guide_block::GuideBlockState,
     surface::{
-        CatalogToolKind, EndTaskArguments, FeedbackStoredValue, SqlBatchValue, SqlQueryResultValue,
-        StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
-        ToolDescriptionContext, ToolName, available_tools, build_tool_result,
-        describe_table_arguments, describe_table_value, end_task_arguments, feedback_arguments,
-        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
-        list_catalog_value, list_columns_arguments, list_columns_table_fallback_value,
-        list_columns_value, required_task_id_argument, required_tool_intent_argument,
-        search_arguments, sql_arguments, start_task_arguments, status_to_error_data,
-        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
+        AddFunctionArguments, CatalogToolKind, EndTaskArguments, FeedbackStoredValue,
+        SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, StartTaskArguments,
+        TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
+        ToolDescriptionContext, ToolName, add_function_arguments, available_tools,
+        build_tool_result, describe_arguments, describe_value, end_task_arguments,
+        feedback_arguments, function_added_value, guide_resource, guide_resource_content,
+        initial_instructions, list_catalog_arguments, list_catalog_value, list_columns_arguments,
+        list_columns_value, render_function_artifact, required_task_id_argument,
+        required_tool_intent_argument, search_arguments, sql_arguments, start_task_arguments,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -53,15 +60,30 @@ const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
 
 enum ToolCallOutcome {
     Payload(Value),
-    SqlBatch(SqlBatchValue),
+    Sql(SqlBatchExecution),
     ToolError {
         operation: &'static str,
         status: tonic::Status,
     },
 }
 
+enum SqlBatchOutput {
+    Executed(SqlBatchValue),
+    GuideBlocked(SqlGuideBlockValue),
+}
+
+struct SqlBatchExecution {
+    output: SqlBatchOutput,
+    task_gate: tokio::sync::OwnedMutexGuard<()>,
+}
+
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
+}
+
+enum QueryRows {
+    Rows(Vec<Value>),
+    GuideRequired(Vec<SqlGuideValue>),
 }
 
 fn task_id_from_backend_response(
@@ -82,7 +104,7 @@ fn task_started_value(task: &coral_api::v1::Task) -> Result<TaskStartedValue, to
     Ok(TaskStartedValue {
         task_id,
         message: "Task started.",
-        instructions: "Pass this task_id as task_id on subsequent Coral MCP tool calls for this work, then call end_task when the task is complete.",
+        instructions: "Pass this task_id plus a concise intent for the specific operation on each subsequent Coral data or enabled-feedback call, then call end_task when the task is complete.",
     })
 }
 
@@ -116,10 +138,26 @@ impl ToolCallOutcome {
     }
 }
 
+#[derive(Debug)]
+struct ToolIntent(String);
+
+impl ToolIntent {
+    fn from_tool_request(
+        arguments: Option<&Map<String, Value>>,
+        key: &str,
+    ) -> Result<Self, ErrorData> {
+        required_tool_intent_argument(arguments, key).map(Self)
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Default)]
 struct TaskCallContext {
     task_id: Option<TaskId>,
-    task_id_metadata: Option<MetadataValue<Ascii>>,
+    tool_intent: Option<ToolIntent>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,28 +191,17 @@ impl TaskCallContext {
         if requirement == TaskContextRequirement::None {
             return Ok(Self::default());
         }
-        if requirement.requires_intent() {
-            required_tool_intent_argument(arguments, "intent")?;
-        }
+        let intent = requirement
+            .requires_intent()
+            .then(|| ToolIntent::from_tool_request(arguments, "intent"))
+            .transpose()?;
         let task_id = requirement
             .requires_task_id()
             .then(|| required_task_id_argument(arguments, "task_id"))
             .transpose()?;
-        let task_id_metadata = task_id
-            .as_ref()
-            .map(ToString::to_string)
-            .map(|task_id| {
-                task_id.parse().map_err(|error| {
-                    ErrorData::invalid_params(
-                        format!("argument 'task_id' is not valid metadata: {error}"),
-                        None,
-                    )
-                })
-            })
-            .transpose()?;
         Ok(Self {
             task_id,
-            task_id_metadata,
+            tool_intent: intent,
         })
     }
 
@@ -184,20 +211,34 @@ impl TaskCallContext {
         }
     }
 
-    fn into_metadata(self) -> Option<MetadataValue<Ascii>> {
-        self.task_id_metadata
+    fn task_id(&self) -> Option<TaskId> {
+        self.task_id
+    }
+
+    fn task_id_metadata(&self) -> Option<MetadataValue<Ascii>> {
+        self.task_id.map(|task_id| {
+            task_id
+                .to_string()
+                .parse()
+                .expect("UUID task ids are valid ASCII metadata")
+        })
+    }
+
+    fn query_attribution_proto(&self) -> Option<ProtoTaskAttribution> {
+        Some(ProtoTaskAttribution {
+            task_id: self.task_id?.to_string(),
+            intent: self.tool_intent.as_ref()?.as_str().to_string(),
+        })
     }
 }
 
 fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskContextRequirement {
-    if !options.tasks_enabled {
-        return TaskContextRequirement::None;
-    }
     match tool_name {
         ToolName::Sql
+        | ToolName::AddFunction
         | ToolName::Search
         | ToolName::ListCatalog
-        | ToolName::DescribeTable
+        | ToolName::Describe
         | ToolName::ListColumns => TaskContextRequirement::TaskIdAndIntent,
         ToolName::StartTask => TaskContextRequirement::Intent,
         ToolName::EndTask => TaskContextRequirement::TaskId,
@@ -208,9 +249,10 @@ fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskCo
 
 /// Cloneable factory for constructing an independent MCP handler per session.
 #[derive(Clone)]
-pub struct CoralMcpServerFactory {
+pub(crate) struct CoralMcpServerFactory {
     app: AppClient,
     options: McpOptions,
+    guide_block: Arc<GuideBlockState>,
 }
 
 impl CoralMcpServerFactory {
@@ -222,14 +264,24 @@ impl CoralMcpServerFactory {
     /// transport must use a client bound to the validated session and must not
     /// fall back to a shared unauthenticated client.
     #[must_use]
-    pub fn new(app: AppClient, options: McpOptions) -> Self {
-        Self { app, options }
+    pub(crate) fn new(app: AppClient, options: McpOptions) -> Self {
+        Self {
+            app,
+            options,
+            guide_block: Arc::new(GuideBlockState::default()),
+        }
     }
 
     /// Constructs a fresh handler for one MCP session.
+    ///
+    /// Handlers from this factory share task-scoped guide-block state.
     #[must_use]
-    pub fn create(&self) -> impl ServerHandler + Clone + use<> {
-        CoralMcpServer::new(&self.app, self.options.clone())
+    pub(crate) fn create(&self) -> impl ServerHandler + Clone + use<> {
+        CoralMcpServer::new(
+            &self.app,
+            self.options.clone(),
+            Arc::clone(&self.guide_block),
+        )
     }
 }
 
@@ -239,8 +291,10 @@ pub(crate) struct CoralMcpServer {
     catalog: CatalogClient,
     query: QueryClient,
     search: SearchClient,
+    function: FunctionClient,
     feedback: FeedbackClient,
     task: TaskClient,
+    guide_block: Arc<GuideBlockState>,
     startup_context: McpStartupContext,
     options: McpOptions,
 }
@@ -284,23 +338,26 @@ impl McpStartupContext {
 }
 
 impl CoralMcpServer {
-    fn new(app: &AppClient, options: McpOptions) -> Self {
+    fn new(app: &AppClient, options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
         let startup_context = McpStartupContext::from_options(&options);
-        Self::new_with_startup_context(app, options, startup_context)
+        Self::new_with_startup_context(app, options, startup_context, guide_block)
     }
 
     fn new_with_startup_context(
         app: &AppClient,
         options: McpOptions,
         startup_context: McpStartupContext,
+        guide_block: Arc<GuideBlockState>,
     ) -> Self {
         Self {
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
             search: app.search_client(),
+            function: app.function_client(),
             feedback: app.feedback_client(),
             task: app.task_client(),
+            guide_block,
             startup_context,
             options,
         }
@@ -308,13 +365,8 @@ impl CoralMcpServer {
 
     fn tool_allowed(&self, tool: ToolName) -> bool {
         match tool {
-            ToolName::Sql
-            | ToolName::Search
-            | ToolName::ListCatalog
-            | ToolName::DescribeTable
-            | ToolName::ListColumns => true,
-            ToolName::StartTask | ToolName::EndTask => self.options.tasks_enabled,
             ToolName::Feedback => self.options.feedback_enabled,
+            _ => true,
         }
     }
 
@@ -338,6 +390,7 @@ impl CoralMcpServer {
 
     async fn load_catalog(
         &self,
+        catalog_name: Option<&str>,
         schema_name: Option<&str>,
         kind: ProtoCatalogItemKind,
         pagination: PaginationRequest,
@@ -346,6 +399,7 @@ impl CoralMcpServer {
         Ok(catalog_client
             .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(self.workspace()),
+                catalog_name: catalog_name.unwrap_or_default().to_string(),
                 schema_name: schema_name.unwrap_or_default().to_string(),
                 kind: kind as i32,
                 pagination: Some(pagination),
@@ -356,6 +410,7 @@ impl CoralMcpServer {
 
     async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         self.load_catalog(
+            None,
             None,
             CATALOG_KIND_TABLE,
             PaginationRequest {
@@ -381,6 +436,7 @@ impl CoralMcpServer {
     ) -> Result<(Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
         self.load_catalog(
             None,
+            None,
             CATALOG_KIND_ALL,
             PaginationRequest {
                 limit: LIST_CATALOG_UNBOUNDED_LIMIT,
@@ -391,17 +447,19 @@ impl CoralMcpServer {
         .map(guide_catalog_from_response)
     }
 
-    async fn load_table_description(
+    async fn load_catalog_surface_description(
         &self,
+        catalog_name: Option<&str>,
         schema_name: &str,
-        table_name: &str,
-    ) -> Result<DescribeTableResponse, tonic::Status> {
+        surface_name: &str,
+    ) -> Result<DescribeCatalogSurfaceResponse, tonic::Status> {
         let mut catalog_client = self.catalog.clone();
         Ok(catalog_client
-            .describe_table(Request::new(DescribeTableRequest {
+            .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
                 workspace: Some(self.workspace()),
+                catalog_name: catalog_name.unwrap_or_default().to_string(),
                 schema_name: schema_name.to_string(),
-                table_name: table_name.to_string(),
+                surface_name: surface_name.to_string(),
             }))
             .await?
             .into_inner())
@@ -411,6 +469,7 @@ impl CoralMcpServer {
         // One item is enough: the app returns per-kind counts before pagination.
         let response = self
             .load_catalog(
+                None,
                 None,
                 CATALOG_KIND_ALL,
                 PaginationRequest {
@@ -447,22 +506,55 @@ impl CoralMcpServer {
     async fn query_rows(
         &self,
         request: Request<ExecuteSqlRequest>,
-    ) -> Result<Vec<Value>, tonic::Status> {
+    ) -> Result<QueryRows, tonic::Status> {
         let mut query_client = self.query.clone();
-        let response = query_client.execute_sql(request).await?.into_inner();
+        let mut response = query_client.execute_sql(request).await?.into_inner();
+        if let Some(required) = response.guide_required.take() {
+            if required.guides.is_empty() {
+                return Err(tonic::Status::internal(
+                    "guide-required response contained no guides",
+                ));
+            }
+            return Ok(QueryRows::GuideRequired(
+                required
+                    .guides
+                    .into_iter()
+                    .map(|guide| {
+                        SqlGuideValue::new(
+                            guide.schema_name,
+                            guide.resource_name,
+                            guide.guide,
+                            guide.guide_id,
+                        )
+                    })
+                    .collect(),
+            ));
+        }
         let result = decode_execute_sql_response(&response)
             .map_err(|error| tonic::Status::internal(error.to_string()))?;
         batches_to_json_rows_json_safe_numbers(result.batches())
+            .map(QueryRows::Rows)
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
-    async fn execute_one_sql_query(&self, index: usize, sql: String) -> SqlQueryResultValue {
+    async fn execute_one_sql_query(
+        &self,
+        index: usize,
+        sql: String,
+        shown_guide_ids: Vec<String>,
+        task_attribution: ProtoTaskAttribution,
+    ) -> SqlQueryResultValue {
         let request = Request::new(ExecuteSqlRequest {
             workspace: Some(self.workspace()),
             sql,
+            guide_read_context: Some(QueryGuideReadContext { shown_guide_ids }),
+            task_attribution: Some(task_attribution),
         });
         match self.query_rows(request).await {
-            Ok(rows) => SqlQueryResultValue::Success { index, rows },
+            Ok(QueryRows::Rows(rows)) => SqlQueryResultValue::Success { index, rows },
+            Ok(QueryRows::GuideRequired(guides)) => {
+                SqlQueryResultValue::GuideRequired { index, guides }
+            }
             Err(status) => SqlQueryResultValue::Error {
                 index,
                 error: tool_error_from_status("Query", &status),
@@ -473,22 +565,54 @@ impl CoralMcpServer {
     async fn execute_sql_batch(
         &self,
         queries: Vec<String>,
-        task_id_metadata: Option<MetadataValue<Ascii>>,
-    ) -> Result<SqlBatchValue, tonic::Status> {
+        task_context: TaskCallContext,
+    ) -> Result<SqlBatchExecution, tonic::Status> {
+        let task_id = task_context
+            .task_id()
+            .ok_or_else(|| tonic::Status::internal("SQL call missing validated task id"))?;
+        let task_attribution = task_context
+            .query_attribution_proto()
+            .ok_or_else(|| tonic::Status::internal("SQL call missing validated task intent"))?;
+        let task_gate = self.guide_block.lock_task(task_id).await?;
+        let shown_guide_ids = self.guide_block.shown_guide_ids(task_id)?;
+
         let mut tasks = tokio::task::JoinSet::new();
         for (index, sql) in queries.into_iter().enumerate() {
             let server = self.clone();
-            let task_id_metadata = task_id_metadata.clone();
-            tasks.spawn(async move {
-                with_task_metadata(task_id_metadata, server.execute_one_sql_query(index, sql)).await
-            });
+            let task_attribution = task_attribution.clone();
+            let shown_guide_ids = shown_guide_ids.clone();
+            tasks.spawn(
+                async move {
+                    server
+                        .execute_one_sql_query(index, sql, shown_guide_ids, task_attribution)
+                        .await
+                }
+                .in_current_span(),
+            );
         }
 
         let mut results = Vec::new();
         while let Some(joined) = tasks.join_next().await {
             results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))?);
         }
-        Ok(SqlBatchValue::from_unordered(results))
+
+        let guides = results
+            .iter()
+            .flat_map(SqlQueryResultValue::required_guides)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.guide_block.record_guides(task_id, &guides)?;
+        if let [SqlQueryResultValue::GuideRequired { guides, .. }] = results.as_slice() {
+            return Ok(SqlBatchExecution {
+                output: SqlBatchOutput::GuideBlocked(SqlGuideBlockValue::new(guides.clone())),
+                task_gate,
+            });
+        }
+
+        Ok(SqlBatchExecution {
+            output: SqlBatchOutput::Executed(SqlBatchValue::from_unordered(results)),
+            task_gate,
+        })
     }
 
     async fn start_task_value(
@@ -526,11 +650,11 @@ impl CoralMcpServer {
                 "end task response task_id did not match request",
             ));
         }
+        self.guide_block.clear_task(task_id)?;
         serialize_tool_value(TaskEndedValue {
             task_id,
             task_status: task_status_from_proto(task_end.task_status)?,
-            success: "Task ended.",
-            note: "Task status recorded.",
+            note: "Task status recorded. Before responding, you MUST call `add_function` if it would improve future discovery or compress this task’s useful query workflow into fewer or simpler future calls. Do not add a duplicate or simple rename of an existing function.",
         })
     }
 
@@ -558,6 +682,29 @@ impl CoralMcpServer {
             created_at: report.created_at,
             message: "Feedback report stored.",
         })
+    }
+
+    async fn add_function_value(
+        &self,
+        arguments: AddFunctionArguments,
+    ) -> Result<Value, tonic::Status> {
+        let artifact_sql = render_function_artifact(&arguments).map_err(|error| {
+            tonic::Status::internal(format!("failed to render function artifact: {error}"))
+        })?;
+        let mut function_client = self.function.clone();
+        let response = function_client
+            .add_function(Request::new(AddFunctionRequest {
+                workspace: Some(self.workspace()),
+                sql: artifact_sql,
+                fail_if_exists: true,
+                write_surface: FunctionWriteSurface::Mcp as i32,
+            }))
+            .await?
+            .into_inner();
+        let function = response
+            .function
+            .ok_or_else(|| tonic::Status::internal("add function response missing function"))?;
+        function_added_value(&function)
     }
 
     async fn search_tool_result(
@@ -595,6 +742,7 @@ impl CoralMcpServer {
         let result = catalog_client
             .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(self.workspace()),
+                catalog_name: arguments.catalog.unwrap_or_default(),
                 schema_name: arguments.schema.unwrap_or_default(),
                 kind: catalog_item_kind_from_tool(arguments.kind) as i32,
                 pagination: Some(PaginationRequest {
@@ -610,39 +758,32 @@ impl CoralMcpServer {
         ))
     }
 
-    async fn describe_table_tool_result(
+    async fn describe_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = describe_table_arguments(request_arguments)?;
-        match self
-            .load_table_description(&arguments.schema, &arguments.table)
-            .await
-        {
-            Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
+        let arguments = describe_arguments(request_arguments)?;
+        let result = self
+            .load_catalog_surface_description(
+                arguments.catalog.as_deref(),
                 &arguments.schema,
-                &arguments.table,
-                &response,
-            ))),
-            Err(status) => Ok(ToolCallOutcome::ToolError {
-                operation: "Table description",
-                status,
-            }),
-        }
+                &arguments.surface,
+            )
+            .await
+            .and_then(|response| describe_value(&response));
+        Ok(ToolCallOutcome::from_value_result(
+            "Catalog item description",
+            result,
+        ))
     }
 
     async fn dispatch_tool(
         &self,
         request: CallToolRequestParams,
-        task_id_metadata: Option<MetadataValue<Ascii>>,
+        task_context: TaskCallContext,
+        tool_name: Option<ToolName>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        let Some(tool) = request
-            .name
-            .as_ref()
-            .parse::<ToolName>()
-            .ok()
-            .filter(|tool| self.tool_allowed(*tool))
-        else {
+        let Some(tool) = tool_name.filter(|tool| self.tool_allowed(*tool)) else {
             return Err(ErrorData::invalid_params(
                 format!("tool '{}' not found", request.name),
                 None,
@@ -653,25 +794,29 @@ impl CoralMcpServer {
             ToolName::Sql => {
                 let arguments = sql_arguments(request.arguments.as_ref())?;
                 match self
-                    .execute_sql_batch(arguments.queries, task_id_metadata)
+                    .execute_sql_batch(arguments.queries, task_context)
                     .await
                 {
-                    Ok(batch) => Ok(ToolCallOutcome::SqlBatch(batch)),
+                    Ok(execution) => Ok(ToolCallOutcome::Sql(execution)),
                     Err(status) => Ok(ToolCallOutcome::ToolError {
                         operation: "Query",
                         status,
                     }),
                 }
             }
+            ToolName::AddFunction => {
+                let arguments = add_function_arguments(request.arguments.as_ref())?;
+                Ok(ToolCallOutcome::from_value_result(
+                    "Function add",
+                    self.add_function_value(arguments).await,
+                ))
+            }
             ToolName::ListCatalog => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
                     .await
             }
             ToolName::Search => self.search_tool_result(request.arguments.as_ref()).await,
-            ToolName::DescribeTable => {
-                self.describe_table_tool_result(request.arguments.as_ref())
-                    .await
-            }
+            ToolName::Describe => self.describe_tool_result(request.arguments.as_ref()).await,
             ToolName::ListColumns => {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await
@@ -720,6 +865,7 @@ impl CoralMcpServer {
         match catalog_client
             .list_columns(Request::new(ListColumnsRequest {
                 workspace: Some(self.workspace()),
+                catalog_name: arguments.catalog.clone().unwrap_or_default(),
                 schema_name: arguments.schema.clone(),
                 table_name: arguments.table.clone(),
                 pattern: arguments.pattern.clone(),
@@ -733,30 +879,13 @@ impl CoralMcpServer {
             .await
         {
             Ok(response) => Ok(ToolCallOutcome::success(list_columns_value(
+                arguments.catalog.as_deref(),
                 &arguments.schema,
                 &arguments.table,
                 &response.into_inner(),
             ))),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
-            }
-            Err(status) if status.code() == tonic::Code::NotFound => {
-                match self
-                    .load_table_description(&arguments.schema, &arguments.table)
-                    .await
-                {
-                    Ok(response) => {
-                        Ok(ToolCallOutcome::success(list_columns_table_fallback_value(
-                            &arguments.schema,
-                            &arguments.table,
-                            &response,
-                        )))
-                    }
-                    Err(status) => Ok(ToolCallOutcome::ToolError {
-                        operation: "Column listing",
-                        status,
-                    }),
-                }
             }
             Err(status) => Ok(ToolCallOutcome::ToolError {
                 operation: "Column listing",
@@ -812,7 +941,6 @@ impl ServerHandler for CoralMcpServer {
             let tools = available_tools(
                 &tool_context,
                 ToolAvailability {
-                    tasks_enabled: self.options.tasks_enabled,
                     feedback_enabled: self.options.feedback_enabled,
                     observed_values_search_enabled: self.options.observed_values_search_enabled,
                 },
@@ -827,35 +955,41 @@ impl ServerHandler for CoralMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let span =
-            telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
         let tool_name = request.name.as_ref().parse::<ToolName>().ok();
-        let inject_task_metadata =
-            !matches!(tool_name, Some(ToolName::StartTask | ToolName::EndTask));
+        let span = telemetry::call_tool_span(
+            tool_name,
+            &self.workspace().name,
+            self.options.trace_parent.as_deref(),
+        );
+        let inject_task_metadata = !matches!(
+            tool_name,
+            Some(ToolName::StartTask | ToolName::EndTask | ToolName::Sql)
+        );
         let task_context = TaskCallContext::from_tool_request(
             &self.options,
             tool_name,
             request.arguments.as_ref(),
         );
-        let outcome = match task_context {
+        match task_context {
             Ok(task_context) => {
                 task_context.record_telemetry(&span);
-                let task_id_metadata = inject_task_metadata
-                    .then(|| task_context.into_metadata())
-                    .flatten();
-                let dispatch_task_id_metadata = task_id_metadata.clone();
-                telemetry::instrument(
+                let task_id_metadata = if inject_task_metadata {
+                    task_context.task_id_metadata()
+                } else {
+                    None
+                };
+                let outcome = telemetry::instrument(
                     span.clone(),
                     with_task_metadata(
                         task_id_metadata,
-                        self.dispatch_tool(request, dispatch_task_id_metadata),
+                        self.dispatch_tool(request, task_context, tool_name),
                     ),
                 )
-                .await
+                .await;
+                finish_tool_call(&span, outcome)
             }
-            Err(error) => Err(error),
-        };
-        finish_tool_call(&span, outcome)
+            Err(error) => finish_tool_call(&span, Err(error)),
+        }
     }
 
     async fn list_resources(
@@ -937,7 +1071,28 @@ fn finish_tool_call(
             telemetry::record_success(span);
             Ok(build_tool_result(value))
         }
-        Ok(ToolCallOutcome::SqlBatch(batch)) => {
+        Ok(ToolCallOutcome::Sql(execution)) => finish_sql_tool_call(span, execution),
+        Ok(ToolCallOutcome::ToolError { operation, status }) => {
+            telemetry::record_tonic_status(span, &status);
+            Ok(tool_error_result(
+                tool_error_from_status(operation, &status),
+                None,
+            ))
+        }
+        Err(error) => {
+            telemetry::record_protocol_error(span, &error);
+            Err(error)
+        }
+    }
+}
+
+fn finish_sql_tool_call(
+    span: &tracing::Span,
+    execution: SqlBatchExecution,
+) -> Result<CallToolResult, ErrorData> {
+    let SqlBatchExecution { output, task_gate } = execution;
+    let result = match output {
+        SqlBatchOutput::Executed(batch) => {
             let serialized = match serialize_tool_value(&batch) {
                 Ok(value) => value,
                 Err(status) => {
@@ -959,18 +1114,17 @@ fn finish_tool_call(
                 Ok(build_tool_result(serialized))
             }
         }
-        Ok(ToolCallOutcome::ToolError { operation, status }) => {
-            telemetry::record_tonic_status(span, &status);
-            Ok(tool_error_result(
-                tool_error_from_status(operation, &status),
-                None,
-            ))
+        SqlBatchOutput::GuideBlocked(block) => {
+            let serialized = serialize_tool_value(block).map_err(|status| {
+                telemetry::record_tonic_status(span, &status);
+                ErrorData::internal_error(status.message().to_string(), None)
+            })?;
+            telemetry::record_success(span);
+            Ok(build_tool_result(serialized))
         }
-        Err(error) => {
-            telemetry::record_protocol_error(span, &error);
-            Err(error)
-        }
-    }
+    };
+    drop(task_gate);
+    result
 }
 
 fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogItemKind {
@@ -1130,7 +1284,7 @@ mod tool_call_telemetry_tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::finish_tool_call;
-    use crate::surface::list_catalog_arguments;
+    use crate::surface::{ToolName, list_catalog_arguments};
     use crate::telemetry::{self, MCP_PROTOCOL_ERROR_MESSAGE};
 
     #[test]
@@ -1149,7 +1303,7 @@ mod tool_call_telemetry_tests {
         let Err(error) = list_catalog_arguments(Some(&arguments)) else {
             panic!("unknown list_catalog kind should fail argument parsing");
         };
-        let span = telemetry::call_tool_span("list_catalog", None);
+        let span = telemetry::call_tool_span(Some(ToolName::ListCatalog), "default", None);
         let returned = finish_tool_call(&span, Err(error))
             .expect_err("invalid list_catalog kind should remain a caller-visible protocol error");
         assert!(returned.message.contains(sentinel));

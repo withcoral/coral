@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "react-hooks"],
+  "categories": { "correctness": "error", "suspicious": "error" },
+  "rules": {
+    "react/react-in-jsx-scope": "off"
+  },
+  "overrides": [
+    {
+      "files": [".storybook/**"],
+      "rules": {
+        "no-underscore-dangle": "off",
+        "no-shadow": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": ["**/*.stories.{ts,tsx}"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": ["app/routes/**/*.{ts,tsx}"],
+      "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "react-hooks", "import"],
+      "rules": {
+        "import/no-cycle": "error"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "build/**",
+    "dist/**",
+    "coverage/**",
+    "node_modules/**",
+    ".react-router/**",
+    "storybook-static/**",
+    "public/**"
+  ]
+}

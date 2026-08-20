@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.7.1" # x-release-please-version
+version = "0.13.0" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.97"
 
@@ -47,6 +47,7 @@ print_stdout = "warn"
 assert_cmd = "2"
 anyhow = "1"
 arrow = "58.1.0"
+async-lock = "3"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
 base64 = "0.22"
@@ -59,6 +60,10 @@ datafusion = "54"
 datafusion-datasource = "54"
 datafusion-datasource-json = "54"
 datafusion-functions-json = "0.54"
+# The 0.13 PostgreSQL/MySQL adapters hard-enable native-tls (OpenSSL on Linux)
+# and expose no rustls feature. Accept this for the database MVP and revisit it
+# when upstream provides a rustls-compatible configuration.
+datafusion-table-providers = { version = "0.13.0", default-features = false }
 datafusion-tracing = "54"
 dialoguer = "0.12"
 etcetera = "0.11"
@@ -68,6 +73,7 @@ glob = "0.3"
 http-body = "1"
 httpdate = "1.0.3"
 jsonschema = { version = "0.46.9", default-features = false }
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 keyring-core = { version = "1.0.0", default-features = false }
 apple-native-keyring-store = { version = "1.0.0", default-features = false, features = ["keychain"] }
 windows-native-keyring-store = { version = "1.0.0", default-features = false }
@@ -85,13 +91,22 @@ regex = "1"
 ring = "0.17.14"
 rmcp = { version = "1.8.0", features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
-rust-embed = { version = "8", features = ["mime-guess"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 schemars = "1.2.1"
 sea-query = { version = "1", default-features = false, features = ["backend-postgres", "backend-sqlite", "derive", "thread-safe"] }
-sea-query-sqlx = { version = "0.9", default-features = false, features = ["sqlx-postgres", "sqlx-sqlite"] }
+# Keep SQLx bind support aligned with SeaQuery value variants enabled
+# transitively by datafusion-table-providers.
+sea-query-sqlx = { version = "0.9", default-features = false, features = [
+  "postgres-array",
+  "sqlx-postgres",
+  "sqlx-sqlite",
+  "with-bigdecimal",
+  "with-chrono",
+  "with-rust_decimal",
+  "with-time",
+] }
 sha2 = "0.10"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "postgres", "runtime-tokio", "sqlite", "tls-rustls"] }
 sqlparser = "0.59.0"
@@ -105,7 +120,6 @@ tonic = { version = "0.14.2", features = ["tls-native-roots", "tls-ring"] }
 tonic-health = "0.14.2"
 tonic-prost = "0.14.2"
 tonic-types = "0.14.2"
-tonic-web = "0.14.5"
 tower = "0.5"
 tower-http = { version = "0.6.8", features = ["cors"] }
 tracing = "0.1.44"

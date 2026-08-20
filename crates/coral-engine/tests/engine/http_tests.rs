@@ -1181,6 +1181,104 @@ async fn source_scoped_table_function_builds_http_search_request() {
 }
 
 #[tokio::test]
+async fn source_scoped_table_function_normalizes_integral_float_for_default_utf8_argument() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Integral float",
+                "score": 1.0
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest(
+        "default_utf8_argument",
+        &server.uri(),
+    ));
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM default_utf8_argument.search_issues(q => 1.0)",
+        )
+        .await
+        .expect("default Utf8 arguments should normalize scalar stringification"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Integral float" })]);
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_checks_allowed_values_before_numeric_coercion() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "1.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Allowed numeric value",
+                "score": 1.0
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("numeric_allowed_value", &server.uri());
+    manifest["functions"][0]["args"][0]["type"] = json!("Float64");
+    manifest["functions"][0]["args"][0]["values"] = json!(["1"]);
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM numeric_allowed_value.search_issues(q => 1)",
+        )
+        .await
+        .expect("allowed values should use the source literal spelling"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Allowed numeric value" })]);
+}
+
+#[tokio::test]
+async fn source_scoped_table_function_preserves_serialized_json_string_argument() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "\"exact\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Exact JSON string",
+                "score": 1.0
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("json_string_argument", &server.uri());
+    manifest["functions"][0]["args"][0]["type"] = json!("Json");
+    let source = build_source(manifest);
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT title FROM json_string_argument.search_issues(q => '\"exact\"')",
+        )
+        .await
+        .expect("HTTP JSON arguments should retain their serialized representation"),
+    );
+
+    assert_eq!(rows, vec![json!({ "title": "Exact JSON string" })]);
+}
+
+#[tokio::test]
 async fn execution_provenance_records_source_scoped_table_functions() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -2317,6 +2415,88 @@ async fn pagination_next_url_header() {
     );
 
     assert_eq!(rows, users_rows());
+}
+
+/// The `OData` shape: the next page's URL arrives in the response body rather
+/// than a header, and the server expects it requested verbatim.
+///
+/// This is the test that catches a `next_url_body` contract whose URL is never
+/// actually followed — the artifact would still read `mode: next_url_body`, and
+/// every unit test would still pass, while the crawl silently stopped at page
+/// one. Page two is keyed on the `$skiptoken` only the body link carries.
+#[tokio::test]
+async fn pagination_next_url_body() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param_is_missing("$skiptoken"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "@odata.nextLink": "?$skiptoken=page-2",
+            "data": &rows[..2],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("$skiptoken", "page-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_next_url_body", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "next_url_body",
+        "next_url_path": ["@odata.nextLink"],
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_next_url_body.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+/// The next URL is attacker-controllable in a way a request Coral built is not,
+/// so leaving the origin must fail loudly rather than send credentials onward.
+#[tokio::test]
+async fn pagination_next_url_body_cross_origin_surfaces_structured_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "@odata.nextLink": "https://attacker.example/steal",
+            "data": &users_rows()[..2],
+        })))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_next_url_body_evil", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "next_url_body",
+        "next_url_path": ["@odata.nextLink"],
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id FROM http_next_url_body_evil.users",
+    )
+    .await
+    .expect_err("cross-origin next link should fail");
+
+    assert!(
+        error.to_string().contains("Source pagination failed"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -3611,4 +3791,255 @@ async fn query_parameters_bind_in_where_clauses() {
     );
 
     assert_eq!(rows, vec![json!({ "title": "Flaky workspace cleanup" })]);
+}
+
+#[tokio::test]
+async fn array_filters_expand_into_repeated_query_parameters() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_array_filter", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "exclude", "type": "Json" }]);
+    table["columns"]
+        .as_array_mut()
+        .expect("columns")
+        .push(exclude_filter_column());
+    table["request"]["query"] = json!([
+        { "name": "exclude", "from": "filter_string_array", "key": "exclude" }
+    ]);
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            r#"SELECT id, name FROM http_array_filter.users WHERE exclude = '["repositories","tags"]'"#,
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+
+    let requests = server.received_requests().await.expect("recorded requests");
+    let query = requests[0].url.query().expect("query string");
+    assert_eq!(query, "exclude=repositories&exclude=tags");
+}
+
+#[tokio::test]
+async fn unexploded_array_filters_join_their_values_with_commas() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_comma_filter", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "select", "type": "Json" }]);
+    table["columns"]
+        .as_array_mut()
+        .expect("columns")
+        .push(json!({
+            "name": "select",
+            "type": "Json",
+            "nullable": true,
+            "virtual": true,
+            "expr": { "kind": "from_filter", "key": "select" }
+        }));
+    table["request"]["query"] = json!([
+        {
+            "name": "$select",
+            "explode": false,
+            "from": "filter_string_array",
+            "key": "select"
+        }
+    ]);
+    let source = build_source(manifest);
+
+    execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            // `select` is a SQL reserved word, and DataFusion accepts it
+            // unquoted as a column reference.
+            r#"SELECT id FROM http_comma_filter.users WHERE select = '["id","mail"]'"#,
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    let requests = server.received_requests().await.expect("recorded requests");
+    let query = requests[0].url.query().expect("query string");
+    assert_eq!(query, "%24select=id%2Cmail");
+}
+
+#[tokio::test]
+async fn array_function_arguments_expand_into_repeated_query_parameters() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .mount(&server)
+        .await;
+
+    let manifest = json!({
+        "name": "http_array_arg",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": server.uri(),
+        "functions": [{
+            "name": "list_users",
+            "description": "HTTP users",
+            "args": [
+                { "name": "exclude", "type": "Utf8", "bind": { "arg": "exclude" } }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "exclude", "from": "arg_string_array", "key": "exclude" }
+                ]
+            },
+            "response": { "rows_path": ["data"] },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            r#"SELECT id, name FROM http_array_arg.list_users(exclude => '["repositories","tags"]')"#,
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2, "name": "Grace"})]);
+
+    let requests = server.received_requests().await.expect("recorded requests");
+    let query = requests[0].url.query().expect("query string");
+    assert_eq!(query, "exclude=repositories&exclude=tags");
+}
+
+#[tokio::test]
+async fn array_filters_accept_a_bare_value_as_a_one_element_list() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("exclude", "repositories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_bare_filter", &server.uri());
+    let table = &mut manifest["tables"][0];
+    table["filters"] = json!([{ "name": "exclude", "type": "Json" }]);
+    table["columns"]
+        .as_array_mut()
+        .expect("columns")
+        .push(exclude_filter_column());
+    table["request"]["query"] = json!([
+        { "name": "exclude", "from": "filter_string_array", "key": "exclude" }
+    ]);
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id FROM http_bare_filter.users WHERE exclude = 'repositories'",
+        )
+        .await
+        .expect("a bare value should be read as a one-element list"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2})]);
+}
+
+/// The virtual column a list-valued filter is addressed through. DSL v4
+/// derives this automatically; a v3 manifest declares it.
+fn exclude_filter_column() -> Value {
+    json!({
+        "name": "exclude",
+        "type": "Json",
+        "nullable": true,
+        "virtual": true,
+        "expr": { "kind": "from_filter", "key": "exclude" }
+    })
+}
+
+#[tokio::test]
+async fn array_function_arguments_accept_a_bare_value_as_a_one_element_list() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("exclude", "repositories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .mount(&server)
+        .await;
+
+    // The argument is declared `Utf8` rather than `Json` precisely so this
+    // works: a `Json` argument's literal must parse as JSON inside
+    // `bind_function_arg`, long before the value source runs.
+    let manifest = json!({
+        "name": "http_bare_arg",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": server.uri(),
+        "functions": [{
+            "name": "list_users",
+            "description": "HTTP users",
+            "args": [
+                { "name": "exclude", "type": "Utf8", "bind": { "arg": "exclude" } }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "exclude", "from": "arg_string_array", "key": "exclude" }
+                ]
+            },
+            "response": { "rows_path": ["data"] },
+            "columns": [
+                { "name": "id", "type": "Int64" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id FROM http_bare_arg.list_users(exclude => 'repositories')",
+        )
+        .await
+        .expect("a bare argument value should be read as a one-element list"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2})]);
 }

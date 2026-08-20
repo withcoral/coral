@@ -3,12 +3,12 @@
     reason = "DSL v4 contracts are field-heavy artifact models documented in the PRD."
 )]
 
-pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 5;
-pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v3";
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v7";
-pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v3";
-pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v1";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v10";
+pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 8;
+pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v4";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v12";
+pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v5";
+pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v4";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v14";
 
 mod artifacts;
 mod diagnostics;
@@ -18,8 +18,10 @@ mod manifest;
 mod naming;
 mod operation_metadata;
 mod projections;
+mod response_cursors;
 mod schema;
 mod surfaces;
+mod wrapped_lists;
 
 #[cfg(test)]
 mod manifest_tests;
@@ -34,28 +36,29 @@ pub use artifacts::{
     Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
     validate_materialized_source, validate_materialized_source_structure,
 };
-pub use diagnostics::{Diagnostic, DiagnosticSeverity};
+pub use diagnostics::Diagnostic;
 pub use ir::{
-    HttpMethod, IrEntityCandidate, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
-    IrOperationInput, IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape,
+    HttpMethod, IrExecutionAttachment, IrField, IrInputLocation, IrOperation, IrOperationInput,
+    IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape,
     McpExecutionAttachment, OutputCardinality, RestExecutionAttachment, RestParameterBinding,
     RestRequestBody, RestResponseAttachment, SemanticIr,
 };
 pub use manifest::{
-    AcceptedIdentityRequirement, IdentityRequirements, McpRuntimeConfig, OpenApiRuntimeConfig,
-    SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4SourceCommon, V4SourceManifest,
-    V4Surface, validate_openapi_base_url_template,
+    AcceptedIdentityRequirement, DatabaseRuntimeConfig, IdentityRequirements, McpRuntimeConfig,
+    OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4SourceCommon,
+    V4SourceManifest, V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
+pub(crate) use operation_metadata::resolve_output_row_type_ref;
 pub use operation_metadata::{
     ImportedSurface, McpOperationPagination, OperationMetadata, OperationMetadataCatalog,
     ValidatedSurfacePlan, validate_operation_metadata_structure, validate_semantic_ir_structure,
 };
 pub use projections::{
-    Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionInputSyncMode,
-    ProjectionKind, ProjectionVisibility, SqlInputExposure, generate_projection_catalog,
-    mcp_projection_arg_specs, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection, sync_projection_inputs,
+    Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
+    ProjectionVisibility, SqlInputExposure, generate_projection_catalog, mcp_projection_arg_specs,
+    projection_arg_specs, projection_column_specs, projection_filter_specs,
+    request_spec_for_projection, validate_projection_compatibility,
 };
 pub use schema::generated_v4_source_manifest_schema;
 pub use surfaces::{

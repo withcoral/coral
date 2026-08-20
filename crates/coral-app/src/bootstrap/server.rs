@@ -1,21 +1,15 @@
 //! Builds and runs the Coral gRPC server.
 
-use std::borrow::Cow;
-use std::convert::Infallible;
-use std::future::{Future, Ready};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::task::{Context, Poll};
 
-use axum::body::Body as AxumBody;
-use axum::extract::Request as AxumRequest;
-use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
+use coral_api::v1::feature_service_server::FeatureServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::function_service_server::FunctionServiceServer;
+use coral_api::v1::gui_onboarding_service_server::GuiOnboardingServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
@@ -31,30 +25,29 @@ use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use tokio::task::{self, JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;
-use tonic::codegen::http::header::CONTENT_TYPE;
-use tonic::codegen::http::{HeaderValue, Method, Request, Response, StatusCode};
 use tonic::service::Routes;
 use tonic::transport::Server;
-use tonic_web::GrpcWebLayer;
-use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use super::health::AggregateHealthService;
-use super::server_config::ServerSettings;
+use super::health::{AggregateHealthService, EngineReadiness};
+use super::server_config::{LoadedServerConfig, ServeSettings};
 use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
-use crate::features::{Feature, FeatureOverrides, FeatureStore};
+use crate::features::service::FeatureService;
+use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
 use crate::functions::service::FunctionService;
-use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
+use crate::gui_onboarding::manager::GuiOnboardingManager;
+use crate::gui_onboarding::service::GuiOnboardingService;
+use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
@@ -67,30 +60,13 @@ use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_stat
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
-use crate::task::store::JsonlTaskEventStore;
-use crate::telemetry::TelemetryConfig;
+use crate::task::store::TaskStore;
 use crate::telemetry::service::TraceService;
+use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
-
-/// A static asset (e.g., a built SPA file) served on the same port as
-/// gRPC-Web.
-pub struct StaticAsset {
-    /// Raw bytes of the asset.
-    pub bytes: Cow<'static, [u8]>,
-    /// MIME type to surface as `Content-Type`.
-    pub content_type: Cow<'static, str>,
-}
-
-/// Source of static assets served alongside gRPC-Web on a single port.
-///
-/// Coral itself is asset-agnostic: `coral-cli`'s `embedded-ui` feature
-/// supplies an implementation backed by the built UI bundle.
-pub trait StaticAssetsProvider: Send + Sync + 'static {
-    /// Returns the asset stored at `path` (relative, no leading slash), or
-    /// `None` if the asset does not exist.
-    fn get(&self, path: &str) -> Option<StaticAsset>;
-}
+use crate::workspaces::{
+    WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
+};
 
 #[derive(Clone)]
 enum ServerModeSelection {
@@ -104,10 +80,20 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    /// Provider every request's principal is resolved through.
+    ///
+    /// Always present, defaulting to [`LocalPrincipalProvider`], so nothing
+    /// downstream of the builder has to handle a server that might have no way
+    /// to name its caller.
+    principal_provider: Arc<dyn PrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
+    // Test seam: a listener the gRPC server adopts instead of binding
+    // `mode.bind_addr()` itself. Lets startup-failure tests hold the reserved
+    // port continuously rather than selecting and releasing it, closing the
+    // race where another process claims the port before the server binds.
+    grpc_listener: Option<Arc<std::net::TcpListener>>,
 }
 
 impl Default for ServerConfig {
@@ -122,10 +108,11 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
-            user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+            principal_provider: Arc::new(LocalPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
+            grpc_listener: None,
         }
     }
 
@@ -146,10 +133,17 @@ impl ServerConfig {
 
     fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
         match &self.mode {
+            ServerModeSelection::Explicit(mode @ ServerMode::StandaloneGrpc { .. }) => {
+                let config = LoadedServerConfig::load(layout)?;
+                config.reject_removed_auth()?;
+                Ok(mode.clone())
+            }
             ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
-            ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
-                bind: ServerSettings::load(layout)?.bind_addr,
-            }),
+            ServerModeSelection::ConfiguredStandaloneGrpc => {
+                let config = LoadedServerConfig::load(layout)?;
+                let bind = config.grpc_settings()?.bind_addr;
+                Ok(ServerMode::StandaloneGrpc { bind })
+            }
         }
     }
 
@@ -187,13 +181,6 @@ pub enum ServerMode {
         /// Address to bind.
         bind: SocketAddr,
     },
-    /// Loopback gRPC-Web server that also serves embedded UI assets.
-    EmbeddedUi {
-        /// Port to bind on `127.0.0.1`.
-        port: u16,
-        /// Static UI assets served on the same origin as gRPC-Web.
-        assets: Arc<dyn StaticAssetsProvider>,
-    },
 }
 
 impl ServerMode {
@@ -201,7 +188,6 @@ impl ServerMode {
         match self {
             Self::EphemeralGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             Self::StandaloneGrpc { bind } => *bind,
-            Self::EmbeddedUi { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
         }
     }
 }
@@ -242,18 +228,6 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Creates a builder for loopback gRPC-Web with embedded UI assets.
-    ///
-    /// Requests with native `application/grpc` content-types are rejected with
-    /// HTTP 415. Requests for paths under registered gRPC services route to
-    /// gRPC-Web; every other path is dispatched to the supplied
-    /// [`StaticAssetsProvider`], with SPA fallback to `index.html` for
-    /// unknown paths.
-    pub fn embedded_ui_loopback(port: u16, assets: Arc<dyn StaticAssetsProvider>) -> Self {
-        Self::new().with_mode(ServerMode::EmbeddedUi { port, assets })
-    }
-
-    #[must_use]
     /// Selects the local server mode.
     pub fn with_mode(mut self, mode: ServerMode) -> Self {
         self.config = self.config.with_mode(mode);
@@ -265,6 +239,20 @@ impl ServerBuilder {
     pub fn with_config_dir(mut self, config_dir: impl Into<PathBuf>) -> Self {
         self.config = self.config.with_config_dir(config_dir);
         self
+    }
+
+    /// Resolves the settings for companions served beside this gRPC server.
+    ///
+    /// Only settings are returned. Constructing the session providers and the
+    /// authorization server, and running the transports they belong to, is the
+    /// caller's job: this builder starts a gRPC server and nothing else.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if the configuration cannot be loaded or validated.
+    pub fn serve_settings(&self) -> Result<ServeSettings, AppError> {
+        let layout = AppEnvironment::discover().app_state_layout(self.config.config_dir.clone())?;
+        LoadedServerConfig::load(&layout)?.companion_settings()
     }
 
     #[must_use]
@@ -283,16 +271,21 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Sets the server-side user principal provider.
+    /// Sets the server-side principal provider.
     ///
-    /// The default provider returns the local single-user principal for every
-    /// request. Product runtimes can authenticate inbound metadata and select a
-    /// user by installing their own provider.
-    pub fn with_user_principal_provider(
+    /// The default provider returns the local principal for every
+    /// request. Product runtimes can authenticate inbound metadata and select
+    /// any canonical principal by installing their own provider.
+    ///
+    /// Whoever resolves `[auth]` composes the provider it asks for and installs
+    /// it here — `coral-cli`'s `serve::compose_session_policies` does this for
+    /// `coral server`. Without this call a standalone listener serves the local
+    /// principal to every caller its address is reachable from.
+    pub fn with_principal_provider(
         mut self,
-        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        principal_provider: Arc<dyn PrincipalProvider>,
     ) -> Self {
-        self.config.user_principal_provider = user_principal_provider;
+        self.config.principal_provider = principal_provider;
         self
     }
 
@@ -322,6 +315,19 @@ impl ServerBuilder {
         self
     }
 
+    /// Adopts an already-bound listener for the gRPC server instead of binding
+    /// the mode's address.
+    ///
+    /// Startup-failure tests use this to reserve a port and hand the live
+    /// listener straight to the server, so the port never lapses between
+    /// selection and bind and a parallel process cannot steal it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_prebound_grpc_listener(mut self, listener: std::net::TcpListener) -> Self {
+        self.config.grpc_listener = Some(Arc::new(listener));
+        self
+    }
+
     /// Starts the Coral gRPC server on TCP.
     ///
     /// By default, Coral keeps a real local gRPC boundary here so the public
@@ -336,42 +342,35 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
         let mode = self.config.resolved_mode(&layout)?;
+        let principal_provider = self.config.principal_provider.clone();
+        let grpc_listener = self.config.grpc_listener.clone();
         layout.ensure()?;
-        let features = FeatureStore::from_layout(layout.clone())
-            .load_with_overrides(&self.config.feature_overrides)?;
+        let feature_store = FeatureStore::from_layout(layout.clone());
+        let features = feature_store.load_with_overrides(&self.config.feature_overrides)?;
         let coral_db = init_database(&layout).await?;
         let config_store = ConfigStore::new(layout.clone());
-        run_state_migrations(&coral_db, &config_store).await?;
+        run_state_migrations(&coral_db, &config_store, &layout).await?;
         let coral_db = Arc::new(coral_db);
-        let telemetry_config = TelemetryConfig::load(&layout)?;
-        let internal_trace_store_dir = telemetry_config
-            .trace_history
-            .enabled
-            .then(|| layout.local_trace_store_dir());
-        let installed_trace_store = crate::telemetry::init_tracing(
-            &telemetry_config,
-            self.config.enable_stderr_logs,
-            internal_trace_store_dir.clone(),
-        )?;
-        let active_trace_store = telemetry_config
-            .trace_history
-            .enabled
-            .then_some(installed_trace_store)
-            .flatten();
+        let (telemetry_config, active_trace_store) =
+            init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
+        let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
+        let database_sources_enabled = features.enabled(Feature::DatabaseSources);
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
             workspace_lifecycle_lock.clone(),
             diagnostic_reporter.clone(),
-        );
+        )
+        .with_pool_registry(Arc::clone(&workspace_pool_registry))
+        .with_database_sources_enabled(database_sources_enabled);
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
@@ -380,10 +379,12 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             Arc::clone(&coral_db),
             diagnostic_reporter.clone(),
-        );
+        )
+        .with_pool_registry(Arc::clone(&workspace_pool_registry));
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
+        let task_activity = crate::task::activity::TaskActivityRecorder::new(Arc::clone(&coral_db));
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -400,7 +401,10 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
-        );
+            workspace_pool_registry,
+        )
+        .with_database_sources_enabled(database_sources_enabled)
+        .with_task_activity_recorder(task_activity);
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =
             observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
@@ -416,6 +420,7 @@ impl ServerBuilder {
         let trace_components = trace_components_for_store(active_trace_store);
         start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -423,13 +428,41 @@ impl ServerBuilder {
                 search_observations,
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store,
+                active_features: features,
             },
             trace_components,
-            self.config.user_principal_provider,
+            principal_provider,
             mode,
+            grpc_listener,
         )
         .await
     }
+}
+
+fn init_server_telemetry(
+    layout: &AppStateLayout,
+    enable_stderr_logs: bool,
+) -> Result<
+    (
+        TelemetryConfig,
+        Option<crate::telemetry::InstalledLocalTraceStore>,
+    ),
+    AppError,
+> {
+    let config = TelemetryConfig::load(layout)?;
+    let local_trace_store_dir = config
+        .trace_history
+        .enabled
+        .then(|| layout.local_trace_store_dir());
+    let installed_trace_store =
+        crate::telemetry::init_tracing(&config, enable_stderr_logs, local_trace_store_dir)?;
+    let active_trace_store = config
+        .trace_history
+        .enabled
+        .then_some(installed_trace_store)
+        .flatten();
+    Ok((config, active_trace_store))
 }
 
 fn trace_components_for_store(
@@ -438,7 +471,10 @@ fn trace_components_for_store(
     active_trace_store.map_or_else(TraceServerComponents::default, |store| {
         TraceServerComponents {
             local_trace_store_dir: Some(store.dir.clone()),
-            service: Some(TraceService::new(store.dir, store.retention)),
+            service: Some(TraceService::new(TraceManager::new(
+                store.dir,
+                store.retention,
+            ))),
         }
     })
 }
@@ -477,6 +513,7 @@ fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseCo
 /// does not wait for the task to finish.
 pub struct RunningServer {
     endpoint_uri: String,
+    local_addr: SocketAddr,
     local_trace_store_dir: Option<PathBuf>,
     search: SearchManager,
     search_observations: Mutex<Option<SearchObservationHandle>>,
@@ -494,6 +531,12 @@ impl RunningServer {
     /// over server configuration.
     pub fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
+    }
+
+    /// Returns the address bound by this server.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 
     #[must_use]
@@ -592,6 +635,7 @@ struct TraceServerComponents {
 }
 
 struct ServerDependencies {
+    gui_onboarding: GuiOnboardingManager,
     source: SourceManager,
     workspace: WorkspaceManager,
     query: QueryManager,
@@ -599,19 +643,20 @@ struct ServerDependencies {
     search_observations: Option<SearchObservationHandle>,
     feedback: FeedbackManager,
     task: TaskManager,
+    feature_store: FeatureStore,
+    // The resolution `start` performed, carried forward so the feature service
+    // can report what this server is running rather than only what config says.
+    active_features: Features,
 }
 
-async fn start_server(
+/// Builds the gRPC routes for every application service, and returns the query
+/// manager the health service reads readiness from.
+fn application_routes(
     dependencies: ServerDependencies,
-    trace_components: TraceServerComponents,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
-    mode: ServerMode,
-) -> Result<RunningServer, AppError> {
-    let TraceServerComponents {
-        service: trace_service,
-        local_trace_store_dir,
-    } = trace_components;
+    trace_service: Option<TraceService>,
+) -> (Routes, QueryManager) {
     let ServerDependencies {
+        gui_onboarding,
         source,
         workspace,
         query,
@@ -619,6 +664,8 @@ async fn start_server(
         search_observations,
         feedback,
         task,
+        feature_store,
+        active_features,
     } = dependencies;
     let (source, query) = match search_observations.as_ref() {
         Some(search_observations) => (
@@ -627,15 +674,19 @@ async fn start_server(
         ),
         None => (source, query),
     };
+    let health_queries = query.clone();
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
-    let catalog_service = CatalogService::new(query.clone());
+    let catalog_service = CatalogService::new(query.clone(), task.clone());
     let function_service = FunctionService::new(query.clone());
-    let query_service = QueryService::new(query);
-    let search_service = SearchService::new(search.clone());
-    let feedback_service = FeedbackService::new(feedback);
+    let query_service = QueryService::new(query, task.clone());
+    let search_service = SearchService::new(search, task.clone());
+    let feedback_service = FeedbackService::new(feedback, task.clone());
+    let feature_service = FeatureService::new(feature_store, active_features);
     let task_service = TaskService::new(task);
-    let mut application_routes = Routes::default()
+    let gui_onboarding_service = GuiOnboardingService::new(gui_onboarding);
+    let mut routes = Routes::default()
+        .add_service(GuiOnboardingServiceServer::new(gui_onboarding_service))
         .add_service(
             SourceServiceServer::new(source_service)
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
@@ -646,6 +697,7 @@ async fn start_server(
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(FeedbackServiceServer::new(feedback_service))
+        .add_service(FeatureServiceServer::new(feature_service))
         .add_service(FunctionServiceServer::new(function_service))
         .add_service(TaskServiceServer::new(task_service))
         .add_service(
@@ -657,23 +709,52 @@ async fn start_server(
                 .max_encoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE),
         );
     if let Some(trace_service) = trace_service {
-        application_routes = application_routes.add_service(
+        routes = routes.add_service(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
         );
     }
+    (routes, health_queries)
+}
+
+async fn start_server(
+    dependencies: ServerDependencies,
+    trace_components: TraceServerComponents,
+    principal_provider: Arc<dyn PrincipalProvider>,
+    mode: ServerMode,
+    grpc_listener: Option<Arc<std::net::TcpListener>>,
+) -> Result<RunningServer, AppError> {
+    let TraceServerComponents {
+        service: trace_service,
+        local_trace_store_dir,
+    } = trace_components;
+    // `RunningServer` owns both for shutdown; the routes only borrow them.
+    let search = dependencies.search.clone();
+    let search_observations = dependencies.search_observations.clone();
+    let (application_routes, health_queries) = application_routes(dependencies, trace_service);
     let routes = Routes::from(
         application_routes
             .into_axum_router()
-            .layer(GrpcRequestContextLayer::new(user_principal_provider)),
+            .layer(GrpcRequestContextLayer::new(principal_provider)),
     )
-    // Process liveness must not depend on principal selection.
+    // Health must not depend on principal selection: it is the readiness signal
+    // an orchestrator reaches without a credential.
     .add_service(tonic_health::pb::health_server::HealthServer::new(
-        AggregateHealthService,
+        AggregateHealthService::new(EngineReadiness::from_query_manager(health_queries)),
     ));
 
-    let listener = TcpListener::bind(mode.bind_addr()).await?;
-    let endpoint_uri = format!("http://{}", listener.local_addr()?);
+    let listener = match grpc_listener {
+        // A test handed us a live listener; adopt it so the reserved port never
+        // lapses. `from_std` requires the socket be non-blocking.
+        Some(prebound) => {
+            let prebound = prebound.try_clone()?;
+            prebound.set_nonblocking(true)?;
+            TcpListener::from_std(prebound)?
+        }
+        None => TcpListener::bind(mode.bind_addr()).await?,
+    };
+    let local_addr = listener.local_addr()?;
+    let endpoint_uri = format!("http://{local_addr}");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (task_finished_tx, task_finished) = watch::channel(false);
 
@@ -681,13 +762,11 @@ async fn start_server(
         ServerMode::EphemeralGrpc | ServerMode::StandaloneGrpc { .. } => {
             start_grpc_server(listener, shutdown_rx, routes, task_finished_tx)
         }
-        ServerMode::EmbeddedUi { assets, .. } => {
-            start_grpc_web_server(listener, shutdown_rx, routes, assets, task_finished_tx)
-        }
     };
 
     Ok(RunningServer {
         endpoint_uri,
+        local_addr,
         local_trace_store_dir,
         search,
         search_observations: Mutex::new(search_observations),
@@ -716,38 +795,6 @@ fn start_grpc_server(
     })
 }
 
-fn start_grpc_web_server(
-    listener: TcpListener,
-    shutdown_rx: oneshot::Receiver<()>,
-    routes: Routes,
-    static_assets: Arc<dyn StaticAssetsProvider>,
-    task_finished: watch::Sender<bool>,
-) -> JoinHandle<Result<(), tonic::transport::Error>> {
-    let grpc = routes
-        .into_axum_router()
-        .layer(GrpcWebLayer::new())
-        .layer(GrpcWebOnlyLayer);
-
-    let app = grpc.fallback_service(StaticAssetService {
-        provider: static_assets,
-    });
-
-    let combined: Routes = app.into();
-
-    tokio::spawn(async move {
-        let result = Server::builder()
-            .accept_http1(true)
-            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .add_routes(combined)
-            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                drop(shutdown_rx.await);
-            })
-            .await;
-        task_finished.send_replace(true);
-        result
-    })
-}
-
 async fn drain_search_before_shutdown(search: SearchManager) {
     if let Err(error) = search.drain_before_shutdown().await {
         tracing::debug!(
@@ -757,147 +804,6 @@ async fn drain_search_before_shutdown(search: SearchManager) {
     }
 }
 
-#[derive(Clone, Copy)]
-struct GrpcWebOnlyLayer;
-
-impl<S> Layer<S> for GrpcWebOnlyLayer {
-    type Service = GrpcWebOnlyService<S>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        GrpcWebOnlyService { inner }
-    }
-}
-
-#[derive(Clone)]
-struct GrpcWebOnlyService<S> {
-    inner: S,
-}
-
-impl<S, ReqB, ResB> Service<Request<ReqB>> for GrpcWebOnlyService<S>
-where
-    S: Service<Request<ReqB>, Response = Response<ResB>> + Send + 'static,
-    S::Future: Send + 'static,
-    S::Error: Send + 'static,
-    ResB: Default,
-{
-    type Response = Response<ResB>;
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, request: Request<ReqB>) -> Self::Future {
-        if is_native_grpc_content_type(request.headers().get(CONTENT_TYPE)) {
-            return Box::pin(async {
-                Ok(Response::builder()
-                    .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-                    .body(ResB::default())
-                    .expect("static response is valid"))
-            });
-        }
-
-        let future = self.inner.call(request);
-        Box::pin(future)
-    }
-}
-
-fn normalized_content_type(content_type: Option<&HeaderValue>) -> Option<String> {
-    Some(
-        content_type?
-            .to_str()
-            .ok()?
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase(),
-    )
-}
-
-fn is_native_grpc_content_type(content_type: Option<&HeaderValue>) -> bool {
-    let Some(content_type) = normalized_content_type(content_type) else {
-        return false;
-    };
-    content_type == "application/grpc" || content_type.starts_with("application/grpc+")
-}
-
-fn is_grpc_web_content_type(content_type: Option<&HeaderValue>) -> bool {
-    let Some(content_type) = normalized_content_type(content_type) else {
-        return false;
-    };
-    content_type == "application/grpc-web" || content_type.starts_with("application/grpc-web+")
-}
-
-fn is_grpc_content_type(content_type: Option<&HeaderValue>) -> bool {
-    is_native_grpc_content_type(content_type) || is_grpc_web_content_type(content_type)
-}
-
-#[derive(Clone)]
-struct StaticAssetService {
-    provider: Arc<dyn StaticAssetsProvider>,
-}
-
-impl Service<AxumRequest> for StaticAssetService {
-    type Response = AxumResponse;
-    type Error = Infallible;
-    type Future = Ready<Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, request: AxumRequest) -> Self::Future {
-        if is_grpc_content_type(request.headers().get(CONTENT_TYPE)) {
-            return std::future::ready(Ok(static_fallback_error_response(
-                StatusCode::NOT_FOUND,
-                "Not Found",
-            )));
-        }
-        if request.method() != Method::GET && request.method() != Method::HEAD {
-            return std::future::ready(Ok(static_fallback_error_response(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "Method Not Allowed",
-            )));
-        }
-
-        let path = request.uri().path();
-        let key = path.trim_start_matches('/');
-        let asset = self
-            .provider
-            .get(key)
-            .or_else(|| self.provider.get("index.html"));
-        let response = match asset {
-            Some(asset) => {
-                let content_type = HeaderValue::from_str(&asset.content_type)
-                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
-                let mut builder = AxumResponse::builder().status(StatusCode::OK);
-                builder
-                    .headers_mut()
-                    .expect("fresh response builder")
-                    .insert(CONTENT_TYPE, content_type);
-                builder
-                    .body(AxumBody::from(asset.bytes.into_owned()))
-                    .expect("static response is valid")
-            }
-            None => static_fallback_error_response(StatusCode::NOT_FOUND, "Not Found"),
-        };
-        std::future::ready(Ok(response))
-    }
-}
-
-fn static_fallback_error_response(status: StatusCode, body: &'static str) -> AxumResponse {
-    AxumResponse::builder()
-        .status(status)
-        .header(
-            CONTENT_TYPE,
-            HeaderValue::from_static("text/plain; charset=utf-8"),
-        )
-        .body(AxumBody::from(body))
-        .expect("static response is valid")
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -905,7 +811,6 @@ mod tests {
         reason = "JSON row assertions intentionally fail loudly in tests"
     )]
 
-    use std::borrow::Cow;
     use std::future::Future as _;
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
@@ -913,13 +818,14 @@ mod tests {
     use std::task::Poll;
     use std::time::Duration;
 
+    use coral_api::v1::gui_onboarding_service_client::GuiOnboardingServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::task_service_client::TaskServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        EndTaskRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
-        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, Workspace,
+        EndTaskRequest, ExecuteSqlRequest, GetGuiOnboardingStateRequest, ImportSourceRequest,
+        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, TraceView, Workspace,
         import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
@@ -930,15 +836,15 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        RunningServer, ServerBuilder, ServerDependencies, ServerMode, StaticAsset,
-        StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        RunningServer, ServerBuilder, ServerDependencies, ServerMode, TraceServerComponents,
+        start_server,
     };
     use crate::bootstrap::AppError;
     use crate::catalog::discovery::CatalogDiscovery;
     use crate::credentials::{CredentialManager, CredentialStore};
-    use crate::features::{Feature, FeatureOverrides};
+    use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
     use crate::feedback::manager::FeedbackManager;
+    use crate::gui_onboarding::manager::GuiOnboardingManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
     use crate::search::observed::{
@@ -949,13 +855,13 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
-    use crate::task::store::JsonlTaskEventStore;
-    use crate::telemetry::service::TraceService;
+    use crate::task::store::TaskStore;
+    use crate::telemetry::{TraceManager, service::TraceService};
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
-        AwsEngineExtensionsProvider, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
-        UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError,
+        AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
+        Principal, PrincipalProvider, PrincipalProviderError,
     };
 
     fn default_workspace() -> Workspace {
@@ -1004,16 +910,16 @@ enabled = false
     }
 
     #[derive(Debug)]
-    struct RejectingUserPrincipalProvider;
+    struct RejectingPrincipalProvider;
 
     #[tonic::async_trait]
-    impl UserPrincipalProvider for RejectingUserPrincipalProvider {
+    impl PrincipalProvider for RejectingPrincipalProvider {
         async fn principal_for_metadata(
             &self,
             _metadata: &tonic::metadata::MetadataMap,
-        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
-            Err(UserPrincipalProviderError::unauthenticated(
-                "rejected user principal",
+        ) -> Result<Principal, PrincipalProviderError> {
+            Err(PrincipalProviderError::unauthenticated(
+                "rejected principal",
             ))
         }
     }
@@ -1027,7 +933,7 @@ enabled = false
             .await
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, config_store)
+        run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
         Arc::new(db)
@@ -1080,7 +986,6 @@ enabled = false
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
@@ -1103,6 +1008,7 @@ enabled = false
         });
         let server = RunningServer {
             endpoint_uri: "http://127.0.0.1:0".to_string(),
+            local_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             local_trace_store_dir: None,
             search,
             search_observations: Mutex::new(Some(search_observations)),
@@ -1190,14 +1096,131 @@ enabled = false
         assert_eq!(bind, SocketAddr::from(([127, 0, 0, 2], 14555)));
     }
 
+    #[test]
+    fn explicit_standalone_grpc_rejects_removed_static_auth_config() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server.auth]\ntoken_env = 'CORAL_SERVER_AUTH_TOKEN'\n",
+        )
+        .expect("config file");
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let builder =
+            ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 14555)));
+
+        assert!(
+            builder.config.resolved_mode(&layout).is_err(),
+            "removed standalone auth config must fail closed"
+        );
+    }
+
+    /// Writes a config whose `[auth]` marks the instance authenticated.
+    ///
+    /// The signing key the section names is never created: startup only asks
+    /// whether authentication is configured, so nothing here resolves.
+    fn configure_session_auth(config_dir: &Path) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+[trace_history]
+enabled = false
+
+[auth.authorization_server]
+issuer = 'https://auth.example.test'
+
+[auth.session]
+signing_key_file = 'session.key'
+
+[auth.provider]
+issuer = 'https://accounts.example.test'
+client_id = 'upstream-client'
+client_secret = 'test-secret'
+redirect_uri = 'https://auth.example.test/auth/oidc/callback'
+",
+        )
+        .expect("write auth config");
+    }
+
+    /// Both standalone entry points bind a real address, so neither may serve
+    /// the local principal to it while the configuration asks for session
+    /// authentication.
+    /// The regression guard for the CLI: `bootstrap()` starts this server on a
+    /// host whose config may well be a `coral server` config.
+    #[tokio::test]
+    async fn ephemeral_grpc_starts_with_configured_auth() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_session_auth(&config_dir);
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("configured auth must not block the local ephemeral server");
+
+        server.shutdown().await.expect("shutdown server");
+    }
+
+    #[test]
+    fn explicit_standalone_grpc_does_not_parse_the_configured_bind() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server]\nbind_addr = 'not-an-address'\n",
+        )
+        .expect("config file");
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let explicit_bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 14555));
+        let builder = ServerBuilder::standalone_grpc(explicit_bind);
+
+        let ServerMode::StandaloneGrpc { bind } = builder
+            .config
+            .resolved_mode(&layout)
+            .expect("explicit bind overrides configured bind")
+        else {
+            panic!("explicit standalone mode must remain selected");
+        };
+        assert_eq!(bind, explicit_bind);
+    }
+
+    #[test]
+    fn resolves_mcp_http_config_without_starting_grpc() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:14556'\n",
+        )
+        .expect("config file");
+
+        let settings = ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(config_dir)
+            .serve_settings()
+            .expect("resolve MCP HTTP config");
+        let config = settings.mcp_http().expect("enabled MCP HTTP config");
+
+        assert_eq!(
+            config.bind_addr(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 14556))
+        );
+    }
+
     #[tokio::test]
     async fn configured_standalone_grpc_starts_with_configured_bind() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         std::fs::create_dir_all(&config_dir).expect("create config dir");
+        // Keep this server-start test from populating process-global tracing
+        // state and making telemetry unit tests depend on execution order.
         std::fs::write(
             config_dir.join("config.toml"),
-            "[server]\nbind_addr = '127.0.0.1:0'\n",
+            "[server]\nbind_addr = '127.0.0.1:0'\n\n[trace_history]\nenabled = false\n",
         )
         .expect("write config");
 
@@ -1213,6 +1236,7 @@ enabled = false
             .expect("endpoint scheme")
             .parse::<SocketAddr>()
             .expect("socket address endpoint");
+        assert_eq!(server.local_addr(), endpoint);
         assert!(endpoint.ip().is_loopback());
         assert_ne!(endpoint.port(), 0);
         server.shutdown().await.expect("shutdown server");
@@ -1321,6 +1345,7 @@ enabled = false
                 page_size: 10,
                 page_token: String::new(),
                 workspace: None,
+                view: TraceView::Unspecified as i32,
             }))
             .await
             .expect_err("trace service should be disabled");
@@ -1365,7 +1390,7 @@ backend = "unsupported"
         let config_dir = temp.path().join("coral-config");
         disable_internal_tracing(&config_dir);
         let server = ServerBuilder::new()
-            .with_config_dir(config_dir.clone())
+            .with_config_dir(config_dir)
             .start()
             .await
             .expect("start server");
@@ -1401,20 +1426,6 @@ backend = "unsupported"
             .expect("task end");
         assert_eq!(task_end.task_id, task.task_id);
         assert_eq!(task_end.task_status, TaskStatus::Success as i32);
-
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let workspace = WorkspaceName::default();
-        let tasks =
-            std::fs::read_to_string(layout.task_events_file(&workspace)).expect("task events file");
-        assert!(tasks.contains(&task.task_id));
-        assert!(
-            tasks.contains("find the HR onboarding form"),
-            "task events should contain start intent, got: {tasks}"
-        );
-        assert!(
-            tasks.contains("success"),
-            "task events should contain end status, got: {tasks}"
-        );
         server.shutdown().await.expect("shutdown");
     }
 
@@ -1434,7 +1445,6 @@ backend = "unsupported"
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
@@ -1483,7 +1493,6 @@ backend = "unsupported"
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
@@ -1532,7 +1541,6 @@ backend = "unsupported"
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1540,6 +1548,7 @@ backend = "unsupported"
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -1558,10 +1567,13 @@ backend = "unsupported"
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
         );
-        let trace_service =
-            TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
+        let trace_service = TraceService::new(TraceManager::new(
+            temp.path().join("trace-store"),
+            Duration::from_mins(1),
+        ));
         let server = start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -1569,13 +1581,16 @@ backend = "unsupported"
                 search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store: FeatureStore::from_layout(layout.clone()),
+                active_features: Features::default(),
             },
             TraceServerComponents {
                 service: Some(trace_service),
                 local_trace_store_dir: None,
             },
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -1591,6 +1606,7 @@ backend = "unsupported"
                 page_size: 10,
                 page_token: String::new(),
                 workspace: None,
+                view: TraceView::Unspecified as i32,
             }))
             .await
             .expect("list traces")
@@ -1599,41 +1615,6 @@ backend = "unsupported"
         assert!(response.traces.is_empty());
         assert!(response.next_page_token.is_empty());
         server.shutdown().await.expect("shutdown");
-    }
-
-    fn grpc_web_body(message: &impl prost::Message) -> Vec<u8> {
-        let mut encoded = Vec::new();
-        prost::Message::encode(message, &mut encoded).expect("encode protobuf");
-
-        let mut body = Vec::with_capacity(5 + encoded.len());
-        body.push(0);
-        body.extend_from_slice(
-            &u32::try_from(encoded.len())
-                .expect("fixture protobuf length fits u32")
-                .to_be_bytes(),
-        );
-        body.extend_from_slice(&encoded);
-        body
-    }
-
-    struct StubAssets;
-
-    impl StaticAssetsProvider for StubAssets {
-        fn get(&self, path: &str) -> Option<StaticAsset> {
-            if path.is_empty() || path == "index.html" {
-                Some(StaticAsset {
-                    bytes: Cow::Borrowed(b"<html><body>Coral UI</body></html>"),
-                    content_type: Cow::Borrowed("text/html; charset=utf-8"),
-                })
-            } else if path == "assets/app.js" {
-                Some(StaticAsset {
-                    bytes: Cow::Borrowed(b"console.log('coral')"),
-                    content_type: Cow::Borrowed("application/javascript"),
-                })
-            } else {
-                None
-            }
-        }
     }
 
     #[test]
@@ -1648,7 +1629,7 @@ backend = "unsupported"
         let temp = TempDir::new().expect("temp dir");
         let server = ServerBuilder::new()
             .with_config_dir(temp.path().join("coral-config"))
-            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .with_principal_provider(Arc::new(RejectingPrincipalProvider))
             .start()
             .await
             .expect("start server");
@@ -1658,7 +1639,7 @@ backend = "unsupported"
             .await
             .expect("connect");
 
-        let status = SourceServiceClient::new(channel)
+        let status = SourceServiceClient::new(channel.clone())
             .list_sources(Request::new(ListSourcesRequest {
                 workspace: Some(default_workspace()),
             }))
@@ -1666,285 +1647,13 @@ backend = "unsupported"
             .expect_err("request should be rejected");
 
         assert_eq!(status.code(), Code::Unauthenticated);
+
+        let status = GuiOnboardingServiceClient::new(channel)
+            .get_gui_onboarding_state(Request::new(GetGuiOnboardingStateRequest {}))
+            .await
+            .expect_err("onboarding request should be rejected");
+        assert_eq!(status.code(), Code::Unauthenticated);
         server.shutdown().await.expect("shutdown");
-    }
-
-    #[test]
-    fn native_grpc_content_type_detection_excludes_grpc_web() {
-        assert!(is_native_grpc_content_type(Some(
-            &"application/grpc".parse().expect("header")
-        )));
-        assert!(is_native_grpc_content_type(Some(
-            &"application/grpc+proto; charset=utf-8"
-                .parse()
-                .expect("header")
-        )));
-        assert!(!is_native_grpc_content_type(Some(
-            &"application/grpc-web+proto".parse().expect("header")
-        )));
-    }
-
-    #[test]
-    fn grpc_web_content_type_detection_accepts_grpc_web() {
-        assert!(is_grpc_web_content_type(Some(
-            &"application/grpc-web".parse().expect("header")
-        )));
-        assert!(is_grpc_web_content_type(Some(
-            &"application/grpc-web+proto; charset=utf-8"
-                .parse()
-                .expect("header")
-        )));
-        assert!(!is_grpc_web_content_type(Some(
-            &"application/grpc+proto".parse().expect("header")
-        )));
-    }
-
-    #[tokio::test]
-    async fn embedded_ui_server_accepts_browser_requests_and_rejects_native_grpc() {
-        let temp = TempDir::new().expect("temp dir");
-        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
-            .with_config_dir(temp.path().join("coral-config"))
-            .start()
-            .await
-            .expect("start embedded UI server");
-        let endpoint = running.endpoint_uri();
-        let path = format!("{endpoint}/coral.v1.SourceService/ListSources");
-        let client = reqwest::Client::new();
-
-        let response = client
-            .post(&path)
-            .header("content-type", "application/grpc-web+proto")
-            .header("x-grpc-web", "1")
-            .body(grpc_web_body(&ListSourcesRequest {
-                workspace: Some(default_workspace()),
-            }))
-            .send()
-            .await
-            .expect("gRPC-Web request");
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        assert!(
-            !response
-                .bytes()
-                .await
-                .expect("gRPC-Web response")
-                .is_empty(),
-            "expected framed gRPC-Web response body"
-        );
-
-        let native_grpc = client
-            .post(&path)
-            .header("content-type", "application/grpc")
-            .body(Vec::new())
-            .send()
-            .await
-            .expect("native gRPC request");
-        assert_eq!(
-            native_grpc.status(),
-            reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
-        );
-
-        running.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn embedded_ui_server_streams_import_source_over_grpc_web() {
-        let temp = TempDir::new().expect("temp dir");
-        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
-            .with_config_dir(temp.path().join("coral-config"))
-            .start()
-            .await
-            .expect("start embedded UI server");
-        let endpoint = running.endpoint_uri();
-        let path = format!("{endpoint}/coral.v1.SourceService/ImportSource");
-        let client = reqwest::Client::new();
-
-        let response = client
-            .post(&path)
-            .header("content-type", "application/grpc-web+proto")
-            .header("x-grpc-web", "1")
-            .body(grpc_web_body(&ImportSourceRequest {
-                workspace: Some(default_workspace()),
-                manifest_yaml: r#"
-name: stream_test
-version: 0.1.0
-dsl_version: 3
-backend: http
-base_url: "https://example.com"
-tables:
-  - name: messages
-    description: Messages
-    request:
-      method: GET
-      path: /messages
-    response: {}
-    columns:
-      - name: id
-        type: Utf8
-"#
-                .to_string(),
-                variables: Vec::new(),
-                secrets: Vec::new(),
-                oauth_credential_retrievals: Vec::new(),
-            }))
-            .send()
-            .await
-            .expect("gRPC-Web streaming request");
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let body = response.bytes().await.expect("gRPC-Web streaming body");
-        let body = body.as_ref();
-        assert!(body.len() >= 5, "expected framed gRPC-Web response body");
-        assert_eq!(body[0], 0, "expected first frame to be a data frame");
-        let len = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
-        let frame = body.get(5..5 + len).expect("complete gRPC-Web data frame");
-        let trailer_offset = 5 + len;
-        assert!(
-            body.len() >= trailer_offset + 5,
-            "expected final gRPC-Web trailer frame"
-        );
-        assert_eq!(
-            body[trailer_offset], 0x80,
-            "expected final frame to be uncompressed trailers"
-        );
-        let trailer_len = u32::from_be_bytes([
-            body[trailer_offset + 1],
-            body[trailer_offset + 2],
-            body[trailer_offset + 3],
-            body[trailer_offset + 4],
-        ]) as usize;
-        let trailer_end = trailer_offset + 5 + trailer_len;
-        let trailers = body
-            .get(trailer_offset + 5..trailer_end)
-            .expect("complete gRPC-Web trailer frame");
-        assert_eq!(
-            body.len(),
-            trailer_end,
-            "expected trailers to be the final gRPC-Web frame"
-        );
-        let trailers = std::str::from_utf8(trailers).expect("trailers are UTF-8");
-        assert!(
-            trailers.lines().any(|line| {
-                line.strip_prefix("grpc-status:")
-                    .is_some_and(|status| status.trim() == "0")
-            }),
-            "expected successful gRPC-Web trailer status, got {trailers:?}"
-        );
-        let event = <ImportSourceResponse as prost::Message>::decode(frame)
-            .expect("decode import source response")
-            .event
-            .expect("stream event");
-        match event {
-            import_source_response::Event::Source(source) => {
-                assert_eq!(source.name, "stream_test");
-            }
-            other => panic!("unexpected stream event: {other:?}"),
-        }
-
-        running.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn embedded_ui_authenticates_grpc_web_without_gating_static_assets() {
-        let temp = TempDir::new().expect("temp dir");
-        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
-            .with_config_dir(temp.path().join("coral-config"))
-            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
-            .start()
-            .await
-            .expect("start embedded UI server");
-        let endpoint = running.endpoint_uri().to_string();
-        let client = reqwest::Client::new();
-
-        // Root serves index.html
-        let root = client.get(&endpoint).send().await.expect("root request");
-        assert_eq!(root.status(), reqwest::StatusCode::OK);
-        assert_eq!(
-            root.headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok()),
-            Some("text/html; charset=utf-8")
-        );
-        let body = root.text().await.expect("root body");
-        assert!(body.contains("Coral UI"), "unexpected body: {body}");
-
-        // Asset path serves the asset
-        let asset = client
-            .get(format!("{endpoint}/assets/app.js"))
-            .send()
-            .await
-            .expect("asset request");
-        assert_eq!(asset.status(), reqwest::StatusCode::OK);
-        assert_eq!(
-            asset
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok()),
-            Some("application/javascript")
-        );
-
-        // Unknown path falls back to index.html (SPA fallback).
-        let route = client
-            .get(format!("{endpoint}/some/spa/route"))
-            .send()
-            .await
-            .expect("spa route request");
-        assert_eq!(route.status(), reqwest::StatusCode::OK);
-        assert_eq!(
-            route
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok()),
-            Some("text/html; charset=utf-8")
-        );
-
-        // Registered gRPC-Web routes still pass through the principal gate.
-        let grpc_path = format!("{endpoint}/coral.v1.SourceService/ListSources");
-        let response = client
-            .post(&grpc_path)
-            .header("content-type", "application/grpc-web+proto")
-            .header("x-grpc-web", "1")
-            .body(grpc_web_body(&ListSourcesRequest {
-                workspace: Some(default_workspace()),
-            }))
-            .send()
-            .await
-            .expect("gRPC-Web request");
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let grpc_status = response
-            .headers()
-            .get("grpc-status")
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
-        let body = String::from_utf8_lossy(&response.bytes().await.expect("gRPC-Web response"))
-            .into_owned();
-        assert!(
-            grpc_status.as_deref() == Some("16")
-                || body.contains("grpc-status: 16")
-                || body.contains("grpc-status:16"),
-            "expected unauthenticated gRPC-Web status, got header {grpc_status:?} and body {body:?}"
-        );
-
-        let unknown_grpc = client
-            .post(format!("{endpoint}/unknown.Service/Method"))
-            .header("content-type", "application/grpc-web+proto")
-            .header("x-grpc-web", "1")
-            .body(grpc_web_body(&ListSourcesRequest {
-                workspace: Some(default_workspace()),
-            }))
-            .send()
-            .await
-            .expect("unknown gRPC-Web request");
-        assert_eq!(unknown_grpc.status(), reqwest::StatusCode::NOT_FOUND);
-        assert_eq!(
-            unknown_grpc
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok()),
-            Some("text/plain; charset=utf-8")
-        );
-        let unknown_body = unknown_grpc.text().await.expect("unknown body");
-        assert_eq!(unknown_body, "Not Found");
-
-        running.shutdown().await.expect("shutdown");
     }
 
     fn loopback_sockets_available() -> bool {
@@ -1981,7 +1690,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1989,6 +1697,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -2012,6 +1721,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2019,10 +1729,13 @@ tables:
                 search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store: FeatureStore::from_layout(layout.clone()),
+                active_features: Features::default(),
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2080,6 +1793,8 @@ tables:
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: "SELECT text FROM tilde_demo.messages ORDER BY text".to_string(),
+                guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect("execute sql")
@@ -2110,7 +1825,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -2118,6 +1832,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -2138,6 +1853,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2145,10 +1861,13 @@ tables:
                 search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store: FeatureStore::from_layout(layout.clone()),
+                active_features: Features::default(),
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2168,6 +1887,8 @@ tables:
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: sql.to_string(),
+                guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect("execute_sql >4MB response")
@@ -2236,7 +1957,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -2244,6 +1964,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -2264,6 +1985,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2271,10 +1993,13 @@ tables:
                 search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store: FeatureStore::from_layout(layout.clone()),
+                active_features: Features::default(),
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2314,6 +2039,8 @@ tables:
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: "SELECT bogus_column FROM wide_demo.wide LIMIT 0".to_string(),
+                guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect_err("expected gRPC Status, not a transport-level PROTOCOL_ERROR");

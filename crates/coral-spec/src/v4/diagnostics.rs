@@ -2,31 +2,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
-    pub code: String,
-    pub severity: DiagnosticSeverity,
     pub message: String,
     pub operation_id: Option<String>,
 }
 
 impl Diagnostic {
-    pub(crate) fn warning(
-        code: &str,
-        message: impl Into<String>,
-        operation_id: Option<String>,
-    ) -> Self {
+    pub fn new(message: impl Into<String>, operation_id: Option<String>) -> Self {
         Self {
-            code: code.to_string(),
-            severity: DiagnosticSeverity::Warning,
             message: message.into(),
             operation_id,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DiagnosticSeverity {
-    Info,
-    Warning,
-    Error,
 }

@@ -5,8 +5,8 @@ use serde_json::Value;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
 use crate::v4::surfaces::json_schema::{
-    JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, direct_json_object_shape,
-    json_schema_default_to_string, json_schema_scalar_type,
+    JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, SchemaRoot,
+    direct_json_object_shape, json_schema_default_to_string, json_schema_scalar_type,
     merge_json_object_shape_annotation_insensitive, resolve_json_schema_ref_with_siblings,
     with_resolved_json_schema,
 };
@@ -31,8 +31,11 @@ impl McpImporter<'_> {
                 diagnostics,
                 schema_complete: &mut schema_complete,
             };
+            // Read exactly as published: the 3.1 nullability rewrites belong
+            // to the OpenAPI surface, and nothing here has been measured
+            // against an MCP descriptor.
             let Some(shape) = input_object_shape(
-                &tool.input_schema,
+                SchemaRoot::new(&tool.input_schema),
                 &tool.input_schema,
                 &mut resolving_refs,
                 &mut context,
@@ -63,6 +66,10 @@ impl McpImporter<'_> {
                     location: IrInputLocation::ToolArg,
                     required: shape.required.contains(name.as_str()),
                     data_type,
+                    // MCP tool arguments are sent as JSON, so a list-valued
+                    // argument needs no wire encoding: `Json` already carries
+                    // the array through to the tool call intact.
+                    collection_encoding: None,
                     default_value: property.get("default").map(json_schema_default_to_string),
                     description: schema_description(property),
                 }
@@ -81,7 +88,7 @@ pub(super) struct ImportedInputs {
 }
 
 fn input_object_shape(
-    root: &Value,
+    root: SchemaRoot<'_>,
     schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     context: &mut InputSchemaContext<'_, '_>,
@@ -99,7 +106,7 @@ fn input_object_shape(
                 return Ok(None);
             }
 
-            let mut shape = direct_json_object_shape(schema);
+            let mut shape = direct_json_object_shape(root, schema);
             if !resolve_input_property_schemas(
                 root,
                 &mut shape,
@@ -141,7 +148,7 @@ fn input_object_shape(
 }
 
 fn resolve_input_property_schemas(
-    root: &Value,
+    root: SchemaRoot<'_>,
     shape: &mut JsonObjectShape,
     resolving_refs: &mut BTreeSet<String>,
     context: &mut InputSchemaContext<'_, '_>,
@@ -178,13 +185,10 @@ fn validate_required_properties(
     if missing.is_empty() {
         return true;
     }
-    context.push_warning(
-        "MCP_INPUT_SCHEMA_REQUIRED_PROPERTY_MISSING",
-        format!(
-            "MCP input schema marks required properties that are not defined: {}",
-            missing.join(", ")
-        ),
-    );
+    context.push_warning(format!(
+        "MCP input schema marks required properties that are not defined: {}",
+        missing.join(", ")
+    ));
     false
 }
 
@@ -198,17 +202,13 @@ fn merge_input_object_shape(
     match merge_json_object_shape_annotation_insensitive(target, source, depth, max_depth) {
         Ok(()) => true,
         Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
-            context.push_warning(
-                "MCP_INPUT_SCHEMA_CONFLICT",
-                format!("MCP input schema defines conflicting property '{property}'"),
-            );
+            context.push_warning(format!(
+                "MCP input schema defines conflicting property '{property}'"
+            ));
             false
         }
         Err(JsonSchemaComparisonError::DepthExceeded) => {
-            context.push_warning(
-                "MCP_INPUT_SCHEMA_DEPTH_EXCEEDED",
-                "MCP input schema exceeds the maximum supported nesting depth",
-            );
+            context.push_warning("MCP input schema exceeds the maximum supported nesting depth");
             false
         }
     }
@@ -223,37 +223,31 @@ struct InputSchemaContext<'a, 'b> {
 impl InputSchemaContext<'_, '_> {
     fn push_unsupported_composition(&mut self) {
         self.push_warning(
-            "MCP_INPUT_SCHEMA_COMPOSITION_UNSUPPORTED",
             "MCP input schema uses anyOf/oneOf, which cannot be safely imported as SQL inputs",
         );
     }
 
-    fn push_schema_walk_diagnostic(&mut self, error: JsonSchemaWalkError<'_>) {
-        let (code, message) = match error {
-            JsonSchemaWalkError::ExternalRef(reference) => (
-                "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
-                format!("MCP input schema external reference '{reference}' is unsupported"),
-            ),
-            JsonSchemaWalkError::RefCycle(reference) => (
-                "MCP_INPUT_SCHEMA_REF_UNSUPPORTED",
-                format!("MCP input schema reference cycle includes '{reference}'"),
-            ),
-            JsonSchemaWalkError::RefNotFound(reference) => (
-                "MCP_INPUT_SCHEMA_REF_NOT_FOUND",
-                format!("MCP input schema reference '{reference}' was not found"),
-            ),
-            JsonSchemaWalkError::DepthExceeded => (
-                "MCP_INPUT_SCHEMA_DEPTH_EXCEEDED",
-                "MCP input schema exceeds the maximum supported nesting depth".to_string(),
-            ),
+    fn push_schema_walk_diagnostic(&mut self, error: JsonSchemaWalkError) {
+        let message = match error {
+            JsonSchemaWalkError::ExternalRef(reference) => {
+                format!("MCP input schema external reference '{reference}' is unsupported")
+            }
+            JsonSchemaWalkError::RefCycle(reference) => {
+                format!("MCP input schema reference cycle includes '{reference}'")
+            }
+            JsonSchemaWalkError::RefNotFound(reference) => {
+                format!("MCP input schema reference '{reference}' was not found")
+            }
+            JsonSchemaWalkError::DepthExceeded => {
+                "MCP input schema exceeds the maximum supported nesting depth".to_string()
+            }
         };
-        self.push_warning(code, message);
+        self.push_warning(message);
     }
 
-    fn push_warning(&mut self, code: &'static str, message: impl Into<String>) {
+    fn push_warning(&mut self, message: impl Into<String>) {
         *self.schema_complete = false;
-        self.diagnostics.push(Diagnostic::warning(
-            code,
+        self.diagnostics.push(Diagnostic::new(
             message,
             Some(self.operation_id.to_string()),
         ));

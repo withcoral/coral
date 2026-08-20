@@ -505,6 +505,26 @@ In this minimal example:
 - `auth` declares how stored values are used to authenticate outgoing HTTP requests
 - `{{input.API_TOKEN}}` is resolved from the secret store because `API_TOKEN` is declared as `kind: secret`
 
+### Table guidance
+
+Use `guide` for query instructions that are too detailed for `description`.
+Set `require_guide_read: true` to show the guide before an MCP agent first
+queries the table in each task:
+
+```yaml
+tables:
+  - name: channels
+    description: Slack channels
+    guide: Prefer user_channels for lookup by name or ID.
+    require_guide_read: true
+```
+
+`require_guide_read` requires a non-empty guide. Coral returns the guide instead
+of executing the first matching query in each MCP task; other queries in the
+same batch still run. The agent can then retry or revise the query. Other SQL
+clients are unaffected. In a DSL v4 projection override, set the same fields on
+the projection.
+
 ### Table filters
 
 HTTP tables can declare `filters` that Coral binds from SQL `WHERE` predicates into provider requests. MCP tables use the same SQL-facing filter fields and add a required `tool_arg` field to bind the filter to an MCP tool argument.
@@ -542,6 +562,9 @@ functions:
   - name: search_issues
     kind: search
     description: Search GitHub issues
+    guide: |
+      Use this function to find issues by keywords or qualifiers.
+      Prefer it over scanning the issues table for lookup queries.
     search_limits:
       default_top_k: 10
       max_top_k: 100
@@ -592,6 +615,8 @@ functions:
       - name: score
         type: Float64
 ```
+
+Table functions support `guide` and `require_guide_read` with the same behavior.
 
 Use `bind.arg` when a SQL argument should populate a differently named request
 argument. Function request values can then reference those bound arguments with
@@ -1011,11 +1036,13 @@ Request query params, body fields, and headers support these `from` values:
 | `filter` | Read a table filter captured from the query `WHERE` clause and serialize it as a string |
 | `filter_int` | Read a table filter captured from the query `WHERE` clause and serialize it as a JSON integer |
 | `filter_bool` | Read a table filter captured from the query `WHERE` clause and serialize it as a JSON boolean |
+| `filter_string_array` | Read a table filter holding a JSON array literal and serialize it as a JSON array |
 | `filter_split` | Split a table filter string and serialize one part as a string |
 | `filter_split_int` | Split a table filter string and serialize one part as a JSON integer |
 | `arg` | Read a source function argument captured from the function call and serialize it as a string |
 | `arg_int` | Read a source function argument captured from the function call and serialize it as a JSON integer |
 | `arg_bool` | Read a source function argument captured from the function call and serialize it as a JSON boolean |
+| `arg_string_array` | Read a source function argument holding a JSON array literal and serialize it as a JSON array |
 | `arg_split` | Split a source function argument string and serialize one part as a string |
 | `arg_split_int` | Split a source function argument string and serialize one part as a JSON integer |
 | `input` | Read a manifest-declared source input (variable/secret) by key |
@@ -1031,7 +1058,8 @@ arg value sources because their request values come from named function
 arguments such as `github.search_issues(q => 'flaky')`.
 
 The suffix controls the value type sent to the provider. Use the bare form for a
-string request value, `_int` for a JSON integer, and `_bool` for a JSON boolean.
+string request value, `_int` for a JSON integer, `_bool` for a JSON boolean, and
+`_string_array` for a JSON array.
 
 Boolean filters used with `filter_bool` can be written as normal SQL boolean
 predicates, for example `WHERE include_archived IS FALSE` or
@@ -1078,6 +1106,39 @@ request:
       part: 1
 ```
 
+### Multi-valued request values
+
+`filter_string_array` and `arg_string_array` read a list. The SQL value is a JSON
+array literal, and a bare value is accepted as a one-element list:
+
+```sql
+SELECT * FROM github.list_org_migrations(org => 'withcoral', exclude => '["repositories"]');
+SELECT * FROM github.list_org_migrations(org => 'withcoral', exclude => 'repositories');
+```
+
+In a request body the list becomes a JSON array. In a query parameter it expands
+according to the parameter's `explode` setting, which defaults to `true`:
+
+```yaml
+query:
+  # explode: true (the default) sends ?exclude=a&exclude=b
+  - name: exclude
+    from: filter_string_array
+    key: exclude
+  # explode: false sends ?$select=a,b
+  - name: $select
+    explode: false
+    from: filter_string_array
+    key: select
+```
+
+An empty list sends no query parameter at all. `explode` has no effect on
+single-valued value sources. Text that starts with `[` is always read as a JSON
+array, so a malformed one is an error rather than a single literal value.
+
+Declare the backing filter or argument as `Utf8`. A `Json` argument's value must
+parse as JSON before the value source runs, which rejects the bare form.
+
 ### HTTP response fields
 
 The `response` object controls how Coral extracts rows from an HTTP response body.
@@ -1108,9 +1169,10 @@ The `pagination` object controls how Coral fetches additional pages of results.
 
 | Field                         | Type            | Default | Description                                                                                            |
 | ----------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------ |
-| `mode`                        | string          | `none`  | Pagination strategy: `none`, `auto`, `cursor_query`, `cursor_body`, `page`, `offset`, or `link_header` |
+| `mode`                        | string          | `none`  | Pagination strategy: `none`, `auto`, `cursor_query`, `cursor_body`, `page`, `offset`, `link_header`, or `next_url_body` |
 | `cursor_param`                | string          | —       | Query parameter name for the cursor (`cursor_query` mode)                                              |
 | `response_cursor_path`        | list of strings | `[]`    | JSON path in the response to the next cursor value                                                     |
+| `next_url_path`               | list of strings | `[]`    | JSON path in the response to the next page's URL (`next_url_body` mode)                                 |
 | `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                      |
 | `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                 |
 | `page_start`                  | integer         | `0`     | Starting page number                                                                                   |
@@ -1165,6 +1227,29 @@ pagination:
     max: 100
     query_param: per_page
 ```
+
+Example using a next-page URL embedded in the response body (common with OData
+APIs such as Microsoft Graph):
+
+```yaml
+pagination:
+  mode: next_url_body
+  next_url_path:
+    - "@odata.nextLink"
+  page_size:
+    default: 50
+    max: 999
+    query_param: $top
+```
+
+<Note>
+  Use `next_url_body` when the response hands back a next-page **URL**, and
+  `cursor_query` when it hands back a **token** you have to place into a request
+  parameter yourself. Both an absolute URL and a relative link such as `?page=2`
+  are accepted; Coral resolves a relative link against the request that returned
+  it. The resolved URL must stay on the same origin as that request — a
+  cross-origin next link fails the query rather than following it.
+</Note>
 
 ## Source inputs
 
@@ -1408,7 +1493,8 @@ secret has been configured.
 
 | Column | Description |
 | ------ | ----------- |
-| `schema_name` | Source schema that owns the input |
+| `schema_name` | Source schema that owns the input; empty for database sources |
+| `catalog_name` | SQL catalog that owns the input; empty for schema-addressed sources |
 | `key` | Input key from the manifest |
 | `kind` | `variable` or `secret` |
 | `value` | Variable value when available; `NULL` for secrets |
@@ -1417,14 +1503,27 @@ secret has been configured.
 | `required` | Whether the input must be configured |
 | `is_set` | Whether Coral has a saved value for that input |
 
+Sources whose tables are addressed as `schema_name.table_name` populate
+`schema_name` and leave `catalog_name` empty. Database sources are addressed by
+catalog instead, so their input rows invert that: `schema_name` is empty and
+`catalog_name` carries the source name. Neither column is ever `NULL` — the
+absent side is the empty string, so match it with `= ''` rather than `IS NULL`.
+A query that should cover either shape filters on both columns.
+
+The same pair appears on `coral.tables`, `coral.columns`, `coral.filters`, and
+`coral.table_functions`, with one difference: on those tables `schema_name` stays
+populated for database sources because it names the schema inside the database
+(such as `public`), while `catalog_name` names the source.
+
 Example queries:
 
 ```sql
--- Look up a variable value
+-- Look up a variable value, whichever way the source is addressed
 SELECT value FROM coral.inputs
-WHERE schema_name = 'datadog' AND kind = 'variable' AND key = 'DD_SITE';
+WHERE (schema_name = 'datadog' OR catalog_name = 'datadog')
+  AND kind = 'variable' AND key = 'DD_SITE';
 
 -- Check which secrets are configured without revealing them
-SELECT schema_name, key FROM coral.inputs
+SELECT catalog_name, schema_name, key FROM coral.inputs
 WHERE kind = 'secret' AND is_set;
 ```

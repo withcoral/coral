@@ -1,8 +1,8 @@
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 
-use crate::state::db::DbError;
 use crate::state::db::schema::Workspaces;
 use crate::state::db::session::DbSession;
+use crate::state::db::{CoralTx, DbError};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub(crate) struct WorkspaceRecord {
@@ -67,17 +67,35 @@ where
         self.session.fetch_all(statement).await
     }
 
-    pub(crate) async fn delete(&mut self, id: &str) -> Result<(), DbError> {
+    pub(crate) async fn delete(&mut self, id: &str) -> Result<bool, DbError> {
         let statement = Query::delete()
             .from_table(Workspaces::Table)
             .and_where(Expr::col(Workspaces::Id).eq(id))
             .to_owned();
-        self.session.execute(statement).await
+        Ok(self.session.execute_rows_affected(statement).await? == 1)
     }
 
     pub(crate) async fn delete_all(&mut self) -> Result<(), DbError> {
         let statement = Query::delete().from_table(Workspaces::Table).to_owned();
         self.session.execute(statement).await
+    }
+}
+
+impl WorkspacesRepo<'_, CoralTx<'_>> {
+    /// Holds an existing workspace parent for a child-table mutation.
+    ///
+    /// The no-op update is portable across `SQLite` and Postgres and establishes
+    /// one parent-before-child serialization point for workspace-scoped writes.
+    pub(crate) async fn hold_for_child_mutation(&mut self, id: &str) -> Result<bool, DbError> {
+        let statement = Query::update()
+            .table(Workspaces::Table)
+            .value(
+                Workspaces::CreatedAtUnixNanos,
+                Expr::col(Workspaces::CreatedAtUnixNanos),
+            )
+            .and_where(Expr::col(Workspaces::Id).eq(id))
+            .to_owned();
+        Ok(DbSession::execute_rows_affected(self.session, statement).await? == 1)
     }
 }
 
@@ -104,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn workspace_repository_round_trips_against_postgres() {
+    async fn workspace_repository_contract_on_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };
@@ -176,6 +194,21 @@ mod tests {
             "workspace list did not contain expected record: {workspaces:?}"
         );
 
+        let mut tx = db.begin().await.expect("begin hold tx");
+        assert!(
+            tx.workspaces()
+                .hold_for_child_mutation(&workspace_id)
+                .await
+                .expect("hold existing workspace")
+        );
+        assert!(
+            !tx.workspaces()
+                .hold_for_child_mutation(&missing_workspace_id)
+                .await
+                .expect("hold missing workspace")
+        );
+        tx.rollback().await.expect("roll back hold tx");
+
         let mut tx = db.begin().await.expect("begin rollback tx");
         tx.workspaces()
             .ensure(&rolled_back_workspace_id, 77)
@@ -192,10 +225,12 @@ mod tests {
         );
 
         let mut tx = db.begin().await.expect("begin delete tx");
-        tx.workspaces()
-            .delete(&workspace_id)
-            .await
-            .expect("delete workspace");
+        assert!(
+            tx.workspaces()
+                .delete(&workspace_id)
+                .await
+                .expect("delete workspace")
+        );
         tx.commit().await.expect("commit delete tx");
         assert_eq!(
             session
@@ -205,6 +240,15 @@ mod tests {
                 .expect("get deleted workspace"),
             None
         );
+
+        let mut tx = db.begin().await.expect("begin missing delete tx");
+        assert!(
+            !tx.workspaces()
+                .delete(&missing_workspace_id)
+                .await
+                .expect("delete missing workspace")
+        );
+        tx.rollback().await.expect("roll back missing delete tx");
     }
 
     fn unique_workspace_id() -> String {

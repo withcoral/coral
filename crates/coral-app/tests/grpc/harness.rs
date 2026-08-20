@@ -185,6 +185,7 @@ impl GrpcHarness {
         self.catalog_client()
             .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(default_workspace()),
+                catalog_name: String::new(),
                 schema_name: String::new(),
                 kind: 1,
                 pagination: Some(PaginationRequest {
@@ -221,6 +222,8 @@ impl GrpcHarness {
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: sql.to_string(),
+                guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect("execute sql")
@@ -408,6 +411,7 @@ pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
             {
                 "name": "lookup_issue",
                 "description": "Lookup issue",
+                "guide": "Use this function for exact issue lookup.",
                 "args": [
                     {
                         "name": "number",

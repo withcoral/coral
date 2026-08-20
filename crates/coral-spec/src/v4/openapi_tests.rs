@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use super::*;
 use crate::{
-    ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
+    CollectionEncoding, ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
     parse_source_manifest_yaml,
 };
 
@@ -19,6 +20,15 @@ fn imported_rest_pagination<'a>(
         OperationMetadata::Rest { pagination, .. } => pagination,
         OperationMetadata::Mcp { .. } => panic!("expected REST metadata"),
     }
+}
+
+fn imported_row_path<'a>(surface: &'a ImportedSurface, operation_id: &str) -> &'a [String] {
+    surface
+        .operation_metadata
+        .operations
+        .get(operation_id)
+        .expect("operation metadata")
+        .row_path()
 }
 
 #[test]
@@ -64,62 +74,6 @@ paths: {}
     assert_eq!(
         metadata.server_url.as_deref(),
         Some("https://statusgator.com/api/v3")
-    );
-}
-
-#[test]
-fn importer_warns_and_skips_external_openapi_operation_refs() {
-    let manifest = parse_source_manifest_yaml(
-        r"
-name: digitalocean_ref_test
-dsl_version: 4
-surface:
-    type: openapi
-    file: /tmp/openapi.yaml
-    base_url: https://api.example.com
-",
-    )
-    .expect("manifest");
-    let v4 = manifest.as_v4().expect("v4");
-    let surface = &v4.surface;
-    let ir = import_openapi_surface(
-        v4,
-        surface,
-        r"
-openapi: 3.0.3
-paths:
-  /account:
-    get:
-      $ref: resources/account/account_get.yml
-"
-        .as_bytes(),
-    )
-    .expect("operation ref import should emit diagnostics");
-
-    assert!(
-        ir.operations.is_empty(),
-        "unsupported operation refs should not import empty operations: {:?}",
-        ir.operations
-    );
-    let diagnostic = ir
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
-        .expect("unsupported operation ref diagnostic");
-    assert!(diagnostic.operation_id.is_none());
-    assert!(
-        diagnostic
-            .message
-            .contains("resources/account/account_get.yml"),
-        "{}",
-        diagnostic.message
-    );
-    assert!(
-        diagnostic
-            .message
-            .contains("dereferenced or bundled OpenAPI documents"),
-        "{}",
-        diagnostic.message
     );
 }
 
@@ -308,7 +262,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_common_envelope_objects_as_singletons() {
+fn importer_infers_row_paths_for_common_envelope_objects() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: statusgator
@@ -358,7 +312,10 @@ components:
     )
     .expect("import");
     let operation = ir.operations.first().expect("operation");
+    // The IR keeps the declared envelope; only the metadata says where its rows
+    // are.
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(imported_row_path(&ir, "listincidents"), ["data"]);
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -372,9 +329,9 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("success"), Some(&ManifestDataType::Boolean));
-    assert_eq!(columns.get("data"), Some(&ManifestDataType::Json));
-    assert_eq!(columns.get("pagination"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.get("name"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 2);
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -384,7 +341,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_single_array_payload_objects_as_singletons() {
+fn importer_infers_row_path_for_a_sole_array_payload_beside_a_total() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -433,6 +390,13 @@ components:
     .expect("import");
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(
+        imported_row_path(
+            &ir,
+            "actions_list_selected_repositories_enabled_github_actions_organization"
+        ),
+        ["repositories"]
+    );
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -442,8 +406,9 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
-    assert_eq!(columns.get("repositories"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("name"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 2);
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -453,7 +418,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_search_result_objects_as_singletons() {
+fn importer_prefers_a_named_row_property_over_other_arrays() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -512,6 +477,11 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // `lexical_fallback_reason` is an array too; the conventional row name wins.
+    assert_eq!(
+        imported_row_path(&ir, "search_issues_and_pull_requests"),
+        ["items"]
+    );
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -521,21 +491,13 @@ paths:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
-    assert_eq!(
-        columns.get("incomplete_results"),
-        Some(&ManifestDataType::Boolean)
-    );
-    assert_eq!(columns.get("items"), Some(&ManifestDataType::Json));
-    assert_eq!(columns.get("search_type"), Some(&ManifestDataType::Utf8));
-    assert_eq!(
-        columns.get("lexical_fallback_reason"),
-        Some(&ManifestDataType::Json)
-    );
-    assert!(!columns.contains_key("id"));
-    assert!(!columns.contains_key("number"));
-    assert!(!columns.contains_key("title"));
-    assert!(!columns.contains_key("state"));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("number"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("title"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.get("state"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 4);
+    assert!(!columns.contains_key("total_count"));
+    assert!(!columns.contains_key("lexical_fallback_reason"));
 }
 
 #[test]
@@ -636,6 +598,9 @@ components:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // A project item is a resource, not a page of its `fields`: nothing in the
+    // response or the request says otherwise.
+    assert!(imported_row_path(&ir, "projects_get_org_item").is_empty());
 
     let row_type = ir
         .types
@@ -716,6 +681,9 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // A bundle's `items` is a conventional row name, but a bundle is still a
+    // resource: no metadata sibling, no pagination parameter.
+    assert!(imported_row_path(&ir, "bundles_get").is_empty());
 }
 
 #[test]
@@ -1191,16 +1159,23 @@ paths:
         .as_bytes(),
     )
     .expect("broken response refs import with diagnostics");
-    let codes = ir
+    let messages = ir
         .operations
         .iter()
         .flat_map(|operation| operation.diagnostics.iter())
-        .map(|diagnostic| diagnostic.code.as_str())
+        .map(|diagnostic| diagnostic.message.as_str())
         .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_REF_NOT_FOUND"), "{codes:?}");
     assert!(
-        codes.contains(&"OPENAPI_EXTERNAL_REF_UNSUPPORTED"),
-        "{codes:?}"
+        messages
+            .iter()
+            .any(|message| message.contains("was not found")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("external reference")),
+        "{messages:?}"
     );
     for operation in &ir.operations {
         assert_eq!(operation.output.cardinality, OutputCardinality::None);
@@ -1252,12 +1227,206 @@ components:
     .expect("conflicting allOf imports with diagnostics");
 
     let operation = ir.operations.first().expect("operation");
-    let codes = operation
-        .diagnostics
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("allOf property")),
+        "{:?}",
+        operation.diagnostics
+    );
+    assert_eq!(operation.output.type_ref, "json");
+}
+
+/// A branch may be an alias — `{$ref: Alias}` where `Alias` is itself
+/// `{$ref: Base}` — which one hop of resolution leaves still holding a `$ref`,
+/// with nothing to contribute.
+///
+/// Inference resolves chains, so a branch dropped here would make a row path it
+/// found look absent from the imported type, and `infer_row_path` would discard
+/// the path.
+#[test]
+fn importer_folds_all_of_branches_through_alias_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: aliased_all_of
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Page'}
+components:
+  schemas:
+    Base:
+      type: object
+      properties:
+        next_cursor: {type: string}
+    Alias: {$ref: '#/components/schemas/Base'}
+    Page:
+      type: object
+      allOf:
+        - {$ref: '#/components/schemas/Alias'}
+        - type: object
+          properties:
+            items:
+              type: array
+              items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
         .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the composed page should import as an object: {row_type:?}");
+    };
+    let names = fields
+        .iter()
+        .map(|field| field.name.as_str())
         .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_ALLOF_CONFLICT"), "{codes:?}");
+
+    assert!(
+        names.contains(&"next_cursor"),
+        "the aliased base contributes its properties: {names:?}"
+    );
+    assert!(names.contains(&"items"), "{names:?}");
+}
+
+/// The fold tracks the refs it is resolving, so a self-referential branch is
+/// named as a cycle rather than recursing until the depth cap stops it.
+#[test]
+fn importer_reports_a_cyclic_all_of_branch() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: cyclic_all_of
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Loop'}
+components:
+  schemas:
+    Loop:
+      type: object
+      allOf:
+        - {$ref: '#/components/schemas/Loop'}
+"
+        .as_bytes(),
+    )
+    .expect("a cyclic allOf imports with diagnostics rather than recursing");
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("cyclic")),
+        "the diagnostic must name the cycle, not a depth ceiling: {:?}",
+        operation.diagnostics
+    );
+    assert_eq!(operation.output.type_ref, "json");
+}
+
+/// Composition past the cap reports its own ceiling. Reusing the property
+/// comparison error sent whoever read it to a constant eight times larger.
+#[test]
+fn importer_reports_all_of_composition_past_the_depth_cap() {
+    let mut schemas = String::from(
+        r"
+components:
+  schemas:
+    Deep0:
+      type: object
+      properties:
+        id: {type: string}
+",
+    );
+    for level in 1..=12 {
+        writeln!(
+            schemas,
+            "    Deep{level}:\n      type: object\n      allOf:\n        - {{$ref: '#/components/schemas/Deep{}'}}",
+            level - 1
+        )
+        .expect("writing to a String cannot fail");
+    }
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: deep_all_of
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let document = format!(
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/Deep12'}}
+{schemas}"
+    );
+    let ir = import_openapi_surface(v4, &v4.surface, document.as_bytes()).expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("nests past")),
+        "{:?}",
+        operation.diagnostics
+    );
     assert_eq!(operation.output.type_ref, "json");
 }
 
@@ -1310,6 +1479,71 @@ paths:
         .collect::<BTreeMap<_, _>>();
     assert_eq!(defaults.get("per_page"), Some(&Some("30")));
     assert_eq!(defaults.get("archived"), Some(&Some("false")));
+}
+
+#[test]
+fn importer_reads_a_null_parameter_default_as_no_default() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: defaults
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r#"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            anyOf: [{type: integer}, {type: "null"}]
+            default: null
+        - name: cursor
+          in: query
+          schema: {type: string, default: null}
+        - name: per_page
+          in: query
+          schema:
+            anyOf: [{type: integer}, {type: "null"}]
+            default: 30
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"#
+        .as_bytes(),
+    )
+    .expect("defaults import");
+    let operation = ir.operations.first().expect("operation");
+    let defaults = operation
+        .inputs
+        .iter()
+        .map(|input| (input.name.as_str(), input.default_value.as_deref()))
+        .collect::<BTreeMap<_, _>>();
+    // What Pydantic emits for `param: int | None = None`. Stringifying it would
+    // send `?limit=null`, which an integer parameter rejects.
+    assert_eq!(defaults.get("limit"), Some(&None));
+    assert_eq!(defaults.get("cursor"), Some(&None));
+    assert_eq!(defaults.get("per_page"), Some(&Some("30")));
 }
 
 #[test]
@@ -1806,16 +2040,17 @@ paths:
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<BTreeMap<_, _>>();
 
-    for operation_id in [
-        "cursor_list",
-        "pagination_token_list",
-        "iterator_list",
-        "start_cursor_list",
-        "nested_next_list",
-        "singleton_get",
-        "cursor_header_list",
-        "cursor_page_list",
-        "numeric_page_list",
+    // Each of these declares an envelope object, so cardinality stays
+    // Singleton; the inferred row path is what makes them paginate.
+    for (operation_id, mode) in [
+        ("cursor_list", PaginationMode::CursorQuery),
+        ("pagination_token_list", PaginationMode::CursorQuery),
+        ("iterator_list", PaginationMode::CursorQuery),
+        ("start_cursor_list", PaginationMode::CursorQuery),
+        ("nested_next_list", PaginationMode::CursorQuery),
+        ("cursor_header_list", PaginationMode::CursorQuery),
+        ("cursor_page_list", PaginationMode::CursorQuery),
+        ("numeric_page_list", PaginationMode::Page),
     ] {
         let operation = operations.get(operation_id).expect("operation");
         assert_eq!(
@@ -1823,12 +2058,26 @@ paths:
             OutputCardinality::Singleton,
             "{operation_id}"
         );
+        assert!(
+            !imported_row_path(&ir, operation_id).is_empty(),
+            "{operation_id}"
+        );
         assert_eq!(
             imported_rest_pagination(&ir, operation_id).mode,
-            PaginationMode::None,
+            mode,
             "{operation_id}"
         );
     }
+
+    // A singleton with a cursor query parameter has no row collection to page
+    // through, so the parameter stays an ordinary input.
+    let singleton = operations.get("singleton_get").expect("singleton");
+    assert_eq!(singleton.output.cardinality, OutputCardinality::Singleton);
+    assert!(imported_row_path(&ir, "singleton_get").is_empty());
+    assert_eq!(
+        imported_rest_pagination(&ir, "singleton_get").mode,
+        PaginationMode::None
+    );
 
     let link = imported_rest_pagination(&ir, "link_list");
     assert_eq!(link.mode, PaginationMode::LinkHeader);
@@ -1907,6 +2156,308 @@ paths:
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
         Some("per_page")
+    );
+}
+
+/// Wrapped-list inference resolves `$ref` when it decides a response is an
+/// envelope, so cursor discovery has to resolve it too: a row path without a
+/// cursor is a table that silently stops after its first page.
+#[test]
+fn importer_finds_a_cursor_inside_a_referenced_envelope_metadata_object() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: referenced_meta
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /things:
+    get:
+      operationId: listThings
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ThingPage'}
+  /widgets:
+    get:
+      operationId: listWidgets
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Thing'}
+                  pageInfo:
+                    type: object
+                    properties:
+                      end_cursor: {$ref: '#/components/schemas/Cursor'}
+components:
+  schemas:
+    Cursor:
+      type: string
+    Thing:
+      type: object
+      properties:
+        id: {type: string}
+    PageMeta:
+      type: object
+      properties:
+        next_cursor: {type: string}
+    ThingPage:
+      type: object
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Thing'}
+        meta: {$ref: '#/components/schemas/PageMeta'}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    // A referenced `meta` sibling: the reference is what supplies the envelope
+    // evidence, so the row path depends on resolving exactly what the cursor
+    // walk must also see.
+    assert_eq!(imported_row_path(&ir, "listthings"), ["data"]);
+    let referenced_meta = imported_rest_pagination(&ir, "listthings");
+    assert_eq!(referenced_meta.mode, PaginationMode::CursorQuery);
+    assert_eq!(referenced_meta.cursor_param.as_deref(), Some("cursor"));
+    assert_eq!(
+        referenced_meta.response_cursor_path,
+        ["meta", "next_cursor"]
+    );
+
+    // An inline `pageInfo` whose token is itself a reference.
+    assert_eq!(imported_row_path(&ir, "listwidgets"), ["data"]);
+    let referenced_token = imported_rest_pagination(&ir, "listwidgets");
+    assert_eq!(referenced_token.mode, PaginationMode::CursorQuery);
+    assert_eq!(
+        referenced_token.response_cursor_path,
+        ["pageInfo", "end_cursor"]
+    );
+}
+
+/// Row-path inference asks the pagination detectors whether an operation is
+/// paginated rather than predicting their answer, so a contract binding any
+/// request input is envelope evidence — one case per way `signals_page_envelope`
+/// can be satisfied. Predicting the answer used to deadlock the two inferences:
+/// no row path because an alias was unknown, and no pagination because the gate
+/// needs a row path. `skip`/`take` and `$skip`/`$top` are the aliases that
+/// deadlocked.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Every mode shares one envelope fixture, which is what makes the inputs the only variable."
+)]
+fn importer_infers_row_paths_when_pagination_detection_binds_a_request_input() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: aliases
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /skip-take:
+    get:
+      operationId: skipTakeList
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 0}}
+        - {name: take, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /odata:
+    get:
+      operationId: odataList
+      parameters:
+        - {name: $skip, in: query, schema: {type: integer, default: 0}}
+        - {name: $top, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /cursor:
+    get:
+      operationId: cursorList
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          headers:
+            X-Next-Cursor:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /page:
+    get:
+      operationId: pageList
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /link-header:
+    get:
+      operationId: linkHeaderList
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /unpaginated:
+    get:
+      operationId: unpaginatedGet
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+components:
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        success: {type: boolean}
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    // Every operation returns the same envelope, and it carries no metadata
+    // sibling, so the operation's own inputs are the only evidence available.
+    for (operation_id, mode) in [
+        ("skiptakelist", PaginationMode::Offset),
+        ("odatalist", PaginationMode::Offset),
+        ("cursorlist", PaginationMode::CursorQuery),
+        ("pagelist", PaginationMode::Page),
+        // Link-header detection is tried first, so this reaches
+        // `signals_page_envelope` by a different route than `pagelist` does —
+        // and it is the shape most real paginated endpoints use.
+        ("linkheaderlist", PaginationMode::LinkHeader),
+    ] {
+        assert_eq!(
+            imported_row_path(&ir, operation_id),
+            ["data"],
+            "{operation_id} should be unwrapped"
+        );
+        assert_eq!(
+            imported_rest_pagination(&ir, operation_id).mode,
+            mode,
+            "{operation_id} should paginate"
+        );
+    }
+
+    // The same envelope without pagination inputs stays a singleton: nothing
+    // says this response is a page rather than a resource.
+    assert!(imported_row_path(&ir, "unpaginatedget").is_empty());
+}
+
+/// A `Link` response header alone is not envelope evidence. GitHub declares one
+/// on singleton resources, where treating it as evidence would promote an
+/// incidental array to the whole relation.
+#[test]
+fn importer_does_not_treat_a_bare_link_header_as_envelope_evidence() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: link_header_singleton
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /runners/{runner_id}:
+    get:
+      operationId: getRunner
+      parameters:
+        - {name: runner_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: {type: string}
+                  public_ips:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        prefix: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert!(
+        imported_row_path(&ir, "getrunner").is_empty(),
+        "a runner is a resource, not a page of its IP addresses"
     );
 }
 
@@ -1997,15 +2548,1816 @@ paths:
     )
     .expect("broken schema imports with diagnostics");
     let operation = ir.operations.first().expect("operation");
-    let codes = operation
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
-        .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_PARAMETER_INVALID"), "{codes:?}");
     assert!(
-        codes.contains(&"OPENAPI_RESPONSE_SCHEMA_UNRESOLVED"),
-        "{codes:?}"
+        operation.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("parameter without a string name")),
+        "{:?}",
+        operation.diagnostics
+    );
+    assert!(
+        operation.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("response schema could not be resolved")),
+        "{:?}",
+        operation.diagnostics
     );
     assert_eq!(operation.output.cardinality, OutputCardinality::Unknown);
+}
+
+/// A body field holding a whole next-page URL is a stronger signal than a
+/// guessed cursor parameter, so it outranks cursor-query and offset detection —
+/// but only for names that actually denote a URL.
+#[test]
+fn importer_detects_body_next_url_pagination_above_cursor_and_offset() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nexturl
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /next-url:
+    get:
+      operationId: nextUrlList
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next_page_url: {type: string}
+                  data:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+  /next-token:
+    get:
+      operationId: nextTokenList
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next_cursor: {type: string}
+                  data:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let next_url = imported_rest_pagination(&ir, "nexturllist");
+    assert_eq!(next_url.mode, PaginationMode::NextUrlBody);
+    assert_eq!(next_url.next_url_path, ["next_page_url"]);
+    assert_eq!(
+        next_url
+            .page_size
+            .as_ref()
+            .and_then(|size| size.query_param.as_deref()),
+        Some("limit"),
+        "page one still asks for a page size; later pages inherit it from the URL"
+    );
+    assert!(
+        next_url.offset_param.is_none(),
+        "a whole next URL must beat offset detection, which would drive `skip` the server may reject"
+    );
+    assert_eq!(imported_row_path(&ir, "nexturllist"), ["data"]);
+
+    // `next_cursor` is a token, not a URL: it belongs in the request parameter
+    // that expects it, so it must keep falling through to cursor-query.
+    let next_token = imported_rest_pagination(&ir, "nexttokenlist");
+    assert_eq!(next_token.mode, PaginationMode::CursorQuery);
+    assert_eq!(next_token.cursor_param.as_deref(), Some("cursor"));
+    assert!(next_token.next_url_path.is_empty());
+}
+
+/// A declared `Link` header is cheaper and more standard than reading the body,
+/// so it stays ahead of body next-URL detection.
+#[test]
+fn importer_prefers_a_declared_link_header_over_a_body_next_url() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: linkfirst
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /both:
+    get:
+      operationId: bothList
+      parameters:
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next_link: {type: string}
+                  data:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let pagination = imported_rest_pagination(&ir, "bothlist");
+    assert_eq!(pagination.mode, PaginationMode::LinkHeader);
+    assert!(pagination.next_url_path.is_empty());
+}
+
+/// A next-page URL in the response body is envelope evidence in its own right.
+///
+/// Graph is the shape that needs it: `{"@odata.nextLink": ..., "value": [...]}`
+/// on an operation that declares no `$top`. The response names no conventional
+/// row property and carries no metadata sibling the lexicon recognizes, so
+/// without the next-URL path there is nothing to unwrap `value` on — and a
+/// contract only survives once the response reads as a list, so the pagination
+/// would have been discarded along with the row path.
+#[test]
+fn importer_treats_a_body_next_url_as_envelope_evidence_without_page_inputs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: odata
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  '@odata.nextLink': {type: string}
+                  value:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(imported_row_path(&ir, "listusers"), ["value"]);
+    let pagination = imported_rest_pagination(&ir, "listusers");
+    assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
+    assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
+    assert!(
+        pagination.page_size.is_none(),
+        "nothing declares a page size here; the next URL carries the paging state"
+    );
+}
+
+/// A body next-URL outranks the input-corroborated modes, so it has to be more
+/// than a name match: the schema must declare the property a string.
+///
+/// Without that, an operation like this one got `mode: next_url_body` on the
+/// strength of the name `nextLink`. At runtime `Value::as_str` on a non-string
+/// reads `None`, `advance_pagination_state` stops, and the query returns page
+/// one — no error, no diagnostic — where the `skip`/`limit` contract the server
+/// actually declared would have fetched everything.
+#[test]
+fn importer_ignores_a_body_next_url_the_schema_does_not_declare_a_string() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: things
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /things:
+    get:
+      operationId: listThings
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nextLink: {}
+                  data:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let pagination = imported_rest_pagination(&ir, "listthings");
+    assert_eq!(
+        pagination.mode,
+        PaginationMode::Offset,
+        "an undeclared type is not enough to displace the contract the server declared"
+    );
+    assert_eq!(pagination.offset_param.as_deref(), Some("skip"));
+    assert!(pagination.next_url_path.is_empty());
+}
+
+/// ...but only at the response root, which is where what it unlocks applies.
+///
+/// `find_response_cursor_path` descends into nested objects up to depth 8. A
+/// singleton resource that happens to carry a nested link — every pre-existing
+/// detector was immune to this, because each needed a bound request input —
+/// would otherwise reach the sole-array fallback and have its one incidental
+/// array promoted to the whole relation.
+#[test]
+fn importer_ignores_a_body_next_url_nested_below_the_response_root() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: tracks
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /tracks/{id}:
+    get:
+      operationId: getTrack
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  tags:
+                    type: array
+                    items: {type: string}
+                  links:
+                    type: object
+                    properties:
+                      next_href: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert!(
+        imported_row_path(&ir, "gettrack").is_empty(),
+        "the track is the resource; its tags are one of its fields, not the relation"
+    );
+    assert_eq!(
+        imported_rest_pagination(&ir, "gettrack").mode,
+        PaginationMode::None,
+        "a contract only survives once the response reads as a list"
+    );
+}
+
+/// End to end on the Microsoft Graph shape: an `allOf` envelope of a shared
+/// pagination base and a `value` array, with `$top`/`$skip` both declared.
+///
+/// The `offset_param` assertion is the regression guard for the ordering
+/// constraint. Graph declares `$skip` on collections that reject it at runtime,
+/// so if body next-URL detection ever stopped winning, these tables would go
+/// from returning one page to returning an error.
+#[test]
+fn importer_reads_odata_collections_as_paginated_row_tables() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/chats:
+    get:
+      operationId: me.listChats
+      parameters:
+        - {name: $top, in: query, schema: {type: integer}}
+        - {name: $skip, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.chatCollectionResponse'
+components:
+  schemas:
+    BaseCollectionPaginationCountResponse:
+      title: Base collection pagination and count responses
+      type: object
+      properties:
+        '@odata.count': {type: integer, format: int64, nullable: true}
+        '@odata.nextLink': {type: string, nullable: true}
+    microsoft.graph.chat:
+      type: object
+      properties:
+        id: {type: string}
+        topic: {type: string}
+    microsoft.graph.chatCollectionResponse:
+      title: Collection of chat
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/BaseCollectionPaginationCountResponse'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/microsoft.graph.chat'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(imported_row_path(&ir, "me_listchats"), ["value"]);
+
+    let pagination = imported_rest_pagination(&ir, "me_listchats");
+    assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
+    assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
+    assert_eq!(
+        pagination
+            .page_size
+            .as_ref()
+            .and_then(|size| size.query_param.as_deref()),
+        Some("$top")
+    );
+    assert!(
+        pagination.offset_param.is_none(),
+        "Graph rejects $skip on several collections; the next link is the only contract that works"
+    );
+}
+
+/// The fixture above declares only `$top` and `$skip`, which is not what a real
+/// Graph collection looks like: they also declare a boolean `$count`.
+///
+/// `$count` is a boolean that shares a candidate name with the page size, and
+/// it sorts ahead of the integer `$top`. `find_numeric_query_input` filters by
+/// type as it searches rather than after choosing, so the boolean is skipped
+/// and `$top` is still found.
+#[test]
+fn importer_finds_the_page_size_a_boolean_count_parameter_shares_a_name_with() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/chats:
+    get:
+      operationId: me.listChats
+      parameters:
+        - {name: $top, in: query, schema: {type: integer}}
+        - {name: $skip, in: query, schema: {type: integer}}
+        - {name: $count, in: query, schema: {type: boolean}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.chatCollectionResponse'
+components:
+  schemas:
+    BaseCollectionPaginationCountResponse:
+      title: Base collection pagination and count responses
+      type: object
+      properties:
+        '@odata.count': {type: integer, format: int64, nullable: true}
+        '@odata.nextLink': {type: string, nullable: true}
+    microsoft.graph.chat:
+      type: object
+      properties:
+        id: {type: string}
+        topic: {type: string}
+    microsoft.graph.chatCollectionResponse:
+      title: Collection of chat
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/BaseCollectionPaginationCountResponse'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/microsoft.graph.chat'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    // The collection reads as a paginated row table with its page size intact.
+    assert_eq!(imported_row_path(&ir, "me_listchats"), ["value"]);
+    let pagination = imported_rest_pagination(&ir, "me_listchats");
+    assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
+    assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
+    assert_eq!(
+        pagination
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("$top")
+    );
+}
+
+/// Graph nests its envelope bases: a delta collection response composes
+/// `BaseDeltaFunctionResponse`, which is itself an `allOf` over
+/// `BaseCollectionPaginationCountResponse`. Row-path inference folds that whole
+/// tree, so type import has to fold it too — otherwise the imported type is
+/// missing the properties the inferred path names and the path is discarded.
+#[test]
+fn importer_folds_nested_all_of_envelope_bases() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/chats/delta:
+    get:
+      operationId: me.chats.delta
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.chatDeltaCollectionResponse'
+components:
+  schemas:
+    BaseCollectionPaginationCountResponse:
+      type: object
+      properties:
+        '@odata.count': {type: integer, format: int64, nullable: true}
+        '@odata.nextLink': {type: string, nullable: true}
+    BaseDeltaFunctionResponse:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/BaseCollectionPaginationCountResponse'
+        - type: object
+          properties:
+            '@odata.deltaLink': {type: string, nullable: true}
+    microsoft.graph.chat:
+      type: object
+      properties:
+        id: {type: string}
+    microsoft.graph.chatDeltaCollectionResponse:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/BaseDeltaFunctionResponse'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/microsoft.graph.chat'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(imported_row_path(&ir, "me_chats_delta"), ["value"]);
+
+    let pagination = imported_rest_pagination(&ir, "me_chats_delta");
+    assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
+    assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
+
+    // The nested base contributes `@odata.count`/`@odata.nextLink` and the
+    // intermediate one `@odata.deltaLink`. Folding only the immediate branches
+    // kept `value` alone.
+    let IrTypeShape::Object { fields } = &ir
+        .semantic_ir
+        .types
+        .iter()
+        .find(|ty| ty.id == "me_chats_delta_row")
+        .expect("response type")
+        .shape
+    else {
+        panic!("expected an object response type");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "@odata.count",
+            "@odata.deltaLink",
+            "@odata.nextLink",
+            "value"
+        ]
+    );
+}
+
+/// `properties` declared alongside `allOf` are as much part of the schema as
+/// the branches are.
+///
+/// Row-path inference reads both, so before type import did too, the inferred
+/// `value` path was rejected as absent from the imported type and the whole
+/// collection collapsed to a single JSON row.
+#[test]
+fn importer_keeps_properties_declared_beside_all_of() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/chats:
+    get:
+      operationId: me.listChats
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.chatCollectionResponse'
+components:
+  schemas:
+    BaseCollectionPaginationCountResponse:
+      type: object
+      properties:
+        '@odata.count': {type: integer, format: int64, nullable: true}
+        '@odata.nextLink': {type: string, nullable: true}
+    microsoft.graph.chat:
+      type: object
+      properties:
+        id: {type: string}
+    microsoft.graph.chatCollectionResponse:
+      type: object
+      properties:
+        value:
+          type: array
+          items:
+            $ref: '#/components/schemas/microsoft.graph.chat'
+      allOf:
+        - $ref: '#/components/schemas/BaseCollectionPaginationCountResponse'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(imported_row_path(&ir, "me_listchats"), ["value"]);
+}
+
+/// A subtype re-declaring an inherited property to pin an annotation is not a
+/// conflict.
+///
+/// Every Graph type re-declares the `@odata.type` discriminator with its own
+/// `default`. Comparing declarations byte-for-byte reads that as two branches
+/// disagreeing and discards the whole type, which costs every column rather
+/// than the one property — so the comparison is on validation semantics, and
+/// [`importer_warns_for_openapi_all_of_property_conflicts`] still holds for branches
+/// that genuinely disagree.
+#[test]
+fn importer_accepts_annotation_only_redeclaration_across_all_of_levels() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/drive:
+    get:
+      operationId: me.getDrive
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.drive'
+components:
+  schemas:
+    microsoft.graph.entity:
+      type: object
+      properties:
+        id: {type: string}
+        '@odata.type': {type: string}
+    microsoft.graph.baseItem:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/microsoft.graph.entity'
+        - type: object
+          properties:
+            name: {type: string}
+            webUrl: {type: string}
+    microsoft.graph.drive:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/microsoft.graph.baseItem'
+        - type: object
+          properties:
+            driveType: {type: string}
+            '@odata.type': {type: string, default: '#microsoft.graph.drive'}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let IrTypeShape::Object { fields } = &ir
+        .semantic_ir
+        .types
+        .iter()
+        .find(|ty| ty.id == "me_getdrive_row")
+        .expect("drive response type")
+        .shape
+    else {
+        panic!("a conflict would have left the type as opaque JSON");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["@odata.type", "driveType", "id", "name", "webUrl"],
+        "the inherited columns must survive two levels of composition"
+    );
+}
+
+#[test]
+fn extracts_openapi_document_metadata_from_3_1_documents() {
+    let metadata = openapi_document_metadata(
+        r"
+openapi: 3.1.0
+info:
+  title: Demo
+  description: Query demo data.
+servers:
+  - url: https://api.example.com/v1
+paths: {}
+"
+        .as_bytes(),
+    )
+    .expect("metadata");
+    assert_eq!(metadata.description.as_deref(), Some("Query demo data."));
+    assert_eq!(
+        metadata.server_url.as_deref(),
+        Some("https://api.example.com/v1")
+    );
+}
+
+#[test]
+fn importer_rejects_unsupported_openapi_versions() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: unsupported_version
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+
+    for version in ["2.0", "3.2.0", "4.0.0"] {
+        let document = format!("openapi: '{version}'\npaths: {{}}\n");
+        let error = import_openapi_surface(v4, &v4.surface, document.as_bytes())
+            .expect_err("unsupported version");
+        assert!(
+            error.to_string().contains("unsupported version"),
+            "{version}: {error}"
+        );
+        // Both entry points share one gate, so metadata extraction refuses the
+        // same documents the importer does.
+        let error =
+            openapi_document_metadata(document.as_bytes()).expect_err("unsupported version");
+        assert!(
+            error.to_string().contains("unsupported version"),
+            "{version}: {error}"
+        );
+    }
+}
+
+/// The two spellings 3.1 uses for a nullable value, in the shapes real
+/// providers publish them: `OpenAI` wraps the declared schema in `anyOf`, Discord
+/// in `oneOf`, and Discord also declares `null` inside the `type` array.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One 3.1 fixture keeps the nullable spellings side by side."
+)]
+fn importer_reads_3_1_nullable_spellings_as_the_shape_they_wrap() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: openapi_3_1
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {type: string}
+        note:
+          description: Free-form note, if the caller set one.
+          anyOf:
+            - {type: string}
+            - {type: 'null'}
+        owner:
+          oneOf:
+            - {$ref: '#/components/schemas/User'}
+            - {type: 'null'}
+        tags:
+          type: [array, 'null']
+          items: {type: string}
+    User:
+      type: object
+      properties:
+        login: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("3.1 import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the row should import as an object: {row_type:?}");
+    };
+    let field = |name: &str| {
+        fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap_or_else(|| panic!("field {name} in {fields:?}"))
+    };
+    let shape = |type_ref: &str| {
+        &ir.types
+            .iter()
+            .find(|ty| ty.id == type_ref)
+            .unwrap_or_else(|| panic!("type {type_ref}"))
+            .shape
+    };
+
+    // The `anyOf` variant carries the type; the sibling carries the docs.
+    let note = field("note");
+    assert!(matches!(
+        shape(&note.type_ref),
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+    assert_eq!(note.description, "Free-form note, if the caller set one.");
+
+    // Unwrapping keeps the `$ref`, so the referenced type keeps its name and
+    // its fields instead of importing as anonymous JSON.
+    let owner = field("owner");
+    assert_eq!(owner.type_ref, "user");
+    let IrTypeShape::Object {
+        fields: owner_fields,
+    } = shape(&owner.type_ref)
+    else {
+        panic!("the referenced user should import as an object");
+    };
+    assert_eq!(
+        owner_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["login"]
+    );
+
+    let IrTypeShape::List { item_type_ref } = shape(&field("tags").type_ref) else {
+        panic!("a nullable array should import as a list");
+    };
+    assert!(matches!(
+        shape(item_type_ref),
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+
+    assert!(ir.diagnostics.is_empty(), "{:?}", ir.diagnostics);
+}
+
+/// A nullable collection at the response root is still a collection. Read as an
+/// object — which is where an unhandled `type` array lands — it would import as
+/// a single row.
+#[test]
+fn importer_reads_a_nullable_array_response_root_as_a_list() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nullable_root
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("nullable root import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+}
+
+/// The same collection, spelled the way YAML invites: an unquoted `null` is a
+/// plain scalar, so it reaches the importer as a null rather than as the string
+/// every other test quotes. A `[T]` array names one type and only 3.1 can write
+/// one, so it collapses too — read as an object, either would import as a
+/// single row.
+#[test]
+fn importer_reads_unquoted_and_single_member_type_arrays_as_lists() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nullable_root
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: [array, null]
+                items:
+                  type: object
+                  properties:
+                    id: {type: [string, null]}
+  /records:
+    get:
+      operationId: records/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: [array]
+                items:
+                  type: [object]
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("nullable root import");
+
+    for operation in &ir.operations {
+        assert_eq!(
+            operation.output.cardinality,
+            OutputCardinality::List,
+            "{}",
+            operation.id
+        );
+    }
+    assert!(ir.diagnostics.is_empty(), "{:?}", ir.diagnostics);
+}
+
+/// Row-path inference refuses alternation, so an envelope whose rows sit behind
+/// a union has no path and the relation collapses to one JSON row. Unwrapping
+/// runs before inference, so the path is there to find.
+#[test]
+fn importer_infers_a_row_path_through_a_nullable_union_envelope() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nullable_envelope
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - type: array
+                        items: {$ref: '#/components/schemas/Item'}
+                      - {type: 'null'}
+                  next_cursor:
+                    anyOf:
+                      - {type: string}
+                      - {type: 'null'}
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("nullable envelope import");
+
+    assert_eq!(imported_row_path(&ir, "items_list"), ["data"]);
+    // The cursor is declared the way OpenAI declares one. Found only if the
+    // union was unwrapped before cursor detection ran.
+    assert_eq!(
+        imported_rest_pagination(&ir, "items_list").mode,
+        PaginationMode::CursorQuery
+    );
+}
+
+/// Only a union that reduces to one declared shape is unwrapped. A genuine
+/// choice between shapes stays opaque, as it did before.
+#[test]
+fn importer_keeps_multi_variant_unions_opaque() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: multi_variant_union
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    value:
+                      anyOf:
+                        - {type: string}
+                        - {type: integer}
+                        - {type: 'null'}
+"
+        .as_bytes(),
+    )
+    .expect("multi variant union import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the row should import as an object: {row_type:?}");
+    };
+    let value = fields
+        .iter()
+        .find(|field| field.name == "value")
+        .expect("value field");
+    let value = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == value.type_ref)
+        .expect("value type");
+    assert!(
+        matches!(value.shape, IrTypeShape::Json),
+        "a genuine choice of shapes stays opaque: {value:?}"
+    );
+}
+
+/// The pass is unconditional, so the 3.0 sources have to come through it
+/// unchanged. Both rewrites need a literal `null` type, which 3.0 does not
+/// have.
+#[test]
+fn importer_leaves_3_0_alternation_schemas_unchanged() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: alternation_3_0
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string, nullable: true}
+                    either:
+                      anyOf:
+                        - {$ref: '#/components/schemas/A'}
+                        - {$ref: '#/components/schemas/B'}
+                    sole:
+                      anyOf:
+                        - {$ref: '#/components/schemas/A'}
+components:
+  schemas:
+    A: {type: object, properties: {a: {type: string}}}
+    B: {type: object, properties: {b: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("3.0 alternation import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the row should import as an object: {row_type:?}");
+    };
+    let imported = |name: &str| {
+        let type_ref = fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap_or_else(|| panic!("field {name}"))
+            .type_ref
+            .as_str();
+        ir.types
+            .iter()
+            .find(|ty| ty.id == type_ref)
+            .unwrap_or_else(|| panic!("type {type_ref}"))
+    };
+
+    assert!(matches!(imported("either").shape, IrTypeShape::Json));
+    // GitHub's 3.0 document spells a nullable ref as a single-variant `anyOf`.
+    // Unwrapping those would change output that is correct today.
+    assert!(matches!(imported("sole").shape, IrTypeShape::Json));
+    let id = imported("id");
+    assert!(matches!(
+        id.shape,
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+}
+
+/// A `$ref` may name a subschema, and `#/components/schemas/Page/anyOf/0`
+/// resolves through `root.pointer` like any other pointer. Normalizing the
+/// document in place would delete the `anyOf` this one ends in, so the
+/// reference would stop resolving and the response would import as one opaque
+/// JSON column — a table losing its columns because of a rewrite aimed at a
+/// different schema. Reading normalizes instead, and leaves the tree alone.
+#[test]
+fn importer_resolves_a_ref_that_points_into_a_nullable_union() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: pointer_ref
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Page:
+      anyOf:
+        - type: object
+          properties:
+            items:
+              type: array
+              items: {type: string}
+            next_cursor: {type: [string, 'null']}
+        - type: 'null'
+paths:
+  /pages:
+    get:
+      operationId: pages/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page/anyOf/0'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the response should import as an object: {row_type:?}");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["items", "next_cursor"]
+    );
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+}
+
+/// A pointer into a subschema ends in an index rather than a name, and every
+/// nullable union in a document offers the same one. Naming the interned type
+/// after that tip alone gives two unrelated schemas the same id, and the second
+/// import answers from the cache with the first one's shape — silently, since
+/// reusing a type that is already interned is the normal path.
+#[test]
+fn importer_keeps_two_subschema_pointers_with_the_same_index_apart() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: pointer_ref
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Page:
+      anyOf:
+        - type: object
+          properties:
+            page_field: {type: string}
+        - type: 'null'
+    Other:
+      anyOf:
+        - type: object
+          properties:
+            other_field: {type: string}
+        - type: 'null'
+paths:
+  /things:
+    get:
+      operationId: things/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    $ref: '#/components/schemas/Page/anyOf/0'
+                  other:
+                    $ref: '#/components/schemas/Other/anyOf/0'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the response should import as an object: {row_type:?}");
+    };
+    let field_types = fields
+        .iter()
+        .map(|field| (field.name.as_str(), field.type_ref.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let page_type = field_types.get("page").expect("page field");
+    let other_type = field_types.get("other").expect("other field");
+    assert_ne!(
+        page_type, other_type,
+        "two subschema pointers should not intern as one type"
+    );
+
+    // The shapes are what the collision destroyed: `other` inherited `Page`'s
+    // fields, so `other_field` disappeared from the catalog entirely.
+    let fields_of = |type_ref: &str| {
+        let ty = ir
+            .types
+            .iter()
+            .find(|ty| ty.id == type_ref)
+            .unwrap_or_else(|| panic!("type {type_ref}"));
+        let IrTypeShape::Object { fields } = &ty.shape else {
+            panic!("expected an object: {ty:?}");
+        };
+        fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(fields_of(page_type), ["page_field"]);
+    assert_eq!(fields_of(other_type), ["other_field"]);
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+}
+
+/// Two `allOf` branches may spell one property's nullability differently — a
+/// `type` array in the base, a union in the subtype — and the fold compares
+/// property schemas on validation semantics to decide whether the branches
+/// disagree. Comparing what the provider wrote rather than what the importer
+/// reads makes those two spellings look like a genuine conflict, which
+/// discards every field of the composed type, not just the one in dispute.
+#[test]
+fn importer_folds_all_of_branches_that_spell_nullability_differently() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: mixed_spellings
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Base:
+      type: object
+      properties:
+        id: {type: [string, 'null']}
+    Extra:
+      type: object
+      properties:
+        id:
+          anyOf:
+            - {type: string}
+            - {type: 'null'}
+        name: {type: string}
+    Composed:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - $ref: '#/components/schemas/Extra'
+paths:
+  /things:
+    get:
+      operationId: things/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Composed'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the composed type should import as an object: {row_type:?}");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "name"]
+    );
+}
+
+fn import_parameter_surface(paths: &str) -> ImportedSurface {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: params
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    import_openapi_surface(
+        v4,
+        surface,
+        format!("openapi: 3.0.3\npaths:\n{paths}").as_bytes(),
+    )
+    .expect("surface imports")
+}
+
+fn imported_input<'a>(ir: &'a ImportedSurface, name: &str) -> &'a IrOperationInput {
+    ir.operations
+        .first()
+        .expect("operation")
+        .inputs
+        .iter()
+        .find(|input| input.name == name)
+        .unwrap_or_else(|| panic!("input '{name}' was not imported"))
+}
+
+fn operation_diagnostics(ir: &ImportedSurface) -> Vec<String> {
+    ir.operations
+        .first()
+        .expect("operation")
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect()
+}
+
+#[test]
+fn importer_reads_array_query_parameters_as_json_collections() {
+    let ir = import_parameter_surface(
+        r"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: exclude
+          in: query
+          schema: {type: array, items: {type: string}}
+        - name: $select
+          in: query
+          style: form
+          explode: false
+          schema: {uniqueItems: true, type: array, items: {type: string}}
+        - name: creator_id
+          in: query
+          schema: {type: array, items: {type: integer}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    // An absent `explode` takes OpenAPI's `form`-style default of true.
+    let exclude = imported_input(&ir, "exclude");
+    assert_eq!(exclude.data_type, IrScalarType::Json);
+    assert_eq!(
+        exclude.collection_encoding,
+        Some(CollectionEncoding::Repeated)
+    );
+
+    let select = imported_input(&ir, "$select");
+    assert_eq!(select.data_type, IrScalarType::Json);
+    assert_eq!(select.collection_encoding, Some(CollectionEncoding::Comma));
+
+    // The item type only gates acceptance; every list lowers to `Json`.
+    let creator_id = imported_input(&ir, "creator_id");
+    assert_eq!(creator_id.data_type, IrScalarType::Json);
+    assert_eq!(
+        creator_id.collection_encoding,
+        Some(CollectionEncoding::Repeated)
+    );
+
+    assert!(
+        operation_diagnostics(&ir).is_empty(),
+        "{:?}",
+        operation_diagnostics(&ir)
+    );
+}
+
+#[test]
+fn importer_leaves_scalar_parameters_without_a_collection_encoding() {
+    let ir = import_parameter_surface(
+        r"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    let state = imported_input(&ir, "state");
+    assert_eq!(state.data_type, IrScalarType::String);
+    assert_eq!(state.collection_encoding, None);
+}
+
+#[test]
+fn importer_rejects_array_parameters_it_cannot_serialize() {
+    let cases = [
+        (
+            "objects",
+            "{type: array, items: {type: object}}",
+            "unsupported array item type 'object'",
+            None,
+        ),
+        (
+            "nested",
+            "{type: array, items: {type: array, items: {type: string}}}",
+            "unsupported array item type 'array'",
+            None,
+        ),
+        (
+            "itemless",
+            "{type: array}",
+            "array without a declared item type",
+            None,
+        ),
+        (
+            "spaced",
+            "{type: array, items: {type: string}}",
+            "unsupported serialization style 'spaceDelimited'",
+            Some("spaceDelimited"),
+        ),
+        // A present-but-wrongly-typed `style` must not read as absent, which
+        // would silently reinterpret it as the default `form`.
+        (
+            "numeric_style",
+            "{type: array, items: {type: string}}",
+            "unsupported serialization style",
+            Some("123"),
+        ),
+    ];
+
+    for (name, schema, expected, style) in cases {
+        let style = style.map_or_else(String::new, |style| format!("          style: {style}\n"));
+        let ir = import_parameter_surface(&format!(
+            r"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: {name}
+          in: query
+{style}          schema: {schema}
+      responses:
+        '200': {{content: {{application/json: {{schema: {{type: array, items: {{type: object}}}}}}}}}}
+"
+        ));
+
+        let operation = ir.operations.first().expect("operation");
+        assert!(
+            !operation.inputs.iter().any(|input| input.name == name),
+            "'{name}' should not be imported"
+        );
+        let diagnostics = operation_diagnostics(&ir);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains(expected)),
+            "'{name}' expected a diagnostic containing '{expected}', got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn importer_rejects_array_parameters_outside_the_query() {
+    let ir = import_parameter_surface(
+        r"
+  /items/{ids}:
+    get:
+      operationId: items/list
+      parameters:
+        - name: ids
+          in: path
+          required: true
+          schema: {type: array, items: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    let diagnostics = operation_diagnostics(&ir);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("is an array in Path position")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn array_query_parameters_never_shadow_numeric_pagination_parameters() {
+    // `limit` matches a page-size candidate token by name but is list-valued,
+    // so detection must keep looking and settle on `per_page`.
+    let ir = import_parameter_surface(
+        r"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: limit, in: query, schema: {type: array, items: {type: string}}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    let pagination = imported_rest_pagination(&ir, "items_list");
+    assert_eq!(pagination.mode, PaginationMode::Page);
+    assert_eq!(
+        pagination
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("per_page")
+    );
+}
+
+#[test]
+fn array_query_parameters_are_never_lookup_keys() {
+    // `owner` is outside the presentation lexicon, so only its list-valued
+    // shape keeps it from anchoring a dependent join.
+    let ir = import_parameter_surface(
+        r"
+  /tokens:
+    get:
+      operationId: tokens/list
+      parameters:
+        - {name: owner, in: query, schema: {type: array, items: {type: string}}}
+        - {name: repository, in: query, schema: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    let OperationMetadata::Rest { lookup_keys, .. } = ir
+        .operation_metadata
+        .operations
+        .get("tokens_list")
+        .expect("operation metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    assert_eq!(lookup_keys, &["repository".to_string()]);
+}
+
+#[test]
+fn importer_rejects_array_parameters_with_a_non_boolean_explode() {
+    // Defaulting a malformed `explode` would pick a wire encoding the
+    // descriptor never asked for.
+    let ir = import_parameter_surface(
+        r#"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: exclude
+          in: query
+          explode: "false"
+          schema: {type: array, items: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+"#,
+    );
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        !operation.inputs.iter().any(|input| input.name == "exclude"),
+        "a malformed explode should not be imported"
+    );
+    let diagnostics = operation_diagnostics(&ir);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("non-boolean explode")),
+        "{diagnostics:?}"
+    );
 }

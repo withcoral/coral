@@ -1,0 +1,24 @@
+.DS_Store
+.env
+/node_modules/
+
+# Local agent/editor artifacts
+/.agents/
+/.vscode/
+/skills-lock.json
+/tasks/
+
+# React Router
+/.react-router/
+/build/
+
+# Vitest failure artifacts: screenshots and attachments are written on a failing
+# run and are never inputs to one.
+/.vitest-attachments/
+**/__screenshots__/
+
+/storybook-static/
+/build-storybook.log
+/.playwright-cli/
+/app/generated/
+/public/.well-known/appspecific/

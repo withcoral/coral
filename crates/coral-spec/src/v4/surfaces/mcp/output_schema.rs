@@ -51,19 +51,16 @@ impl McpImporter<'_> {
                             name: "result".to_string(),
                             type_ref: json_type.clone(),
                             required: false,
-                            nullable: true,
                             description: String::new(),
                         },
                         IrField {
                             name: "raw".to_string(),
                             type_ref: json_type,
                             required: false,
-                            nullable: true,
                             description: "Raw MCP tool payload.".to_string(),
                         },
                     ],
                 },
-                nullable: false,
                 description: String::new(),
             },
         );
@@ -90,7 +87,6 @@ impl McpImporter<'_> {
                     name: name.clone(),
                     type_ref: self.ensure_type_for_scalar(data_type),
                     required: required.contains(name.as_str()),
-                    nullable: !required.contains(name.as_str()),
                     description: schema_description(property),
                 }
             })
@@ -101,7 +97,6 @@ impl McpImporter<'_> {
                 name: "raw".to_string(),
                 type_ref: json_type,
                 required: false,
-                nullable: true,
                 description: "Raw MCP tool payload.".to_string(),
             });
         }
@@ -110,7 +105,6 @@ impl McpImporter<'_> {
             IrType {
                 id: type_id.to_string(),
                 shape: IrTypeShape::Object { fields },
-                nullable: false,
                 description: schema_description(schema),
             },
         );

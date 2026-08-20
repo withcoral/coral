@@ -10,13 +10,12 @@ use crate::TableFunctionInfo;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
+use crate::runtime::DATAFUSION_DEFAULT_CATALOG;
 use crate::runtime::dependent_join::error::DependentJoinError;
 use crate::{
     CoreError, QueryResultObserverError, RequestIdentityHttpAuthenticatorError,
     RequestIdentitySelectionError, SourceDecoratorError, SourceInputResolverError, TableInfo,
 };
-
-const DATAFUSION_DEFAULT_CATALOG: &str = "datafusion";
 
 pub(crate) fn datafusion_to_core(error: &DataFusionError, tables: &[TableInfo]) -> CoreError {
     datafusion_to_core_with_sql(error, tables, None)
@@ -79,6 +78,16 @@ pub(crate) fn datafusion_to_core_with_sql_and_table_functions(
         DataFusionError::ResourcesExhausted(detail) => CoreError::Unavailable(detail.clone()),
         other => CoreError::internal(other.to_string()),
     }
+}
+
+pub(crate) fn missing_table_reference(
+    error: &DataFusionError,
+    sql: Option<&str>,
+) -> Option<TableRefParts> {
+    let DataFusionError::Plan(detail) = error.find_root() else {
+        return None;
+    };
+    table_not_found_ref(error, detail, sql)
 }
 
 pub(crate) fn source_decorator_error_to_core(error: &SourceDecoratorError) -> CoreError {
@@ -376,6 +385,8 @@ mod tests {
             schema_name: schema.to_string(),
             function_name: name.to_string(),
             description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
             arguments: vec![],
             result_columns: vec![],
             kind: coral_spec::SourceTableFunctionKind::Table,

@@ -16,6 +16,14 @@ const TRACESTATE_HEADER: &str = "tracestate";
 /// Stable message recorded for failed gRPC requests.
 pub const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 
+/// Prefix for span attributes that may be retained in local trace history but
+/// must be removed before exporting spans over OTLP.
+pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
+/// Local-only Universal Search text used by Query Stream.
+pub const QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE: &str = "coral.local.search.query";
+/// Span attribute containing the Coral workspace associated with an operation.
+pub const WORKSPACE_SPAN_ATTRIBUTE: &str = "workspace";
+
 /// Records a categorical failure without accepting caller-controlled message text.
 pub fn record_failure(
     span: &tracing::Span,
@@ -27,6 +35,22 @@ pub fn record_failure(
     span.record("exception.message", stable_message);
     span.set_status(OtelStatus::error(stable_message));
 }
+
+/// Boolean span attribute that opts an operation into Query Stream.
+pub const QUERY_STREAM_ENTRY_ATTRIBUTE: &str = "coral.stream.entry";
+/// Span attribute containing the semantic Query Stream operation kind.
+pub const QUERY_STREAM_KIND_ATTRIBUTE: &str = "coral.stream.kind";
+/// Span attribute containing the privacy-safe Query Stream operation name.
+pub const QUERY_STREAM_NAME_ATTRIBUTE: &str = "coral.stream.name";
+
+/// Semantic Query Stream kind for SQL and catalog query operations.
+pub const QUERY_STREAM_KIND_QUERY: &str = "query";
+/// Semantic Query Stream kind for Universal Search operations.
+pub const QUERY_STREAM_KIND_SEARCH: &str = "search";
+/// Semantic Query Stream kind for tool operations without a more specific kind.
+pub const QUERY_STREAM_KIND_TOOL: &str = "tool";
+/// Semantic Query Stream kind for another explicitly marked user-visible operation.
+pub const QUERY_STREAM_KIND_OTHER: &str = "other";
 
 struct TraceHeaders<'a> {
     traceparent: &'a str,

@@ -7,42 +7,28 @@ description: "Coral is a single SQL interface for APIs, files, and other data so
 
 Agents are able to make fewer, more precise tool calls with Coral than they do with data source MCP servers, CLI tools or API wrappers. For agent read tasks, SQL has a structural advantage when query complexity exceeds what a single API call can answer. It avoids pagination through large results, has cleaner, tabular responses, can bring back specific columns, and can correlate across sources more efficiently.
 
-Coral supports a number of [popular data sources](/reference/bundled-sources) bundled in, plus [community source specs](/reference/community-sources) you can import with `coral source add --file`. You can also extend it to accommodate others by writing your own [source specs](/reference/source-spec-reference). You can run SQL from the [CLI](/reference/cli-reference) or through [MCP](/guides/use-coral-over-mcp). And everything is local; your data, credentials and usage history never leave your machine.
+Coral supports a number of [popular data sources](/reference/bundled-sources) bundled in, plus [community source specs](/reference/community-sources) you can import with `coral source add --file`. You can also extend it to accommodate others by writing your own [source specs](/reference/source-spec-reference). You can use our desktop app, or the [CLI](/reference/cli-reference).
+
+Everything is local: your data, credentials and usage history never leave your machine.
 
 ## Get started
 
 <Steps titleSize="h3">
   <Step title="Install Coral">
-    Install the Coral CLI to get started.
-
-    ```shellscript
-    brew install withcoral/tap/coral
-    ```
-
-    [See all installation options](/getting-started/installation)
+    [Download the Coral desktop app for macOS](https://withcoral.com/download) to get started, or [see all installation options](/getting-started/installation).
 
   </Step>
 
   <Step title="Add your sources">
-   Connect GitHub, Slack, Datadog, and other [bundled sources](/reference/bundled-sources) to your workspace. For example:
-
-    ```shellscript
-    coral source add --interactive github
-    ```
+   Connect GitHub, Slack, Datadog, and other [bundled sources](/reference/bundled-sources) to your workspace.
+   Coral can only fetch data from sources you've connected.
 
     [Go to the quickstart](/getting-started/quickstart)
 
   </Step>
 
-  <Step title="Start querying">
-    Write SQL directly or let your AI agent query on your behalf.
-
-    ```shellscript
-    coral sql "SELECT name, stargazers_count FROM github.org_repos WHERE org = 'withcoral' ORDER BY stargazers_count DESC"
-    ```
-
-    [Or use Coral over MCP](/guides/use-coral-over-mcp)
-
+  <Step title="Connect your agents to Coral via MCP">
+    Configure your MCP clients (e.g. Claude Code, Codex) to use [Coral MCP](/guides/use-coral-over-mcp)
   </Step>
 </Steps>
 
@@ -77,15 +63,11 @@ Full [benchmark report](https://withcoral.com/benchmarks).
 
 Coral sits between your agents and your data sources: your agents write SQL, and Coral translates it into API calls or file reads, then returns a single query result.
 
-You can ask your agents complex questions about your data:
+You can **ask your agents complex questions about your data**:
 
 ![coral sql demo](/images/claude-query-example.png)
 
-Or run SQL queries yourself:
-
-![coral sql demo](/images/coral-sql-join.gif)
-
-A **source spec** is a YAML file that defines how to reach an API or local dataset and which tables/columns it exposes. A **source** is a data source Coral can query, created from a source spec plus your configured credentials and variables. When you run `coral source add github`, Coral installs the `github` source. At query time, Coral loads that source as the `github` SQL schema, so tables like `github.issues` and `github.pulls` are queryable. Start with [bundled sources](/reference/bundled-sources), check [community sources](/reference/community-sources), or [write your own](/guides/write-a-custom-source).
+Coral connects to data sources using source specs. A **source spec** is a YAML file that defines how to reach an API or local dataset and which tables/columns it exposes. A **source** is a data source Coral can query, created from a source spec plus your configured credentials and variables. When you run `coral source add github`, Coral installs the `github` source. At query time, Coral loads that source as the `github` SQL schema, so tables like `github.issues` and `github.pulls` are queryable. Start with [bundled sources](/reference/bundled-sources), check [community sources](/reference/community-sources), or [write your own](/guides/write-a-custom-source).
 
 During `source add`, Coral collects each declared variable and secret (tokens, workspace IDs, file paths, etc.) from environment variables of the same name, or prompts for them interactively when you pass `--interactive`. These values are stored locally in Coral state, with secrets kept separately from non-secret config, and used only at query time. Because each source appears as SQL tables, you can `JOIN` across sources in one statement (for example `github.issues` with `linear.attachments`), and Coral executes that locally on your machine.
 
@@ -124,7 +106,8 @@ For the full internals, crates, gRPC transport, DataFusion integration, see the 
     Set up MCP for Claude Code, Cursor, and other agents
   </Card>
   <Card title="Search with Coral" href="/guides/search-with-coral">
-    Find tables, columns, filters, and values Coral has seen before you write SQL
+    Find tables, columns, filters, and values Coral has seen before you write
+    SQL
   </Card>
   <Card title="Write a custom source" href="/guides/write-a-custom-source">
     Connect any API or dataset to Coral

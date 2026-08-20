@@ -1,0 +1,397 @@
+name: Publish Docker image
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Published release tag to package, e.g. v1.2.3.
+        required: true
+        type: string
+      defer-aliases:
+        description: Defer moving aliases to the paired release coordinator.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      digest:
+        description: Digest the published Coral version tag resolves to.
+        value: ${{ jobs.publish-image.outputs.digest }}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Published release tag to package, e.g. v1.2.3. Rebuilds the image
+          from that release's assets (CVE rebuild) without touching the release.
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  # Direct CVE rebuilds share the coordinator lock because they may move X.Y
+  # and latest. Deferred release builds get a run-local group instead.
+  group: ${{ inputs.defer-aliases == true && format('docker-publish-deferred-{0}', github.run_id) || 'coordinated-docker-aliases' }}
+  queue: max
+
+env:
+  IMAGE: ghcr.io/withcoral/coral
+  TARBALL: coral-x86_64-unknown-linux-gnu.tar.gz
+  # Must stay in step with the runtime stage of docker/Dockerfile.
+  BASE_IMAGE: debian:trixie-slim
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  publish-image:
+    name: Build, publish, and smoke the linux/amd64 image
+    # Serialize exact-version writes even when a direct rebuild overlaps a
+    # deferred release build for the same tag.
+    concurrency:
+      group: docker-publish-${{ inputs.tag }}
+      queue: max
+    # GitHub-hosted, like release.yml's Linux build matrix: the smoke battery
+    # runs real containers against the pushed digest on a stock Docker daemon.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+    steps:
+      - name: Validate tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Docker publish tag must look like vX.Y.Z, got '${TAG}'." >&2
+            exit 1
+          fi
+
+          version="${TAG#v}"
+          {
+            echo "version=${version}"
+            echo "major-minor=${version%.*}"
+          } >> "$GITHUB_OUTPUT"
+
+      # The Dockerfile and entrypoint come from the ref this workflow runs on:
+      # the release tag under workflow_call, and whatever ref the CVE rebuild
+      # dispatch picks. Only the binary comes from the release assets.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release"
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/release" \
+            --pattern "$TARBALL" \
+            --pattern checksums.sha256
+
+      - name: Verify release checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/release"
+          # Exact filename match, reprinted in sha256sum's two-space format.
+          awk -v f="$TARBALL" '$2 == f { print $1 "  " f }' checksums.sha256 > tarball.sha256
+          test -s tarball.sha256
+          sha256sum --check --strict tarball.sha256
+
+      - name: Extract binary into the build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          # dist/<TARGETARCH>/coral is the build-context layout docker/Dockerfile stages from.
+          mkdir -p dist/amd64
+          tar -xzf "$RUNNER_TEMP/release/$TARBALL" -C dist/amd64 coral
+          test -x dist/amd64/coral
+
+      - name: Check glibc floor against the base image
+        shell: bash
+        run: |
+          set -euo pipefail
+          needed="$(objdump -T dist/amd64/coral | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          test -n "$needed"
+          # Read natively on this amd64 runner — no QEMU anywhere in this workflow.
+          base="GLIBC_$(docker run --rm --platform linux/amd64 "$BASE_IMAGE" ldd --version | head -1 | awk '{print $NF}')"
+          echo "binary requires ${needed}; ${BASE_IMAGE} provides ${base}"
+          if [ "$(printf '%s\n%s\n' "$needed" "$base" | sort -V | tail -1)" != "$base" ]; then
+            echo "Release binary requires ${needed}, newer than ${BASE_IMAGE}'s ${base}." >&2
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          # A publishing workflow takes no cache input it did not build itself.
+          cache-binary: false
+
+      - name: Build and push image by digest
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=true \
+            --file docker/Dockerfile \
+            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file "$RUNNER_TEMP/build-metadata.json" \
+            .
+          digest="$(jq -r '."containerimage.digest" // ""' "$RUNNER_TEMP/build-metadata.json")"
+          test -n "$digest"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Read release prerelease flag
+        if: ${{ inputs.defer-aliases != true }}
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the newest stable tags
+        if: ${{ inputs.defer-aliases != true }}
+        id: newest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
+        run: |
+          set -euo pipefail
+          # One listing, ranked by version rather than by GitHub's own ordering
+          # (which is by commit date, not by semver). "$TAG" joins the candidate
+          # set either way: the release path may not list it yet, and the CVE
+          # rebuild path already does, so both compare against the same set.
+          stable="$(gh release list --repo "$GITHUB_REPOSITORY" \
+            --exclude-pre-releases --exclude-drafts --limit 1000 \
+            --json tagName --jq '.[].tagName')"
+          candidates="$(printf '%s\n%s\n' "$stable" "$TAG" | grep -v '^$' | sort -u)"
+          newest="$(printf '%s\n' "$candidates" | sort -V | tail -1)"
+          # Dots are literal so the 1.2 line never absorbs 1.20.x.
+          line="$(printf '%s\n' "$candidates" | grep -E "^v${MAJOR_MINOR//./\\.}\." | sort -V | tail -1)"
+          echo "newest candidate is '${newest}'; newest in the ${MAJOR_MINOR} line is '${line}'; this run packages '${TAG}'"
+          {
+            echo "tag=${newest}"
+            echo "line-tag=${line}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Snapshot direct rebuild alias ownership
+        if: ${{ inputs.defer-aliases != true }}
+        id: aliases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
+          NEWEST_LINE_TAG: ${{ steps.newest.outputs.line-tag }}
+          NEWEST_TAG: ${{ steps.newest.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag_digest() {
+            local tag="$1"
+            local matches
+            if ! matches="$(gh api --paginate \
+              "/orgs/withcoral/packages/container/coral/versions?per_page=100" \
+              --jq ".[] | select(any(.metadata.container.tags[]; . == \"${tag}\")) | .name")"; then
+              echo "Failed to resolve ${IMAGE}:${tag} through the package API." >&2
+              return 2
+            fi
+            if [ -n "$matches" ]; then
+              if [ "$(printf '%s\n' "$matches" | wc -l)" -ne 1 ]; then
+                echo "${IMAGE}:${tag} resolved to multiple package digests." >&2
+                return 2
+              fi
+              if [[ ! "$matches" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "${IMAGE}:${tag} resolved to invalid digest '${matches}'." >&2
+                return 2
+              fi
+            fi
+            printf '%s' "$matches"
+          }
+
+          if ! version_digest="$(tag_digest "$VERSION")"; then
+            exit 1
+          fi
+          can_move_alias() {
+            local alias="$1"
+            local eligible="$2"
+            local alias_digest
+            [ "$eligible" = true ] || return 1
+            if ! alias_digest="$(tag_digest "$alias")"; then
+              return 2
+            fi
+            if [ -z "$alias_digest" ] || { [ -n "$version_digest" ] && [ "$alias_digest" = "$version_digest" ]; }; then
+              return 0
+            fi
+            echo "Leaving ${IMAGE}:${alias} at ${alias_digest}; it does not belong to ${IMAGE}:${VERSION}${version_digest:+ at ${version_digest}}." >&2
+            return 1
+          }
+
+          line_eligible=false
+          latest_eligible=false
+          if [ "$PRERELEASE" = false ] && [ "$NEWEST_LINE_TAG" = "$TAG" ]; then
+            line_eligible=true
+          fi
+          if [ "$PRERELEASE" = false ] && [ "$NEWEST_TAG" = "$TAG" ]; then
+            latest_eligible=true
+          fi
+
+          move_line=false
+          move_latest=false
+          if can_move_alias "$MAJOR_MINOR" "$line_eligible"; then
+            move_line=true
+          else
+            status=$?
+            [ "$status" -eq 1 ] || exit "$status"
+          fi
+          if can_move_alias latest "$latest_eligible"; then
+            move_latest=true
+          else
+            status=$?
+            [ "$status" -eq 1 ] || exit "$status"
+          fi
+          {
+            echo "move-line=${move_line}"
+            echo "move-latest=${move_latest}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare smoke helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/wait-healthy.sh" <<'HELPER'
+          #!/usr/bin/env bash
+          # Poll the image's own grpc_health_probe from inside the container, so the
+          # probe under test is the one the HEALTHCHECK uses.
+          set -euo pipefail
+          container="$1"
+          for _ in $(seq 1 60); do
+            if docker exec "$container" /usr/local/bin/grpc_health_probe -addr=127.0.0.1:14555 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container ${container} never became healthy" >&2
+          docker logs "$container" >&2 || true
+          exit 1
+          HELPER
+          chmod +x "$RUNNER_TEMP/wait-healthy.sh"
+
+      - name: Smoke - first boot seeds a starter config
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker volume create coral-smoke > /dev/null
+          docker run -d --name coral-smoke -v coral-smoke:/var/lib/coral "${IMAGE}@${DIGEST}" > /dev/null
+          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke
+          docker logs coral-smoke 2>&1 | grep -F 'coral-entrypoint: seeded starter'
+          docker logs coral-smoke 2>&1 | grep -F 'Coral gRPC server listening on http://0.0.0.0:14555'
+
+      - name: Smoke - restart reuses the existing config
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker restart coral-smoke > /dev/null
+          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke
+          docker logs coral-smoke 2>&1 | grep -F 'coral-entrypoint: using existing'
+          test "$(docker logs coral-smoke 2>&1 | grep -c -F 'coral-entrypoint: seeded starter')" -eq 1
+
+      - name: Smoke - read-only volume fails fast
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          status=0
+          output="$(timeout --kill-after=5s 30s docker run --rm -v coral-smoke:/var/lib/coral:ro "${IMAGE}@${DIGEST}" 2>&1)" || status=$?
+          printf '%s\n' "$output"
+          test "$status" -eq 1
+          printf '%s\n' "$output" | grep -F 'coral-entrypoint: FATAL'
+
+      - name: Smoke - CORAL_SEED_CONFIG seeds once
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          marker='# coral-docker-smoke-marker'
+          seed="$(printf '%s\n[server]\nbind_addr = "0.0.0.0:14555"\n' "$marker")"
+          docker volume create coral-smoke-seed > /dev/null
+          docker run -d --name coral-smoke-seed \
+            -e CORAL_SEED_CONFIG="$seed" \
+            -v coral-smoke-seed:/var/lib/coral \
+            "${IMAGE}@${DIGEST}" > /dev/null
+          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke-seed
+          docker logs coral-smoke-seed 2>&1 | grep -F 'from CORAL_SEED_CONFIG'
+          expected_sha="$(printf '%s' "$seed" | sha256sum | awk '{print $1}')"
+          actual_sha="$(docker exec coral-smoke-seed sha256sum /var/lib/coral/config/config.toml | awk '{print $1}')"
+          test "$actual_sha" = "$expected_sha"
+          docker restart coral-smoke-seed > /dev/null
+          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke-seed
+          docker logs coral-smoke-seed 2>&1 | grep -F 'CORAL_SEED_CONFIG ignored'
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the staged manifest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # Moving aliases are applied to Coral and Coral UI together by the release
+      # coordinator. A direct CVE rebuild moves an alias only when it is absent
+      # or still resolves to the rebuilt exact version, so it cannot roll back
+      # a coordinated pair.
+      - name: Tag the validated manifest
+        id: manifest
+        shell: bash
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          DEFER_ALIASES: ${{ inputs.defer-aliases }}
+          MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
+          MOVE_LATEST: ${{ steps.aliases.outputs.move-latest }}
+          MOVE_LINE: ${{ steps.aliases.outputs.move-line }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The exact version tag always publishes. During a direct CVE rebuild,
+          # moving tags never move backwards or point at a prerelease: a release
+          # superseded in its own X.Y line republishes only its exact version tag.
+          tags=(--tag "${IMAGE}:${VERSION}")
+          if [ "$DEFER_ALIASES" != true ]; then
+            if [ "$MOVE_LINE" = true ]; then
+              tags+=(--tag "${IMAGE}:${MAJOR_MINOR}")
+            fi
+            if [ "$MOVE_LATEST" = true ]; then
+              tags+=(--tag "${IMAGE}:latest")
+            fi
+          fi
+          docker buildx imagetools create "${tags[@]}" "${IMAGE}@${BUILD_DIGEST}"
+          # A one-source create preserves the signed index; verify the exact tag
+          # still resolves to that digest after publishing all selected tags.
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
+          test "$digest" = "$BUILD_DIGEST"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"

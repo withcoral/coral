@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -5,11 +6,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryExecutionProvenance, QueryParameterValue,
-    QueryParameters, QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig,
-    QueryRuntimeContext, StatusCode, UdfRuntimeArgument, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
-    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    CoralQuery, CoralSqlFunctionArgument, CoralSqlFunctionDefinition,
+    CoralSqlFunctionInferenceDefinition, CoralSqlFunctionSignature, CoralSqlResultColumn,
+    CoralSqlTableFunctionPublish, CoreError, EngineExtensions, QueryExecutionProvenance,
+    QueryParameterValue, QueryParameters, QueryResultObserver, QueryResultObserverError,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage, StatusCode,
 };
 use coral_spec::ManifestDataType;
 use serde_json::{Value, json};
@@ -171,23 +172,21 @@ fn events_source(source_name: &str) -> (tempfile::TempDir, coral_engine::QuerySo
     (temp, source)
 }
 
-fn udf_sql(name: &str, query: impl Into<String>) -> UdfRuntimeSqlDefinition {
-    UdfRuntimeSqlDefinition {
+fn udf_sql(name: &str, query: impl Into<String>) -> CoralSqlFunctionInferenceDefinition {
+    CoralSqlFunctionInferenceDefinition {
         name: name.to_string(),
-        implementation: UdfRuntimeImplementation::CoralSql {
-            query: query.into(),
-        },
+        query: query.into(),
     }
 }
 
-fn min_id_sql_udf(source_name: &str) -> UdfRuntimeSqlDefinition {
+fn min_id_sql_udf(source_name: &str) -> CoralSqlFunctionInferenceDefinition {
     udf_sql(
         "min_id_events",
         format!("select id from {source_name}.events where id >= $min_id order by id"),
     )
 }
 
-fn review_queue_sql_udf(source_name: &str) -> UdfRuntimeSqlDefinition {
+fn review_queue_sql_udf(source_name: &str) -> CoralSqlFunctionInferenceDefinition {
     udf_sql(
         "review_queue",
         format!(
@@ -196,24 +195,23 @@ fn review_queue_sql_udf(source_name: &str) -> UdfRuntimeSqlDefinition {
     )
 }
 
-fn udf_publish(name: &str) -> UdfRuntimePublish {
-    UdfRuntimePublish {
-        table_function: UdfRuntimeTableFunctionPublish {
-            schema: "udfs".to_string(),
-            name: name.to_string(),
-            description: String::new(),
-        },
+fn udf_publish(name: &str) -> CoralSqlTableFunctionPublish {
+    CoralSqlTableFunctionPublish {
+        schema: "udfs".to_string(),
+        name: name.to_string(),
+        description: String::new(),
+        guide: String::new(),
     }
 }
 
-fn udf_argument(name: &str, data_type: ManifestDataType) -> UdfRuntimeArgument {
-    UdfRuntimeArgument {
+fn udf_argument(name: &str, data_type: ManifestDataType) -> CoralSqlFunctionArgument {
+    CoralSqlFunctionArgument {
         name: name.to_string(),
         data_type,
     }
 }
 
-fn udf_result_column(name: &str, data_type: DataType) -> UdfRuntimeResultColumn {
+fn udf_result_column(name: &str, data_type: DataType) -> CoralSqlResultColumn {
     udf_result_column_with_nullability(name, data_type, true)
 }
 
@@ -221,28 +219,27 @@ fn udf_result_column_with_nullability(
     name: &str,
     data_type: DataType,
     nullable: bool,
-) -> UdfRuntimeResultColumn {
-    UdfRuntimeResultColumn {
+) -> CoralSqlResultColumn {
+    CoralSqlResultColumn {
         name: name.to_string(),
         data_type,
         nullable,
     }
 }
 
-fn min_id_udf(source_name: &str) -> UdfRuntimeDefinition {
-    UdfRuntimeDefinition {
+fn min_id_udf(source_name: &str) -> CoralSqlFunctionDefinition {
+    CoralSqlFunctionDefinition {
         name: "min_id_events".to_string(),
         description: "Events above an id".to_string(),
         arguments: vec![udf_argument("min_id", ManifestDataType::Int64)],
-        implementation: UdfRuntimeImplementation::CoralSql {
-            query: format!("select id from {source_name}.events where id >= $min_id order by id"),
-        },
+        query: format!("select id from {source_name}.events where id >= $min_id order by id"),
         publish: udf_publish("min_id_events"),
         result_columns: vec![udf_result_column("id", DataType::Int64)],
+        source_names: vec![source_name.to_string()],
     }
 }
 
-fn min_id_udf_without_columns(source_name: &str) -> UdfRuntimeDefinition {
+fn min_id_udf_without_columns(source_name: &str) -> CoralSqlFunctionDefinition {
     let mut udf = min_id_udf(source_name);
     udf.result_columns.clear();
     udf
@@ -252,22 +249,22 @@ fn min_id_udf_with_result_column(
     source_name: &str,
     column_name: &str,
     data_type: DataType,
-) -> UdfRuntimeDefinition {
+) -> CoralSqlFunctionDefinition {
     let mut udf = min_id_udf(source_name);
     udf.result_columns = vec![udf_result_column(column_name, data_type)];
     udf
 }
 
-fn min_id_udf_with_body(source_name: &str, body: impl Into<String>) -> UdfRuntimeDefinition {
+fn min_id_udf_with_body(source_name: &str, body: impl Into<String>) -> CoralSqlFunctionDefinition {
     let mut udf = min_id_udf(source_name);
-    udf.implementation = UdfRuntimeImplementation::CoralSql { query: body.into() };
+    udf.query = body.into();
     udf
 }
 
 fn min_id_udf_with_non_nullable_result(
     source_name: &str,
     body: impl Into<String>,
-) -> UdfRuntimeDefinition {
+) -> CoralSqlFunctionDefinition {
     let mut udf = min_id_udf_with_body(source_name, body);
     udf.result_columns = vec![udf_result_column_with_nullability(
         "id",
@@ -277,32 +274,30 @@ fn min_id_udf_with_non_nullable_result(
     udf
 }
 
-fn mixed_case_published_min_id_udf(source_name: &str) -> UdfRuntimeDefinition {
+fn mixed_case_published_min_id_udf(source_name: &str) -> CoralSqlFunctionDefinition {
     let mut udf = min_id_udf(source_name);
-    udf.publish = UdfRuntimePublish {
-        table_function: UdfRuntimeTableFunctionPublish {
-            schema: "Udfs".to_string(),
-            name: "Min_Id_Events".to_string(),
-            description: String::new(),
-        },
+    udf.publish = CoralSqlTableFunctionPublish {
+        schema: "Udfs".to_string(),
+        name: "Min_Id_Events".to_string(),
+        description: String::new(),
+        guide: String::new(),
     };
     udf
 }
 
-fn published_limited_events_udf(source_name: &str) -> UdfRuntimeDefinition {
-    UdfRuntimeDefinition {
+fn published_limited_events_udf(source_name: &str) -> CoralSqlFunctionDefinition {
+    CoralSqlFunctionDefinition {
         name: "limited_events".to_string(),
         description: "Limited events".to_string(),
         arguments: Vec::new(),
-        implementation: UdfRuntimeImplementation::CoralSql {
-            query: format!("select id from {source_name}.events limit 1"),
-        },
+        query: format!("select id from {source_name}.events limit 1"),
         publish: udf_publish("limited_events"),
         result_columns: vec![udf_result_column("id", DataType::Int64)],
+        source_names: vec![source_name.to_string()],
     }
 }
 
-fn argument_types(signature: &UdfRuntimeSignature) -> Vec<(&str, ManifestDataType)> {
+fn argument_types(signature: &CoralSqlFunctionSignature) -> Vec<(&str, ManifestDataType)> {
     signature
         .arguments
         .iter()
@@ -310,7 +305,7 @@ fn argument_types(signature: &UdfRuntimeSignature) -> Vec<(&str, ManifestDataTyp
         .collect()
 }
 
-fn column_types(signature: &UdfRuntimeSignature) -> Vec<(&str, &DataType)> {
+fn column_types(signature: &CoralSqlFunctionSignature) -> Vec<(&str, &DataType)> {
     signature
         .result_columns
         .iter()
@@ -318,8 +313,8 @@ fn column_types(signature: &UdfRuntimeSignature) -> Vec<(&str, &DataType)> {
         .collect()
 }
 
-fn review_queue_udf(source_name: &str) -> UdfRuntimeDefinition {
-    UdfRuntimeDefinition {
+fn review_queue_udf(source_name: &str) -> CoralSqlFunctionDefinition {
+    CoralSqlFunctionDefinition {
         name: "review_queue".to_string(),
         description: "Review queue".to_string(),
         arguments: vec![
@@ -329,17 +324,16 @@ fn review_queue_udf(source_name: &str) -> UdfRuntimeDefinition {
             udf_argument("query", ManifestDataType::Utf8),
             udf_argument("since", ManifestDataType::Timestamp),
         ],
-        implementation: UdfRuntimeImplementation::CoralSql {
-            query: format!(
-                "select title, score from {source_name}.search_issues(q => $query, mode => $mode, min_score => $min_score, payload => $payload, since => $since)"
-            ),
-        },
+        query: format!(
+            "select title, score from {source_name}.search_issues(q => $query, mode => $mode, min_score => $min_score, payload => $payload, since => $since)"
+        ),
         publish: udf_publish("review_queue"),
         result_columns: Vec::new(),
+        source_names: vec![source_name.to_string()],
     }
 }
 
-fn published_review_queue_udf(source_name: &str) -> UdfRuntimeDefinition {
+fn published_review_queue_udf(source_name: &str) -> CoralSqlFunctionDefinition {
     let mut udf = review_queue_udf(source_name);
     udf.result_columns = vec![
         udf_result_column("title", DataType::Utf8),
@@ -348,7 +342,7 @@ fn published_review_queue_udf(source_name: &str) -> UdfRuntimeDefinition {
     udf
 }
 
-fn review_queue_udf_published_as(source_name: &str, schema: &str) -> UdfRuntimeDefinition {
+fn review_queue_udf_published_as(source_name: &str, schema: &str) -> CoralSqlFunctionDefinition {
     review_queue_udf_published_at(source_name, schema, "review_queue")
 }
 
@@ -356,14 +350,13 @@ fn review_queue_udf_published_at(
     source_name: &str,
     schema: &str,
     name: &str,
-) -> UdfRuntimeDefinition {
+) -> CoralSqlFunctionDefinition {
     let mut udf = published_review_queue_udf(source_name);
-    udf.publish = UdfRuntimePublish {
-        table_function: UdfRuntimeTableFunctionPublish {
-            schema: schema.to_string(),
-            name: name.to_string(),
-            description: String::new(),
-        },
+    udf.publish = CoralSqlTableFunctionPublish {
+        schema: schema.to_string(),
+        name: name.to_string(),
+        description: String::new(),
+        guide: String::new(),
     };
     udf
 }
@@ -386,7 +379,7 @@ fn assert_invalid_input_contains(error: CoreError, expected: &str) {
 
 async fn assert_udf_sql_error(
     source_name: &str,
-    udfs: Vec<UdfRuntimeDefinition>,
+    udfs: Vec<CoralSqlFunctionDefinition>,
     sql: &str,
     expected: &str,
 ) {
@@ -402,7 +395,7 @@ async fn assert_udf_sql_error(
 
 async fn assert_source_udf_sql_error(
     source_name: &str,
-    udfs: Vec<UdfRuntimeDefinition>,
+    udfs: Vec<CoralSqlFunctionDefinition>,
     sql: &str,
     expected: &str,
 ) {
@@ -441,6 +434,7 @@ async fn infer_udf_signature_uses_source_function_schema_with_parameters() {
             ("since", ManifestDataType::Timestamp),
         ]
     );
+    assert_eq!(signature.source_names, ["signature_param_search"]);
 
     let columns = column_types(&signature);
     assert!(matches!(
@@ -471,6 +465,7 @@ async fn infer_udf_signature_uses_explicit_cast_for_argument_type() {
         panic!("expected label result column");
     };
     assert!(matches!(column_type, DataType::Utf8 | DataType::Utf8View));
+    assert!(signature.source_names.is_empty());
 }
 
 #[tokio::test]
@@ -519,7 +514,74 @@ async fn infer_udf_signature_uses_column_comparison_for_argument_type() {
         column_types(&signature).as_slice(),
         [("id", DataType::Int64)]
     ));
+    assert_eq!(signature.source_names, ["schema_udf_events"]);
     assert_eq!(observer.calls(), 0);
+}
+
+#[tokio::test]
+async fn infer_udf_signature_maps_component_schema_to_canonical_source_name() {
+    let (_temp, component_source) = events_source("github_rest");
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github".to_string(),
+            authored_version: None,
+            description: String::new(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            components: component_source.components().to_vec(),
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("composite runtime source");
+
+    let signature = CoralQuery::infer_udf_signature(
+        &[source],
+        test_runtime(),
+        udf_sql("github_events", "select id from github_rest.events"),
+    )
+    .await
+    .expect("udf signature inference should resolve the installed source name");
+
+    assert_eq!(signature.source_names, ["github"]);
+}
+
+#[tokio::test]
+async fn infer_udf_signature_sorts_and_deduplicates_source_names() {
+    let (_zeta_temp, zeta_source) = events_source("zeta_events");
+    let (_alpha_temp, alpha_source) = events_source("alpha_events");
+
+    let signature = CoralQuery::infer_udf_signature(
+        &[zeta_source, alpha_source],
+        test_runtime(),
+        udf_sql(
+            "combined_events",
+            "select id from zeta_events.events \
+             union all select id from alpha_events.events \
+             union all select id from zeta_events.events",
+        ),
+    )
+    .await
+    .expect("udf signature inference should collect every source once");
+
+    assert_eq!(signature.source_names, ["alpha_events", "zeta_events"]);
+}
+
+#[tokio::test]
+async fn infer_udf_signature_excludes_system_catalog_tables() {
+    let signature = CoralQuery::infer_udf_signature(
+        &[],
+        test_runtime(),
+        udf_sql(
+            "catalog_tables",
+            "select schema_name, table_name from coral.tables",
+        ),
+    )
+    .await
+    .expect("system catalog query should plan");
+
+    assert!(signature.source_names.is_empty());
 }
 
 #[tokio::test]
@@ -644,15 +706,14 @@ async fn published_udf_table_function_executes_udf_sql() {
 
 #[tokio::test]
 async fn published_udf_table_function_coerces_arguments_in_the_expanded_body() {
-    let udf = UdfRuntimeDefinition {
+    let udf = CoralSqlFunctionDefinition {
         name: "format_id".to_string(),
         description: "Formats an id".to_string(),
         arguments: vec![udf_argument("id", ManifestDataType::Int64)],
-        implementation: UdfRuntimeImplementation::CoralSql {
-            query: "select concat($id, '-x') as formatted_id".to_string(),
-        },
+        query: "select concat($id, '-x') as formatted_id".to_string(),
         publish: udf_publish("format_id"),
         result_columns: vec![udf_result_column("formatted_id", DataType::Utf8View)],
+        source_names: Vec::new(),
     };
     let runtime = CoralQuery::prepare(&[], test_runtime())
         .await
@@ -703,10 +764,8 @@ async fn published_udf_table_function_normalizes_argument_identifiers() {
         .first_mut()
         .expect("test UDF should have one argument")
         .name = "minId".to_string();
-    udf.implementation = UdfRuntimeImplementation::CoralSql {
-        query: "select id from mixed_case_arg_udf_events.events where id >= $minId order by id"
-            .to_string(),
-    };
+    udf.query = "select id from mixed_case_arg_udf_events.events where id >= $minId order by id"
+        .to_string();
     let runtime = test_runtime().with_udfs(vec![udf]);
 
     let execution = CoralQuery::execute_sql(
@@ -994,9 +1053,11 @@ async fn udf_table_function_cannot_replace_source_table_function() {
 async fn published_udf_table_function_is_cataloged() {
     let server = MockServer::start().await;
     let source = search_source(&server, "catalog_udf_search");
-    let runtime = test_runtime().with_udfs(vec![published_review_queue_udf("catalog_udf_search")]);
+    let mut udf = published_review_queue_udf("catalog_udf_search");
+    udf.publish.guide = "Use this function for review queue lookups.".to_string();
+    let runtime = test_runtime().with_udfs(vec![udf]);
 
-    let catalog = CoralQuery::list_catalog(&[source], runtime, Some("udfs"))
+    let catalog = CoralQuery::list_catalog(&[source], runtime, None, Some("udfs"))
         .await
         .expect("catalog should include udf function");
 
@@ -1005,6 +1066,10 @@ async fn published_udf_table_function_is_cataloged() {
     let function = catalog.table_functions.first().expect("udf table function");
     assert_eq!(function.schema_name, "udfs");
     assert_eq!(function.function_name, "review_queue");
+    assert_eq!(
+        function.guide,
+        "Use this function for review queue lookups."
+    );
     let [_min_score, _mode, payload, _query, _since] = function.arguments.as_slice() else {
         panic!("expected five review queue arguments");
     };
@@ -1028,7 +1093,7 @@ async fn published_udf_table_function_catalog_uses_normalized_publish_identifier
         "catalog_mixed_case_udf_events",
     )]);
 
-    let catalog = CoralQuery::list_catalog(&[source], runtime, Some("udfs"))
+    let catalog = CoralQuery::list_catalog(&[source], runtime, None, Some("udfs"))
         .await
         .expect("catalog should include normalized udf function");
 

@@ -1,0 +1,264 @@
+import {
+  TraceOperationKind,
+  TraceStatus,
+  type TraceSpan,
+  type TraceSummary,
+} from '@/generated/coral/v1/traces_pb'
+import { nanosToMs } from '@/utils/format-time'
+
+export type JsonObject = Record<string, unknown>
+export type TraceSpanData = Omit<TraceSpan, '$typeName' | '$unknown'>
+export type TraceSummaryData = Omit<TraceSummary, '$typeName' | '$unknown'>
+export interface TraceDetailData {
+  spans: TraceSpanData[]
+  summary?: TraceSummaryData
+}
+
+export function startMs(trace: TraceSummaryData): number {
+  return nanosToMs(trace.startTimeUnixNanos)
+}
+
+export function formatRows(trace: TraceSummaryData): string {
+  return trace.rowCountRecorded ? trace.rowCount.toString() : '—'
+}
+
+export function statusLabel(status: TraceStatus): string {
+  if (status === TraceStatus.OK) return 'done'
+  if (status === TraceStatus.ERROR) return 'error'
+  return 'unknown'
+}
+
+export function statusTone(status: TraceStatus): 'ok' | 'error' | 'running' {
+  if (status === TraceStatus.OK) return 'ok'
+  if (status === TraceStatus.ERROR) return 'error'
+  return 'running'
+}
+
+export function durationClass(nanos: string, warningClass: string, defaultClass: string): string {
+  return nanosToMs(nanos) > 1000 ? warningClass : defaultClass
+}
+
+export function formatTraceError(message: string): string {
+  const normalized = message.toLowerCase()
+  if (normalized.includes('unimplemented') || normalized.includes('http 404')) {
+    return 'This Coral server does not serve trace history. Trace history is on by default, so check that config.toml does not set [trace_history].enabled = false, then restart the Coral server.'
+  }
+  return message
+}
+
+export function parseJsonObject(json: string): JsonObject {
+  if (!json) return {}
+  try {
+    const parsed = JSON.parse(json)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function attrFrom(attrs: JsonObject, name: string): string | undefined {
+  const value = attrs[name]
+  if (value === undefined || value === null) return undefined
+  return String(value)
+}
+
+export function attr(span: TraceSpanData, name: string): string | undefined {
+  return attrFrom(parseJsonObject(span.attributesJson), name)
+}
+
+export function spanSource(span: TraceSpanData): string {
+  const attrs = parseJsonObject(span.attributesJson)
+  return (
+    attrFrom(attrs, 'coral.source') ?? attrFrom(attrs, 'db.system') ?? span.scopeName ?? 'coral'
+  )
+}
+
+function endpointPath(url: string): string {
+  if (!url) return ''
+  try {
+    const parsed = new URL(url, 'http://coral.local')
+    if (parsed.hostname !== 'coral.local' && parsed.pathname === '/') return parsed.hostname
+    return parsed.pathname
+  } catch {
+    return url.replace(/^https?:\/\//, '')
+  }
+}
+
+function endpointLine(url: string): string {
+  if (!url) return ''
+  try {
+    const parsed = new URL(url, 'http://coral.local')
+    return `${parsed.pathname}${parsed.search}`
+  } catch {
+    return endpointPath(url)
+  }
+}
+
+function sourceTableLabel(attrs: JsonObject): string | undefined {
+  const source = attrFrom(attrs, 'coral.source')
+  const table = attrFrom(attrs, 'coral.table')
+  if (source && table) return `${source}.${table}`
+  return table
+}
+
+export function spanOperation(span: TraceSpanData): string {
+  const attrs = parseJsonObject(span.attributesJson)
+  const method = attrFrom(attrs, 'http.request.method')
+  const table = attrFrom(attrs, 'coral.table')
+  if (method && table) return `${method} ${table}`
+  if (method) return method
+  return table ?? span.name
+}
+
+export function spanRequestOperation(span: TraceSpanData): string {
+  const attrs = parseJsonObject(span.attributesJson)
+  const method = attrFrom(attrs, 'http.request.method')
+  const target = sourceTableLabel(attrs)
+
+  if (method && target) return `${method} ${target}`
+  return method ?? target ?? ''
+}
+
+export function spanRequestEndpoint(span: TraceSpanData): string {
+  return endpointLine(spanUrl(span))
+}
+
+export function spanRequestLine(span: TraceSpanData): string {
+  const operation = spanRequestOperation(span)
+  const endpoint = spanRequestEndpoint(span)
+
+  if (!operation && !endpoint) return spanDisplayLabel(span)
+  if (!operation) return endpoint
+  if (!endpoint) return operation
+  return `${operation} ${endpoint}`
+}
+
+export function spanDisplayLabel(span: TraceSpanData): string {
+  const attrs = parseJsonObject(span.attributesJson)
+  const method = attrFrom(attrs, 'http.request.method')
+  const target = sourceTableLabel(attrs)
+  const url = attrFrom(attrs, 'url.full') ?? attrFrom(attrs, 'http.url') ?? ''
+
+  if (method && target) return `${method} ${target}`
+  if (method && url) return `${method} ${endpointPath(url)}`
+  if (target) return target
+  if (span.name === 'coral.query') return 'Query'
+  if (span.name === 'coral.search') return 'Search'
+  return span.name || span.scopeName || 'span'
+}
+
+export function spanDisplayMeta(span: TraceSpanData, label = spanDisplayLabel(span)): string {
+  const status = spanStatusCode(span)
+  const parts = [
+    span.kind,
+    span.statusMessage,
+    ['ok', 'done', 'unknown'].includes(status.toLowerCase()) ? undefined : status,
+    span.scopeName && span.scopeName !== label ? span.scopeName : undefined,
+  ].filter((part): part is string => typeof part === 'string' && part.length > 0)
+
+  return [...new Set(parts)].join(' · ')
+}
+
+export function spanUrl(span: TraceSpanData): string {
+  const attrs = parseJsonObject(span.attributesJson)
+  return attrFrom(attrs, 'url.full') ?? attrFrom(attrs, 'http.url') ?? ''
+}
+
+export function spanStatusCode(span: TraceSpanData): string {
+  return (
+    attrFrom(parseJsonObject(span.attributesJson), 'http.response.status_code') ??
+    statusLabel(span.status)
+  )
+}
+
+export function isHttpSpan(span: TraceSpanData): boolean {
+  const attrs = parseJsonObject(span.attributesJson)
+  return span.name.startsWith('http.') || 'url.full' in attrs || 'http.request.method' in attrs
+}
+
+export function sortedSpans(spans: TraceSpanData[]): TraceSpanData[] {
+  return [...spans].toSorted((a, b) => {
+    const aStart = BigInt(a.startTimeUnixNanos || 0)
+    const bStart = BigInt(b.startTimeUnixNanos || 0)
+    if (aStart < bStart) return -1
+    if (aStart > bStart) return 1
+    return 0
+  })
+}
+
+export function hasTypedOperation(trace: TraceSummaryData): boolean {
+  return trace.operationKind !== TraceOperationKind.UNSPECIFIED
+}
+
+export function isSearchOperation(trace: TraceSummaryData): boolean {
+  if (hasTypedOperation(trace)) {
+    return trace.operationKind === TraceOperationKind.SEARCH
+  }
+  return trace.name === 'coral.search'
+}
+
+function fallbackOperationLabel(trace: TraceSummaryData): string {
+  if (trace.name === 'coral.query') return 'Query'
+  if (trace.name === 'coral.search') return 'Search'
+  return trace.name || trace.traceId
+}
+
+function humanizeOperationName(name: string): string {
+  const words = name.replace(/[_-]+/g, ' ').trim()
+  if (!words) return ''
+  if (words.toLowerCase() === 'sql') return 'SQL'
+  return `${words[0].toUpperCase()}${words.slice(1)}`
+}
+
+export function operationLabel(trace: TraceSummaryData): string {
+  if (!hasTypedOperation(trace)) return fallbackOperationLabel(trace)
+  const name = humanizeOperationName(trace.operationName)
+  if (name) return name
+  if (trace.operationKind === TraceOperationKind.QUERY) return 'Query'
+  if (trace.operationKind === TraceOperationKind.SEARCH) return 'Search'
+  if (trace.operationKind === TraceOperationKind.TOOL) return 'Tool'
+  return 'Operation'
+}
+
+export function operationPreview(trace: TraceSummaryData): string {
+  const query = trace.query.trim()
+  const label = operationLabel(trace)
+  if (!query) return label
+  if (hasTypedOperation(trace) && trace.operationKind !== TraceOperationKind.QUERY) {
+    return `${label} · ${query}`
+  }
+  return query
+}
+
+export function operationDetailText(trace: TraceSummaryData): string {
+  if (trace.query.trim()) return trace.query
+  if (isSearchOperation(trace)) return 'No Search text was recorded for this operation.'
+  if (hasTypedOperation(trace) && trace.operationKind === TraceOperationKind.TOOL) {
+    return `${operationLabel(trace)} tool call. No SQL was recorded.`
+  }
+  return 'No SQL recorded for this operation.'
+}
+
+export function operationDetailLabel(trace: TraceSummaryData): string {
+  if (isSearchOperation(trace)) return 'Search details'
+  if (
+    (hasTypedOperation(trace) && trace.operationKind === TraceOperationKind.QUERY) ||
+    (!hasTypedOperation(trace) && trace.name === 'coral.query')
+  ) {
+    return 'Query details'
+  }
+  return `${operationLabel(trace)} details`
+}
+
+export function operationCodeLanguage(trace: TraceSummaryData): 'plain' | 'sql' {
+  return isSearchOperation(trace) || !trace.query.trim() ? 'plain' : 'sql'
+}
+
+export function sourceNames(spans: TraceSpanData[]): string[] {
+  const names = new Set<string>()
+  for (const span of spans) {
+    const source = attrFrom(parseJsonObject(span.attributesJson), 'coral.source')
+    if (source) names.add(source)
+  }
+  return [...names]
+}

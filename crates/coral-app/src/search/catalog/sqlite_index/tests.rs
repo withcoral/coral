@@ -1,10 +1,10 @@
 use tempfile::{TempDir, tempdir};
 
 use super::{
-    CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot, SqliteCatalogIndex,
-    like_prefix_pattern, refresh_catalog_documents_after_stale_check,
+    CatalogDocumentClass, CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
+    SqliteCatalogIndex, refresh_catalog_documents_after_stale_check,
 };
-use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
+use crate::search::sqlite_store::SqliteSearchStore;
 use crate::workspaces::WorkspaceName;
 
 #[test]
@@ -44,21 +44,72 @@ fn refresh_and_search_catalog_metadata() {
                 "sha".to_string(),
             ],
             10,
+            CatalogDocumentClass::Entries,
         )
         .expect("search catalog");
 
-    assert!(hits.hits.iter().any(|hit| hit.doc_kind
-        == CatalogIndexDocumentKind::CatalogTableFunction
-        && hit.surface_name == "search_deployments"));
-    assert_eq!(hits.document_count, 3);
-    let sha_hit = hits
+    // Entries get their own window, so this lane returns nothing field-shaped.
+    assert!(
+        hits.hits
+            .iter()
+            .any(|hit| hit.surface_name == "search_deployments" && hit.field_name.is_empty())
+    );
+    assert!(
+        hits.hits.iter().all(|hit| hit.field_name.is_empty()),
+        "entry retrieval must not return field documents"
+    );
+
+    let fields = store
+        .search_catalog(&["sha".to_string()], 10, CatalogDocumentClass::Fields)
+        .expect("search catalog fields");
+    let sha_hit = fields
         .hits
         .iter()
-        .find(|hit| hit.doc_kind == CatalogIndexDocumentKind::ColumnHint && hit.field_name == "sha")
+        .find(|hit| hit.field_name == "sha")
         .expect("sha column hit");
     assert_eq!(sha_hit.surface_kind, "table_function");
     assert_eq!(sha_hit.field_role, "table_function_result_column");
-    assert_eq!(sha_hit.description, "Deployment commit SHA");
+}
+
+#[test]
+fn search_hit_preserves_catalog_identity_from_the_projection() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let mut document = document(DocumentInput {
+        doc_id: "catalog:table:warehouse.analytics.events",
+        doc_kind: CatalogIndexDocumentKind::CatalogTable,
+        source_name: "analytics",
+        surface_kind: "table",
+        surface_name: "events",
+        field_name: "",
+        field_role: "",
+        qualified_name: "warehouse.analytics.events",
+        title: "events",
+        description: "Warehouse events",
+        searchable_text: "warehouse analytics events",
+    });
+    document.catalog_name = Some("warehouse".to_string());
+    store
+        .refresh_catalog_projection(&CatalogIndexSnapshot {
+            documents: vec![document],
+            fingerprint: "catalog-identity-v1".to_string(),
+        })
+        .expect("refresh catalog");
+
+    let hits = store
+        .search_catalog(
+            &["warehouse".to_string()],
+            10,
+            CatalogDocumentClass::Entries,
+        )
+        .expect("search catalog");
+
+    assert_eq!(
+        hits.hits
+            .first()
+            .and_then(|hit| hit.catalog_name.as_deref()),
+        Some("warehouse")
+    );
 }
 
 #[test]
@@ -82,7 +133,6 @@ fn refresh_to_empty_snapshot_clears_projection_and_persists_fingerprint() {
     assert_eq!(refresh.document_count, 0);
     assert_eq!(store.catalog_document_count().expect("document count"), 0);
     assert_eq!(catalog_fts_document_count(&store), 0);
-    assert_eq!(catalog_source_owner_count(&store), 0);
     assert_eq!(
         persisted_catalog_fingerprint(&store),
         empty_snapshot.fingerprint
@@ -100,7 +150,7 @@ fn refresh_to_empty_snapshot_clears_projection_and_persists_fingerprint() {
 }
 
 #[test]
-fn duplicate_document_refresh_rolls_back_documents_fts_owners_and_fingerprint() {
+fn duplicate_document_refresh_rolls_back_documents_fts_and_fingerprint() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
     let original_snapshot = catalog_index_snapshot();
@@ -178,11 +228,6 @@ fn clear_workspace_removes_workspace_documents_and_invalidates_fingerprint() {
         "clear should remove workspace FTS rows"
     );
     assert_eq!(
-        catalog_source_owner_count(&store),
-        0,
-        "clear should remove persisted source ownership"
-    );
-    assert_eq!(
         schema_version(&store),
         crate::search::sqlite_store::SEARCH_SQLITE_SCHEMA_VERSION.to_string(),
         "clear should leave schema metadata intact"
@@ -224,7 +269,7 @@ fn clear_source_removes_only_source_documents_and_invalidates_fingerprint() {
     assert_eq!(store.catalog_document_count().expect("document count"), 1);
     assert_eq!(catalog_fts_document_count(&store), 1);
     let hits = store
-        .search_catalog(&["slack".to_string()], 10)
+        .search_catalog(&["slack".to_string()], 10, CatalogDocumentClass::Entries)
         .expect("search remaining source");
     assert_eq!(hits.hits.len(), 1);
     assert_eq!(
@@ -239,95 +284,119 @@ fn clear_source_removes_only_source_documents_and_invalidates_fingerprint() {
 }
 
 #[test]
-fn clear_installed_source_uses_persisted_component_ownership_after_restart() {
+fn clear_source_leaves_the_other_provider_interface_stranded_nowhere() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
     let snapshot = CatalogIndexSnapshot {
-        fingerprint: "multi-component-catalog-v1".to_string(),
+        fingerprint: "independent-sources-v1".to_string(),
         documents: vec![
-            owned_document(
-                "github_v4",
-                DocumentInput {
-                    doc_id: "catalog:table:github_v4_rest.issues",
-                    doc_kind: CatalogIndexDocumentKind::CatalogTable,
-                    source_name: "github_v4_rest",
-                    surface_kind: "table",
-                    surface_name: "issues",
-                    field_name: "",
-                    field_role: "",
-                    qualified_name: "github_v4_rest.issues",
-                    title: "issues",
-                    description: "GitHub issues",
-                    searchable_text: "github rest issues",
-                },
-            ),
-            owned_document(
-                "github_v4",
-                DocumentInput {
-                    doc_id: "catalog:function:github_v4_mcp.search_issues",
-                    doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
-                    source_name: "github_v4_mcp",
-                    surface_kind: "table_function",
-                    surface_name: "search_issues",
-                    field_name: "",
-                    field_role: "",
-                    qualified_name: "github_v4_mcp.search_issues",
-                    title: "search_issues",
-                    description: "Search GitHub issues",
-                    searchable_text: "github mcp search issues",
-                },
-            ),
-            owned_document(
-                "slack_v4",
-                DocumentInput {
-                    doc_id: "catalog:table:slack_v4_rest.messages",
-                    doc_kind: CatalogIndexDocumentKind::CatalogTable,
-                    source_name: "slack_v4_rest",
-                    surface_kind: "table",
-                    surface_name: "messages",
-                    field_name: "",
-                    field_role: "",
-                    qualified_name: "slack_v4_rest.messages",
-                    title: "messages",
-                    description: "Slack messages",
-                    searchable_text: "slack rest messages",
-                },
-            ),
+            document(DocumentInput {
+                doc_id: "catalog:table:github_v4.issues",
+                doc_kind: CatalogIndexDocumentKind::CatalogTable,
+                source_name: "github_v4",
+                surface_kind: "table",
+                surface_name: "issues",
+                field_name: "",
+                field_role: "",
+                qualified_name: "github_v4.issues",
+                title: "issues",
+                description: "GitHub issues",
+                searchable_text: "github rest issues",
+            }),
+            document(DocumentInput {
+                doc_id: "catalog:function:github_mcp_v4.search_issues",
+                doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+                source_name: "github_mcp_v4",
+                surface_kind: "table_function",
+                surface_name: "search_issues",
+                field_name: "",
+                field_role: "",
+                qualified_name: "github_mcp_v4.search_issues",
+                title: "search_issues",
+                description: "Search GitHub issues",
+                searchable_text: "github mcp search issues",
+            }),
         ],
     };
     store
         .refresh_catalog_projection(&snapshot)
         .expect("refresh catalog");
-    drop(store);
 
-    let reopened = catalog_store(&temp);
-    let result = reopened
+    let result = store
         .clear_catalog_source("github_v4")
-        .expect("clear installed source");
+        .expect("clear one installed source");
 
-    assert_eq!(result.deleted_document_count, 2);
+    // The REST and MCP interfaces are independent sources: no ownership
+    // indirection can strand one when the other is cleared.
+    assert_eq!(result.deleted_document_count, 1);
+    assert_eq!(store.catalog_document_count().expect("document count"), 1);
+    assert_eq!(catalog_fts_document_count(&store), 1);
+    let hits = store
+        .search_catalog(
+            &["search_issues".to_string()],
+            10,
+            CatalogDocumentClass::Entries,
+        )
+        .expect("search remaining source");
     assert_eq!(
-        reopened.catalog_document_count().expect("document count"),
-        1
+        hits.hits.first().expect("remaining hit").source_name,
+        "github_mcp_v4"
     );
-    assert_eq!(catalog_fts_document_count(&reopened), 1);
-    let connection = reopened.connect_for_test().expect("connect");
-    let github_owner_count: i64 = connection
+}
+
+#[test]
+fn clear_source_keeps_its_workspace_guard_on_the_fts_delete() {
+    // `doc_id` is not workspace-qualified. Production runs one sidecar per
+    // workspace, so this guards test layouts and defence in depth, not a live
+    // corruption path -- but the schema is workspace-keyed, so it stays.
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("search.sqlite3");
+    let other_workspace = WorkspaceName::parse("other").expect("workspace");
+    let shared_documents = vec![document(DocumentInput {
+        doc_id: "catalog:table:github_v4.issues",
+        doc_kind: CatalogIndexDocumentKind::CatalogTable,
+        source_name: "github_v4",
+        surface_kind: "table",
+        surface_name: "issues",
+        field_name: "",
+        field_role: "",
+        qualified_name: "github_v4.issues",
+        title: "issues",
+        description: "GitHub issues",
+        searchable_text: "github rest issues",
+    })];
+    for workspace_name in [WorkspaceName::default(), other_workspace.clone()] {
+        SqliteSearchStore::open(&path, workspace_name)
+            .expect("store")
+            .refresh_catalog_projection(&CatalogIndexSnapshot {
+                fingerprint: "shared-doc-id-v1".to_string(),
+                documents: shared_documents.clone(),
+            })
+            .expect("refresh catalog");
+    }
+
+    SqliteSearchStore::open(&path, WorkspaceName::default())
+        .expect("store")
+        .clear_catalog_source("github_v4")
+        .expect("clear source in one workspace");
+
+    let other_store = SqliteSearchStore::open(&path, other_workspace).expect("other store");
+    assert_eq!(
+        other_store
+            .catalog_document_count()
+            .expect("document count"),
+        1,
+        "clearing one workspace must not delete another workspace's rows"
+    );
+    let connection = other_store.connect_for_test().expect("connect");
+    let other_fts_rows: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM catalog_source_owners WHERE workspace = 'default' AND owner_source_name = 'github_v4'",
+            "SELECT COUNT(*) FROM catalog_documents_fts WHERE workspace = 'other'",
             [],
             |row| row.get(0),
         )
-        .expect("GitHub owner count");
-    let slack_owner_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM catalog_source_owners WHERE workspace = 'default' AND owner_source_name = 'slack_v4'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("Slack owner count");
-    assert_eq!(github_owner_count, 0);
-    assert_eq!(slack_owner_count, 1);
+        .expect("other workspace FTS rows");
+    assert_eq!(other_fts_rows, 1);
 }
 
 #[test]
@@ -402,7 +471,7 @@ fn compaction_reports_checkpoint_and_vacuum_status() {
 }
 
 #[test]
-fn search_rejects_unknown_doc_kind_from_storage() {
+fn search_tolerates_unknown_doc_kind_from_storage() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
     store
@@ -423,23 +492,12 @@ fn search_rejects_unknown_doc_kind_from_storage() {
         .execute_batch("PRAGMA ignore_check_constraints = OFF")
         .expect("restore constraint checks");
 
-    let Err(error) = store.search_catalog(&["github".to_string()], 10) else {
-        panic!("unknown doc_kind should fail search");
-    };
-    match error {
-        SqliteSearchError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
-            column,
-            rusqlite::types::Type::Text,
-            source,
-        )) => {
-            assert_eq!(column, 1);
-            assert_eq!(
-                source.to_string(),
-                "unknown catalog search doc_kind 'mystery_kind'"
-            );
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+    // Retrieval never decodes doc_kind, so a corrupted one cannot fail a search.
+    let hits = store
+        .search_catalog(&["github".to_string()], 10, CatalogDocumentClass::Fields)
+        .expect("search tolerates an unknown doc_kind");
+
+    assert!(!hits.hits.is_empty());
 }
 
 #[test]
@@ -487,56 +545,6 @@ fn refresh_rechecks_fingerprint_after_writer_lock() {
 }
 
 #[test]
-fn missing_catalog_ownership_invalidates_and_repairs_the_projection() {
-    let temp = tempdir().expect("tempdir");
-    let store = catalog_store(&temp);
-    let snapshot = catalog_index_snapshot();
-    store
-        .refresh_catalog_projection(&snapshot)
-        .expect("refresh catalog");
-    let connection = store.connect_for_test().expect("connect");
-    connection
-        .execute(
-            "DELETE FROM catalog_source_owners WHERE workspace = 'default' AND source_name = 'github'",
-            [],
-        )
-        .expect("corrupt source ownership");
-    drop(connection);
-
-    assert!(
-        !store
-            .catalog_projection_is_current(&snapshot.fingerprint)
-            .expect("projection current check")
-    );
-    let refresh = store
-        .refresh_catalog_projection(&snapshot)
-        .expect("repair catalog projection");
-
-    assert!(refresh.refreshed);
-    assert!(
-        store
-            .catalog_projection_is_current(&snapshot.fingerprint)
-            .expect("repaired projection current")
-    );
-}
-
-#[test]
-fn short_identifiers_match_without_trigram_fts() {
-    let temp = tempdir().expect("tempdir");
-    let store = catalog_store(&temp);
-    let snapshot = catalog_index_snapshot();
-    store
-        .refresh_catalog_projection(&snapshot)
-        .expect("refresh");
-
-    let hits = store
-        .search_catalog(&["q".to_string()], 10)
-        .expect("short search");
-
-    assert!(hits.hits.iter().any(|hit| hit.field_name == "q"));
-}
-
-#[test]
 fn search_terms_are_normalized_before_retrieval() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
@@ -546,11 +554,10 @@ fn search_terms_are_normalized_before_retrieval() {
         .expect("refresh");
 
     let hits = store
-        .search_catalog(&[" GitHub ".to_string()], 10)
+        .search_catalog(&[" GitHub ".to_string()], 10, CatalogDocumentClass::Fields)
         .expect("search");
 
     assert!(hits.hits.iter().any(|hit| hit.source_name == "github"));
-    assert!(hits.hits.iter().any(|hit| !hit.matched_fields.is_empty()));
 }
 
 #[test]
@@ -563,59 +570,11 @@ fn empty_terms_are_ignored() {
         .expect("refresh");
 
     let hits = store
-        .search_catalog(&["  ".to_string()], 10)
+        .search_catalog(&["  ".to_string()], 10, CatalogDocumentClass::Fields)
         .expect("search");
 
     assert!(hits.hits.is_empty());
     assert!(!hits.retrieval_limited);
-}
-
-#[test]
-fn exact_field_name_matches_report_matched_field() {
-    let temp = tempdir().expect("tempdir");
-    let store = catalog_store(&temp);
-    let snapshot = field_name_match_snapshot();
-    store
-        .refresh_catalog_projection(&snapshot)
-        .expect("refresh");
-
-    let hits = store
-        .search_catalog(&["id".to_string()], 10)
-        .expect("search");
-    let hit = hits
-        .hits
-        .iter()
-        .find(|hit| hit.field_name == "id")
-        .expect("id field hit");
-
-    assert!(hit.matched_fields.iter().any(|field| field == "field_name"));
-}
-
-#[test]
-fn like_prefix_pattern_escapes_sql_wildcards() {
-    assert_eq!(like_prefix_pattern("user_id"), "user\\_id%");
-    assert_eq!(like_prefix_pattern("rate%"), "rate\\%%");
-    assert_eq!(like_prefix_pattern("path\\name"), "path\\\\name%");
-}
-
-#[test]
-fn prefix_fallback_treats_underscores_as_literals() {
-    let temp = tempdir().expect("tempdir");
-    let store = catalog_store(&temp);
-    let snapshot = underscore_column_snapshot();
-    store
-        .refresh_catalog_projection(&snapshot)
-        .expect("refresh");
-
-    let hits = store
-        .search_catalog(&["user_id".to_string()], 10)
-        .expect("search");
-
-    assert!(hits.hits.iter().any(|hit| hit.field_name == "user_id"));
-    assert!(
-        !hits.hits.iter().any(|hit| hit.field_name == "user0id"),
-        "SQL LIKE prefix fallback must not treat '_' as a wildcard"
-    );
 }
 
 #[test]
@@ -628,24 +587,14 @@ fn compact_identifier_variants_retrieve_punctuation_equivalent_identifiers() {
         .expect("refresh");
 
     let hits = store
-        .search_catalog(&["ab-cd".to_string()], 10)
+        .search_catalog(&["ab-cd".to_string()], 10, CatalogDocumentClass::Fields)
         .expect("search");
 
     assert!(
         hits.hits
             .iter()
             .any(|hit| hit.surface_name == "ab_cd" && hit.field_name == "deploy_url"),
-        "hyphenated query should retrieve underscore identifier before provider ranking"
-    );
-    let hit = hits
-        .hits
-        .iter()
-        .find(|hit| hit.surface_name == "ab_cd" && hit.field_name == "deploy_url")
-        .expect("punctuation-equivalent hit");
-    assert!(
-        hit.matched_fields
-            .iter()
-            .any(|field| field == "surface_name")
+        "hyphenated query should retrieve the underscore identifier"
     );
 }
 
@@ -659,7 +608,7 @@ fn fts_ranking_weights_qualified_name_before_title_inside_limit() {
         .expect("refresh");
 
     let hits = store
-        .search_catalog(&["needle".to_string()], 1)
+        .search_catalog(&["needle".to_string()], 1, CatalogDocumentClass::Fields)
         .expect("search");
 
     assert_eq!(hits.hits.len(), 1);
@@ -671,52 +620,15 @@ fn fts_ranking_weights_qualified_name_before_title_inside_limit() {
 }
 
 #[test]
-fn exact_identifier_is_retained_before_prefix_limit() {
-    let temp = tempdir().expect("tempdir");
-    let store = catalog_store(&temp);
-    let snapshot = identifier_priority_snapshot();
-    store
-        .refresh_catalog_projection(&snapshot)
-        .expect("refresh");
-
-    let hits = store
-        .search_catalog(&["id".to_string()], 1)
-        .expect("search");
-
-    assert_eq!(hits.hits.len(), 1);
-    assert_eq!(hits.hits.first().expect("top search hit").field_name, "id");
-    assert!(hits.retrieval_limited);
-}
-
-#[test]
-fn merged_candidate_windows_are_not_globally_truncated() {
-    let temp = tempdir().expect("tempdir");
-    let store = catalog_store(&temp);
-    let snapshot = identifier_priority_snapshot();
-    store
-        .refresh_catalog_projection(&snapshot)
-        .expect("refresh");
-
-    let hits = store
-        .search_catalog(&["id".to_string(), "identity".to_string()], 1)
-        .expect("search");
-
-    assert!(hits.hits.iter().any(|hit| hit.field_name == "id"));
-    assert!(hits.hits.iter().any(|hit| hit.field_name == "identity"));
-    assert!(hits.retrieval_limited);
-}
-
-#[test]
 fn exact_fit_does_not_report_retrieval_limited() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
-    let snapshot = identifier_priority_snapshot();
     store
-        .refresh_catalog_projection(&snapshot)
+        .refresh_catalog_projection(&truncation_snapshot())
         .expect("refresh");
 
     let hits = store
-        .search_catalog(&["id".to_string()], 2)
+        .search_catalog(&["identifi".to_string()], 2, CatalogDocumentClass::Fields)
         .expect("search");
 
     assert_eq!(hits.hits.len(), 2);
@@ -727,13 +639,12 @@ fn exact_fit_does_not_report_retrieval_limited() {
 fn probe_past_limit_reports_retrieval_limited() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
-    let snapshot = identifier_probe_snapshot();
     store
-        .refresh_catalog_projection(&snapshot)
+        .refresh_catalog_projection(&truncation_snapshot())
         .expect("refresh");
 
     let hits = store
-        .search_catalog(&["id".to_string()], 2)
+        .search_catalog(&["ident".to_string()], 2, CatalogDocumentClass::Fields)
         .expect("search");
 
     assert_eq!(hits.hits.len(), 2);
@@ -758,24 +669,10 @@ fn catalog_fts_document_count(store: &SqliteSearchStore) -> u32 {
     u32::try_from(count).expect("FTS count should fit")
 }
 
-fn catalog_source_owner_count(store: &SqliteSearchStore) -> u32 {
-    let connection = store.connect_for_test().expect("connect");
-    let workspace_name = WorkspaceName::default();
-    let count: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM catalog_source_owners WHERE workspace = ?1",
-            [workspace_name.as_str()],
-            |row| row.get(0),
-        )
-        .expect("source owner count");
-    u32::try_from(count).expect("source owner count should fit")
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct CatalogProjectionStorageState {
     documents: Vec<(String, String, String)>,
     fts_documents: Vec<(String, String, String, String, String)>,
-    source_owners: Vec<(String, String, String)>,
     fingerprint: String,
 }
 
@@ -822,23 +719,6 @@ fn catalog_projection_storage_state(store: &SqliteSearchStore) -> CatalogProject
             .collect::<Result<Vec<_>, _>>()
             .expect("read catalog FTS state")
     };
-    let source_owners = {
-        let mut statement = connection
-            .prepare(
-                "SELECT source_name, owner_source_name, snapshot_fingerprint
-                 FROM catalog_source_owners
-                 WHERE workspace = ?1
-                 ORDER BY source_name",
-            )
-            .expect("prepare catalog ownership state");
-        statement
-            .query_map([workspace_name.as_str()], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .expect("query catalog ownership state")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("read catalog ownership state")
-    };
     let fingerprint = connection
         .query_row(
             "SELECT value FROM search_meta WHERE key = ?1",
@@ -853,7 +733,6 @@ fn catalog_projection_storage_state(store: &SqliteSearchStore) -> CatalogProject
     CatalogProjectionStorageState {
         documents,
         fts_documents,
-        source_owners,
         fingerprint,
     }
 }
@@ -871,6 +750,30 @@ fn schema_version(store: &SqliteSearchStore) -> String {
             |row| row.get(0),
         )
         .expect("schema version")
+}
+
+fn truncation_snapshot() -> CatalogIndexSnapshot {
+    CatalogIndexSnapshot {
+        fingerprint: "truncation-fixture-v1".to_string(),
+        documents: ["identity", "identifier", "identifiable"]
+            .into_iter()
+            .map(|field_name| {
+                document(DocumentInput {
+                    doc_id: field_name,
+                    doc_kind: CatalogIndexDocumentKind::ColumnHint,
+                    source_name: "fixture",
+                    surface_kind: "table",
+                    surface_name: "users",
+                    field_name,
+                    field_role: "table_column",
+                    qualified_name: "fixture.users",
+                    title: field_name,
+                    description: "",
+                    searchable_text: field_name,
+                })
+            })
+            .collect(),
+    }
 }
 
 fn catalog_index_snapshot() -> CatalogIndexSnapshot {
@@ -954,93 +857,6 @@ fn fts_weight_snapshot() -> CatalogIndexSnapshot {
     }
 }
 
-fn identifier_priority_snapshot() -> CatalogIndexSnapshot {
-    CatalogIndexSnapshot {
-        fingerprint: "identifier-priority-fixture-v1".to_string(),
-        documents: vec![
-            document(DocumentInput {
-                doc_id: "a-prefix-identifier",
-                doc_kind: CatalogIndexDocumentKind::ColumnHint,
-                source_name: "fixture",
-                surface_kind: "table",
-                surface_name: "users",
-                field_name: "identity",
-                field_role: "table_column",
-                qualified_name: "fixture.users.identity",
-                title: "identity",
-                description: "",
-                searchable_text: "fixture users identity",
-            }),
-            document(DocumentInput {
-                doc_id: "z-exact-id",
-                doc_kind: CatalogIndexDocumentKind::ColumnHint,
-                source_name: "fixture",
-                surface_kind: "table",
-                surface_name: "users",
-                field_name: "id",
-                field_role: "table_column",
-                qualified_name: "fixture.users.id",
-                title: "id",
-                description: "",
-                searchable_text: "fixture users id",
-            }),
-        ],
-    }
-}
-
-fn identifier_probe_snapshot() -> CatalogIndexSnapshot {
-    let mut snapshot = identifier_priority_snapshot();
-    snapshot.fingerprint = "identifier-probe-fixture-v1".to_string();
-    snapshot.documents.push(document(DocumentInput {
-        doc_id: "b-prefix-id-token",
-        doc_kind: CatalogIndexDocumentKind::ColumnHint,
-        source_name: "fixture",
-        surface_kind: "table",
-        surface_name: "users",
-        field_name: "id_token",
-        field_role: "table_column",
-        qualified_name: "fixture.users.id_token",
-        title: "id_token",
-        description: "",
-        searchable_text: "fixture users id_token",
-    }));
-    snapshot
-}
-
-fn underscore_column_snapshot() -> CatalogIndexSnapshot {
-    CatalogIndexSnapshot {
-        fingerprint: "underscore-fixture-v1".to_string(),
-        documents: vec![
-            document(DocumentInput {
-                doc_id: "column:table:github.users:user0id",
-                doc_kind: CatalogIndexDocumentKind::ColumnHint,
-                source_name: "github",
-                surface_kind: "table",
-                surface_name: "users",
-                field_name: "user0id",
-                field_role: "table_column",
-                qualified_name: "github.users.user0id",
-                title: "user0id",
-                description: "",
-                searchable_text: "github users user0id",
-            }),
-            document(DocumentInput {
-                doc_id: "column:table:github.users:user_id",
-                doc_kind: CatalogIndexDocumentKind::ColumnHint,
-                source_name: "github",
-                surface_kind: "table",
-                surface_name: "users",
-                field_name: "user_id",
-                field_role: "table_column",
-                qualified_name: "github.users.user_id",
-                title: "user_id",
-                description: "",
-                searchable_text: "github users user_id",
-            }),
-        ],
-    }
-}
-
 fn punctuation_variant_snapshot() -> CatalogIndexSnapshot {
     CatalogIndexSnapshot {
         fingerprint: "punctuation-variant-fixture-v1".to_string(),
@@ -1056,25 +872,6 @@ fn punctuation_variant_snapshot() -> CatalogIndexSnapshot {
             title: "deploy_url",
             description: "",
             searchable_text: "fixture ab_cd deploy_url",
-        })],
-    }
-}
-
-fn field_name_match_snapshot() -> CatalogIndexSnapshot {
-    CatalogIndexSnapshot {
-        fingerprint: "field-name-match-fixture-v1".to_string(),
-        documents: vec![document(DocumentInput {
-            doc_id: "column:table:fixture.users:id",
-            doc_kind: CatalogIndexDocumentKind::ColumnHint,
-            source_name: "fixture",
-            surface_kind: "table",
-            surface_name: "users",
-            field_name: "id",
-            field_role: "table_column",
-            qualified_name: "fixture.users.id",
-            title: "primary key",
-            description: "",
-            searchable_text: "",
         })],
     }
 }
@@ -1095,14 +892,9 @@ struct DocumentInput<'a> {
 }
 
 fn document(input: DocumentInput<'_>) -> CatalogIndexDocument {
-    owned_document(input.source_name, input)
-}
-
-fn owned_document(owner_source_name: &str, input: DocumentInput<'_>) -> CatalogIndexDocument {
     CatalogIndexDocument {
         doc_id: input.doc_id.to_string(),
         doc_kind: input.doc_kind,
-        owner_source_name: owner_source_name.to_string(),
         source_name: input.source_name.to_string(),
         surface_kind: input.surface_kind.to_string(),
         surface_name: input.surface_name.to_string(),
@@ -1112,6 +904,6 @@ fn owned_document(owner_source_name: &str, input: DocumentInput<'_>) -> CatalogI
         title: input.title.to_string(),
         description: input.description.to_string(),
         searchable_text: input.searchable_text.to_string(),
-        payload_json: "{}".to_string(),
+        catalog_name: None,
     }
 }

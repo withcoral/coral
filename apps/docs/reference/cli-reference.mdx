@@ -56,15 +56,16 @@ Use `DESCRIBE <schema>.<table>` to inspect a table's result columns:
 coral sql "DESCRIBE datadog.hosts"
 ```
 
-`DESCRIBE` expects a table. To inspect table functions, query
-`coral.table_functions`.
+`DESCRIBE` expects a table. To inspect table functions, including their
+descriptions and guides, query `coral.table_functions`.
 
 `DESCRIBE SELECT ...` still describes the result schema of the query itself.
 
 ## `coral search`
 
 Find relevant Coral tables, table functions, columns, filters, and values Coral
-has observed during earlier queries.
+has observed during earlier queries. The query must include at least one term
+with three or more characters.
 
 ```shellscript
 coral search github issues assigned to me
@@ -93,16 +94,11 @@ Enable them persistently using Coral [runtime features](/reference/configuration
 ### JSON response
 
 With `--json`, the response separates `results`, `provider_statuses`, and
-`truncation`. Each result identifies its provider and typed result kind.
-Catalog table results include `sql_reference`; table-function results include
-`sql_reference` and `sql_call_example`. Catalog field-level results include
-`surface_sql_reference`, identifying the table or table function that owns the
-matching column, filter, argument, or result column.
-
-Observed-value results include the value, its `schema_name`, surface, column,
-field path, observation count, and when it was last observed. `schema_name` is
-the runtime, query-visible SQL schema to use in a query; it can differ from the
-installed source name when one source exposes multiple runtime components.
+`truncation`. Each result is one table or table function. It includes its
+`kind`, SQL reference, contributing providers, and available description or
+guide. Table results can include `fields` and `required`. Function results can
+include `arguments`, `required`, and `returns`. Matching observed values are
+grouped by field in `matching_values` on the same result.
 
 The `catalog_metadata` and `observed_values` provider statuses report whether
 each local search found matches, completed with no matches, returned partial
@@ -169,9 +165,8 @@ Clear Coral's local search data for one workspace.
 Clear deletes local search data, so Coral requires both `--yes` and an explicit
 `--workspace NAME`.
 
-`--source` accepts the canonical installed source name, not a runtime SQL
-schema. It clears the selected scope for every runtime schema and surface owned
-by that source.
+`--source` accepts the installed source name, which is also its SQL schema
+name. It clears the selected scope for that source.
 
 ```shellscript
 coral search-index clear --scope all --workspace work --yes
@@ -185,7 +180,7 @@ coral search-index clear --scope all --source github --workspace work --yes
 | Option                    | Type   | Default  | Description                                               |
 | ------------------------- | ------ | -------- | --------------------------------------------------------- |
 | `--scope`                 | enum   | required | Search data scope to clear: `all` or `observed-values`    |
-| `--source`                | string | unset    | Installed source owner whose runtime schemas and surfaces are cleared |
+| `--source`                | string | unset    | Installed source whose local search state is cleared      |
 | global `--workspace NAME` | string | required | Workspace whose search data will be cleared               |
 | `--yes`                   | flag   | required | Confirm destructive search-data deletion                  |
 
@@ -375,6 +370,7 @@ Example function:
 name: open_prs
 schema: functions
 description: All open PRs in the specified repo
+guide: Use this function when you need a reusable open-PR lookup.
 */
 
 select number, title, html_url as url
@@ -382,7 +378,7 @@ from github.pulls
 where owner = $owner and repo = $repo and state = 'open'
 ```
 
-The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. Coral infers each required argument and its type from `$argument` uses in the SQL body. If the surrounding SQL does not provide enough type evidence, add an explicit cast such as `cast($limit as BIGINT)`.
+The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. The optional `guide` appears in catalog and search metadata for agents and users choosing how to query the function. Coral infers each required argument and its type from `$argument` uses in the SQL body. If the surrounding SQL does not provide enough type evidence, add an explicit cast such as `cast($limit as BIGINT)`.
 
 ### `coral functions list`
 
@@ -457,40 +453,13 @@ Persistently disables an experimental runtime feature.
 coral features disable feedback
 ```
 
-## `coral ui`
-
-Open the local Coral UI in your browser.
-
-```shellscript
-coral ui
-```
-
-### Options
-
-| Option      | Type | Default | Description                                      |
-| ----------- | ---- | ------- | ------------------------------------------------ |
-| `--port`    | port | `1457`  | Loopback port for the local browser-facing server |
-| `--no-open` | flag | `false` | Start the server without opening a browser       |
-
-The UI opens at `http://127.0.0.1:1457` by default, which only accepts connections from your machine. The command keeps running until you press `Ctrl-C`.
-
-The host is fixed to `127.0.0.1`. Use `--port` to bind a different loopback port:
-
-```shellscript
-coral ui --port 1458
-```
-
-Use `--no-open` to start the same loopback server without launching a browser:
-
-```shellscript
-coral ui --no-open
-```
 
 ## `coral server`
 
 Start a long-running native gRPC server. Coral prints the selected endpoint and
 a `CORAL_ENDPOINT` hint for clients, then runs until you press `Ctrl-C` or send
-`SIGTERM` on Unix.
+`SIGTERM` on Unix. When `[server.mcp_http]` is enabled, it also prints the bound
+MCP Streamable HTTP endpoint.
 
 ```shellscript
 coral server
@@ -498,11 +467,8 @@ coral server
 
 The bind address comes from `[server].bind_addr`. Without a `[server]` section,
 Coral uses an ephemeral port on `127.0.0.1`. See
-[Configuration](/reference/configuration#server).
-
-<Warning>
-  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
-</Warning>
+[Configuration](/reference/configuration#server). To run the server as a
+container, see [Self-host Coral with Docker](/guides/self-host-with-docker).
 
 ## `coral mcp-stdio`
 
@@ -517,15 +483,23 @@ This command is intended to be launched by an MCP-capable client rather than use
 
 By default, this server exposes:
 
-| Type     | Name             | Description                                             |
-| -------- | ---------------- | ------------------------------------------------------- |
-| Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Type     | Name             | Description |
+| -------- | ---------------- | ----------- |
+| Tool     | `sql`            | Execute read-only SQL against the Coral database |
+| Tool     | `add_function`   | Create a reusable table function in the current workspace |
 | Tool     | `search`         | Find relevant catalog entries and, when enabled, locally observed values |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
-| Tool     | `describe_table` | Show compact metadata for one database table            |
-| Tool     | `list_columns`   | List columns for one database table with pagination     |
-| Resource | `coral://guide`  | Database workflow guide for agents                     |
+| Tool     | `describe`       | Describe one database table or table function |
+| Tool     | `list_columns`   | List columns for one database table with pagination |
+| Resource | `coral://guide`  | Database workflow guide for agents |
 | Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
+
+`add_function` accepts `schema`, `name`, `description`, and one read-only SQL query. Values such as `$owner` in the query become required named arguments. It never overwrites an existing function, and Coral validates the function before saving it.
+
+`describe` accepts `schema` and a bare `surface` name. Add `catalog` for a
+three-part table. Coral resolves whether the surface is a table or table
+function. An exact result returns the surface kind and metadata without
+repeating the requested target. A missing result returns `kind: missing`.
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 
@@ -535,7 +509,7 @@ for one MCP server process with
 `coral --enable-observed-values-search mcp-stdio`.
 
 Discovery helpers include the `coral` system schema, so `search`,
-`list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
+`list_catalog`, `describe`, `list_columns`, and `coral://tables` can
 discover `coral.tables`, `coral.columns`, `coral.filters`,
 `coral.table_functions`, and `coral.inputs`.
 

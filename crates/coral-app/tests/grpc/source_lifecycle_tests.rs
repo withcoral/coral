@@ -205,6 +205,8 @@ async fn delete_source_removes_from_list_and_disk() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT * FROM local_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("query should fail after delete");
@@ -287,6 +289,7 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
             kind: 1,
             pagination: Some(PaginationRequest {
@@ -321,6 +324,7 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "missing".to_string(),
             kind: 1,
             pagination: Some(PaginationRequest {
@@ -421,6 +425,8 @@ async fn query_execution_rejects_non_read_only_sql() {
                 "COPY local_messages.messages TO '{}' STORED AS ARROW",
                 copy_target.display()
             ),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("COPY TO should be rejected");
@@ -432,6 +438,8 @@ async fn query_execution_rejects_non_read_only_sql() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "CREATE TABLE copied AS SELECT * FROM local_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("CREATE TABLE should be rejected");
@@ -443,6 +451,8 @@ async fn query_execution_rejects_non_read_only_sql() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SET datafusion.execution.batch_size = 1".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("SET should be rejected");
@@ -568,6 +578,8 @@ async fn execute_sql_with_unreachable_api_returns_unavailable_error() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT * FROM unreachable_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("unreachable source query should fail");
@@ -1453,6 +1465,7 @@ async fn rejects_invalid_workspace_and_source_names() {
             workspace: Some(Workspace {
                 name: r"bad\workspace".to_string(),
             }),
+            catalog_name: String::new(),
             schema_name: String::new(),
             kind: 1,
             pagination: None,

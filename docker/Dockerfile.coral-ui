@@ -1,0 +1,35 @@
+# Coral UI is compiled on the build platform. The target runtime stage is COPY-only,
+# so image assembly never executes target-architecture code.
+FROM --platform=$BUILDPLATFORM node:24.15.0-trixie-slim AS build
+WORKDIR /src
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV CORAL_DESKTOP_APP="" VITE_CORAL_DESKTOP_APP=""
+COPY apps/coral-ui/package.json apps/coral-ui/package-lock.json ./apps/coral-ui/
+RUN npm ci --prefix apps/coral-ui
+COPY crates/coral-api/proto ./crates/coral-api/proto
+COPY apps/desktop/src/shared/types.ts ./apps/desktop/src/shared/types.ts
+COPY apps/coral-ui ./apps/coral-ui
+RUN npm run build --prefix apps/coral-ui
+
+FROM --platform=$BUILDPLATFORM node:24.15.0-trixie-slim AS deps
+WORKDIR /app
+COPY apps/coral-ui/package.json apps/coral-ui/package-lock.json ./
+RUN npm ci --omit=dev
+
+FROM node:24.15.0-trixie-slim
+ARG CORAL_UI_VERSION
+ARG CORAL_UI_REVISION
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000
+LABEL org.opencontainers.image.source="https://github.com/withcoral/coral" \
+      org.opencontainers.image.version="$CORAL_UI_VERSION" \
+      org.opencontainers.image.revision="$CORAL_UI_REVISION"
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /src/apps/coral-ui/build ./build
+COPY --from=build /src/apps/coral-ui/package.json ./package.json
+COPY apps/coral-ui/server.js ./server.js
+COPY --chown=0:0 --chmod=0755 docker/entrypoint-coral-ui.sh /usr/local/bin/entrypoint-coral-ui.sh
+USER node
+EXPOSE 3000
+HEALTHCHECK --interval=2s --timeout=2s --retries=15 CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+ENTRYPOINT ["/usr/local/bin/entrypoint-coral-ui.sh"]

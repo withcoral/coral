@@ -4,9 +4,7 @@ use serde_json::{Map, Value};
 
 use crate::ResponseSpec;
 use crate::v4::diagnostics::Diagnostic;
-use crate::v4::ir::{
-    IrEntityCandidate, IrOperationOutput, OutputCardinality, RestResponseAttachment,
-};
+use crate::v4::ir::{IrOperationOutput, OutputCardinality, RestResponseAttachment};
 
 use super::import::OpenApiImporter;
 
@@ -44,7 +42,7 @@ impl OpenApiImporter<'_> {
     ) -> (
         IrOperationOutput,
         RestResponseAttachment,
-        Option<IrEntityCandidate>,
+        Option<String>,
         OpenApiResponsePaginationContext,
     ) {
         let Some(selected) = self.select_json_response(
@@ -69,8 +67,7 @@ impl OpenApiImporter<'_> {
         };
 
         let Some(resolved) = self.resolve_ref(&selected.schema, operation_id, diagnostics) else {
-            diagnostics.push(Diagnostic::warning(
-                "OPENAPI_RESPONSE_SCHEMA_UNRESOLVED",
+            diagnostics.push(Diagnostic::new(
                 format!("operation '{operation_id}' response schema could not be resolved"),
                 Some(operation_id.to_string()),
             ));
@@ -92,7 +89,8 @@ impl OpenApiImporter<'_> {
                 },
             );
         };
-        let (cardinality, row_schema, entity_name) = classify_response_schema(path, &resolved);
+        let (cardinality, row_schema, schema_entity_name) =
+            classify_response_schema(path, &resolved);
         let type_ref = self
             .import_schema(
                 &row_schema,
@@ -102,13 +100,9 @@ impl OpenApiImporter<'_> {
             )
             .unwrap_or_else(|| "json".to_string());
         let response = ResponseSpec::default();
-        let entity = (cardinality != OutputCardinality::None
+        let entity_name = (cardinality != OutputCardinality::None
             && cardinality != OutputCardinality::Unknown)
-            .then(|| IrEntityCandidate {
-                name: entity_name.unwrap_or_else(|| entity_name_from_path(path)),
-                type_ref: type_ref.clone(),
-                identity_fields: vec!["id".to_string()],
-            });
+            .then(|| schema_entity_name.unwrap_or_else(|| entity_name_from_path(path)));
         (
             IrOperationOutput {
                 cardinality,
@@ -119,7 +113,7 @@ impl OpenApiImporter<'_> {
                 media_type: selected.media_type,
                 response,
             },
-            entity,
+            entity_name,
             OpenApiResponsePaginationContext {
                 schema: resolved,
                 headers: selected.headers,

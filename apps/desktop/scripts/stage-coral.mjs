@@ -33,13 +33,8 @@ function run(command, args, options = {}) {
   })
 }
 
-// apps/ui is embedded only when this script builds coral-cli locally.
-if (needsCliBuild) {
-  await run('npm', ['ci', '--prefix', 'apps/ui'])
-  await run('npm', ['run', 'build', '--prefix', 'apps/ui'])
-}
-await run('npm', ['ci', '--prefix', 'apps/reef'])
-await run('npm', ['run', 'build', '--prefix', 'apps/reef'], {
+await run('npm', ['ci', '--prefix', 'apps/coral-ui'])
+await run('npm', ['run', 'build', '--prefix', 'apps/coral-ui'], {
   env: {
     ...process.env,
     CORAL_DESKTOP_APP: '1',

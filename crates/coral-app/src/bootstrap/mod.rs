@@ -20,7 +20,9 @@ pub(crate) use error::MAX_STATUS_DETAIL_BYTES;
 pub(crate) use error::{app_status, core_status, status_with_bounded_detail};
 
 pub use error::AppError;
-pub use server::{RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider};
+pub use health::READINESS_SERVICE_NAME;
+pub use server::{RunningServer, ServerBuilder, ServerMode};
+pub use server_config::{McpHttpServeConfig, ServeSettings, SessionAuthSettings};
 
 pub(crate) fn discover_app_state_layout(
     config_dir_override: Option<PathBuf>,
@@ -28,9 +30,25 @@ pub(crate) fn discover_app_state_layout(
     env::AppEnvironment::discover().app_state_layout(config_dir_override)
 }
 
-#[cfg(test)]
 pub(crate) fn env_var(name: &str) -> Result<Option<String>, std::env::VarError> {
     env::AppEnvironment::env_var(name)
+}
+
+/// Reports whether `ip` addresses the local machine.
+///
+/// Shared by the auth-disabled `server.mcp_http.bind` guard, the auth URL
+/// validator's loopback-http allowance, and coral-cli's listener exposure
+/// warning, so that tightening the rule (for instance, to stop treating
+/// `::ffff:127.0.0.1` as loopback) cannot leave one call site more permissive
+/// than the other. That last one is why this is `pub` rather than crate-local:
+/// the warning is the only notice an operator gets about a remote bind, and a
+/// restated copy of the rule could drift into disagreeing with the guard that
+/// rejects the same bind. `postgres_host_is_loopback` deliberately does not
+/// route through it: it works on host strings rather than addresses.
+#[must_use]
+pub fn is_loopback_ip(ip: std::net::IpAddr) -> bool {
+    ip.is_loopback()
+        || matches!(ip, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
 }
 
 /// Startup context for one workspace's MCP session.
@@ -133,6 +151,7 @@ impl McpQueryHistoryEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpQueryTableUsage {
     source: String,
+    catalog: Option<String>,
     schema: String,
     table: String,
 }
@@ -142,6 +161,14 @@ impl McpQueryTableUsage {
     #[must_use]
     pub fn source_name(&self) -> &str {
         &self.source
+    }
+
+    /// SQL catalog used in the query, or `None` for a table addressed as
+    /// `schema.table`. Two catalogs can expose the same `schema.table`, so this
+    /// is part of the table's identity.
+    #[must_use]
+    pub fn catalog_name(&self) -> Option<&str> {
+        self.catalog.as_deref()
     }
 
     /// SQL schema name used in the query.
@@ -159,6 +186,7 @@ impl McpQueryTableUsage {
     fn from_trace(usage: TraceQueryTableUsage) -> Self {
         Self {
             source: usage.source,
+            catalog: usage.catalog,
             schema: usage.schema,
             table: usage.table,
         }
@@ -399,6 +427,7 @@ mod tests {
             tables: (0..table_count)
                 .map(|index| McpQueryTableUsage {
                     source: table_source.to_string(),
+                    catalog: None,
                     schema: "schema".to_string(),
                     table: format!("table_{index}"),
                 })

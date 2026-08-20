@@ -7,8 +7,8 @@ mod query_error;
 mod udfs;
 
 pub use catalog::{
-    CatalogInfo, ColumnInfo, DescribeTableInfo, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo,
+    CatalogInfo, ColumnInfo, DescribeCatalogSurfaceInfo, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
@@ -16,13 +16,12 @@ pub use query::{
     QueryExecution, QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue,
     QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
+    ResolvedQueryResources, RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 pub use udfs::{
-    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
-    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
-    UdfRuntimeTableFunctionPublish,
+    CoralSqlFunctionArgument, CoralSqlFunctionDefinition, CoralSqlFunctionInferenceDefinition,
+    CoralSqlFunctionSignature, CoralSqlResultColumn, CoralSqlTableFunctionPublish,
 };
 
 #[cfg(test)]

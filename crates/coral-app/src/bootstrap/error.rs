@@ -24,6 +24,9 @@ pub enum AppError {
     /// A requested function was not found in config.
     #[error("function '{0}' not found")]
     FunctionNotFound(String),
+    /// A function cannot be created because the name is already installed.
+    #[error("function '{0}' already exists")]
+    FunctionAlreadyExists(String),
     /// A requested workspace was not found in config.
     #[error("workspace '{0}' not found")]
     WorkspaceNotFound(String),
@@ -54,7 +57,7 @@ pub enum AppError {
     },
     /// A DSL v4 source has missing or stale generated runtime artifacts.
     #[error(
-        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
+        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source or reconcile the selected artifact files."
     )]
     MissingOrIncompatibleV4Materialization {
         /// Source name whose installed artifacts failed validation.
@@ -149,6 +152,7 @@ impl From<DbError> for AppError {
             DbError::Config(detail) => {
                 Self::FailedPrecondition(format!("database configuration is invalid: {detail}"))
             }
+            error @ DbError::CorruptData(_) => Self::Database(error.to_string()),
             DbError::MissingDatabaseParent(path) => Self::FailedPrecondition(format!(
                 "database file parent directory is missing for {}",
                 path.display()
@@ -294,7 +298,9 @@ fn app_code(error: &AppError) -> Code {
         AppError::SourceNotFound(_)
         | AppError::FunctionNotFound(_)
         | AppError::WorkspaceNotFound(_) => Code::NotFound,
-        AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
+        AppError::FunctionAlreadyExists(_) | AppError::WorkspaceAlreadyExists(_) => {
+            Code::AlreadyExists
+        }
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingSourceInputs { .. }

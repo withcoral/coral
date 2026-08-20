@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
+use coral_spec::backends::database::{DatabaseConnectionSpec, DatabaseSourceManifest};
 use coral_spec::backends::file::FileSourceManifest;
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::backends::mcp::McpSourceManifest;
@@ -22,7 +23,7 @@ use crate::{
 };
 
 /// One managed source selected into the current query runtime.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QuerySource {
     source_name: String,
     authored_version: Option<String>,
@@ -55,14 +56,63 @@ pub struct RuntimeSourcePackage {
 }
 
 /// One backend-ready component inside an app-assembled query source package.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum RuntimeSourceComponent {
+    /// Relational database-backed runtime component.
+    Database(DatabaseSourceManifest),
     /// HTTP-backed runtime component.
     Http(HttpSourceManifest),
     /// File-backed runtime component.
     File(FileSourceManifest),
     /// MCP-backed runtime component.
     Mcp(McpSourceManifest),
+}
+
+impl fmt::Debug for QuerySource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QuerySource")
+            .field("source_name", &self.source_name)
+            .field("authored_version", &self.authored_version)
+            .field("description", &self.description)
+            .field("declared_inputs", &self.declared_inputs)
+            .field("test_queries", &self.test_queries)
+            .field("components", &self.components)
+            .field("variables", &self.variables)
+            .field("secret_count", &self.secrets.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for RuntimeSourceComponent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Database(manifest) => {
+                let provider = match &manifest.connection {
+                    DatabaseConnectionSpec::Postgres(_) => "postgres",
+                    DatabaseConnectionSpec::MySql(_) => "mysql",
+                    DatabaseConnectionSpec::Sqlite(_) => "sqlite",
+                };
+                formatter
+                    .debug_struct("Database")
+                    .field("source_name", &manifest.common.name)
+                    .field("provider", &provider)
+                    .finish_non_exhaustive()
+            }
+            Self::Http(manifest) => formatter
+                .debug_struct("Http")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
+            Self::File(manifest) => formatter
+                .debug_struct("File")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
+            Self::Mcp(manifest) => formatter
+                .debug_struct("Mcp")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl QuerySource {
@@ -191,19 +241,44 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the SQL schemas published by this selected source.
+    /// Returns the SQL schema names published by this source's two-part
+    /// components. Database components publish catalogs instead; see
+    /// [`Self::catalog_names`]. A source with no components claims its source
+    /// name as a schema. Schema and catalog names of all selected sources
+    /// share one flat namespace.
     pub fn schema_names(&self) -> Vec<&str> {
-        let mut schemas = Vec::new();
+        let mut names = Vec::new();
         for component in &self.components {
-            let schema = component.source_name();
-            if !schemas.contains(&schema) {
-                schemas.push(schema);
+            if matches!(component, RuntimeSourceComponent::Database(_)) {
+                continue;
+            }
+            let name = component.source_name();
+            if !names.contains(&name) {
+                names.push(name);
             }
         }
-        if schemas.is_empty() {
-            schemas.push(self.source_name());
+        if self.components.is_empty() {
+            names.push(self.source_name());
         }
-        schemas
+        names
+    }
+
+    #[must_use]
+    /// Returns the SQL catalog names published by this source's database
+    /// components. Tables of these components resolve as
+    /// `catalog.schema.table`, with schemas discovered at registration time.
+    pub fn catalog_names(&self) -> Vec<&str> {
+        let mut names = Vec::new();
+        for component in &self.components {
+            let RuntimeSourceComponent::Database(manifest) = component else {
+                continue;
+            };
+            let name = manifest.common.name.as_str();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
 
     #[must_use]
@@ -221,9 +296,11 @@ impl QuerySource {
 
 impl RuntimeSourceComponent {
     #[must_use]
-    /// Returns the runtime schema name declared by this component.
+    /// Returns the name this component publishes at runtime: a schema name,
+    /// or a catalog name for database components.
     pub fn source_name(&self) -> &str {
         match self {
+            Self::Database(manifest) => &manifest.common.name,
             Self::Http(manifest) => &manifest.common.name,
             Self::File(manifest) => &manifest.common.name,
             Self::Mcp(manifest) => &manifest.common.name,
@@ -571,6 +648,11 @@ impl QueryParameterValue {
 pub struct QueryRuntimeConfig {
     /// Non-secret runtime inputs owned by the application layer.
     pub context: QueryRuntimeContext,
+    /// Database connection pools reused by runtimes in the caller-defined scope.
+    ///
+    /// Applications serving multiple workspaces should provide a distinct
+    /// registry per workspace. The default creates an isolated registry.
+    pub database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     /// Optional engine extensions for this runtime build.
     pub extensions: EngineExtensions,
     /// Engine-wide query memory policy.
@@ -582,8 +664,8 @@ pub struct QueryRuntimeConfig {
         Option<RequestIdentityHttpAuthenticatorFactory>,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
-    /// Validated UDFs available in this runtime build.
-    pub udfs: Vec<super::UdfRuntimeDefinition>,
+    /// Executable Coral SQL functions available in this runtime build.
+    pub udfs: Vec<super::CoralSqlFunctionDefinition>,
 }
 
 impl QueryRuntimeConfig {
@@ -592,6 +674,7 @@ impl QueryRuntimeConfig {
     pub fn new(context: QueryRuntimeContext, extensions: EngineExtensions) -> Self {
         Self {
             context,
+            database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             extensions,
             memory: QueryMemoryConfig::default(),
             request_identity_selector: None,
@@ -601,9 +684,9 @@ impl QueryRuntimeConfig {
         }
     }
 
-    /// Attaches validated UDFs to this runtime config.
+    /// Attaches executable Coral SQL functions to this runtime config.
     #[must_use]
-    pub fn with_udfs(mut self, udfs: Vec<super::UdfRuntimeDefinition>) -> Self {
+    pub fn with_udfs(mut self, udfs: Vec<super::CoralSqlFunctionDefinition>) -> Self {
         self.udfs = udfs;
         self
     }
@@ -923,7 +1006,8 @@ impl QueryExecution {
     pub fn new(
         arrow_schema: Arc<Schema>,
         batches: Vec<RecordBatch>,
-        mut provenance: QueryExecutionProvenance,
+        sql: impl Into<String>,
+        resources: ResolvedQueryResources,
     ) -> Self {
         let schema = arrow_schema
             .fields()
@@ -940,7 +1024,7 @@ impl QueryExecution {
             })
             .collect();
         let row_count = batches.iter().map(RecordBatch::num_rows).sum();
-        provenance.set_row_count(row_count);
+        let provenance = QueryExecutionProvenance::new(sql, resources, row_count);
         Self {
             schema,
             arrow_schema,
@@ -981,34 +1065,68 @@ impl QueryExecution {
     }
 }
 
-/// Successful-execution provenance for one query result.
+/// Source resources referenced by a resolved logical query plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryExecutionProvenance {
-    sql: String,
+pub struct ResolvedQueryResources {
     sources: Vec<String>,
     tables: Vec<QueryTableUsage>,
     table_functions: Vec<QueryTableFunctionUsage>,
-    row_count: usize,
 }
 
-impl QueryExecutionProvenance {
+impl ResolvedQueryResources {
     #[must_use]
-    /// Builds one provenance entry for a planned query.
-    ///
-    /// [`QueryExecution::new`] stamps the final row count from the materialized
-    /// result batches.
+    /// Builds the resource set resolved from one logical query plan.
     pub fn new(
-        sql: impl Into<String>,
         sources: Vec<String>,
         tables: Vec<QueryTableUsage>,
         table_functions: Vec<QueryTableFunctionUsage>,
     ) -> Self {
         Self {
-            sql: sql.into(),
             sources,
             tables,
             table_functions,
-            row_count: 0,
+        }
+    }
+
+    #[must_use]
+    /// Returns the installed source names referenced by the query.
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+
+    #[must_use]
+    /// Returns source tables referenced by the query.
+    pub fn tables(&self) -> &[QueryTableUsage] {
+        &self.tables
+    }
+
+    #[must_use]
+    /// Returns source-scoped table functions referenced by the query.
+    pub fn table_functions(&self) -> &[QueryTableFunctionUsage] {
+        &self.table_functions
+    }
+}
+
+/// Successful-execution provenance for one query result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryExecutionProvenance {
+    sql: String,
+    resources: ResolvedQueryResources,
+    row_count: usize,
+}
+
+impl QueryExecutionProvenance {
+    #[must_use]
+    /// Builds provenance for one successfully materialized query.
+    pub fn new(
+        sql: impl Into<String>,
+        resources: ResolvedQueryResources,
+        row_count: usize,
+    ) -> Self {
+        Self {
+            sql: sql.into(),
+            resources,
+            row_count,
         }
     }
 
@@ -1021,19 +1139,19 @@ impl QueryExecutionProvenance {
     #[must_use]
     /// Returns the installed source names used by the query.
     pub fn sources(&self) -> &[String] {
-        &self.sources
+        self.resources.sources()
     }
 
     #[must_use]
     /// Returns source tables used by the query.
     pub fn tables(&self) -> &[QueryTableUsage] {
-        &self.tables
+        self.resources.tables()
     }
 
     #[must_use]
     /// Returns source-scoped table functions used by the query.
     pub fn table_functions(&self) -> &[QueryTableFunctionUsage] {
-        &self.table_functions
+        self.resources.table_functions()
     }
 
     #[must_use]
@@ -1041,16 +1159,17 @@ impl QueryExecutionProvenance {
     pub fn row_count(&self) -> usize {
         self.row_count
     }
-
-    pub(crate) fn set_row_count(&mut self, row_count: usize) {
-        self.row_count = row_count;
-    }
 }
 
-/// One source table referenced by a successful query.
+/// One source table referenced by a query.
+///
+/// `(schema, table)` alone does not identify a table once catalog-backed sources
+/// are registered: two databases can each expose `public.users`. The catalog is
+/// part of the identity, so consumers keying on this entry must include it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QueryTableUsage {
     source: String,
+    catalog: Option<String>,
     schema: String,
     table: String,
 }
@@ -1058,13 +1177,18 @@ pub struct QueryTableUsage {
 impl QueryTableUsage {
     #[must_use]
     /// Builds one source table usage entry.
+    ///
+    /// `catalog_name` is `None` for a table addressed as `schema.table`, and the
+    /// SQL catalog for one addressed as `catalog.schema.table`.
     pub fn new(
         source_name: impl Into<String>,
+        catalog_name: Option<&str>,
         schema_name: impl Into<String>,
         table_name: impl Into<String>,
     ) -> Self {
         Self {
             source: source_name.into(),
+            catalog: catalog_name.map(ToString::to_string),
             schema: schema_name.into(),
             table: table_name.into(),
         }
@@ -1074,6 +1198,13 @@ impl QueryTableUsage {
     /// Returns the installed source name that owns this table.
     pub fn source_name(&self) -> &str {
         &self.source
+    }
+
+    #[must_use]
+    /// Returns the SQL catalog for this table, or `None` when it is addressed as
+    /// `schema.table`.
+    pub fn catalog_name(&self) -> Option<&str> {
+        self.catalog.as_deref()
     }
 
     #[must_use]
@@ -1089,7 +1220,7 @@ impl QueryTableUsage {
     }
 }
 
-/// One source-scoped table function referenced by a successful query.
+/// One source-scoped table function referenced by a query.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QueryTableFunctionUsage {
     source: String,

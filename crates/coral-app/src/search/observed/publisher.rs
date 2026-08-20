@@ -98,7 +98,22 @@ impl SearchObservationHandle {
                 source.runtime_contract_fingerprint,
                 source.credential_revision,
             );
-            for scope in source_surface_scopes(source.query_source, seed) {
+            // Fail this source closed without touching the others: the arm
+            // above aborts capture for every selected source, which a single
+            // source's incoherent identity must not do.
+            let source_scopes = match source_surface_scopes(source.query_source, seed) {
+                Ok(source_scopes) => source_scopes,
+                Err(error) => {
+                    tracing::warn!(
+                        workspace = %workspace_name.as_str(),
+                        source = %source.query_source.source_name(),
+                        error = %error,
+                        "skipping observed-values capture for a source whose runtime component identity diverges"
+                    );
+                    continue;
+                }
+            };
+            for scope in source_scopes {
                 scopes.insert(scope.key(), RegisteredSurface { scope, epoch });
             }
         }
@@ -132,10 +147,10 @@ impl SearchObservationHandle {
     pub(crate) fn clear_source(
         &self,
         workspace_name: &WorkspaceName,
-        owner_source_name: &str,
+        source_name: &str,
     ) -> Result<(), AppError> {
         self.store
-            .clear_source_and_advance_epoch(workspace_name, owner_source_name)
+            .clear_source_and_advance_epoch(workspace_name, source_name)
             .map(|_result| ())
             .map_err(|error| observed_values_store_error(&error))
     }
@@ -201,7 +216,6 @@ impl SourceScanObservedValuesPublisher {
                 tracing::debug!(
                     workspace = %self.workspace_name.as_str(),
                     source = %scope.source_name,
-                    source_owner = %scope.owner_source_name,
                     surface = %observation.surface_name,
                     "dropping observed-values source-scan observation because writer queue is full"
                 );
@@ -211,7 +225,6 @@ impl SourceScanObservedValuesPublisher {
                 tracing::debug!(
                     workspace = %self.workspace_name.as_str(),
                     source = %scope.source_name,
-                    source_owner = %scope.owner_source_name,
                     surface = %observation.surface_name,
                     "dropping observed-values source-scan observation because writer is stopped"
                 );
@@ -250,7 +263,6 @@ impl SourceScanObservedValuesPublisher {
         };
         permit.send(ObservedValuesWrite {
             workspace_name: self.workspace_name.clone(),
-            owner_source_name: scope.owner_source_name.clone(),
             source_name: scope.source_name.clone(),
             source_scope_id: scope.source_scope_id.clone(),
             surface_kind,
@@ -302,9 +314,11 @@ mod tests {
         let source = http_query_source("/issues");
 
         let first_scope = source_surface_scopes(&source, SourceScopeSeed::PRE_ACTIVATION)
+            .expect("coherent source identity")
             .pop()
             .expect("first scope");
         let second_scope = source_surface_scopes(&source, SourceScopeSeed::PRE_ACTIVATION)
+            .expect("coherent source identity")
             .pop()
             .expect("second scope");
 
@@ -318,18 +332,21 @@ mod tests {
             &source,
             SourceScopeSeed::new("runtime-contract-a", Uuid::from_u128(1)),
         )
+        .expect("coherent source identity")
         .pop()
         .expect("first scope");
         let contract_changed = source_surface_scopes(
             &source,
             SourceScopeSeed::new("runtime-contract-b", Uuid::from_u128(1)),
         )
+        .expect("coherent source identity")
         .pop()
         .expect("contract scope");
         let credential_changed = source_surface_scopes(
             &source,
             SourceScopeSeed::new("runtime-contract-a", Uuid::from_u128(2)),
         )
+        .expect("coherent source identity")
         .pop()
         .expect("credential scope");
 
@@ -435,30 +452,81 @@ mod tests {
     }
 
     #[test]
-    fn publisher_preserves_owner_and_query_schema_for_multi_surface_v4_package() {
+    fn divergent_component_identity_is_skipped_without_affecting_other_sources() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::default();
         let handle = SearchObservationHandle::new(layout.clone());
-        let source = multi_surface_v4_query_source();
-        let extensions =
-            handle.extensions_for(&workspace, &[SearchObservationSource::for_test(&source)]);
+        let divergent = divergent_component_query_source();
+        let coherent = single_component_query_source("github_mcp_v4");
+        let extensions = handle.extensions_for(
+            &workspace,
+            &[
+                SearchObservationSource::for_test(&divergent),
+                SearchObservationSource::for_test(&coherent),
+            ],
+        );
         let publisher = extensions
             .source_observation_publishers
             .first()
             .expect("publisher");
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "title",
-                DataType::Utf8,
-                false,
-            )])),
-            vec![Arc::new(StringArray::from(vec!["Fix the bug"]))],
-        )
-        .expect("batch");
+        let batch = title_batch();
 
-        for source_name in ["github_v4_rest", "github_v4_mcp"] {
+        for source_name in ["github_v4_rest", "github_v4_mcp", "github_mcp_v4"] {
+            publisher.publish_source_scan(SourceScanObservation {
+                source_name,
+                surface_kind: SourceObservationSurfaceKind::Table,
+                surface_name: "list_issues",
+                batch: &batch,
+            });
+        }
+
+        // Only the coherent source registered a surface, so only its
+        // observation is captured; the divergent package writes nothing.
+        let identities = wait_for_source_identities(&layout, &workspace, 1);
+        assert_eq!(
+            identities,
+            [("github_mcp_v4".to_string(), "list_issues".to_string())]
+        );
+    }
+
+    #[test]
+    fn divergent_component_identity_fails_scope_derivation() {
+        let source = divergent_component_query_source();
+
+        let error = source_surface_scopes(&source, SourceScopeSeed::PRE_ACTIVATION)
+            .expect_err("divergent component identity must not derive scopes");
+
+        // This is what makes retrieval fail closed: the live-scope loader turns
+        // this error into a per-source load failure.
+        assert!(error.to_string().contains("github_v4"));
+        assert!(error.to_string().contains("github_v4_rest"));
+    }
+
+    #[test]
+    fn independent_sources_are_captured_and_cleared_in_isolation() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let handle = SearchObservationHandle::new(layout.clone());
+        let rest = single_component_query_source("github_v4");
+        let mcp = single_component_query_source("github_mcp_v4");
+        let extensions = handle.extensions_for(
+            &workspace,
+            &[
+                SearchObservationSource::for_test(&rest),
+                SearchObservationSource::for_test(&mcp),
+            ],
+        );
+        let publisher = extensions
+            .source_observation_publishers
+            .first()
+            .expect("publisher");
+        let batch = title_batch();
+
+        for source_name in ["github_v4", "github_mcp_v4"] {
             publisher.publish_source_scan(SourceScanObservation {
                 source_name,
                 surface_kind: SourceObservationSurfaceKind::Table,
@@ -471,28 +539,22 @@ mod tests {
         assert_eq!(
             identities,
             [
-                (
-                    "github_v4".to_string(),
-                    "github_v4_rest".to_string(),
-                    "list_issues".to_string(),
-                ),
-                (
-                    "github_v4".to_string(),
-                    "github_v4_mcp".to_string(),
-                    "list_issues".to_string(),
-                ),
+                ("github_v4".to_string(), "list_issues".to_string()),
+                ("github_mcp_v4".to_string(), "list_issues".to_string()),
             ]
         );
 
-        let store = SqliteObservedValuesStore::new(layout);
+        // The REST and MCP interfaces are separate installed sources: clearing
+        // one leaves the other's queued observation untouched.
+        let store = SqliteObservedValuesStore::new(layout.clone());
         store
             .clear_source_and_advance_epoch(&workspace, "github_v4")
-            .expect("clear logical source owner");
+            .expect("clear one installed source");
         assert_eq!(
             store
-                .pending_queue_job_count(&workspace)
-                .expect("queue count"),
-            0
+                .queue_source_identities(&workspace)
+                .expect("queue identities"),
+            [("github_mcp_v4".to_string(), "list_issues".to_string())]
         );
     }
 
@@ -628,9 +690,10 @@ tables:
         )
     }
 
-    fn multi_surface_v4_query_source() -> QuerySource {
-        // Multi-surface v4 sources reach the engine through this backend-ready
-        // package shape: one installed owner with one schema per component.
+    /// Synthetic package in the pre-#1791 shape: components named differently
+    /// from the package that carries them. Unreachable through the sources
+    /// domain, which is exactly what the tripwire defends against.
+    fn divergent_component_query_source() -> QuerySource {
         QuerySource::from_runtime_components(
             RuntimeSourcePackage {
                 source_name: "github_v4".to_string(),
@@ -647,7 +710,36 @@ tables:
             BTreeMap::new(),
             BTreeMap::new(),
         )
-        .expect("multi-surface query source")
+        .expect("divergent component query source")
+    }
+
+    fn single_component_query_source(source_name: &str) -> QuerySource {
+        QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: source_name.to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: None,
+                components: vec![http_component(source_name)],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("single component query source")
+    }
+
+    fn title_batch() -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "title",
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["Fix the bug"]))],
+        )
+        .expect("batch")
     }
 
     fn http_component(source_name: &str) -> RuntimeSourceComponent {
@@ -688,7 +780,7 @@ tables:
         layout: &AppStateLayout,
         workspace: &WorkspaceName,
         expected_count: usize,
-    ) -> Vec<(String, String, String)> {
+    ) -> Vec<(String, String)> {
         let store = SqliteObservedValuesStore::new(layout.clone());
         for _ in 0..100 {
             let identities = store

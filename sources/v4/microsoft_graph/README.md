@@ -8,13 +8,33 @@ tables and table functions.
 
 ## Status
 
-This is a preview DSL v4 source. The full Microsoft Graph `OpenAPI`
+This is a preview DSL v4 source. The full Microsoft Graph OpenAPI
 descriptor is about 38 MB and produces a large generated catalog, so `source
 add` can take longer than curated sources.
 
-Generated Graph tables usually expose Microsoft Graph's OData response envelope.
-For collection endpoints, use `json_get_array(value)` and `unnest(...)` to turn
-the response's `value` array into rows.
+## Collections and pagination
+
+Collection endpoints are ordinary row tables: one row per resource, with a
+column per declared property. Coral unwraps Microsoft Graph's OData envelope,
+so there is no `value` array to `unnest`.
+
+Coral also follows `@odata.nextLink` until it stops appearing, so a query
+returns the whole collection rather than the first page. Some Graph collections
+are very large — a busy Teams chat can hold hundreds of thousands of messages —
+so add a `LIMIT`, a `WHERE` filter, or `top => n` when you do not need all of
+it.
+
+Inherited properties are declared as columns however deep the `allOf` chain
+goes: `microsoft.graph.drive` reaches `id`, `name`, and `webUrl` through
+`baseItem` and `entity`, and all three are columns.
+
+One known gap, tracked separately:
+
+- Graph declares `$count` as a boolean and `$top` as an integer on the same
+  endpoints, and page-size detection stops at the first candidate name it
+  recognizes. `$top` is therefore not detected, so Coral accepts Graph's
+  server-side default page size. `top` stays available as an ordinary filter if
+  you want to set it yourself.
 
 ## Requirements
 
@@ -78,76 +98,60 @@ coral source test microsoft_graph_v4
 
 ## Example queries
 
+Column names are the resource's property names, lowercased with punctuation
+removed: `lastUpdatedDateTime` becomes `lastupdateddatetime`. Properties that
+hold an object or an array stay JSON, so reach into them with `json_get_str`
+and friends.
+
 List chats visible to the signed-in user:
 
 ```sql
-WITH chats AS (
-  SELECT unnest(json_get_array(value)) AS chat
-  FROM microsoft_graph_v4.me_chat_me_listchats
-  WHERE top = 20
-)
 SELECT
-  json_get_str(chat, 'id') AS id,
-  coalesce(json_get_str(chat, 'topic'), json_get_str(chat, 'chatType')) AS topic,
-  json_get_str(chat, 'chatType') AS chat_type,
-  json_get_str(chat, 'lastUpdatedDateTime') AS last_updated,
-  json_get_str(chat, 'webUrl') AS web_url
-FROM chats
-ORDER BY last_updated DESC;
+  id,
+  coalesce(topic, chattype) AS topic,
+  chattype,
+  lastupdateddatetime,
+  weburl
+FROM microsoft_graph_v4.me_chat_me_listchats
+ORDER BY lastupdateddatetime DESC
+LIMIT 20;
 ```
 
-List recent messages from one chat:
+List recent messages from one chat. `from` is a SQL keyword, so quote it:
 
 ```sql
-WITH raw AS (
-  SELECT unnest(json_get_array(value)) AS msg
-  FROM microsoft_graph_v4.chats_chatmessage_chats_listmessages(
-    chat_id => '19:example@thread.v2',
-    top => 50
-  )
-)
 SELECT
-  json_get_str(msg, 'createdDateTime') AS created,
-  json_get_str(msg, 'from', 'user', 'displayName') AS sender,
+  createddatetime,
+  json_get_str("from", 'user', 'displayName') AS sender,
   regexp_replace(
-    replace(json_get_str(msg, 'body', 'content'), '&nbsp;', ' '),
+    replace(json_get_str(body, 'content'), '&nbsp;', ' '),
     '<[^>]+>',
     '',
     'g'
   ) AS body
-FROM raw
-ORDER BY created ASC;
+FROM microsoft_graph_v4.chats_chatmessage_chats_listmessages(
+  chat_id => '19:example@thread.v2'
+)
+ORDER BY createddatetime DESC
+LIMIT 50;
 ```
 
 List joined Teams:
 
 ```sql
-WITH teams AS (
-  SELECT unnest(json_get_array(value)) AS team
-  FROM microsoft_graph_v4.me_team_me_listjoinedteams
-)
-SELECT
-  json_get_str(team, 'id') AS id,
-  json_get_str(team, 'displayName') AS display_name,
-  json_get_str(team, 'tenantId') AS tenant_id
-FROM teams
-ORDER BY display_name;
+SELECT id, displayname, tenantid
+FROM microsoft_graph_v4.me_team_me_listjoinedteams
+ORDER BY displayname;
 ```
 
-Inspect OneDrive/SharePoint drives visible through `/me`:
+Count the messages in a chat — the question that motivated following
+`@odata.nextLink`, since it needs every page:
 
 ```sql
-WITH drives AS (
-  SELECT unnest(json_get_array(value)) AS drive
-  FROM microsoft_graph_v4.me_drive_me_listdrives
-)
-SELECT
-  json_get_str(drive, 'id') AS id,
-  json_get_str(drive, 'name') AS name,
-  json_get_str(drive, 'driveType') AS drive_type,
-  json_get_str(drive, 'webUrl') AS web_url
-FROM drives
-ORDER BY name;
+SELECT count(*) AS message_count
+FROM microsoft_graph_v4.chats_chatmessage_chats_listmessages(
+  chat_id => '19:example@thread.v2'
+);
 ```
 
 Find generated Teams/SharePoint table names:

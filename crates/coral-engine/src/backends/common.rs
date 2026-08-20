@@ -14,24 +14,40 @@ use coral_spec::{
     SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::catalog::CatalogProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
-use datafusion::logical_expr::Expr;
 use datafusion::prelude::SessionContext;
+use serde_json::Value;
+
+/// One table-function argument after SQL literal evaluation and
+/// manifest-directed coercion.
+#[derive(Debug, Clone)]
+pub(crate) struct BoundSourceFunctionValue {
+    /// Value encoded according to the manifest-declared type.
+    pub(crate) value: Value,
+    /// Original scalar spelling used by the existing `values:` contract.
+    pub(crate) source_text: String,
+}
+
+/// `None` represents SQL `NULL`.
+pub(crate) type BoundSourceFunctionArg = Option<BoundSourceFunctionValue>;
 
 /// Provider factory for one registered source-scoped table function.
 ///
-/// Implementations bind one call site's positional arguments (manifest order,
-/// NULL meaning "absent") into a scannable provider. Binding is pure argument
-/// validation plus request-value capture — no I/O happens until the returned
-/// provider is scanned.
+/// Implementations map one call site's manifest-bound positional arguments
+/// (`None` meaning SQL `NULL`) into a scannable provider. Mapping is pure
+/// argument validation plus request-value capture — no I/O happens until the
+/// returned provider is scanned.
 pub(crate) trait SourceFunctionProviderFactory: std::fmt::Debug + Send + Sync {
     /// Manifest-declared result schema for this function.
     fn schema(&self) -> SchemaRef;
 
-    /// Binds positional call arguments into a provider for one call site.
-    fn provider_for_args(&self, args: &[Expr])
-    -> datafusion::error::Result<Arc<dyn TableProvider>>;
+    /// Maps manifest-bound positional arguments into a provider for one call site.
+    fn provider_for_args(
+        &self,
+        args: &[BoundSourceFunctionArg],
+    ) -> datafusion::error::Result<Arc<dyn TableProvider>>;
 }
 
 #[derive(Debug, Clone)]
@@ -47,9 +63,13 @@ pub(crate) struct RegisteredColumn {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTable {
+    /// SQL schema containing this table when it differs from the source's
+    /// default schema. Database tables set this to their remote schema.
+    pub(crate) schema_name: Option<String>,
     pub(crate) table_name: String,
     pub(crate) description: String,
     pub(crate) guide: String,
+    pub(crate) require_guide_read: bool,
     pub(crate) columns: Vec<RegisteredColumn>,
     pub(crate) filters: Vec<RegisteredFilter>,
     pub(crate) required_filters: Vec<String>,
@@ -63,6 +83,8 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
     pub(crate) kind: SourceTableFunctionKind,
     pub(crate) description: String,
+    pub(crate) guide: String,
+    pub(crate) require_guide_read: bool,
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
     pub(crate) search_limits: Option<SearchLimitsSpec>,
@@ -107,9 +129,37 @@ pub(crate) struct RegisteredInput {
     pub(crate) is_set: bool,
 }
 
+/// The source's portion of a fully qualified table name
+/// (`catalog.schema.table`): which position its name occupies and what that
+/// name is. Names for all selected sources share one flat namespace
+/// regardless of variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceQualifiedName {
+    /// Two-part source: tables resolve as `datafusion.<name>.<table>`.
+    Schema(String),
+    /// Catalog-backed source: tables resolve as `<name>.<db_schema>.<table>`,
+    /// with the SQL schema recorded per table.
+    Catalog(String),
+}
+
+impl SourceQualifiedName {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Schema(name) | Self::Catalog(name) => name,
+        }
+    }
+
+    pub(crate) fn catalog_name(&self) -> Option<&str> {
+        match self {
+            Self::Catalog(name) => Some(name),
+            Self::Schema(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredSource {
-    pub(crate) schema_name: String,
+    pub(crate) qualified_name: SourceQualifiedName,
     pub(crate) tables: Vec<RegisteredTable>,
     pub(crate) table_functions: Vec<RegisteredTableFunction>,
     pub(crate) inputs: Vec<RegisteredInput>,
@@ -117,6 +167,7 @@ pub(crate) struct RegisteredSource {
 
 pub(crate) struct BackendRegistration {
     pub(crate) schemas: Vec<BackendSchemaRegistration>,
+    pub(crate) catalogs: Vec<BackendCatalogRegistration>,
 }
 
 pub(crate) struct BackendSchemaRegistration {
@@ -124,9 +175,58 @@ pub(crate) struct BackendSchemaRegistration {
     pub(crate) source: RegisteredSource,
 }
 
+pub(crate) struct BackendCatalogRegistration {
+    pub(crate) catalog: Arc<dyn CatalogProvider>,
+    pub(crate) source: RegisteredSource,
+    pub(crate) column_fetcher: Arc<dyn DatabaseColumnFetcher>,
+}
+
+/// Row-set restriction for one lazy database column-metadata fetch.
+///
+/// `None` means "no restriction on this dimension"; `Some` restricts the
+/// remote query to the listed values. An empty list matches nothing.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ColumnInventoryFilter {
+    pub(crate) schemas: Option<Vec<String>>,
+    pub(crate) tables: Option<Vec<String>>,
+}
+
+/// One column described by a remote database's own catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DatabaseColumnRow {
+    pub(crate) schema_name: String,
+    pub(crate) table_name: String,
+    pub(crate) ordinal_position: i32,
+    pub(crate) column_name: String,
+    pub(crate) data_type: String,
+    pub(crate) is_nullable: bool,
+}
+
+/// Query-time source of column metadata for one registered database catalog.
+///
+/// Fetches answer from the remote database's catalog (`information_schema`,
+/// `pragma_table_xinfo`) in one round trip per call, so `coral.columns` cost
+/// scales with source count instead of table count.
+#[async_trait]
+pub(crate) trait DatabaseColumnFetcher: std::fmt::Debug + Send + Sync {
+    async fn fetch_columns(
+        &self,
+        filter: &ColumnInventoryFilter,
+    ) -> datafusion::error::Result<Vec<DatabaseColumnRow>>;
+}
+
+/// Pairs a registered catalog name with its lazy column fetcher.
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogColumnFetcher {
+    pub(crate) catalog_name: String,
+    pub(crate) relation_names: BTreeSet<(String, String)>,
+    pub(crate) fetcher: Arc<dyn DatabaseColumnFetcher>,
+}
+
 pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source: &'a QuerySource,
     pub(crate) runtime_context: &'a QueryRuntimeContext,
+    pub(crate) database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
@@ -168,7 +268,9 @@ impl BackendRegistrationContext {
 
 #[async_trait]
 pub(crate) trait CompiledBackendSource: Send + Sync {
-    fn schema_name(&self) -> &str;
+    /// Runtime qualified name: the SQL schema for two-part sources, the SQL
+    /// catalog for catalog-backed sources.
+    fn qualified_name(&self) -> SourceQualifiedName;
 
     fn source_name(&self) -> &str;
 
@@ -206,6 +308,7 @@ fn backend_kind_label(kind: SourceBackend) -> &'static str {
         SourceBackend::Http => "http",
         SourceBackend::File => "file",
         SourceBackend::Mcp => "mcp",
+        SourceBackend::Database => "database",
     }
 }
 
@@ -331,9 +434,11 @@ pub(crate) fn build_registered_table(
     required_filters: Vec<String>,
 ) -> RegisteredTable {
     RegisteredTable {
+        schema_name: None,
         table_name: common.name.clone(),
         description: common.description.clone(),
         guide: common.guide.clone(),
+        require_guide_read: common.require_guide_read,
         columns,
         filters: registered_filters_from_specs(&common.filters),
         required_filters,
@@ -372,6 +477,8 @@ pub(crate) fn build_registered_table_function(
         factory,
         kind: function.kind,
         description: function.description.clone(),
+        guide: function.guide.clone(),
+        require_guide_read: function.require_guide_read,
         arguments,
         result_columns,
         search_limits: function.search_limits.clone(),
@@ -432,7 +539,7 @@ pub(crate) mod test_support {
 
         fn provider_for_args(
             &self,
-            _args: &[Expr],
+            _args: &[BoundSourceFunctionArg],
         ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
             Err(DataFusionError::Internal(
                 "stub source function factory cannot bind arguments".to_string(),

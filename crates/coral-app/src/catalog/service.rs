@@ -3,34 +3,40 @@
 use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
 use coral_api::v1::{
     CatalogCounts as ProtoCatalogCounts, CatalogItemKind as ProtoCatalogItemKind,
-    DescribeTableRequest, DescribeTableResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, PaginationRequest, SearchCatalogRequest,
-    SearchCatalogResponse,
+    DescribeCatalogSurfaceRequest, DescribeCatalogSurfaceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, PaginationRequest,
+    SearchCatalogRequest, SearchCatalogResponse,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
-    CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
-    SearchCatalogQuery, column_pagination, search_pagination,
+    CatalogDiscovery, CatalogItemKind, CatalogSurfaceRef, CatalogTableRef, ListColumnsQuery,
+    Pagination, SearchCatalogQuery, column_pagination, search_pagination,
 };
 use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
+use crate::request_context::RequestContext;
+use crate::task::manager::TaskManager;
+use crate::task::service::task_manager_status;
 use crate::transport::{
     catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
-    describe_table_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
-    query_status, workspace_name_from_proto,
+    describe_catalog_surface_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
+    query_status, request_context, workspace_name_from_proto,
 };
+use crate::workspaces::WorkspaceName;
 
 #[derive(Clone)]
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
+    tasks: TaskManager,
 }
 
 impl CatalogService {
-    pub(crate) fn new(query_manager: QueryManager) -> Self {
+    pub(crate) fn new(query_manager: QueryManager, task_manager: TaskManager) -> Self {
         Self {
             catalog: CatalogDiscovery::new(query_manager),
+            tasks: task_manager,
         }
     }
 }
@@ -43,15 +49,25 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        let attribution = QueryAttribution::from_extensions(request.extensions());
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
+            let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let catalog_page = catalog
-                .list_catalog(&workspace_name, schema_name, kind, pagination, &attribution)
+                .list_catalog(
+                    &workspace_name,
+                    catalog_name,
+                    schema_name,
+                    kind,
+                    pagination,
+                    &attribution,
+                )
                 .await
                 .map_err(query_status)?;
             let page = catalog_page.items;
@@ -84,10 +100,13 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<SearchCatalogResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        let attribution = QueryAttribution::from_extensions(request.extensions());
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
+            let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
             let pagination = search_pagination(request.pagination.map(pagination_from_proto))
@@ -97,6 +116,7 @@ impl CatalogServiceApi for CatalogService {
                     &workspace_name,
                     SearchCatalogQuery {
                         pattern: &request.pattern,
+                        catalog_name,
                         schema_name,
                         kind,
                         ignore_case: request.ignore_case,
@@ -125,27 +145,30 @@ impl CatalogServiceApi for CatalogService {
         .await
     }
 
-    async fn describe_table(
+    async fn describe_catalog_surface(
         &self,
-        request: Request<DescribeTableRequest>,
-    ) -> Result<Response<DescribeTableResponse>, Status> {
+        request: Request<DescribeCatalogSurfaceRequest>,
+    ) -> Result<Response<DescribeCatalogSurfaceResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        let attribution = QueryAttribution::from_extensions(request.extensions());
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
-            let table_name = required_trimmed(&request.table_name, "table_name")?;
+            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
+            let catalog_name = optional_exact(&request.catalog_name, "catalog_name")?;
+            let schema_name = required_exact(&request.schema_name, "schema_name")?;
+            let surface_name = required_exact(&request.surface_name, "surface_name")?;
             let result = catalog
-                .describe_table(
+                .describe_catalog_surface(
                     &workspace_name,
-                    CatalogTableRef::new(&schema_name, &table_name),
+                    CatalogSurfaceRef::new(catalog_name, schema_name, surface_name),
                     &attribution,
                 )
                 .await
                 .map_err(query_status)?;
-            Ok(Response::new(describe_table_response_to_proto(
+            Ok(Response::new(describe_catalog_surface_response_to_proto(
                 &workspace_name,
                 result,
             )))
@@ -159,19 +182,22 @@ impl CatalogServiceApi for CatalogService {
     ) -> Result<Response<ListColumnsResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
-        let attribution = QueryAttribution::from_extensions(request.extensions());
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
-            let table_name = required_trimmed(&request.table_name, "table_name")?;
+            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
+            let catalog_name = optional_exact(&request.catalog_name, "catalog_name")?;
+            let schema_name = required_exact(&request.schema_name, "schema_name")?;
+            let table_name = required_exact(&request.table_name, "table_name")?;
             let pagination = column_pagination(request.pagination.map(pagination_from_proto))
                 .map_err(app_status)?;
             let page = catalog
                 .list_columns(
                     &workspace_name,
                     ListColumnsQuery {
-                        table_ref: CatalogTableRef::new(&schema_name, &table_name),
+                        table_ref: CatalogTableRef::new(catalog_name, schema_name, table_name),
                         pattern: request.pattern.as_deref(),
                         ignore_case: request.ignore_case,
                         required_only: request.required_only,
@@ -182,7 +208,11 @@ impl CatalogServiceApi for CatalogService {
                 .await
                 .map_err(query_status)?
                 .ok_or_else(|| {
-                    Status::not_found(format!("table '{schema_name}.{table_name}' not found"))
+                    let qualifier = catalog_name.map_or_else(
+                        || schema_name.to_string(),
+                        |catalog| format!("{catalog}.{schema_name}"),
+                    );
+                    Status::not_found(format!("table '{qualifier}.{table_name}' not found"))
                 })?;
             let pagination = pagination_to_proto(
                 page.total,
@@ -202,6 +232,18 @@ impl CatalogServiceApi for CatalogService {
         }))
         .await
     }
+}
+
+async fn query_attribution(
+    tasks: &TaskManager,
+    workspace: &WorkspaceName,
+    request_context: &RequestContext,
+) -> Result<QueryAttribution, Status> {
+    tasks
+        .validate_attribution(workspace, request_context.task_id())
+        .await
+        .map(QueryAttribution::new)
+        .map_err(task_manager_status)
 }
 
 fn pagination_from_proto(pagination: PaginationRequest) -> Pagination {
@@ -227,12 +269,43 @@ fn optional_trimmed(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
-fn required_trimmed(value: &str, field: &str) -> Result<String, Status> {
-    let value = value.trim();
+fn optional_exact<'a>(value: &'a str, field: &str) -> Result<Option<&'a str>, Status> {
     if value.is_empty() {
+        return Ok(None);
+    }
+    if value.trim().is_empty() {
+        return Err(app_status(crate::bootstrap::AppError::InvalidInput(
+            format!("field '{field}' must not be blank"),
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn required_exact<'a>(value: &'a str, field: &str) -> Result<&'a str, Status> {
+    if value.trim().is_empty() {
         return Err(app_status(crate::bootstrap::AppError::InvalidInput(
             format!("missing required field '{field}'"),
         )));
     }
-    Ok(value.to_string())
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{optional_exact, required_exact};
+
+    #[test]
+    fn exact_identifiers_are_validated_without_being_trimmed() {
+        assert_eq!(
+            required_exact(" schema ", "schema_name").unwrap(),
+            " schema "
+        );
+        assert_eq!(
+            optional_exact(" catalog ", "catalog_name").unwrap(),
+            Some(" catalog ")
+        );
+        assert_eq!(optional_exact("", "catalog_name").unwrap(), None);
+        required_exact("   ", "schema_name").unwrap_err();
+        optional_exact("   ", "catalog_name").unwrap_err();
+    }
 }

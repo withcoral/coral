@@ -102,6 +102,11 @@ pub fn validate_materialized_source_structure(
                 projection.name
             )));
         }
+        crate::validate_required_guide(
+            &format!("DSL v4 projection '{}'", projection.name),
+            &projection.guide,
+            projection.require_guide_read,
+        )?;
     }
     Ok(())
 }
@@ -186,6 +191,9 @@ surface:
                 importer_version: match surface_type {
                     SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
                     SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+                    SurfaceType::Database => {
+                        panic!("database surfaces do not have materialized plans")
+                    }
                 }
                 .to_string(),
                 operations: Vec::new(),
@@ -208,6 +216,7 @@ surface:
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
+            require_guide_read: false,
             operation_id: "items/list".to_string(),
             visibility: ProjectionVisibility::Published,
             inputs: Vec::new(),
@@ -314,6 +323,24 @@ surface:
             .expect_err("duplicate projection names should fail validation");
 
         assert_eq!(error.to_string(), "DSL v4 projection 'items' is repeated");
+    }
+
+    #[test]
+    fn structural_validation_rejects_empty_required_projection_guide() {
+        let mut materialized = materialized_source();
+        let mut guarded = projection("items");
+        guarded.require_guide_read = true;
+        guarded.guide = " ".to_string();
+        materialized.projections.projections.push(guarded);
+
+        let error = validate_materialized_source_structure(&manifest(), &materialized)
+            .expect_err("required projection guide must contain guidance");
+        assert!(
+            error
+                .to_string()
+                .contains("sets require_guide_read but has an empty guide"),
+            "unexpected validation error: {error}"
+        );
     }
 
     #[test]

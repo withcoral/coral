@@ -191,7 +191,7 @@ async fn coral_columns_default_row_order_matches_ordinal_position() {
 async fn list_tables_matches_catalog() {
     let (_temp, sources) = build_catalog_sources();
 
-    let listed = CoralQuery::list_tables(&sources, test_runtime(), None, None)
+    let listed = CoralQuery::list_tables(&sources, test_runtime(), None, None, None)
         .await
         .expect("list_tables should succeed");
     let catalog_rows = execution_to_rows(
@@ -224,7 +224,7 @@ async fn list_tables_matches_catalog() {
 
 #[tokio::test]
 async fn list_tables_returns_system_catalog_when_no_sources() {
-    let tables = CoralQuery::list_tables(&[], test_runtime(), None, None)
+    let tables = CoralQuery::list_tables(&[], test_runtime(), None, None, None)
         .await
         .expect("source-free catalog should succeed");
 
@@ -378,6 +378,7 @@ fn http_manifest_with_function() -> Value {
             "name": "search_issues",
             "kind": "search",
             "description": "Search issues",
+            "guide": "Prefer this function for issue lookup.",
             "search_limits": {
                 "default_top_k": 5,
                 "max_top_k": 100,
@@ -395,8 +396,8 @@ fn http_manifest_with_function() -> Value {
                     "bind": { "arg": "search_type" }
                 },
                 // OpenAPI v4 generation does not produce Json HTTP function args.
-                // This fixture verifies typed args still register and list even
-                // though public catalog metadata does not expose arg types yet.
+                // This fixture verifies that typed arguments register and stay
+                // visible in public catalog metadata.
                 {
                     "name": "metadata",
                     "type": "Json",
@@ -482,7 +483,7 @@ async fn coral_table_functions_lists_source_functions() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json \
+            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json, guide \
              FROM coral.table_functions WHERE schema_name = 'searchy'",
         )
         .await
@@ -495,13 +496,19 @@ async fn coral_table_functions_lists_source_functions() {
     assert_eq!(row["function_name"], "search_issues");
     assert_eq!(row["kind"], "search");
     assert_eq!(row["description"], "Search issues");
+    assert_eq!(row["guide"], "Prefer this function for issue lookup.");
     assert_eq!(
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
         json!([
-            { "name": "q", "required": true, "values": [] },
-            { "name": "mode", "required": false, "values": ["lexical", "semantic", "hybrid"] },
-            { "name": "metadata", "required": false, "values": [] },
-            { "name": "since", "required": false, "values": [] }
+            { "name": "q", "type": "Utf8", "required": true, "values": [] },
+            {
+                "name": "mode",
+                "type": "Utf8",
+                "required": false,
+                "values": ["lexical", "semantic", "hybrid"]
+            },
+            { "name": "metadata", "type": "Json", "required": false, "values": [] },
+            { "name": "since", "type": "Timestamp", "required": false, "values": [] }
         ])
     );
     assert_eq!(
@@ -631,6 +638,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "result_columns_json",
             "kind",
             "search_limits_json",
+            "guide",
         ]
     );
 
@@ -660,6 +668,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "is_required_filter",
             "description",
             "filter_mode",
+            "catalog_name",
         ]
     );
 }
@@ -698,7 +707,7 @@ async fn coral_filters_lists_filter_metadata() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT table_name, filter_name, filter_mode, is_required, data_type, description \
+            "SELECT table_name, filter_name, filter_mode, is_required, data_type, description, catalog_name \
              FROM coral.filters WHERE schema_name = 'searchy' AND filter_mode = 'contains'",
         )
         .await
@@ -714,6 +723,7 @@ async fn coral_filters_lists_filter_metadata() {
             "is_required": false,
             "data_type": "Utf8",
             "description": "Provider-native placeholder search text",
+            "catalog_name": "",
         })]
     );
 }
@@ -749,7 +759,7 @@ async fn coral_columns_exposes_filter_mode_for_virtual_filters() {
 async fn list_catalog_matches_table_function_metadata() {
     let sources = vec![build_source(http_manifest_with_function())];
 
-    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), Some("searchy"))
+    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), None, Some("searchy"))
         .await
         .expect("list_catalog should succeed");
 
@@ -759,6 +769,7 @@ async fn list_catalog_matches_table_function_metadata() {
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.function_name, "search_issues");
     assert_eq!(function.description, "Search issues");
+    assert_eq!(function.guide, "Prefer this function for issue lookup.");
     assert_eq!(function.arguments.len(), 4);
     assert_eq!(function.arguments[0].name, "q");
     assert!(function.arguments[0].required);
@@ -778,7 +789,7 @@ async fn list_catalog_matches_table_function_metadata() {
 async fn list_catalog_collects_tables_and_functions_together() {
     let sources = vec![build_source(http_manifest_with_function())];
 
-    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), Some("searchy"))
+    let catalog = CoralQuery::list_catalog(&sources, test_runtime(), None, Some("searchy"))
         .await
         .expect("list_catalog should succeed");
 

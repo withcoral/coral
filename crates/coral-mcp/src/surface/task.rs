@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{
-    arguments::required_string_argument,
+    arguments::{reject_unknown_arguments, required_string_argument},
     schema::{tool_input_schema, tool_output_schema},
     tool_names::ToolName,
 };
@@ -21,7 +21,7 @@ const TOOL_INTENT_ARGUMENT_DESCRIPTION: &str =
 const TOOL_INTENT_JSON_SCHEMA_PATTERN: &str = r".*\S.*";
 const TASK_ID_LEN: usize = 36;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct TaskId(uuid::Uuid);
 
@@ -99,7 +99,6 @@ pub(crate) struct TaskStartedValue {
 pub(crate) struct TaskEndedValue {
     pub(crate) task_id: TaskId,
     pub(crate) task_status: TaskStatus,
-    pub(crate) success: &'static str,
     pub(crate) note: &'static str,
 }
 
@@ -198,25 +197,6 @@ fn required_task_status_argument(
             None,
         )),
     }
-}
-
-fn reject_unknown_arguments(
-    arguments: Option<&Map<String, Value>>,
-    allowed: &[&str],
-) -> Result<(), ErrorData> {
-    let Some(arguments) = arguments else {
-        return Ok(());
-    };
-    if let Some(key) = arguments
-        .keys()
-        .find(|key| !allowed.contains(&key.as_str()))
-    {
-        return Err(ErrorData::invalid_params(
-            format!("unknown argument '{key}'"),
-            None,
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) fn required_tool_intent_argument(

@@ -1,4 +1,4 @@
-//! `OpenAPI` reference hydration for the `openapi-hydrate` xtask subcommand.
+//! OpenAPI reference hydration for the `openapi-hydrate` xtask subcommand.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
@@ -14,7 +14,7 @@ use serde_json::{Map, Number, Value};
 use thiserror::Error;
 use url::Url;
 
-/// Maximum number of bytes accepted for the root `OpenAPI` descriptor.
+/// Maximum number of bytes accepted for the root OpenAPI descriptor.
 pub(crate) const ROOT_DESCRIPTOR_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Maximum number of bytes accepted for a referenced external descriptor.
@@ -29,7 +29,7 @@ pub(crate) const USER_AGENT: &str = "openapi";
 /// Maximum number of external documents fetched at the same time.
 pub(crate) const MAX_CONCURRENT_FETCHES: usize = 32;
 
-/// Errors returned by `OpenAPI` hydration.
+/// Errors returned by OpenAPI hydration.
 #[derive(Debug, Error)]
 pub(crate) enum OpenApiToolsError {
     /// The input location or base URI is invalid.
@@ -161,7 +161,7 @@ struct RefTarget {
     fragment: String,
 }
 
-/// Hydrates an `OpenAPI` document from bytes and a base URI.
+/// Hydrates an OpenAPI document from bytes and a base URI.
 ///
 /// # Errors
 ///
@@ -180,7 +180,7 @@ pub(crate) fn hydrate_openapi(input: &[u8], base_uri: &str) -> Result<Value, Ope
     resolver.hydrate()
 }
 
-/// Hydrates an `OpenAPI` document from an HTTPS URL or local file path.
+/// Hydrates an OpenAPI document from an HTTPS URL or local file path.
 ///
 /// # Errors
 ///

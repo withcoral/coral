@@ -21,6 +21,8 @@
 //!         name: "default".to_string(),
 //!     }),
 //!     sql: "select 1".to_string(),
+//!     guide_read_context: None,
+//!     task_attribution: None,
 //! };
 //! assert_eq!(request.sql, "select 1");
 //! ```
@@ -58,7 +60,7 @@ pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_
 /// Maximum gRPC message size for `SourceService` *responses*, in bytes.
 ///
 /// Source validation returns source metadata plus all exposed tables. Generated
-/// DSL v4 sources from large `OpenAPI` documents can exceed tonic's 4 MB default.
+/// DSL v4 sources from large OpenAPI documents can exceed tonic's 4 MB default.
 pub const SOURCE_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
 
 /// Maximum gRPC message size for `SearchService` *responses*, in bytes.

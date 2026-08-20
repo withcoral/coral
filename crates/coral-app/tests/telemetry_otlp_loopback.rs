@@ -20,9 +20,12 @@ use tonic::Request;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
 
-use coral_api::v1::ExecuteSqlRequest;
+use coral_api::v1::{ExecuteSqlRequest, SearchRequest};
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, decode_execute_sql_response, default_workspace};
+
+const LOCAL_ONLY_SENTINEL: &str = "LOCAL_ONLY_FUTURE_TOOL_SENTINEL";
+const SEARCH_QUERY_SENTINEL: &str = "LOCAL_ONLY_SEARCH_QUERY_SENTINEL";
 
 #[tokio::test]
 async fn otlp_export_loopback_covers_traces_logs_and_metrics() {
@@ -106,6 +109,8 @@ async fn emit_test_telemetry(endpoint_uri: &str) {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT 1 AS loopback_value".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect("execute loopback query")
@@ -113,10 +118,20 @@ async fn emit_test_telemetry(endpoint_uri: &str) {
     let result = decode_execute_sql_response(&response).expect("decode loopback query");
     assert_eq!(result.row_count(), 1);
 
+    app.search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: SEARCH_QUERY_SENTINEL.to_string(),
+            limit: 0,
+        }))
+        .await
+        .expect("search empty catalog");
+
     let query = tracing::info_span!(
         target: "coral_app",
         "loopback_query",
         sql = "SELECT 'secret-loopback-sql'",
+        coral.local.future_tool.input = LOCAL_ONLY_SENTINEL,
         status = "ok"
     );
     let _query = query.enter();
@@ -223,6 +238,21 @@ fn assert_exported_trace_contract(trace_exports: &[ExportTraceServiceRequest], s
         trace_exports,
         "mcp-body-secret"
     ));
+    assert!(!trace_exports_contain_string(
+        trace_exports,
+        LOCAL_ONLY_SENTINEL
+    ));
+    assert!(!trace_exports_contain_string(
+        trace_exports,
+        SEARCH_QUERY_SENTINEL
+    ));
+    assert!(spans.iter().all(|span| {
+        span.attributes.iter().all(|attribute| {
+            !attribute
+                .key
+                .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)
+        })
+    }));
     for expected in ["loopback.log", "loopback-log-value"] {
         assert!(
             trace_exports_contain_string(trace_exports, expected),
@@ -241,6 +271,11 @@ fn assert_exported_log_contract(logs: &[LogRecord]) {
         logs.iter()
             .any(|log| log_contains_string(log, "loopback-log-value")),
         "OTLP log export should keep application log attributes: {logs:?}"
+    );
+    assert!(
+        logs.iter()
+            .all(|log| !log_contains_string(log, SEARCH_QUERY_SENTINEL)),
+        "OTLP logs must not contain local-only Search text: {logs:?}"
     );
 }
 
@@ -329,6 +364,8 @@ fn assert_local_trace_history_contract(local_trace_history: &str) {
         "trace-body-secret",
         "loopback_mcp_body",
         "mcp-body-secret",
+        LOCAL_ONLY_SENTINEL,
+        SEARCH_QUERY_SENTINEL,
     ] {
         assert!(
             local_trace_history.contains(expected),

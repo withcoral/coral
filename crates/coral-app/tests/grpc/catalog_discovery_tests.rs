@@ -4,8 +4,8 @@
 )]
 
 use coral_api::v1::{
-    DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-    SearchCatalogRequest, catalog_item,
+    DescribeCatalogSurfaceRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
+    SearchCatalogRequest, catalog_item, describe_catalog_surface_response,
 };
 use coral_client::default_workspace;
 use tonic::Request;
@@ -30,6 +30,7 @@ async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
         .catalog_client()
         .search_catalog(Request::new(SearchCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             pattern: "Issue".to_string(),
             ignore_case: true,
             schema_name: "searchy".to_string(),
@@ -90,6 +91,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "searchy".to_string(),
             kind: 0,
             pagination: Some(PaginationRequest {
@@ -117,6 +119,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
     };
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.name, "lookup_issue");
+    assert_eq!(function.guide, "Use this function for exact issue lookup.");
     let table = match response.items[1].item.as_ref().expect("catalog item") {
         catalog_item::Item::Table(table) => table,
         catalog_item::Item::TableFunction(_) => panic!("expected table"),
@@ -129,6 +132,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "searchy".to_string(),
             kind: 2,
             pagination: Some(PaginationRequest {
@@ -159,6 +163,41 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
 }
 
 #[tokio::test]
+async fn search_catalog_matches_table_function_guide() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_functions_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "exact issue lookup".to_string(),
+            ignore_case: true,
+            catalog_name: String::new(),
+            schema_name: "searchy".to_string(),
+            kind: 2,
+            pagination: None,
+        }))
+        .await
+        .expect("search table function guide")
+        .into_inner();
+
+    assert_eq!(response.items.len(), 1);
+    assert!(
+        response.items[0]
+            .matched_fields
+            .iter()
+            .any(|field| field == "guide")
+    );
+}
+
+#[tokio::test]
 async fn list_columns_filters_required_columns_and_patterns() {
     let harness = GrpcHarness::new().await;
     harness
@@ -173,6 +212,7 @@ async fn list_columns_filters_required_columns_and_patterns() {
         .catalog_client()
         .list_columns(Request::new(ListColumnsRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "filtered_messages".to_string(),
             table_name: "messages".to_string(),
             pattern: None,
@@ -193,6 +233,7 @@ async fn list_columns_filters_required_columns_and_patterns() {
         .catalog_client()
         .list_columns(Request::new(ListColumnsRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "filtered_messages".to_string(),
             table_name: "messages".to_string(),
             pattern: Some("TEXT".to_string()),
@@ -227,7 +268,7 @@ async fn list_columns_filters_required_columns_and_patterns() {
 }
 
 #[tokio::test]
-async fn describe_missing_table_returns_catalog_suggestions() {
+async fn describe_missing_surface_returns_missing() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -239,28 +280,27 @@ async fn describe_missing_table_returns_catalog_suggestions() {
 
     let response = harness
         .catalog_client()
-        .describe_table(Request::new(DescribeTableRequest {
+        .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
-            table_name: "messeges".to_string(),
+            surface_name: "messeges".to_string(),
         }))
         .await
-        .expect("describe missing table")
+        .expect("describe missing surface")
         .into_inner();
 
-    assert!(response.table.is_none());
-    assert_eq!(response.available_schemas, vec!["coral", "local_messages"]);
-    assert_eq!(response.same_schema_tables.len(), 3);
-    assert_eq!(response.suggestions.len(), 3);
-    assert_eq!(response.suggestions[0].name, "events");
+    let Some(describe_catalog_surface_response::Result::Missing(_)) = response.result else {
+        panic!("expected missing surface");
+    };
 }
 
 #[tokio::test]
-async fn describe_missing_table_name_does_not_apply_regex_limits() {
+async fn describe_catalog_surface_returns_exact_table_function() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
-            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
+            fixture_manifest_with_functions_yaml(),
             Vec::new(),
             Vec::new(),
         )
@@ -268,18 +308,50 @@ async fn describe_missing_table_name_does_not_apply_regex_limits() {
 
     let response = harness
         .catalog_client()
-        .describe_table(Request::new(DescribeTableRequest {
+        .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
             workspace: Some(default_workspace()),
-            schema_name: "local_messages".to_string(),
-            table_name: "missing_table_".repeat(40),
+            catalog_name: String::new(),
+            schema_name: "searchy".to_string(),
+            surface_name: "lookup_issue".to_string(),
         }))
         .await
-        .expect("describe long missing table name")
+        .expect("describe exact table function")
         .into_inner();
 
-    assert!(response.table.is_none());
-    assert_eq!(response.same_schema_tables.len(), 3);
-    assert_eq!(response.suggestions.len(), 3);
+    let Some(describe_catalog_surface_response::Result::TableFunction(function)) = response.result
+    else {
+        panic!("expected table function");
+    };
+    assert_eq!(function.name, "lookup_issue");
+    assert_eq!(function.guide, "Use this function for exact issue lookup.");
+}
+
+#[tokio::test]
+async fn describe_catalog_surface_does_not_resolve_partial_function_name() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_functions_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .catalog_client()
+        .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
+            workspace: Some(default_workspace()),
+            catalog_name: String::new(),
+            schema_name: "searchy".to_string(),
+            surface_name: "lookup".to_string(),
+        }))
+        .await
+        .expect("describe missing catalog surface")
+        .into_inner();
+
+    let Some(describe_catalog_surface_response::Result::Missing(_)) = response.result else {
+        panic!("expected missing surface");
+    };
 }
 
 #[tokio::test]
@@ -297,6 +369,7 @@ async fn list_columns_missing_table_takes_precedence_over_invalid_pattern() {
         .catalog_client()
         .list_columns(Request::new(ListColumnsRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
             table_name: "missing".to_string(),
             pattern: Some("[".to_string()),
@@ -318,6 +391,7 @@ async fn invalid_regex_returns_invalid_argument() {
         .catalog_client()
         .search_catalog(Request::new(SearchCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             pattern: "[".to_string(),
             ignore_case: true,
             schema_name: String::new(),
@@ -340,6 +414,7 @@ async fn invalid_regex_returns_invalid_argument() {
         .catalog_client()
         .list_columns(Request::new(ListColumnsRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "filtered_messages".to_string(),
             table_name: "messages".to_string(),
             pattern: Some("[".to_string()),

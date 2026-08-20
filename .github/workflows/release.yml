@@ -61,66 +61,23 @@ jobs:
           echo "commit-sha=${tag_commit}" >> "$GITHUB_OUTPUT"
           echo "tag-name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
 
-  build-ui:
-    needs: validate-release-ref
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    env:
-      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
-    outputs:
-      has-ui: ${{ steps.detect-ui.outputs.has-ui }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
-          persist-credentials: false
-      - name: Detect UI package
-        id: detect-ui
-        run: |
-          if [ -f apps/ui/package.json ]; then
-            echo "has-ui=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has-ui=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Set up Node
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/ui/.node-version
-          package-manager-cache: false
-      - name: Install UI dependencies
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        run: npm ci --prefix apps/ui
-      - name: Build UI
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        run: npm run build --prefix apps/ui
-      - name: Verify UI entrypoint
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        run: test -s apps/ui/dist/index.html
-      - name: Upload UI artifact
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: ui-dist
-          path: apps/ui/dist
 
   build:
     needs:
       - validate-release-ref
-      - build-ui
     strategy:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: blacksmith-4vcpu-ubuntu-2404
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: true
+            os: blacksmith-4vcpu-ubuntu-2404-arm
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: blacksmith-6vcpu-macos-26
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: blacksmith-6vcpu-macos-26
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: blacksmith-4vcpu-windows-2025
     runs-on: ${{ matrix.os }}
     env:
       TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
@@ -133,52 +90,23 @@ jobs:
         run: rustup show
       - name: Ensure target is installed
         run: rustup target add ${{ matrix.target }}
-      - name: Download UI artifact
-        if: needs.build-ui.outputs.has-ui == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: ui-dist
-          path: apps/ui/dist
       # No Rust cache here — release builds must compile from a clean state
       # to guard against cache poisoning attacks.
-      - name: Install cross
-        if: matrix.cross
-        run: |
-          set -euo pipefail
-          cargo install cargo-binstall --locked
-          cargo binstall --no-confirm --force --disable-strategies compile cross@0.2.5
       - name: Build Unix
         if: runner.os != 'Windows'
         shell: bash
         env:
-          CROSS: ${{ matrix.cross }}
-          HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
           TARGET: ${{ matrix.target }}
         run: |
-          feature_args=()
-          if [ "$HAS_UI" = "true" ]; then
-            feature_args=(--features embedded-ui)
-          fi
-
-          if [ "$CROSS" = "true" ]; then
-            cross build --locked --release --target "$TARGET" "${feature_args[@]}"
-          else
-            cargo build --locked --release --target "$TARGET" "${feature_args[@]}"
-          fi
+          cargo build --locked --release --target "$TARGET"
 
       - name: Build Windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
           TARGET: ${{ matrix.target }}
         run: |
-          $featureArgs = @()
-          if ($env:HAS_UI -eq "true") {
-            $featureArgs += @("--features", "embedded-ui")
-          }
-
-          cargo build --locked --release --target $env:TARGET @featureArgs
+          cargo build --locked --release --target $env:TARGET
 
       - name: Smoke Windows release binary
         if: runner.os == 'Windows'
@@ -495,34 +423,6 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
-      - name: Promote GitHub release
-        id: promote-release
-        env:
-          GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
-          release_id="$(printf '%s' "$release_json" | jq -r '.id')"
-          was_prerelease="$(printf '%s' "$release_json" | jq -r '.prerelease')"
-
-          if [ "$was_prerelease" = "true" ]; then
-            release_json="$(gh api \
-              --method PATCH \
-              "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-              -F prerelease=false \
-              -F make_latest=true)"
-          fi
-
-          {
-            echo "was_prerelease=${was_prerelease}"
-            echo "tag_name=$(printf '%s' "$release_json" | jq -r '.tag_name')"
-            echo "release_name=$(printf '%s' "$release_json" | jq -r '.name // ""')"
-            echo "release_url=$(printf '%s' "$release_json" | jq -r '.html_url')"
-            echo "body<<__RELEASE_BODY__"
-            printf '%s' "$release_json" | jq -r '.body // ""'
-            echo "__RELEASE_BODY__"
-          } >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
@@ -560,37 +460,126 @@ jobs:
               client_payload: { version },
             });
 
+  # Both immutable images and their paired aliases are release gates. The
+  # GitHub release remains a prerelease until all three jobs succeed.
+  publish-docker:
+    needs:
+      - validate-release-ref
+      - publish-version
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      tag: ${{ needs.validate-release-ref.outputs.tag-name }}
+      defer-aliases: true
+
+  publish-coral-ui-docker:
+    needs:
+      - validate-release-ref
+      - publish-version
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/coral-ui-docker-publish.yml
+    with:
+      tag: ${{ needs.validate-release-ref.outputs.tag-name }}
+      commit-sha: ${{ needs.validate-release-ref.outputs.commit-sha }}
+
+  coordinate-docker-aliases:
+    needs:
+      - validate-release-ref
+      - publish-docker
+      - publish-coral-ui-docker
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-aliases.yml
+    with:
+      tag: ${{ needs.validate-release-ref.outputs.tag-name }}
+      coral-digest: ${{ needs.publish-docker.outputs.digest }}
+      coral-ui-digest: ${{ needs.publish-coral-ui-docker.outputs.digest }}
+
+  promote-release:
+    needs:
+      - validate-release-ref
+      - coordinate-docker-aliases
+    environment: release
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: write
+    outputs:
+      promoted: ${{ steps.promote.outputs.promoted }}
+    steps:
+      - name: Create GitHub App token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        id: github-app-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          repositories: coral
+
+      - name: Mark the coordinated release complete
+        id: promote
+        env:
+          GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
+          MAKE_LATEST: ${{ needs.coordinate-docker-aliases.outputs.make-latest }}
+          TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
+          was_prerelease="$(printf '%s' "$release" | jq -r .prerelease)"
+          promoted=false
+          if [ "$was_prerelease" = true ]; then
+            release_id="$(printf '%s' "$release" | jq -r .id)"
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F prerelease=false -f "make_latest=${MAKE_LATEST}" >/dev/null
+            promoted=true
+          fi
+          echo "promoted=${promoted}" >> "$GITHUB_OUTPUT"
+
+  # Keep delivery separate so a failed webhook can be retried without
+  # re-running the already-completed promotion job.
+  notify-release:
+    needs:
+      - validate-release-ref
+      - promote-release
+    if: needs.promote-release.outputs.promoted == 'true'
+    environment: release
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+    # The release is already published and promoted by this point, so an
+    # undelivered changelog post must never redden the run. Failures surface as
+    # warning annotations instead, and the job can be re-run on its own.
+    continue-on-error: true
+    steps:
       - name: Post promoted release to Discord
-        if: steps.promote-release.outputs.was_prerelease == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
-          TAG_NAME: ${{ steps.promote-release.outputs.tag_name }}
-          RELEASE_NAME: ${{ steps.promote-release.outputs.release_name }}
-          RELEASE_BODY: ${{ steps.promote-release.outputs.body }}
-          RELEASE_URL: ${{ steps.promote-release.outputs.release_url }}
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
         run: |
-          MAX_LEN=3500
-          BODY="$RELEASE_BODY"
-          if [ ${#BODY} -gt $MAX_LEN ]; then
-            BODY="${BODY:0:$MAX_LEN}..."
+          set -euo pipefail
+          skip() {
+            echo "::warning title=Discord release notes not posted::$1"
+            exit 0
+          }
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            skip "DISCORD_CHANGELOG_WEBHOOK is not configured"
           fi
-
-          TITLE_MAX_LEN=256
-          TITLE="🪸 ${RELEASE_NAME:-$TAG_NAME}"
-          if [ ${#TITLE} -gt $TITLE_MAX_LEN ]; then
-            TITLE="${TITLE:0:$((TITLE_MAX_LEN - 3))}..."
-          fi
-
-          jq -n \
-            --arg title "$TITLE" \
-            --arg desc "$BODY" \
-            --arg url "$RELEASE_URL" \
-            '{
-              embeds: [{
-                title: $title,
-                description: $desc,
-                url: $url,
-                color: 16744272,
-                footer: { text: "Fresh from the reef" }
-              }]
-            }' | curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"
+          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")" ||
+            skip "could not read the ${TAG_NAME} release"
+          name="$(printf '%s' "$release" | jq -r '.name // ""')"
+          url="$(printf '%s' "$release" | jq -r .html_url)"
+          body="$(printf '%s' "$release" | jq -r '.body // ""')"
+          title="🪸 ${name:-$TAG_NAME}"
+          payload="$(jq -n --arg title "${title:0:253}" --arg desc "${body:0:3500}" --arg url "$url" \
+            '{embeds:[{title:$title,description:$desc,url:$url,color:16744272,footer:{text:"Fresh from the reef"}}]}')" ||
+            skip "could not build the Discord payload for ${TAG_NAME}"
+          printf '%s' "$payload" |
+            curl -sf --max-time 30 -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK" ||
+            skip "the Discord webhook rejected the post for ${TAG_NAME}"

@@ -27,7 +27,7 @@ use crate::{
     },
     validate::validate_template,
     validate_declared_relation_namespace, validate_detail_hint_references, validate_http_function,
-    validate_http_table, validate_source_name, validate_test_queries,
+    validate_http_table, validate_required_guide, validate_source_name, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -140,6 +140,8 @@ struct RawHttpTableSpec {
     #[serde(default)]
     guide: String,
     #[serde(default)]
+    require_guide_read: bool,
+    #[serde(default)]
     filters: Vec<FilterSpec>,
     #[serde(default)]
     fetch_limit_default: Option<usize>,
@@ -236,6 +238,11 @@ impl HttpSourceManifest {
 
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
+        validate_required_guide(
+            &format!("table '{schema}.{}'", self.name),
+            &self.guide,
+            self.require_guide_read,
+        )?;
         validate_http_table(HttpTableValidation {
             schema,
             table_name: &self.name,
@@ -253,6 +260,7 @@ impl RawHttpTableSpec {
                 self.name,
                 self.description,
                 self.guide,
+                self.require_guide_read,
                 self.filters,
                 self.fetch_limit_default,
                 self.search_limits,
@@ -387,6 +395,7 @@ pub(crate) fn test_http_table_spec(
             name.to_string(),
             "test".to_string(),
             String::new(),
+            false,
             filters,
             None,
             None,

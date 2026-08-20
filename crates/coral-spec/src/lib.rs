@@ -93,6 +93,10 @@ mod udf;
 pub mod v4;
 mod validate;
 
+pub use backends::database::{
+    DatabaseConnectionSpec, DatabaseProvider, DatabaseSourceManifest, MySqlConnectionSpec,
+    PostgresConnectionSpec, SqliteConnectionSpec,
+};
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 pub use backends::mcp::{
     McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
@@ -100,13 +104,13 @@ pub use backends::mcp::{
 };
 pub use bundle::{IdentityManifestDocument, ManifestBundle, parse_manifest_bundle_yaml};
 pub use common::{
-    BodyFieldSpec, BodySpec, ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, DetailHintSpec,
-    ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType,
-    PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec,
-    ResponseBodyFormat, ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend,
-    SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
-    TableFunctionArgSpec, TimestampInput, ValidatedPagination, ValidatedPaginationMode,
-    ValueSourceSpec,
+    BodyFieldSpec, BodySpec, CollectionEncoding, ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY,
+    DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec, HttpMethod,
+    ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
+    RequestRouteSpec, RequestSpec, ResponseBodyFormat, ResponseSpec, RowStrategy, SearchLimitsSpec,
+    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
+    TableCommon, TableFunctionArgSpec, TimestampInput, ValidatedPagination,
+    ValidatedPaginationMode, ValueSourceSpec,
 };
 pub(crate) use common::{
     validate_reserved_source_schema_name, validate_source_name, validate_test_queries,
@@ -115,7 +119,7 @@ pub use error::{ManifestError, Result};
 pub use identities::{
     IDENTITY_SPEC_VERSION, IdentityManifest, IdentityOAuthMethodSpec, IdentityOAuthSpec,
     IdentitySpecConfig, IdentitySpecType, generated_identity_manifest_schema,
-    parse_identity_manifest_value, parse_identity_manifest_yaml,
+    parse_identity_manifest_value, parse_identity_manifest_yaml, validate_identity_spec_name,
 };
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
@@ -132,12 +136,13 @@ pub use parser::{
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub use udf::{
-    FunctionCoralSqlImplementationSpec, FunctionImplementationSpec, FunctionSpec,
-    parse_function_sql,
+    FunctionCoralSqlImplementationSpec, FunctionDeclaredArgument, FunctionDeclaredResultColumn,
+    FunctionDeclaredSignature, FunctionImplementationSpec, FunctionLanguage, FunctionSpec,
+    FunctionTypeScriptImplementationSpec, parse_function_artifact,
 };
 pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
     validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,
     validate_filters_and_column_exprs, validate_http_function, validate_http_table,
-    validate_identifier, validate_unique_values,
+    validate_identifier, validate_required_guide, validate_unique_values,
 };

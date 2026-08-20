@@ -50,4 +50,10 @@ surface:
   type: openapi
   url: https://gitlab.com/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml
   base_url: '{{input.GITLAB_API_BASE}}'
+  auth:
+    type: HeaderAuth
+    headers:
+      - name: Authorization
+        from: template
+        template: Bearer {{input.GITLAB_TOKEN}}
 test_queries: []

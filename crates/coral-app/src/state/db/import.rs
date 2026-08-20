@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::session::DbRepos;
 use super::{CoralDb, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
-use crate::state::ConfigStore;
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceRecord;
 
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
@@ -17,8 +17,19 @@ pub(crate) struct WorkspaceCatalogCutoverReport {
 pub(crate) async fn run_state_migrations(
     db: &CoralDb,
     config_store: &ConfigStore,
+    layout: &AppStateLayout,
 ) -> Result<(), AppError> {
     cutover_legacy_workspace_catalog(db, config_store).await?;
+    remove_legacy_task_jsonl(config_store, layout)?;
+    Ok(())
+}
+
+fn remove_legacy_task_jsonl(
+    config_store: &ConfigStore,
+    layout: &AppStateLayout,
+) -> Result<(), AppError> {
+    let _state_lock = config_store.state_lock_exclusive()?;
+    layout.remove_legacy_task_event_logs()?;
     Ok(())
 }
 
@@ -35,12 +46,14 @@ async fn cutover_legacy_workspace_catalog_at(
     now_unix_nanos: i64,
 ) -> Result<WorkspaceCatalogCutoverReport, AppError> {
     let _state_lock = config_store.state_lock_exclusive()?;
-    let mut session = db;
-    if session
+    let mut tx = db.begin().await?;
+    if !tx
         .state_migrations()
-        .has_completed(WORKSPACE_CATALOG_CUTOVER_ID)
+        .try_claim(WORKSPACE_CATALOG_CUTOVER_ID, now_unix_nanos)
         .await?
     {
+        tx.rollback().await?;
+        let mut session = db;
         return Ok(WorkspaceCatalogCutoverReport {
             workspace_count: session.workspaces().list().await?.len(),
             cutover_performed: false,
@@ -52,13 +65,9 @@ async fn cutover_legacy_workspace_catalog_at(
         .legacy_workspace_records();
     let workspace_count = workspaces.len();
 
-    let mut tx = db.begin().await?;
     tx.workspaces().delete_all().await?;
     import_legacy_workspaces(&mut tx, &workspaces, now_unix_nanos).await?;
     verify_workspace_parity(&mut tx, &workspaces).await?;
-    tx.state_migrations()
-        .mark_completed(WORKSPACE_CATALOG_CUTOVER_ID, now_unix_nanos)
-        .await?;
     tx.commit().await?;
 
     Ok(WorkspaceCatalogCutoverReport {
@@ -117,6 +126,7 @@ mod tests {
     use super::{
         WORKSPACE_CATALOG_CUTOVER_ID, WorkspaceCatalogCutoverReport,
         cutover_legacy_workspace_catalog, cutover_legacy_workspace_catalog_at,
+        run_state_migrations,
     };
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
@@ -233,6 +243,43 @@ mod tests {
                 cutover_performed: false
             }
         );
+    }
+
+    #[tokio::test]
+    async fn shared_database_does_not_scope_task_cleanup_to_the_first_layout() {
+        let temp = tempdir().expect("temp dir");
+        let first_layout =
+            AppStateLayout::discover(Some(temp.path().join("first"))).expect("first layout");
+        let second_layout =
+            AppStateLayout::discover(Some(temp.path().join("second"))).expect("second layout");
+        first_layout.ensure().expect("ensure first layout");
+        second_layout.ensure().expect("ensure second layout");
+        let first_config_store = ConfigStore::new(first_layout.clone());
+        let second_config_store = ConfigStore::new(second_layout.clone());
+        let first_legacy_file = first_layout
+            .workspace_dir(&WorkspaceName::default())
+            .join("tasks")
+            .join("tasks.jsonl");
+        let second_legacy_file = second_layout
+            .workspace_dir(&WorkspaceName::default())
+            .join("tasks")
+            .join("tasks.jsonl");
+        for path in [&first_legacy_file, &second_legacy_file] {
+            std::fs::create_dir_all(path.parent().expect("legacy task dir"))
+                .expect("create legacy task dir");
+            std::fs::write(path, "sensitive task intent").expect("write legacy task file");
+        }
+        let db = open_sqlite(&first_layout).await;
+
+        run_state_migrations(&db, &first_config_store, &first_layout)
+            .await
+            .expect("run migrations for first layout");
+        run_state_migrations(&db, &second_config_store, &second_layout)
+            .await
+            .expect("run migrations for second layout");
+
+        assert!(!first_legacy_file.exists());
+        assert!(!second_legacy_file.exists());
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {

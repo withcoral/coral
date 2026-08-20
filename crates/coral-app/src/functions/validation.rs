@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashSet};
 
-use coral_engine::{QuerySource, RuntimeSourceComponent, UdfRuntimeDefinition};
+use coral_engine::{CoralSqlFunctionDefinition, QuerySource, RuntimeSourceComponent};
 
 use crate::bootstrap::AppError;
 
@@ -11,13 +11,10 @@ pub(crate) fn initial_sql_publish_targets(selected_sources: &[QuerySource]) -> S
 }
 
 pub(crate) fn record_sql_publish_target(
-    function: &UdfRuntimeDefinition,
+    function: &CoralSqlFunctionDefinition,
     publish_targets: &mut SqlPublishTargets,
 ) -> Result<(), AppError> {
-    let target = SqlPublishTarget::new(
-        &function.publish.table_function.schema,
-        &function.publish.table_function.name,
-    );
+    let target = SqlPublishTarget::new(&function.publish.schema, &function.publish.name);
     if !publish_targets.insert(target.clone()) {
         return Err(AppError::FailedPrecondition(format!(
             "function publish target '{}' is installed more than once",
@@ -43,10 +40,10 @@ pub(crate) fn source_sql_publish_targets_for_schemas(
 }
 
 pub(crate) fn unchecked_source_publish_schemas(
-    function: &UdfRuntimeDefinition,
+    function: &CoralSqlFunctionDefinition,
     checked: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let schema = &function.publish.table_function.schema;
+    let schema = &function.publish.schema;
     if checked.contains(schema) {
         BTreeSet::new()
     } else {
@@ -69,6 +66,9 @@ fn record_source_component_sql_targets(
     targets: &mut SqlPublishTargets,
 ) {
     match component {
+        RuntimeSourceComponent::Database(_) => {
+            // Database tables are discovered at registration and have no static publish targets.
+        }
         RuntimeSourceComponent::Http(manifest) => {
             for table in &manifest.tables {
                 targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
@@ -122,10 +122,7 @@ impl SqlPublishTarget {
 mod tests {
     use std::collections::BTreeMap;
 
-    use coral_engine::{
-        RuntimeSourcePackage, UdfRuntimeImplementation, UdfRuntimePublish,
-        UdfRuntimeTableFunctionPublish,
-    };
+    use coral_engine::{CoralSqlTableFunctionPublish, RuntimeSourcePackage};
     use coral_spec::parse_source_manifest_yaml;
 
     use super::*;
@@ -182,22 +179,20 @@ tables:
         .expect("multi-schema source")
     }
 
-    fn runtime_function() -> UdfRuntimeDefinition {
-        UdfRuntimeDefinition {
+    fn runtime_function() -> CoralSqlFunctionDefinition {
+        CoralSqlFunctionDefinition {
             name: "review_queue".to_string(),
             description: String::new(),
             arguments: Vec::new(),
-            implementation: UdfRuntimeImplementation::CoralSql {
-                query: "select 1 as id".to_string(),
-            },
-            publish: UdfRuntimePublish {
-                table_function: UdfRuntimeTableFunctionPublish {
-                    schema: "functions".to_string(),
-                    name: "review_queue".to_string(),
-                    description: String::new(),
-                },
+            query: "select 1 as id".to_string(),
+            publish: CoralSqlTableFunctionPublish {
+                schema: "functions".to_string(),
+                name: "review_queue".to_string(),
+                description: String::new(),
+                guide: String::new(),
             },
             result_columns: Vec::new(),
+            source_names: Vec::new(),
         }
     }
 

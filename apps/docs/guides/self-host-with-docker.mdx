@@ -1,0 +1,412 @@
+---
+title: "Self-host Coral with Docker"
+description: "Run the Coral server and Coral UI as containers with Docker Compose, locally or behind TLS with authentication."
+---
+
+Coral publishes two container images to GitHub Container Registry:
+
+| Image                          | Contents                                                        | Default port |
+| ------------------------------ | --------------------------------------------------------------- | ------------ |
+| `ghcr.io/withcoral/coral`      | The Coral server (`coral server`): native gRPC data plane, plus opt-in MCP Streamable HTTP and OAuth listeners | `14555` (gRPC) |
+| `ghcr.io/withcoral/coral-ui`   | The Coral UI web console, a web server that talks to the Coral server | `3000` |
+
+Every release pushes an immutable version tag (for example `0.13.0`), and the
+`latest` and `major.minor` tags of both images move together, so matching tags
+are always compatible. Pin exact versions in production.
+
+This guide covers two topologies: a loopback-only stack for trying the server
+deployment on one machine, and a production stack behind a TLS-terminating
+reverse proxy with authentication enabled.
+
+<Warning>
+  Coral terminates no TLS and, without `[auth]`, does not authenticate clients. Never expose any Coral or Coral UI port beyond loopback without a TLS-terminating proxy in front and authentication enabled.
+</Warning>
+
+## How the pieces fit
+
+The Coral server owns all state and serves up to three listeners, all
+cleartext, all configured in `config.toml` (see
+[Configuration](/reference/configuration#server)):
+
+- **Native gRPC** (`[server].bind_addr`, port `14555` in the image's default
+  config) — the data plane Coral UI talks to.
+- **MCP Streamable HTTP** (`[server.mcp_http]`, opt-in) — serves `/mcp` for MCP
+  clients, plus health-check endpoints.
+- **OAuth authorization server** (`[auth].http_bind_addr`, only with `[auth]`)
+  — serves login, token, and discovery endpoints.
+
+The first boot of the Coral container seeds `config.toml` from the
+`CORAL_SEED_CONFIG` environment variable if set, otherwise with a starter
+config that binds gRPC to `0.0.0.0:14555`. The seed applies **once**: an
+existing `config.toml` on the volume is never rewritten, so later changes to
+`CORAL_SEED_CONFIG` have no effect (see
+[Changing the configuration](#changing-the-configuration-later)).
+
+## Local deployment
+
+The local stack runs without authentication: the Coral server has no `[auth]`
+configured and Coral UI runs with `CORAL_UI_AUTH_MODE=disabled`, talking gRPC
+to Coral over the Compose network. Everything is published only on loopback.
+
+<Warning>
+  `CORAL_UI_AUTH_MODE=disabled` serves Coral UI with no login: anyone who can reach the port can read every source and submit new source credentials. Keep the published port bound to `127.0.0.1` and do not port-forward it beyond your machine.
+</Warning>
+
+You need Docker Engine with the Compose plugin.
+
+Create `compose.yaml`:
+
+```yaml
+services:
+  coral:
+    image: ghcr.io/withcoral/coral:latest
+    restart: unless-stopped
+    environment:
+      CORAL_SEED_CONFIG: |
+        [server]
+        bind_addr = "0.0.0.0:14555"
+
+        [server.mcp_http]
+        enabled = true
+        bind = "0.0.0.0:14556"
+        allow_unauthenticated_non_loopback = true
+    ports:
+      - "127.0.0.1:14556:14556"
+    volumes:
+      - coral-data:/var/lib/coral
+
+  coral-ui:
+    image: ghcr.io/withcoral/coral-ui:latest
+    restart: unless-stopped
+    environment:
+      CORAL_ENDPOINT: http://coral:14555
+      CORAL_UI_AUTH_MODE: disabled
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      coral:
+        condition: service_healthy
+
+volumes:
+  coral-data:
+```
+
+Start the stack:
+
+```shellscript
+docker compose up -d
+```
+
+Coral UI is at `http://localhost:3000`. Verify readiness with:
+
+```shellscript
+curl -fsS http://localhost:3000/readyz
+```
+
+MCP Streamable HTTP is published on loopback too — the seed config opts the
+unauthenticated listener into a non-loopback bind with
+`allow_unauthenticated_non_loopback` (see
+[Configuration](/reference/configuration#server)). Point any MCP client that
+supports the transport at:
+
+```text
+http://localhost:14556/mcp
+```
+
+The listener performs no authentication — reachability is the entire access
+control — which is why the compose file publishes it to `127.0.0.1` only, and
+why Coral prints an exposure warning at startup. It accepts requests addressed
+to `localhost`, `127.0.0.1`, `::1`, or the bind IP; to reach it from a sibling
+container by service name instead, add the name to
+`[server.mcp_http].allowed_hosts`.
+
+## Remote deployment with TLS
+
+The production stack adds authentication and a TLS-terminating reverse proxy
+(Caddy here, which provisions Let's Encrypt certificates automatically). TLS
+termination in front of every listener is mandatory for remote deployments:
+Coral serves only cleartext, and with `[auth]` enabled bearer tokens would
+otherwise cross the wire unprotected.
+
+The example uses one domain per surface:
+
+| Hostname                    | Serves                          | Proxied to        |
+| --------------------------- | ------------------------------- | ----------------- |
+| `coral.example.com`         | Coral UI                        | `coral-ui:3000`   |
+| `auth.coral.example.com`    | Coral's OAuth authorization server | `coral:8081`   |
+| `mcp.coral.example.com`     | MCP Streamable HTTP             | `coral:14556`     |
+
+### Prerequisites
+
+- A host with Docker, ports 80 and 443 reachable from the internet, and DNS
+  records for the three hostnames pointing at it.
+- An OIDC client registered with your identity provider (Google, Okta,
+  Microsoft Entra, Keycloak, and others all work). Set its redirect URI to
+  `https://auth.coral.example.com/auth/oidc/callback` and note the client ID
+  and secret. Who can sign in to Coral is decided entirely by this provider —
+  see [Authentication](/reference/configuration#authentication).
+
+<Note>
+  During login, the Coral server itself fetches `https://coral.example.com/.well-known/oauth-client` and Coral UI fetches the issuer's discovery and token endpoints. Both `coral.example.com` and `auth.coral.example.com` must therefore resolve to a **public** address from inside the containers, and certificates must chain to system roots (Let's Encrypt is fine, a private CA is not). Split-horizon DNS that answers with private addresses breaks login: Coral rejects client-metadata hosts that resolve to private or loopback addresses.
+</Note>
+
+### Secrets
+
+Generate the two secrets and put them in a `.env` file next to the compose
+file, together with your IdP client secret (replace `your-idp-client-secret`):
+
+```shellscript
+cat > .env <<EOF
+CORAL_SESSION_SIGNING_KEY=$(openssl ecparam -genkey -name prime256v1 -noout | openssl pkcs8 -topk8 -nocrypt -outform DER | base64 | tr -d '\n')
+CORAL_UI_SESSION_SECRET=$(openssl rand -base64 48)
+CORAL_OIDC_CLIENT_SECRET=your-idp-client-secret
+EOF
+chmod 600 .env
+```
+
+`CORAL_SESSION_SIGNING_KEY` signs Coral's access tokens; losing it invalidates
+every session, so treat it like any other production key material.
+
+### Compose file
+
+Create `compose.yaml`, replacing the `example.com` hostnames and the
+`[auth.provider]` issuer and client ID with yours:
+
+```yaml
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  coral:
+    image: ghcr.io/withcoral/coral:0.13.0
+    restart: unless-stopped
+    environment:
+      CORAL_SESSION_SIGNING_KEY: ${CORAL_SESSION_SIGNING_KEY}
+      CORAL_OIDC_CLIENT_SECRET: ${CORAL_OIDC_CLIENT_SECRET}
+      CORAL_SEED_CONFIG: |
+        [server]
+        bind_addr = "0.0.0.0:14555"
+
+        [server.mcp_http]
+        enabled = true
+        bind = "0.0.0.0:14556"
+        public_url = "https://mcp.coral.example.com/mcp"
+
+        [auth]
+        http_bind_addr = "0.0.0.0:8081"
+        allowed_audiences = ["https://coral.example.com"]
+
+        [auth.session]
+        signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+
+        [auth.authorization_server]
+        issuer = "https://auth.coral.example.com"
+        trusted_clients = ["https://coral.example.com/.well-known/oauth-client"]
+
+        [auth.provider]
+        issuer = "https://your-idp.example.com"
+        client_id = "your-oidc-client-id"
+        client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+        redirect_uri = "https://auth.coral.example.com/auth/oidc/callback"
+    volumes:
+      - coral-data:/var/lib/coral
+
+  coral-ui:
+    image: ghcr.io/withcoral/coral-ui:0.13.0
+    restart: unless-stopped
+    environment:
+      CORAL_ENDPOINT: http://coral:14555
+      CORAL_UI_ALLOW_INSECURE_CORAL_ENDPOINT: "1"
+      CORAL_UI_AUTH_MODE: required
+      CORAL_UI_SESSION_SECRET: ${CORAL_UI_SESSION_SECRET}
+      CORAL_UI_AUTH_ISSUER: https://auth.coral.example.com
+      CORAL_UI_PUBLIC_URL: https://coral.example.com
+    depends_on:
+      coral:
+        condition: service_healthy
+
+volumes:
+  coral-data:
+  caddy-data:
+  caddy-config:
+```
+
+Coral UI talks native gRPC straight to `coral:14555` inside the Compose
+network. That leg is cleartext on an operator-controlled network, which Coral
+UI refuses by default; `CORAL_UI_ALLOW_INSECURE_CORAL_ENDPOINT=1` is the
+explicit opt-in for exactly this wiring. To avoid the opt-in, terminate TLS in
+front of the gRPC listener too and point `CORAL_ENDPOINT` at an `https://`
+URL.
+
+And the `Caddyfile`:
+
+```text
+coral.example.com {
+	reverse_proxy coral-ui:3000
+}
+
+auth.coral.example.com {
+	reverse_proxy coral:8081
+}
+
+mcp.coral.example.com {
+	reverse_proxy coral:14556
+}
+```
+
+### Start and verify
+
+```shellscript
+docker compose up -d
+```
+
+The Coral server logs a startup warning about its non-loopback cleartext
+listeners; that is expected here, since Caddy terminates TLS in front of them
+and the Compose network is not exposed. Then verify each surface:
+
+```shellscript
+curl -fsS https://coral.example.com/readyz
+```
+
+```shellscript
+curl -i https://mcp.coral.example.com/mcp
+```
+
+The first returns `{"coral":"reachable","status":"ok"}` once Coral UI can
+reach a ready Coral server. The second returns `401 Unauthorized` with a
+`WWW-Authenticate` header pointing at the OAuth resource metadata — that is an
+MCP client's entry point into the login flow, so a `401` here means MCP is
+wired correctly.
+
+Open `https://coral.example.com` in a browser. You are redirected to your
+identity provider's login and land back in Coral UI signed in. The
+`trusted_clients` entry in the seed config is Coral UI's own client ID, so its
+sign-ins skip Coral's approval page; drop that line to have every sign-in
+pause on the approval page instead (see
+[Configuration](/reference/configuration#authentication)).
+
+### Connect an MCP client
+
+Point any MCP client that supports Streamable HTTP and OAuth at:
+
+```text
+https://mcp.coral.example.com/mcp
+```
+
+The client discovers Coral's authorization server from the protected-resource
+metadata and walks the browser login, pausing on Coral's approval page —
+unlike Coral UI, MCP clients are not listed in `trusted_clients` — before
+your identity provider's sign-in. No token needs to be copied by hand.
+
+## Administering a deployed instance
+
+Most administration happens in the Coral UI: installing, editing, importing,
+and removing sources, creating workspaces, browsing the schema and traces, and
+toggling runtime features.
+
+The `coral` CLI inside the container operates on the same state as the server
+(concurrent access is safe — state access is serialized through a file lock),
+which covers the remaining operations:
+
+```shellscript
+docker compose exec coral coral source add --interactive github
+```
+
+```shellscript
+docker compose exec coral coral sql "select * from coral.tables"
+```
+
+The installed CLI on your workstation cannot target a remote server: CLI
+commands always operate on the machine's own local state, so administration
+runs either in the browser or inside the container.
+
+<Tip>
+  An MCP client on the Docker host can also use the stdio transport against the containerized instance without enabling MCP HTTP: configure the client to run `docker compose exec -i coral coral mcp-stdio` (or `docker exec -i <container> coral mcp-stdio`).
+</Tip>
+
+### Changing the configuration later
+
+`CORAL_SEED_CONFIG` only seeds the **first** boot. Afterwards, edit the config
+on the volume and restart:
+
+```shellscript
+docker compose cp coral:/var/lib/coral/config/config.toml ./config.toml
+```
+
+```shellscript
+docker compose exec -T coral sh -c 'cat > /var/lib/coral/config/config.toml' < ./config.toml && docker compose restart coral
+```
+
+Writing through `exec` keeps the file owned by the container user; copying it
+back in with `docker compose cp` would leave it root-owned and unreadable to
+the server.
+
+### Persistence and backup
+
+Everything the server owns lives on the `coral-data` volume: `config.toml`,
+the SQLite database, workspace and source state, and credential material. Back
+up that volume. To move state to Postgres instead of SQLite, see
+[Database](/reference/configuration#database) — workspace and source files
+remain on the volume either way, so the Coral server stays a
+single-instance deployment.
+
+### Upgrades
+
+To upgrade, edit `compose.yaml` to the new version, keeping the `coral` and
+`coral-ui` tags identical (release tags of the two images move together),
+then:
+
+```shellscript
+docker compose pull && docker compose up -d
+```
+
+### Health endpoints
+
+| Container  | Endpoint                                   | Meaning                                          |
+| ---------- | ------------------------------------------ | ------------------------------------------------ |
+| `coral`    | gRPC health service `""` on `14555`        | Liveness (built into the image's `HEALTHCHECK`)  |
+| `coral`    | gRPC health service `coral.readiness`      | Readiness (engine catalog resolved)              |
+| `coral`    | `GET /livez`, `GET /readyz` on `14556`     | Same checks over HTTP, when MCP HTTP is enabled  |
+| `coral-ui` | `GET /healthz` on `3000`                   | Coral UI process and configuration health        |
+| `coral-ui` | `GET /readyz` on `3000`                    | Coral UI can reach a ready Coral server          |
+
+## Environment variable reference
+
+### `coral` container
+
+The server reads its networking, auth, and telemetry configuration from
+`config.toml`, not environment variables. See
+[Configuration](/reference/configuration). The container-level variables:
+
+| Variable                    | Default                 | Description                                                                                      |
+| --------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------ |
+| `CORAL_CONFIG_DIR`          | `/var/lib/coral/config` | Coral's local state directory (set by the image).                                                |
+| `CORAL_SEED_CONFIG`         | unset                   | Verbatim `config.toml` content, seeded on first boot only.                                       |
+| `CORAL_SESSION_SIGNING_KEY` | unset                   | Token signing key (base64 PKCS#8 P-256 DER) when `[auth.session]` uses the default key source.   |
+| `CORAL_HEALTHCHECK_ADDR`    | `127.0.0.1:14555`       | Address the image's Docker `HEALTHCHECK` probes. Set it if you change the gRPC bind port.        |
+
+Variables named by `config.toml` keys — `[database].url_env`,
+`[auth.provider].client_secret_env`, `[auth.session].signing_key_env` — must
+also be provided when configured.
+
+### `coral-ui` container
+
+| Variable                                 | Required                | Description                                                                                          |
+| ---------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------- |
+| `CORAL_ENDPOINT`                         | always                  | URL of the Coral server's gRPC listener.                                                             |
+| `CORAL_UI_AUTH_MODE`                     | always                  | `required` or `disabled`.                                                                            |
+| `CORAL_UI_SESSION_SECRET`                | `required` mode         | Session cookie encryption secret, at least 32 characters.                                            |
+| `CORAL_UI_AUTH_ISSUER`                   | `required` mode         | Coral's OAuth issuer URL — the `[auth.authorization_server].issuer` value.                           |
+| `CORAL_UI_PUBLIC_URL`                    | `required` mode         | Coral UI's externally reachable origin, scheme and host only. HTTPS unless explicit loopback.        |
+| `CORAL_UI_ALLOW_INSECURE_CORAL_ENDPOINT` | no                      | Set to `1` to allow cleartext gRPC to a non-loopback `CORAL_ENDPOINT` on a trusted private network.  |
+| `CORAL_UI_SESSION_COOKIE_NAME`           | no                      | Session cookie name, default `coral_ui_session`.                                                     |
+| `CORAL_UI_SESSION_MAX_AGE_SECONDS`       | no                      | Session cookie lifetime cap, default `3600`.                                                         |
+| `PORT`, `HOST`                           | no                      | Listen port and address, default `3000` on `0.0.0.0`.                                                |

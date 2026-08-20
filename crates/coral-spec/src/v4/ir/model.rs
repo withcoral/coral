@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::CollectionEncoding;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::mcp::McpExecutionAttachment;
 use crate::v4::ir::rest::RestExecutionAttachment;
@@ -27,7 +28,10 @@ pub struct IrOperation {
     pub naming: Option<IrOperationNaming>,
     pub inputs: Vec<IrOperationInput>,
     pub output: IrOperationOutput,
-    pub entity: Option<IrEntityCandidate>,
+    /// Name of the rows this operation yields. Seeds the projection
+    /// name; when unset the namer falls back to the operation id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_name: Option<String>,
     pub execution: IrExecutionAttachment,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -46,6 +50,20 @@ pub struct IrOperationInput {
     pub location: IrInputLocation,
     pub required: bool,
     pub data_type: IrScalarType,
+    /// Set when this input takes a list of values rather than one, and how
+    /// that list is encoded onto the wire.
+    ///
+    /// `data_type` is [`IrScalarType::Json`] whenever this is set. Keeping the
+    /// list out of `data_type` means every match on the scalar vocabulary —
+    /// pagination inference, operation-metadata policy — excludes lists by
+    /// construction rather than by remembering to guard.
+    ///
+    /// This is the import-side type only. Projections deliberately do not
+    /// lower it through [`IrScalarType::lower`]: the SQL binding type is
+    /// `Utf8`, so a caller may pass either JSON array text or a bare single
+    /// value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_encoding: Option<CollectionEncoding>,
     pub default_value: Option<String>,
     pub description: String,
 }
@@ -56,20 +74,12 @@ pub struct IrOperationOutput {
     pub type_ref: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrEntityCandidate {
-    pub name: String,
-    pub type_ref: String,
-    pub identity_fields: Vec<String>,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputCardinality {
     None,
     Singleton,
     List,
-    WrappedList,
     Unknown,
 }
 
@@ -77,7 +87,6 @@ pub enum OutputCardinality {
 pub struct IrType {
     pub id: String,
     pub shape: IrTypeShape,
-    pub nullable: bool,
     pub description: String,
 }
 
@@ -97,7 +106,6 @@ pub struct IrField {
     pub name: String,
     pub type_ref: String,
     pub required: bool,
-    pub nullable: bool,
     pub description: String,
 }
 
@@ -198,7 +206,7 @@ mod tests {
                     cardinality: OutputCardinality::List,
                     type_ref: "issue".to_string(),
                 },
-                entity: None,
+                entity_name: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                     method: HttpMethod::Get,
                     path_template: "/issues".to_string(),
@@ -216,17 +224,15 @@ mod tests {
                 IrType {
                     id: "issue".to_string(),
                     shape: IrTypeShape::Object { fields: Vec::new() },
-                    nullable: false,
                     description: String::new(),
                 },
                 IrType {
                     id: "issue_id".to_string(),
                     shape: IrTypeShape::Scalar(IrScalarType::String),
-                    nullable: false,
                     description: String::new(),
                 },
             ],
-            diagnostics: vec![Diagnostic::warning("TEST", "diagnostic", None)],
+            diagnostics: vec![Diagnostic::new("diagnostic", None)],
         };
 
         let yaml = serde_yaml::to_string(&ir).expect("serialize semantic IR");
@@ -260,6 +266,7 @@ mod tests {
                     location: IrInputLocation::ToolArg,
                     required: false,
                     data_type: IrScalarType::String,
+                    collection_encoding: None,
                     default_value: None,
                     description: String::new(),
                 }],
@@ -267,7 +274,7 @@ mod tests {
                     cardinality: OutputCardinality::List,
                     type_ref: "item".to_string(),
                 },
-                entity: None,
+                entity_name: None,
                 execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                     tool_name: "list_items".to_string(),
                 }),
@@ -276,7 +283,6 @@ mod tests {
             types: vec![IrType {
                 id: "item".to_string(),
                 shape: IrTypeShape::Object { fields: Vec::new() },
-                nullable: false,
                 description: String::new(),
             }],
             diagnostics: Vec::new(),
@@ -319,7 +325,6 @@ types:
   - id: issue
     shape: !Object
       fields: []
-    nullable: false
     description: ""
 diagnostics: []
 "#
@@ -362,6 +367,7 @@ future_generator_metadata:
             location: IrInputLocation::Path,
             required: true,
             data_type: IrScalarType::String,
+            collection_encoding: None,
             default_value: None,
             description: String::new(),
         };

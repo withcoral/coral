@@ -25,7 +25,7 @@ env:
 jobs:
   changes:
     name: Detect changes
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     permissions:
       contents: read
@@ -36,9 +36,9 @@ jobs:
       postgres_database_tests: ${{ steps.filter.outputs.postgres_database_tests }}
       release_workflow: ${{ steps.filter.outputs.release_workflow }}
       install-script: ${{ steps.filter.outputs.install-script }}
-      ui-build: ${{ steps.filter.outputs.ui-build }}
-      ui-tests: ${{ steps.filter.outputs.ui-tests }}
-      reef-checks: ${{ steps.filter.outputs.reef-checks }}
+      coral-image: ${{ steps.filter.outputs.coral-image }}
+      coral-ui-checks: ${{ steps.filter.outputs.coral-ui-checks }}
+      coral-ui-image: ${{ steps.filter.outputs.coral-ui-image }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
@@ -80,6 +80,7 @@ jobs:
               - 'xtask/**'
             postgres_database_tests:
               - '.github/workflows/validate.yml'
+              - 'Makefile'
               - 'crates/coral-app/migrations/**'
               - 'crates/coral-app/src/state/db/**'
               - 'crates/coral-app/tests/postgres_database_tests.rs'
@@ -88,21 +89,37 @@ jobs:
             install-script:
               - '.github/workflows/validate.yml'
               - 'scripts/install.sh'
-            ui-build:
+            # Kept out of the coral-ui-image block below: docker/coral-ui-publish.test.mjs
+            # reads that block by slicing to the next filter key.
+            coral-image:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'docker/Dockerfile'
+              - 'docker/entrypoint.sh'
+              - 'docker/coral-smoke.sh'
+            coral-ui-checks:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
-              - 'apps/ui/**'
-            ui-tests:
-              - '.github/workflows/validate.yml'
-              - 'crates/coral-api/proto/**'
-              - 'apps/ui/**'
-            reef-checks:
-              - '.github/workflows/validate.yml'
-              - 'crates/coral-api/proto/**'
-              - 'apps/reef/**'
-              # Reef re-exports the desktop IPC bridge types, so a change there
-              # can break the reef type-check.
+              - 'apps/coral-ui/**'
+              # Coral UI re-exports the desktop IPC bridge types, so a change there
+              # can break the Coral UI type-check.
               - 'apps/desktop/src/shared/types.ts'
+            coral-ui-image:
+              - '.github/workflows/validate.yml'
+              - '.github/workflows/docker-aliases.yml'
+              - '.github/workflows/docker-publish.yml'
+              - '.github/workflows/coral-ui-docker-publish.yml'
+              - '.github/workflows/release.yml'
+              - '.dockerignore'
+              - 'Makefile'
+              - 'docker/Dockerfile.coral-ui'
+              - 'docker/entrypoint-coral-ui.sh'
+              - 'docker/coral-ui-smoke.sh'
+              - 'docker/coral-ui-image.test.mjs'
+              - 'docker/coral-ui-publish.test.mjs'
+              - 'apps/coral-ui/**'
+              - 'apps/desktop/src/shared/types.ts'
+              - 'crates/coral-api/proto/**'
             desktop-checks:
               - '.github/workflows/validate.yml'
               - 'apps/desktop/**'
@@ -161,23 +178,19 @@ jobs:
 
   rust-checks:
     name: Rust checks
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: changes
+    # Healthy runs take 5-7 minutes. This is a backstop for a job that wedges
+    # outside nextest's reach — a stuck build, cache restore, or toolchain
+    # install — so it fails on its own instead of holding a runner until
+    # someone cancels it or GitHub's 6-hour default kills it.
+    timeout-minutes: 30
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
-      - name: Free Linux runner disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          # Rust comes from rustup; this job does not use the hosted language tool cache.
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          # Keep swap for the memory-intensive clippy, test, and docs phases.
-          swap-storage: false
-
+      # No disk-space reclamation step here: the Blacksmith runner boots with a
+      # 145 GB root filesystem and ~81 GB free before any workflow step runs, so
+      # the GitHub-hosted-runner cleanup dance cost ~50s per run to reclaim space
+      # this job never needed (and evicted pre-pulled Docker images along the way).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
@@ -202,7 +215,7 @@ jobs:
 
   postgres-database-tests:
     name: Postgres database tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.postgres_database_tests == 'true' }}
     services:
@@ -235,13 +248,7 @@ jobs:
       - name: Run Postgres database tests
         env:
           CORAL_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-        run: |
-          cargo test --locked -p coral-app --lib \
-            state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            --test postgres_database_tests \
-            -- --ignored
+        run: make postgres-tests
 
   windows-rust-smoke:
     name: Windows Rust smoke
@@ -351,11 +358,12 @@ jobs:
           CORAL_INSTALL_DIR="$install_dir" sh < scripts/install.sh
           "$install_dir/coral" --version
 
-  ui-build:
-    name: UI build
+
+  coral-ui-checks:
+    name: Coral UI checks
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
-    if: ${{ needs.changes.outputs.ui-build == 'true' || needs.changes.outputs.rust_checks == 'true' }}
+    if: ${{ needs.changes.outputs.coral-ui-checks == 'true' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -365,125 +373,80 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version-file: apps/ui/.node-version
+          node-version-file: apps/coral-ui/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version-file: apps/ui/.node-version
+          node-version-file: apps/coral-ui/.node-version
           cache: npm
-          cache-dependency-path: apps/ui/package-lock.json
+          cache-dependency-path: apps/coral-ui/package-lock.json
 
-      - name: Install UI dependencies
-        run: npm ci --prefix apps/ui
+      - name: Install Coral UI dependencies
+        run: npm ci --prefix apps/coral-ui
 
       - name: Lint and format check
-        run: npm run check --prefix apps/ui
+        run: npm run check --prefix apps/coral-ui
 
-      - name: Build UI
-        run: npm run build --prefix apps/ui
+      - name: Type-check Coral UI
+        run: npm run typecheck --prefix apps/coral-ui
 
-      - name: Verify UI entrypoint
-        run: test -s apps/ui/dist/index.html
+      - name: Test Coral UI
+        run: npm test --prefix apps/coral-ui
 
-      - name: Verify production build excludes test mocks
+      - name: Build Coral UI
+        run: npm run build --prefix apps/coral-ui
+
+      - name: Smoke production Coral UI server
+        run: npm run test:server --prefix apps/coral-ui
+
+  coral-image:
+    name: Coral image
+    # Validates docker/Dockerfile and docker/entrypoint.sh against a stub
+    # binary. The entrypoint is pure shell up to its closing exec, so every
+    # branch it takes runs without compiling coral-cli: rust-checks covers the
+    # real binary, and docker-publish.yml smokes the real image at release.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.coral-image == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
+        with:
+          cache-key: coral/docker/Dockerfile
+
+      - name: Build and smoke the Coral image entrypoint
+        run: make coral-docker-stub-test CORAL_DOCKER_IMAGE=coral:stub
+
+  coral-ui-image:
+    name: Coral UI image
+    # The smoke matrix is peer-free, so nothing here compiles Rust or pulls a
+    # Coral image; readiness against a live peer is covered by the mocked
+    # health client in apps/coral-ui/app/routes/readyz.server.test.ts.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.coral-ui-image == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
+        with:
+          cache-key: coral/docker/Dockerfile.coral-ui
+
+      - name: Check Coral UI image contract
+        run: node --test docker/coral-ui-image.test.mjs docker/coral-ui-publish.test.mjs
+
+      - name: Build and smoke the linux/amd64 Coral UI image
         run: |
-          if grep -R -E 'mockServiceWorker|setupWorker|@msw/playwright|mockScenario|PW_UI_SCREENCAST' apps/ui/dist; then
-            echo 'Production UI build contains test/mock-only code' >&2
-            exit 1
-          fi
-
-  ui-tests:
-    name: UI tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: changes
-    if: ${{ needs.changes.outputs.ui-tests == 'true' }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Node
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/ui/.node-version
-          package-manager-cache: false
-
-      - name: Set up Node with trusted npm cache
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/ui/.node-version
-          cache: npm
-          cache-dependency-path: apps/ui/package-lock.json
-
-      - name: Install UI dependencies
-        run: npm ci --prefix apps/ui
-
-      - name: Type-check UI tests
-        run: npm run test:ui:type-check --prefix apps/ui
-
-      - name: Install Chromium for Playwright
-        run: npm exec --prefix apps/ui -- playwright install --with-deps chromium
-
-      - name: Run UI tests
-        run: npm run test:ui --prefix apps/ui
-
-      - name: Upload UI test artifacts
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: ui-test-results
-          path: |
-            apps/ui/test-results/**
-            apps/ui/playwright-report/**
-          if-no-files-found: ignore
-
-  reef-checks:
-    name: Reef checks
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: changes
-    if: ${{ needs.changes.outputs.reef-checks == 'true' }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Node
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/reef/.node-version
-          package-manager-cache: false
-
-      - name: Set up Node with trusted npm cache
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/reef/.node-version
-          cache: npm
-          cache-dependency-path: apps/reef/package-lock.json
-
-      - name: Install Reef dependencies
-        run: npm ci --prefix apps/reef
-
-      - name: Lint and format check
-        run: npm run check --prefix apps/reef
-
-      - name: Type-check Reef
-        run: npm run typecheck --prefix apps/reef
-
-      - name: Install Chromium for Reef browser tests
-        run: npm exec --prefix apps/reef -- playwright install --with-deps chromium
-
-      - name: Test Reef
-        run: npm test --prefix apps/reef
-
-      - name: Build Reef
-        run: npm run build --prefix apps/reef
+          make coral-ui-docker-test CORAL_UI_DOCKER_IMAGE=coral-ui:local
+          test "$(docker image inspect coral-ui:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
 
   desktop-checks:
     name: Desktop checks
@@ -513,7 +476,7 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
-      # The full build stages the Rust binary + Reef, which their dedicated jobs
+      # The full build stages the Rust binary + Coral UI, which their dedicated jobs
       # already cover; this runs desktop type and packaging-config checks.
       - name: Check desktop
         run: npm run check --prefix apps/desktop
@@ -634,7 +597,7 @@ jobs:
       - name: Set up Node for Mintlify validation
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version-file: apps/ui/.node-version
+          node-version-file: apps/coral-ui/.node-version
           package-manager-cache: false
 
       - name: Validate Mintlify docs
@@ -698,7 +661,7 @@ jobs:
 
   performance-regression:
     name: Performance regression
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.performance-regression == 'true' }}
     steps:
@@ -742,9 +705,9 @@ jobs:
         rust-checks,
         windows-rust-smoke,
         install-script,
-        ui-build,
-        ui-tests,
-        reef-checks,
+        coral-ui-checks,
+        coral-ui-image,
+        coral-image,
         desktop-checks,
         proto-lint,
         gha-security-audit-pr,
@@ -765,9 +728,9 @@ jobs:
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
           WINDOWS_RUST_SMOKE_RESULT: ${{ needs.windows-rust-smoke.result }}
           INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
-          UI_BUILD_RESULT: ${{ needs.ui-build.result }}
-          UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
-          REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
+          CORAL_UI_CHECKS_RESULT: ${{ needs.coral-ui-checks.result }}
+          CORAL_UI_IMAGE_RESULT: ${{ needs.coral-ui-image.result }}
+          CORAL_IMAGE_RESULT: ${{ needs.coral-image.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
@@ -783,9 +746,9 @@ jobs:
             "rust-checks:$RUST_CHECKS_RESULT"
             "windows-rust-smoke:$WINDOWS_RUST_SMOKE_RESULT"
             "install-script:$INSTALL_SCRIPT_RESULT"
-            "ui-build:$UI_BUILD_RESULT"
-            "ui-tests:$UI_TESTS_RESULT"
-            "reef-checks:$REEF_CHECKS_RESULT"
+            "coral-ui-checks:$CORAL_UI_CHECKS_RESULT"
+            "coral-ui-image:$CORAL_UI_IMAGE_RESULT"
+            "coral-image:$CORAL_IMAGE_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"

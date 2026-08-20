@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks perf-check
+.PHONY: install docker-build coral-ui-docker-build coral-ui-docker-smoke coral-ui-docker-test coral-docker-stub-build coral-docker-smoke coral-docker-stub-test rust-checks perf-check
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
 .PHONY: license-check lint-proto lint-sources fix-sources
 .PHONY: docs-generate docs-check schema-generate schema-check
@@ -6,14 +6,139 @@
 LOCAL_POSTGRES_IMAGE ?= postgres:17
 LOCAL_POSTGRES_CONTAINER ?= coral-test-postgres
 LOCAL_POSTGRES_PORT ?=
+DOCKER_IMAGE ?= coral:local
+CORAL_UI_DOCKER_IMAGE ?= coral-ui:local
+CORAL_DOCKER_IMAGE ?= coral:stub
+DOCKER_NO_CACHE ?= 0
 
-install: ui-build
+define docker_build_preflight
+if ! command -v docker >/dev/null 2>&1; then \
+  echo "docker is required to build the $(1) image" >&2; \
+  exit 1; \
+fi; \
+if ! docker buildx version >/dev/null 2>&1; then \
+  echo "docker buildx is required to build the $(1) image" >&2; \
+  exit 1; \
+fi; \
+daemon_arch=$$(docker info --format '{{.Architecture}}'); \
+case "$$daemon_arch" in \
+  amd64|x86_64) image_arch=amd64 ;; \
+  arm64|aarch64) image_arch=arm64 ;; \
+  *) echo "unsupported Docker architecture: $$daemon_arch" >&2; exit 1 ;; \
+esac; \
+case "$(DOCKER_NO_CACHE)" in \
+  0|false|'') no_cache=0 ;; \
+  1|true) no_cache=1 ;; \
+  *) echo "DOCKER_NO_CACHE must be 0, 1, false, or true" >&2; exit 1 ;; \
+esac;
+endef
+
+install:
 	cargo install --path crates/coral-cli --locked
 
-ui-build:
-	npm ci --prefix apps/ui
-	npm run build --prefix apps/ui
-	test -s apps/ui/dist/index.html
+# ----------------------------------------------------------------------------
+# Local Coral image build
+# ----------------------------------------------------------------------------
+# Compiles the current checkout in a native Linux BuildKit stage, then packages
+# that binary with the same runtime Dockerfile used by the publishing workflow.
+# The image platform follows the Docker daemon (arm64 or amd64), so this works
+# without cross-compilers or QEMU on both Apple Silicon and Intel machines.
+#
+#   make docker-build
+#   DOCKER_IMAGE=coral:test make docker-build
+#   DOCKER_NO_CACHE=1 make docker-build
+
+docker-build:
+	@set -eu; \
+	$(call docker_build_preflight,Coral) \
+	git_sha=$$(git rev-parse --short HEAD); \
+	test -n "$$git_sha"; \
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	context="$$tmpdir/context"; \
+	mkdir -p "$$context/dist/$$image_arch" "$$context/docker"; \
+	set -- docker buildx build \
+	  --platform "linux/$$image_arch" \
+	  --provenance=false \
+	  --build-arg "CORAL_GIT_SHA=$$git_sha" \
+	  --file docker/Dockerfile.local \
+	  --target binary \
+	  --output "type=local,dest=$$context/dist/$$image_arch"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" .; \
+	echo "Compiling the current checkout for linux/$$image_arch..."; \
+	"$$@"; \
+	test -x "$$context/dist/$$image_arch/coral"; \
+	cp docker/Dockerfile docker/entrypoint.sh "$$context/docker/"; \
+	set -- docker buildx build \
+	  --platform "linux/$$image_arch" \
+	  --provenance=false \
+	  --file "$$context/docker/Dockerfile" \
+	  --load \
+	  --tag "$(DOCKER_IMAGE)"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" "$$context"; \
+	echo "Building $(DOCKER_IMAGE) from the local linux/$$image_arch binary..."; \
+	"$$@"; \
+	echo "Built $(DOCKER_IMAGE)"
+
+coral-ui-docker-build:
+	@set -eu; \
+	$(call docker_build_preflight,Coral UI) \
+	set -- docker buildx build --platform "linux/$$image_arch" --provenance=false --file docker/Dockerfile.coral-ui --load --tag "$(CORAL_UI_DOCKER_IMAGE)"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" .; \
+	"$$@"; \
+	echo "Built $(CORAL_UI_DOCKER_IMAGE)"
+
+coral-ui-docker-smoke:
+	CORAL_UI_IMAGE="$(CORAL_UI_DOCKER_IMAGE)" docker/coral-ui-smoke.sh
+
+# The smoke runs from the recipe, not as a second prerequisite: `make -j` runs
+# prerequisites concurrently and would start it against a half-built image.
+coral-ui-docker-test: coral-ui-docker-build
+	CORAL_UI_IMAGE="$(CORAL_UI_DOCKER_IMAGE)" docker/coral-ui-smoke.sh
+
+# ----------------------------------------------------------------------------
+# Coral image entrypoint checks
+# ----------------------------------------------------------------------------
+# docker/entrypoint.sh is pure shell up to its closing exec, so every branch it
+# takes can be exercised against a stub binary. That keeps image validation off
+# the Rust build; the real binary is covered by rust-checks, and the real image
+# by the release smoke in .github/workflows/docker-publish.yml.
+#
+#   make coral-docker-stub-test
+#   CORAL_DOCKER_IMAGE=coral:test make coral-docker-stub-test
+
+coral-docker-stub-build:
+	@set -eu; \
+	$(call docker_build_preflight,Coral) \
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	context="$$tmpdir/context"; \
+	mkdir -p "$$context/dist/$$image_arch" "$$context/docker"; \
+	printf '%s\n' '#!/bin/sh' 'echo "coral-stub: $$*" >&2' 'exec sleep infinity' \
+	  > "$$context/dist/$$image_arch/coral"; \
+	chmod 0755 "$$context/dist/$$image_arch/coral"; \
+	cp docker/Dockerfile docker/entrypoint.sh "$$context/docker/"; \
+	set -- docker buildx build \
+	  --platform "linux/$$image_arch" \
+	  --provenance=false \
+	  --file "$$context/docker/Dockerfile" \
+	  --load \
+	  --tag "$(CORAL_DOCKER_IMAGE)"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" "$$context"; \
+	echo "Building $(CORAL_DOCKER_IMAGE) with a stub binary..."; \
+	"$$@"; \
+	echo "Built $(CORAL_DOCKER_IMAGE)"
+
+coral-docker-smoke:
+	CORAL_IMAGE="$(CORAL_DOCKER_IMAGE)" docker/coral-smoke.sh
+
+# Smoke from the recipe, for the same `make -j` ordering reason as above.
+coral-docker-stub-test: coral-docker-stub-build
+	CORAL_IMAGE="$(CORAL_DOCKER_IMAGE)" docker/coral-smoke.sh
 
 rust-checks:
 	cargo fmt --all -- --check
@@ -28,14 +153,16 @@ perf-check:
 # ----------------------------------------------------------------------------
 # Local Postgres-backed tests
 # ----------------------------------------------------------------------------
-# Starts a Docker Postgres matching CI's major version and runs the ignored
-# Postgres coverage against it. By default Docker chooses an available localhost
-# port, and postgres-tests creates a fresh database inside the container for
-# each run. Set LOCAL_POSTGRES_PORT=55432 if you need a stable host port.
+# Runs all ignored Postgres coverage through postgres-tests. When
+# CORAL_TEST_POSTGRES_URL is set, the target uses that database. Otherwise it
+# starts a Docker Postgres matching CI's major version and creates a fresh
+# database inside the reusable container. Docker chooses an available localhost
+# port by default; set LOCAL_POSTGRES_PORT=55432 if you need a stable host port.
 #
 #   make postgres-start   # start/wait for local Docker Postgres
 #   make postgres-url     # print the local Postgres connection URL
-#   make postgres-tests   # start Docker Postgres, then run Postgres tests
+#   make postgres-tests   # provision locally, then run all Postgres tests
+#   CORAL_TEST_POSTGRES_URL=... make postgres-tests  # use an existing database
 #   make postgres-stop    # stop the local Docker Postgres container
 #   make postgres-clean   # remove the local Docker Postgres container
 
@@ -91,21 +218,36 @@ postgres-stop:
 postgres-clean:
 	@docker rm -f "$(LOCAL_POSTGRES_CONTAINER)" >/dev/null 2>&1 || true
 
-postgres-tests: postgres-start
+# Provision the local container through a prerequisite rather than a recursive
+# $(MAKE) call inside the recipe. GNU make runs any recipe line containing
+# $(MAKE) even under -n/-t/-q, and this recipe is a single continued line, so an
+# inline sub-make would make `make -n postgres-tests` execute the real suite.
+# CORAL_TEST_POSTGRES_URL reaches both this conditional and the recipe's shell
+# whether it is set in the environment or on the command line.
+POSTGRES_TESTS_PREREQS :=
+ifeq ($(strip $(CORAL_TEST_POSTGRES_URL)),)
+POSTGRES_TESTS_PREREQS := postgres-start
+endif
+
+postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	@set -eu; \
-	host_port=$$(docker port "$(LOCAL_POSTGRES_CONTAINER)" 5432/tcp | sed -n 's/.*:\([0-9][0-9]*\)$$/\1/p' | head -n 1); \
-	if [ -z "$$host_port" ]; then \
-	  echo "Local Postgres is not exposing 5432/tcp"; \
-	  exit 1; \
+	url="$${CORAL_TEST_POSTGRES_URL:-}"; \
+	cleanup() { :; }; \
+	if [ -z "$$url" ]; then \
+	  host_port=$$(docker port "$(LOCAL_POSTGRES_CONTAINER)" 5432/tcp | sed -n 's/.*:\([0-9][0-9]*\)$$/\1/p' | head -n 1); \
+	  if [ -z "$$host_port" ]; then \
+	    echo "Local Postgres is not exposing 5432/tcp"; \
+	    exit 1; \
+	  fi; \
+	  db_name="coral_test_$$(date +%s)_$$$$"; \
+	  docker exec "$(LOCAL_POSTGRES_CONTAINER)" createdb -U postgres "$$db_name"; \
+	  cleanup() { docker exec "$(LOCAL_POSTGRES_CONTAINER)" dropdb -U postgres --if-exists "$$db_name" >/dev/null 2>&1 || true; }; \
+	  url="postgres://postgres:postgres@127.0.0.1:$$host_port/$$db_name"; \
 	fi; \
-	db_name="coral_test_$$(date +%s)_$$$$"; \
-	docker exec "$(LOCAL_POSTGRES_CONTAINER)" createdb -U postgres "$$db_name"; \
-	cleanup() { docker exec "$(LOCAL_POSTGRES_CONTAINER)" dropdb -U postgres --if-exists "$$db_name" >/dev/null 2>&1 || true; }; \
 	trap cleanup EXIT INT TERM; \
-	url="postgres://postgres:postgres@127.0.0.1:$$host_port/$$db_name"; \
 	echo "Running Postgres tests against $$url"; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
-	  state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
+	  contract_on_postgres \
 	  -- --ignored; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \
 	  --test postgres_database_tests \

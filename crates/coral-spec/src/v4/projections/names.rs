@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::v4::diagnostics::{Diagnostic, DiagnosticSeverity};
+use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrExecutionAttachment, IrOperation, OutputCardinality, SemanticIr};
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
@@ -67,12 +67,10 @@ pub(super) fn resolve_projection_name_collisions(
                 .get_mut(*index)
                 .expect("projection index came from projections");
             projection.name.clone_from(&name);
-            let diagnostic = Diagnostic {
-                code: "PROJECTION_NAME_COLLISION_RESOLVED".to_string(),
-                severity: DiagnosticSeverity::Warning,
-                message: format!("projection name collision resolved as '{name}'"),
-                operation_id: Some(projection.operation_id.clone()),
-            };
+            let diagnostic = Diagnostic::new(
+                format!("projection name collision resolved as '{name}'"),
+                Some(projection.operation_id.clone()),
+            );
             projection.diagnostics.push(diagnostic.clone());
             diagnostics.push(diagnostic);
         }
@@ -182,6 +180,11 @@ pub(super) fn projection_guide(
         .iter()
         .filter(|input| !input.required)
         .filter(|input| !matches!(input.name.as_str(), "page" | "per_page"))
+        // List-valued inputs are overwhelmingly presentation knobs such as
+        // OData's `$select` and `$expand`, and they sort ahead of real filters
+        // because `$` precedes every letter. Promoting them here would push
+        // genuinely selective filters out of a list capped at three.
+        .filter(|input| input.collection_encoding.is_none())
         .map(|input| input.name.as_str())
         .take(3)
         .collect::<Vec<_>>();
@@ -204,6 +207,26 @@ pub(super) fn projection_guide(
         sentences.push(format!(
             "Most useful optional filters: {}.",
             optional.join(", ")
+        ));
+    }
+
+    // Function arguments have no description field of their own, so this is the
+    // only place a caller learns that a `Json` input wants a JSON array rather
+    // than a bare value.
+    let collections = exposed_inputs
+        .iter()
+        .filter(|input| input.collection_encoding.is_some())
+        .map(|input| input.name.as_str())
+        .collect::<Vec<_>>();
+    if !collections.is_empty() {
+        let takes = if collections.len() == 1 {
+            "takes"
+        } else {
+            "take"
+        };
+        sentences.push(format!(
+            "{} {takes} a JSON array of values, for example '[\"a\",\"b\"]'.",
+            human_join(&collections)
         ));
     }
 
@@ -233,9 +256,7 @@ pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> Strin
         OutputCardinality::Singleton if operation.inputs.iter().any(|input| input.required) => {
             format!("get_{entity}")
         }
-        OutputCardinality::List | OutputCardinality::WrappedList | OutputCardinality::Singleton => {
-            entity
-        }
+        OutputCardinality::List | OutputCardinality::Singleton => entity,
         OutputCardinality::None | OutputCardinality::Unknown => {
             normalize_identifier(&operation.id, "projection")
         }
@@ -257,9 +278,9 @@ fn projection_entity_name(operation: &IrOperation, is_search: bool) -> String {
     if is_search && let Some(search_entity) = search_entity_from_path(operation) {
         return search_entity;
     }
-    operation.entity.as_ref().map_or_else(
+    operation.entity_name.as_deref().map_or_else(
         || normalize_identifier(&operation.id, "projection"),
-        |entity| normalize_entity_identifier(&entity.name),
+        normalize_entity_identifier,
     )
 }
 

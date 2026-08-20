@@ -14,5 +14,6 @@ pub use model::{
     ImportedSurface, McpOperationPagination, OperationMetadata, OperationMetadataCatalog,
 };
 pub use plan::ValidatedSurfacePlan;
+pub(crate) use policy::resolve_output_row_type_ref;
 pub use policy::validate_operation_metadata_structure;
 pub use structural::validate_semantic_ir_structure;

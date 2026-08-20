@@ -37,6 +37,25 @@ pub(crate) struct SqlBatchValue {
     results: Vec<SqlQueryResultValue>,
 }
 
+#[derive(Clone, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct SqlGuideValue {
+    pub(crate) schema: String,
+    pub(crate) resource: String,
+    guide: String,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) id: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct SqlGuideBlockValue {
+    message: &'static str,
+    #[schemars(length(min = 1))]
+    guides: Vec<SqlGuideValue>,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "status")]
 pub(crate) enum SqlQueryResultValue {
@@ -53,6 +72,13 @@ pub(crate) enum SqlQueryResultValue {
         index: usize,
         error: ToolError,
     },
+    #[serde(rename = "guide_required")]
+    GuideRequired {
+        #[schemars(range(min = 0, max = MAX_SQL_BATCH_RESULT_INDEX))]
+        index: usize,
+        #[schemars(length(min = 1))]
+        guides: Vec<SqlGuideValue>,
+    },
 }
 
 #[derive(JsonSchema)]
@@ -65,6 +91,27 @@ pub(crate) enum SqlQueryResultValue {
 enum SqlToolOutputSchema {
     Success(SqlBatchValue),
     PartialFailure(ToolErrorWithData<SqlBatchValue>),
+    GuideBlock(SqlGuideBlockValue),
+}
+
+impl SqlGuideValue {
+    pub(crate) fn new(schema: String, resource: String, guide: String, id: String) -> Self {
+        Self {
+            schema,
+            resource,
+            guide,
+            id,
+        }
+    }
+}
+
+impl SqlGuideBlockValue {
+    pub(crate) fn new(guides: Vec<SqlGuideValue>) -> Self {
+        Self {
+            message: "Coral blocked this SQL call because one or more referenced resources have require_guide_read enabled. No queries in this call were executed. Read the guidance below. These guide versions are now unblocked for the remainder of this task. Retry the SQL unchanged if it follows the guidance, or revise it before trying again.",
+            guides,
+        }
+    }
 }
 
 impl SqlBatchValue {
@@ -79,10 +126,14 @@ impl SqlBatchValue {
             .iter()
             .filter(|result| matches!(result, SqlQueryResultValue::Success { .. }))
             .count();
+        let error_count = results
+            .iter()
+            .filter(|result| matches!(result, SqlQueryResultValue::Error { .. }))
+            .count();
         Self {
             total_count: results.len(),
             success_count,
-            error_count: results.len() - success_count,
+            error_count,
             results,
         }
     }
@@ -111,14 +162,23 @@ impl SqlBatchValue {
 impl SqlQueryResultValue {
     fn index(&self) -> usize {
         match self {
-            Self::Success { index, .. } | Self::Error { index, .. } => *index,
+            Self::Success { index, .. }
+            | Self::Error { index, .. }
+            | Self::GuideRequired { index, .. } => *index,
         }
     }
 
     fn is_retryable(&self) -> bool {
         match self {
-            Self::Success { .. } => false,
             Self::Error { error, .. } => error.retryable,
+            Self::Success { .. } | Self::GuideRequired { .. } => false,
+        }
+    }
+
+    pub(crate) fn required_guides(&self) -> &[SqlGuideValue] {
+        match self {
+            Self::GuideRequired { guides, .. } => guides,
+            Self::Success { .. } | Self::Error { .. } => &[],
         }
     }
 }

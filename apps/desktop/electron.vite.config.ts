@@ -1,4 +1,17 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { execFileSync } from 'node:child_process'
+
+// Fills the About panel's build-number slot; empty outside a git checkout.
+function buildCommit(): string {
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return ''
+  }
+}
 
 export function createConfig(env: NodeJS.ProcessEnv = process.env) {
   return defineConfig({
@@ -9,6 +22,7 @@ export function createConfig(env: NodeJS.ProcessEnv = process.env) {
       // the auto-updater stays inert (it cannot install updates into an
       // unsigned app, and only release builds publish an update feed).
       define: {
+        __CORAL_DESKTOP_COMMIT__: JSON.stringify(buildCommit()),
         __CORAL_DESKTOP_RELEASE__: JSON.stringify(env.CORAL_DESKTOP_RELEASE === '1'),
       },
       build: {

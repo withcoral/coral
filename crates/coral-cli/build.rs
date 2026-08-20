@@ -9,15 +9,11 @@
 use std::process::Command;
 
 fn main() {
-    let sha = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
+    println!("cargo:rerun-if-env-changed=CORAL_GIT_SHA");
+    let sha = std::env::var("CORAL_GIT_SHA")
         .ok()
-        .filter(|out| out.status.success())
-        .map_or_else(
-            || "unknown".to_owned(),
-            |out| String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-        );
+        .filter(|sha| !sha.is_empty())
+        .unwrap_or_else(git_sha);
     println!("cargo:rustc-env=CORAL_GIT_SHA={sha}");
 
     // Trigger rebuilds when HEAD or the checked-out branch's ref moves so the
@@ -37,11 +33,18 @@ fn main() {
     {
         println!("cargo:rerun-if-changed={packed_refs_path}");
     }
+}
 
-    if std::env::var_os("CARGO_FEATURE_EMBEDDED_UI").is_some() {
-        println!("cargo:rerun-if-changed=../../apps/ui/dist");
-        println!("cargo:rerun-if-changed=../../apps/ui/dist/index.html");
-    }
+fn git_sha() -> String {
+    Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map_or_else(
+            || "unknown".to_owned(),
+            |out| String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+        )
 }
 
 fn git_path(path: &str) -> Option<String> {

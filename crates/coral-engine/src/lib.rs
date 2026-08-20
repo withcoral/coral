@@ -41,7 +41,14 @@
 //! # async fn demo(
 //! #     sources: &[QuerySource],
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! let _ = CoralQuery::list_tables(sources, QueryRuntimeConfig::default(), None, None).await?;
+//! let _ = CoralQuery::list_tables(
+//!     sources,
+//!     QueryRuntimeConfig::default(),
+//!     None,
+//!     None,
+//!     None,
+//! )
+//! .await?;
 //! # Ok(())
 //! # }
 //! # Ok(())
@@ -61,6 +68,7 @@ pub mod contracts;
 mod runtime;
 mod types;
 
+pub use backends::database::DatabasePoolRegistry;
 pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
     BoundRequestIdentityHttpAuthenticator, EngineExtensions, QueryResultObserver,
@@ -72,17 +80,18 @@ pub use composition::{
     SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
+    CatalogInfo, ColumnInfo, CoralSqlFunctionArgument, CoralSqlFunctionDefinition,
+    CoralSqlFunctionInferenceDefinition, CoralSqlFunctionSignature, CoralSqlResultColumn,
+    CoralSqlTableFunctionPublish, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
+    DescribeCatalogSurfaceInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
-    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
-    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
-    UdfRuntimeTableFunctionPublish,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
+    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
+    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo,
 };
+pub use runtime::normalize_catalog_name;
 
 /// High-level query operations for the local query engine.
 pub struct CoralQuery;
@@ -95,27 +104,79 @@ pub struct PreparedQueryRuntime {
     inner: runtime::query::QueryRuntimeAdapter,
 }
 
+/// One logically planned query bound to its originating runtime.
+///
+/// Inspect [`Self::resources`] before consuming the query with [`Self::execute`].
+pub struct PreparedQuery<'runtime> {
+    runtime: &'runtime PreparedQueryRuntime,
+    inner: runtime::query::PreparedSql,
+}
+
+impl PreparedQuery<'_> {
+    /// Returns source resources referenced by the logical query plan.
+    #[must_use]
+    pub fn resources(&self) -> &ResolvedQueryResources {
+        self.inner.resources()
+    }
+
+    /// Physically plans and executes this query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if physical planning or execution fails.
+    pub async fn execute(self) -> Result<QueryExecution, CoreError> {
+        self.runtime.inner.execute_prepared(self.inner).await
+    }
+}
+
 impl PreparedQueryRuntime {
     /// Lists queryable tables from this prepared runtime.
-    #[must_use]
-    pub fn list_tables(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if live catalog metadata cannot be collected.
+    pub async fn list_tables(
         &self,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
-    ) -> Vec<TableInfo> {
-        self.inner.list_tables(schema_filter, table_filter)
+    ) -> Result<Vec<TableInfo>, CoreError> {
+        Box::pin(
+            self.inner
+                .list_tables(catalog_filter, schema_filter, table_filter),
+        )
+        .await
     }
 
     /// Lists queryable catalog metadata from this prepared runtime.
-    #[must_use]
-    pub fn list_catalog(&self, schema_filter: Option<&str>) -> CatalogInfo {
-        self.inner.catalog_info(schema_filter)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if live catalog metadata cannot be collected.
+    pub async fn list_catalog(
+        &self,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
+    ) -> Result<CatalogInfo, CoreError> {
+        Box::pin(self.inner.catalog_info(catalog_filter, schema_filter)).await
     }
 
-    /// Describes one table from this prepared runtime.
-    #[must_use]
-    pub fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
-        self.inner.describe_table(schema_name, table_name)
+    /// Resolves one table or table function from this prepared runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if live catalog metadata cannot be collected.
+    pub async fn describe_catalog_surface(
+        &self,
+        catalog_name: Option<&str>,
+        schema_name: &str,
+        surface_name: &str,
+    ) -> Result<DescribeCatalogSurfaceInfo, CoreError> {
+        Box::pin(
+            self.inner
+                .describe_catalog_surface(catalog_name, schema_name, surface_name),
+        )
+        .await
     }
 
     /// Infers typed signatures for multiple UDFs against this runtime.
@@ -129,11 +190,11 @@ impl PreparedQueryRuntime {
     /// source runtime.
     pub async fn infer_udf_signatures(
         &self,
-        udfs: Vec<UdfRuntimeSqlDefinition>,
-    ) -> Result<Vec<Result<UdfRuntimeSignature, CoreError>>, CoreError> {
+        udfs: Vec<CoralSqlFunctionInferenceDefinition>,
+    ) -> Result<Vec<Result<CoralSqlFunctionSignature, CoreError>>, CoreError> {
         let mut results = Vec::with_capacity(udfs.len());
         for udf in udfs {
-            if udf.sql().trim().is_empty() {
+            if udf.query.trim().is_empty() {
                 results.push(Err(CoreError::InvalidInput(format!(
                     "udf '{}' SQL body cannot be empty",
                     udf.name
@@ -151,7 +212,10 @@ impl PreparedQueryRuntime {
     ///
     /// Returns [`CoreError`] if UDF publication conflicts with the prepared
     /// catalog or a UDF body cannot be planned.
-    pub async fn with_udfs(mut self, udfs: Vec<UdfRuntimeDefinition>) -> Result<Self, CoreError> {
+    pub async fn with_udfs(
+        mut self,
+        udfs: Vec<CoralSqlFunctionDefinition>,
+    ) -> Result<Self, CoreError> {
         self.inner.install_udfs(udfs).await?;
         Ok(self)
     }
@@ -177,10 +241,34 @@ impl PreparedQueryRuntime {
         sql: &str,
         params: QueryParameters,
     ) -> Result<QueryExecution, CoreError> {
+        self.prepare_sql_with_params(sql, params)
+            .await?
+            .execute()
+            .await
+    }
+
+    /// Logically plans one `SQL` statement without physical execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty or cannot be logically planned.
+    pub async fn prepare_sql(&self, sql: &str) -> Result<PreparedQuery<'_>, CoreError> {
+        self.prepare_sql_with_params(sql, QueryParameters::new())
+            .await
+    }
+
+    async fn prepare_sql_with_params(
+        &self,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<PreparedQuery<'_>, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
-        self.inner.execute_sql(sql, &params).await
+        Ok(PreparedQuery {
+            runtime: self,
+            inner: self.inner.prepare_sql(sql, params).await?,
+        })
     }
 
     /// Explains one `SQL` statement against this prepared runtime.
@@ -240,12 +328,14 @@ impl CoralQuery {
     pub async fn list_tables(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
-        Ok(Self::prepare(sources, runtime)
+        Self::prepare(sources, runtime)
             .await?
-            .list_tables(schema_filter, table_filter))
+            .list_tables(catalog_filter, schema_filter, table_filter)
+            .await
     }
 
     /// Lists queryable catalog metadata from the provided source set.
@@ -263,32 +353,35 @@ impl CoralQuery {
     pub async fn list_catalog(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, CoreError> {
-        Ok(Self::prepare(sources, runtime)
+        Self::prepare(sources, runtime)
             .await?
-            .list_catalog(schema_filter))
+            .list_catalog(catalog_filter, schema_filter)
+            .await
     }
 
-    /// Describes one table or returns lightweight table metadata for missing-table help.
+    /// Resolves one table or table function, or returns a missing result.
     ///
-    /// This builds the runtime once, clones only the matched table on exact
-    /// hits, and clones lightweight table metadata when the table is missing.
+    /// This builds the runtime once and returns only an exact match.
     ///
     /// # Errors
     ///
     /// Returns [`CoreError`] if credential resolution fails, if any validated
     /// source spec cannot be compiled, or if the underlying query runtime
     /// cannot be built.
-    pub async fn describe_table(
+    pub async fn describe_catalog_surface(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
+        catalog_name: Option<&str>,
         schema_name: &str,
-        table_name: &str,
-    ) -> Result<DescribeTableInfo, CoreError> {
-        Ok(Self::prepare(sources, runtime)
+        surface_name: &str,
+    ) -> Result<DescribeCatalogSurfaceInfo, CoreError> {
+        Self::prepare(sources, runtime)
             .await?
-            .describe_table(schema_name, table_name))
+            .describe_catalog_surface(catalog_name, schema_name, surface_name)
+            .await
     }
 
     /// Executes one `SQL` statement over the provided source set.
@@ -339,8 +432,8 @@ impl CoralQuery {
     pub async fn infer_udf_signature(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
-        udf: UdfRuntimeSqlDefinition,
-    ) -> Result<UdfRuntimeSignature, CoreError> {
+        udf: CoralSqlFunctionInferenceDefinition,
+    ) -> Result<CoralSqlFunctionSignature, CoreError> {
         let mut results = Self::infer_udf_signatures(sources, runtime, vec![udf]).await?;
         results.pop().ok_or_else(|| {
             CoreError::InvalidInput("UDF signature inference returned no result".to_string())
@@ -358,8 +451,8 @@ impl CoralQuery {
     pub async fn infer_udf_signatures(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
-        udfs: Vec<UdfRuntimeSqlDefinition>,
-    ) -> Result<Vec<Result<UdfRuntimeSignature, CoreError>>, CoreError> {
+        udfs: Vec<CoralSqlFunctionInferenceDefinition>,
+    ) -> Result<Vec<Result<CoralSqlFunctionSignature, CoreError>>, CoreError> {
         if udfs.is_empty() {
             return Ok(Vec::new());
         }
@@ -440,13 +533,16 @@ impl CoralQuery {
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
         let source_name = source.source_name();
         let schema_names = source.schema_names();
-        let catalog = query_runtime.catalog_info_for_schemas(&schema_names);
+        let catalog_names = source.catalog_names();
+        let catalog = query_runtime
+            .catalog_info_for_sources(&schema_names, &catalog_names)
+            .await?;
         if catalog.tables.is_empty() && catalog.table_functions.is_empty() {
             if let Some(failure) = query_runtime.registration_failure(source_name) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));
             }
-            for schema_name in schema_names {
-                if let Some(failure) = query_runtime.registration_failure(schema_name) {
+            for name in schema_names.into_iter().chain(catalog_names) {
+                if let Some(failure) = query_runtime.registration_failure(name) {
                     return Err(CoreError::FailedPrecondition(failure.detail.clone()));
                 }
             }

@@ -14,11 +14,9 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-#[cfg(feature = "embedded-ui")]
-use assert_cmd::Command;
 use coral_api::v1::{
     AddFunctionResponse, CatalogRebuildResult, DiscoverSourcesResponse, ExecuteSqlResponse,
-    Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady,
+    Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady, FunctionWriteSurface,
     ListFunctionsResponse, ListSourcesResponse, ListWorkspacesResponse, RebuildSearchIndexResponse,
     SearchDataScope, SearchIndexProvider, SearchMaintenanceResult, SearchMaintenanceState,
     SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, function,
@@ -31,30 +29,6 @@ use harness::{
     MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name,
     encode_arrow_ipc_stream,
 };
-
-#[cfg(feature = "embedded-ui")]
-#[test]
-fn ui_help_does_not_require_app_bootstrap() {
-    let assert = Command::cargo_bin("coral")
-        .expect("cargo bin")
-        .args(["ui", "--help"])
-        .assert()
-        .success();
-
-    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        stdout.contains("embedded Coral UI"),
-        "expected ui help text: {stdout}"
-    );
-    assert!(
-        stdout.contains("--port <PORT>"),
-        "expected ui port option: {stdout}"
-    );
-    assert!(
-        stdout.contains("--no-open"),
-        "expected ui no-open option: {stdout}"
-    );
-}
 
 fn nonempty_lines(output: &str) -> Vec<&str> {
     output
@@ -270,6 +244,7 @@ async fn functions_add_sends_file_to_selected_workspace() {
                 runtime: Some(function::Runtime::Ready(FunctionRuntimeReady::default())),
                 ..Function::default()
             }),
+            replaced: false,
         },
     ))
     .await;
@@ -288,6 +263,8 @@ async fn functions_add_sends_file_to_selected_workspace() {
     assert_eq!(requests.len(), 1);
     assert_workspace_name(requests[0].workspace.as_ref(), "work");
     assert_eq!(requests[0].sql, sql);
+    assert!(!requests[0].fail_if_exists);
+    assert_eq!(requests[0].write_surface, FunctionWriteSurface::Cli as i32);
 
     server.shutdown().await;
 }
@@ -827,6 +804,7 @@ fn sql_response(schema: &Schema, batches: &[RecordBatch], row_count: i64) -> Exe
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(schema, batches).expect("encode arrow ipc"),
         row_count,
+        guide_required: None,
     }
 }
 
@@ -954,12 +932,12 @@ async fn search_command_renders_text_output_and_provider_statuses() {
         "expected results section: {stdout}"
     );
     assert!(
-        stdout.contains("[catalog_metadata] table local_messages.messages"),
+        stdout.contains("[table] local_messages.messages"),
         "expected catalog table result: {stdout}"
     );
     assert!(
-        stdout.contains("SQL: local_messages.messages"),
-        "expected SQL reference: {stdout}"
+        stdout.contains("required: owner"),
+        "expected required filters on the entry: {stdout}"
     );
     assert!(
         stdout.contains("Provider statuses"),
@@ -997,16 +975,15 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
     let response: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("search --json should emit JSON");
 
-    assert_eq!(response["results"][0]["provider"], "catalog_metadata");
-    assert_eq!(response["results"][0]["kind"], "catalog_metadata");
+    assert_eq!(response["results"][0]["kind"], "table");
     assert_eq!(
-        response["results"][0]["catalog_metadata"]["item"]["sql_reference"],
+        response["results"][0]["sql_reference"],
         "local_messages.messages"
     );
-    assert_eq!(
-        response["results"][1]["column_hint"]["field_role"],
-        "table_column"
-    );
+    // Matching columns nest under the entry rather than arriving as peers.
+    assert_eq!(response["results"][0]["fields"]["text"], "Utf8");
+    assert_eq!(response["results"][0]["required"][0], "owner");
+    assert_eq!(response["results"].as_array().map(Vec::len), Some(1));
     assert_eq!(
         response["provider_statuses"][0]["coverage"]["searched_units"],
         3
@@ -1018,7 +995,7 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
     assert!(response["provider_statuses"][1]["coverage"].is_null());
     assert_eq!(response["provider_statuses"][2]["state"], "skipped");
     assert!(response["provider_statuses"][2]["coverage"].is_null());
-    assert_eq!(response["truncation"]["returned_count"], 2);
+    assert_eq!(response["truncation"]["returned_count"], 1);
 
     let requests = server.search_requests();
     assert_eq!(requests.len(), 1, "expected one search call");

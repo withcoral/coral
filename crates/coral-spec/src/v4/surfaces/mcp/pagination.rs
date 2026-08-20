@@ -2,35 +2,57 @@ use serde_json::Value;
 
 use crate::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
 use crate::v4::ir::{IrOperationInput, IrOperationOutput, IrScalarType, OutputCardinality};
-use crate::v4::surfaces::json_schema::json_schema_type_contains;
+use crate::v4::response_cursors::{StringTypeRequirement, find_response_cursor_path};
+use crate::v4::surfaces::json_schema::SchemaRoot;
 
-pub(super) fn infer_mcp_pagination_contracts(
+/// Pagination contracts a tool's arguments and output schema describe, before
+/// any decision about whether its result is read as a list.
+#[derive(Default)]
+pub(super) struct McpPaginationContracts {
+    pub(super) cursor: Option<McpPaginationSpec>,
+    pub(super) offset: Option<McpOffsetPaginationSpec>,
+}
+
+impl McpPaginationContracts {
+    pub(super) const fn is_paginated(&self) -> bool {
+        self.cursor.is_some() || self.offset.is_some()
+    }
+}
+
+/// Neither detector consults the row path, so this runs first and answers the
+/// question wrapped-list inference needs — is this tool paginated? — without the
+/// two inferences having to predict each other.
+pub(super) fn detect_mcp_pagination_contracts(
     inputs: &[IrOperationInput],
-    output: &IrOperationOutput,
     output_schema: Option<&Value>,
     input_schema: &Value,
-) -> (Option<McpPaginationSpec>, Option<McpOffsetPaginationSpec>) {
-    let pagination = infer_mcp_pagination(inputs, output, output_schema);
-    let offset_pagination = pagination
+) -> McpPaginationContracts {
+    let cursor = infer_mcp_pagination(inputs, output_schema);
+    let offset = cursor
         .is_none()
-        .then(|| infer_mcp_offset_pagination(inputs, output, input_schema))
+        .then(|| infer_mcp_offset_pagination(inputs, input_schema))
         .flatten();
-    (pagination, offset_pagination)
+    McpPaginationContracts { cursor, offset }
 }
 
 fn infer_mcp_pagination(
     inputs: &[IrOperationInput],
-    output: &IrOperationOutput,
     output_schema: Option<&Value>,
 ) -> Option<McpPaginationSpec> {
-    if !matches!(
-        output.cardinality,
-        OutputCardinality::List | OutputCardinality::WrappedList
-    ) {
-        return None;
-    }
+    /// Response property names that conventionally carry a continuation token.
+    const RESPONSE_CURSOR_TOKENS: &[&str] =
+        &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
+
     let cursor_arg = cursor_input_name(inputs)?;
-    let response_cursor_path = find_response_cursor_path(output_schema?)?;
+    // A tool's output schema is its own reference root, so `$defs` entries
+    // resolve against the schema itself.
+    let output_schema = output_schema?;
+    let response_cursor_path = find_response_cursor_path(
+        SchemaRoot::new(output_schema),
+        output_schema,
+        RESPONSE_CURSOR_TOKENS,
+        StringTypeRequirement::Untyped,
+    )?;
     Some(McpPaginationSpec {
         cursor_arg: cursor_arg.to_string(),
         response_cursor_path,
@@ -40,15 +62,8 @@ fn infer_mcp_pagination(
 
 fn infer_mcp_offset_pagination(
     inputs: &[IrOperationInput],
-    output: &IrOperationOutput,
     input_schema: &Value,
 ) -> Option<McpOffsetPaginationSpec> {
-    if !matches!(
-        output.cardinality,
-        OutputCardinality::List | OutputCardinality::WrappedList
-    ) {
-        return None;
-    }
     let properties = input_schema.get("properties").and_then(Value::as_object)?;
     let limit = offset_pagination_input(inputs, properties.get("limit")?, "limit")?;
     if limit.default == 0
@@ -69,6 +84,12 @@ fn infer_mcp_offset_pagination(
         offset_start: offset.default,
         max_pages: None,
     })
+}
+
+/// A wrapped-list envelope is a singleton by cardinality but yields rows, so it
+/// paginates like a declared list.
+pub(super) fn is_list_like_output(output: &IrOperationOutput, row_path: &[String]) -> bool {
+    output.cardinality == OutputCardinality::List || !row_path.is_empty()
 }
 
 struct OffsetPaginationInput<'a> {
@@ -137,31 +158,6 @@ fn cursor_input_name(inputs: &[IrOperationInput]) -> Option<&str> {
             CURSOR_INPUTS.contains(&normalized.as_str())
         })
         .map(|input| input.name.as_str())
-}
-
-pub(super) fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
-    let properties = schema.get("properties").and_then(Value::as_object)?;
-    for (name, property) in properties {
-        if is_response_cursor_property(name, property) {
-            return Some(vec![name.clone()]);
-        }
-    }
-    for (name, property) in properties {
-        if !json_schema_type_contains(property, "object") {
-            continue;
-        }
-        if let Some(mut path) = find_response_cursor_path(property) {
-            path.insert(0, name.clone());
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
-    const RESPONSE_CURSORS: &[&str] = &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
-    RESPONSE_CURSORS.contains(&cursor_token(name).as_str())
-        && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
 }
 
 fn cursor_token(value: &str) -> String {

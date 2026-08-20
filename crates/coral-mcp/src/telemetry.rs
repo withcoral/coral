@@ -10,8 +10,11 @@ use rmcp::{ErrorData, model::ErrorCode};
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
+use crate::surface::ToolName;
+
 pub(crate) const MCP_PROTOCOL_ERROR_MESSAGE: &str = "MCP request failed";
 pub(crate) const MCP_TOOL_ERROR_MESSAGE: &str = "MCP tool call failed";
+pub(crate) const UNKNOWN_TOOL_NAME: &str = "unknown_tool";
 
 pub(crate) async fn instrument<T, F>(span: tracing::Span, future: F) -> T
 where
@@ -47,10 +50,19 @@ pub(crate) fn list_tools_span(trace_parent: Option<&str>) -> tracing::Span {
     span
 }
 
-pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tracing::Span {
+pub(crate) fn call_tool_span(
+    tool_name: Option<ToolName>,
+    workspace: &str,
+    trace_parent: Option<&str>,
+) -> tracing::Span {
+    let operation_kind = query_stream_kind_for_tool(tool_name);
+    let tool_name = tool_name.map_or(UNKNOWN_TOOL_NAME, ToolName::as_str);
     let span = tracing::info_span!(
         target: "coral_mcp::server",
         "coral.mcp.call_tool",
+        coral.stream.entry = true,
+        coral.stream.kind = operation_kind,
+        coral.stream.name = tool_name,
         error.type = field::Empty,
         exception.message = field::Empty,
         mcp.method = "tools/call",
@@ -59,9 +71,28 @@ pub(crate) fn call_tool_span(tool_name: &str, trace_parent: Option<&str>) -> tra
         otel.name = "coral.mcp.call_tool",
         task.id = field::Empty,
         status = field::Empty,
+        workspace = field::Empty,
     );
+    span.record(coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE, workspace);
     apply_trace_parent(&span, trace_parent);
     span
+}
+
+fn query_stream_kind_for_tool(tool_name: Option<ToolName>) -> &'static str {
+    match tool_name {
+        Some(ToolName::Sql) => coral_telemetry::QUERY_STREAM_KIND_QUERY,
+        Some(ToolName::Search) => coral_telemetry::QUERY_STREAM_KIND_SEARCH,
+        Some(
+            ToolName::AddFunction
+            | ToolName::ListCatalog
+            | ToolName::Describe
+            | ToolName::ListColumns
+            | ToolName::StartTask
+            | ToolName::EndTask
+            | ToolName::Feedback,
+        )
+        | None => coral_telemetry::QUERY_STREAM_KIND_TOOL,
+    }
 }
 
 pub(crate) fn list_resources_span(trace_parent: Option<&str>) -> tracing::Span {
@@ -160,14 +191,18 @@ mod tests {
     use tonic_types::{ErrorDetail, StatusExt as _};
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    use super::{MCP_TOOL_ERROR_MESSAGE, call_tool_span, record_tonic_status};
+    use super::{
+        MCP_TOOL_ERROR_MESSAGE, UNKNOWN_TOOL_NAME, call_tool_span, list_resources_span,
+        list_tools_span, read_resource_span, record_tonic_status,
+    };
+    use crate::surface::ToolName;
 
     #[test]
-    fn tool_call_span_does_not_record_intent_or_arguments() {
+    fn tool_call_span_uses_the_canonical_tool_name() {
         let (exporter, provider, subscriber) = telemetry_fixture();
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let span = call_tool_span("future_tool", None);
+        let span = call_tool_span(Some(ToolName::ListCatalog), "alpha", None);
         span.in_scope(|| {});
         drop(span);
 
@@ -179,8 +214,24 @@ mod tests {
             .expect("tool call span");
 
         assert_eq!(
+            attribute(tool_call, coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            string_attribute(tool_call, coral_telemetry::QUERY_STREAM_KIND_ATTRIBUTE),
+            Some(coral_telemetry::QUERY_STREAM_KIND_TOOL.to_string())
+        );
+        assert_eq!(
+            string_attribute(tool_call, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE),
+            Some("list_catalog".to_string())
+        );
+        assert_eq!(
+            string_attribute(tool_call, coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE),
+            Some("alpha".to_string())
+        );
+        assert_eq!(
             string_attribute(tool_call, "mcp.tool.name"),
-            Some("future_tool".to_string())
+            Some("list_catalog".to_string())
         );
         assert_eq!(attribute(tool_call, "mcp.tool.intent"), None);
         assert!(
@@ -194,12 +245,60 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_span_records_semantic_capability() {
+        let (exporter, provider, subscriber) = telemetry_fixture();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        for tool_name in [
+            Some(ToolName::Sql),
+            Some(ToolName::Search),
+            Some(ToolName::ListCatalog),
+            None,
+        ] {
+            let span = call_tool_span(tool_name, "alpha", None);
+            span.in_scope(|| {});
+        }
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let expected = [
+            ("sql", coral_telemetry::QUERY_STREAM_KIND_QUERY),
+            ("search", coral_telemetry::QUERY_STREAM_KIND_SEARCH),
+            ("list_catalog", coral_telemetry::QUERY_STREAM_KIND_TOOL),
+            (UNKNOWN_TOOL_NAME, coral_telemetry::QUERY_STREAM_KIND_TOOL),
+        ];
+        for (tool_name, expected_kind) in expected {
+            let tool_call = spans
+                .iter()
+                .find(|span| {
+                    span.name == "coral.mcp.call_tool"
+                        && string_attribute(span, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE)
+                            .as_deref()
+                            == Some(tool_name)
+                })
+                .unwrap_or_else(|| panic!("missing {tool_name} tool span"));
+            assert_eq!(
+                string_attribute(tool_call, coral_telemetry::QUERY_STREAM_KIND_ATTRIBUTE)
+                    .as_deref(),
+                Some(expected_kind),
+                "unexpected Query Stream capability for {tool_name}"
+            );
+            assert_eq!(
+                string_attribute(tool_call, "mcp.method").as_deref(),
+                Some("tools/call")
+            );
+        }
+
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
     fn tonic_error_details_are_not_recorded_on_tool_spans() {
         let (exporter, provider, subscriber) = telemetry_fixture();
         let _guard = tracing::subscriber::set_default(subscriber);
         let sentinel = "SENSITIVE_TONIC_ERROR_MARKER";
 
-        let span = call_tool_span("list_catalog", None);
+        let span = call_tool_span(Some(ToolName::ListCatalog), "default", None);
         record_tonic_status(
             &span,
             &tonic::Status::invalid_argument(format!("invalid kind: {sentinel}")),
@@ -246,7 +345,7 @@ mod tests {
             ))],
         );
 
-        let span = call_tool_span("list_catalog", None);
+        let span = call_tool_span(Some(ToolName::ListCatalog), "default", None);
         record_tonic_status(&span, &status);
         drop(span);
 
@@ -271,6 +370,40 @@ mod tests {
         provider.shutdown().expect("provider shutdown");
     }
 
+    #[test]
+    fn protocol_discovery_spans_are_not_stream_entries() {
+        let (exporter, provider, subscriber) = telemetry_fixture();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        for span in [
+            list_tools_span(None),
+            list_resources_span(None),
+            read_resource_span("coral://tables", None),
+        ] {
+            span.in_scope(|| {});
+        }
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        for name in [
+            "coral.mcp.list_tools",
+            "coral.mcp.list_resources",
+            "coral.mcp.read_resource",
+        ] {
+            let span = spans
+                .iter()
+                .find(|span| span.name == name)
+                .unwrap_or_else(|| panic!("missing {name} span"));
+            assert_eq!(
+                attribute(span, coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE),
+                None,
+                "{name} must remain protocol bookkeeping"
+            );
+        }
+
+        provider.shutdown().expect("provider shutdown");
+    }
+
     fn telemetry_fixture() -> (
         InMemorySpanExporter,
         SdkTracerProvider,
@@ -280,7 +413,7 @@ mod tests {
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
             .build();
-        let tracer = provider.tracer("mcp-error-privacy-test");
+        let tracer = provider.tracer("mcp-query-stream-test");
         let subscriber = tracing_subscriber::Registry::default()
             .with(tracing_opentelemetry::layer().with_tracer(tracer));
         (exporter, provider, subscriber)
