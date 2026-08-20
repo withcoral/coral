@@ -196,6 +196,7 @@ export const scrollbar = style({
     },
     '&[data-orientation="vertical"]': {
       margin: '8px',
+      marginInlineEnd: '4px',
       width: '4px',
     },
     '&[data-orientation="vertical"]::before': {
