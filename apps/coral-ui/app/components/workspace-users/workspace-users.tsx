@@ -55,6 +55,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const [addUserId, setAddUserId] = useState<string>()
   const [search, setSearch] = useState('')
   const submittedAddUserId = useRef<string | undefined>(undefined)
+  const previousCurrentUserRole = useRef(data.currentUserRole)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const isOwner = data.currentUserRole === 'owner'
   const ownerCount = data.members.filter((member) => member.role === 'owner').length
@@ -102,6 +103,15 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
       setAddUserId(undefined)
     }
   }, [addFetcher.data, addFetcher.state])
+
+  useEffect(() => {
+    const previousRole = previousCurrentUserRole.current
+    previousCurrentUserRole.current = data.currentUserRole
+
+    if (previousRole === 'owner' && data.currentUserRole === 'member') {
+      document.getElementById(pageHeadingId)?.focus()
+    }
+  }, [data.currentUserRole, pageHeadingId])
 
   if (!isOwner) {
     return (
@@ -322,7 +332,6 @@ function WorkspaceUserRow({
   const [removalDialogOpen, setRemovalDialogOpen] = useState(false)
   const [showRemovalResult, setShowRemovalResult] = useState(false)
   const removalSucceeded = useRef(false)
-  const selfDemotionConfirmed = useRef(false)
   const rolePending = roleFetcher.state !== 'idle'
   const removalPending = removalFetcher.state !== 'idle'
   const roleError =
@@ -406,7 +415,6 @@ function WorkspaceUserRow({
                   member.role === 'owner' &&
                   role === 'member'
                 ) {
-                  selfDemotionConfirmed.current = false
                   setConfirmingDemotion(true)
                   return
                 }
@@ -496,11 +504,7 @@ function WorkspaceUserRow({
       <Dialog.Root open={confirmingDemotion} onOpenChange={setConfirmingDemotion}>
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup
-            finalFocus={() =>
-              selfDemotionConfirmed.current ? document.getElementById(pageHeadingId) : true
-            }
-          >
+          <Dialog.Popup>
             <Dialog.Title>Change your role to Member?</Dialog.Title>
             <Dialog.Description>
               You will lose access to manage users in {workspaceName}.
@@ -512,7 +516,6 @@ function WorkspaceUserRow({
               <Button.TextButton
                 disabled={ownerControlsDisabled}
                 onClick={() => {
-                  selfDemotionConfirmed.current = true
                   setConfirmingDemotion(false)
                   submitRole('member')
                 }}

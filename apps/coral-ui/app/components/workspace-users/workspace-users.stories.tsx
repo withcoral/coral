@@ -95,11 +95,37 @@ export const RemovalRestoresFocusToHeading: Story = {
     await waitFor(() => expect(page.queryByText('Lin Chen')).not.toBeInTheDocument())
     await waitFor(() => expect(page.getByRole('heading', { name: 'Users' })).toHaveFocus())
 
-    await userEvent.click(page.getByRole('button', { name: 'Remove Ada Lovelace' }))
-    await userEvent.click(page.getByRole('button', { name: 'Remove myself' }))
+    await userEvent.click(page.getByRole('button', { name: 'Role for Ada Lovelace: Owner' }))
+    await userEvent.click(page.getByRole('menuitemradio', { name: 'Member' }))
+    await userEvent.click(page.getByRole('button', { name: 'Change my role' }))
 
     await waitFor(() => expect(page.getByText('Owner access required')).toBeInTheDocument())
     await waitFor(() => expect(page.getByRole('heading', { name: 'Users' })).toHaveFocus())
+  },
+}
+
+export const FailedSelfDemotionRestoresFocusToRole: Story = {
+  args: {
+    action: fn(async ({ request }: { request: Request }) => {
+      const formData = await request.formData()
+      return {
+        intent: 'role' as const,
+        message: 'Could not update workspace user.',
+        status: 'error' as const,
+        userId: String(formData.get('userId')),
+      }
+    }),
+  },
+  play: async ({ canvasElement, userEvent }) => {
+    const page = within(canvasElement.ownerDocument.body)
+    const roleButton = page.getByRole('button', { name: 'Role for Ada Lovelace: Owner' })
+
+    await userEvent.click(roleButton)
+    await userEvent.click(page.getByRole('menuitemradio', { name: 'Member' }))
+    await userEvent.click(page.getByRole('button', { name: 'Change my role' }))
+
+    await waitFor(() => expect(page.getByRole('alert')).toHaveTextContent('Could not update'))
+    await waitFor(() => expect(roleButton).toHaveFocus())
   },
 }
 
