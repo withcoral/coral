@@ -122,6 +122,11 @@ function hookArguments(source: string, hook: string): string[] {
   return calls
 }
 
+/** A stylesheet that comes from a package rather than from app code. */
+function isPackageStylesheet(specifier: string): boolean {
+  return specifier.endsWith('.css') && !/^[.~]|^@\//.test(specifier)
+}
+
 function isVisualTsx(name: string): boolean {
   return (
     name.endsWith('.tsx') &&
@@ -224,6 +229,45 @@ describe('architecture', () => {
       'allowedTests names a test file that no longer exists. Drop the entry so the list keeps ' +
         'describing the suite.',
     ).toEqual([])
+  })
+
+  it('keeps third party stylesheets in a layer', () => {
+    const importedRaw = filesUnder(appDir, (name) => /\.tsx?$/.test(name)).flatMap((file) =>
+      importsFrom(fs.readFileSync(file, 'utf8'))
+        .filter(isPackageStylesheet)
+        .map((specifier) => `${path.relative(appDir, file)} -> import '${specifier}'`),
+    )
+    const importedUnlayered = filesUnder(appDir, (name) => name.endsWith('.css')).flatMap((file) =>
+      [...fs.readFileSync(file, 'utf8').matchAll(/@import\s+([^;]+);/g)]
+        .filter((match) => !match[1].includes('layer('))
+        .map((match) => `${path.relative(appDir, file)} -> @import ${match[1].trim()}`),
+    )
+
+    expect(
+      [...importedRaw, ...importedUnlayered],
+      'a third party stylesheet has to arrive through an @import that names a layer, the way ' +
+        'app/wax/components/toast/toastify.css imports react-toastify. Imported straight from ' +
+        'the package its rules are unlayered, an unlayered rule beats every layer whatever its ' +
+        'specificity, and it silently outranks the wax rules written to restyle it.',
+    ).toEqual([])
+  })
+
+  it('states one layer order for the whole app', () => {
+    const globals = fs.readFileSync(path.join(appDir, 'styles', 'globals.css'), 'utf8')
+    const layers = fs.readFileSync(path.join(appDir, 'wax', 'theme', 'layers.css.ts'), 'utf8')
+    const stated = /@layer ([^;]+);/
+      .exec(globals)?.[1]
+      .split(',')
+      .map((name) => name.trim())
+    const declared = [...layers.matchAll(/globalLayer\('([^']+)'\)/g)].map((match) => match[1])
+
+    expect(
+      stated,
+      'app/styles/globals.css states the layer order for the app and ' +
+        'app/wax/theme/layers.css.ts declares the same layers for Vanilla Extract. Both have to ' +
+        'name the same layers in the same order. A layer left out of the statement is created ' +
+        'the first time a rule uses it, which puts it above everything already there.',
+    ).toEqual(declared)
   })
 
   it('does not depend on Tailwind packages', () => {
