@@ -160,6 +160,14 @@ export const cell = style({
   whiteSpace: 'nowrap',
 })
 export const cellTimestamp = style({ minWidth: 80 })
+export const cellUser = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 8,
+  maxWidth: 176,
+  minWidth: 0,
+})
+export const userLabel = style({ overflow: 'hidden', textOverflow: 'ellipsis' })
 export const sqlPreview = style({
   color: utils.opacify(theme.content.primary, 85),
   flex: 1,

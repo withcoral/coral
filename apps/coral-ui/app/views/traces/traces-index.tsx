@@ -137,7 +137,7 @@ export function TracesIndex({
     const needle = searchText.trim().toLowerCase()
     if (!needle) return true
     const legacyName = hasTypedOperation(trace) ? '' : trace.name
-    return `${operationPreview(trace)} ${operationLabel(trace)} ${trace.operationName} ${legacyName} ${trace.traceId}`
+    return `${operationPreview(trace)} ${operationLabel(trace)} ${trace.operationName} ${legacyName} ${trace.traceId} ${trace.user?.id ?? ''}`
       .toLowerCase()
       .includes(needle)
   })

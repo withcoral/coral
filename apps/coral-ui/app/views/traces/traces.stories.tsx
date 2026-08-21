@@ -60,6 +60,12 @@ const traces = [
   }),
 ]
 
+const tracesWithUsers = [
+  { ...traces[0], user: { id: 'ludo' } },
+  { ...traces[1], user: { id: 'coral:local' } },
+  traces[2],
+]
+
 const TraceStoryContext = createContext<React.ComponentProps<typeof TracesIndex> | null>(null)
 
 function TraceStoryRoute() {
@@ -106,6 +112,8 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const Populated: Story = {}
+
+export const WithUsers: Story = { args: { traces: tracesWithUsers } }
 
 export const Empty: Story = { args: { traces: [] } }
 
