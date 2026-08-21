@@ -51,6 +51,9 @@ export function loader({ request }: Route.LoaderArgs): WebSettingsLoaderData {
                 : windows
                   ? `npx --yes add-mcp@1.11.0 (Get-Command coral).Source --global --agent ${client.id} --name coral --args mcp-stdio --yes`
                   : `npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent ${client.id} --name coral --args mcp-stdio --yes`,
+            ...(windows && connection.mode === 'local'
+              ? { installCommandLabel: 'Requires PowerShell' }
+              : {}),
             ...(connection.mode === 'local'
               ? {
                   workspaceInstallCommand: windows

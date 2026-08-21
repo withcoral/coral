@@ -42,6 +42,12 @@ export const installCommand = style({
   minWidth: 0,
 })
 
+export const installCommandContainer = style({
+  display: 'grid',
+  gap: '4px',
+  minWidth: 0,
+})
+
 export const copyButton = style({
   opacity: 0,
   transition: 'opacity 120ms ease',

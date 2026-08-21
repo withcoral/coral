@@ -13,6 +13,7 @@ interface McpClientInstallListItemBase {
 export type McpClientInstallListItem =
   | (McpClientInstallListItemBase & {
       readonly installCommand: string
+      readonly installCommandLabel?: string
       readonly workspaceInstallCommand?: string
       readonly workspaceInstallShell?: 'posix' | 'powershell'
     })
@@ -122,14 +123,21 @@ export function McpClientInstallList({
                       step, so it wraps instead of truncating. */}
               <Table.Cell wrap={!installCommand}>
                 {installCommand ? (
-                  <div className={styles.installCommand}>
-                    <code>{installCommand}</code>
-                    <Button.CopyButton
-                      ariaLabel={`Copy the Coral install command for ${client.name}`}
-                      className={styles.copyButton}
-                      textToCopy={installCommand}
-                      variant="bare"
-                    />
+                  <div className={styles.installCommandContainer}>
+                    {'installCommandLabel' in client && client.installCommandLabel ? (
+                      <Typography.BodySmall variant="secondary">
+                        {client.installCommandLabel}
+                      </Typography.BodySmall>
+                    ) : null}
+                    <div className={styles.installCommand}>
+                      <code>{installCommand}</code>
+                      <Button.CopyButton
+                        ariaLabel={`Copy the Coral install command for ${client.name}`}
+                        className={styles.copyButton}
+                        textToCopy={installCommand}
+                        variant="bare"
+                      />
+                    </div>
                   </div>
                 ) : (
                   <Typography.BodySmall variant="secondary">

@@ -63,6 +63,7 @@ describe('settings loader', () => {
           id: 'codex',
           installCommand:
             'npx --yes add-mcp@1.11.0 (Get-Command coral).Source --global --agent codex --name coral --args mcp-stdio --yes',
+          installCommandLabel: 'Requires PowerShell',
           workspaceInstallShell: 'powershell',
         }),
       ]),
