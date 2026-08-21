@@ -285,7 +285,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                       if (retryPending) return
                       void revalidator.revalidate()
                     }}
-                    size="22"
+                    size="32"
                     variant="secondary"
                   >
                     <Button.Icon name="RefreshCw" />
