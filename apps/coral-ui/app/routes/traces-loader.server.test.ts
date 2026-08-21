@@ -95,4 +95,5 @@ describe('traces list loader', () => {
     ).resolves.toEqual(traces.slice(0, 80))
     expect(listPage).toHaveBeenCalledOnce()
   })
+
 })
