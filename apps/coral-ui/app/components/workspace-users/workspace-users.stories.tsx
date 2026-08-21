@@ -5,7 +5,12 @@ import { fn } from 'storybook/test'
 
 import { addToast, ToastContainer } from '@/wax/components/toast'
 
-import { WorkspaceUsers, type WorkspaceUsersData } from './workspace-users'
+import {
+  WorkspaceUsers,
+  type WorkspaceUserRole,
+  type WorkspaceUsersActionData,
+  type WorkspaceUsersData,
+} from './workspace-users'
 
 const MEMBERS: WorkspaceUsersData['members'] = [
   { displayName: 'Ada Lovelace', role: 'owner', userId: 'usr_ada' },
@@ -81,11 +86,25 @@ export const LoadError: Story = {
 }
 
 function WorkspaceUsersStory({ action, data }: StoryArgs) {
+  let storyData: WorkspaceUsersData = {
+    ...data,
+    availableUsers: [...data.availableUsers],
+    members: [...data.members],
+  }
   const RoutesStub = createRoutesStub([
     {
-      action,
+      action: async ({ request }) => {
+        const formData = await request.clone().formData()
+        const result = await action({ request })
+
+        if (isSuccessfulAction(result)) {
+          storyData = applySuccessfulAction(storyData, formData, result)
+        }
+
+        return result
+      },
       Component: WorkspaceUsersStoryRoute,
-      loader: () => data,
+      loader: () => storyData,
       path: '/workspaces/:workspaceId/users',
     },
   ])
@@ -101,4 +120,53 @@ function WorkspaceUsersStory({ action, data }: StoryArgs) {
 function WorkspaceUsersStoryRoute() {
   const data = useLoaderData() as WorkspaceUsersData
   return <WorkspaceUsers data={data} />
+}
+
+function isSuccessfulAction(result: unknown): result is WorkspaceUsersActionData {
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    'status' in result &&
+    result.status === 'success'
+  )
+}
+
+function applySuccessfulAction(
+  data: WorkspaceUsersData,
+  formData: FormData,
+  result: WorkspaceUsersActionData,
+): WorkspaceUsersData {
+  const userId = result.userId
+
+  if (result.intent === 'add') {
+    const candidate = data.availableUsers.find((user) => user.userId === userId)
+    if (!candidate) return data
+
+    return {
+      ...data,
+      availableUsers: data.availableUsers.filter((user) => user.userId !== userId),
+      members: [...data.members, { ...candidate, role: formData.get('role') as WorkspaceUserRole }],
+    }
+  }
+
+  if (result.intent === 'remove') {
+    const member = data.members.find((user) => user.userId === userId)
+    if (!member) return data
+
+    return {
+      ...data,
+      availableUsers: [
+        ...data.availableUsers,
+        { displayName: member.displayName, userId: member.userId },
+      ],
+      members: data.members.filter((user) => user.userId !== userId),
+    }
+  }
+
+  const role = formData.get('role') as WorkspaceUserRole
+  return {
+    ...data,
+    currentUserRole: userId === data.currentUserId ? role : data.currentUserRole,
+    members: data.members.map((user) => (user.userId === userId ? { ...user, role } : user)),
+  }
 }

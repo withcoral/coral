@@ -62,7 +62,9 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const selectedAddUser = availableUsers.find((user) => user.userId === addUserId)
   const addPending = addFetcher.state !== 'idle'
   const addError =
-    showAddResult && addFetcher.data?.status === 'error' ? addFetcher.data.message : undefined
+    !addPending && showAddResult && addFetcher.data?.status === 'error'
+      ? addFetcher.data.message
+      : undefined
 
   const onSearchShortcut = useCallback((event: KeyboardEvent) => {
     const input = searchInputRef.current
@@ -296,9 +298,10 @@ function WorkspaceUserRow({
   const [showRemovalResult, setShowRemovalResult] = useState(false)
   const rolePending = roleFetcher.state !== 'idle'
   const removalPending = removalFetcher.state !== 'idle'
-  const roleError = roleFetcher.data?.status === 'error' ? roleFetcher.data.message : undefined
+  const roleError =
+    !rolePending && roleFetcher.data?.status === 'error' ? roleFetcher.data.message : undefined
   const removalError =
-    showRemovalResult && removalFetcher.data?.status === 'error'
+    !removalPending && showRemovalResult && removalFetcher.data?.status === 'error'
       ? removalFetcher.data.message
       : undefined
   const rowError = roleError ?? removalError
