@@ -40,7 +40,12 @@ export function KeyboardShortcut({
     const shortcutTarget = target ?? (typeof window === 'undefined' ? undefined : window)
     if (!shortcutTarget) return
 
-    return tinykeys(shortcutTarget, { [shortcut]: handler })
+    return tinykeys(shortcutTarget, {
+      [shortcut]: (event) => {
+        if (document.querySelector('[role="dialog"][data-open]')) return
+        handler(event)
+      },
+    })
   }, [target, shortcut, handler])
 
   if (children && tooltipContent) {
