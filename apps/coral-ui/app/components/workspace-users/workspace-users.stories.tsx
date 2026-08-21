@@ -86,35 +86,36 @@ export const LoadError: Story = {
     retryData: DEFAULT_DATA,
   },
   play: async ({ canvasElement, userEvent }) => {
-    const page = within(canvasElement.ownerDocument.body)
-    const retry = page.getByRole('button', { name: 'Retry' })
+    const canvas = within(canvasElement)
+    const retry = canvas.getByRole('button', { name: 'Retry' })
 
-    await expect(page.getByRole('button', { name: 'Add user' })).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: 'Add user' })).toBeDisabled()
     await userEvent.click(retry)
-    await expect(page.getByRole('button', { name: 'Retrying…' })).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: 'Retrying…' })).toBeDisabled()
 
-    await waitFor(() => expect(page.queryByRole('alert')).not.toBeInTheDocument())
-    await expect(page.getByText('Ada Lovelace (you)')).toBeInTheDocument()
-    await expect(page.getByRole('button', { name: 'Add user' })).toBeEnabled()
+    await waitFor(() => expect(canvas.queryByRole('alert')).not.toBeInTheDocument())
+    await expect(canvas.getByText('Ada Lovelace (you)')).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: 'Add user' })).toBeEnabled()
   },
 }
 
 export const RemovalRestoresFocusToHeading: Story = {
   play: async ({ canvasElement, userEvent }) => {
-    const page = within(canvasElement.ownerDocument.body)
+    const canvas = within(canvasElement)
+    const document = within(canvasElement.ownerDocument.body)
 
-    await userEvent.click(page.getByRole('button', { name: 'Remove Lin Chen' }))
-    await userEvent.click(page.getByRole('button', { name: 'Remove user' }))
+    await userEvent.click(canvas.getByRole('button', { name: 'Remove Lin Chen' }))
+    await userEvent.click(document.getByRole('button', { name: 'Remove user' }))
 
-    await waitFor(() => expect(page.queryByText('Lin Chen')).not.toBeInTheDocument())
-    await waitFor(() => expect(page.getByRole('heading', { name: 'Users' })).toHaveFocus())
+    await waitFor(() => expect(canvas.queryByText('Lin Chen')).not.toBeInTheDocument())
+    await waitFor(() => expect(canvas.getByRole('heading', { name: 'Users' })).toHaveFocus())
 
-    await userEvent.click(page.getByRole('button', { name: 'Role for Ada Lovelace: Owner' }))
-    await userEvent.click(page.getByRole('menuitemradio', { name: 'Member' }))
-    await userEvent.click(page.getByRole('button', { name: 'Change my role' }))
+    await userEvent.click(canvas.getByRole('button', { name: 'Role for Ada Lovelace: Owner' }))
+    await userEvent.click(document.getByRole('menuitemradio', { name: 'Member' }))
+    await userEvent.click(document.getByRole('button', { name: 'Change my role' }))
 
-    await waitFor(() => expect(page.getByText('Owner access required')).toBeInTheDocument())
-    await waitFor(() => expect(page.getByRole('heading', { name: 'Users' })).toHaveFocus())
+    await waitFor(() => expect(canvas.getByText('Owner access required')).toBeInTheDocument())
+    await waitFor(() => expect(canvas.getByRole('heading', { name: 'Users' })).toHaveFocus())
   },
 }
 
@@ -131,14 +132,15 @@ export const FailedSelfDemotionRestoresFocusToRole: Story = {
     }),
   },
   play: async ({ canvasElement, userEvent }) => {
-    const page = within(canvasElement.ownerDocument.body)
-    const roleButton = page.getByRole('button', { name: 'Role for Ada Lovelace: Owner' })
+    const canvas = within(canvasElement)
+    const document = within(canvasElement.ownerDocument.body)
+    const roleButton = canvas.getByRole('button', { name: 'Role for Ada Lovelace: Owner' })
 
     await userEvent.click(roleButton)
-    await userEvent.click(page.getByRole('menuitemradio', { name: 'Member' }))
-    await userEvent.click(page.getByRole('button', { name: 'Change my role' }))
+    await userEvent.click(document.getByRole('menuitemradio', { name: 'Member' }))
+    await userEvent.click(document.getByRole('button', { name: 'Change my role' }))
 
-    await waitFor(() => expect(page.getByRole('alert')).toHaveTextContent('Could not update'))
+    await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Could not update'))
     await waitFor(() => expect(roleButton).toHaveFocus())
   },
 }
