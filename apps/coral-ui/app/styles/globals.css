@@ -1,9 +1,10 @@
-/* Layer order for the whole app, lowest priority first. Wax rules go in the wax
-   layer (see app/wax/theme/layers.css.ts); the reset below goes in the reset layer,
-   so a component rule wins over an element default whatever the load order. App code
-   outside app/wax stays unlayered, which puts it above both. This is the first
-   stylesheet the app loads, so the order is settled before any rule arrives. */
-@layer reset, wax;
+/* Layer order for the whole app, lowest priority first. The reset below goes in the
+   reset layer, third party stylesheets go in vendor, and wax component rules go in
+   wax (see app/wax/theme/layers.css.ts), so a component rule wins over an element
+   default or a vendor default whatever the load order. App code outside app/wax
+   stays unlayered, which puts it above all three. This is the first stylesheet the
+   app loads, so the order is settled before any rule arrives. */
+@layer reset, vendor, wax;
 
 /* Encode Sans Semi Expanded — latin */
 @font-face {

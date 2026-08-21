@@ -1,5 +1,5 @@
 import { Bounce, ToastContainer as ToastContainerComponent } from 'react-toastify'
-import 'react-toastify/dist/ReactToastify.css'
+import './toastify.css'
 
 import * as styles from './toast-container.css'
 

@@ -12,6 +12,12 @@ import { globalLayer } from '@vanilla-extract/css'
 // wax components of everything the reset names. It goes in the first layer.
 export const resetLayer = globalLayer('reset')
 
+// Third party stylesheets, currently react-toastify. They are unlayered as shipped,
+// which puts them above every wax rule, so app/wax/components/toast/toastify.css
+// imports them into this layer instead. Nothing writes to it from TypeScript; the
+// name is declared here so that the order is stated in one place.
+export const vendorLayer = globalLayer('vendor')
+
 // Wax component styles. Wax rules and consumer overrides are both single class
 // selectors, so which one wins used to depend on the order the bundler linked the
 // CSS chunks, and dev and production disagreed. A layer settles it by construction.

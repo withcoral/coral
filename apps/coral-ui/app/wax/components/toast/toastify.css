@@ -1,0 +1,5 @@
+/* react-toastify ships unlayered rules for the same classes that
+   toast-container.css.ts restyles. An unlayered rule beats every layer whatever
+   its specificity, so the defaults have to be in a layer of their own, below wax.
+   app/styles/globals.css and ../../theme/layers.css.ts state the layer order. */
+@import 'react-toastify/dist/ReactToastify.css' layer(vendor);
