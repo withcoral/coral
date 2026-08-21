@@ -39,10 +39,12 @@ export function KeyboardShortcut({
   useEffect(() => {
     const shortcutTarget = target ?? (typeof window === 'undefined' ? undefined : window)
     if (!shortcutTarget) return
+    const targetDocument =
+      'ownerDocument' in shortcutTarget ? shortcutTarget.ownerDocument : shortcutTarget.document
 
     return tinykeys(shortcutTarget, {
       [shortcut]: (event) => {
-        if (document.querySelector('[role="dialog"][data-open]')) return
+        if (targetDocument.querySelector('[role="dialog"][data-open]')) return
         handler(event)
       },
     })
