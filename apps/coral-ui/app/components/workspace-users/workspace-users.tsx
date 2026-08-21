@@ -458,7 +458,7 @@ function WorkspaceUserRow({
                   type="submit"
                   variant="destructive"
                 >
-                  Remove user
+                  <span role="status">{removalPending ? 'Removing…' : 'Remove user'}</span>
                 </Button.TextButton>
               </removalFetcher.Form>
             </Dialog.Actions>
