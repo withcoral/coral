@@ -1,4 +1,4 @@
-import { keyframes, style } from '@vanilla-extract/css'
+import { keyframes, style } from '@/wax/css'
 
 import { animation, theme } from '@/wax/theme/theme.css'
 import { zIndex } from '@/wax/theme/z-index'

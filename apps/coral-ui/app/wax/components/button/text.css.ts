@@ -1,6 +1,5 @@
-import { createVar } from '@vanilla-extract/css'
-import { recipe } from '@vanilla-extract/recipes'
-import type { RecipeVariants } from '@vanilla-extract/recipes'
+import { createVar, recipe } from '@/wax/css'
+import type { RecipeVariants } from '@/wax/css'
 
 import { animation, staticUtilities, theme } from '@/wax/theme/theme.css'
 

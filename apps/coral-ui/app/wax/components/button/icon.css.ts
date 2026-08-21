@@ -1,6 +1,5 @@
-import { keyframes, style } from '@vanilla-extract/css'
-import type { RecipeVariants } from '@vanilla-extract/recipes'
-import { recipe } from '@vanilla-extract/recipes'
+import { keyframes, recipe, style } from '@/wax/css'
+import type { RecipeVariants } from '@/wax/css'
 
 import { staticUtilities, theme } from '@/wax/theme/theme.css'
 

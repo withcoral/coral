@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { style } from '@/wax/css'
 
 import { breakpoints } from '@/styles/theme.css'
 import { utils } from '@/styles/utils'

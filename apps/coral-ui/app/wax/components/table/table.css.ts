@@ -1,5 +1,4 @@
-import { createVar, fallbackVar, style } from '@vanilla-extract/css'
-import { recipe } from '@vanilla-extract/recipes'
+import { createVar, fallbackVar, recipe, style } from '@/wax/css'
 
 import { theme, zIndex } from '@/wax/theme/theme.css'
 

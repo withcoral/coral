@@ -21,6 +21,27 @@
       }
     },
     {
+      "files": ["app/wax/**/*.{ts,tsx}"],
+      "excludeFiles": ["app/wax/css.ts", "app/wax/theme/layers.css.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@vanilla-extract/css",
+                "message": "Import from '@/wax/css' instead, so wax rules land in the wax cascade layer."
+              },
+              {
+                "name": "@vanilla-extract/recipes",
+                "message": "Import from '@/wax/css' instead, so wax rules land in the wax cascade layer."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["app/routes/**/*.{ts,tsx}"],
       "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "react-hooks", "import"],
       "rules": {

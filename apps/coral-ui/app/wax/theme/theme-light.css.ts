@@ -1,4 +1,4 @@
-import { createTheme } from '@vanilla-extract/css'
+import { createTheme } from '@/wax/css'
 
 import { utils } from '@/styles/utils'
 import { paletteLight } from '@/wax/base/palette/palette-light'

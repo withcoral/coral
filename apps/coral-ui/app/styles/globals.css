@@ -1,3 +1,10 @@
+/* Layer order for the whole app, lowest priority first. Wax rules go in the wax
+   layer (see app/wax/theme/layers.css.ts); the reset below goes in the reset layer,
+   so a component rule wins over an element default whatever the load order. App code
+   outside app/wax stays unlayered, which puts it above both. This is the first
+   stylesheet the app loads, so the order is settled before any rule arrives. */
+@layer reset, wax;
+
 /* Encode Sans Semi Expanded — latin */
 @font-face {
   font-family: 'Encode Sans Semi Expanded';
@@ -117,145 +124,147 @@
     U+A720-A7FF;
 }
 
-/* CSS reset (replaces Tailwind preflight) */
-*,
-::after,
-::before {
-  box-sizing: border-box;
-  border-width: 0;
-  border-style: solid;
-}
-
-html,
-:host {
-  line-height: 1.5;
-  -webkit-text-size-adjust: 100%;
-  tab-size: 4;
-}
-
-/* Remove default margins */
-blockquote,
-dl,
-dd,
-h1,
-h2,
-h3,
-h4,
-h5,
-h6,
-hr,
-figure,
-p,
-pre {
-  margin: 0;
-}
-
-/* Reset heading font-size/weight so they don't override component styles */
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  font-size: inherit;
-  font-weight: inherit;
-}
-
-/* Reset lists */
-ol,
-ul,
-menu {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-/* Form elements inherit font */
-button,
-input,
-optgroup,
-select,
-textarea {
-  font-family: inherit;
-  font-feature-settings: inherit;
-  font-variation-settings: inherit;
-  font-size: 100%;
-  font-weight: inherit;
-  line-height: inherit;
-  letter-spacing: inherit;
-  color: inherit;
-  margin: 0;
-  padding: 0;
-}
-
-/* Button / clickable cursor */
-button,
-[role='button'] {
-  cursor: pointer;
-}
-
-/* Textarea defaults */
-textarea {
-  resize: vertical;
-}
-
-/* Placeholder opacity normalization */
-input::placeholder,
-textarea::placeholder {
-  opacity: 1;
-}
-
-/* Table reset */
-table {
-  text-indent: 0;
-  border-color: inherit;
-  border-collapse: collapse;
-}
-
-/* HR reset */
-hr {
-  height: 0;
-  color: inherit;
-  border-top-width: 1px;
-}
-
-/* Media defaults */
-img,
-svg,
-video,
-canvas,
-audio,
-iframe,
-embed,
-object {
-  display: block;
-  vertical-align: middle;
-}
-
-img,
-video {
-  max-width: 100%;
-  height: auto;
-}
-
-/* Summary cursor */
-summary {
-  cursor: pointer;
-}
-
-a {
-  color: inherit;
-  text-decoration: inherit;
-}
-
-/* @starting-style is not supported by vanilla-extract */
-dialog {
-  @starting-style {
-    opacity: 0;
+@layer reset {
+  /* CSS reset (replaces Tailwind preflight) */
+  *,
+  ::after,
+  ::before {
+    box-sizing: border-box;
+    border-width: 0;
+    border-style: solid;
   }
-}
-dialog::backdrop {
-  @starting-style {
-    opacity: 0;
+
+  html,
+  :host {
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+  }
+
+  /* Remove default margins */
+  blockquote,
+  dl,
+  dd,
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  hr,
+  figure,
+  p,
+  pre {
+    margin: 0;
+  }
+
+  /* Reset heading font-size/weight so they don't override component styles */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  /* Reset lists */
+  ol,
+  ul,
+  menu {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Form elements inherit font */
+  button,
+  input,
+  optgroup,
+  select,
+  textarea {
+    font-family: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    font-size: 100%;
+    font-weight: inherit;
+    line-height: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Button / clickable cursor */
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+
+  /* Textarea defaults */
+  textarea {
+    resize: vertical;
+  }
+
+  /* Placeholder opacity normalization */
+  input::placeholder,
+  textarea::placeholder {
+    opacity: 1;
+  }
+
+  /* Table reset */
+  table {
+    text-indent: 0;
+    border-color: inherit;
+    border-collapse: collapse;
+  }
+
+  /* HR reset */
+  hr {
+    height: 0;
+    color: inherit;
+    border-top-width: 1px;
+  }
+
+  /* Media defaults */
+  img,
+  svg,
+  video,
+  canvas,
+  audio,
+  iframe,
+  embed,
+  object {
+    display: block;
+    vertical-align: middle;
+  }
+
+  img,
+  video {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Summary cursor */
+  summary {
+    cursor: pointer;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+
+  /* @starting-style is not supported by vanilla-extract */
+  dialog {
+    @starting-style {
+      opacity: 0;
+    }
+  }
+  dialog::backdrop {
+    @starting-style {
+      opacity: 0;
+    }
   }
 }

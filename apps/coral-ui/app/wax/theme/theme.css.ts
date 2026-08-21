@@ -1,4 +1,4 @@
-import { createThemeContract } from '@vanilla-extract/css'
+import { createThemeContract } from '@/wax/css'
 
 /**
  * Static tokens are not affected by the theme, they are always the same.

@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { style } from '@/wax/css'
 
 import { animation, staticUtilities, theme } from '@/wax/theme/theme.css'
 

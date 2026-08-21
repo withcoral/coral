@@ -1,5 +1,4 @@
-import { style } from '@vanilla-extract/css'
-import { recipe } from '@vanilla-extract/recipes'
+import { recipe, style } from '@/wax/css'
 
 import { theme } from '@/wax/theme/theme.css'
 

@@ -1,7 +1,5 @@
-import { assignVars, createThemeContract, style } from '@vanilla-extract/css'
-import { recipe } from '@vanilla-extract/recipes'
-import type { RecipeVariants } from '@vanilla-extract/recipes'
-
+import { assignVars, createThemeContract, recipe, style } from '@/wax/css'
+import type { RecipeVariants } from '@/wax/css'
 import { animation, theme } from '@/wax/theme/theme.css'
 
 // Class to mark button as disabled (used for styling child elements)
