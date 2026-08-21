@@ -115,6 +115,18 @@ export const Populated: Story = {}
 
 export const WithUsers: Story = { args: { traces: tracesWithUsers } }
 
+export const NarrowWithLongUser: Story = {
+  args: {
+    traces: [
+      {
+        ...traces[0],
+        user: { id: 'user-with-an-exceptionally-long-identifier@example.com' },
+      },
+    ],
+  },
+  parameters: { chromatic: { viewports: [375] } },
+}
+
 export const Empty: Story = { args: { traces: [] } }
 
 export const Disconnected: Story = {

@@ -166,8 +166,27 @@ export const cellUser = style({
   gap: 8,
   maxWidth: 176,
   minWidth: 0,
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      gap: 0,
+      maxWidth: 20,
+    },
+  },
 })
-export const userLabel = style({ overflow: 'hidden', textOverflow: 'ellipsis' })
+export const userLabel = style({
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      clip: 'rect(0 0 0 0)',
+      clipPath: 'inset(50%)',
+      height: 1,
+      position: 'absolute',
+      whiteSpace: 'nowrap',
+      width: 1,
+    },
+  },
+})
 export const sqlPreview = style({
   color: utils.opacify(theme.content.primary, 85),
   flex: 1,
