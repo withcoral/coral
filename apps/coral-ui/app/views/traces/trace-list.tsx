@@ -36,7 +36,7 @@ function TraceRow({
   trace: TraceSummaryData
   workspaceId: string
 }) {
-  const userLabel = trace.user ? traceUserLabel(trace.user) : null
+  const userLabel = trace.userId ? traceUserLabel(trace.userId) : null
   return (
     <NavLink
       className={s.fullRow}
@@ -62,20 +62,24 @@ function TraceRow({
           language={operationCodeLanguage(trace)}
         />
       </div>
-      {trace.user && (
-        <div className={classNames(s.cell, s.cellUser)}>
+      {trace.userId && (
+        <div
+          aria-label={`User: ${userLabel}`}
+          className={classNames(s.cell, s.cellUser)}
+          role="group"
+        >
           <Avatar
             aria-hidden="true"
             className={s.desktopUserAvatar}
             name={userLabel ?? ''}
-            seed={trace.user.id}
+            seed={trace.userId}
           />
           <Tooltip content={userLabel}>
             <Avatar
               aria-hidden="true"
               className={s.mobileUserAvatar}
               name={userLabel ?? ''}
-              seed={trace.user.id}
+              seed={trace.userId}
             />
           </Tooltip>
           <Tooltip content={userLabel} showOnlyWhenTruncated>

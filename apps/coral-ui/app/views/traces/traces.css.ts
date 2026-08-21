@@ -163,6 +163,7 @@ export const cellTimestamp = style({ minWidth: 80 })
 export const cellUser = style({
   alignItems: 'center',
   display: 'flex',
+  flexShrink: 1,
   gap: 8,
   maxWidth: 176,
   minWidth: 0,

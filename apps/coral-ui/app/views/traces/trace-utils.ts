@@ -8,13 +8,7 @@ import { nanosToMs } from '@/utils/format-time'
 
 export type JsonObject = Record<string, unknown>
 export type TraceSpanData = Omit<TraceSpan, '$typeName' | '$unknown'>
-export interface TraceUserData {
-  id: string
-}
-
-export type TraceSummaryData = Omit<TraceSummary, '$typeName' | '$unknown'> & {
-  user?: TraceUserData
-}
+export type TraceSummaryData = Omit<TraceSummary, '$typeName' | '$unknown'>
 export interface TraceDetailData {
   spans: TraceSpanData[]
   summary?: TraceSummaryData
@@ -24,8 +18,8 @@ export function startMs(trace: TraceSummaryData): number {
   return nanosToMs(trace.startTimeUnixNanos)
 }
 
-export function traceUserLabel(user: TraceUserData): string {
-  return user.id === 'coral:local' ? 'Local user' : user.id
+export function traceUserLabel(userId: string): string {
+  return userId === 'coral:local' ? 'Local user' : userId
 }
 
 export function formatRows(trace: TraceSummaryData): string {

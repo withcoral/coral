@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createContext, useContext } from 'react'
 import { createRoutesStub } from 'react-router'
+import { expect, userEvent } from 'storybook/test'
 
 import {
   TraceInvocationKind,
@@ -61,8 +62,8 @@ const traces = [
 ]
 
 const tracesWithUsers = [
-  { ...traces[0], user: { id: 'ludo' } },
-  { ...traces[1], user: { id: 'coral:local' } },
+  { ...traces[0], userId: 'user-with-a-long-attribution-identifier' },
+  { ...traces[1], userId: 'coral:local' },
   traces[2],
 ]
 
@@ -120,11 +121,23 @@ export const NarrowWithLongUser: Story = {
     traces: [
       {
         ...traces[0],
-        user: { id: 'user-with-an-exceptionally-long-identifier@example.com' },
+        userId: 'user-with-an-exceptionally-long-identifier@example.com',
       },
     ],
   },
   parameters: { chromatic: { viewports: [375] } },
+}
+
+export const SearchByDisplayedUserLabel: Story = {
+  args: { traces: tracesWithUsers },
+  play: async ({ canvas }) => {
+    await userEvent.type(canvas.getByPlaceholderText('Search operations...'), 'Local user')
+
+    await expect(canvas.getByText('Local user')).toBeVisible()
+    await expect(
+      canvas.queryByText('user-with-a-long-attribution-identifier'),
+    ).not.toBeInTheDocument()
+  },
 }
 
 export const Empty: Story = { args: { traces: [] } }

@@ -35,6 +35,7 @@ function summary(
     startTimeUnixNanos: '1000000',
     status: TraceStatus.OK,
     traceId,
+    userId: '',
   }
 }
 
@@ -95,5 +96,4 @@ describe('traces list loader', () => {
     ).resolves.toEqual(traces.slice(0, 80))
     expect(listPage).toHaveBeenCalledOnce()
   })
-
 })
