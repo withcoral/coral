@@ -437,9 +437,15 @@ function WorkspaceUserRow({
         <Dialog.Portal>
           <Dialog.Backdrop />
           <Dialog.Popup>
-            <Dialog.Title>Remove workspace user?</Dialog.Title>
+            <Dialog.Title>
+              {member.userId === currentUserId
+                ? 'Remove yourself from this workspace?'
+                : 'Remove workspace user?'}
+            </Dialog.Title>
             <Dialog.Description>
-              {member.displayName || member.userId} will lose access to {workspaceName}.
+              {member.userId === currentUserId
+                ? `You will lose access to ${workspaceName}.`
+                : `${member.displayName || member.userId} will lose access to ${workspaceName}.`}
             </Dialog.Description>
             {removalError ? <Banner variant="error">{removalError}</Banner> : null}
             <Dialog.Actions>
