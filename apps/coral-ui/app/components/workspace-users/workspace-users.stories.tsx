@@ -159,6 +159,7 @@ function applySuccessfulAction(
         ...data.availableUsers,
         { displayName: member.displayName, userId: member.userId },
       ],
+      currentUserRole: userId === data.currentUserId ? 'member' : data.currentUserRole,
       members: data.members.filter((user) => user.userId !== userId),
     }
   }
