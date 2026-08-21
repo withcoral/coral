@@ -89,6 +89,8 @@ message TraceSummary {
   // Invocation path for the Query Stream entry, independent of its semantic
   // operation kind.
   TraceInvocationKind invocation_kind = 14;
+  // Stable authenticated Coral user id associated with the trace, when known.
+  string user_id = 15;
 }
 
 // Lists locally captured traces.

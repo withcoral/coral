@@ -21,6 +21,8 @@ pub const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
 /// Local-only Universal Search text used by Query Stream.
 pub const QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE: &str = "coral.local.search.query";
+/// Stable authenticated user id retained only in local trace history.
+pub const TRACE_USER_ID_ATTRIBUTE: &str = "coral.local.user.id";
 /// Span attribute containing the Coral workspace associated with an operation.
 pub const WORKSPACE_SPAN_ATTRIBUTE: &str = "workspace";
 

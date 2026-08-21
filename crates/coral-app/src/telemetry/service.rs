@@ -174,6 +174,7 @@ fn trace_summary_to_proto(summary: TraceSummaryRecord) -> TraceSummary {
         operation_kind: trace_operation_kind_to_proto(summary.operation_kind) as i32,
         operation_name: summary.operation_name,
         invocation_kind: trace_invocation_kind_to_proto(summary.invocation_kind) as i32,
+        user_id: summary.user_id,
     }
 }
 
@@ -387,6 +388,7 @@ mod tests {
         assert_eq!(summary.query, "SELECT 42");
         assert_eq!(summary.start_time_unix_nanos, 10);
         assert_eq!(summary.end_time_unix_nanos, 40);
+        assert_eq!(summary.user_id, "user-123");
 
         let detail = TraceServiceApi::get_trace(
             &service,
@@ -449,6 +451,7 @@ mod tests {
                     "mcp.tool.name": "sql",
                     "workspace": "alpha",
                     "status": "ok",
+                    "coral.local.user.id": "user-123",
                 })
                 .to_string()
             ),

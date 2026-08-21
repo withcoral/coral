@@ -300,7 +300,11 @@ fn query_stream_projector_releases_completed_discovery_trees() {
             status: StoredTraceStatus::Ok,
             start_time_unix_nanos: base,
             end_time_unix_nanos: base + 4,
-            attributes_json: r#"{"mcp.method":"tools/list"}"#.to_string(),
+            attributes_json: json!({
+                "coral.local.user.id": format!("user-{index}"),
+                "mcp.method": "tools/list",
+            })
+            .to_string(),
         };
         let child = TraceListSpanRecord {
             trace_id: "shared-discovery-trace".to_string(),
@@ -326,6 +330,7 @@ fn query_stream_projector_releases_completed_discovery_trees() {
         assert!(projector.nodes.is_empty());
         assert!(projector.aggregates.is_empty());
         assert!(projector.finalized.is_empty());
+        assert!(projector.trace_user_ids.is_empty());
     }
 }
 

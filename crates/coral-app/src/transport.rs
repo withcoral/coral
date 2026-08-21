@@ -148,6 +148,11 @@ where
                 .await
                 {
                     Ok(principal) => {
+                        crate::telemetry::record_local_only_span_attribute(
+                            &span,
+                            coral_telemetry::TRACE_USER_ID_ATTRIBUTE,
+                            principal.id().as_str(),
+                        );
                         let task_id = match task_id {
                             Ok(task_id) => task_id,
                             Err(status) => {
@@ -230,6 +235,7 @@ fn grpc_span_for_metadata(
         grpc.method = metadata.method.as_str(),
         grpc.status_code = tracing::field::Empty,
         grpc.code = tracing::field::Empty,
+        coral.local.user.id = tracing::field::Empty,
         status = tracing::field::Empty,
     );
     coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request_metadata));

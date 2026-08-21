@@ -15,7 +15,7 @@ use super::{
     TraceStoreError, TraceSummaryRecord, attr_string, attr_u64, parse_attributes,
     read_list_spans_file, status_from_attributes, usize_to_u32,
 };
-use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
+use coral_telemetry::{TRACE_USER_ID_ATTRIBUTE, WORKSPACE_SPAN_ATTRIBUTE};
 
 // Bounded LIST storage scanning.
 
@@ -130,6 +130,7 @@ struct ProjectedQueryStreamSpan {
     workspace: Option<String>,
     operation_text: Option<String>,
     row_count: Option<u64>,
+    user_id: Option<String>,
 }
 
 impl ProjectedQueryStreamSpan {
@@ -151,6 +152,9 @@ impl ProjectedQueryStreamSpan {
         let row_count = attributes
             .as_ref()
             .and_then(|attributes| attr_u64(attributes, "row_count"));
+        let user_id = attributes
+            .as_ref()
+            .and_then(|attributes| attr_string(attributes, TRACE_USER_ID_ATTRIBUTE));
         Self {
             trace_id: span.trace_id,
             span_id: span.span_id,
@@ -165,6 +169,7 @@ impl ProjectedQueryStreamSpan {
             workspace,
             operation_text,
             row_count,
+            user_id,
         }
     }
 
@@ -345,6 +350,7 @@ impl StreamingQueryStreamAggregate {
             operation_kind: self.entry.metadata.kind,
             operation_name: self.entry.metadata.name,
             invocation_kind: self.entry.metadata.invocation_kind,
+            user_id: String::new(),
         }
     }
 }
@@ -367,6 +373,7 @@ struct QueryStreamProjector {
     aggregates: HashMap<u64, StreamingQueryStreamAggregate>,
     aggregate_starts: BTreeMap<i64, Vec<u64>>,
     finalized: Vec<TraceSummaryRecord>,
+    trace_user_ids: HashMap<String, String>,
     next_operation_id: u64,
 }
 
@@ -380,6 +387,7 @@ impl QueryStreamProjector {
             aggregates: HashMap::new(),
             aggregate_starts: BTreeMap::new(),
             finalized: Vec::new(),
+            trace_user_ids: HashMap::new(),
             next_operation_id: 0,
         }
     }
@@ -427,6 +435,11 @@ impl QueryStreamProjector {
         let key = span.key();
         if self.nodes.contains_key(&key) {
             return;
+        }
+        if let Some(user_id) = span.user_id.as_ref() {
+            self.trace_user_ids
+                .entry(span.trace_id.clone())
+                .or_insert_with(|| user_id.clone());
         }
         let parent = span
             .parent_key()
@@ -493,6 +506,7 @@ impl QueryStreamProjector {
         for key in take_indexed_values_after(&mut self.node_starts, watermark) {
             self.nodes.remove(&key);
         }
+        self.retain_active_trace_user_ids();
         self.trim_finalized();
     }
 
@@ -504,7 +518,23 @@ impl QueryStreamProjector {
         self.aggregate_starts.clear();
         self.nodes.clear();
         self.node_starts.clear();
+        self.trace_user_ids.clear();
         self.trim_finalized();
+    }
+
+    fn retain_active_trace_user_ids(&mut self) {
+        let active_trace_ids = self
+            .nodes
+            .keys()
+            .map(|(trace_id, _)| trace_id.as_str())
+            .chain(
+                self.aggregates
+                    .values()
+                    .map(|aggregate| aggregate.entry.trace_id.as_str()),
+            )
+            .collect::<HashSet<_>>();
+        self.trace_user_ids
+            .retain(|trace_id, _| active_trace_ids.contains(trace_id.as_str()));
     }
 
     fn finalize_operation(&mut self, operation_id: u64) {
@@ -516,7 +546,14 @@ impl QueryStreamProjector {
             .as_deref()
             .is_none_or(|workspace_name| aggregate.workspace() == Some(workspace_name))
         {
-            self.finalized.push(aggregate.into_summary());
+            let user_id = self
+                .trace_user_ids
+                .get(&aggregate.entry.trace_id)
+                .cloned()
+                .unwrap_or_default();
+            let mut summary = aggregate.into_summary();
+            summary.user_id = user_id;
+            self.finalized.push(summary);
         }
     }
 
