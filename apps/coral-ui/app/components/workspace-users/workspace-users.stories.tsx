@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { createRoutesStub, useLoaderData } from 'react-router'
-import { fn } from 'storybook/test'
+import { expect, fn, waitFor, within } from 'storybook/test'
 
 import { addToast, ToastContainer } from '@/wax/components/toast'
 
@@ -82,6 +82,18 @@ export const NonOwner: Story = {
 export const LoadError: Story = {
   args: {
     data: { ...DEFAULT_DATA, error: 'Coral could not load workspace users.', members: [] },
+  },
+}
+
+export const RemovalRestoresFocusToHeading: Story = {
+  play: async ({ canvasElement, userEvent }) => {
+    const page = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(page.getByRole('button', { name: 'Remove Lin Chen' }))
+    await userEvent.click(page.getByRole('button', { name: 'Remove user' }))
+
+    await waitFor(() => expect(page.queryByText('Lin Chen')).not.toBeInTheDocument())
+    await waitFor(() => expect(page.getByRole('heading', { name: 'Users' })).toHaveFocus())
   },
 }
 
