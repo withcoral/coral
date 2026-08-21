@@ -342,8 +342,9 @@ function WorkspaceUserRow({
       : undefined
   const rowError = roleError ?? (removalDialogOpen ? undefined : removalError)
   const ownerControlsDisabled = member.role === 'owner' && ownershipReductionPending
+  const ownerMutationDisabled = isLastOwner || ownerControlsDisabled
   const controlsDisabled =
-    isLastOwner || ownerControlsDisabled || rolePending || removalPending || mutationsDisabled
+    ownerMutationDisabled || rolePending || removalPending || mutationsDisabled
 
   useEffect(() => {
     if (
@@ -482,7 +483,7 @@ function WorkspaceUserRow({
                 <input name="intent" type="hidden" value="remove" />
                 <input name="userId" type="hidden" value={member.userId} />
                 <Button.TextButton
-                  disabled={removalPending || ownerControlsDisabled}
+                  disabled={removalPending || ownerMutationDisabled}
                   type="submit"
                   variant="destructive"
                 >
@@ -514,7 +515,7 @@ function WorkspaceUserRow({
                 Cancel
               </Button.TextButton>
               <Button.TextButton
-                disabled={ownerControlsDisabled}
+                disabled={ownerMutationDisabled}
                 onClick={() => {
                   setConfirmingDemotion(false)
                   submitRole('member')
