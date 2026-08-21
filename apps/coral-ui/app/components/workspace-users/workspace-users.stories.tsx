@@ -109,6 +109,13 @@ export const RemovalRestoresFocusToHeading: Story = {
 
     await waitFor(() => expect(canvas.queryByText('Lin Chen')).not.toBeInTheDocument())
     await waitFor(() => expect(canvas.getByRole('heading', { name: 'Users' })).toHaveFocus())
+  },
+}
+
+export const SuccessfulSelfDemotionRestoresFocusToHeading: Story = {
+  play: async ({ canvasElement, userEvent }) => {
+    const canvas = within(canvasElement)
+    const document = within(canvasElement.ownerDocument.body)
 
     await userEvent.click(
       await canvas.findByRole('button', { name: 'Role for Ada Lovelace: Owner' }),

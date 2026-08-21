@@ -57,6 +57,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const [search, setSearch] = useState('')
   const submittedAddUserId = useRef<string | undefined>(undefined)
   const previousCurrentUserRole = useRef(data.currentUserRole)
+  const previousMemberIds = useRef(new Set(data.members.map((member) => member.userId)))
   const searchInputRef = useRef<HTMLInputElement>(null)
   const isOwner = data.currentUserRole === 'owner'
   const ownerCount = data.members.filter((member) => member.role === 'owner').length
@@ -114,6 +115,16 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
       document.getElementById(pageHeadingId)?.focus()
     }
   }, [data.currentUserRole, pageHeadingId])
+
+  useEffect(() => {
+    const currentMemberIds = new Set(data.members.map((member) => member.userId))
+    const memberWasRemoved = [...previousMemberIds.current].some(
+      (userId) => !currentMemberIds.has(userId),
+    )
+    previousMemberIds.current = currentMemberIds
+
+    if (memberWasRemoved) document.getElementById(pageHeadingId)?.focus()
+  }, [data.members, pageHeadingId])
 
   if (!isOwner) {
     return (
@@ -318,7 +329,6 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                 member={member}
                 mutationsDisabled={addPending}
                 ownershipReductionPending={ownershipReductionPending}
-                pageHeadingId={pageHeadingId}
                 workspaceName={data.workspaceName}
               />
             ))
@@ -335,7 +345,6 @@ function WorkspaceUserRow({
   member,
   mutationsDisabled,
   ownershipReductionPending,
-  pageHeadingId,
   workspaceName,
 }: {
   readonly currentUserId: string
@@ -343,7 +352,6 @@ function WorkspaceUserRow({
   readonly member: WorkspaceUser
   readonly mutationsDisabled: boolean
   readonly ownershipReductionPending: boolean
-  readonly pageHeadingId: string
   readonly workspaceName: string
 }) {
   const roleFetcher = useFetcher<WorkspaceUsersActionData>()
@@ -351,7 +359,6 @@ function WorkspaceUserRow({
   const [confirmingDemotion, setConfirmingDemotion] = useState(false)
   const [removalDialogOpen, setRemovalDialogOpen] = useState(false)
   const [showRemovalResult, setShowRemovalResult] = useState(false)
-  const removalSucceeded = useRef(false)
   const roleTriggerRef = useRef<HTMLButtonElement>(null)
   const rolePending = roleFetcher.state !== 'idle'
   const removalPending = removalFetcher.state !== 'idle'
@@ -373,7 +380,6 @@ function WorkspaceUserRow({
       removalFetcher.data.intent === 'remove' &&
       removalFetcher.data.userId === member.userId
     ) {
-      removalSucceeded.current = true
       setRemovalDialogOpen(false)
       setShowRemovalResult(false)
     }
@@ -461,7 +467,6 @@ function WorkspaceUserRow({
           className={styles.removeButton}
           disabled={controlsDisabled}
           onClick={() => {
-            removalSucceeded.current = false
             setShowRemovalResult(false)
             setRemovalDialogOpen(true)
           }}
@@ -481,11 +486,7 @@ function WorkspaceUserRow({
       >
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup
-            finalFocus={() =>
-              removalSucceeded.current ? document.getElementById(pageHeadingId) : true
-            }
-          >
+          <Dialog.Popup>
             <Dialog.Title>
               {member.userId === currentUserId
                 ? 'Remove yourself from this workspace?'
