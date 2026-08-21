@@ -352,6 +352,7 @@ function WorkspaceUserRow({
   const [removalDialogOpen, setRemovalDialogOpen] = useState(false)
   const [showRemovalResult, setShowRemovalResult] = useState(false)
   const removalSucceeded = useRef(false)
+  const roleTriggerRef = useRef<HTMLButtonElement>(null)
   const rolePending = roleFetcher.state !== 'idle'
   const removalPending = removalFetcher.state !== 'idle'
   const roleError =
@@ -377,6 +378,10 @@ function WorkspaceUserRow({
       setShowRemovalResult(false)
     }
   }, [member.userId, removalFetcher.data])
+
+  useEffect(() => {
+    if (roleError) roleTriggerRef.current?.focus()
+  }, [roleError])
 
   const submitRole = (role: WorkspaceUserRole) => {
     roleFetcher.submit({ intent: 'role', role, userId: member.userId }, { method: 'post' })
@@ -421,6 +426,7 @@ function WorkspaceUserRow({
                 ariaLabel={`Role for ${member.displayName || member.userId}: ${roleLabel(member.role)}${rolePending ? ', saving' : ''}`}
                 disabled={controlsDisabled}
                 fullWidth
+                ref={roleTriggerRef}
                 variant="secondary"
               />
             }
@@ -525,7 +531,7 @@ function WorkspaceUserRow({
       <Dialog.Root open={confirmingDemotion} onOpenChange={setConfirmingDemotion}>
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup>
+          <Dialog.Popup finalFocus={roleTriggerRef}>
             <Dialog.Title>Change your role to Member?</Dialog.Title>
             <Dialog.Description>
               You will lose access to manage users in {workspaceName}.
