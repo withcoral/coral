@@ -324,7 +324,7 @@ function WorkspaceUserRow({
     !removalPending && showRemovalResult && removalFetcher.data?.status === 'error'
       ? removalFetcher.data.message
       : undefined
-  const rowError = roleError ?? removalError
+  const rowError = roleError ?? (removalDialogOpen ? undefined : removalError)
   const ownerControlsDisabled = member.role === 'owner' && ownershipReductionPending
   const controlsDisabled =
     isLastOwner || ownerControlsDisabled || rolePending || removalPending || mutationsDisabled
