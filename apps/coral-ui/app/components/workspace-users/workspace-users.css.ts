@@ -57,8 +57,11 @@ export const memberNameLine = style({
 export const memberTableRow = style({})
 export const removeButton = style({
   marginInlineStart: 'auto',
-  opacity: 0,
+  opacity: 1,
   transition: 'opacity 120ms ease',
+  '@media': {
+    '(hover: hover) and (pointer: fine)': { opacity: 0 },
+  },
   selectors: {
     '&:focus-visible': { opacity: 1 },
     [`${memberTableRow}:hover &`]: { opacity: 1 },

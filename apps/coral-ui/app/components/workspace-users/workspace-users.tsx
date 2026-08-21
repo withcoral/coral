@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useFetcher } from 'react-router'
 
 import { Banner, Button, Combobox, Dialog, Menu, Table, Typography } from '@/wax/components'
@@ -46,12 +46,12 @@ const USER_COLUMNS: Table.Column[] = [
 
 export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) {
   const addFetcher = useFetcher<WorkspaceUsersActionData>()
-  const removalFetcher = useFetcher<WorkspaceUsersActionData>()
+  const addUserLabelId = useId()
+  const addRoleLabelId = useId()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [addRole, setAddRole] = useState<WorkspaceUserRole>('member')
   const [showAddResult, setShowAddResult] = useState(false)
   const [addUserId, setAddUserId] = useState<string>()
-  const [removingMember, setRemovingMember] = useState<WorkspaceUser | null>(null)
   const [search, setSearch] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const isOwner = data.currentUserRole === 'owner'
@@ -62,14 +62,8 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const availableUserLabels = availableUsers.map(userCandidateLabel)
   const selectedAddUser = availableUsers.find((user) => user.userId === addUserId)
   const addPending = addFetcher.state !== 'idle'
-  const removalPending = removalFetcher.state !== 'idle'
-  const mutationsDisabled = addPending || removalPending
   const addError =
     showAddResult && addFetcher.data?.status === 'error' ? addFetcher.data.message : undefined
-  const removalError =
-    removalFetcher.data?.status === 'error' && removalFetcher.data.userId === removingMember?.userId
-      ? removalFetcher.data.message
-      : undefined
 
   const onSearchShortcut = useCallback((event: KeyboardEvent) => {
     const input = searchInputRef.current
@@ -92,16 +86,6 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
       setAddUserId(undefined)
     }
   }, [addFetcher.data, addUserId])
-
-  useEffect(() => {
-    if (
-      removalFetcher.data?.status === 'success' &&
-      removalFetcher.data.intent === 'remove' &&
-      removalFetcher.data.userId === removingMember?.userId
-    ) {
-      setRemovingMember(null)
-    }
-  }, [removalFetcher.data, removingMember?.userId])
 
   if (!isOwner) {
     return (
@@ -128,9 +112,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
           }}
           open={addDialogOpen}
         >
-          <Dialog.Trigger
-            render={<Button.Container disabled={removalPending || Boolean(data.error)} />}
-          >
+          <Dialog.Trigger render={<Button.Container disabled={Boolean(data.error)} />}>
             <Button.Icon name="Plus" />
             <Button.Text>Add user</Button.Text>
           </Dialog.Trigger>
@@ -151,7 +133,9 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                 <input name="role" type="hidden" value={addRole} />
                 <div className={styles.addFields}>
                   <div className={styles.addField}>
-                    <Typography.BodyStrong>User</Typography.BodyStrong>
+                    <Typography.BodyStrong as="span" id={addUserLabelId}>
+                      User
+                    </Typography.BodyStrong>
                     {availableUsers.length === 0 ? (
                       <Typography.Body variant="secondary">
                         All users already have access.
@@ -169,7 +153,10 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                         }}
                         value={selectedAddUser ? userCandidateLabel(selectedAddUser) : undefined}
                       >
-                        <Combobox.Input placeholder="Search users..." />
+                        <Combobox.Input
+                          ariaLabelledby={addUserLabelId}
+                          placeholder="Search users..."
+                        />
                         <Combobox.Content>
                           <Combobox.Empty>No users found.</Combobox.Empty>
                           <Combobox.List>
@@ -184,11 +171,14 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                     )}
                   </div>
                   <div className={styles.addField}>
-                    <Typography.BodyStrong>Role</Typography.BodyStrong>
+                    <Typography.BodyStrong as="span" id={addRoleLabelId}>
+                      Role
+                    </Typography.BodyStrong>
                     <Menu.Container>
                       <Menu.Trigger
                         render={
                           <Button.Container
+                            aria-labelledby={addRoleLabelId}
                             disabled={addPending}
                             fullWidth
                             size="36"
@@ -278,49 +268,13 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                 isLastOwner={member.role === 'owner' && ownerCount === 1}
                 key={member.userId}
                 member={member}
-                mutationsDisabled={mutationsDisabled}
-                onRemove={setRemovingMember}
+                mutationsDisabled={addPending}
+                workspaceName={data.workspaceName}
               />
             ))
           )}
         </Table.Body>
       </Table.Container>
-
-      <Dialog.Root
-        onOpenChange={(open) => {
-          if (!open && removalFetcher.state === 'idle') setRemovingMember(null)
-        }}
-        open={removingMember !== null}
-      >
-        <Dialog.Portal>
-          <Dialog.Backdrop />
-          <Dialog.Popup>
-            <Dialog.Title>Remove workspace user?</Dialog.Title>
-            <Dialog.Description>
-              {removingMember
-                ? `${removingMember.displayName || removingMember.userId} will lose access to ${data.workspaceName}.`
-                : ''}
-            </Dialog.Description>
-            {removalError ? <Banner variant="error">{removalError}</Banner> : null}
-            <Dialog.Actions>
-              <Button.TextButton
-                disabled={removalPending}
-                onClick={() => setRemovingMember(null)}
-                variant="secondary"
-              >
-                Cancel
-              </Button.TextButton>
-              <removalFetcher.Form method="post">
-                <input name="intent" type="hidden" value="remove" />
-                <input name="userId" type="hidden" value={removingMember?.userId ?? ''} />
-                <Button.TextButton disabled={removalPending} type="submit" variant="destructive">
-                  Remove user
-                </Button.TextButton>
-              </removalFetcher.Form>
-            </Dialog.Actions>
-          </Dialog.Popup>
-        </Dialog.Portal>
-      </Dialog.Root>
     </WorkspaceUsersPageHeader>
   )
 }
@@ -330,18 +284,43 @@ function WorkspaceUserRow({
   isLastOwner,
   member,
   mutationsDisabled,
-  onRemove,
+  workspaceName,
 }: {
   readonly currentUserId: string
   readonly isLastOwner: boolean
   readonly member: WorkspaceUser
   readonly mutationsDisabled: boolean
-  readonly onRemove: (member: WorkspaceUser) => void
+  readonly workspaceName: string
 }) {
   const roleFetcher = useFetcher<WorkspaceUsersActionData>()
+  const removalFetcher = useFetcher<WorkspaceUsersActionData>()
+  const [confirmingDemotion, setConfirmingDemotion] = useState(false)
+  const [removalDialogOpen, setRemovalDialogOpen] = useState(false)
+  const [showRemovalResult, setShowRemovalResult] = useState(false)
   const rolePending = roleFetcher.state !== 'idle'
-  const rowError = roleFetcher.data?.status === 'error' ? roleFetcher.data.message : undefined
-  const controlsDisabled = isLastOwner || rolePending || mutationsDisabled
+  const removalPending = removalFetcher.state !== 'idle'
+  const roleError = roleFetcher.data?.status === 'error' ? roleFetcher.data.message : undefined
+  const removalError =
+    showRemovalResult && removalFetcher.data?.status === 'error'
+      ? removalFetcher.data.message
+      : undefined
+  const rowError = roleError ?? removalError
+  const controlsDisabled = isLastOwner || rolePending || removalPending || mutationsDisabled
+
+  useEffect(() => {
+    if (
+      removalFetcher.data?.status === 'success' &&
+      removalFetcher.data.intent === 'remove' &&
+      removalFetcher.data.userId === member.userId
+    ) {
+      setRemovalDialogOpen(false)
+      setShowRemovalResult(false)
+    }
+  }, [member.userId, removalFetcher.data])
+
+  const submitRole = (role: WorkspaceUserRole) => {
+    roleFetcher.submit({ intent: 'role', role, userId: member.userId }, { method: 'post' })
+  }
 
   return (
     <Table.Row className={styles.memberTableRow}>
@@ -392,10 +371,15 @@ function WorkspaceUserRow({
           <Menu.Content align="end" className={styles.roleMenu}>
             <Menu.RadioGroup
               onValueChange={(role) => {
-                roleFetcher.submit(
-                  { intent: 'role', role, userId: member.userId },
-                  { method: 'post' },
-                )
+                if (
+                  member.userId === currentUserId &&
+                  member.role === 'owner' &&
+                  role === 'member'
+                ) {
+                  setConfirmingDemotion(true)
+                  return
+                }
+                submitRole(role as WorkspaceUserRole)
               }}
               value={member.role}
             >
@@ -410,13 +394,76 @@ function WorkspaceUserRow({
           ariaLabel={`Remove ${member.displayName || member.userId}`}
           className={styles.removeButton}
           disabled={controlsDisabled}
-          onClick={() => onRemove(member)}
+          onClick={() => {
+            setShowRemovalResult(false)
+            setRemovalDialogOpen(true)
+          }}
           size="32"
           variant="bare"
         >
           <Button.Icon name="UserRoundMinus" />
         </Button.Container>
       </Table.Cell>
+      <Dialog.Root
+        onOpenChange={(open) => {
+          if (removalPending) return
+          setRemovalDialogOpen(open)
+          if (open) setShowRemovalResult(false)
+        }}
+        open={removalDialogOpen}
+      >
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup>
+            <Dialog.Title>Remove workspace user?</Dialog.Title>
+            <Dialog.Description>
+              {member.displayName || member.userId} will lose access to {workspaceName}.
+            </Dialog.Description>
+            {removalError ? <Banner variant="error">{removalError}</Banner> : null}
+            <Dialog.Actions>
+              <Button.TextButton
+                disabled={removalPending}
+                onClick={() => setRemovalDialogOpen(false)}
+                variant="secondary"
+              >
+                Cancel
+              </Button.TextButton>
+              <removalFetcher.Form method="post" onSubmit={() => setShowRemovalResult(true)}>
+                <input name="intent" type="hidden" value="remove" />
+                <input name="userId" type="hidden" value={member.userId} />
+                <Button.TextButton disabled={removalPending} type="submit" variant="destructive">
+                  Remove user
+                </Button.TextButton>
+              </removalFetcher.Form>
+            </Dialog.Actions>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+      <Dialog.Root open={confirmingDemotion} onOpenChange={setConfirmingDemotion}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup>
+            <Dialog.Title>Change your role to Member?</Dialog.Title>
+            <Dialog.Description>
+              You will lose access to manage users in {workspaceName}.
+            </Dialog.Description>
+            <Dialog.Actions>
+              <Button.TextButton onClick={() => setConfirmingDemotion(false)} variant="secondary">
+                Cancel
+              </Button.TextButton>
+              <Button.TextButton
+                onClick={() => {
+                  setConfirmingDemotion(false)
+                  submitRole('member')
+                }}
+                variant="destructive"
+              >
+                Change my role
+              </Button.TextButton>
+            </Dialog.Actions>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
     </Table.Row>
   )
 }
