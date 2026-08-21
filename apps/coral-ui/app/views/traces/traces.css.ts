@@ -173,6 +173,17 @@ export const cellUser = style({
     },
   },
 })
+export const desktopUserAvatar = style({
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: { display: 'none' },
+  },
+})
+export const mobileUserAvatar = style({
+  display: 'none',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: { display: 'inline-flex' },
+  },
+})
 export const userLabel = style({
   overflow: 'hidden',
   textOverflow: 'ellipsis',

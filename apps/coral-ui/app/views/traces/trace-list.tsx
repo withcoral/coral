@@ -36,6 +36,7 @@ function TraceRow({
   trace: TraceSummaryData
   workspaceId: string
 }) {
+  const userLabel = trace.user ? traceUserLabel(trace.user) : null
   return (
     <NavLink
       className={s.fullRow}
@@ -63,10 +64,25 @@ function TraceRow({
       </div>
       {trace.user && (
         <div className={classNames(s.cell, s.cellUser)}>
-          <Avatar name={traceUserLabel(trace.user)} seed={trace.user.id} />
-          <Typography.Body as="span" className={s.userLabel} variant="secondary">
-            {traceUserLabel(trace.user)}
-          </Typography.Body>
+          <Avatar
+            aria-hidden="true"
+            className={s.desktopUserAvatar}
+            name={userLabel ?? ''}
+            seed={trace.user.id}
+          />
+          <Tooltip content={userLabel}>
+            <Avatar
+              aria-hidden="true"
+              className={s.mobileUserAvatar}
+              name={userLabel ?? ''}
+              seed={trace.user.id}
+            />
+          </Tooltip>
+          <Tooltip content={userLabel} showOnlyWhenTruncated>
+            <Typography.Body as="span" className={s.userLabel} variant="secondary">
+              {userLabel}
+            </Typography.Body>
+          </Tooltip>
         </div>
       )}
       <div
