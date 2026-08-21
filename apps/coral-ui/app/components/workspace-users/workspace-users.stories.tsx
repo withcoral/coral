@@ -36,6 +36,7 @@ const DEFAULT_DATA: WorkspaceUsersData = {
 interface StoryArgs {
   action: (args: { request: Request }) => unknown
   data: WorkspaceUsersData
+  retryData?: WorkspaceUsersData
 }
 
 const meta: Meta<StoryArgs> = {
@@ -82,6 +83,19 @@ export const NonOwner: Story = {
 export const LoadError: Story = {
   args: {
     data: { ...DEFAULT_DATA, error: 'Coral could not load workspace users.', members: [] },
+    retryData: DEFAULT_DATA,
+  },
+  play: async ({ canvasElement, userEvent }) => {
+    const page = within(canvasElement.ownerDocument.body)
+    const retry = page.getByRole('button', { name: 'Retry' })
+
+    await expect(page.getByRole('button', { name: 'Add user' })).toBeDisabled()
+    await userEvent.click(retry)
+    await expect(page.getByRole('button', { name: 'Retrying…' })).toBeDisabled()
+
+    await waitFor(() => expect(page.queryByRole('alert')).not.toBeInTheDocument())
+    await expect(page.getByText('Ada Lovelace (you)')).toBeInTheDocument()
+    await expect(page.getByRole('button', { name: 'Add user' })).toBeEnabled()
   },
 }
 
@@ -129,12 +143,13 @@ export const FailedSelfDemotionRestoresFocusToRole: Story = {
   },
 }
 
-function WorkspaceUsersStory({ action, data }: StoryArgs) {
+function WorkspaceUsersStory({ action, data, retryData }: StoryArgs) {
   let storyData: WorkspaceUsersData = {
     ...data,
     availableUsers: [...data.availableUsers],
     members: [...data.members],
   }
+  let loadCount = 0
   const RoutesStub = createRoutesStub([
     {
       action: async ({ request }) => {
@@ -148,7 +163,14 @@ function WorkspaceUsersStory({ action, data }: StoryArgs) {
         return result
       },
       Component: WorkspaceUsersStoryRoute,
-      loader: () => storyData,
+      loader: async () => {
+        loadCount += 1
+        if (loadCount > 1 && retryData) {
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          storyData = retryData
+        }
+        return storyData
+      },
       path: '/workspaces/:workspaceId/users',
     },
   ])

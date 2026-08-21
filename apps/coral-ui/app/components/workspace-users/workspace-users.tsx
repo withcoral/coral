@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { useFetcher, useFetchers } from 'react-router'
+import { useFetcher, useFetchers, useRevalidator } from 'react-router'
 
 import { Banner, Button, Combobox, Dialog, Menu, Table, Typography } from '@/wax/components'
 import { Avatar } from '@/wax/components/avatar'
@@ -47,6 +47,7 @@ const USER_COLUMNS: Table.Column[] = [
 export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) {
   const addFetcher = useFetcher<WorkspaceUsersActionData>()
   const fetchers = useFetchers()
+  const revalidator = useRevalidator()
   const addUserLabelId = useId()
   const pageHeadingId = useId()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -65,6 +66,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const availableUserLabels = availableUsers.map(userCandidateLabel)
   const selectedAddUser = availableUsers.find((user) => user.userId === addUserId)
   const addPending = addFetcher.state !== 'idle'
+  const retryPending = revalidator.state !== 'idle'
   const ownershipReductionPending = fetchers.some((fetcher) => {
     if (fetcher.state === 'idle') return false
 
@@ -275,7 +277,25 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
         <Table.Body>
           {data.error ? (
             <Table.Status>
-              <Banner variant="error">{data.error}</Banner>
+              <Banner
+                action={
+                  <Button.Container
+                    disabled={retryPending}
+                    onClick={() => {
+                      if (retryPending) return
+                      void revalidator.revalidate()
+                    }}
+                    size="22"
+                    variant="secondary"
+                  >
+                    <Button.Icon name="RefreshCw" />
+                    <Button.Text>{retryPending ? 'Retrying…' : 'Retry'}</Button.Text>
+                  </Button.Container>
+                }
+                variant="error"
+              >
+                {data.error}
+              </Banner>
             </Table.Status>
           ) : data.members.length === 0 ? (
             <Table.Status>
