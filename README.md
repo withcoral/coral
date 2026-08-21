@@ -137,11 +137,11 @@ For a deeper understanding of the internals, see the
 
 ## Sources
 
-Coral bundles 26 [popular data sources](https://withcoral.com/docs/reference/bundled-sources)
+Coral bundles [popular data sources](https://withcoral.com/docs/reference/bundled-sources)
 — Datadog, GitHub, Linear, Sentry, Slack, Stripe, and more — plus local JSONL
 and Parquet files. Run `coral source discover` to see what your build bundles.
 
-Another 109 [community source specs](https://withcoral.com/docs/reference/community-sources)
+Many more [community source specs](https://withcoral.com/docs/reference/community-sources)
 live in this repo under [`sources/community`](./sources/community) and import
 with `coral source add --file`. Community sources do not appear in
 `coral source discover`, and `coral source add <name>` installs bundled sources
