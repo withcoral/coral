@@ -3,21 +3,42 @@
 [![CI](https://github.com/withcoral/coral/actions/workflows/validate.yml/badge.svg)](https://github.com/withcoral/coral/actions/workflows/validate.yml)
 [![Release](https://img.shields.io/github/v/release/withcoral/coral)](https://github.com/withcoral/coral/releases)
 [![License](https://img.shields.io/github/license/withcoral/coral)](./LICENSE)
-[![Docs](https://img.shields.io/badge/docs-withcoral.com-0A7C8A)](https://withcoral.com/docs)
+[![Docs](https://img.shields.io/badge/docs-withcoral.com-398125)](https://withcoral.com/docs)
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://withcoral.com/discord)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/withcoral/coral)
 
-Coral gives agents a local-first SQL runtime over APIs, files, and other data
-sources. Query it from the CLI, inspect schemas and tables, or expose the same
-runtime over MCP so agents can use it without bespoke tool glue.
+Coral is a single SQL interface for APIs, files, and other data sources.
 
-You can ask your agents complex questions about your data:
+Agents make fewer, more precise tool calls with Coral than they do with
+per-source MCP servers, CLI tools, or API wrappers. For agent read tasks, SQL
+has a structural advantage when a question needs more than one API call: it
+avoids paginating through large results, returns tabular rows instead of
+sprawling JSON, brings back only the columns you asked for, and correlates
+across sources in a single statement.
 
-![coral sql demo](./apps/docs/images/claude-query-example.png)
+Everything is local: your data, credentials, and usage history never leave your
+machine.
 
-Or run SQL queries yourself:
+[![Download Coral for macOS](https://img.shields.io/badge/Download_for_macOS-universal_.dmg-398125?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-mac-universal.dmg)
 
-![coral sql demo](./apps/docs/images/coral-sql-join.gif)
+Coral ships as a macOS desktop app, and the app bundles the `coral` binary it
+runs queries with. On Linux or Windows, and for servers and automation, use the
+[CLI](#cli-quickstart).
+
+## Get started
+
+1. **Install Coral.** Use the download above, or see
+   [all installation options](https://withcoral.com/docs/getting-started/installation).
+2. **Add your sources.** Connect GitHub, Slack, Datadog, and other
+   [bundled sources](https://withcoral.com/docs/reference/bundled-sources) from
+   the sources page. Coral only fetches data from sources you connect.
+3. **Connect your agents over MCP.** The app exposes an MCP server over stdio.
+   Point Claude Code, Codex, Cursor, or VS Code at it — see
+   [Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp).
+
+Then ask your agent a question about your data:
+
+![Coral answering a data question in Claude](./apps/docs/images/claude-query-example.png)
 
 ## Why Coral
 
@@ -37,7 +58,7 @@ Coral gives agents one query interface instead:
 - expose the same runtime over MCP
 - answer cross-source questions without stitching tools together by hand
 
-We benchmarked Coral with direct provider MCPs (Datadog, Sentry, Linear, Slack and Github) for a diverse set of 82 real-world AI tasks using Claude Opus 4.6. Key findings:
+We benchmarked Coral against direct provider MCPs (Datadog, Sentry, Linear, Slack, and GitHub) for a diverse set of 82 real-world AI tasks using Claude Opus 4.6. Key findings:
 
 1. **Widespread impact on performance**. Across all tasks, Claude was 20% more accurate and 2x more cost efficient using Coral than using direct provider MCPs. With Coral, Claude also had 42% lower latency.
 
@@ -114,21 +135,29 @@ keep things responsive and cut unnecessary API traffic.
 For a deeper understanding of the internals, see the
 [architecture page](https://withcoral.com/docs/project/architecture).
 
-## Bundled sources
+## Sources
 
-Coral supports many data sources out of the box, like Datadog, GitHub, Linear, Sentry, Stripe and more — plus local JSONL and Parquet files.
+Coral bundles 26 [popular data sources](https://withcoral.com/docs/reference/bundled-sources)
+— Datadog, GitHub, Linear, Sentry, Slack, Stripe, and more — plus local JSONL
+and Parquet files. Run `coral source discover` to see what your build bundles.
 
-Run `coral source discover` to see what's in your build, or check the
-[bundled sources reference](https://withcoral.com/docs/reference/bundled-sources)
-for the canonical list. If the source you need isn't there, you can
-[write a custom source](https://withcoral.com/docs/guides/write-a-custom-source),
-or [let us know you'd like Coral to support a data source you use](https://github.com/withcoral/coral/issues/new).
+Another 109 [community source specs](https://withcoral.com/docs/reference/community-sources)
+live in this repo under [`sources/community`](./sources/community) and import
+with `coral source add --file`. Community sources do not appear in
+`coral source discover`, and `coral source add <name>` installs bundled sources
+only.
 
-## Quickstart
+If neither covers what you need,
+[write your own source spec](https://withcoral.com/docs/guides/write-a-custom-source),
+or [tell us which source to add](https://github.com/withcoral/coral/issues/new).
 
-This gets you from a fresh [install](https://withcoral.com/docs/getting-started/installation)
-of Coral to your first SQL query. If you prefer an interactive wizard, you can run
-`coral onboard`, which guides you through everything covered below.
+## CLI quickstart
+
+This walks the CLI path end to end, from a fresh
+[install](https://withcoral.com/docs/getting-started/installation) to your
+first SQL query. For the desktop app, see [Get started](#get-started) above.
+If you prefer an interactive wizard, run `coral onboard`, which guides you
+through everything covered below.
 
 ### 1. Install Coral
 
@@ -197,6 +226,7 @@ coral sql "
 
 ### Next steps
 
+- **[Search with Coral](https://withcoral.com/docs/guides/search-with-coral)** — `coral search` finds where to query before you write SQL, across catalog metadata and the values Coral saw while querying your sources
 - **[Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp)** — expose Coral to Claude Code, Cursor, or VS Code over MCP so your agent can query sources directly
 - **[Write a custom source spec](https://withcoral.com/docs/guides/write-a-custom-source)** — connect any HTTP API or local dataset that isn't bundled yet
 - **[Install Coral skills](https://withcoral.com/docs/getting-started/installation#skills)** — teach your coding agent how to use Coral
@@ -215,19 +245,18 @@ codex mcp add coral -- coral mcp-stdio                 # Codex
 For Cursor, VS Code, Claude Desktop, OpenCode, and manual config examples,
 see [Use Coral over MCP](https://withcoral.com/docs/guides/use-coral-over-mcp).
 
-Coral also publishes a set of skills that teach your agent the
-discovery-first SQL workflow (`list_catalog`, `coral.tables`,
-`coral.table_functions`, `coral.columns`, etc.):
+Coral also publishes three skills that teach your agent the discovery-first
+SQL workflow: `coral`, `coral-create-source-spec`, and
+`coral-review-source-spec`.
 
 ```bash
 npx skills add withcoral/skills
 ```
 
-Once connected, ask your agent to "list the tables available in Coral" or to
-run a small query. It should use `search`, `list_catalog`, or the
-`coral.tables` / `coral.table_functions` metadata tables as database catalog
-discovery, then answer with SQL over your visible schemas, tables, and table
-functions.
+Once connected, ask your agent a question about your data. It should reach for
+`search` first to find the right schemas and tables, fall back to the
+`coral.tables`, `coral.table_functions`, and `coral.columns` metadata tables
+for catalog discovery, then answer with SQL over the sources you connected.
 
 ## Local state
 
