@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { useFetcher } from 'react-router'
+import { useFetcher, useFetchers } from 'react-router'
 
 import { Banner, Button, Combobox, Dialog, Menu, Table, Typography } from '@/wax/components'
 import { Avatar } from '@/wax/components/avatar'
@@ -46,12 +46,14 @@ const USER_COLUMNS: Table.Column[] = [
 
 export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) {
   const addFetcher = useFetcher<WorkspaceUsersActionData>()
+  const fetchers = useFetchers()
   const addUserLabelId = useId()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [addRole, setAddRole] = useState<WorkspaceUserRole>('member')
   const [showAddResult, setShowAddResult] = useState(false)
   const [addUserId, setAddUserId] = useState<string>()
   const [search, setSearch] = useState('')
+  const submittedAddUserId = useRef<string | undefined>(undefined)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const isOwner = data.currentUserRole === 'owner'
   const ownerCount = data.members.filter((member) => member.role === 'owner').length
@@ -61,6 +63,16 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const availableUserLabels = availableUsers.map(userCandidateLabel)
   const selectedAddUser = availableUsers.find((user) => user.userId === addUserId)
   const addPending = addFetcher.state !== 'idle'
+  const ownershipReductionPending = fetchers.some((fetcher) => {
+    if (fetcher.state === 'idle') return false
+
+    const intent = fetcher.formData?.get('intent')
+    const userId = fetcher.formData?.get('userId')
+    const member = data.members.find((candidate) => candidate.userId === userId)
+    if (member?.role !== 'owner') return false
+
+    return intent === 'remove' || (intent === 'role' && fetcher.formData?.get('role') === 'member')
+  })
   const addError =
     !addPending && showAddResult && addFetcher.data?.status === 'error'
       ? addFetcher.data.message
@@ -77,16 +89,18 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
 
   useEffect(() => {
     if (
+      addFetcher.state === 'idle' &&
       addFetcher.data?.status === 'success' &&
       addFetcher.data.intent === 'add' &&
-      addFetcher.data.userId === addUserId
+      addFetcher.data.userId === submittedAddUserId.current
     ) {
+      submittedAddUserId.current = undefined
       setAddDialogOpen(false)
       setAddRole('member')
       setShowAddResult(false)
       setAddUserId(undefined)
     }
-  }, [addFetcher.data, addUserId])
+  }, [addFetcher.data, addFetcher.state])
 
   if (!isOwner) {
     return (
@@ -127,7 +141,10 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
               <addFetcher.Form
                 className={styles.addForm}
                 method="post"
-                onSubmit={() => setShowAddResult(true)}
+                onSubmit={() => {
+                  submittedAddUserId.current = addUserId
+                  setShowAddResult(true)
+                }}
               >
                 <input name="intent" type="hidden" value="add" />
                 <input name="userId" type="hidden" value={addUserId ?? ''} />
@@ -268,6 +285,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                 key={member.userId}
                 member={member}
                 mutationsDisabled={addPending}
+                ownershipReductionPending={ownershipReductionPending}
                 workspaceName={data.workspaceName}
               />
             ))
@@ -283,12 +301,14 @@ function WorkspaceUserRow({
   isLastOwner,
   member,
   mutationsDisabled,
+  ownershipReductionPending,
   workspaceName,
 }: {
   readonly currentUserId: string
   readonly isLastOwner: boolean
   readonly member: WorkspaceUser
   readonly mutationsDisabled: boolean
+  readonly ownershipReductionPending: boolean
   readonly workspaceName: string
 }) {
   const roleFetcher = useFetcher<WorkspaceUsersActionData>()
@@ -305,7 +325,9 @@ function WorkspaceUserRow({
       ? removalFetcher.data.message
       : undefined
   const rowError = roleError ?? removalError
-  const controlsDisabled = isLastOwner || rolePending || removalPending || mutationsDisabled
+  const ownerControlsDisabled = member.role === 'owner' && ownershipReductionPending
+  const controlsDisabled =
+    isLastOwner || ownerControlsDisabled || rolePending || removalPending || mutationsDisabled
 
   useEffect(() => {
     if (
@@ -431,7 +453,11 @@ function WorkspaceUserRow({
               <removalFetcher.Form method="post" onSubmit={() => setShowRemovalResult(true)}>
                 <input name="intent" type="hidden" value="remove" />
                 <input name="userId" type="hidden" value={member.userId} />
-                <Button.TextButton disabled={removalPending} type="submit" variant="destructive">
+                <Button.TextButton
+                  disabled={removalPending || ownerControlsDisabled}
+                  type="submit"
+                  variant="destructive"
+                >
                   Remove user
                 </Button.TextButton>
               </removalFetcher.Form>
@@ -452,6 +478,7 @@ function WorkspaceUserRow({
                 Cancel
               </Button.TextButton>
               <Button.TextButton
+                disabled={ownerControlsDisabled}
                 onClick={() => {
                   setConfirmingDemotion(false)
                   submitRole('member')
