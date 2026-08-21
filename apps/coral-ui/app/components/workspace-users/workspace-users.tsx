@@ -105,7 +105,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
 
   if (!isOwner) {
     return (
-      <WorkspaceUsersPageHeader>
+      <WorkspaceUsersPageHeader headingId={pageHeadingId}>
         <Banner title="Owner access required">
           Only workspace owners can view and manage workspace users. Your current role is Member.
         </Banner>

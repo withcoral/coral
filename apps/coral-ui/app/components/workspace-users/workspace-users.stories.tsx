@@ -94,6 +94,12 @@ export const RemovalRestoresFocusToHeading: Story = {
 
     await waitFor(() => expect(page.queryByText('Lin Chen')).not.toBeInTheDocument())
     await waitFor(() => expect(page.getByRole('heading', { name: 'Users' })).toHaveFocus())
+
+    await userEvent.click(page.getByRole('button', { name: 'Remove Ada Lovelace' }))
+    await userEvent.click(page.getByRole('button', { name: 'Remove myself' }))
+
+    await waitFor(() => expect(page.getByText('Owner access required')).toBeInTheDocument())
+    await waitFor(() => expect(page.getByRole('heading', { name: 'Users' })).toHaveFocus())
   },
 }
 
