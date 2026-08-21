@@ -464,7 +464,15 @@ function WorkspaceUserRow({
                   type="submit"
                   variant="destructive"
                 >
-                  <span role="status">{removalPending ? 'Removing…' : 'Remove user'}</span>
+                  <span role="status">
+                    {member.userId === currentUserId
+                      ? removalPending
+                        ? 'Removing myself…'
+                        : 'Remove myself'
+                      : removalPending
+                        ? 'Removing…'
+                        : 'Remove user'}
+                  </span>
                 </Button.TextButton>
               </removalFetcher.Form>
             </Dialog.Actions>
