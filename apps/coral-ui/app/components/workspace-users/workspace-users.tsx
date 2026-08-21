@@ -49,6 +49,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const fetchers = useFetchers()
   const revalidator = useRevalidator()
   const addUserLabelId = useId()
+  const fetcherNamespace = `workspace-users:${useId()}:`
   const pageHeadingId = useId()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [addRole, setAddRole] = useState<WorkspaceUserRole>('member')
@@ -69,7 +70,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const addPending = addFetcher.state !== 'idle'
   const retryPending = revalidator.state !== 'idle'
   const ownershipReductionPending = fetchers.some((fetcher) => {
-    if (fetcher.state === 'idle') return false
+    if (fetcher.state === 'idle' || !fetcher.key.startsWith(fetcherNamespace)) return false
 
     const intent = fetcher.formData?.get('intent')
     const userId = fetcher.formData?.get('userId')
@@ -324,6 +325,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
             visibleMembers.map((member) => (
               <WorkspaceUserRow
                 currentUserId={data.currentUserId}
+                fetcherNamespace={fetcherNamespace}
                 isLastOwner={member.role === 'owner' && ownerCount === 1}
                 key={member.userId}
                 member={member}
@@ -341,6 +343,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
 
 function WorkspaceUserRow({
   currentUserId,
+  fetcherNamespace,
   isLastOwner,
   member,
   mutationsDisabled,
@@ -348,14 +351,19 @@ function WorkspaceUserRow({
   workspaceName,
 }: {
   readonly currentUserId: string
+  readonly fetcherNamespace: string
   readonly isLastOwner: boolean
   readonly member: WorkspaceUser
   readonly mutationsDisabled: boolean
   readonly ownershipReductionPending: boolean
   readonly workspaceName: string
 }) {
-  const roleFetcher = useFetcher<WorkspaceUsersActionData>()
-  const removalFetcher = useFetcher<WorkspaceUsersActionData>()
+  const roleFetcher = useFetcher<WorkspaceUsersActionData>({
+    key: `${fetcherNamespace}role:${member.userId}`,
+  })
+  const removalFetcher = useFetcher<WorkspaceUsersActionData>({
+    key: `${fetcherNamespace}remove:${member.userId}`,
+  })
   const [confirmingDemotion, setConfirmingDemotion] = useState(false)
   const [removalDialogOpen, setRemovalDialogOpen] = useState(false)
   const [showRemovalResult, setShowRemovalResult] = useState(false)
