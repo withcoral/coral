@@ -13,6 +13,7 @@ const config: StorybookConfig = {
   stories: [
     '../app/wax/**/*.stories.@(js|jsx|mjs|ts|tsx)',
     '../app/components/**/*.stories.@(js|jsx|mjs|ts|tsx)',
+    '../app/views/**/*.stories.@(js|jsx|mjs|ts|tsx)',
   ],
   addons: ['@chromatic-com/storybook', '@storybook/addon-docs', '@storybook/addon-a11y'],
   framework: {
