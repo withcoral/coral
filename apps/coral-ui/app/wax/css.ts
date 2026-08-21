@@ -1,4 +1,6 @@
 import {
+  createGlobalTheme as vanillaCreateGlobalTheme,
+  createTheme as vanillaCreateTheme,
   globalStyle as vanillaGlobalStyle,
   style as vanillaStyle,
   styleVariants as vanillaStyleVariants,
@@ -50,6 +52,37 @@ function inWaxLayerRule<Rule extends ComplexStyleRule | string>(rule: Rule): Rul
   }
   return inWaxLayer(rule) as Rule
 }
+
+/**
+ * The token block of a theme goes in the wax layer too. The theme class sits on the
+ * body, so an app rule that redeclares a token on the body is one class wide just
+ * like the theme rule, and unlayered, which used to leave the winner to the order
+ * the bundler linked the chunks in. Vanilla Extract takes the layer as an `@layer`
+ * key in the token map, which is always the last object argument.
+ */
+function inWaxLayerTokens(args: readonly unknown[]): unknown[] {
+  const withLayer = [...args]
+
+  for (let index = withLayer.length - 1; index >= 0; index -= 1) {
+    const argument = withLayer[index]
+    if (typeof argument === 'object' && argument !== null) {
+      withLayer[index] = { ...argument, '@layer': waxLayer }
+      break
+    }
+  }
+
+  return withLayer
+}
+
+export const createTheme = ((...args: readonly unknown[]) =>
+  (vanillaCreateTheme as (...rest: unknown[]) => unknown)(
+    ...inWaxLayerTokens(args),
+  )) as typeof vanillaCreateTheme
+
+export const createGlobalTheme = ((...args: readonly unknown[]) =>
+  (vanillaCreateGlobalTheme as (...rest: unknown[]) => unknown)(
+    ...inWaxLayerTokens(args),
+  )) as typeof vanillaCreateGlobalTheme
 
 export function style(rule: ComplexStyleRule, debugId?: string): string {
   return vanillaStyle(inWaxLayerRule(rule), debugId)
