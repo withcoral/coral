@@ -5,7 +5,6 @@ import * as styles from './dialog.css'
 
 export interface PopupProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode
-  finalFocus?: React.ComponentProps<typeof BaseDialog.Popup>['finalFocus']
   ref?: React.Ref<HTMLDivElement>
   /** The width of the dialog. Defaults to 'm'. */
   size?: PopupSize

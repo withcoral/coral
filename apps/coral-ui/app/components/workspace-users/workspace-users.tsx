@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useFetcher, useFetchers, useRevalidator } from 'react-router'
 
+import { ErrorBanner } from '@/components/error-banner'
 import { Banner, Button, Combobox, Dialog, Menu, Table, Typography } from '@/wax/components'
 import { Avatar } from '@/wax/components/avatar'
 import { TextInput } from '@/wax/components/inputs/text'
@@ -48,7 +49,6 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   const addFetcher = useFetcher<WorkspaceUsersActionData>()
   const fetchers = useFetchers()
   const revalidator = useRevalidator()
-  const addUserLabelId = useId()
   const fetcherNamespace = `workspace-users:${useId()}:`
   const pageHeadingId = useId()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -85,6 +85,8 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
       : undefined
 
   const onSearchShortcut = useCallback((event: KeyboardEvent) => {
+    if (document.querySelector('[role="dialog"]')) return
+
     const input = searchInputRef.current
     if (!input) return
 
@@ -177,9 +179,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                 <input name="role" type="hidden" value={addRole} />
                 <div className={styles.addFields}>
                   <div className={styles.addField}>
-                    <Typography.BodyStrong as="span" id={addUserLabelId}>
-                      User
-                    </Typography.BodyStrong>
+                    <Typography.BodyStrong as="span">User</Typography.BodyStrong>
                     {availableUsers.length === 0 ? (
                       <Typography.Body variant="secondary">
                         All users already have access.
@@ -197,10 +197,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                         }}
                         value={selectedAddUser ? userCandidateLabel(selectedAddUser) : undefined}
                       >
-                        <Combobox.Input
-                          ariaLabelledby={addUserLabelId}
-                          placeholder="Search users..."
-                        />
+                        <Combobox.Input placeholder="Search users..." />
                         <Combobox.Content>
                           <Combobox.Empty>No users found.</Combobox.Empty>
                           <Combobox.List>
@@ -288,35 +285,21 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
         <Table.Head />
         <Table.Body>
           {data.error ? (
-            <Table.Status>
-              <Banner
-                action={
-                  <Button.Container
-                    disabled={retryPending}
-                    onClick={() => {
-                      if (retryPending) return
-                      void revalidator.revalidate()
-                    }}
-                    size="32"
-                    variant="secondary"
-                  >
-                    <Button.Icon name="RefreshCw" />
-                    <Button.Text>{retryPending ? 'Retrying…' : 'Retry'}</Button.Text>
-                  </Button.Container>
-                }
-                variant="error"
-              >
-                {data.error}
-              </Banner>
+            <Table.Status className={styles.statusCell}>
+              <ErrorBanner
+                message={data.error}
+                onRetry={retryPending ? undefined : () => void revalidator.revalidate()}
+                title="Couldn't load workspace users"
+              />
             </Table.Status>
           ) : data.members.length === 0 ? (
-            <Table.Status>
+            <Table.Status className={styles.statusCell}>
               <Typography.BodySmall variant="tertiary">
                 This workspace has no users.
               </Typography.BodySmall>
             </Table.Status>
           ) : visibleMembers.length === 0 ? (
-            <Table.Status>
+            <Table.Status className={styles.statusCell}>
               <Typography.BodySmall variant="tertiary">
                 No users match "{search}".
               </Typography.BodySmall>
@@ -537,10 +520,16 @@ function WorkspaceUserRow({
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
-      <Dialog.Root open={confirmingDemotion} onOpenChange={setConfirmingDemotion}>
+      <Dialog.Root
+        open={confirmingDemotion}
+        onOpenChange={(open) => {
+          setConfirmingDemotion(open)
+          if (!open) roleTriggerRef.current?.focus()
+        }}
+      >
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup finalFocus={roleTriggerRef}>
+          <Dialog.Popup>
             <Dialog.Title>Change your role to Member?</Dialog.Title>
             <Dialog.Description>
               You will lose access to manage users in {workspaceName}.

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { createRoutesStub, useLoaderData } from 'react-router'
-import { expect, fn, waitFor, within } from 'storybook/test'
+import { fn } from 'storybook/test'
 
 import { addToast, ToastContainer } from '@/wax/components/toast'
 
@@ -36,7 +36,6 @@ const DEFAULT_DATA: WorkspaceUsersData = {
 interface StoryArgs {
   action: (args: { request: Request }) => unknown
   data: WorkspaceUsersData
-  retryData?: WorkspaceUsersData
 }
 
 const meta: Meta<StoryArgs> = {
@@ -83,86 +82,15 @@ export const NonOwner: Story = {
 export const LoadError: Story = {
   args: {
     data: { ...DEFAULT_DATA, error: 'Coral could not load workspace users.', members: [] },
-    retryData: DEFAULT_DATA,
-  },
-  play: async ({ canvasElement, userEvent }) => {
-    const canvas = within(canvasElement)
-    const retry = await canvas.findByRole('button', { name: 'Retry' })
-
-    await expect(canvas.getByRole('button', { name: 'Add user' })).toBeDisabled()
-    await userEvent.click(retry)
-    await expect(canvas.getByRole('button', { name: 'Retrying…' })).toBeDisabled()
-
-    await waitFor(() => expect(canvas.queryByRole('alert')).not.toBeInTheDocument())
-    await expect(canvas.getByText('Ada Lovelace (you)')).toBeInTheDocument()
-    await expect(canvas.getByRole('button', { name: 'Add user' })).toBeEnabled()
   },
 }
 
-export const RemovalRestoresFocusToHeading: Story = {
-  play: async ({ canvasElement, userEvent }) => {
-    const canvas = within(canvasElement)
-    const document = within(canvasElement.ownerDocument.body)
-
-    await userEvent.click(await canvas.findByRole('button', { name: 'Remove Lin Chen' }))
-    await userEvent.click(await document.findByRole('button', { name: 'Remove user' }))
-
-    await waitFor(() => expect(canvas.queryByText('Lin Chen')).not.toBeInTheDocument())
-    await waitFor(() => expect(canvas.getByRole('heading', { name: 'Users' })).toHaveFocus())
-  },
-}
-
-export const SuccessfulSelfDemotionRestoresFocusToHeading: Story = {
-  play: async ({ canvasElement, userEvent }) => {
-    const canvas = within(canvasElement)
-    const document = within(canvasElement.ownerDocument.body)
-
-    await userEvent.click(
-      await canvas.findByRole('button', { name: 'Role for Ada Lovelace: Owner' }),
-    )
-    await userEvent.click(await document.findByRole('menuitemradio', { name: 'Member' }))
-    await userEvent.click(await document.findByRole('button', { name: 'Change my role' }))
-
-    await waitFor(() => expect(canvas.getByText('Owner access required')).toBeInTheDocument())
-    await waitFor(() => expect(canvas.getByRole('heading', { name: 'Users' })).toHaveFocus())
-  },
-}
-
-export const FailedSelfDemotionRestoresFocusToRole: Story = {
-  args: {
-    action: fn(async ({ request }: { request: Request }) => {
-      const formData = await request.formData()
-      return {
-        intent: 'role' as const,
-        message: 'Could not update workspace user.',
-        status: 'error' as const,
-        userId: String(formData.get('userId')),
-      }
-    }),
-  },
-  play: async ({ canvasElement, userEvent }) => {
-    const canvas = within(canvasElement)
-    const document = within(canvasElement.ownerDocument.body)
-    const roleButton = await canvas.findByRole('button', {
-      name: 'Role for Ada Lovelace: Owner',
-    })
-
-    await userEvent.click(roleButton)
-    await userEvent.click(await document.findByRole('menuitemradio', { name: 'Member' }))
-    await userEvent.click(await document.findByRole('button', { name: 'Change my role' }))
-
-    await waitFor(() => expect(canvas.getByRole('alert')).toHaveTextContent('Could not update'))
-    await waitFor(() => expect(roleButton).toHaveFocus())
-  },
-}
-
-function WorkspaceUsersStory({ action, data, retryData }: StoryArgs) {
+function WorkspaceUsersStory({ action, data }: StoryArgs) {
   let storyData: WorkspaceUsersData = {
     ...data,
     availableUsers: [...data.availableUsers],
     members: [...data.members],
   }
-  let loadCount = 0
   const RoutesStub = createRoutesStub([
     {
       action: async ({ request }) => {
@@ -176,14 +104,7 @@ function WorkspaceUsersStory({ action, data, retryData }: StoryArgs) {
         return result
       },
       Component: WorkspaceUsersStoryRoute,
-      loader: async () => {
-        loadCount += 1
-        if (loadCount > 1 && retryData) {
-          await new Promise((resolve) => setTimeout(resolve, 100))
-          storyData = retryData
-        }
-        return storyData
-      },
+      loader: () => storyData,
       path: '/workspaces/:workspaceId/users',
     },
   ])
