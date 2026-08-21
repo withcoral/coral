@@ -47,7 +47,6 @@ const USER_COLUMNS: Table.Column[] = [
 export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) {
   const addFetcher = useFetcher<WorkspaceUsersActionData>()
   const addUserLabelId = useId()
-  const addRoleLabelId = useId()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [addRole, setAddRole] = useState<WorkspaceUserRole>('member')
   const [showAddResult, setShowAddResult] = useState(false)
@@ -171,14 +170,12 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                     )}
                   </div>
                   <div className={styles.addField}>
-                    <Typography.BodyStrong as="span" id={addRoleLabelId}>
-                      Role
-                    </Typography.BodyStrong>
+                    <Typography.BodyStrong as="span">Role</Typography.BodyStrong>
                     <Menu.Container>
                       <Menu.Trigger
                         render={
                           <Button.Container
-                            aria-labelledby={addRoleLabelId}
+                            ariaLabel={`Role: ${roleLabel(addRole)}`}
                             disabled={addPending}
                             fullWidth
                             size="36"
@@ -358,7 +355,7 @@ function WorkspaceUserRow({
             className={styles.roleTrigger}
             render={
               <Button.Container
-                ariaLabel={`Role for ${member.displayName || member.userId}`}
+                ariaLabel={`Role for ${member.displayName || member.userId}: ${roleLabel(member.role)}${rolePending ? ', saving' : ''}`}
                 disabled={controlsDisabled}
                 fullWidth
                 variant="secondary"
