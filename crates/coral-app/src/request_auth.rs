@@ -144,7 +144,7 @@ mod tests {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
         let token = config
-            .issue_access_token(USER_ID, CLIENT_ID, BFF_AUDIENCE, PrincipalKind::User)
+            .issue_access_token_as(USER_ID, CLIENT_ID, BFF_AUDIENCE, PrincipalKind::User)
             .expect("session token")
             .access_token;
         let provider = SessionPrincipalProvider::new(config.verifier(), [BFF_AUDIENCE.to_string()]);
@@ -181,7 +181,7 @@ mod tests {
 
         for audience in [MCP_AUDIENCE, BFF_AUDIENCE] {
             let token = config
-                .issue_access_token(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
+                .issue_access_token_as(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
                 .expect("session token")
                 .access_token;
             let principal = private_api
@@ -208,7 +208,7 @@ mod tests {
 
         for kind in [PrincipalKind::User, PrincipalKind::Agent] {
             let token = config
-                .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, kind)
+                .issue_access_token_as(USER_ID, CLIENT_ID, MCP_AUDIENCE, kind)
                 .expect("session token")
                 .access_token;
             let principal = provider
@@ -230,11 +230,11 @@ mod tests {
         let config = session(&signing_key);
         let wrong_signing_key = test_signing_key();
         let wrong_key = session(&wrong_signing_key)
-            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
+            .issue_access_token_as(USER_ID, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
             .expect("wrong-key token")
             .access_token;
         let wrong_audience = config
-            .issue_access_token(
+            .issue_access_token_as(
                 USER_ID,
                 CLIENT_ID,
                 "https://other.example/mcp",
@@ -284,7 +284,7 @@ mod tests {
 
         for audience in [MCP_AUDIENCE, BFF_AUDIENCE] {
             let token = config
-                .issue_access_token(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
+                .issue_access_token_as(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
                 .expect("token")
                 .access_token;
             private_api
@@ -294,7 +294,7 @@ mod tests {
         }
 
         let unapproved = config
-            .issue_access_token(
+            .issue_access_token_as(
                 USER_ID,
                 CLIENT_ID,
                 "https://unapproved.example",
@@ -317,7 +317,7 @@ mod tests {
         let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
         let accepted = config
-            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
+            .issue_access_token_as(USER_ID, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
             .expect("token")
             .access_token;
         provider
@@ -327,7 +327,7 @@ mod tests {
 
         for audience in [BFF_AUDIENCE, "https://unapproved.example"] {
             let token = config
-                .issue_access_token(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
+                .issue_access_token_as(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
                 .expect("token")
                 .access_token;
             provider

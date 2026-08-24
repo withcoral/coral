@@ -113,6 +113,35 @@ impl SessionTokenIssuer {
         user_id: &str,
         client_id: &str,
         audience: &str,
+    ) -> Result<IssuedAccessToken, SessionTokenError> {
+        self.mint(user_id, client_id, audience, PrincipalKind::User)
+    }
+
+    /// Mints a token for an actor kind the caller names.
+    ///
+    /// Not reachable outside tests, and that is the point. The kind a token
+    /// carries has to agree with what the subject actually is, and the only
+    /// principals this deployment registers are the people in its directory —
+    /// nothing records that an identifier belongs to an agent, so nothing could
+    /// check such a claim. Until something does, the issuer asserts the one kind
+    /// it can substantiate, and a token that says otherwise cannot be minted by
+    /// a running server at all.
+    #[cfg(any(test, feature = "test-session-tokens"))]
+    pub(crate) fn issue_access_token_as(
+        &self,
+        user_id: &str,
+        client_id: &str,
+        audience: &str,
+        principal_kind: PrincipalKind,
+    ) -> Result<IssuedAccessToken, SessionTokenError> {
+        self.mint(user_id, client_id, audience, principal_kind)
+    }
+
+    fn mint(
+        &self,
+        user_id: &str,
+        client_id: &str,
+        audience: &str,
         principal_kind: PrincipalKind,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         if PrincipalId::parse(user_id).is_err() {
@@ -575,7 +604,7 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let access = issuer
-            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
+            .issue_access_token_as(USER_ID, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
             .unwrap();
         let header = decode_header(&access.access_token).unwrap();
         assert_eq!(header.alg, Algorithm::ES256);
@@ -615,7 +644,7 @@ mod tests {
             (PrincipalKind::Agent, "agent"),
         ] {
             let access = issuer
-                .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, kind)
+                .issue_access_token_as(USER_ID, CLIENT_ID, MCP_AUDIENCE, kind)
                 .expect("session token");
             assert_eq!(
                 string_claim(
@@ -662,7 +691,7 @@ mod tests {
         let issuer = test_issuer();
         for user_id in ["", "   ", "user id", "user\tid", LOCAL_PRINCIPAL_ID] {
             let Err(_error) =
-                issuer.issue_access_token(user_id, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
+                issuer.issue_access_token_as(user_id, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
             else {
                 panic!("token issuance should reject the subject {user_id:?}");
             };
@@ -781,10 +810,10 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let mcp = issuer
-            .issue_access_token("user-123", "mcp-client", MCP_AUDIENCE, PrincipalKind::User)
+            .issue_access_token_as("user-123", "mcp-client", MCP_AUDIENCE, PrincipalKind::User)
             .unwrap();
         let bff = issuer
-            .issue_access_token("user-123", "bff-client", BFF_AUDIENCE, PrincipalKind::User)
+            .issue_access_token_as("user-123", "bff-client", BFF_AUDIENCE, PrincipalKind::User)
             .unwrap();
 
         verifier
@@ -815,7 +844,7 @@ mod tests {
             (CLIENT_ID, "audience "),
         ] {
             let Err(_error) =
-                issuer.issue_access_token("user-123", client_id, audience, PrincipalKind::User)
+                issuer.issue_access_token_as("user-123", client_id, audience, PrincipalKind::User)
             else {
                 panic!(
                     "token issuance should reject client_id={client_id:?}, audience={audience:?}"
@@ -828,7 +857,7 @@ mod tests {
     fn public_jwks_support_detached_validation() {
         let issuer = test_issuer();
         let token = issuer
-            .issue_access_token("user-123", CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
+            .issue_access_token_as("user-123", CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
             .unwrap();
         let expected = issuer
             .verifier()

@@ -1,4 +1,6 @@
-use sea_query::{Expr, ExprTrait, Func, OnConflict, Order, Query, SelectStatement};
+use sea_query::{
+    Alias, Expr, ExprTrait, Func, OnConflict, Order, Query, SelectStatement, SimpleExpr,
+};
 
 use crate::state::db::DbError;
 use crate::state::db::schema::{Users, WorkspaceMembers};
@@ -57,9 +59,10 @@ where
             .columns([WorkspaceMembers::WorkspaceId, WorkspaceMembers::Role])
             .from(WorkspaceMembers::Table)
             .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
-            .and_where(
-                Expr::col(WorkspaceMembers::WorkspaceId).in_subquery(owner_bearing_workspaces()),
-            )
+            .and_where(Expr::exists(owner_bearing_workspace(Expr::col((
+                WorkspaceMembers::Table,
+                WorkspaceMembers::WorkspaceId,
+            )))))
             .to_owned();
         let rows: Vec<(String, String)> = self.session.fetch_all(statement).await?;
         let mut memberships = rows
@@ -173,12 +176,31 @@ where
     }
 }
 
-/// Selects every workspace id that still has at least one owner.
-fn owner_bearing_workspaces() -> SelectStatement {
+/// Table alias the ownership probe reads under, so its predicates cannot be
+/// mistaken for the outer row's.
+fn owner_probe() -> Alias {
+    Alias::new("owner_probe")
+}
+
+/// Asks whether `workspace_id` still has at least one owner.
+///
+/// Correlated to the row being read rather than a standalone `IN (...)` list.
+/// `SQLite` does not flatten an uncorrelated `IN (SELECT ...)` into a semi-join,
+/// so it rebuilds the full set of owner-bearing workspaces on every execution:
+/// the cost follows the size of the whole install rather than the size of the
+/// answer, on a path every directory read takes. Correlating it turns that into
+/// one index probe per candidate row against `(role, workspace_id)`. `Postgres`
+/// flattens either spelling, so this is `SQLite`'s requirement rather than the
+/// query's meaning.
+fn owner_bearing_workspace(workspace_id: SimpleExpr) -> SelectStatement {
     Query::select()
-        .column(WorkspaceMembers::WorkspaceId)
-        .from(WorkspaceMembers::Table)
-        .and_where(Expr::col(WorkspaceMembers::Role).eq(MemberRole::Owner.as_storage_str()))
+        .expr(Expr::val(1))
+        .from_as(WorkspaceMembers::Table, owner_probe())
+        .and_where(
+            Expr::col((owner_probe(), WorkspaceMembers::Role))
+                .eq(MemberRole::Owner.as_storage_str()),
+        )
+        .and_where(Expr::col((owner_probe(), WorkspaceMembers::WorkspaceId)).eq(workspace_id))
         .to_owned()
 }
 

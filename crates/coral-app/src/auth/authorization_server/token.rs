@@ -10,8 +10,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::identity::PrincipalKind;
-
 use super::AuthorizationServerHttpState;
 use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARAMETERS};
 use super::response::security_headers;
@@ -96,7 +94,6 @@ pub(super) async fn oauth_token(
         &authorization.user_id,
         &authorization.client_id,
         &authorization.resource,
-        PrincipalKind::User,
     ) {
         Ok(issued) => issued,
         Err(error) => {

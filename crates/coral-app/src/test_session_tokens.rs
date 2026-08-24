@@ -39,7 +39,7 @@ pub fn issue_access_token(
 ) -> Result<String, String> {
     Ok(
         SessionTokenIssuer::new(Some(issuer), signing_key, access_token_ttl)?
-            .issue_access_token(user_id, client_id, audience, principal_kind)?
+            .issue_access_token_as(user_id, client_id, audience, principal_kind)?
             .access_token,
     )
 }
