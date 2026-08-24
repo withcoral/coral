@@ -47,6 +47,20 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
     }
 
+    /// Starts a server and creates the one workspace the fixture works in.
+    ///
+    /// This is what a suite that is about something else wants: nearly every
+    /// scoped fixture pairs [`Self::new`] with [`Self::seed_workspace`], and a
+    /// test that copies the surrounding style but forgets the second call
+    /// compiles and then fails deep inside an RPC with an unknown-workspace
+    /// error that does not point back at the missing setup. [`Self::new`]
+    /// stays for the suites whose subject is the fresh install itself.
+    pub(crate) async fn with_workspace() -> Self {
+        let harness = Self::new().await;
+        harness.seed_workspace().await;
+        harness
+    }
+
     pub(crate) async fn new_with_observed_values_search() -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path().join("coral-config");

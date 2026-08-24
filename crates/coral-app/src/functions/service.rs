@@ -247,8 +247,10 @@ mod tests {
     use crate::request_context::RequestContext;
     use crate::state::ConfigStore;
     use crate::state::db::CoralDb;
-    use crate::test_support::{create_workspace, migrated_deployment, seed_principal};
-    use crate::workspaces::{MemberRole, WorkspaceName};
+    use crate::test_support::{
+        create_workspace, migrated_deployment, seed_principal, test_workspace,
+    };
+    use crate::workspaces::MemberRole;
 
     /// This suite's login issuer. Each suite provisions under its own, so a
     /// subject seeded here is a different person from the same subject
@@ -265,15 +267,6 @@ mod tests {
         service: FunctionService,
         config_store: ConfigStore,
         db: Arc<CoralDb>,
-    }
-
-    /// The workspace these fixtures run in.
-    ///
-    /// An install provisions none, so [`fixture`] creates it explicitly. The
-    /// name is ordinary on purpose: a fixture that leaned on a well-known one
-    /// would prove the workspace was resolved by name rather than created.
-    fn test_workspace() -> WorkspaceName {
-        WorkspaceName::parse("work").expect("workspace name")
     }
 
     /// A shared deployment over one migrated database holding one created

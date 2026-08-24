@@ -234,8 +234,7 @@ fn catalog_item_matches(item: &CatalogItem, schema_name: &str, item_name: &str) 
 
 #[tokio::test]
 async fn search_and_list_catalog_share_runtime_catalog_items() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     let workspace = default_workspace();
     harness
         .import_source(table_preview_manifest_yaml(), Vec::new(), Vec::new())
@@ -270,8 +269,7 @@ async fn search_and_list_catalog_share_runtime_catalog_items() {
 
 #[tokio::test]
 async fn search_and_list_catalog_share_installed_udf_metadata() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     let workspace = default_workspace();
 
     search_entry(&harness, &workspace, "coral", "tables")
@@ -334,8 +332,7 @@ async fn search_and_list_catalog_share_installed_udf_metadata() {
 
 #[tokio::test]
 async fn natural_language_review_queue_query_ranks_installed_udf_in_top_three() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .function_client()
         .add_function(Request::new(AddFunctionRequest {
@@ -372,8 +369,7 @@ async fn natural_language_review_queue_query_ranks_installed_udf_in_top_three() 
 
 #[tokio::test]
 async fn unified_catalog_keeps_source_metadata_isolated_by_workspace() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     let default = default_workspace();
     let work = workspace("work");
     harness
@@ -445,8 +441,7 @@ async fn unified_catalog_keeps_source_metadata_isolated_by_workspace() {
 
 #[tokio::test]
 async fn search_service_returns_structured_shell_response() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let response = harness
         .search_client()
@@ -495,8 +490,7 @@ fn search_completes_with_one_blocking_thread() {
         .build()
         .expect("build constrained Tokio runtime");
     let search = runtime.block_on(async {
-        let harness = GrpcHarness::new().await;
-        harness.seed_workspace().await;
+        let harness = GrpcHarness::with_workspace().await;
         let search = tokio::time::timeout(
             Duration::from_secs(5),
             harness.search_client().search(Request::new(SearchRequest {
@@ -611,8 +605,7 @@ async fn search_paused_in_catalog_resolution_does_not_recreate_deleted_workspace
 
 #[tokio::test]
 async fn search_service_rejects_empty_query() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let status = harness
         .search_client()
@@ -634,8 +627,7 @@ async fn search_service_rejects_empty_query() {
 
 #[tokio::test]
 async fn table_function_proto_exposes_search_metadata() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -668,8 +660,7 @@ async fn table_function_proto_exposes_search_metadata() {
 
 #[tokio::test]
 async fn search_matches_table_function_guide() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -693,8 +684,7 @@ async fn search_matches_table_function_guide() {
 
 #[tokio::test]
 async fn search_returns_catalog_metadata_for_search_functions_and_column_hints() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -762,8 +752,7 @@ async fn search_returns_catalog_metadata_for_search_functions_and_column_hints()
 
 #[tokio::test]
 async fn search_reports_partial_catalog_coverage_and_recovers_after_source_repair() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(table_preview_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -831,8 +820,7 @@ async fn search_reports_partial_catalog_coverage_and_recovers_after_source_repai
 
 #[tokio::test]
 async fn search_isolates_identity_gated_source_as_partial_catalog_failure() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(table_preview_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -914,8 +902,7 @@ surface:
 
 #[tokio::test]
 async fn rebuild_search_index_forces_catalog_projection_refresh() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -1008,8 +995,7 @@ async fn rebuild_search_index_unspecified_rebuilds_catalog_and_observed_values()
 
 #[tokio::test]
 async fn rebuild_search_index_all_rebuilds_catalog_and_skips_disabled_observed_values() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -1035,8 +1021,7 @@ async fn rebuild_search_index_all_rebuilds_catalog_and_skips_disabled_observed_v
 
 #[tokio::test]
 async fn rebuild_search_index_observed_values_skips_without_creating_storage_when_disabled() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     let sqlite_path = search_sqlite_path(&harness);
     assert!(!sqlite_path.exists());
 
@@ -1095,8 +1080,7 @@ async fn rebuild_search_index_observed_values_rebuilds_projection() {
 
 #[tokio::test]
 async fn drain_search_queue_rejects_invalid_budget_when_disabled() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     let sqlite_path = search_sqlite_path(&harness);
     assert!(!sqlite_path.exists());
 
@@ -1118,8 +1102,7 @@ async fn drain_search_queue_rejects_invalid_budget_when_disabled() {
 
 #[tokio::test]
 async fn drain_search_queue_skips_without_creating_storage_when_disabled() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     let sqlite_path = search_sqlite_path(&harness);
     assert!(!sqlite_path.exists());
 
@@ -1178,8 +1161,7 @@ async fn drain_search_queue_reports_observed_provider_detail() {
 
 #[tokio::test]
 async fn clear_search_data_remains_available_when_observed_values_search_is_disabled() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let response = harness
         .search_client()
@@ -1208,8 +1190,7 @@ async fn clear_search_data_remains_available_when_observed_values_search_is_disa
 
 #[tokio::test]
 async fn clear_search_data_accepts_source_target_with_internal_whitespace() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let response = harness
         .search_client()
@@ -1231,8 +1212,7 @@ async fn clear_search_data_accepts_source_target_with_internal_whitespace() {
 
 #[tokio::test]
 async fn clear_search_data_rejects_invalid_source_targets_at_transport_edge() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     for source_name in [
         "",
@@ -1268,8 +1248,7 @@ async fn clear_search_data_rejects_invalid_source_targets_at_transport_edge() {
 
 #[tokio::test]
 async fn clear_search_data_removes_catalog_projection_and_next_search_recreates_it() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -1470,8 +1449,7 @@ async fn source_scoped_clear_leaves_the_other_installed_source_intact() {
 
 #[tokio::test]
 async fn search_table_preview_columns_do_not_inherit_table_matched_fields() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(table_preview_manifest_yaml(), Vec::new(), Vec::new())
         .await;
@@ -1588,8 +1566,7 @@ async fn search_groups_observed_values_under_their_table() {
 
 #[tokio::test]
 async fn search_provider_coverage_counts_mapped_candidates() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             many_matching_columns_manifest_yaml(),
@@ -1639,8 +1616,7 @@ async fn search_provider_coverage_counts_mapped_candidates() {
 
 #[tokio::test]
 async fn search_truncation_reflects_provider_retrieval_limit() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             many_retrieved_columns_manifest_yaml(),

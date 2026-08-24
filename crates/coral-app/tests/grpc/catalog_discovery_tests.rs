@@ -17,8 +17,7 @@ use super::harness::{
 
 #[tokio::test]
 async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_functions_yaml(),
@@ -79,8 +78,7 @@ async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
 
 #[tokio::test]
 async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagination() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_functions_yaml(),
@@ -166,8 +164,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
 
 #[tokio::test]
 async fn search_catalog_matches_table_function_guide() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_functions_yaml(),
@@ -202,8 +199,7 @@ async fn search_catalog_matches_table_function_guide() {
 
 #[tokio::test]
 async fn list_columns_filters_required_columns_and_patterns() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_required_filter_yaml(),
@@ -273,8 +269,7 @@ async fn list_columns_filters_required_columns_and_patterns() {
 
 #[tokio::test]
 async fn describe_missing_surface_returns_missing() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
@@ -302,8 +297,7 @@ async fn describe_missing_surface_returns_missing() {
 
 #[tokio::test]
 async fn describe_catalog_surface_returns_exact_table_function() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_functions_yaml(),
@@ -334,8 +328,7 @@ async fn describe_catalog_surface_returns_exact_table_function() {
 
 #[tokio::test]
 async fn describe_catalog_surface_does_not_resolve_partial_function_name() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_functions_yaml(),
@@ -363,8 +356,7 @@ async fn describe_catalog_surface_does_not_resolve_partial_function_name() {
 
 #[tokio::test]
 async fn list_columns_missing_table_takes_precedence_over_invalid_pattern() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
@@ -393,8 +385,7 @@ async fn list_columns_missing_table_takes_precedence_over_invalid_pattern() {
 
 #[tokio::test]
 async fn invalid_regex_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
-    harness.seed_workspace().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .catalog_client()

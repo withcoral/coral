@@ -867,7 +867,9 @@ mod tests {
     use super::*;
     use crate::identity::Principal;
     use crate::state::db::CoralDb;
-    use crate::test_support::{create_workspace, migrated_deployment, seed_principal};
+    use crate::test_support::{
+        create_workspace, migrated_deployment, seed_principal, test_workspace,
+    };
     use crate::workspaces::MemberRole;
     use coral_engine::QueryRuntimeContext;
     use coral_spec::{
@@ -899,15 +901,6 @@ mod tests {
         service: SourceService,
         db: Arc<CoralDb>,
         config_file: PathBuf,
-    }
-
-    /// The workspace these fixtures run in.
-    ///
-    /// An install provisions none, so [`fixture`] creates it explicitly. The
-    /// name is ordinary on purpose: a fixture that leaned on a well-known one
-    /// would prove the workspace was resolved by name rather than created.
-    fn test_workspace() -> WorkspaceName {
-        WorkspaceName::parse("work").expect("workspace name")
     }
 
     /// A shared deployment over one migrated database holding one created

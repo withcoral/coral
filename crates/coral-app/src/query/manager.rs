@@ -1475,6 +1475,7 @@ mod tests {
     use crate::task::activity::TaskActivityRecorder;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
+    use crate::test_support::{create_workspace, test_workspace};
     use crate::workspaces::authorization::WorkspaceAuthorizer;
 
     struct QueryManagerFixture {
@@ -1483,18 +1484,8 @@ mod tests {
         db: Arc<CoralDb>,
     }
 
-    /// The workspace these fixtures run in.
-    ///
-    /// An install provisions none, so every fixture that needs one creates it
-    /// through [`create_test_workspace`]. The name is ordinary on purpose: a
-    /// fixture that leaned on a well-known one would prove the workspace was
-    /// resolved by name rather than by having been created.
-    fn test_workspace() -> WorkspaceName {
-        WorkspaceName::parse("work").expect("workspace name")
-    }
-
     async fn create_test_workspace(db: &Arc<CoralDb>) {
-        crate::test_support::create_workspace(db, &test_workspace()).await;
+        create_workspace(db, &test_workspace()).await;
     }
 
     async fn query_manager_with(

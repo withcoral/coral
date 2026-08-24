@@ -160,9 +160,9 @@ mod tests {
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
-    use crate::test_support::{create_workspace, seed_principal};
+    use crate::test_support::{create_workspace, seed_principal, test_workspace};
+    use crate::workspaces::MemberRole;
     use crate::workspaces::authorization::WorkspaceAuthorizer;
-    use crate::workspaces::{MemberRole, WorkspaceName};
 
     /// This suite's login issuer. Each suite provisions under its own, so a
     /// subject seeded here is a different person from the same subject
@@ -198,15 +198,6 @@ mod tests {
             .expect("run state migrations");
         create_workspace(&db, &test_workspace()).await;
         (dir, db)
-    }
-
-    /// The workspace these fixtures run in.
-    ///
-    /// An install provisions none, so [`task_database`] creates it explicitly.
-    /// The name is ordinary on purpose: a fixture that leaned on a well-known
-    /// one would prove the workspace was resolved by name rather than created.
-    fn test_workspace() -> WorkspaceName {
-        WorkspaceName::parse("work").expect("workspace name")
     }
 
     fn workspace(name: &str) -> Workspace {

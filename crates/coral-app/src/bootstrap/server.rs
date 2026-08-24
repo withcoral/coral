@@ -1054,25 +1054,15 @@ mod tests {
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
     use crate::telemetry::{TraceManager, service::TraceService};
+    use crate::test_support::{create_workspace, test_workspace};
     use crate::transport::workspace_to_proto;
     use crate::users::manager::UserManager;
     use crate::workspaces::authorization::{LocalPrincipalPolicy, WorkspaceAuthorizer};
-    use crate::workspaces::{MemberRole, WorkspaceManager, WorkspaceName};
+    use crate::workspaces::{MemberRole, WorkspaceManager};
     use crate::{
         AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
         PrincipalKind,
     };
-
-    /// The workspace these fixtures run in.
-    ///
-    /// An install provisions none, so every fixture that needs one creates it:
-    /// [`test_db`] for the in-process assemblies, [`create_test_workspace_in`] for
-    /// the ones that hand a config directory to `ServerBuilder`. The name is
-    /// ordinary on purpose — a fixture that leaned on a well-known one would
-    /// prove the workspace was resolved by name rather than created.
-    fn test_workspace() -> WorkspaceName {
-        WorkspaceName::parse("work").expect("workspace name")
-    }
 
     fn workspace() -> Workspace {
         workspace_to_proto(&test_workspace())
@@ -1145,13 +1135,9 @@ enabled = false
         run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
-        let mut tx = db.begin().await.expect("begin workspace creation");
-        tx.workspaces()
-            .create(test_workspace().as_str(), 1)
-            .await
-            .expect("create workspace");
-        tx.commit().await.expect("commit workspace creation");
-        Arc::new(db)
+        let db = Arc::new(db);
+        create_workspace(&db, &test_workspace()).await;
+        db
     }
 
     fn test_user_manager(db: &Arc<CoralDb>) -> UserManager {

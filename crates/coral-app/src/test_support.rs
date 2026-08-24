@@ -116,6 +116,14 @@ pub(crate) async fn seed_principal(
     Principal::parse(&user.user_id, PrincipalKind::User).expect("federated principal")
 }
 
+/// The name of the one ordinary workspace a suite runs in.
+///
+/// The name is ordinary on purpose: a fixture that leaned on a well-known one
+/// would prove the workspace was resolved by name rather than created.
+pub(crate) fn test_workspace() -> WorkspaceName {
+    WorkspaceName::parse("work").expect("workspace name")
+}
+
 /// Creates one ordinary workspace for a suite to run in.
 ///
 /// An install provisions none, so a fixture that needs one creates it the way
