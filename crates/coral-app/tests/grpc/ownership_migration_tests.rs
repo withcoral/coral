@@ -326,11 +326,11 @@ async fn a_shared_start_keeps_the_two_inaccessible_categories_distinct() {
     }
 }
 
-/// A row squatting on the local user's unique empty subject makes the upgrade
-/// fail its membership foreign key after it has already claimed its marker.
-/// The claim must not survive: startup fails outright, the state is left
-/// exactly as it was, and the start after an operator repairs the directory
-/// runs the whole upgrade.
+/// A row squatting on the local user's unique empty subject swallows the
+/// upgrade's own insert of the local user, so it fails after it has already
+/// claimed its marker. The claim must not survive: startup fails outright, the
+/// state is left exactly as it was, and the start after an operator repairs the
+/// directory runs the whole upgrade.
 #[tokio::test]
 async fn a_rolled_back_upgrade_leaves_no_claim_and_a_later_start_retries_it() {
     let install = Install::new();
@@ -351,11 +351,11 @@ async fn a_rolled_back_upgrade_leaves_no_claim_and_a_later_start_retries_it() {
     let install = shared.shutdown().await;
 
     let Err(error) = install.start(Admission::LocalPrincipal).await else {
-        panic!("the upgrade must fail its membership foreign key")
+        panic!("the upgrade must fail on the local user row it could not write")
     };
 
     assert!(
-        error.contains("FOREIGN KEY constraint failed"),
+        error.contains("the local user row is absent"),
         "unexpected startup failure: {error}"
     );
 
