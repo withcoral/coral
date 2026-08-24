@@ -250,8 +250,22 @@ mod tests {
     #[tokio::test]
     async fn end_task_returns_success_status() {
         let (_dir, db) = task_database().await;
-        let _owner = seed_principal(&db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
-        let principal = seed_principal(&db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
+        let _owner = seed_principal(
+            &db,
+            ISSUER,
+            &test_workspace(),
+            "owner",
+            Some(MemberRole::Owner),
+        )
+        .await;
+        let principal = seed_principal(
+            &db,
+            ISSUER,
+            &test_workspace(),
+            "member",
+            Some(MemberRole::Member),
+        )
+        .await;
         let service = TaskService::new(
             TaskManager::new(TaskStore::new(Arc::clone(&db))),
             WorkspaceAuthorizer::new(db),
@@ -373,8 +387,22 @@ mod tests {
         let tasks = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         // The workspace needs an owner before any membership in it grants
         // anything, so one is seeded beside the member under test.
-        let _owner = seed_principal(&db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
+        let _owner = seed_principal(
+            &db,
+            ISSUER,
+            &test_workspace(),
+            "owner",
+            Some(MemberRole::Owner),
+        )
+        .await;
+        let member = seed_principal(
+            &db,
+            ISSUER,
+            &test_workspace(),
+            "member",
+            Some(MemberRole::Member),
+        )
+        .await;
         let outsider = seed_principal(&db, ISSUER, &test_workspace(), "outsider", None).await;
         let service = TaskService::new(tasks.clone(), WorkspaceAuthorizer::new(db));
         let active = service

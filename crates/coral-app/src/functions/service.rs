@@ -346,9 +346,24 @@ mod tests {
     #[tokio::test]
     async fn only_owners_change_the_function_set_and_never_through_an_agent() {
         let fixture = fixture().await;
-        let owner = seed_principal(&fixture.db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&fixture.db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
+        let owner = seed_principal(
+            &fixture.db,
+            ISSUER,
+            &test_workspace(),
+            "owner",
+            Some(MemberRole::Owner),
+        )
+        .await;
+        let member = seed_principal(
+            &fixture.db,
+            ISSUER,
+            &test_workspace(),
+            "member",
+            Some(MemberRole::Member),
+        )
+        .await;
+        let outsider =
+            seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
         let agent = Principal::parse(owner.id().as_str(), PrincipalKind::Agent).expect("agent");
 
         for reader in [&member, &agent] {

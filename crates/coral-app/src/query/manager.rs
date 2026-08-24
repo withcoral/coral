@@ -1641,9 +1641,23 @@ mod tests {
         /// seeded elsewhere.
         const ISSUER: &str = "https://issuer.test/read-authorization";
 
-        let _owner = seed_principal(db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
+        let _owner = seed_principal(
+            db,
+            ISSUER,
+            &test_workspace(),
+            "owner",
+            Some(MemberRole::Owner),
+        )
+        .await;
         ReadAccess {
-            member: seed_principal(db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await,
+            member: seed_principal(
+                db,
+                ISSUER,
+                &test_workspace(),
+                "member",
+                Some(MemberRole::Member),
+            )
+            .await,
             outsider: seed_principal(db, ISSUER, &test_workspace(), "outsider", None).await,
             authorizer: WorkspaceAuthorizer::new(Arc::clone(db)),
         }

@@ -1149,9 +1149,24 @@ mod tests {
     #[tokio::test]
     async fn source_configuration_reaches_only_workspace_owners() {
         let fixture = fixture().await;
-        let owner = seed_principal(&fixture.db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&fixture.db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
+        let owner = seed_principal(
+            &fixture.db,
+            ISSUER,
+            &test_workspace(),
+            "owner",
+            Some(MemberRole::Owner),
+        )
+        .await;
+        let member = seed_principal(
+            &fixture.db,
+            ISSUER,
+            &test_workspace(),
+            "member",
+            Some(MemberRole::Member),
+        )
+        .await;
+        let outsider =
+            seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
         std::fs::write(&fixture.config_file, UNPARSEABLE_CONFIG).expect("poison the app config");
 
         for status in every_source_rpc(&fixture.service, &member).await {

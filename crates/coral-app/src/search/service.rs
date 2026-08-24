@@ -692,9 +692,24 @@ mod tests {
     #[tokio::test]
     async fn members_search_while_only_owners_maintain_the_index() {
         let fixture = fixture().await;
-        let owner = seed_principal(&fixture.db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&fixture.db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
+        let owner = seed_principal(
+            &fixture.db,
+            ISSUER,
+            &test_workspace(),
+            "owner",
+            Some(MemberRole::Owner),
+        )
+        .await;
+        let member = seed_principal(
+            &fixture.db,
+            ISSUER,
+            &test_workspace(),
+            "member",
+            Some(MemberRole::Member),
+        )
+        .await;
+        let outsider =
+            seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
 
         assert_eq!(
             fixture
