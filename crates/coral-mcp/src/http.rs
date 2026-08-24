@@ -717,7 +717,7 @@ impl ReadinessProbe {
     ///
     /// A data-plane call cannot serve here. It would have to name a workspace,
     /// and the only name available without reading state is one nothing
-    /// provisions — whose `NotFound` [`catalog_rejection_is_reachable`] reads as
+    /// provisions — whose `NotFound` [`rejection_is_reachable`] reads as
     /// reachable, so `/readyz` would answer ready for a server that can reach
     /// nothing at all. The health service asks about the instance itself,
     /// server-side, and names no workspace.
@@ -1126,12 +1126,17 @@ async fn readyz(State(state): State<Arc<HttpState>>) -> StatusCode {
 async fn readiness_status(probe: &ReadinessProbe, timeout: Duration) -> StatusCode {
     match tokio::time::timeout(timeout, (probe.0)()).await {
         Ok(Ok(())) => StatusCode::NO_CONTENT,
-        Ok(Err(code)) if catalog_rejection_is_reachable(code) => StatusCode::NO_CONTENT,
+        Ok(Err(code)) if rejection_is_reachable(code) => StatusCode::NO_CONTENT,
         Ok(Err(_)) | Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
-fn catalog_rejection_is_reachable(code: tonic::Code) -> bool {
+/// Whether a rejection still proves the server on the other end is reachable.
+///
+/// The probe's own transport failures — and the codes a server emits when it
+/// cannot serve — mean unready. Everything else arrived *from* a server that
+/// answered, so it reports reachability even though the call itself failed.
+fn rejection_is_reachable(code: tonic::Code) -> bool {
     !matches!(
         code,
         tonic::Code::Cancelled
