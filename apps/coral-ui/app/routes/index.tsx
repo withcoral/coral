@@ -3,14 +3,19 @@ import type { Route } from './+types/index'
 import { replace } from 'react-router'
 
 import { requestAuthContext } from '@/auth/server-context'
+import { rethrowAsCoralUnavailableRouteError } from '@/lib/coral-unavailable.server'
 import { getGuiOnboardingCompleted } from '@/lib/gui-onboarding.server'
 import { redirectToFirstWorkspaceTraces } from '@/lib/workspace-redirect.server'
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const accessToken = context.get(requestAuthContext).accessToken
-  if (!(await getGuiOnboardingCompleted(request, accessToken))) return replace('/onboarding')
+  try {
+    if (!(await getGuiOnboardingCompleted(request, accessToken))) return replace('/onboarding')
 
-  return redirectToFirstWorkspaceTraces(request, accessToken)
+    return await redirectToFirstWorkspaceTraces(request, accessToken)
+  } catch (error) {
+    rethrowAsCoralUnavailableRouteError(request, error)
+  }
 }
 
 export default function AppIndex() {

@@ -5,6 +5,7 @@ import { replace, useFetcher } from 'react-router'
 import { requestAuthContext } from '@/auth/server-context'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
+import { rethrowAsCoralUnavailableRouteError } from '@/lib/coral-unavailable.server'
 import { COMPLETE_ONBOARDING_INTENT } from '@/lib/gui-onboarding'
 import { getGuiOnboardingCompleted } from '@/lib/gui-onboarding.server'
 import { loadOnboardingSampleQuery } from '@/lib/onboarding-query.server'
@@ -24,36 +25,40 @@ import {
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const accessToken = context.get(requestAuthContext).accessToken
-  if (await getGuiOnboardingCompleted(request, accessToken)) {
-    const workspace = await firstWorkspaceForRequest(request, accessToken)
-    return replace(routePath('workspaceTraces', { workspaceId: workspace.name }))
-  }
+  try {
+    if (await getGuiOnboardingCompleted(request, accessToken)) {
+      const workspace = await firstWorkspaceForRequest(request, accessToken)
+      return replace(routePath('workspaceTraces', { workspaceId: workspace.name }))
+    }
 
-  const workspaces = await listWorkspacesForRequest(request, accessToken)
-  const [workspace] = workspaces
-  if (!workspace) {
-    throw new Response('No Coral workspace is configured.', {
-      status: 404,
-      statusText: 'Workspace Not Found',
-    })
-  }
+    const workspaces = await listWorkspacesForRequest(request, accessToken)
+    const [workspace] = workspaces
+    if (!workspace) {
+      throw new Response('No Coral workspace is configured.', {
+        status: 404,
+        statusText: 'Workspace Not Found',
+      })
+    }
 
-  const sources = await loadSourcesRouteData(request, workspace, accessToken)
-  const step = getOnboardingStepState(new URL(request.url).searchParams.get('step'))
-  const shouldRunSampleQuery =
-    step.step === 'query' &&
-    sources.loadError === null &&
-    sources.entries.some((entry) => entry.installed)
+    const sources = await loadSourcesRouteData(request, workspace, accessToken)
+    const step = getOnboardingStepState(new URL(request.url).searchParams.get('step'))
+    const shouldRunSampleQuery =
+      step.step === 'query' &&
+      sources.loadError === null &&
+      sources.entries.some((entry) => entry.installed)
 
-  return {
-    ...sources,
-    runtime: isCoralDesktopBuild() ? ('desktop' as const) : ('web' as const),
-    sampleQuery: shouldRunSampleQuery
-      ? loadOnboardingSampleQuery(request, accessToken, workspace.name)
-      : null,
-    step,
-    workspaceId: workspace.name,
-    workspaces: workspaces.map(({ name }) => ({ name })),
+    return {
+      ...sources,
+      runtime: isCoralDesktopBuild() ? ('desktop' as const) : ('web' as const),
+      sampleQuery: shouldRunSampleQuery
+        ? loadOnboardingSampleQuery(request, accessToken, workspace.name)
+        : null,
+      step,
+      workspaceId: workspace.name,
+      workspaces: workspaces.map(({ name }) => ({ name })),
+    }
+  } catch (error) {
+    rethrowAsCoralUnavailableRouteError(request, error)
   }
 }
 

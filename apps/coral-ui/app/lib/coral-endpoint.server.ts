@@ -1,3 +1,5 @@
+import { Code, ConnectError } from '@connectrpc/connect'
+
 import { DEFAULT_DEV_CORAL_ENDPOINT, DEFAULT_DEV_CORAL_PORT } from './constants'
 import { isExplicitLoopbackUrl } from './loopback.server'
 import { trimTrailingSlash } from './utils'
@@ -22,7 +24,12 @@ export function resolveCoralEndpoint({
   if (!configured) {
     if (authenticated)
       throw new Error('CORAL_ENDPOINT must be set when Coral authentication is enabled')
-    if (env.NODE_ENV === 'production') throw new Error('CORAL_ENDPOINT must be set in production')
+    if (env.NODE_ENV === 'production') {
+      // Unavailable, not a plain Error: a Coral UI deployed without a Coral
+      // endpoint has no Coral to reach, so it renders the Coral-unavailable
+      // boundary alongside every other failure to reach Coral.
+      throw new ConnectError('CORAL_ENDPOINT must be set in production', Code.Unavailable)
+    }
 
     const requestUrl = new URL(request.url)
     return policy(

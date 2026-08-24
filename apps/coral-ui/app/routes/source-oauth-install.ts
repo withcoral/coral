@@ -41,8 +41,11 @@ export async function action({ context, params, request }: Route.ActionArgs): Pr
     return oauthStreamErrorResponse(errorMessage(error), 400)
   }
 
-  const sourceClient = sourceClientForRequest(request, context.get(requestAuthContext).accessToken)
   try {
+    const sourceClient = sourceClientForRequest(
+      request,
+      context.get(requestAuthContext).accessToken,
+    )
     const workspace = workspaceFromParams(params)
     const info = await getSourceInfo(sourceClient, name, workspace)
     if (info.installed && originLabel(info.origin) !== 'bundled') {

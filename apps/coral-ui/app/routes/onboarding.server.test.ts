@@ -1,6 +1,7 @@
 import { create } from '@bufbuild/protobuf'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { createMemoryRouter, redirect } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
   completeGuiOnboarding,
@@ -123,6 +124,10 @@ describe('onboarding route authentication', () => {
 })
 
 describe('onboarding server route', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('replaces completed users directly into the normal app before loading onboarding data', async () => {
     getGuiOnboardingCompleted.mockResolvedValue(true)
     const request = new Request('http://coral-ui.test/onboarding')
@@ -171,6 +176,19 @@ describe('onboarding server route', () => {
     } finally {
       router.dispose()
     }
+  })
+
+  it('maps an unavailable completion-state lookup before React Router consumes it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    getGuiOnboardingCompleted.mockRejectedValue(new ConnectError('sidecar down', Code.Unavailable))
+    const request = new Request('http://coral-ui.test/onboarding')
+
+    const caught = await loader(authRouteTestArgs(request, {}, null)).catch((thrown) => thrown)
+
+    expect(caught).toMatchObject({
+      data: null,
+      init: { status: 503, statusText: 'Coral unavailable' },
+    })
   })
 
   it('persists completion before redirecting to the normal app', async () => {

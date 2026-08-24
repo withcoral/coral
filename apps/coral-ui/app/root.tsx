@@ -1,4 +1,12 @@
-import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router'
+import {
+  isRouteErrorResponse,
+  Links,
+  Meta,
+  Outlet,
+  Scripts,
+  ScrollRestoration,
+  useRevalidator,
+} from 'react-router'
 
 import type { Route } from './+types/root'
 import {
@@ -6,7 +14,11 @@ import {
   readSidebarCollapsedCookieValue,
 } from './components/sidebar/sidebar-state'
 import { NavigationProgressBar } from './components/navigation-progress-bar'
+import { EmptyPage } from './components/empty-page'
+import { CORAL_UNAVAILABLE_STATUS, CORAL_UNAVAILABLE_STATUS_TEXT } from './lib/coral-unavailable'
+import * as styles from './root.css'
 import './styles/globals.css'
+import { Button } from './wax/components'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
 import { lightTheme } from './wax/theme/theme-light.css'
@@ -115,6 +127,12 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let stack: string | undefined
 
   if (isRouteErrorResponse(error)) {
+    if (
+      error.status === CORAL_UNAVAILABLE_STATUS &&
+      error.statusText === CORAL_UNAVAILABLE_STATUS_TEXT
+    ) {
+      return <CoralUnavailableRouteError />
+    }
     message = error.status === 404 ? '404' : 'Error'
     details =
       error.status === 404 ? 'The requested page could not be found.' : error.statusText || details
@@ -132,6 +150,29 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
           <code>{stack}</code>
         </pre>
       )}
+    </main>
+  )
+}
+
+function CoralUnavailableRouteError() {
+  const revalidator = useRevalidator()
+
+  return <CoralUnavailable onRetry={() => revalidator.revalidate()} />
+}
+
+export function CoralUnavailable({ onRetry }: { onRetry: () => void }) {
+  return (
+    <main className={styles.unavailable}>
+      <EmptyPage
+        action={
+          <Button.TextButton onClick={onRetry} variant="secondary">
+            Retry
+          </Button.TextButton>
+        }
+        description="Couldn't connect to Coral. Check that Coral is installed and try again."
+        iconName="CircleAlert"
+        title="Coral is unavailable"
+      />
     </main>
   )
 }
