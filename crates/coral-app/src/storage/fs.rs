@@ -108,6 +108,18 @@ pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Separates the original directory name from the unique suffix that
+/// [`DirectoryBackup::move_for_delete`] stages a deletion under.
+pub(crate) const DELETION_BACKUP_INFIX: &str = ".delete.rollback.";
+
+/// Reports whether `name` is a directory staged aside for deletion.
+///
+/// Callers that walk a directory listing rather than hold a [`DirectoryBackup`]
+/// ask here, so the staging spelling lives in one place.
+pub(crate) fn is_deletion_backup(name: &str) -> bool {
+    name.contains(DELETION_BACKUP_INFIX)
+}
+
 #[derive(Debug)]
 pub(crate) struct DirectoryBackup {
     original: PathBuf,
@@ -117,7 +129,10 @@ pub(crate) struct DirectoryBackup {
 
 impl DirectoryBackup {
     pub(crate) fn move_for_delete(path: &Path, name: impl fmt::Display) -> io::Result<Self> {
-        let backup = path.with_file_name(format!("{name}.delete.rollback.{}", Uuid::new_v4()));
+        let backup = path.with_file_name(format!(
+            "{name}{DELETION_BACKUP_INFIX}{}",
+            Uuid::new_v4()
+        ));
         if !path.try_exists()? {
             return Ok(Self {
                 original: path.to_path_buf(),

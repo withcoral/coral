@@ -4,17 +4,10 @@ use super::session::DbRepos;
 use super::{CoralDb, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::state::{AppStateLayout, ConfigStore};
+use crate::storage::fs::is_deletion_backup;
 use crate::workspaces::{WorkspaceName, WorkspaceRecord};
 
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
-
-/// Marks the directory a workspace deletion moved aside before removing it.
-///
-/// Deletion stages the workspace directory under this name and only then
-/// removes it, so a leftover is a workspace on its way out rather than one to
-/// carry into the database. It is spelled here because the cutover reads the
-/// directory layout a `DirectoryBackup` leaves behind, not the type itself.
-const DELETION_BACKUP_MARKER: &str = ".delete.rollback.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceCatalogCutoverReport {
@@ -128,7 +121,7 @@ fn implicitly_provisioned_workspaces(
         let directory_name = entry.file_name();
         let Some(name) = directory_name
             .to_str()
-            .filter(|name| !name.contains(DELETION_BACKUP_MARKER))
+            .filter(|name| !is_deletion_backup(name))
             .and_then(|name| WorkspaceName::parse(name).ok())
         else {
             continue;
@@ -194,6 +187,7 @@ mod tests {
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
     use crate::state::{AppStateLayout, ConfigStore};
+    use crate::storage::fs::DELETION_BACKUP_INFIX;
     use crate::workspaces::WorkspaceName;
 
     #[tokio::test]
@@ -314,7 +308,7 @@ mod tests {
         std::fs::create_dir_all(
             layout
                 .workspaces_root()
-                .join("default.delete.rollback.7f1c5a4e"),
+                .join(format!("default{DELETION_BACKUP_INFIX}7f1c5a4e")),
         )
         .expect("create workspaces root");
         let config_store = ConfigStore::new(layout.clone());
