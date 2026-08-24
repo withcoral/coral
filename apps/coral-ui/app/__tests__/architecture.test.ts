@@ -51,6 +51,7 @@ const allowedTests = [
   'lib/utils.test.ts',
   'lib/workspace-name.test.ts',
   'lib/workspace-routing.test.ts',
+  'lib/workspaces.server.test.ts',
   'routes.test.ts',
   'routes/_protected.server.test.tsx',
   'routes/auth.callback.server.test.tsx',
