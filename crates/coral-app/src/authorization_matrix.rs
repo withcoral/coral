@@ -177,8 +177,46 @@ mod tests {
     use super::{AUTHORIZATION_MATRIX, Classification, HEALTH_SERVICE};
 
     /// The protobuf definitions this crate serves.
+    ///
+    /// Rooted above the version directory so a new package — a `coral/v2`, or a
+    /// service nested under `coral/v1` — is discovered rather than silently
+    /// unclassified. The walk below recurses, so anything added under here is
+    /// held to the same rule.
     fn proto_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../coral-api/proto/coral/v1")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../coral-api/proto")
+    }
+
+    /// The health RPCs this server mounts.
+    ///
+    /// These are not read from the protos. The vendored `grpc/health/v1`
+    /// copy declares only `Check`, while the `tonic_health` service actually
+    /// mounted answers `Watch` as well, so the proto would report a rule for a
+    /// live RPC as stale. What the server serves is the thing worth holding
+    /// the matrix to, and naming the methods here is what makes a misspelled
+    /// health row fail.
+    fn mounted_health_rpcs() -> [String; 2] {
+        [
+            format!("{HEALTH_SERVICE}/Check"),
+            format!("{HEALTH_SERVICE}/Watch"),
+        ]
+    }
+
+    /// Every `.proto` under `root`, including nested ones.
+    ///
+    /// The walk recurses so that a service nested under `coral/v1`, or a whole
+    /// new package beside it, is discovered rather than silently unclassified.
+    fn proto_files(root: &PathBuf) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let entries = fs::read_dir(root).expect("proto directory is readable");
+        for entry in entries {
+            let path = entry.expect("proto directory entry").path();
+            if path.is_dir() {
+                files.extend(proto_files(&path));
+            } else if path.extension().is_some_and(|ext| ext == "proto") {
+                files.push(path);
+            }
+        }
+        files
     }
 
     /// Every RPC declared in the shipped protos, as `package.Service/Method`.
@@ -187,14 +225,9 @@ mod tests {
     /// new RPC — or a whole new service file — is discovered by the test that
     /// demands a classification for it.
     fn declared_rpcs() -> BTreeSet<String> {
-        let entries = fs::read_dir(proto_dir()).expect("proto directory is readable");
-        let mut declared = BTreeSet::new();
+        let mut declared: BTreeSet<String> = BTreeSet::new();
         let mut files = 0_usize;
-        for entry in entries {
-            let path = entry.expect("proto directory entry").path();
-            if path.extension().is_none_or(|ext| ext != "proto") {
-                continue;
-            }
+        for path in proto_files(&proto_dir()) {
             files += 1;
             let text = fs::read_to_string(&path).expect("proto file is readable");
             let mut package: Option<&str> = None;
@@ -221,6 +254,8 @@ mod tests {
             }
         }
         assert!(files > 0, "found no protos to walk under {:?}", proto_dir());
+        declared.retain(|rpc| !rpc.starts_with(HEALTH_SERVICE));
+        declared.extend(mounted_health_rpcs());
         declared
     }
 
@@ -246,10 +281,7 @@ mod tests {
     #[test]
     fn every_declared_rpc_is_classified_and_no_rule_outlives_its_rpc() {
         let declared = declared_rpcs();
-        let classified: BTreeSet<String> = classified_rpcs()
-            .into_iter()
-            .filter(|rpc| rpc.starts_with("coral.v1."))
-            .collect();
+        let classified: BTreeSet<String> = classified_rpcs().into_iter().collect();
 
         let unclassified: Vec<&String> = declared.difference(&classified).collect();
         assert!(
