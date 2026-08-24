@@ -92,29 +92,22 @@ function SourceImportDialogContent({
   onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
   openAuthorization: (url: string) => unknown
 }) {
-  const formRef = useRef<HTMLFormElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [step, setStep] = useState(0)
   const [manifestYaml, setManifestYaml] = useState('')
+  // Counts describes rather than naming one, so the configure step remounts for
+  // every manifest. Two manifests can declare the same source name, and a
+  // remount is what keeps one manifest's credentials out of the next one's form.
+  const [describeCount, setDescribeCount] = useState(0)
   // Names the file being read, so the wait says which manifest it is about. A
   // pasted manifest has no name.
   const [fileName, setFileName] = useState<string | null>(null)
   const [dropping, setDropping] = useState(false)
   const describe = useFetcher<SourceDescribeData>()
-  const navigation = useNavigation()
-  const oauth = useOAuthInstallFlow({
-    fetchOAuthInstall: fetchOAuthImport,
-    openAuthorization,
-    onComplete: onOAuthImportComplete ?? (() => {}),
-  })
 
   const describing = describe.state !== 'idle'
-  const submitting = navigation.state === 'submitting'
   const entry: CatalogEntry | null =
     describe.data?.status === 'success' && !describing ? describe.data.entry : null
-  const importing = submitting || oauth.busy
-
-  const collection = useSourceInputCollection(entry?.inputSpecs ?? null)
 
   // A described manifest resolves as fetcher state rather than as an event, so
   // both outcomes land here. The ref keys on the result object, which is new per
@@ -142,6 +135,7 @@ function SourceImportDialogContent({
     (text: string, from: string | null) => {
       setManifestYaml(text)
       setFileName(from)
+      setDescribeCount((previous) => previous + 1)
       describe.submit({ manifest_yaml: text }, { action: describePath, method: 'post' })
     },
     [describe, describePath],
@@ -189,22 +183,6 @@ function SourceImportDialogContent({
     return () => document.removeEventListener('paste', handlePaste)
   }, [describeManifest, describing, step])
 
-  function cancel() {
-    oauth.cancel()
-    onCancel()
-  }
-
-  async function submitOAuthImport() {
-    if (!formRef.current || oauth.busy) return
-    await oauth.start(oauthImportPath, new FormData(formRef.current))
-  }
-
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    if (!collection.usesOAuth) return
-    event.preventDefault()
-    void submitOAuthImport()
-  }
-
   return (
     <div className={styles.dialogContent}>
       <StepHeader step={0} />
@@ -250,7 +228,7 @@ function SourceImportDialogContent({
         )}
       </div>
       <Dialog.Actions>
-        <ButtonContainer disabled={describing} onClick={cancel} size="32" variant="bare">
+        <ButtonContainer disabled={describing} onClick={onCancel} size="32" variant="bare">
           <ButtonText>Cancel</ButtonText>
         </ButtonContainer>
       </Dialog.Actions>
@@ -264,78 +242,131 @@ function SourceImportDialogContent({
         <Dialog.Portal>
           <Dialog.Popup size="l">
             {entry ? (
-              // The form lives here because the credential inputs render here: a
-              // portalled popup sits outside any outer form.
-              <Form
-                className={styles.dialogContent}
-                method="post"
-                onSubmit={handleSubmit}
-                ref={formRef}
-              >
-                <input type="hidden" name="_intent" value="import" />
-                <input type="hidden" name="name" value={entry.name} />
-                <input type="hidden" name="manifest_yaml" value={manifestYaml} />
-
-                <StepHeader step={1} />
-                <SourceIdentityHeader
-                  description={entry.description}
-                  name={entry.name}
-                  origin={entry.origin}
-                  version={entry.version}
-                />
-                {entry.installed ? (
-                  <SourceError>A source named {entry.name} is already configured.</SourceError>
-                ) : null}
-
-                <SourceInputRows
-                  collection={collection}
-                  disabled={importing}
-                  submitLabel="Import source"
-                />
-
-                <OAuthProgressDialog
-                  error={oauth.error}
-                  inputLabel={formatFieldName}
-                  onCancel={oauth.cancel}
-                  progress={oauth.progress}
-                />
-
-                <Dialog.Actions>
-                  <ButtonContainer disabled={submitting} onClick={cancel} size="32" variant="bare">
-                    <ButtonText>Cancel</ButtonText>
-                  </ButtonContainer>
-                  <ButtonContainer
-                    disabled={importing}
-                    onClick={() => setStep(0)}
-                    size="32"
-                    variant="secondary"
-                  >
-                    <ButtonText>Back</ButtonText>
-                  </ButtonContainer>
-                  <ButtonContainer
-                    disabled={importing || !collection.canSubmit || entry.installed}
-                    onClick={collection.usesOAuth ? () => void submitOAuthImport() : undefined}
-                    size="32"
-                    type={collection.usesOAuth ? 'button' : 'submit'}
-                    variant="primary"
-                  >
-                    {importing ? <SpinningButtonIcon name="Loader" /> : null}
-                    <ButtonText>
-                      {submitting
-                        ? 'Importing…'
-                        : oauthActionLabel(oauth.progress, {
-                            busy: 'Importing…',
-                            idle: 'Import source',
-                          })}
-                    </ButtonText>
-                  </ButtonContainer>
-                </Dialog.Actions>
-              </Form>
+              <SourceImportConfigureForm
+                entry={entry}
+                fetchOAuthImport={fetchOAuthImport}
+                key={describeCount}
+                manifestYaml={manifestYaml}
+                oauthImportPath={oauthImportPath}
+                onBack={() => setStep(0)}
+                onCancel={onCancel}
+                onOAuthImportComplete={onOAuthImportComplete}
+                openAuthorization={openAuthorization}
+              />
             ) : null}
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
     </div>
+  )
+}
+
+/**
+ * The configure step, mounted per described manifest. It owns the collected
+ * input values, so remounting it is what clears one manifest's credentials
+ * before the next manifest's form reuses the same input keys.
+ */
+function SourceImportConfigureForm({
+  entry,
+  fetchOAuthImport,
+  manifestYaml,
+  oauthImportPath,
+  onBack,
+  onCancel,
+  onOAuthImportComplete,
+  openAuthorization,
+}: {
+  entry: CatalogEntry
+  fetchOAuthImport: typeof fetch
+  manifestYaml: string
+  oauthImportPath: string
+  onBack: () => void
+  onCancel: () => void
+  onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
+  openAuthorization: (url: string) => unknown
+}) {
+  const formRef = useRef<HTMLFormElement>(null)
+  const navigation = useNavigation()
+  const oauth = useOAuthInstallFlow({
+    fetchOAuthInstall: fetchOAuthImport,
+    openAuthorization,
+    onComplete: onOAuthImportComplete ?? (() => {}),
+  })
+  const collection = useSourceInputCollection(entry.inputSpecs ?? null)
+
+  const submitting = navigation.state === 'submitting'
+  const importing = submitting || oauth.busy
+
+  function cancel() {
+    oauth.cancel()
+    onCancel()
+  }
+
+  async function submitOAuthImport() {
+    if (!formRef.current || oauth.busy) return
+    await oauth.start(oauthImportPath, new FormData(formRef.current))
+  }
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    if (!collection.usesOAuth) return
+    event.preventDefault()
+    void submitOAuthImport()
+  }
+
+  return (
+    // The form lives here because the credential inputs render here: a
+    // portalled popup sits outside any outer form.
+    <Form className={styles.dialogContent} method="post" onSubmit={handleSubmit} ref={formRef}>
+      <input type="hidden" name="_intent" value="import" />
+      <input type="hidden" name="name" value={entry.name} />
+      <input type="hidden" name="manifest_yaml" value={manifestYaml} />
+
+      <StepHeader step={1} />
+      <SourceIdentityHeader
+        description={entry.description}
+        name={entry.name}
+        origin={entry.origin}
+        version={entry.version}
+      />
+      {entry.installed ? (
+        <SourceError>A source named {entry.name} is already configured.</SourceError>
+      ) : null}
+
+      <SourceInputRows collection={collection} disabled={importing} submitLabel="Import source" />
+
+      <OAuthProgressDialog
+        error={oauth.error}
+        inputLabel={formatFieldName}
+        onCancel={oauth.cancel}
+        progress={oauth.progress}
+      />
+
+      <Dialog.Actions>
+        <ButtonContainer disabled={submitting} onClick={cancel} size="32" variant="bare">
+          <ButtonText>Cancel</ButtonText>
+        </ButtonContainer>
+        <ButtonContainer disabled={importing} onClick={onBack} size="32" variant="secondary">
+          <ButtonText>Back</ButtonText>
+        </ButtonContainer>
+        <ButtonContainer
+          disabled={importing || !collection.canSubmit || entry.installed}
+          onClick={collection.usesOAuth ? () => void submitOAuthImport() : undefined}
+          size="32"
+          type={collection.usesOAuth ? 'button' : 'submit'}
+          variant="primary"
+        >
+          {importing ? <SpinningButtonIcon name="Loader" /> : null}
+          <ButtonText>
+            {submitting
+              ? 'Importing…'
+              : oauthActionLabel(oauth.progress, {
+                  busy: 'Importing…',
+                  idle: 'Import source',
+                })}
+          </ButtonText>
+        </ButtonContainer>
+      </Dialog.Actions>
+    </Form>
   )
 }
 
