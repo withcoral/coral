@@ -294,7 +294,10 @@ function SourceImportConfigureForm({
   })
   const collection = useSourceInputCollection(entry.inputSpecs ?? null)
 
-  const submitting = navigation.state === 'submitting'
+  // A successful import answers with a redirect, so navigation goes on to
+  // `loading` while this dialog is still mounted. Treating only `submitting` as
+  // busy re-enables the button in that gap and lets a second import through.
+  const submitting = navigation.state !== 'idle'
   const importing = submitting || oauth.busy
   // Pressing Enter in a field submits the form whatever the button says, so the
   // rule that disables the button has to hold here too.
