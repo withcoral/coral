@@ -30,13 +30,7 @@ impl CoralDb {
         CoralTx::begin_read_snapshot(&self.backend).await
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Phase 1 keeps an explicit database health probe for the server diagnostics wired in a later stack PR."
-        )
-    )]
+    /// Reports whether the database still answers, for the readiness probe.
     pub(crate) async fn ping(&self) -> Result<(), DbError> {
         match &self.backend {
             CoralDbBackend::Sqlite(db) => {
@@ -47,6 +41,16 @@ impl CoralDb {
             }
         }
         Ok(())
+    }
+
+    /// Closes the pool, so a test can observe a database that stopped
+    /// answering without taking a real backend away.
+    #[cfg(test)]
+    pub(crate) async fn close_for_tests(&self) {
+        match &self.backend {
+            CoralDbBackend::Sqlite(db) => db.pool.close().await,
+            CoralDbBackend::Postgres(db) => db.pool.close().await,
+        }
     }
 }
 

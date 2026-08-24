@@ -5,9 +5,15 @@
 //! convention for overall server health, and what off-the-shelf probers query by
 //! default — answers process liveness from a constant: a live process must not
 //! report `NotServing` just because its engine is degraded, or a liveness prober
-//! restarts the container instead of removing it from rotation. Engine readiness
-//! is a separate registered service, [`READINESS_SERVICE_NAME`], so a readiness
-//! probe can ask for it explicitly.
+//! restarts the container instead of removing it from rotation. Service
+//! readiness is a separate registered service, [`READINESS_SERVICE_NAME`], so a
+//! readiness probe can ask for it explicitly.
+//!
+//! Readiness asks whether this service can serve at all: it is up, and the
+//! database it reads and writes answers. It deliberately says nothing about any
+//! one workspace's catalog. A catalog answer would be a stronger signal, but it
+//! is a signal about a workspace and its sources rather than about this
+//! instance, and a probe that pulls a replica out of rotation cannot act on it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -20,39 +26,30 @@ use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_server::Health;
 use tonic_health::pb::{HealthCheckRequest, HealthCheckResponse};
 
-use crate::catalog::discovery::CatalogDiscovery;
-use crate::query::QueryAttribution;
-use crate::query::manager::{QueryManager, QueryManagerError};
-use crate::transport::query_status;
-use crate::workspaces::WorkspaceManager;
+use crate::state::db::CoralDb;
 
-/// Health service name reporting whether the engine can answer for its catalog.
+/// Health service name reporting whether the service can reach its database.
 ///
 /// Readiness lives under its own name so the default (empty-name) check stays a
-/// constant-time liveness answer. Probes that want engine health ask for this.
+/// constant-time liveness answer. Probes that want service health ask for this.
 pub const READINESS_SERVICE_NAME: &str = "coral.readiness";
 
-/// How long one engine readiness answer is reused.
+/// How long one readiness answer is reused.
 ///
 /// The health service is unauthenticated by design, so without this every caller
-/// that can reach the port could drive a catalog resolution per request. It also
-/// keeps a normal orchestrator poll interval from doing the work every time.
+/// that can reach the port could drive a database round trip per request. It
+/// also keeps a normal orchestrator poll interval from doing the work every
+/// time.
 const READINESS_CACHE_TTL: Duration = Duration::from_secs(2);
 
 /// How long a caller waits on the running probe before answering unready.
 ///
 /// Without a deadline the health RPC hangs on exactly the fault it exists to
-/// report: catalog resolution connects to every configured source and has no
-/// bound of its own, so a wedged source would wedge the answer instead of
-/// reporting `NotServing`. This bounds only how long an answer is waited for —
-/// the resolution itself runs to completion in the background — so a slow
-/// engine converges to ready over successive polls rather than restarting a
-/// doomed resolution on every one.
-///
-/// It bounds the asynchronous part of that work. A probe stalled inside a
-/// blocking call — `load_query_sources` takes the state lock with a blocking
-/// `flock` — cannot be preempted, so it holds a runtime thread until it
-/// returns; this deadline still frees the RPC to answer.
+/// report: a database that accepts the round trip and never answers it would
+/// wedge the health answer instead of reporting `NotServing`. This bounds only
+/// how long an answer is waited for — the check itself runs to completion in
+/// the background — so a slow database converges to ready over successive polls
+/// rather than restarting a doomed check on every one.
 ///
 /// Keep it below coral-mcp's `READINESS_TIMEOUT`, the client-side deadline the
 /// authenticated `/readyz` applies to this RPC, so the answer comes from here
@@ -61,24 +58,24 @@ const READINESS_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 type ReadinessFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 
-/// Whether the server can still answer for its catalog.
+/// Whether the server can still reach the state it serves out of.
 ///
 /// The health service is the only unauthenticated RPC on the gRPC surface, which
 /// makes it the one place a readiness probe can reach without a bearer token.
-/// Answering from the engine here is what keeps an authenticated `/readyz` from
-/// degenerating into a port check: the alternative — probing a data-plane RPC
-/// from outside — either needs a token or an authentication bypass.
+/// Answering from the database here is what keeps an authenticated `/readyz`
+/// from degenerating into a port check: the alternative — probing a data-plane
+/// RPC from outside — either needs a token or an authentication bypass.
 #[derive(Clone)]
 pub(super) struct EngineReadiness {
     probe: Arc<dyn Fn() -> ReadinessFuture + Send + Sync>,
     cached: Arc<Mutex<Option<(Instant, bool)>>>,
-    /// The resolution currently running, shared by everyone waiting on it.
+    /// The check currently running, shared by everyone waiting on it.
     ///
     /// The TTL alone bounds the steady-state rate but not concurrency: every
     /// caller arriving in the instant the cache expires would otherwise launch
-    /// its own resolution, letting unauthenticated health traffic fan out into
-    /// arbitrary engine work. Occupying this slot for the length of one probe is
-    /// what collapses that burst into a single catalog resolution.
+    /// its own check, letting unauthenticated health traffic fan out into
+    /// database work. Occupying this slot for the length of one probe is what
+    /// collapses that burst into a single round trip.
     in_flight: Arc<Mutex<Option<watch::Receiver<Option<bool>>>>>,
 }
 
@@ -91,49 +88,24 @@ impl EngineReadiness {
         }
     }
 
-    /// Reports readiness by resolving one existing workspace's catalog, the
-    /// same work the auth-disabled readiness probe drives through `ListCatalog`.
+    /// Reports readiness from one round trip to the database this server serves
+    /// out of.
     ///
-    /// The workspace comes from the instance's own listing rather than a
-    /// well-known name, because no workspace is provisioned any more: naming
-    /// one would resolve a workspace that does not exist, and the missing
-    /// workspace is classified as reachable, so the probe would answer ready
-    /// without ever reaching the engine it exists to ask about.
+    /// Every RPC worth routing here reads or writes that database, so a server
+    /// that cannot reach it can answer nothing and belongs out of rotation;
+    /// one that can reach it is as ready as an instance-wide probe can
+    /// establish.
     ///
-    /// Which one it picks does not matter — readiness is instance-wide, and
-    /// every workspace's catalog runs through the same engine — so it takes the
-    /// first listed and pays for one resolution rather than one per workspace.
-    pub(super) fn from_catalog_resolution(
-        queries: QueryManager,
-        workspaces: WorkspaceManager,
-    ) -> Self {
+    /// Readiness asks nothing about a workspace. Resolving a workspace's
+    /// catalog would report more, but what it reports is a property of that
+    /// workspace and the sources it names — which workspaces exist at all is a
+    /// tenancy question, and a source outside this deployment failing is not
+    /// this replica being unfit to serve. Neither is something a probe that
+    /// empties a fleet can act on.
+    pub(super) fn from_database(database: Arc<CoralDb>) -> Self {
         Self::new(Arc::new(move || {
-            let catalog = CatalogDiscovery::new(queries.clone());
-            let workspaces = workspaces.clone();
-            Box::pin(async move {
-                let listed = match workspaces.list_workspaces().await {
-                    Ok(listed) => listed,
-                    // Classified the same way a catalog rejection is, so a
-                    // store that cannot answer reports unready under one rule.
-                    Err(error) => {
-                        return readiness_from_catalog::<()>(Err(QueryManagerError::App(error)));
-                    }
-                };
-                let Some(workspace) = listed.first() else {
-                    // An instance that owns no workspace has no catalog to fail
-                    // on. A fresh install is waiting to be given one, not
-                    // broken, so it must not be held out of rotation.
-                    return true;
-                };
-                readiness_from_catalog(
-                    catalog
-                        // Neither the catalog nor the schema is filtered: the
-                        // probe asks the same unqualified question `ListCatalog`
-                        // does.
-                        .catalog_info(&workspace.name, None, None, &QueryAttribution::new(None))
-                        .await,
-                )
-            })
+            let database = Arc::clone(&database);
+            Box::pin(async move { database.ping().await.is_ok() })
         }))
     }
 
@@ -145,15 +117,15 @@ impl EngineReadiness {
     /// Reads the cached answer while it is fresh, else waits on one probe.
     ///
     /// Exactly one probe runs at a time and every caller arriving during it
-    /// shares that one answer, so a burst of health traffic resolves the catalog
-    /// once rather than once per request.
+    /// shares that one answer, so a burst of health traffic costs one database
+    /// round trip rather than one per request.
     ///
-    /// The deadline bounds this *answer*, not the resolution behind it. A
-    /// catalog that legitimately takes longer than one poll allows keeps
-    /// resolving after this returns unready and records what it finds, so the
-    /// next poll reports ready — whereas cancelling it would discard the work
-    /// and restart from nothing every time, and an engine slower than the
-    /// deadline could never report ready at all.
+    /// The deadline bounds this *answer*, not the check behind it. A database
+    /// that legitimately takes longer than one poll allows keeps answering
+    /// after this returns unready and records what it found, so the next poll
+    /// reports ready — whereas cancelling it would discard the work and restart
+    /// from nothing every time, and a database slower than the deadline could
+    /// never report ready at all.
     async fn is_ready(&self) -> bool {
         if let Some(ready) = self.fresh_answer() {
             return ready;
@@ -165,7 +137,7 @@ impl EngineReadiness {
                     return ready;
                 }
                 // The sender is dropped without a value only if the probe task
-                // panicked, which is not an engine that can answer.
+                // panicked, which is not a service that can answer.
                 if answer.changed().await.is_err() {
                     return false;
                 }
@@ -177,16 +149,16 @@ impl EngineReadiness {
     /// Subscribes to the running probe, starting one if none is running.
     ///
     /// The probe is spawned rather than awaited in place so that neither this
-    /// caller's deadline nor its disconnection can cancel a resolution already
-    /// under way: whoever asks next still gets the answer it paid for.
+    /// caller's deadline nor its disconnection can cancel a check already under
+    /// way: whoever asks next still gets the answer it paid for.
     ///
     /// Whether to probe is decided under the slot, cache included, because a
     /// caller reads the cache before it reaches this lock. A probe finishing in
     /// between records its answer and vacates the slot, so that caller arrives
     /// to an empty slot holding a fresh answer; without re-reading the cache
-    /// here it would resolve the catalog again anyway. Deciding under the lock
+    /// here it would check the database again anyway. Deciding under the lock
     /// is what keeps the TTL a bound on how often unauthenticated health
-    /// traffic can drive a resolution, rather than only on the steady state.
+    /// traffic can drive a check, rather than only on the steady state.
     fn in_flight_probe(&self) -> watch::Receiver<Option<bool>> {
         let Ok(mut slot) = self.in_flight.lock() else {
             // A poisoned slot costs single-flight, not correctness.
@@ -231,44 +203,6 @@ impl EngineReadiness {
     }
 }
 
-/// Turns one catalog resolution into a readiness answer.
-///
-/// A rejection is not automatically an unready instance. The auth-disabled
-/// `/readyz` classifies its own answer with `catalog_rejection_is_reachable` in
-/// coral-mcp's `http` module, which deliberately reads request-shaped codes — a
-/// workspace deleted between the listing and the resolution, two sources
-/// claiming one runtime schema — as proof the engine is reachable. Those faults
-/// are instance-wide and therefore identical on every replica, so calling them
-/// unready here would pull a whole fleet out of rotation for a condition the
-/// other surface reports as reachable.
-///
-/// The two surfaces no longer ask the same question, and `/readyz` is currently
-/// the weaker one. This probe resolves the first workspace the instance
-/// actually has; `/readyz` still names the literal `default`, which nothing
-/// provisions any more, so it reads `NotFound` — a code this predicate's
-/// counterpart treats as reachable — and answers ready even for an engine that
-/// cannot resolve a real catalog. Repairing that is owned by the local
-/// MCP-resolution work, which requires readiness to stop probing a default
-/// workspace. Until then, do not read a green `/readyz` as agreement with this
-/// function.
-fn readiness_from_catalog<T>(outcome: Result<T, QueryManagerError>) -> bool {
-    match outcome {
-        Ok(_) => true,
-        // Reuse the data plane's mapping so the code classified here is the
-        // same one `/readyz` would have seen over the wire.
-        Err(error) => !matches!(
-            query_status(error).code(),
-            tonic::Code::Cancelled
-                | tonic::Code::Unknown
-                | tonic::Code::DeadlineExceeded
-                | tonic::Code::Unimplemented
-                | tonic::Code::Internal
-                | tonic::Code::Unavailable
-                | tonic::Code::DataLoss
-        ),
-    }
-}
-
 pub(super) struct AggregateHealthService {
     readiness: EngineReadiness,
 }
@@ -301,7 +235,7 @@ impl Health for AggregateHealthService {
         request: tonic::Request<HealthCheckRequest>,
     ) -> Result<tonic::Response<HealthCheckResponse>, tonic::Status> {
         let status = match request.get_ref().service.as_str() {
-            // Process liveness: answered from a constant so a degraded engine
+            // Process liveness: answered from a constant so a degraded service
             // never tells a liveness prober to restart the process.
             "" => ServingStatus::Serving,
             READINESS_SERVICE_NAME if self.readiness.is_ready().await => ServingStatus::Serving,
@@ -336,27 +270,16 @@ mod tests {
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_server::Health as _;
 
-    use coral_engine::{CoreError, QueryRuntimeContext};
-
     use super::{
         AggregateHealthService, EngineReadiness, READINESS_PROBE_TIMEOUT, READINESS_SERVICE_NAME,
-        readiness_from_catalog,
     };
-    use crate::bootstrap::AppError;
-    use crate::credentials::{CredentialManager, CredentialStore};
-    use crate::query::manager::{QueryManager, QueryManagerError};
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos as _, ResolvedDatabaseConfig, run_state_migrations,
-    };
-    use crate::state::{AppStateLayout, ConfigStore};
-    use crate::workspaces::{WorkspaceManager, WorkspaceName};
+    use crate::state::AppStateLayout;
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
 
-    /// One instance's own state, database and managers, with the readiness
-    /// probe the server mounts over them and no workspace until a test creates
-    /// one.
+    /// One instance's own migrated database, with the readiness probe the
+    /// server mounts over it.
     struct ReadinessFixture {
         _temp: TempDir,
-        layout: AppStateLayout,
         db: Arc<CoralDb>,
         readiness: EngineReadiness,
     }
@@ -366,7 +289,6 @@ mod tests {
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
         let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
         else {
             panic!("the default test database is sqlite")
@@ -377,71 +299,34 @@ mod tests {
                 .expect("open sqlite"),
         );
         db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, &config_store, &layout)
-            .await
-            .expect("run state migrations");
-        let credentials = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let workspaces = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credentials.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
-        );
-        let queries = QueryManager::new_for_tests(
-            config_store,
-            workspaces.clone(),
-            credentials,
-            QueryRuntimeContext::default(),
-            layout.clone(),
-            Vec::new(),
-        );
         ReadinessFixture {
             _temp: temp,
-            readiness: EngineReadiness::from_catalog_resolution(queries, workspaces),
-            layout,
+            readiness: EngineReadiness::from_database(Arc::clone(&db)),
             db,
         }
     }
 
-    async fn create_workspace(db: &Arc<CoralDb>, name: &str) {
-        let workspace = WorkspaceName::parse(name).expect("workspace name");
-        let mut tx = db.begin().await.expect("begin workspace creation");
-        tx.workspaces()
-            .create(workspace.as_str(), 1)
-            .await
-            .expect("create workspace");
-        tx.commit().await.expect("commit workspace creation");
-    }
-
-    /// A fresh install owns no workspace, so the probe has no catalog to
-    /// resolve. Nothing about that is a fault, and reporting unready would
-    /// hold an instance out of rotation for having nothing in it yet.
+    /// A fresh install owns no workspace and no source. Readiness is a question
+    /// about this service, not about what has been put in it, so an empty
+    /// instance whose database answers is ready to serve.
     #[tokio::test]
-    async fn an_instance_that_owns_no_workspace_reports_ready() {
+    async fn an_instance_with_a_reachable_database_reports_ready() {
         let fixture = readiness_fixture().await;
 
         assert!(fixture.readiness.is_ready().await);
     }
 
-    /// The regression that makes this probe worth having: it must resolve a
-    /// catalog the instance actually owns. Naming a workspace instead would
-    /// resolve one no install provisions any more, and a missing workspace is
-    /// deliberately classified as reachable — so an engine that cannot read
-    /// its own state would still report ready.
-    ///
-    /// The unparseable config file is that engine: catalog resolution reads it
-    /// after the workspace check, and fails with an infrastructure code.
+    /// The fault this probe exists to report: every RPC worth routing here
+    /// reads or writes the database, so a server that cannot reach it can
+    /// answer nothing and must leave the rotation.
     #[tokio::test]
-    async fn an_engine_that_cannot_answer_for_a_real_workspace_reports_unready() {
+    async fn an_unreachable_database_reports_unready() {
         let fixture = readiness_fixture().await;
-        create_workspace(&fixture.db, "work").await;
-        std::fs::write(fixture.layout.config_file(), "this is not toml")
-            .expect("write unparseable config");
+        fixture.db.close_for_tests().await;
 
         assert!(
             !fixture.readiness.is_ready().await,
-            "a catalog the instance owns and cannot resolve is an unready engine"
+            "a server that cannot reach its database is not ready to serve"
         );
     }
 
@@ -455,18 +340,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn liveness_stays_serving_while_the_engine_is_unready() {
+    async fn liveness_stays_serving_while_the_service_is_unready() {
         for ready in [true, false] {
             assert_eq!(
                 check("", ready).await.expect("liveness check"),
                 ServingStatus::Serving as i32,
-                "liveness must not follow engine readiness"
+                "liveness must not follow service readiness"
             );
         }
     }
 
     #[tokio::test]
-    async fn the_readiness_service_reports_engine_readiness() {
+    async fn the_readiness_service_reports_service_readiness() {
         assert_eq!(
             check(READINESS_SERVICE_NAME, true)
                 .await
@@ -490,7 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readiness_probes_the_engine_once_within_the_cache_window() {
+    async fn readiness_probes_the_database_once_within_the_cache_window() {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
         let readiness = EngineReadiness::new(Arc::new(move || {
@@ -505,7 +390,7 @@ mod tests {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
-            "the unauthenticated readiness check must not resolve the catalog per request"
+            "the unauthenticated readiness check must not hit the database per request"
         );
     }
 
@@ -533,7 +418,7 @@ mod tests {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
-            "losing the race to a finished probe must not buy a second catalog resolution"
+            "losing the race to a finished probe must not buy a second database round trip"
         );
     }
 
@@ -563,7 +448,7 @@ mod tests {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
-            "concurrent public health traffic must not fan out into parallel engine work"
+            "concurrent public health traffic must not fan out into parallel database work"
         );
     }
 
@@ -572,7 +457,7 @@ mod tests {
     async fn a_wedged_probe_answers_unready_instead_of_hanging() {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
-        // Never resolves: the catalog resolution wedging is precisely the fault
+        // Never resolves: a database that never answers is precisely the fault
         // this service exists to report, so it must not also silence it.
         let readiness = EngineReadiness::new(Arc::new(move || {
             counted.fetch_add(1, Ordering::SeqCst);
@@ -588,16 +473,16 @@ mod tests {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
-            "a wedged probe still occupies the slot, so polling must not pile up resolutions"
+            "a wedged probe still occupies the slot, so polling must not pile up checks"
         );
     }
 
-    /// The regression that makes a deadline dangerous: cancelling the
-    /// resolution to answer on time would discard the work, so an engine slower
-    /// than the deadline would restart from nothing every poll and never report
-    /// ready. The answer is bounded; the resolution is not.
+    /// The regression that makes a deadline dangerous: cancelling the check to
+    /// answer on time would discard the work, so a database slower than the
+    /// deadline would restart from nothing every poll and never report ready.
+    /// The answer is bounded; the check is not.
     #[tokio::test(start_paused = true)]
-    async fn a_slow_engine_reports_ready_on_a_later_poll() {
+    async fn a_slow_database_reports_ready_on_a_later_poll() {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
         let slow = READINESS_PROBE_TIMEOUT + Duration::from_millis(200);
@@ -611,15 +496,15 @@ mod tests {
 
         assert!(
             !readiness.is_ready().await,
-            "the first poll gives up waiting before the catalog finishes"
+            "the first poll gives up waiting before the check finishes"
         );
 
-        // Let the resolution the first poll walked away from finish.
+        // Let the check the first poll walked away from finish.
         tokio::time::sleep(Duration::from_millis(400)).await;
 
         assert!(
             readiness.is_ready().await,
-            "the resolution must survive the deadline and record what it found"
+            "the check must survive the deadline and record what it found"
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -628,41 +513,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_resolved_catalog_reports_ready() {
-        assert!(readiness_from_catalog(Ok(())));
-    }
-
-    #[test]
-    fn instance_wide_catalog_rejections_still_report_ready() {
-        // Each of these is identical on every replica, so reporting unready
-        // would empty the fleet for a rejection the auth-disabled `/readyz`
-        // reports as reachable.
-        for error in [
-            AppError::WorkspaceNotFound("work".to_string()),
-            AppError::InvalidInput(
-                "catalog runtime schema 'public' is owned by both 'a' and 'b'".to_string(),
-            ),
-            AppError::FailedPrecondition("source 'a' is missing credentials".to_string()),
-        ] {
-            let described = error.to_string();
-            assert!(
-                readiness_from_catalog::<()>(Err(QueryManagerError::App(error))),
-                "request-shaped rejection must not report the instance unready: {described}"
-            );
-        }
-    }
-
-    #[test]
-    fn infrastructure_faults_report_unready() {
-        assert!(
-            !readiness_from_catalog::<()>(Err(QueryManagerError::App(AppError::Internal(
-                "config store lock poisoned".to_string()
-            )))),
-            "an engine that cannot answer at all is not ready"
-        );
-        assert!(!readiness_from_catalog::<()>(Err(QueryManagerError::Core(
-            CoreError::Unavailable("backend down".to_string())
-        ))),);
-    }
 }

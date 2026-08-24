@@ -459,6 +459,7 @@ impl ServerBuilder {
         );
         let mut server = start_server(
             ServerDependencies {
+                database: Arc::clone(&coral_db),
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
                 source: source_manager,
                 workspace: workspace_manager,
@@ -807,6 +808,8 @@ struct TraceServerComponents {
 }
 
 struct ServerDependencies {
+    /// The app database, which the readiness probe answers out of.
+    database: Arc<CoralDb>,
     gui_onboarding: GuiOnboardingManager,
     source: SourceManager,
     workspace: WorkspaceManager,
@@ -830,6 +833,7 @@ fn application_routes(
     trace_service: Option<TraceService>,
 ) -> (Routes, EngineReadiness) {
     let ServerDependencies {
+        database,
         gui_onboarding,
         source,
         workspace,
@@ -850,7 +854,7 @@ fn application_routes(
         ),
         None => (source, query),
     };
-    let readiness = EngineReadiness::from_catalog_resolution(query.clone(), workspace.clone());
+    let readiness = EngineReadiness::from_database(database);
     let source_service = SourceService::new(
         source,
         query.clone(),
@@ -2119,6 +2123,7 @@ backend = "unsupported"
         );
         let server = start_server(
             ServerDependencies {
+                database: Arc::clone(&db),
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
@@ -2278,6 +2283,7 @@ backend = "unsupported"
         );
         let running = start_server(
             ServerDependencies {
+                database: Arc::clone(&db),
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
@@ -2412,6 +2418,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                database: Arc::clone(&db),
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
@@ -2546,6 +2553,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                database: Arc::clone(&db),
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,

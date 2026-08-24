@@ -369,13 +369,14 @@ async fn start_mcp_http(
     Ok(Some(server))
 }
 
-/// Probes engine readiness over the unauthenticated gRPC health service.
+/// Probes server readiness over the unauthenticated gRPC health service.
 ///
 /// A data-plane call cannot serve here: with `[auth]` on it would need a bearer
 /// token the probe does not hold, and its `Unauthenticated` rejection reads as
 /// "reachable" — turning `/readyz` into a port check. The health service reports
-/// catalog reachability server-side instead, under its readiness service name so
-/// the aggregate liveness check stays a constant.
+/// server-side instead whether this instance can reach the database it serves
+/// out of, under its readiness service name so the aggregate liveness check
+/// stays a constant.
 async fn probe_serving_health(client: &AppClient) -> Result<(), Code> {
     match client.check_engine_ready().await {
         Ok(true) => Ok(()),

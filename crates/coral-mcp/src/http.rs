@@ -22,9 +22,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_app::{CanonicalOauthUrl, OauthUrlError};
-use coral_client::{AppClient, default_workspace};
+use coral_client::AppClient;
 use futures::{Stream, StreamExt as _};
 use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ServerJsonRpcMessage};
 use rmcp::transport::{
@@ -50,7 +49,6 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::Request as GrpcRequest;
 use tower::ServiceExt;
 use url::{Position, Url};
 
@@ -715,24 +713,30 @@ fn spawn_http_server(
 struct ReadinessProbe(Arc<dyn Fn() -> ProbeFuture + Send + Sync>);
 
 impl ReadinessProbe {
+    /// Probes the server over the unauthenticated gRPC health service.
+    ///
+    /// A data-plane call cannot serve here. It would have to name a workspace,
+    /// and the only name available without reading state is one nothing
+    /// provisions — whose `NotFound` [`catalog_rejection_is_reachable`] reads as
+    /// reachable, so `/readyz` would answer ready for a server that can reach
+    /// nothing at all. The health service asks about the instance itself,
+    /// server-side, and names no workspace.
+    ///
+    /// Twin of `probe_serving_health` in `coral-cli/src/serve.rs`, which
+    /// supplies this probe for the authenticated surface. The mapping — ready,
+    /// not-ready as `Unavailable`, the status code otherwise — is duplicated on
+    /// purpose: only the surface-specific reasoning around it differs. Change
+    /// one mapping and the other needs the same change, or the two `/readyz`
+    /// surfaces drift apart.
     fn from_app(app: AppClient) -> Self {
         Self(Arc::new(move || {
-            let mut catalog = app.catalog_client();
+            let app = app.clone();
             Box::pin(async move {
-                catalog
-                    .list_catalog(GrpcRequest::new(ListCatalogRequest {
-                        workspace: Some(default_workspace()),
-                        catalog_name: String::new(),
-                        schema_name: String::new(),
-                        kind: CatalogItemKind::Unspecified as i32,
-                        pagination: Some(PaginationRequest {
-                            limit: 1,
-                            offset: 0,
-                        }),
-                    }))
-                    .await
-                    .map(|_response| ())
-                    .map_err(|status| status.code())
+                match app.check_engine_ready().await {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(tonic::Code::Unavailable),
+                    Err(status) => Err(status.code()),
+                }
             })
         }))
     }
