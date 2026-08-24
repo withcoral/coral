@@ -285,18 +285,20 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
         <Table.Body>
           {data.error ? (
             <Table.Status>
-              <Typography.BodySmall role="alert" variant="error">
-                {data.error}
-              </Typography.BodySmall>
-              <Button.TextButton
-                disabled={retryPending}
-                onClick={() => void revalidator.revalidate()}
-                size="22"
-                type="button"
-                variant="secondary"
-              >
-                {retryPending ? 'Retrying…' : 'Retry'}
-              </Button.TextButton>
+              <div className={styles.loadError}>
+                <Typography.BodySmall role="alert" variant="error">
+                  {data.error}
+                </Typography.BodySmall>
+                <Button.TextButton
+                  disabled={retryPending}
+                  onClick={() => void revalidator.revalidate()}
+                  size="22"
+                  type="button"
+                  variant="secondary"
+                >
+                  {retryPending ? 'Retrying…' : 'Retry'}
+                </Button.TextButton>
+              </div>
             </Table.Status>
           ) : data.members.length === 0 ? (
             <Table.Status>
