@@ -55,7 +55,6 @@ export const memberNameLine = style({
   gap: '4px 8px',
 })
 export const memberTableRow = style({})
-export const statusCell = style({ paddingBlock: 0 })
 export const removeButton = style({
   marginInlineStart: 'auto',
   opacity: 1,

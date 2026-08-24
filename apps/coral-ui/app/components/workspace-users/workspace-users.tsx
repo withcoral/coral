@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useFetcher, useFetchers, useRevalidator } from 'react-router'
 
-import { ErrorBanner } from '@/components/error-banner'
 import { Banner, Button, Combobox, Dialog, Menu, Table, Typography } from '@/wax/components'
 import { Avatar } from '@/wax/components/avatar'
 import { TextInput } from '@/wax/components/inputs/text'
@@ -285,21 +284,28 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
         <Table.Head />
         <Table.Body>
           {data.error ? (
-            <Table.Status className={styles.statusCell}>
-              <ErrorBanner
-                message={data.error}
-                onRetry={retryPending ? undefined : () => void revalidator.revalidate()}
-                title="Couldn't load workspace users"
-              />
+            <Table.Status>
+              <Typography.BodySmall role="alert" variant="error">
+                {data.error}
+              </Typography.BodySmall>
+              <Button.TextButton
+                disabled={retryPending}
+                onClick={() => void revalidator.revalidate()}
+                size="22"
+                type="button"
+                variant="secondary"
+              >
+                {retryPending ? 'Retrying…' : 'Retry'}
+              </Button.TextButton>
             </Table.Status>
           ) : data.members.length === 0 ? (
-            <Table.Status className={styles.statusCell}>
+            <Table.Status>
               <Typography.BodySmall variant="tertiary">
                 This workspace has no users.
               </Typography.BodySmall>
             </Table.Status>
           ) : visibleMembers.length === 0 ? (
-            <Table.Status className={styles.statusCell}>
+            <Table.Status>
               <Typography.BodySmall variant="tertiary">
                 No users match "{search}".
               </Typography.BodySmall>
