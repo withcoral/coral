@@ -18,8 +18,8 @@ use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
-    TRACE_RESPONSE_MAX_MESSAGE_SIZE,
+    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_REQUEST_MAX_MESSAGE_SIZE,
+    SOURCE_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
@@ -689,6 +689,7 @@ fn application_routes(
         .add_service(GuiOnboardingServiceServer::new(gui_onboarding_service))
         .add_service(
             SourceServiceServer::new(source_service)
+                .max_decoding_message_size(SOURCE_REQUEST_MAX_MESSAGE_SIZE)
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(WorkspaceServiceServer::new(workspace_service))

@@ -45,6 +45,7 @@ export function SourceInstallDialog({
               actionError={actionError}
               entry={entry}
               fetchOAuthInstall={fetchOAuthInstall}
+              key={entry.name}
               onOAuthInstallComplete={onOAuthInstallComplete}
               onCancel={() => onOpenChange(false)}
               openAuthorization={openAuthorization}
@@ -124,7 +125,7 @@ function SourceInstallDialogContent({
         version={entry.version}
       />
 
-      <SourceInputRows collection={collection} disabled={busy} />
+      <SourceInputRows collection={collection} disabled={busy} submitLabel="Add source" />
 
       <OAuthProgressDialog
         error={oauth.error}

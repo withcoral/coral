@@ -66,7 +66,7 @@ export function SourceIdentityHeader({
 
   return (
     <SourceHeader
-      description={<Markdown>{description}</Markdown>}
+      description={description ? <Markdown>{description}</Markdown> : null}
       leading={<ProviderLogo name={name} size="large" />}
       pill={originLabel ? <Pill color="graySubtle">{originLabel}</Pill> : null}
       title={

@@ -8,9 +8,10 @@ use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, CredentialMetadata, DeleteSourceRequest,
-    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
+    DeleteSourceResponse, DescribeSourceManifestRequest, DescribeSourceManifestResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
     OAuthCredentialCallbackReceived, OAuthCredentialClient, OAuthCredentialClientId,
     OAuthCredentialClientSecret, OAuthCredentialCompleted, OAuthCredentialEndpoints,
     OAuthCredentialInput, OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope,
@@ -346,6 +347,27 @@ impl SourceServiceApi for SourceService {
                 report,
             )))
         }))
+        .await
+    }
+
+    async fn describe_source_manifest(
+        &self,
+        request: Request<DescribeSourceManifestRequest>,
+    ) -> Result<Response<DescribeSourceManifestResponse>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        let workspaces = self.workspaces.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            require_workspace(&workspaces, &workspace_name).await?;
+            let candidate = sources
+                .describe_source_manifest(&workspace_name, &request.manifest_yaml)
+                .map_err(app_status)?;
+            Ok(Response::new(DescribeSourceManifestResponse {
+                source_info: Some(candidate_source_to_proto(candidate)),
+            }))
+        })
         .await
     }
 }

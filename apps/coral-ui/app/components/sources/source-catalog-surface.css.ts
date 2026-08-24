@@ -98,6 +98,7 @@ export const headerAction = style({
   alignItems: 'center',
   display: 'flex',
   flexShrink: 0,
+  gap: '8px',
 })
 
 export const statusPanel = style({

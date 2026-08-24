@@ -243,16 +243,7 @@ function SourceCreateDialogContent({
       <input type="hidden" name="name" value={draft.name.trim()} />
       <input type="hidden" name="manifest_yaml" value={buildManifestYaml(draft)} />
       {draft.auth === 'bearer' || draft.auth === 'header' ? (
-        <>
-          <input type="hidden" name="secret_key" value={SECRET_KEY} />
-          <input type="hidden" name="secret_value" value={draft.token.trim()} />
-        </>
-      ) : null}
-      {draft.auth === 'oauthDevice' ? (
-        <>
-          <input type="hidden" name="oauth_input_key" value={SECRET_KEY} />
-          <input type="hidden" name="oauth_method_index" value="0" />
-        </>
+        <input type="hidden" name={`sec:${SECRET_KEY}`} value={draft.token.trim()} />
       ) : null}
 
       <StepHeader step={0} />

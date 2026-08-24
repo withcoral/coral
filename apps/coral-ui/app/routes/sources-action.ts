@@ -5,6 +5,7 @@ import { requestAuthContext } from '@/auth/server-context'
 import {
   CreateBundledSourceRequestSchema,
   DeleteSourceRequestSchema,
+  DescribeSourceManifestRequestSchema,
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
   ImportSourceRequestSchema,
@@ -127,10 +128,15 @@ export async function runSourcesAction(
       if (typeof manifestYaml !== 'string' || manifestYaml.trim().length === 0) {
         return actionError('import', name, 'Missing source manifest')
       }
-      const secretKey = formValue(formData, 'secret_key')
-      const secretValue = formValue(formData, 'secret_value')
-      const secrets = secretKey && secretValue ? [{ key: secretKey, value: secretValue }] : []
-      await importSourceManifest(sourceClient, workspace, manifestYaml, secrets)
+      const info = await describeSourceManifest(sourceClient, workspace, manifestYaml)
+      const missing = firstMissingRequiredInput(info, formData)
+      if (missing) return actionError('import', name, `${missing} is required`)
+      await importSourceManifest(
+        sourceClient,
+        workspace,
+        manifestYaml,
+        installBindingsFromForm(info, formData),
+      )
       return actionSuccess('import', name)
     }
     return actionError('install', name, 'Unknown source action')
@@ -184,17 +190,30 @@ async function createBundledSource(
   return response.source
 }
 
+async function describeSourceManifest(
+  sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
+  manifestYaml: string,
+) {
+  const response = await sourceClient.describeSourceManifest(
+    create(DescribeSourceManifestRequestSchema, { manifestYaml, workspace }),
+  )
+  if (!response.sourceInfo) throw new Error('Coral did not describe the source manifest')
+  return response.sourceInfo
+}
+
 async function importSourceManifest(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
   workspace: Workspace,
   manifestYaml: string,
-  secrets: { key: string; value: string }[],
+  bindings: InstallInput[],
 ) {
+  const { secrets, variables } = splitInstallBindings(bindings)
   const stream = sourceClient.importSource(
-    create(ImportSourceRequestSchema, { manifestYaml, secrets, workspace }),
+    create(ImportSourceRequestSchema, { manifestYaml, secrets, variables, workspace }),
   )
-  // The import wizard has no OAuth inputs, so the stream only carries the
-  // terminal source event.
+  // Callers route OAuth manifests through the streaming resource route, so the
+  // stream here only carries the terminal source event.
   for await (const response of stream) {
     if (response.event.case === 'source') return response.event.value
   }

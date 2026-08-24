@@ -490,6 +490,20 @@ message DeleteSourceRequest {
 // Confirms source deletion.
 message DeleteSourceResponse {}
 
+// Inspects one user-supplied source manifest without installing it.
+message DescribeSourceManifestRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Raw source manifest YAML to parse and describe.
+  string manifest_yaml = 2;
+}
+
+// Returns the metadata declared by one source manifest.
+message DescribeSourceManifestResponse {
+  // Metadata parsed from the manifest, including declared inputs.
+  SourceInfo source_info = 1;
+}
+
 // Validates that a registered source is queryable.
 message ValidateSourceRequest {
   // Owning workspace resource.
@@ -557,4 +571,7 @@ service SourceService {
   rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse);
   // Validates that a registered source is queryable.
   rpc ValidateSource(ValidateSourceRequest) returns (ValidateSourceResponse);
+  // Parses one user-supplied manifest and returns its declared metadata without
+  // installing anything.
+  rpc DescribeSourceManifest(DescribeSourceManifestRequest) returns (DescribeSourceManifestResponse);
 }

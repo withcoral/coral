@@ -4,47 +4,59 @@ import type { Route } from './+types/source-oauth-import'
 
 import { requestAuthContext } from '@/auth/server-context'
 import {
+  DescribeSourceManifestRequestSchema,
   ImportSourceRequestSchema,
-  OAuthCredentialRetrievalSchema,
 } from '@/generated/coral/v1/sources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
 import {
   oauthSourceStreamResponse,
   oauthStreamErrorResponse,
 } from '@/lib/source-oauth-response.server'
-import { formValue } from '@/lib/source-install-form'
+import {
+  installBindingsFromForm,
+  oauthCredentialRetrievalsFromForm,
+  splitInstallBindings,
+} from '@/lib/source-install-form'
 import { errorMessage } from '@/lib/utils'
 import { workspaceFromParams } from '@/lib/workspace-routing'
 
 export async function action({ context, params, request }: Route.ActionArgs): Promise<Response> {
   const formData = await request.formData()
   const manifestYaml = formData.get('manifest_yaml')
-  const inputKey = formValue(formData, 'oauth_input_key')
-  const methodIndexValue = formValue(formData, 'oauth_method_index')
-  const methodIndex = Number(methodIndexValue)
 
   if (typeof manifestYaml !== 'string' || !manifestYaml.trim()) {
     return oauthStreamErrorResponse('Missing source manifest', 400)
   }
-  if (!inputKey) return oauthStreamErrorResponse('Missing OAuth source input key', 400)
-  if (methodIndexValue === '' || !Number.isInteger(methodIndex) || methodIndex < 0) {
-    return oauthStreamErrorResponse('Invalid OAuth credential method index', 400)
-  }
+
+  const workspace = workspaceFromParams(params)
+  const sourceClient = sourceClientForRequest(request, context.get(requestAuthContext).accessToken)
 
   try {
-    const stream = sourceClientForRequest(
-      request,
-      context.get(requestAuthContext).accessToken,
-    ).importSource(
+    // The manifest is the only description of its own inputs, so ask Coral what it
+    // declares before mapping the submitted form onto it.
+    const described = await sourceClient.describeSourceManifest(
+      create(DescribeSourceManifestRequestSchema, { manifestYaml, workspace }),
+      { signal: request.signal },
+    )
+    const info = described.sourceInfo
+    if (!info) return oauthStreamErrorResponse('Coral did not describe the source manifest', 502)
+
+    const oauthCredentialRetrievals = oauthCredentialRetrievalsFromForm(info, formData)
+    if (oauthCredentialRetrievals.length === 0) {
+      return oauthStreamErrorResponse(
+        'No OAuth credential retrieval was selected; use the normal import action.',
+        400,
+      )
+    }
+
+    const { secrets, variables } = splitInstallBindings(installBindingsFromForm(info, formData))
+    const stream = sourceClient.importSource(
       create(ImportSourceRequestSchema, {
         manifestYaml,
-        oauthCredentialRetrievals: [
-          create(OAuthCredentialRetrievalSchema, {
-            inputKey,
-            methodIndex,
-          }),
-        ],
-        workspace: workspaceFromParams(params),
+        oauthCredentialRetrievals,
+        secrets,
+        variables,
+        workspace,
       }),
       { signal: request.signal },
     )

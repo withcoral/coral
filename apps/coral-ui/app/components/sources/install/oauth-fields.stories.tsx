@@ -23,6 +23,7 @@ const meta = {
     disabled: false,
     inputKey: 'GITHUB_TOKEN',
     onValueChange: fn(),
+    submitLabel: 'Add source',
     values: {},
   },
   component: OAuthFields,

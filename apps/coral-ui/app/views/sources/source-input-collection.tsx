@@ -98,9 +98,12 @@ export function useSourceInputCollection(
 export function SourceInputRows({
   collection,
   disabled,
+  submitLabel,
 }: {
   collection: SourceInputCollection
   disabled: boolean
+  /** Name of the button that starts an OAuth flow, such as `Add source`. */
+  submitLabel: string
 }) {
   const { changeMethod, effectiveChoice, inputSpecs, inputs, setValue, values } = collection
 
@@ -118,6 +121,7 @@ export function SourceInputRows({
           disabled={disabled}
           onValueChange={setValue}
           onMethodChange={(index) => changeMethod(input, index)}
+          submitLabel={submitLabel}
         />
       ))}
     </div>
@@ -131,6 +135,7 @@ function InputRow({
   disabled,
   onValueChange,
   onMethodChange,
+  submitLabel,
 }: {
   input: CatalogSourceInputSpec
   methodIndex: number
@@ -138,6 +143,7 @@ function InputRow({
   disabled: boolean
   onValueChange: (key: string, value: string) => void
   onMethodChange: (index: number) => void
+  submitLabel: string
 }) {
   if (input.input.case === 'variable') {
     const def = input.input.value.defaultValue
@@ -193,6 +199,7 @@ function InputRow({
                   inputKey={input.key}
                   method={method}
                   onValueChange={onValueChange}
+                  submitLabel={submitLabel}
                   values={values}
                 />
               </div>
@@ -205,6 +212,7 @@ function InputRow({
                   inputKey={input.key}
                   method={method}
                   onValueChange={onValueChange}
+                  submitLabel={submitLabel}
                   values={values}
                 />
               </Tabs.Panel>
@@ -218,6 +226,7 @@ function InputRow({
           inputKey={input.key}
           method={selected}
           onValueChange={onValueChange}
+          submitLabel={submitLabel}
           values={values}
         />
       )}
@@ -242,12 +251,14 @@ function CredentialMethodFields({
   inputKey,
   method,
   onValueChange,
+  submitLabel,
   values,
 }: {
   disabled: boolean
   inputKey: string
   method: CatalogSourceCredentialMethod | undefined
   onValueChange: (key: string, value: string) => void
+  submitLabel: string
   values: Record<string, string>
 }) {
   if (!method || method.method.case === 'sourceConfig') {
@@ -271,6 +282,7 @@ function CredentialMethodFields({
         fields={oauthFields(method.method.value)}
         inputKey={inputKey}
         onValueChange={onValueChange}
+        submitLabel={submitLabel}
         values={values}
       />
     )

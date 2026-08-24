@@ -28,9 +28,10 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse,
     CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteFunctionRequest, DeleteFunctionResponse,
     DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
-    DescribeCatalogSurfaceRequest, DescribeCatalogSurfaceResponse, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest,
-    EndTaskResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    DescribeCatalogSurfaceRequest, DescribeCatalogSurfaceResponse, DescribeSourceManifestRequest,
+    DescribeSourceManifestResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse,
@@ -1371,6 +1372,17 @@ impl SourceService for MockSourceService {
             .push(request.into_inner());
         self.config.delete_source.clone().into_tonic_result()?;
         Ok(Response::new(DeleteSourceResponse {}))
+    }
+
+    /// Only the web UI inspects a manifest before installing it, so the CLI
+    /// harness carries no canned answer for this call.
+    async fn describe_source_manifest(
+        &self,
+        _request: Request<DescribeSourceManifestRequest>,
+    ) -> Result<Response<DescribeSourceManifestResponse>, Status> {
+        Err(Status::unimplemented(
+            "describe_source_manifest is not used by the CLI",
+        ))
     }
 
     async fn validate_source(

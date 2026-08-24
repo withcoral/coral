@@ -130,7 +130,7 @@ export function toCatalogSourceInputSpecs(info: SourceInfo): CatalogSourceInputS
   return info.inputs.map(toCatalogSourceInputSpec)
 }
 
-function toCatalogEntry(s: SourceInfo): CatalogEntry {
+export function toCatalogEntry(s: SourceInfo): CatalogEntry {
   return {
     name: s.name,
     description: s.description,

@@ -63,6 +63,14 @@ pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_
 /// DSL v4 sources from large OpenAPI documents can exceed tonic's 4 MB default.
 pub const SOURCE_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
 
+/// Maximum gRPC message size for `SourceService` *requests*, in bytes.
+///
+/// `DescribeSourceManifest` and `ImportSource` carry a whole manifest in the
+/// request. Generated DSL v4 manifests reach several megabytes — the bundled
+/// `github` manifest is 4.6 MB and `stripe` is 3 MB — so importing one exceeds
+/// tonic's 4 MB decode default.
+pub const SOURCE_REQUEST_MAX_MESSAGE_SIZE: usize = SOURCE_RESPONSE_MAX_MESSAGE_SIZE;
+
 /// Maximum gRPC message size for `SearchService` *responses*, in bytes.
 ///
 /// Universal Search returns bounded metadata hints, but it may include table,
