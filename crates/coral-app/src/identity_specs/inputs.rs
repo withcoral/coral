@@ -216,7 +216,7 @@ fn resolve_declared_inputs(
             .get(&input.key)
             .and_then(|value| non_blank_value(value))
             .or_else(|| {
-                (input.kind == ManifestInputKind::Variable)
+                (input.kind == ManifestInputKind::Variable && !input.required)
                     .then(|| non_blank_value(&input.default_value))
                     .flatten()
             });
@@ -277,7 +277,7 @@ mod tests {
             "  CLIENT_SECRET: {kind: secret}\n  REGION: {kind: variable, required: false}\n  REMOVE: {kind: variable, required: false}",
         );
         let current = oauth_manifest(
-            "  CLIENT_SECRET: {kind: secret}\n  REGION: {kind: variable, required: false}\n  DEFAULTED: {kind: variable, default: '  fallback  ', required: true}\n  OPTIONAL_SECRET: {kind: secret, required: false}",
+            "  CLIENT_SECRET: {kind: secret}\n  REGION: {kind: variable, required: false}\n  DEFAULTED: {kind: variable, default: '  fallback  ', required: false}\n  OPTIONAL_SECRET: {kind: secret, required: false}",
         );
         let previous_values = BTreeMap::from([
             ("CLIENT_SECRET".to_string(), "  old-secret  ".to_string()),
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mismatched_manifests_and_treats_blank_defaults_as_missing() {
+    fn rejects_mismatched_manifests_and_treats_required_defaults_as_missing() {
         let key = IdentitySpecKey::global("demo").unwrap();
         let other = named_oauth_manifest("other", "  TOKEN: {kind: secret}");
         assert!(matches!(
@@ -457,9 +457,32 @@ mod tests {
                 .variables()
                 .is_empty()
         );
-        let required = oauth_manifest("  BLANK: {kind: variable, default: '   ', required: true}");
+        let required =
+            oauth_manifest("  REQUIRED: {kind: variable, default: fallback, required: true}");
+        assert!(matches!(
+            prepare(&key, &required, None, &BTreeMap::new(), &[]),
+            Err(AppError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            prepare(
+                &key,
+                &required,
+                None,
+                &BTreeMap::new(),
+                &[IdentitySpecInputValue::new("REQUIRED", " \t ")],
+            ),
+            Err(AppError::InvalidInput(_))
+        ));
         assert!(matches!(
             resolve(&key, &required, &BTreeMap::new()),
+            Err(AppError::FailedPrecondition(_))
+        ));
+        assert!(matches!(
+            resolve(
+                &key,
+                &required,
+                &BTreeMap::from([("REQUIRED".to_string(), " \t ".to_string())]),
+            ),
             Err(AppError::FailedPrecondition(_))
         ));
     }
