@@ -44,40 +44,38 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
     validate_args(args)?;
     require_command("hyperfine")?;
 
-    let coral_bin = absolute_path(&args.coral_bin)?;
-    ensure_executable(&coral_bin)?;
-
+    let coral_bin = resolve_coral_bin(&args.coral_bin)?;
     let temp_dir = TempDir::create("coral-tables-perf")?;
-    let config_dir = temp_dir.path().join("coral-config");
-    fs::create_dir_all(&config_dir)
-        .with_context(|| format!("creating {}", config_dir.display()))?;
-    fs::write(
-        config_dir.join("config.toml"),
-        "[credentials]\nstorage = \"file\"\n",
-    )
-    .with_context(|| format!("writing {}", config_dir.join("config.toml").display()))?;
-
-    create_workspace(&coral_bin, &config_dir)?;
-    install_github_source(&coral_bin, &config_dir, &args.github_token)?;
-    run_coral_sql(&coral_bin, &config_dir)?;
+    let config_dir = prepare_config_dir(temp_dir.path())?;
+    provision_measured_workspace(&coral_bin, &config_dir, &args.github_token)?;
 
     let result_json = temp_dir.path().join("hyperfine.json");
     run_hyperfine(args, &coral_bin, &config_dir, &result_json)?;
-
     let result = load_hyperfine_result(&result_json)?;
+
+    Ok(report_measurement(&result, args.max_mean_seconds))
+}
+
+/// Prints the measurement and answers whether it stayed within the threshold.
+fn report_measurement(result: &HyperfineResult, max_mean_seconds: f64) -> bool {
     println!(
         "coral.tables mean: {:.3}s (stddev {:.3}s, threshold {:.3}s)",
-        result.mean, result.stddev, args.max_mean_seconds
+        result.mean, result.stddev, max_mean_seconds
     );
-    if result.mean > args.max_mean_seconds {
+    if is_regression(result.mean, max_mean_seconds) {
         eprintln!(
             "Performance regression: mean {:.3}s exceeds {:.3}s",
-            result.mean, args.max_mean_seconds
+            result.mean, max_mean_seconds
         );
-        return Ok(false);
+        return false;
     }
+    true
+}
 
-    Ok(true)
+/// The pass/fail rule this check exists to apply: a mean at the threshold still
+/// passes, and only one above it counts as a regression.
+fn is_regression(mean: f64, max_mean_seconds: f64) -> bool {
+    mean > max_mean_seconds
 }
 
 fn validate_args(args: &Args) -> Result<()> {
@@ -103,6 +101,14 @@ fn require_command(command: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolves the binary under test to an absolute path and refuses anything that
+/// is not a file we can hand to hyperfine.
+fn resolve_coral_bin(coral_bin: &Path) -> Result<PathBuf> {
+    let coral_bin = absolute_path(coral_bin)?;
+    ensure_executable(&coral_bin)?;
+    Ok(coral_bin)
+}
+
 fn absolute_path(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
@@ -118,6 +124,33 @@ fn ensure_executable(path: &Path) -> Result<()> {
         bail!("Coral binary is not a file: {}", path.display());
     }
     Ok(())
+}
+
+/// Lays out a throwaway config directory so the check never reads or writes the
+/// developer's own Coral state.
+fn prepare_config_dir(temp_dir: &Path) -> Result<PathBuf> {
+    let config_dir = temp_dir.join("coral-config");
+    fs::create_dir_all(&config_dir)
+        .with_context(|| format!("creating {}", config_dir.display()))?;
+    fs::write(
+        config_dir.join("config.toml"),
+        "[credentials]\nstorage = \"file\"\n",
+    )
+    .with_context(|| format!("writing {}", config_dir.join("config.toml").display()))?;
+    Ok(config_dir)
+}
+
+/// Brings the fresh state directory to the state the benchmark measures: the
+/// workspace exists, carries the github source, and has answered the query once
+/// so the timed runs are not paying for first-run work.
+fn provision_measured_workspace(
+    coral_bin: &Path,
+    config_dir: &Path,
+    github_token: &str,
+) -> Result<()> {
+    create_workspace(coral_bin, config_dir)?;
+    install_github_source(coral_bin, config_dir, github_token)?;
+    run_coral_sql(coral_bin, config_dir)
 }
 
 /// Builds a `coral` invocation pinned to this check's config directory and
@@ -311,7 +344,36 @@ impl Drop for TempDir {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_quote;
+    use super::{HyperfineResult, is_regression, report_measurement, shell_quote};
+
+    #[test]
+    fn a_mean_under_the_threshold_is_not_a_regression() {
+        assert!(!is_regression(0.5, 0.75));
+    }
+
+    #[test]
+    fn a_mean_at_the_threshold_is_not_a_regression() {
+        assert!(!is_regression(0.75, 0.75));
+    }
+
+    #[test]
+    fn a_mean_above_the_threshold_is_a_regression() {
+        assert!(is_regression(0.751, 0.75));
+    }
+
+    #[test]
+    fn the_check_passes_only_while_the_mean_stays_within_the_threshold() {
+        let within = HyperfineResult {
+            mean: 0.5,
+            stddev: 0.01,
+        };
+        let over = HyperfineResult {
+            mean: 1.5,
+            stddev: 0.01,
+        };
+        assert!(report_measurement(&within, 0.75));
+        assert!(!report_measurement(&over, 0.75));
+    }
 
     #[test]
     fn shell_quote_leaves_safe_paths_unquoted() {
