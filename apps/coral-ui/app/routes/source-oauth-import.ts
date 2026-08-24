@@ -13,6 +13,7 @@ import {
   oauthStreamErrorResponse,
 } from '@/lib/source-oauth-response.server'
 import {
+  firstMissingRequiredInput,
   installBindingsFromForm,
   oauthCredentialRetrievalsFromForm,
   splitInstallBindings,
@@ -41,6 +42,11 @@ export async function action({ context, params, request }: Route.ActionArgs): Pr
     const info = described.sourceInfo
     if (!info) return oauthStreamErrorResponse('Coral did not describe the source manifest', 502)
 
+    // Import upserts, so an already-configured name would be replaced.
+    if (info.installed) {
+      return oauthStreamErrorResponse(`A source named ${info.name} is already configured.`, 400)
+    }
+
     const oauthCredentialRetrievals = oauthCredentialRetrievalsFromForm(info, formData)
     if (oauthCredentialRetrievals.length === 0) {
       return oauthStreamErrorResponse(
@@ -48,6 +54,11 @@ export async function action({ context, params, request }: Route.ActionArgs): Pr
         400,
       )
     }
+
+    // The OAuth handshake is the expensive part, so refuse a manifest whose
+    // other inputs are incomplete before starting it, as the install route does.
+    const missing = firstMissingRequiredInput(info, formData)
+    if (missing) return oauthStreamErrorResponse(`${missing} is required`, 400)
 
     const { secrets, variables } = splitInstallBindings(installBindingsFromForm(info, formData))
     const stream = sourceClient.importSource(
