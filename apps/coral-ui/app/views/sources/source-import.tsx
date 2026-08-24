@@ -296,6 +296,9 @@ function SourceImportConfigureForm({
 
   const submitting = navigation.state === 'submitting'
   const importing = submitting || oauth.busy
+  // Pressing Enter in a field submits the form whatever the button says, so the
+  // rule that disables the button has to hold here too.
+  const blocked = importing || !collection.canSubmit || entry.installed
 
   function cancel() {
     oauth.cancel()
@@ -303,11 +306,15 @@ function SourceImportConfigureForm({
   }
 
   async function submitOAuthImport() {
-    if (!formRef.current || oauth.busy) return
+    if (!formRef.current || blocked) return
     await oauth.start(oauthImportPath, new FormData(formRef.current))
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    if (blocked) {
+      event.preventDefault()
+      return
+    }
     if (!collection.usesOAuth) return
     event.preventDefault()
     void submitOAuthImport()
@@ -349,7 +356,7 @@ function SourceImportConfigureForm({
           <ButtonText>Back</ButtonText>
         </ButtonContainer>
         <ButtonContainer
-          disabled={importing || !collection.canSubmit || entry.installed}
+          disabled={blocked}
           onClick={collection.usesOAuth ? () => void submitOAuthImport() : undefined}
           size="32"
           type={collection.usesOAuth ? 'button' : 'submit'}
