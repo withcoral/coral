@@ -314,12 +314,6 @@ impl WorkspaceManager {
         }
     }
 
-    /// Lists the workspaces `user_id` belongs to, with the role they hold.
-    ///
-    /// This is the caller's own view rather than the deployment's: it is what
-    /// one person may reach, while [`Self::list_workspaces`] stays the
-    /// host-wide inventory that only the local principal and host-scoped work
-    /// may read.
     /// Lists what `principal` holds, which is not always what the membership
     /// rows say.
     ///
@@ -348,6 +342,12 @@ impl WorkspaceManager {
             .await
     }
 
+    /// Lists the workspaces `user_id` belongs to, with the role they hold.
+    ///
+    /// This is one user's own view rather than the deployment's: it is what
+    /// that person may reach, while [`Self::list_workspaces`] stays the
+    /// host-wide inventory that only the local principal and host-scoped work
+    /// may read.
     pub(crate) async fn list_memberships_for_user(
         &self,
         user_id: &str,
