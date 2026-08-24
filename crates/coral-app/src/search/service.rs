@@ -563,8 +563,7 @@ mod tests {
         clear_target_from_proto, provider_status_to_proto,
     };
     use crate::catalog::discovery::CatalogDiscovery;
-    use crate::credentials::{CredentialManager, CredentialStore};
-    use crate::identity::{Principal, PrincipalKind};
+    use crate::identity::Principal;
     use crate::query::manager::QueryManager;
     use crate::request_context::RequestContext;
     use crate::search::maintenance::SearchClearTarget;
@@ -573,16 +572,17 @@ mod tests {
         ProviderCoverage, ProviderStatus, SearchProviderKind,
         SearchProviderState as DomainProviderState,
     };
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos as _, LoginIdentity, LoginProvisioning,
-        ResolvedDatabaseConfig, run_state_migrations,
-    };
-    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::state::db::CoralDb;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
+    use crate::test_support::{migrated_deployment, seed_principal};
     use crate::workspaces::authorization::WorkspaceAuthorizer;
-    use crate::workspaces::manager::WorkspaceManager;
     use crate::workspaces::{MemberRole, WorkspaceName};
+
+    /// This suite's login issuer. Each suite provisions under its own, so a
+    /// subject seeded here is a different person from the same subject
+    /// seeded elsewhere.
+    const ISSUER: &str = "https://issuer.test/search-authorization";
 
     /// A provider value no enum admits. Reaching the maintenance request build
     /// with it answers `InvalidArgument`, so a refusal that answers anything
@@ -598,36 +598,18 @@ mod tests {
     /// A shared deployment over one migrated database holding the default
     /// workspace, so every caller's authority comes from a membership row.
     async fn fixture() -> Fixture {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
-        else {
-            panic!("the default test database is sqlite")
-        };
-        let db = Arc::new(
-            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-                .await
-                .expect("open sqlite"),
-        );
-        db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, &config_store, &layout)
-            .await
-            .expect("import the default workspace");
-        let credentials = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let workspaces = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credentials.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
+        let deployment = migrated_deployment().await;
+        let (temp, layout, config_store, db, workspaces) = (
+            deployment.temp,
+            deployment.layout,
+            deployment.config_store,
+            deployment.db,
+            deployment.workspaces,
         );
         let queries = QueryManager::new_for_tests(
             config_store.clone(),
             workspaces.clone(),
-            credentials,
+            deployment.credentials,
             QueryRuntimeContext::default(),
             layout.clone(),
             Vec::new(),
@@ -650,39 +632,6 @@ mod tests {
             ),
             db,
         }
-    }
-
-    /// Provisions one directory user through the production login seam and
-    /// grants it `role` on the default workspace, so the principal the
-    /// authorizer is handed is the one a real login carries.
-    async fn seed_principal(
-        db: &Arc<CoralDb>,
-        subject: &str,
-        role: Option<MemberRole>,
-    ) -> Principal {
-        let LoginProvisioning::Provisioned(user) = db
-            .user_state()
-            .provision_login(LoginIdentity {
-                issuer: "https://issuer.test/search-authorization",
-                subject,
-                display_name: None,
-                principal_claim: subject,
-                now_unix_nanos: 1,
-            })
-            .await
-            .expect("provision user")
-        else {
-            panic!("expected a provisioned user rather than an issuer mismatch")
-        };
-        if let Some(role) = role {
-            let mut session = db.as_ref();
-            session
-                .workspace_members()
-                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
-                .await
-                .expect("grant membership");
-        }
-        Principal::parse(&user.user_id, PrincipalKind::User).expect("federated principal")
     }
 
     fn request<T>(message: T, principal: &Principal) -> Request<T> {
@@ -733,9 +682,9 @@ mod tests {
     #[tokio::test]
     async fn members_search_while_only_owners_maintain_the_index() {
         let fixture = fixture().await;
-        let owner = seed_principal(&fixture.db, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&fixture.db, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&fixture.db, "outsider", None).await;
+        let owner = seed_principal(&fixture.db, ISSUER, "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&fixture.db, ISSUER, "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&fixture.db, ISSUER, "outsider", None).await;
 
         assert_eq!(
             fixture

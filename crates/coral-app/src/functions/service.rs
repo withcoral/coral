@@ -243,16 +243,17 @@ mod tests {
     use tonic::Code;
 
     use super::*;
-    use crate::credentials::{CredentialManager, CredentialStore};
     use crate::identity::{Principal, PrincipalKind};
     use crate::request_context::RequestContext;
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos as _, LoginIdentity, LoginProvisioning,
-        ResolvedDatabaseConfig, run_state_migrations,
-    };
-    use crate::state::{AppStateLayout, ConfigStore};
-    use crate::workspaces::manager::WorkspaceManager;
+    use crate::state::ConfigStore;
+    use crate::state::db::CoralDb;
+    use crate::test_support::{migrated_deployment, seed_principal};
     use crate::workspaces::{MemberRole, WorkspaceName};
+
+    /// This suite's login issuer. Each suite provisions under its own, so a
+    /// subject seeded here is a different person from the same subject
+    /// seeded elsewhere.
+    const ISSUER: &str = "https://issuer.test/function-authorization";
 
     /// SQL no compiler accepts. Reaching function installation with it answers
     /// `InvalidArgument`, so a refusal that answers anything else proves the
@@ -269,79 +270,24 @@ mod tests {
     /// A shared deployment over one migrated database holding the default
     /// workspace, so every caller's authority comes from a membership row.
     async fn fixture() -> Fixture {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
-        else {
-            panic!("the default test database is sqlite")
-        };
-        let db = Arc::new(
-            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-                .await
-                .expect("open sqlite"),
-        );
-        db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, &config_store, &layout)
-            .await
-            .expect("import the default workspace");
-        let credentials = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let workspaces = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credentials.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
-        );
+        let deployment = migrated_deployment().await;
         let queries = QueryManager::new_for_tests(
-            config_store.clone(),
-            workspaces,
-            credentials,
+            deployment.config_store.clone(),
+            deployment.workspaces,
+            deployment.credentials,
             QueryRuntimeContext::default(),
-            layout,
+            deployment.layout,
             Vec::new(),
         );
         Fixture {
-            _temp: temp,
-            service: FunctionService::new(queries, WorkspaceAuthorizer::new(Arc::clone(&db))),
-            config_store,
-            db,
+            _temp: deployment.temp,
+            service: FunctionService::new(
+                queries,
+                WorkspaceAuthorizer::new(Arc::clone(&deployment.db)),
+            ),
+            config_store: deployment.config_store,
+            db: deployment.db,
         }
-    }
-
-    /// Provisions one directory user through the production login seam and
-    /// grants it `role` on the default workspace, so the principal the
-    /// authorizer is handed is the one a real login carries.
-    async fn seed_principal(
-        db: &Arc<CoralDb>,
-        subject: &str,
-        role: Option<MemberRole>,
-    ) -> Principal {
-        let LoginProvisioning::Provisioned(user) = db
-            .user_state()
-            .provision_login(LoginIdentity {
-                issuer: "https://issuer.test/function-authorization",
-                subject,
-                display_name: None,
-                principal_claim: subject,
-                now_unix_nanos: 1,
-            })
-            .await
-            .expect("provision user")
-        else {
-            panic!("expected a provisioned user rather than an issuer mismatch")
-        };
-        if let Some(role) = role {
-            let mut session = db.as_ref();
-            session
-                .workspace_members()
-                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
-                .await
-                .expect("grant membership");
-        }
-        Principal::parse(&user.user_id, PrincipalKind::User).expect("federated principal")
     }
 
     fn request<T>(message: T, principal: &Principal) -> Request<T> {
@@ -390,9 +336,9 @@ mod tests {
     #[tokio::test]
     async fn only_owners_change_the_function_set_and_never_through_an_agent() {
         let fixture = fixture().await;
-        let owner = seed_principal(&fixture.db, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&fixture.db, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&fixture.db, "outsider", None).await;
+        let owner = seed_principal(&fixture.db, ISSUER, "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&fixture.db, ISSUER, "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&fixture.db, ISSUER, "outsider", None).await;
         let agent = Principal::parse(owner.id().as_str(), PrincipalKind::Agent).expect("agent");
 
         for reader in [&member, &agent] {

@@ -99,16 +99,20 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{FeedbackService, FeedbackServiceApi, SubmitFeedbackRequest};
-    use crate::identity::{Principal, PrincipalKind};
+    use crate::identity::Principal;
     use crate::request_context::RequestContext;
     use crate::state::AppStateLayout;
-    use crate::state::db::{
-        CoralDb, DbRepos as _, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
-    };
+    use crate::state::db::{CoralDb, DbRepos as _, ResolvedDatabaseConfig};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
+    use crate::test_support::seed_principal;
     use crate::workspaces::authorization::WorkspaceAuthorizer;
     use crate::workspaces::{MemberRole, WorkspaceName};
+
+    /// This suite's login issuer. Each suite provisions under its own, so a
+    /// subject seeded here is a different person from the same subject
+    /// seeded elsewhere.
+    const ISSUER: &str = "https://issuer.test/feedback-authorization";
 
     /// A report is filed under the workspace and published onward from it, so a
     /// caller who may not reach the workspace files nothing. The blank fields
@@ -136,9 +140,9 @@ mod tests {
         tx.commit().await.expect("commit workspace creation");
         // The workspace needs an owner before any membership in it grants
         // anything, so one is seeded beside the member under test.
-        let _owner = seed_principal(&db, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&db, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&db, "outsider", None).await;
+        let _owner = seed_principal(&db, ISSUER, "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&db, ISSUER, "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&db, ISSUER, "outsider", None).await;
         let workspace = WorkspaceName::default();
         let service = FeedbackService::new(
             crate::feedback::manager::FeedbackManager::new(layout.clone()),
@@ -184,39 +188,6 @@ mod tests {
         let raw = fs::read_to_string(layout.feedback_reports_file(&workspace))
             .expect("feedback file should exist");
         assert_eq!(raw.lines().count(), 1);
-    }
-
-    /// Provisions one directory user through the production login seam and
-    /// grants it `role` on the default workspace, so the principal the
-    /// authorizer is handed is the one a real login carries.
-    async fn seed_principal(
-        db: &Arc<CoralDb>,
-        subject: &str,
-        role: Option<MemberRole>,
-    ) -> Principal {
-        let LoginProvisioning::Provisioned(user) = db
-            .user_state()
-            .provision_login(LoginIdentity {
-                issuer: "https://issuer.test/feedback-authorization",
-                subject,
-                display_name: None,
-                principal_claim: subject,
-                now_unix_nanos: 1,
-            })
-            .await
-            .expect("provision user")
-        else {
-            panic!("expected a provisioned user rather than an issuer mismatch")
-        };
-        if let Some(role) = role {
-            let mut session = db.as_ref();
-            session
-                .workspace_members()
-                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
-                .await
-                .expect("grant membership");
-        }
-        Principal::parse(&user.user_id, PrincipalKind::User).expect("federated principal")
     }
 
     fn request<T>(message: T, principal: Principal) -> Request<T> {

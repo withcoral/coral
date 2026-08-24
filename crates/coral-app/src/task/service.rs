@@ -154,17 +154,20 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{TaskService, TaskServiceApi};
-    use crate::identity::{Principal, PrincipalKind};
+    use crate::identity::Principal;
     use crate::request_context::RequestContext;
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos as _, LoginIdentity, LoginProvisioning,
-        ResolvedDatabaseConfig, run_state_migrations,
-    };
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
+    use crate::test_support::seed_principal;
     use crate::workspaces::authorization::WorkspaceAuthorizer;
     use crate::workspaces::{MemberRole, WorkspaceName};
+
+    /// This suite's login issuer. Each suite provisions under its own, so a
+    /// subject seeded here is a different person from the same subject
+    /// seeded elsewhere.
+    const ISSUER: &str = "https://issuer.test/task-authorization";
 
     const UNKNOWN_TASK_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
@@ -237,8 +240,8 @@ mod tests {
     #[tokio::test]
     async fn end_task_returns_success_status() {
         let (_dir, db) = task_database().await;
-        let _owner = seed_principal(&db, "owner", Some(MemberRole::Owner)).await;
-        let principal = seed_principal(&db, "member", Some(MemberRole::Member)).await;
+        let _owner = seed_principal(&db, ISSUER, "owner", Some(MemberRole::Owner)).await;
+        let principal = seed_principal(&db, ISSUER, "member", Some(MemberRole::Member)).await;
         let service = TaskService::new(
             TaskManager::new(TaskStore::new(Arc::clone(&db))),
             WorkspaceAuthorizer::new(db),
@@ -360,9 +363,9 @@ mod tests {
         let tasks = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         // The workspace needs an owner before any membership in it grants
         // anything, so one is seeded beside the member under test.
-        let _owner = seed_principal(&db, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&db, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&db, "outsider", None).await;
+        let _owner = seed_principal(&db, ISSUER, "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&db, ISSUER, "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&db, ISSUER, "outsider", None).await;
         let service = TaskService::new(tasks.clone(), WorkspaceAuthorizer::new(db));
         let active = service
             .start_task(request_for_principal(
@@ -415,39 +418,6 @@ mod tests {
             Some(task_id),
             "the denied EndTask must leave the task active"
         );
-    }
-
-    /// Provisions one directory user through the production login seam and
-    /// grants it `role` on the default workspace, so the principal the
-    /// authorizer is handed is the one a real login carries.
-    async fn seed_principal(
-        db: &Arc<CoralDb>,
-        subject: &str,
-        role: Option<MemberRole>,
-    ) -> Principal {
-        let LoginProvisioning::Provisioned(user) = db
-            .user_state()
-            .provision_login(LoginIdentity {
-                issuer: "https://issuer.test/task-authorization",
-                subject,
-                display_name: None,
-                principal_claim: subject,
-                now_unix_nanos: 1,
-            })
-            .await
-            .expect("provision user")
-        else {
-            panic!("expected a provisioned user rather than an issuer mismatch")
-        };
-        if let Some(role) = role {
-            let mut session = db.as_ref();
-            session
-                .workspace_members()
-                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
-                .await
-                .expect("grant membership");
-        }
-        Principal::parse(&user.user_id, PrincipalKind::User).expect("federated principal")
     }
 
     #[tokio::test]

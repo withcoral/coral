@@ -1617,50 +1617,20 @@ mod tests {
     /// and an outsider does not. A separate owner is seeded because a workspace
     /// with no owner conceals its own members too.
     async fn read_access(db: &Arc<CoralDb>) -> ReadAccess {
+        use crate::test_support::seed_principal;
         use crate::workspaces::MemberRole;
 
-        let _owner = seed_principal(db, "owner", Some(MemberRole::Owner)).await;
+        /// This suite's login issuer. Each suite provisions under its own, so
+        /// a subject seeded here is a different person from the same subject
+        /// seeded elsewhere.
+        const ISSUER: &str = "https://issuer.test/read-authorization";
+
+        let _owner = seed_principal(db, ISSUER, "owner", Some(MemberRole::Owner)).await;
         ReadAccess {
-            member: seed_principal(db, "member", Some(MemberRole::Member)).await,
-            outsider: seed_principal(db, "outsider", None).await,
+            member: seed_principal(db, ISSUER, "member", Some(MemberRole::Member)).await,
+            outsider: seed_principal(db, ISSUER, "outsider", None).await,
             authorizer: WorkspaceAuthorizer::new(Arc::clone(db)),
         }
-    }
-
-    /// Provisions one directory user through the production login seam and
-    /// grants it `role` on the default workspace, so the principal the
-    /// authorizer is handed is the one a real login carries.
-    async fn seed_principal(
-        db: &Arc<CoralDb>,
-        subject: &str,
-        role: Option<crate::workspaces::MemberRole>,
-    ) -> Principal {
-        use crate::state::db::{DbRepos as _, LoginIdentity, LoginProvisioning};
-
-        let LoginProvisioning::Provisioned(user) = db
-            .user_state()
-            .provision_login(LoginIdentity {
-                issuer: "https://issuer.test/read-authorization",
-                subject,
-                display_name: None,
-                principal_claim: subject,
-                now_unix_nanos: 1,
-            })
-            .await
-            .expect("provision user")
-        else {
-            panic!("expected a provisioned user rather than an issuer mismatch")
-        };
-        if let Some(role) = role {
-            let mut session = db.as_ref();
-            session
-                .workspace_members()
-                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
-                .await
-                .expect("grant membership");
-        }
-        Principal::parse(&user.user_id, crate::identity::PrincipalKind::User)
-            .expect("federated principal")
     }
 
     fn query_span_count(exporter: &opentelemetry_sdk::trace::InMemorySpanExporter) -> usize {
