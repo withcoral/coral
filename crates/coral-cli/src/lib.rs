@@ -550,8 +550,6 @@ impl Command {
             | Command::Features(_)
             | Command::Completion(_)
             | Command::Server => false,
-            #[cfg(feature = "embedded-ui")]
-            Command::Ui(_) => false,
         }
     }
 
