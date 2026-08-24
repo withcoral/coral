@@ -259,12 +259,12 @@ mod tests {
         assert!(marker_completed(&db).await);
     }
 
-    /// A row squatting on the local user's unique empty subject makes
-    /// `ensure_local` a no-op, so the membership insert fails its user foreign
-    /// key after the upgrade has already claimed its marker. That claim must
-    /// not survive, or no later start could ever retry the upgrade. The
-    /// repository contract covers the sibling direction — an ownership row
-    /// that was written before a rollback disappears with it.
+    /// A row squatting on the local user's unique empty subject swallows the
+    /// `ensure_local` insert, which fails the upgrade after it has already
+    /// claimed its marker. That claim must not survive, or no later start
+    /// could ever retry the upgrade. The repository contract covers the
+    /// sibling direction — an ownership row that was written before a rollback
+    /// disappears with it.
     #[tokio::test]
     async fn a_failure_part_way_through_rolls_back_every_write_and_retries_later() {
         let (db, _temp) = open_sqlite().await;
@@ -275,10 +275,10 @@ mod tests {
 
         let error = migrate_local_ownership_once_at(&db, 70)
             .await
-            .expect_err("the membership insert must fail its user foreign key");
+            .expect_err("a swallowed local user insert must fail the upgrade");
 
         assert!(
-            error.to_string().contains("FOREIGN KEY constraint failed"),
+            error.to_string().contains("the local user row is absent"),
             "unexpected error: {error}"
         );
         assert!(
@@ -313,6 +313,44 @@ mod tests {
             role_for(&db, "second", LOCAL_PRINCIPAL_ID).await,
             Some(MemberRole::Owner)
         );
+    }
+
+    /// The same squatter on an instance that holds no workspace at all. No
+    /// membership is written, so nothing else references the local user and
+    /// only `ensure_local` proving its own row keeps the marker from retiring
+    /// an upgrade that never happened — which would leave `workspace create`
+    /// failing on a missing creator for good.
+    #[tokio::test]
+    async fn a_squatted_local_row_fails_the_upgrade_even_with_no_workspaces() {
+        let (db, _temp) = open_sqlite().await;
+        let squatter = seed_user(&db, "").await;
+
+        let error = migrate_local_ownership_once_at(&db, 70)
+            .await
+            .expect_err("a swallowed local user insert must fail the upgrade");
+
+        assert!(
+            error.to_string().contains("the local user row is absent"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !marker_completed(&db).await,
+            "the marker must not retire an upgrade that never wrote the local user"
+        );
+
+        remove_user(&db, &squatter).await;
+        let retry = migrate_local_ownership_once_at(&db, 80)
+            .await
+            .expect("retry the upgrade");
+
+        assert_eq!(
+            retry,
+            LocalOwnershipMigrationReport {
+                performed: true,
+                workspaces_claimed: 0,
+            }
+        );
+        assert_eq!(local_user(&db).await.user_id, LOCAL_PRINCIPAL_ID);
     }
 
     async fn seed_workspaces(db: &CoralDb, workspace_ids: &[&str]) {

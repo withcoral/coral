@@ -110,6 +110,12 @@ where
     /// though `users.subject` is unique. Re-running leaves an existing row
     /// exactly as it stands, so a retried migration never rewrites the local
     /// user's timestamps.
+    ///
+    /// Returning `Ok` means the row is there. The insert alone cannot promise
+    /// that — a corrupted directory row squatting on the empty subject
+    /// swallows it — and a caller that writes nothing referencing the local
+    /// user would otherwise take a silent no-op for success and commit a
+    /// migration marker that retires itself without the row ever existing.
     pub(crate) async fn ensure_local(&mut self, now_unix_nanos: i64) -> Result<(), DbError> {
         let statement = Query::insert()
             .into_table(Users::Table)
@@ -127,7 +133,15 @@ where
             // re-run trips instead of guessing which arbiter fires first.
             .on_conflict(OnConflict::new().do_nothing().to_owned())
             .to_owned();
-        self.session.execute(statement).await
+        self.session.execute(statement).await?;
+
+        if self.get_by_user_id(LOCAL_PRINCIPAL_ID).await?.is_none() {
+            return Err(DbError::CorruptData(
+                "the local user row is absent after its upsert; another directory row holds its identity"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) async fn get_by_user_id(
