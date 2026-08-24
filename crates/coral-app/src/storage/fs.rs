@@ -129,10 +129,8 @@ pub(crate) struct DirectoryBackup {
 
 impl DirectoryBackup {
     pub(crate) fn move_for_delete(path: &Path, name: impl fmt::Display) -> io::Result<Self> {
-        let backup = path.with_file_name(format!(
-            "{name}{DELETION_BACKUP_INFIX}{}",
-            Uuid::new_v4()
-        ));
+        let backup =
+            path.with_file_name(format!("{name}{DELETION_BACKUP_INFIX}{}", Uuid::new_v4()));
         if !path.try_exists()? {
             return Ok(Self {
                 original: path.to_path_buf(),
