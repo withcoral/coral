@@ -8,7 +8,9 @@ use super::super::tests::{
     set_modified_time, timestamped_jsonl_path, trace_record, write_record_file,
     write_record_file_lines,
 };
-use super::super::{StoredTraceStatus, TraceSpanRecord, TraceStore, TraceSummaryRecord};
+use super::super::{
+    StoredTraceStatus, TraceScope, TraceSpanRecord, TraceStore, TraceSummaryRecord,
+};
 
 pub(super) fn span(trace_id: &str, span_id: &str) -> TestSpan {
     TestSpan {
@@ -79,11 +81,19 @@ impl TestSpan {
     }
 }
 
+/// The scope a workspace name stands for in these tests: naming none is the
+/// host's own unrestricted read.
+pub(super) fn scope(workspace_name: Option<&str>) -> TraceScope {
+    workspace_name.map_or(TraceScope::Host, |workspace_name| {
+        TraceScope::workspaces([workspace_name])
+    })
+}
+
 pub(super) fn project(
     records: &[TraceSpanRecord],
     workspace_name: Option<&str>,
 ) -> Vec<TraceSummaryRecord> {
-    super::summaries(records, workspace_name)
+    super::summaries(records, &scope(workspace_name))
 }
 
 pub(super) struct TraceFiles {
@@ -129,7 +139,7 @@ impl TraceFiles {
         workspace_name: Option<&str>,
     ) -> Vec<TraceSummaryRecord> {
         TraceStore::new(self.temp.path().to_path_buf())
-            .list_query_stream_sync(limit, offset, workspace_name)
+            .list_query_stream_sync(limit, offset, &scope(workspace_name))
             .expect("list query stream")
     }
 }

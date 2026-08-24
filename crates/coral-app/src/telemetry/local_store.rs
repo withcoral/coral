@@ -362,6 +362,65 @@ pub(crate) struct TraceStore {
     retention: Option<Duration>,
 }
 
+/// The spans one trace read may see.
+///
+/// Every read the store answers is scoped by one of these, and a caller is
+/// shown nothing outside it. It projects rather than admits: a trace whose
+/// spans span two workspaces is a different trace to each of their owners, and
+/// neither is handed the other's SQL because they happen to share a trace id.
+/// A read that resolves to no workspace is therefore an empty read, not a wide
+/// one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TraceScope {
+    /// Every span this host recorded, including the rows no workspace claims.
+    Host,
+    /// Only spans attributed to one of these workspaces.
+    Workspaces(HashSet<String>),
+}
+
+impl TraceScope {
+    /// Scopes a read to the workspaces `names` names.
+    pub(crate) fn workspaces<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        Self::Workspaces(names.into_iter().map(str::to_string).collect())
+    }
+
+    /// Reports whether work attributed to `workspace` is in scope.
+    ///
+    /// An unattributed `None` is the host's own work: no workspace claims it,
+    /// so only [`Self::Host`] sees it.
+    fn admits(&self, workspace: Option<&str>) -> bool {
+        match self {
+            Self::Host => true,
+            Self::Workspaces(names) => workspace.is_some_and(|workspace| names.contains(workspace)),
+        }
+    }
+
+    /// Reports whether a span carrying `attributes_json` is in scope.
+    fn admits_span(&self, attributes_json: &str) -> bool {
+        match self {
+            // Parsing the attributes of a span nothing can exclude is work for
+            // an answer already known.
+            Self::Host => true,
+            Self::Workspaces(_) => self.admits(workspace_attribute(attributes_json).as_deref()),
+        }
+    }
+
+    /// Reports whether work whose workspace is not yet settled could still
+    /// turn out to be in scope.
+    fn may_admit(&self, workspace: Option<&str>) -> bool {
+        match self {
+            Self::Host => true,
+            Self::Workspaces(names) => workspace.is_none_or(|workspace| names.contains(workspace)),
+        }
+    }
+
+    /// Reports whether this scope excludes nothing, which is what lets a scan
+    /// stop early without proving anything about the spans it has not read.
+    const fn admits_every_span(&self) -> bool {
+        matches!(self, Self::Host)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TraceStoreFile {
     path: PathBuf,
@@ -568,6 +627,15 @@ struct TracePrimaryCandidate {
     priority: u8,
 }
 
+/// One trace as a listing sees it, under one scope.
+///
+/// Two kinds of fact live here and must not be confused. The first four are
+/// what the caller is shown, and they count only the spans the scope admits,
+/// so a foreign span never lends this trace its SQL, its errors, or its
+/// duration. The last three describe the trace as it was stored, foreign spans
+/// included; the scan reads them to decide when it may stop opening older
+/// files, and that question is about where spans are on disk rather than about
+/// who may see them.
 #[derive(Debug, Clone)]
 struct TraceListAggregate {
     trace_id: String,
@@ -575,9 +643,12 @@ struct TraceListAggregate {
     end_time_unix_nanos: i64,
     span_count: u32,
     error_count: u32,
-    found_root_span: bool,
-    matches_workspace: bool,
     primary: Option<TracePrimaryCandidate>,
+    /// Whether any span of this trace is in scope at all.
+    in_scope: bool,
+    scan_start_unix_nanos: i64,
+    scan_end_unix_nanos: i64,
+    found_root_span: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -621,75 +692,46 @@ impl TraceStore {
         &self,
         limit: usize,
         offset: usize,
+        scope: TraceScope,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
         let traces = self.clone();
-        task::spawn_blocking(move || traces.list_traces_sync(limit, offset))
+        task::spawn_blocking(move || traces.list_traces_sync(limit, offset, &scope))
             .await
             .map_err(|source| TraceStoreError::Worker { source })?
-    }
-
-    pub(crate) async fn list_traces_for_workspace(
-        &self,
-        limit: usize,
-        offset: usize,
-        workspace_name: String,
-    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        let traces = self.clone();
-        task::spawn_blocking(move || {
-            traces.list_traces_for_workspace_sync(limit, offset, &workspace_name)
-        })
-        .await
-        .map_err(|source| TraceStoreError::Worker { source })?
     }
 
     pub(crate) async fn list_query_stream(
         &self,
         limit: usize,
         offset: usize,
-        workspace_name: Option<String>,
+        scope: TraceScope,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
         let traces = self.clone();
-        task::spawn_blocking(move || {
-            traces.list_query_stream_sync(limit, offset, workspace_name.as_deref())
-        })
-        .await
-        .map_err(|source| TraceStoreError::Worker { source })?
+        task::spawn_blocking(move || traces.list_query_stream_sync(limit, offset, &scope))
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
     }
 
     pub(crate) async fn get_trace(
         &self,
         trace_id: String,
+        scope: TraceScope,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
         let traces = self.clone();
-        task::spawn_blocking(move || traces.get_trace_sync(&trace_id))
+        task::spawn_blocking(move || traces.get_trace_sync(&trace_id, &scope))
             .await
             .map_err(|source| TraceStoreError::Worker { source })?
-    }
-
-    pub(crate) async fn get_trace_for_workspace(
-        &self,
-        trace_id: String,
-        workspace_name: String,
-    ) -> Result<TraceDetailRecord, TraceStoreError> {
-        let traces = self.clone();
-        task::spawn_blocking(move || {
-            traces.get_trace_for_workspace_sync(&trace_id, &workspace_name)
-        })
-        .await
-        .map_err(|source| TraceStoreError::Worker { source })?
     }
 
     pub(crate) async fn get_query_stream_trace(
         &self,
         trace_id: String,
-        workspace_name: Option<String>,
+        scope: TraceScope,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
         let traces = self.clone();
-        task::spawn_blocking(move || {
-            traces.get_query_stream_trace_sync(&trace_id, workspace_name.as_deref())
-        })
-        .await
-        .map_err(|source| TraceStoreError::Worker { source })?
+        task::spawn_blocking(move || traces.get_query_stream_trace_sync(&trace_id, &scope))
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
     }
 
     pub(crate) async fn delete_traces_for_workspace(
@@ -706,24 +748,7 @@ impl TraceStore {
         &self,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        self.list_traces_filtered_sync(limit, offset, None)
-    }
-
-    fn list_traces_for_workspace_sync(
-        &self,
-        limit: usize,
-        offset: usize,
-        workspace_name: &str,
-    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        self.list_traces_filtered_sync(limit, offset, Some(workspace_name))
-    }
-
-    fn list_traces_filtered_sync(
-        &self,
-        limit: usize,
-        offset: usize,
-        workspace_name: Option<&str>,
+        scope: &TraceScope,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -739,7 +764,7 @@ impl TraceStore {
         for (file_index, file) in files.iter().enumerate().rev() {
             oldest_scanned_file_index = Some(file_index);
             for span in read_list_spans_file(&file.path)? {
-                record_list_span(span, workspace_name, &mut spans_by_id, &mut traces);
+                record_list_span(span, scope, &mut spans_by_id, &mut traces);
             }
 
             let Some(newest_unscanned_file) =
@@ -751,18 +776,18 @@ impl TraceStore {
                 &traces,
                 required_trace_count,
                 newest_unscanned_file.span_end_upper_bound_unix_nanos,
-                workspace_name,
+                scope,
             ) {
                 break;
             }
         }
 
-        let page_trace_ids = trace_page_ids(&traces, offset, limit, workspace_name);
+        let page_trace_ids = trace_page_ids(&traces, offset, limit);
         complete_list_aggregates_for_page(
             &files,
             oldest_scanned_file_index,
             &page_trace_ids,
-            workspace_name,
+            scope,
             &mut spans_by_id,
             &mut traces,
         )?;
@@ -780,12 +805,16 @@ impl TraceStore {
         &self,
         limit: usize,
         offset: usize,
-        workspace_name: Option<&str>,
+        scope: &TraceScope,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        query_stream::list(self, limit, offset, workspace_name)
+        query_stream::list(self, limit, offset, scope)
     }
 
-    fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
+    fn get_trace_sync(
+        &self,
+        trace_id: &str,
+        scope: &TraceScope,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
         let mut spans_by_id = HashMap::new();
         self.prune_expired()?;
         let files = self.jsonl_files_by_modified()?;
@@ -810,6 +839,13 @@ impl TraceStore {
             }
         }
         let mut spans = spans_by_id.into_values().collect::<Vec<_>>();
+        // The scope projects the trace rather than admitting it: a caller sees
+        // the spans their own workspaces recorded and no others, so a trace
+        // that two workspaces share carries no query text across the boundary.
+        // A trace with nothing in scope reads exactly like one that was never
+        // recorded, which is the answer a caller who may not know it exists
+        // must get.
+        spans.retain(|span| scope.admits_span(&span.attributes_json));
 
         if spans.is_empty() {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
@@ -825,30 +861,13 @@ impl TraceStore {
         Ok(TraceDetailRecord { summary, spans })
     }
 
-    fn get_trace_for_workspace_sync(
-        &self,
-        trace_id: &str,
-        workspace_name: &str,
-    ) -> Result<TraceDetailRecord, TraceStoreError> {
-        let detail = self.get_trace_sync(trace_id)?;
-        if detail
-            .spans
-            .iter()
-            .any(|span| attributes_match_workspace(&span.attributes_json, workspace_name))
-        {
-            Ok(detail)
-        } else {
-            Err(TraceStoreError::NotFound(trace_id.to_string()))
-        }
-    }
-
     fn get_query_stream_trace_sync(
         &self,
         trace_id: &str,
-        workspace_name: Option<&str>,
+        scope: &TraceScope,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
-        let mut detail = self.get_trace_sync(trace_id)?;
-        let Some(summary) = query_stream::summary(&detail.spans, workspace_name) else {
+        let mut detail = self.get_trace_sync(trace_id, scope)?;
+        let Some(summary) = query_stream::summary(&detail.spans, scope) else {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         };
         detail.summary = summary;
@@ -1038,32 +1057,45 @@ impl TracePrimaryCandidate {
 }
 
 impl TraceListAggregate {
-    fn new(span: &TraceListSpanRecord, workspace_name: Option<&str>) -> Self {
+    fn new(span: &TraceListSpanRecord, scope: &TraceScope) -> Self {
         let mut aggregate = Self {
             trace_id: span.trace_id.clone(),
-            start_time_unix_nanos: span.start_time_unix_nanos,
-            end_time_unix_nanos: span.end_time_unix_nanos,
+            // No span is in scope yet, so the shown bounds start empty rather
+            // than at this span's: `record_span` opens them only if it admits
+            // one.
+            start_time_unix_nanos: i64::MAX,
+            end_time_unix_nanos: i64::MIN,
             span_count: 0,
             error_count: 0,
-            found_root_span: false,
-            matches_workspace: false,
             primary: None,
+            in_scope: false,
+            scan_start_unix_nanos: span.start_time_unix_nanos,
+            scan_end_unix_nanos: span.end_time_unix_nanos,
+            found_root_span: false,
         };
-        aggregate.record_span(span, workspace_name);
+        aggregate.record_span(span, scope);
         aggregate
     }
 
-    fn record_span(&mut self, span: &TraceListSpanRecord, workspace_name: Option<&str>) {
+    fn record_span(&mut self, span: &TraceListSpanRecord, scope: &TraceScope) {
+        self.scan_start_unix_nanos = self.scan_start_unix_nanos.min(span.start_time_unix_nanos);
+        self.scan_end_unix_nanos = self.scan_end_unix_nanos.max(span.end_time_unix_nanos);
+        self.found_root_span |= is_root_span_parent(span.parent_span_id.as_deref());
+
+        // Everything below is what the caller is told about this trace, so a
+        // span they may not see contributes none of it — not the summary it
+        // could have been chosen for, and not the counts and times that would
+        // report its existence anyway.
+        if !scope.admits_span(&span.attributes_json) {
+            return;
+        }
+        self.in_scope = true;
         self.start_time_unix_nanos = self.start_time_unix_nanos.min(span.start_time_unix_nanos);
         self.end_time_unix_nanos = self.end_time_unix_nanos.max(span.end_time_unix_nanos);
         self.span_count = self.span_count.saturating_add(1);
         if span.status == StoredTraceStatus::Error {
             self.error_count = self.error_count.saturating_add(1);
         }
-        self.found_root_span |= is_root_span_parent(span.parent_span_id.as_deref());
-        self.matches_workspace |= workspace_name.is_some_and(|workspace_name| {
-            attributes_match_workspace(&span.attributes_json, workspace_name)
-        });
 
         let primary = TracePrimaryCandidate::from_span(span);
         if self
@@ -1089,7 +1121,7 @@ impl TraceListAggregate {
 
 fn record_list_span(
     span: TraceListSpanRecord,
-    workspace_name: Option<&str>,
+    scope: &TraceScope,
     spans_by_id: &mut HashMap<(String, String), TraceListSpanRecord>,
     traces: &mut HashMap<String, TraceListAggregate>,
 ) {
@@ -1099,8 +1131,8 @@ fn record_list_span(
         Entry::Vacant(entry) => {
             traces
                 .entry(span.trace_id.clone())
-                .and_modify(|aggregate| aggregate.record_span(&span, workspace_name))
-                .or_insert_with(|| TraceListAggregate::new(&span, workspace_name));
+                .and_modify(|aggregate| aggregate.record_span(&span, scope))
+                .or_insert_with(|| TraceListAggregate::new(&span, scope));
             entry.insert(span);
         }
     }
@@ -1110,11 +1142,10 @@ fn trace_page_ids(
     traces: &HashMap<String, TraceListAggregate>,
     offset: usize,
     limit: usize,
-    workspace_name: Option<&str>,
 ) -> HashSet<String> {
     let mut aggregates = traces
         .values()
-        .filter(|aggregate| trace_matches_workspace_filter(aggregate, workspace_name))
+        .filter(|aggregate| aggregate.in_scope)
         .collect::<Vec<_>>();
     sort_trace_aggregates(&mut aggregates);
     aggregates
@@ -1129,7 +1160,7 @@ fn complete_list_aggregates_for_page(
     files: &[TraceStoreFile],
     oldest_scanned_file_index: Option<usize>,
     page_trace_ids: &HashSet<String>,
-    workspace_name: Option<&str>,
+    scope: &TraceScope,
     spans_by_id: &mut HashMap<(String, String), TraceListSpanRecord>,
     traces: &mut HashMap<String, TraceListAggregate>,
 ) -> Result<(), TraceStoreError> {
@@ -1149,7 +1180,7 @@ fn complete_list_aggregates_for_page(
             break;
         }
         for span in read_list_spans_file_for_trace_ids(&file.path, page_trace_ids)? {
-            record_list_span(span, workspace_name, spans_by_id, traces);
+            record_list_span(span, scope, spans_by_id, traces);
         }
     }
 
@@ -1166,7 +1197,7 @@ fn page_completion_start_cutoff(
         if !aggregate.found_root_span {
             return None;
         }
-        cutoff = cutoff.min(aggregate.start_time_unix_nanos);
+        cutoff = cutoff.min(aggregate.scan_start_unix_nanos);
     }
     Some(cutoff)
 }
@@ -1175,7 +1206,7 @@ fn list_page_is_newer_than_unscanned_files(
     traces: &HashMap<String, TraceListAggregate>,
     required_trace_count: usize,
     newest_unscanned_span_end_upper_bound_unix_nanos: i64,
-    workspace_name: Option<&str>,
+    scope: &TraceScope,
 ) -> bool {
     if required_trace_count == 0 {
         return false;
@@ -1183,7 +1214,7 @@ fn list_page_is_newer_than_unscanned_files(
 
     let mut aggregates = traces
         .values()
-        .filter(|aggregate| trace_matches_workspace_filter(aggregate, workspace_name))
+        .filter(|aggregate| aggregate.in_scope)
         .collect::<Vec<_>>();
     if aggregates.len() < required_trace_count {
         return false;
@@ -1196,29 +1227,21 @@ fn list_page_is_newer_than_unscanned_files(
         return false;
     }
 
-    workspace_name.is_none_or(|_| {
-        workspace_filter_is_settled_for_page_boundary(
+    scope.admits_every_span()
+        || scope_is_settled_for_page_boundary(
             traces,
             boundary,
             newest_unscanned_span_end_upper_bound_unix_nanos,
         )
-    })
 }
 
-fn trace_matches_workspace_filter(
-    aggregate: &TraceListAggregate,
-    workspace_name: Option<&str>,
-) -> bool {
-    workspace_name.is_none_or(|_| aggregate.matches_workspace)
-}
-
-fn workspace_filter_is_settled_for_page_boundary(
+fn scope_is_settled_for_page_boundary(
     traces: &HashMap<String, TraceListAggregate>,
     boundary: &TraceListAggregate,
     newest_unscanned_span_end_upper_bound_unix_nanos: i64,
 ) -> bool {
     traces.values().all(|aggregate| {
-        aggregate.matches_workspace
+        aggregate.in_scope
             || !could_sort_before_or_at_boundary(aggregate, boundary)
             || trace_is_complete_before_unscanned_files(
                 aggregate,
@@ -1231,8 +1254,11 @@ fn could_sort_before_or_at_boundary(
     aggregate: &TraceListAggregate,
     boundary: &TraceListAggregate,
 ) -> bool {
-    aggregate.end_time_unix_nanos > boundary.end_time_unix_nanos
-        || (aggregate.end_time_unix_nanos == boundary.end_time_unix_nanos
+    // The candidate has nothing in scope yet, so the end time it would enter
+    // the page with is unknown; the latest end it has anywhere bounds it, and
+    // reading that keeps the answer conservative.
+    aggregate.scan_end_unix_nanos > boundary.end_time_unix_nanos
+        || (aggregate.scan_end_unix_nanos == boundary.end_time_unix_nanos
             && aggregate.trace_id <= boundary.trace_id)
 }
 
@@ -1241,7 +1267,7 @@ fn trace_is_complete_before_unscanned_files(
     newest_unscanned_span_end_upper_bound_unix_nanos: i64,
 ) -> bool {
     aggregate.found_root_span
-        && newest_unscanned_span_end_upper_bound_unix_nanos < aggregate.start_time_unix_nanos
+        && newest_unscanned_span_end_upper_bound_unix_nanos < aggregate.scan_start_unix_nanos
 }
 
 fn sort_trace_aggregates(aggregates: &mut [&TraceListAggregate]) {
@@ -2069,7 +2095,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        JSONL_MAX_FILE_AGE, JsonlSpanExporter, RollingJsonlWriter, StoredTraceStatus,
+        JSONL_MAX_FILE_AGE, JsonlSpanExporter, RollingJsonlWriter, StoredTraceStatus, TraceScope,
         TraceSpanRecord, TraceStore, unix_nanos,
     };
     use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
@@ -2108,13 +2134,15 @@ mod tests {
 
         let store = TraceStore::new(dir);
         let trace_id = store
-            .list_traces_sync(10, 0)
+            .list_traces_sync(10, 0, &TraceScope::Host)
             .expect("list traces")
             .into_iter()
             .next()
             .expect("trace summary")
             .trace_id;
-        let detail = store.get_trace_sync(&trace_id).expect("trace detail");
+        let detail = store
+            .get_trace_sync(&trace_id, &TraceScope::Host)
+            .expect("trace detail");
         let span = detail.spans.first().expect("trace span");
 
         assert_eq!(span.name, "coral.query");
@@ -2166,7 +2194,10 @@ mod tests {
 
         assert_eq!(jsonl_file_count(&dir), 1);
         assert_eq!(
-            TraceStore::new(dir).list_traces_sync(10, 0).unwrap().len(),
+            TraceStore::new(dir)
+                .list_traces_sync(10, 0, &TraceScope::Host)
+                .unwrap()
+                .len(),
             2
         );
     }
@@ -2194,7 +2225,9 @@ mod tests {
         provider.shutdown().expect("provider shutdown");
 
         let store = TraceStore::new(dir);
-        let summaries = store.list_traces_sync(10, 0).expect("list traces");
+        let summaries = store
+            .list_traces_sync(10, 0, &TraceScope::Host)
+            .expect("list traces");
 
         assert_eq!(summaries.len(), 1);
         let summary = summaries.first().expect("trace summary");
@@ -2205,7 +2238,7 @@ mod tests {
         assert!(summary.row_count_recorded);
 
         let detail = store
-            .get_trace_sync(&summary.trace_id)
+            .get_trace_sync(&summary.trace_id, &TraceScope::Host)
             .expect("trace detail");
         assert_eq!(detail.summary, *summary);
         assert_eq!(detail.spans.len(), 1);
@@ -2247,12 +2280,14 @@ mod tests {
 
         let store = TraceStore::new(dir);
         let summary = store
-            .list_traces_sync(10, 0)
+            .list_traces_sync(10, 0, &TraceScope::Host)
             .expect("list traces")
             .into_iter()
             .next()
             .expect("trace summary");
-        let detail = store.get_trace_sync("mixed-batch").expect("trace detail");
+        let detail = store
+            .get_trace_sync("mixed-batch", &TraceScope::Host)
+            .expect("trace detail");
 
         assert_eq!(summary.root_span_id, "first-query");
         assert_eq!(summary.query, "SELECT 1");
@@ -2284,7 +2319,7 @@ mod tests {
         .expect("write body record");
 
         let summaries = TraceStore::new(dir)
-            .list_traces_sync(10, 0)
+            .list_traces_sync(10, 0, &TraceScope::Host)
             .expect("list traces");
 
         assert_eq!(summaries.len(), 1);
@@ -2387,7 +2422,7 @@ mod tests {
         set_modified_time(&old_path, old_time);
 
         let summaries = TraceStore::new(dir)
-            .list_traces_sync(1, 0)
+            .list_traces_sync(1, 0, &TraceScope::Host)
             .expect("list traces");
 
         assert_eq!(summaries.len(), 1);
@@ -2422,7 +2457,7 @@ mod tests {
         set_modified_time(&old_path, old_time);
 
         let summaries = TraceStore::new(dir)
-            .list_traces_sync(1, 1)
+            .list_traces_sync(1, 1, &TraceScope::Host)
             .expect("list traces");
 
         assert_eq!(summaries.len(), 1);
@@ -2473,7 +2508,7 @@ mod tests {
         set_modified_time(&root_path, root_time);
 
         let summaries = TraceStore::new(dir)
-            .list_traces_sync(1, 0)
+            .list_traces_sync(1, 0, &TraceScope::Host)
             .expect("list traces");
 
         assert_eq!(summaries.len(), 1);
@@ -2514,7 +2549,7 @@ mod tests {
         set_modified_time(&query_path, query_time);
 
         let summaries = TraceStore::new(dir)
-            .list_traces_sync(1, 0)
+            .list_traces_sync(1, 0, &TraceScope::Host)
             .expect("list traces");
 
         assert_eq!(summaries.len(), 1);
@@ -2552,7 +2587,7 @@ mod tests {
         set_modified_time(&visible_path, visible_modified);
 
         let summaries = TraceStore::new(dir)
-            .list_traces_sync(1, 0)
+            .list_traces_sync(1, 0, &TraceScope::Host)
             .expect("list traces");
 
         assert_eq!(summaries.len(), 1);
@@ -2577,7 +2612,7 @@ mod tests {
 
         assert!(
             store
-                .list_traces_sync(10, 0)
+                .list_traces_sync(10, 0, &TraceScope::Host)
                 .expect("list traces")
                 .is_empty()
         );
@@ -2599,7 +2634,7 @@ mod tests {
         write_record_file(&target_path, &trace_record("target-trace", "target-span"));
 
         let detail = TraceStore::new(dir)
-            .get_trace_sync("target-trace")
+            .get_trace_sync("target-trace", &TraceScope::Host)
             .expect("trace detail");
 
         assert_eq!(detail.summary.trace_id, "target-trace");
@@ -2625,7 +2660,7 @@ mod tests {
         set_modified_time(&old_path, old_time);
 
         let detail = TraceStore::new(dir)
-            .get_trace_sync("target-trace")
+            .get_trace_sync("target-trace", &TraceScope::Host)
             .expect("trace detail");
 
         assert_eq!(detail.summary.trace_id, "target-trace");
@@ -2661,7 +2696,7 @@ mod tests {
         set_modified_time(&query_path, query_time);
 
         let detail = TraceStore::new(dir)
-            .get_trace_sync("nested-detail-trace")
+            .get_trace_sync("nested-detail-trace", &TraceScope::Host)
             .expect("trace detail");
 
         assert_eq!(detail.summary.root_span_id, "query-span");
@@ -2700,7 +2735,7 @@ mod tests {
         set_modified_time(&newer_path, newer_modified);
 
         let detail = TraceStore::new(dir)
-            .get_trace_sync("duplicate-trace")
+            .get_trace_sync("duplicate-trace", &TraceScope::Host)
             .expect("trace detail");
 
         assert_eq!(detail.spans.len(), 1);
@@ -2769,8 +2804,9 @@ mod tests {
         );
 
         let store = TraceStore::new(dir);
+        let alpha = TraceScope::workspaces(["alpha"]);
         let summaries = store
-            .list_traces_for_workspace_sync(10, 0, "alpha")
+            .list_traces_sync(10, 0, &alpha)
             .expect("list alpha traces");
 
         assert_eq!(
@@ -2780,27 +2816,102 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["alpha-new", "alpha-old"]
         );
-        assert_eq!(summaries.first().expect("alpha-new").span_count, 2);
+        // The child span carries no workspace, so nothing attributes it to
+        // alpha and the projection leaves it out — of the span count and of
+        // the trace's end time alike, which is what keeps a listing from
+        // reporting a span its detail will not show.
+        assert_eq!(summaries.first().expect("alpha-new").span_count, 1);
         assert_eq!(
             summaries.first().expect("alpha-new").end_time_unix_nanos,
-            20
+            15
         );
 
         let paged = store
-            .list_traces_for_workspace_sync(1, 1, "alpha")
+            .list_traces_sync(1, 1, &alpha)
             .expect("list second alpha trace");
         assert_eq!(paged.first().expect("paged alpha").trace_id, "alpha-old");
 
         let detail = store
-            .get_trace_for_workspace_sync("alpha-new", "alpha")
+            .get_trace_sync("alpha-new", &alpha)
             .expect("alpha trace detail");
-        assert_eq!(detail.spans.len(), 2);
+        assert_eq!(detail.spans.len(), 1);
+        assert_eq!(detail.summary.end_time_unix_nanos, 15);
         store
-            .get_trace_for_workspace_sync("beta-trace", "alpha")
+            .get_trace_sync("beta-trace", &alpha)
             .expect_err("beta trace must not be visible through alpha filter");
         store
-            .get_trace_for_workspace_sync("duplicate-workspace", "alpha")
+            .get_trace_sync("duplicate-workspace", &alpha)
             .expect_err("newer beta duplicate must not be visible through alpha filter");
+    }
+
+    /// A trace id is not an authorization boundary: two workspaces can end up
+    /// sharing one, through a `CORAL_TRACE_PARENT` reused across them or a
+    /// client-supplied `traceparent`. The scope therefore projects the trace
+    /// rather than admitting it — each owner is shown their own spans, and the
+    /// summary is rebuilt from those, so neither reads the other's SQL through
+    /// the trace they happen to share.
+    #[test]
+    fn a_shared_trace_shows_each_workspace_only_its_own_spans() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+
+        // Beta's span is the one a summary would reach for first: it is the
+        // earliest, so it wins the primary candidate on every tiebreak.
+        let mut beta_span = trace_record("shared-trace", "beta-span");
+        beta_span.attributes_json =
+            r#"{"workspace":"beta","sql":"SELECT beta_secret"}"#.to_string();
+        beta_span.status = StoredTraceStatus::Error;
+        beta_span.start_time_unix_nanos = 10;
+        beta_span.end_time_unix_nanos = 40;
+
+        let mut alpha_span = trace_record("shared-trace", "alpha-span");
+        alpha_span.attributes_json = r#"{"workspace":"alpha","sql":"SELECT alpha"}"#.to_string();
+        alpha_span.parent_span_id = Some("beta-span".to_string());
+        alpha_span.start_time_unix_nanos = 20;
+        alpha_span.end_time_unix_nanos = 30;
+
+        write_record_file_lines(
+            &dir.join(timestamped_jsonl_path(SystemTime::now())),
+            &[beta_span, alpha_span],
+        );
+        let store = TraceStore::new(dir);
+
+        let listed = store
+            .list_traces_sync(10, 0, &TraceScope::workspaces(["alpha"]))
+            .expect("list alpha traces");
+        let summary = listed.first().expect("the shared trace is alpha's too");
+        assert_eq!(summary.query, "SELECT alpha");
+        assert_eq!(summary.root_span_id, "alpha-span");
+        assert_eq!(summary.span_count, 1);
+        assert_eq!(summary.start_time_unix_nanos, 20);
+        assert_eq!(summary.end_time_unix_nanos, 30);
+        assert_eq!(summary.status, StoredTraceStatus::Ok);
+
+        let detail = store
+            .get_trace_sync("shared-trace", &TraceScope::workspaces(["alpha"]))
+            .expect("alpha reads the trace it took part in");
+        assert_eq!(
+            detail
+                .spans
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha-span"],
+            "beta's span must not travel with the trace id it shares",
+        );
+        assert_eq!(detail.summary.query, "SELECT alpha");
+
+        // Both halves are still there for the host, which is the only reader
+        // with no workspace to be confined to.
+        let host = store
+            .get_trace_sync("shared-trace", &TraceScope::Host)
+            .expect("the host reads the whole trace");
+        assert_eq!(host.spans.len(), 2);
+        // And a caller scoped to neither workspace is told nothing exists.
+        store
+            .get_trace_sync("shared-trace", &TraceScope::workspaces(["gamma"]))
+            .expect_err("a trace with nothing in scope reads as absent");
     }
 
     #[test]
@@ -2825,13 +2936,13 @@ mod tests {
 
         let store = TraceStore::new(dir);
         let summary = store
-            .list_traces_sync(1, 0)
+            .list_traces_sync(1, 0, &TraceScope::Host)
             .expect("list traces")
             .into_iter()
             .next()
             .expect("trace summary");
         let detail = store
-            .get_trace_sync("same-file-duplicate-trace")
+            .get_trace_sync("same-file-duplicate-trace", &TraceScope::Host)
             .expect("trace detail");
 
         assert_eq!(summary.query, "SELECT 'new'");
@@ -2854,11 +2965,13 @@ mod tests {
 
         assert!(
             store
-                .list_traces_sync(10, 0)
+                .list_traces_sync(10, 0, &TraceScope::Host)
                 .expect("missing store list")
                 .is_empty()
         );
-        store.get_trace_sync("missing").unwrap_err();
+        store
+            .get_trace_sync("missing", &TraceScope::Host)
+            .unwrap_err();
     }
 
     #[test]
@@ -2904,7 +3017,9 @@ mod tests {
         );
         let store = TraceStore::with_retention(dir, TRACE_RETENTION);
 
-        let traces = store.list_traces_sync(10, 0).expect("list traces");
+        let traces = store
+            .list_traces_sync(10, 0, &TraceScope::Host)
+            .expect("list traces");
 
         assert!(!expired_path.exists());
         assert!(old_name_fresh_path.exists());

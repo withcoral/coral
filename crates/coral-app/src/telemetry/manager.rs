@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::local_store::{TraceDetailRecord, TraceStore, TraceStoreError, TraceSummaryRecord};
-use crate::workspaces::WorkspaceName;
+use super::local_store::{
+    TraceDetailRecord, TraceScope, TraceStore, TraceStoreError, TraceSummaryRecord,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TraceListView {
@@ -15,7 +16,7 @@ pub(crate) enum TraceListView {
 #[derive(Debug)]
 pub(crate) struct ListTracesQuery {
     pub(crate) view: TraceListView,
-    pub(crate) workspace: Option<WorkspaceName>,
+    pub(crate) scope: TraceScope,
     pub(crate) page_size: usize,
     pub(crate) offset: usize,
 }
@@ -29,7 +30,7 @@ pub(crate) struct TraceListPage {
 #[derive(Debug)]
 pub(crate) struct GetTraceQuery {
     pub(crate) trace_id: String,
-    pub(crate) workspace: Option<WorkspaceName>,
+    pub(crate) scope: TraceScope,
     pub(crate) view: TraceListView,
 }
 
@@ -68,24 +69,16 @@ impl TraceManager {
     ) -> Result<TraceListPage, TraceManagerError> {
         let ListTracesQuery {
             view,
-            workspace,
+            scope,
             page_size,
             offset,
         } = query;
-        let workspace = workspace.map(|workspace| workspace.as_str().to_string());
         let fetch_limit = page_size.saturating_add(1);
         let mut traces = match view {
-            TraceListView::All => match workspace {
-                Some(workspace) => {
-                    self.traces
-                        .list_traces_for_workspace(fetch_limit, offset, workspace)
-                        .await
-                }
-                None => self.traces.list_traces(fetch_limit, offset).await,
-            },
+            TraceListView::All => self.traces.list_traces(fetch_limit, offset, scope).await,
             TraceListView::QueryStream => {
                 self.traces
-                    .list_query_stream(fetch_limit, offset, workspace)
+                    .list_query_stream(fetch_limit, offset, scope)
                     .await
             }
         }?;
@@ -105,24 +98,12 @@ impl TraceManager {
     ) -> Result<TraceDetailRecord, TraceManagerError> {
         let GetTraceQuery {
             trace_id,
-            workspace,
+            scope,
             view,
         } = query;
-        let workspace = workspace.map(|workspace| workspace.as_str().to_string());
         match view {
-            TraceListView::All => match workspace {
-                Some(workspace) => {
-                    self.traces
-                        .get_trace_for_workspace(trace_id, workspace)
-                        .await
-                }
-                None => self.traces.get_trace(trace_id).await,
-            },
-            TraceListView::QueryStream => {
-                self.traces
-                    .get_query_stream_trace(trace_id, workspace)
-                    .await
-            }
+            TraceListView::All => self.traces.get_trace(trace_id, scope).await,
+            TraceListView::QueryStream => self.traces.get_query_stream_trace(trace_id, scope).await,
         }
         .map_err(TraceManagerError::from)
     }
@@ -135,8 +116,9 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError};
-    use crate::workspaces::WorkspaceName;
+    use super::{
+        GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError, TraceScope,
+    };
 
     #[tokio::test]
     async fn manager_scopes_and_paginates_all_trace_lists() {
@@ -150,12 +132,12 @@ mod tests {
 
     async fn assert_manager_scopes_and_paginates_trace_lists(view: TraceListView) {
         let (_temp, manager) = trace_manager_fixture();
-        let alpha = WorkspaceName::parse("alpha").expect("alpha workspace");
+        let alpha = TraceScope::workspaces(["alpha"]);
 
         let first_page = manager
             .list_traces(ListTracesQuery {
                 view,
-                workspace: Some(alpha.clone()),
+                scope: alpha.clone(),
                 page_size: 1,
                 offset: 0,
             })
@@ -171,7 +153,7 @@ mod tests {
         let second_page = manager
             .list_traces(ListTracesQuery {
                 view,
-                workspace: Some(alpha),
+                scope: alpha,
                 page_size: 1,
                 offset: 1,
             })
@@ -192,7 +174,7 @@ mod tests {
         let detail = manager
             .get_trace(GetTraceQuery {
                 trace_id: "beta".to_string(),
-                workspace: None,
+                scope: TraceScope::Host,
                 view: TraceListView::All,
             })
             .await
@@ -202,7 +184,7 @@ mod tests {
         let error = manager
             .get_trace(GetTraceQuery {
                 trace_id: "beta".to_string(),
-                workspace: Some(WorkspaceName::parse("alpha").expect("alpha workspace")),
+                scope: TraceScope::workspaces(["alpha"]),
                 view: TraceListView::All,
             })
             .await

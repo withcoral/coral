@@ -9,7 +9,7 @@ use super::super::{
     unix_nanos,
 };
 use super::QueryStreamProjector;
-use super::test_support::{TraceFiles, span};
+use super::test_support::{TraceFiles, scope, span};
 
 #[test]
 fn query_stream_resolves_equal_mtime_files_as_one_bucket() {
@@ -286,7 +286,7 @@ fn query_stream_completes_returned_operations_from_older_files() {
 
 #[test]
 fn query_stream_projector_releases_completed_discovery_trees() {
-    let mut projector = QueryStreamProjector::new(1, Some("alpha"));
+    let mut projector = QueryStreamProjector::new(1, &scope(Some("alpha")));
 
     for index in (0..128_i64).rev() {
         let base = index * 10;

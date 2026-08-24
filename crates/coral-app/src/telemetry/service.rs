@@ -1,7 +1,5 @@
 //! Implements the gRPC `TraceService` for local trace inspection.
 
-use std::collections::HashSet;
-
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
     GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceInvocationKind,
@@ -10,13 +8,13 @@ use coral_api::v1::{
 use tonic::{Code, Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
-use crate::identity::{LOCAL_PRINCIPAL_ID, Principal, PrincipalKind};
+use crate::identity::{Principal, PrincipalKind};
 use crate::telemetry::local_store::{
     StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceDetailRecord,
-    TraceSpanRecord, TraceSummaryRecord,
+    TraceScope, TraceSpanRecord, TraceSummaryRecord,
 };
 use crate::telemetry::manager::{
-    GetTraceQuery, ListTracesQuery, TraceListPage, TraceListView, TraceManager, TraceManagerError,
+    GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError,
 };
 use crate::transport::{grpc_span, instrument_grpc, request_context};
 use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
@@ -24,16 +22,14 @@ use crate::workspaces::{MemberRole, WorkspaceManager, WorkspaceName};
 
 const DEFAULT_TRACE_PAGE_SIZE: usize = 50;
 const MAX_TRACE_PAGE_SIZE: usize = 200;
-
-/// What one caller may read, settled before any trace leaves the store.
-enum TraceAccessScope {
-    /// One workspace the caller manages.
-    Workspace(WorkspaceName),
-    /// Every trace this host recorded, including rows no workspace claims.
-    Host,
-    /// Only the workspaces the caller owns, read one at a time.
-    Owned(Vec<WorkspaceName>),
-}
+/// The deepest page `ListTraces` will serve, in traces.
+///
+/// A page token is an offset into a store that has to be re-read from the top
+/// to reach it, so an unbounded token buys unbounded work with one request.
+/// The cap is far past any real paging depth — the UI pages 50 at a time, so
+/// this is 200 pages of scrolling — and pagination stops advertising a token
+/// before it, so an honest client never meets the refusal.
+const MAX_TRACE_PAGE_OFFSET: usize = 10_000;
 
 #[derive(Clone)]
 pub(crate) struct TraceService {
@@ -63,22 +59,25 @@ impl TraceService {
     /// confined to the workspaces the caller owns. Only the built-in local
     /// principal reads the host's own rows — the spans no workspace claims —
     /// and only where the deployment admits that principal at all.
+    ///
+    /// Authorization ends here. The scope is all that crosses into the store,
+    /// which owns the filtering and never learns who asked.
     async fn trace_access_scope(
         &self,
         principal: &Principal,
         workspace: Option<WorkspaceName>,
-    ) -> Result<TraceAccessScope, Status> {
+    ) -> Result<TraceScope, Status> {
         if let Some(workspace) = workspace {
             self.authorizer
                 .authorize(principal, &workspace, WorkspaceAction::Manage)
                 .await
                 .map_err(app_status)?;
-            return Ok(TraceAccessScope::Workspace(workspace));
+            return Ok(TraceScope::workspaces([workspace.as_str()]));
         }
 
         self.authorizer.admit(principal).map_err(app_status)?;
-        if principal.id().as_str() == LOCAL_PRINCIPAL_ID {
-            return Ok(TraceAccessScope::Host);
+        if principal.is_local() {
+            return Ok(TraceScope::Host);
         }
         // An unnamed request reads every workspace the caller owns at once, so
         // an agent credential is refused it for the same reason `Manage`
@@ -96,8 +95,12 @@ impl TraceService {
             .into_iter()
             .filter(|membership| membership.role == MemberRole::Owner)
             .map(|membership| membership.workspace.name)
-            .collect();
-        Ok(TraceAccessScope::Owned(owned))
+            .collect::<Vec<_>>();
+        // A caller who owns nothing is scoped to nothing, which is an empty
+        // read rather than a wide one.
+        Ok(TraceScope::workspaces(
+            owned.iter().map(WorkspaceName::as_str),
+        ))
     }
 }
 
@@ -120,7 +123,14 @@ impl TraceServiceApi for TraceService {
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
             let view = trace_list_view_from_proto(request.view)?;
-            let page = list_scoped_traces(&service.traces, scope, view, page_size, offset)
+            let page = service
+                .traces
+                .list_traces(ListTracesQuery {
+                    view,
+                    scope,
+                    page_size,
+                    offset,
+                })
                 .await
                 .map_err(trace_manager_status)?;
             Ok(Response::new(ListTracesResponse {
@@ -129,8 +139,11 @@ impl TraceServiceApi for TraceService {
                     .into_iter()
                     .map(trace_summary_to_proto)
                     .collect(),
+                // Paging ends at the cap rather than handing out a token the
+                // next request would refuse.
                 next_page_token: page
                     .next_offset
+                    .filter(|offset| *offset <= MAX_TRACE_PAGE_OFFSET)
                     .map_or_else(String::new, |offset| offset.to_string()),
             }))
         })
@@ -155,137 +168,19 @@ impl TraceServiceApi for TraceService {
                 ));
             }
             let view = trace_list_view_from_proto(request.view)?;
-            let trace = get_scoped_trace(&service.traces, scope, request.trace_id, view)
+            let trace = service
+                .traces
+                .get_trace(GetTraceQuery {
+                    trace_id: request.trace_id,
+                    scope,
+                    view,
+                })
                 .await
                 .map_err(trace_manager_status)?;
             Ok(Response::new(trace_detail_to_proto(trace)))
         })
         .await
     }
-}
-
-/// Reads one page of traces under `scope`.
-async fn list_scoped_traces(
-    traces: &TraceManager,
-    scope: TraceAccessScope,
-    view: TraceListView,
-    page_size: usize,
-    offset: usize,
-) -> Result<TraceListPage, TraceManagerError> {
-    let workspace = match scope {
-        TraceAccessScope::Workspace(workspace) => Some(workspace),
-        TraceAccessScope::Host => None,
-        TraceAccessScope::Owned(workspaces) => {
-            return list_owned_traces(traces, &workspaces, view, page_size, offset).await;
-        }
-    };
-    traces
-        .list_traces(ListTracesQuery {
-            view,
-            workspace,
-            page_size,
-            offset,
-        })
-        .await
-}
-
-/// Merges one page out of the workspaces the caller owns.
-///
-/// The store scopes a read to a single workspace, so an unnamed request is
-/// answered by reading each owned workspace from the top and merging. Reading
-/// `offset + page_size` from each is enough: a trace cannot rank higher in the
-/// merged page than it does in its own workspace's page, so nothing below that
-/// depth in a workspace can reach this page.
-async fn list_owned_traces(
-    traces: &TraceManager,
-    workspaces: &[WorkspaceName],
-    view: TraceListView,
-    page_size: usize,
-    offset: usize,
-) -> Result<TraceListPage, TraceManagerError> {
-    let depth = offset.saturating_add(page_size);
-    let mut merged = Vec::new();
-    let mut merged_ids = HashSet::new();
-    let mut deeper_traces_exist = false;
-    for workspace in workspaces {
-        let page = traces
-            .list_traces(ListTracesQuery {
-                view,
-                workspace: Some(workspace.clone()),
-                page_size: depth,
-                offset: 0,
-            })
-            .await?;
-        deeper_traces_exist |= page.next_offset.is_some();
-        for summary in page.traces {
-            // A trace whose spans span two owned workspaces is one trace.
-            if merged_ids.insert(summary.trace_id.clone()) {
-                merged.push(summary);
-            }
-        }
-    }
-    // Newest first, ties broken by trace id: the order each workspace's own
-    // page already arrives in, so the merge preserves it.
-    merged.sort_by(|left, right| {
-        right
-            .end_time_unix_nanos
-            .cmp(&left.end_time_unix_nanos)
-            .then_with(|| left.trace_id.cmp(&right.trace_id))
-    });
-    let next_offset = (deeper_traces_exist || merged.len() > depth).then_some(depth);
-    Ok(TraceListPage {
-        traces: merged.into_iter().skip(offset).take(page_size).collect(),
-        next_offset,
-    })
-}
-
-/// Reads one trace under `scope`.
-async fn get_scoped_trace(
-    traces: &TraceManager,
-    scope: TraceAccessScope,
-    trace_id: String,
-    view: TraceListView,
-) -> Result<TraceDetailRecord, TraceManagerError> {
-    let workspace = match scope {
-        TraceAccessScope::Workspace(workspace) => Some(workspace),
-        TraceAccessScope::Host => None,
-        TraceAccessScope::Owned(workspaces) => {
-            return get_owned_trace(traces, &workspaces, trace_id, view).await;
-        }
-    };
-    traces
-        .get_trace(GetTraceQuery {
-            trace_id,
-            workspace,
-            view,
-        })
-        .await
-}
-
-/// Looks one trace up in each workspace the caller owns.
-///
-/// A trace that belongs to none of them is reported absent rather than
-/// refused: which workspace it does belong to is not the caller's to learn.
-async fn get_owned_trace(
-    traces: &TraceManager,
-    workspaces: &[WorkspaceName],
-    trace_id: String,
-    view: TraceListView,
-) -> Result<TraceDetailRecord, TraceManagerError> {
-    for workspace in workspaces {
-        let found = traces
-            .get_trace(GetTraceQuery {
-                trace_id: trace_id.clone(),
-                workspace: Some(workspace.clone()),
-                view,
-            })
-            .await;
-        match found {
-            Err(TraceManagerError::NotFound { .. }) => {}
-            found => return found,
-        }
-    }
-    Err(TraceManagerError::NotFound { trace_id })
 }
 
 fn normalize_page_size(page_size: i32) -> usize {
@@ -302,12 +197,19 @@ fn parse_page_token(page_token: &str) -> Result<usize, Status> {
     if page_token.is_empty() {
         return Ok(0);
     }
-    page_token.parse().map_err(|_parse_error| {
+    let offset: usize = page_token.parse().map_err(|_parse_error| {
         Status::new(
             Code::InvalidArgument,
             "invalid input: page_token must be returned by ListTraces",
         )
-    })
+    })?;
+    if offset > MAX_TRACE_PAGE_OFFSET {
+        return Err(Status::new(
+            Code::InvalidArgument,
+            "invalid input: page_token is beyond the deepest page ListTraces serves",
+        ));
+    }
+    Ok(offset)
 }
 
 fn trace_list_view_from_proto(view: i32) -> Result<TraceListView, Status> {
@@ -454,11 +356,30 @@ mod tests {
         assert_eq!(normalize_page_size(10_000), super::MAX_TRACE_PAGE_SIZE);
     }
 
+    /// A token is an offset the store has to scan down to, so the depth a
+    /// caller can name is the work a caller can buy. Past the cap the request
+    /// is refused rather than served.
     #[test]
-    fn page_token_is_offset() {
+    fn page_token_is_a_bounded_offset() {
         assert_eq!(parse_page_token("").expect("empty token"), 0);
         assert_eq!(parse_page_token("25").expect("offset token"), 25);
+        assert_eq!(
+            parse_page_token(&super::MAX_TRACE_PAGE_OFFSET.to_string()).expect("the deepest page"),
+            super::MAX_TRACE_PAGE_OFFSET
+        );
         parse_page_token("not-an-offset").unwrap_err();
+        assert_eq!(
+            parse_page_token(&(super::MAX_TRACE_PAGE_OFFSET + 1).to_string())
+                .expect_err("a token past the cap buys no work")
+                .code(),
+            Code::InvalidArgument
+        );
+        assert_eq!(
+            parse_page_token("4000000000")
+                .expect_err("nor does one far past it")
+                .code(),
+            Code::InvalidArgument
+        );
     }
 
     #[test]
@@ -628,7 +549,16 @@ mod tests {
             .await
             .expect("an owner inspects their own workspace")
             .into_inner();
-        assert_eq!(trace_ids(&listed), vec!["alpha-new", "alpha-old"]);
+        assert_eq!(
+            trace_ids(&listed),
+            vec!["shared-trace", "alpha-new", "alpha-old"]
+        );
+        // The trace alpha shares with beta is summarized from alpha's span
+        // alone, so the listing never hands one workspace the other's SQL.
+        assert_eq!(
+            listed.traces.first().expect("the shared trace").query,
+            "SELECT alpha"
+        );
 
         // A member is denied and an outsider is concealed: the workspace they
         // already know about stays distinguishable from the one they do not.
@@ -682,7 +612,12 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(listed, vec!["beta-trace", "alpha-new", "alpha-old"]);
+        // One entry for the shared trace, not one per owned workspace it
+        // touches: the store merges it before the page is cut.
+        assert_eq!(
+            listed,
+            vec!["shared-trace", "beta-trace", "alpha-new", "alpha-old"]
+        );
 
         for (trace_id, expected) in [
             ("alpha-old", Code::Ok),
@@ -706,6 +641,24 @@ mod tests {
                 expected
             );
         }
+
+        // Both halves of the shared trace belong to workspaces this caller
+        // owns, so the unnamed read is the one that shows the whole of it.
+        let shared = TraceServiceApi::get_trace(
+            &service,
+            request(
+                GetTraceRequest {
+                    trace_id: "shared-trace".to_string(),
+                    workspace: None,
+                    view: TraceView::Unspecified as i32,
+                },
+                owner.clone(),
+            ),
+        )
+        .await
+        .expect("the owner of both workspaces reads both halves")
+        .into_inner();
+        assert_eq!(shared.spans.len(), 2);
 
         let member_page =
             TraceServiceApi::list_traces(&service, request(list_global(10, ""), member))
@@ -741,6 +694,7 @@ mod tests {
         assert_eq!(
             trace_ids(&response),
             vec![
+                "shared-trace",
                 "host-trace",
                 "gamma-trace",
                 "beta-trace",
@@ -849,7 +803,8 @@ mod tests {
     }
 
     /// The traces every fan-out case reads: two workspaces the owner holds,
-    /// one they only belong to, and one host row no workspace claims.
+    /// one they only belong to, one host row no workspace claims, and one
+    /// trace whose spans fall in two of those workspaces at once.
     fn fan_out_trace_records() -> Vec<serde_json::Value> {
         vec![
             trace_record_json("alpha-old", "alpha-old-span", Some("alpha"), 10, 20),
@@ -857,6 +812,8 @@ mod tests {
             trace_record_json("beta-trace", "beta-span", Some("beta"), 30, 40),
             trace_record_json("gamma-trace", "gamma-span", Some("gamma"), 40, 50),
             trace_record_json("host-trace", "host-span", None, 50, 60),
+            trace_record_json("shared-trace", "shared-alpha-span", Some("alpha"), 60, 70),
+            trace_record_json("shared-trace", "shared-beta-span", Some("beta"), 65, 75),
         ]
     }
 
