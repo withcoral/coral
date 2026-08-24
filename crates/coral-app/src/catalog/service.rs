@@ -63,13 +63,18 @@ impl CatalogServiceApi for CatalogService {
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let attribution = authorized_query_attribution(
-                &authorizer,
-                &tasks,
-                &workspace_name,
-                &request_context,
-            )
-            .await?;
+            // Access is settled immediately after parsing the workspace: a
+            // caller who may not reach it must not cause a task lookup or a
+            // runtime build, nor learn whether their task id exists.
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
+            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
@@ -120,13 +125,15 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let attribution = authorized_query_attribution(
-                &authorizer,
-                &tasks,
-                &workspace_name,
-                &request_context,
-            )
-            .await?;
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
+            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
@@ -178,13 +185,15 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let attribution = authorized_query_attribution(
-                &authorizer,
-                &tasks,
-                &workspace_name,
-                &request_context,
-            )
-            .await?;
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
+            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_exact(&request.catalog_name, "catalog_name")?;
             let schema_name = required_exact(&request.schema_name, "schema_name")?;
             let surface_name = required_exact(&request.surface_name, "surface_name")?;
@@ -216,13 +225,15 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let attribution = authorized_query_attribution(
-                &authorizer,
-                &tasks,
-                &workspace_name,
-                &request_context,
-            )
-            .await?;
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
+            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_exact(&request.catalog_name, "catalog_name")?;
             let schema_name = required_exact(&request.schema_name, "schema_name")?;
             let table_name = required_exact(&request.table_name, "table_name")?;
@@ -269,24 +280,14 @@ impl CatalogServiceApi for CatalogService {
     }
 }
 
-/// Settles access to `workspace` before any discovery work, then labels the
-/// work that follows. The order is the point: every catalog RPC reaches this
-/// immediately after parsing its workspace, so a caller who may not reach the
-/// workspace never causes a task lookup or a runtime build.
-async fn authorized_query_attribution(
-    authorizer: &WorkspaceAuthorizer,
+/// Labels catalog work with the caller's task, validating the attribution
+/// against `workspace`. Callers must have already settled workspace access;
+/// this performs no authorization of its own.
+async fn query_attribution(
     tasks: &TaskManager,
     workspace: &WorkspaceName,
     request_context: &RequestContext,
 ) -> Result<QueryAttribution, Status> {
-    authorizer
-        .authorize(
-            request_context.principal(),
-            workspace,
-            WorkspaceAction::Read,
-        )
-        .await
-        .map_err(app_status)?;
     tasks
         .validate_attribution(workspace, request_context.task_id())
         .await
