@@ -46,7 +46,12 @@ export const headerControls = style({
 export const searchBar = style({ flex: '1 1 280px', maxWidth: '280px', minWidth: '180px' })
 export const searchInput = style({})
 globalStyle(`${searchInput}::-webkit-search-cancel-button`, { display: 'none' })
-export const loadError = style({ alignItems: 'center', display: 'flex', gap: '8px' })
+export const loadError = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: '8px',
+  justifyContent: 'center',
+})
 export const memberRow = style({ alignItems: 'flex-start', display: 'flex', gap: '10px' })
 export const memberIdentity = style({ display: 'flex', flexDirection: 'column', gap: '4px' })
 export const memberNameLine = style({
