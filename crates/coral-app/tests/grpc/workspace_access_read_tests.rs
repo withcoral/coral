@@ -1,7 +1,7 @@
 use coral_api::CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND;
 use coral_api::v1::{
-    EndTaskRequest, ExecuteSqlRequest, ListCatalogRequest, PaginationRequest, StartTaskRequest,
-    SubmitFeedbackRequest, TaskAttribution, TaskStatus, WorkspaceRole,
+    EndTaskRequest, ExecuteSqlRequest, ExplainSqlRequest, ListCatalogRequest, PaginationRequest,
+    StartTaskRequest, SubmitFeedbackRequest, TaskAttribution, TaskStatus, WorkspaceRole,
 };
 use coral_client::AppClient;
 use tonic::{Code, Request, Status};
@@ -14,6 +14,11 @@ use crate::harness::{
 /// A task id that was never minted anywhere, so `EndTask` cannot be answered
 /// from a real row: the refusal it draws has to come from the workspace rule.
 const UNMINTED_TASK_ID: &str = "00000000-0000-4000-8000-000000000000";
+
+/// SQL the query path itself rejects. A caller who reached the planner would
+/// be told so, which is what makes a concealing refusal on `ExplainSql` an
+/// absence rather than an error code.
+const UNPLANNABLE_SQL: &str = "this is not sql";
 
 async fn list_catalog(client: &AppClient, name: &str) -> Result<usize, Status> {
     client
@@ -30,6 +35,17 @@ async fn list_catalog(client: &AppClient, name: &str) -> Result<usize, Status> {
         }))
         .await
         .map(|response| response.into_inner().items.len())
+}
+
+async fn explain_sql(client: &AppClient, name: &str, sql: &str) -> Result<(), Status> {
+    client
+        .query_client()
+        .explain_sql(Request::new(ExplainSqlRequest {
+            workspace: Some(named_workspace(name)),
+            sql: sql.to_string(),
+        }))
+        .await
+        .map(|_| ())
 }
 
 async fn start_task(client: &AppClient, name: &str) -> Result<String, Status> {
@@ -106,6 +122,12 @@ async fn read_refusals(
                 .expect_err("a non-member must not query the workspace"),
         ),
         (
+            "explain_sql",
+            explain_sql(client, name, UNPLANNABLE_SQL)
+                .await
+                .expect_err("a non-member must not plan against the workspace"),
+        ),
+        (
             "list_catalog",
             list_catalog(client, name)
                 .await
@@ -145,6 +167,9 @@ async fn expect_full_read_access(client: &AppClient, name: &str) {
     execute_sql(client, name, "select 1")
         .await
         .expect("a member queries the workspace");
+    explain_sql(client, name, "select 1")
+        .await
+        .expect("a member plans a statement");
     list_catalog(client, name)
         .await
         .expect("a member browses the catalog");
