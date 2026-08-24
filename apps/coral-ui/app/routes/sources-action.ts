@@ -129,6 +129,12 @@ export async function runSourcesAction(
         return actionError('import', name, 'Missing source manifest')
       }
       const info = await describeSourceManifest(sourceClient, workspace, manifestYaml)
+      // Import upserts, so without this an already-configured name would have
+      // its manifest and bindings replaced. The dialog disables the button for
+      // this case; only the server can hold the rule for a submit that skips it.
+      if (info.installed) {
+        return actionError('import', name, `A source named ${info.name} is already configured.`)
+      }
       const missing = firstMissingRequiredInput(info, formData)
       if (missing) return actionError('import', name, `${missing} is required`)
       await importSourceManifest(
