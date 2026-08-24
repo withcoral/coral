@@ -11,6 +11,12 @@ use serde_json::Value;
 
 const DEFAULT_SQL: &str = "select * from coral.tables";
 
+/// The workspace this check creates and measures against.
+///
+/// A fresh state directory owns no workspace, so the harness has to create the
+/// one it benchmarks and name it on every command that follows.
+const WORKSPACE: &str = "perf";
+
 #[derive(Debug, clap::Args)]
 pub(crate) struct Args {
     /// Path to the release Coral binary to benchmark.
@@ -51,6 +57,7 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
     )
     .with_context(|| format!("writing {}", config_dir.join("config.toml").display()))?;
 
+    create_workspace(&coral_bin, &config_dir)?;
     install_github_source(&coral_bin, &config_dir, &args.github_token)?;
     run_coral_sql(&coral_bin, &config_dir)?;
 
@@ -113,16 +120,39 @@ fn ensure_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn install_github_source(coral_bin: &Path, config_dir: &Path, github_token: &str) -> Result<()> {
-    let output = Command::new(coral_bin)
-        .args(["source", "add", "github"])
+/// Builds a `coral` invocation pinned to this check's config directory and
+/// workspace, so every command targets the workspace the check provisions.
+fn coral_command(coral_bin: &Path, config_dir: &Path) -> Command {
+    let mut command = Command::new(coral_bin);
+    command
         .env("CORAL_CONFIG_DIR", config_dir)
+        .env("CORAL_WORKSPACE", WORKSPACE);
+    command
+}
+
+fn create_workspace(coral_bin: &Path, config_dir: &Path) -> Result<()> {
+    let output = coral_command(coral_bin, config_dir)
+        .args(["workspace", "create", WORKSPACE])
+        .output()
+        .with_context(|| format!("running {} workspace create", coral_bin.display()))?;
+
+    if !output.status.success() {
+        print!("{}", command_log(&output));
+        bail!("failed to create the {WORKSPACE} workspace");
+    }
+
+    println!("Created the {WORKSPACE} workspace.");
+    Ok(())
+}
+
+fn install_github_source(coral_bin: &Path, config_dir: &Path, github_token: &str) -> Result<()> {
+    let output = coral_command(coral_bin, config_dir)
+        .args(["source", "add", "github"])
         .env("GITHUB_TOKEN", github_token)
         .output()
         .with_context(|| format!("running {} source add github", coral_bin.display()))?;
 
-    let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
-    log.push_str(&String::from_utf8_lossy(&output.stderr));
+    let log = command_log(&output);
 
     if !output.status.success() {
         print!("{log}");
@@ -134,10 +164,15 @@ fn install_github_source(coral_bin: &Path, config_dir: &Path, github_token: &str
     Ok(())
 }
 
+fn command_log(output: &std::process::Output) -> String {
+    let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
+    log.push_str(&String::from_utf8_lossy(&output.stderr));
+    log
+}
+
 fn run_coral_sql(coral_bin: &Path, config_dir: &Path) -> Result<()> {
-    let status = Command::new(coral_bin)
+    let status = coral_command(coral_bin, config_dir)
         .args(["sql", DEFAULT_SQL])
-        .env("CORAL_CONFIG_DIR", config_dir)
         .stdout(Stdio::null())
         .status()
         .with_context(|| format!("running {} sql", coral_bin.display()))?;
@@ -175,6 +210,7 @@ fn run_hyperfine(
             &command,
         ])
         .env("CORAL_CONFIG_DIR", config_dir)
+        .env("CORAL_WORKSPACE", WORKSPACE)
         .status()
         .context("running hyperfine")?;
     if !status.success() {
