@@ -115,7 +115,10 @@ fn implicitly_provisioned_workspaces(
     let mut workspaces = Vec::new();
     for entry in entries {
         let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+        // Metadata, not `file_type`: a workspace directory may be a symlink to
+        // another volume, and skipping it here would orphan it for good once
+        // the cutover marker commits.
+        if !std::fs::metadata(entry.path())?.is_dir() {
             continue;
         }
         let directory_name = entry.file_name();
@@ -372,6 +375,38 @@ mod tests {
             installed_source.exists(),
             "the preserved workspace keeps its contents"
         );
+    }
+
+    /// A workspace directory can be a symlink — relocated to another volume by
+    /// hand, say. The cutover runs once, so reading only the link itself and
+    /// not what it points at would orphan that workspace for good.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cutover_preserves_a_symlinked_legacy_workspace() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let implicit_workspace = WorkspaceName::parse("default").expect("workspace");
+        let relocated = temp.path().join("other-volume").join("default");
+        std::fs::create_dir_all(&relocated).expect("create relocated workspace dir");
+        std::fs::create_dir_all(layout.workspaces_root()).expect("create workspaces root");
+        std::os::unix::fs::symlink(&relocated, layout.workspace_dir(&implicit_workspace))
+            .expect("link the relocated workspace into place");
+        let db = open_sqlite(&layout).await;
+
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
+            .await
+            .expect("cut over legacy workspace catalog");
+
+        assert_eq!(
+            report,
+            WorkspaceCatalogCutoverReport {
+                workspace_count: 1,
+                cutover_performed: true
+            }
+        );
+        assert_eq!(workspace_ids(&db).await, vec!["default".to_string()]);
     }
 
     async fn workspace_ids(db: &CoralDb) -> Vec<String> {
