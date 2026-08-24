@@ -492,9 +492,18 @@ fn query_stream_summary_never_enriches_across_a_workspace_boundary() {
     let summary = alpha
         .first()
         .expect("alpha owns the operation its root began");
-    assert_ne!(
-        summary.query, "SELECT beta_secret",
-        "beta's query text must not reach a caller scoped to alpha"
+    // Asserted as an absence rather than "not beta's text": a projection that
+    // mangled the leak instead of withholding it would satisfy the weaker
+    // claim. Alpha's root carries no query text of its own, so the only
+    // correct summary carries none.
+    assert!(
+        summary.query.is_empty(),
+        "alpha's root carries no query text of its own, so its summary must carry none: {:?}",
+        summary.query,
+    );
+    assert_eq!(
+        summary.span_count, 1,
+        "beta's span must not be counted into an alpha-scoped summary either"
     );
 
     // The host reads across workspaces, so the enrichment it sees is the proof

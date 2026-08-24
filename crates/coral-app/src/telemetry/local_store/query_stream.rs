@@ -255,23 +255,27 @@ impl StreamingQueryStreamAggregate {
     }
 
     fn record_span(&mut self, span: &ProjectedQueryStreamSpan, depth: usize, scope: &TraceScope) {
-        self.span_count = self.span_count.saturating_add(1);
         // Evidence is recorded for every span, including excluded ones: a
         // second workspace is what makes the evidence a `Conflict`, and that
         // conclusion is only reachable by seeing the span that conflicts.
         self.workspace_evidence.record(span.workspace.as_deref());
-        let Some(metadata) = span.metadata.as_ref() else {
-            return;
-        };
-        // Everything below becomes what the caller is shown — the operation
-        // this summary names and the query text it carries. A span positively
+
+        // Everything below is what the caller is told about this operation —
+        // the count that reports a span existed at all, the operation this
+        // summary names, and the query text it carries. A span positively
         // attributed to a workspace this scope excludes contributes none of
         // it, or an operation admitted by its own root would report a
-        // descendant's SQL. A span carrying no workspace of its own is not
-        // excluded: it belongs to whatever operation owns it.
+        // descendant's SQL and count the span that carried it. A span with no
+        // workspace of its own is not excluded: it belongs to whatever
+        // operation owns it.
         if !scope.may_admit(span.workspace.as_deref()) {
             return;
         }
+        self.span_count = self.span_count.saturating_add(1);
+
+        let Some(metadata) = span.metadata.as_ref() else {
+            return;
+        };
         if depth > 0 {
             let operation = QueryStreamPrimaryOperation::new(
                 metadata.kind,
