@@ -407,10 +407,28 @@ impl TraceScope {
 
     /// Reports whether work whose workspace is not yet settled could still
     /// turn out to be in scope.
+    ///
+    /// A scope over no workspaces is the exception: nothing can settle into it,
+    /// so unattributed work is excluded here rather than carried until
+    /// [`Self::admits`] rejects it at the end of a scan that never had an
+    /// answer to find.
     fn may_admit(&self, workspace: Option<&str>) -> bool {
         match self {
             Self::Host => true,
+            Self::Workspaces(names) if names.is_empty() => false,
             Self::Workspaces(names) => workspace.is_none_or(|workspace| names.contains(workspace)),
+        }
+    }
+
+    /// Reports whether this scope can admit anything at all.
+    ///
+    /// A caller who owns no workspaces asks a question with no possible answer,
+    /// and reading the whole retained store to say so is work spent to learn
+    /// nothing.
+    fn admits_nothing(&self) -> bool {
+        match self {
+            Self::Host => false,
+            Self::Workspaces(names) => names.is_empty(),
         }
     }
 
@@ -750,7 +768,7 @@ impl TraceStore {
         offset: usize,
         scope: &TraceScope,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        if limit == 0 {
+        if limit == 0 || scope.admits_nothing() {
             return Ok(Vec::new());
         }
 
