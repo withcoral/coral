@@ -254,7 +254,11 @@ mod tests {
             }
         }
         assert!(files > 0, "found no protos to walk under {:?}", proto_dir());
-        declared.retain(|rpc| !rpc.starts_with(HEALTH_SERVICE));
+        // Matched to the service boundary, not the bare prefix: a future
+        // service merely named like this one would otherwise be dropped from
+        // the declared set and ship unclassified.
+        let health_prefix = format!("{HEALTH_SERVICE}/");
+        declared.retain(|rpc| !rpc.starts_with(&health_prefix));
         declared.extend(mounted_health_rpcs());
         declared
     }

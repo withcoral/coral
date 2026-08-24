@@ -1040,8 +1040,14 @@ mod tests {
 
     /// Replaces the workspace name the caller themselves asked about, so two
     /// answers about different names are still comparable.
+    ///
+    /// Only the quoted occurrence is replaced. A bare substring replacement
+    /// also rewrites the name where it sits inside another identifier, which
+    /// can make two genuinely different messages compare equal — and the
+    /// comparison is the whole assertion, so that would report a concealment
+    /// that is not there.
     fn normalize(message: &str, name: &str) -> String {
-        message.replace(name, "<workspace>")
+        message.replace(&format!("'{name}'"), "'<workspace>'")
     }
 
     fn reasons(status: &Status) -> Vec<String> {
