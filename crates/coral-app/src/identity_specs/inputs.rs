@@ -106,7 +106,7 @@ pub(crate) fn prepare_identity_spec_input_material(
             )));
         }
         if supplied_values
-            .insert(input.key.as_str(), trimmed_non_empty_value(&input.value))
+            .insert(input.key.as_str(), non_blank_value(&input.value))
             .is_some()
         {
             return Err(AppError::InvalidInput(format!(
@@ -119,10 +119,11 @@ pub(crate) fn prepare_identity_spec_input_material(
     let mut values = BTreeMap::new();
     for input in &manifest.inputs {
         let supplied_value = supplied_values.get(input.key.as_str()).cloned().flatten();
-        let previous_value = (previous_kinds.get(input.key.as_str()) == Some(&input.kind))
-            .then(|| previous_values.get(&input.key))
-            .flatten()
-            .and_then(|value| trimmed_non_empty_value(value));
+        let previous_value = (input.kind == ManifestInputKind::Variable
+            && previous_kinds.get(input.key.as_str()) == Some(&input.kind))
+        .then(|| previous_values.get(&input.key))
+        .flatten()
+        .and_then(|value| non_blank_value(value));
         if let Some(value) = supplied_value.or(previous_value) {
             values.insert(input.key.clone(), value);
         }
@@ -213,10 +214,10 @@ fn resolve_declared_inputs(
     for input in &manifest.inputs {
         let value = values
             .get(&input.key)
-            .and_then(|value| trimmed_non_empty_value(value))
+            .and_then(|value| non_blank_value(value))
             .or_else(|| {
                 (input.kind == ManifestInputKind::Variable)
-                    .then(|| trimmed_non_empty_value(&input.default_value))
+                    .then(|| non_blank_value(&input.default_value))
                     .flatten()
             });
         let Some(value) = value else {
@@ -241,9 +242,8 @@ fn input_kinds(manifest: &IdentityManifest) -> BTreeMap<&str, ManifestInputKind>
         .collect()
 }
 
-fn trimmed_non_empty_value(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+fn non_blank_value(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_string())
 }
 
 fn corrupt_input_material(key: &IdentitySpecKey, detail: &str) -> DbError {
@@ -271,17 +271,17 @@ mod tests {
     use crate::state::db::IdentitySpecKey;
 
     #[test]
-    fn prepares_trimmed_overrides_and_preserves_only_same_kind_material() {
+    fn preserves_input_boundaries_and_inherits_only_variables() {
         let key = IdentitySpecKey::global("demo").unwrap();
         let previous = oauth_manifest(
-            "  KEEP: {kind: secret}\n  FLIP: {kind: secret, required: false}\n  REMOVE: {kind: variable, required: false}",
+            "  CLIENT_SECRET: {kind: secret}\n  REGION: {kind: variable, required: false}\n  REMOVE: {kind: variable, required: false}",
         );
         let current = oauth_manifest(
-            "  KEEP: {kind: secret}\n  FLIP: {kind: variable, default: flipped}\n  REQUIRED_DEFAULT: {kind: variable, default: fallback, required: true}\n  EMPTY_OPTIONAL: {kind: variable, required: false}",
+            "  CLIENT_SECRET: {kind: secret}\n  REGION: {kind: variable, required: false}\n  DEFAULTED: {kind: variable, default: '  fallback  ', required: true}\n  OPTIONAL_SECRET: {kind: secret, required: false}",
         );
         let previous_values = BTreeMap::from([
-            ("KEEP".to_string(), " old-secret ".to_string()),
-            ("FLIP".to_string(), "old-flip".to_string()),
+            ("CLIENT_SECRET".to_string(), "  old-secret  ".to_string()),
+            ("REGION".to_string(), "  eu-west-1  ".to_string()),
             ("REMOVE".to_string(), "old-remove".to_string()),
         ]);
         let prepared = prepare(
@@ -289,21 +289,57 @@ mod tests {
             &current,
             Some(&previous),
             &previous_values,
-            &[IdentitySpecInputValue::new("KEEP", " \t ")],
+            &[IdentitySpecInputValue::new(
+                "CLIENT_SECRET",
+                "  new-secret  ",
+            )],
         )
         .unwrap();
         assert_eq!(
             prepared.values(),
-            &BTreeMap::from([("KEEP".to_string(), "old-secret".to_string())])
+            &BTreeMap::from([
+                ("CLIENT_SECRET".to_string(), "  new-secret  ".to_string()),
+                ("REGION".to_string(), "  eu-west-1  ".to_string()),
+            ])
         );
         let resolved = resolve(&key, &current, prepared.values()).unwrap();
-        assert_eq!(value(resolved.secrets(), "KEEP"), Some("old-secret"));
-        assert_eq!(value(resolved.variables(), "FLIP"), Some("flipped"));
         assert_eq!(
-            value(resolved.variables(), "REQUIRED_DEFAULT"),
-            Some("fallback")
+            value(resolved.secrets(), "CLIENT_SECRET"),
+            Some("  new-secret  ")
         );
-        assert!(!resolved.variables().contains_key("EMPTY_OPTIONAL"));
+        assert_eq!(value(resolved.variables(), "REGION"), Some("  eu-west-1  "));
+        assert_eq!(
+            value(resolved.variables(), "DEFAULTED"),
+            Some("  fallback  ")
+        );
+        assert!(!resolved.secrets().contains_key("OPTIONAL_SECRET"));
+
+        assert!(matches!(
+            prepare(&key, &current, Some(&previous), &previous_values, &[],),
+            Err(AppError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn preserves_stored_input_boundaries() {
+        let key = IdentitySpecKey::global("demo").unwrap();
+        let manifest = oauth_manifest(
+            "  CLIENT_SECRET: {kind: secret}\n  REGION: {kind: variable, required: true}",
+        );
+        let stored = BTreeMap::from([
+            ("CLIENT_SECRET".to_string(), "  stored-secret  ".to_string()),
+            ("REGION".to_string(), "  stored-region  ".to_string()),
+        ]);
+
+        let resolved = resolve(&key, &manifest, &stored).unwrap();
+        assert_eq!(
+            value(resolved.secrets(), "CLIENT_SECRET"),
+            Some("  stored-secret  ")
+        );
+        assert_eq!(
+            value(resolved.variables(), "REGION"),
+            Some("  stored-region  ")
+        );
     }
 
     #[test]
@@ -312,6 +348,7 @@ mod tests {
         let manifest = oauth_manifest("  NEEDED: {kind: secret}");
         for supplied in [
             vec![IdentitySpecInputValue::new(" NEEDED ", "secret")],
+            vec![IdentitySpecInputValue::new("NEEDED", " \t ")],
             vec![
                 IdentitySpecInputValue::new("NEEDED", "one"),
                 IdentitySpecInputValue::new("NEEDED", "two"),
