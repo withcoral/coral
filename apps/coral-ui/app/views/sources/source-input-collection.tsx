@@ -161,7 +161,7 @@ function InputRow({
   const selected = methods[methodIndex]
 
   return (
-    <SourceInputField input={input} showHint={methods.length <= 1} showLabel={methods.length <= 1}>
+    <SourceInputField input={input} showHint={methods.length === 0} showLabel={methods.length <= 1}>
       {methods.length > 0 ? (
         <input type="hidden" name={`method:${input.key}`} value={methodIndex} />
       ) : null}
@@ -188,7 +188,7 @@ function InputRow({
               <div aria-hidden="true" className={styles.methodSizer} inert key={`sizer:${index}`}>
                 <CredentialMethodContent
                   disabled
-                  hint={input.hint}
+                  hint={method.hint || method.description || input.hint}
                   inputKey={input.key}
                   method={method}
                   onValueChange={onValueChange}
@@ -200,7 +200,7 @@ function InputRow({
               <Tabs.Panel className={styles.methodPanel} key={index} value={index}>
                 <CredentialMethodContent
                   disabled={disabled || index !== methodIndex}
-                  hint={input.hint}
+                  hint={method.hint || method.description || input.hint}
                   inputKey={input.key}
                   method={method}
                   onValueChange={onValueChange}
@@ -211,8 +211,9 @@ function InputRow({
           </div>
         </Tabs.Root>
       ) : (
-        <CredentialMethodFields
+        <CredentialMethodContent
           disabled={disabled}
+          hint={selected ? selected.hint || selected.description || input.hint : ''}
           inputKey={input.key}
           method={selected}
           onValueChange={onValueChange}
