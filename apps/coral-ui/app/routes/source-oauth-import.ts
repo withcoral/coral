@@ -29,10 +29,15 @@ export async function action({ context, params, request }: Route.ActionArgs): Pr
     return oauthStreamErrorResponse('Missing source manifest', 400)
   }
 
-  const workspace = workspaceFromParams(params)
-  const sourceClient = sourceClientForRequest(request, context.get(requestAuthContext).accessToken)
-
   try {
+    // The browser reads this response as a stream, so setup failures have to
+    // take the same shape as the ones raised further down.
+    const workspace = workspaceFromParams(params)
+    const sourceClient = sourceClientForRequest(
+      request,
+      context.get(requestAuthContext).accessToken,
+    )
+
     // The manifest is the only description of its own inputs, so ask Coral what it
     // declares before mapping the submitted form onto it.
     const described = await sourceClient.describeSourceManifest(
