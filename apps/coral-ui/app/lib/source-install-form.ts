@@ -175,7 +175,7 @@ function oauthCredentialInputsFromForm(
   oauth: OAuthCredentialMethod,
   formData: FormData,
 ): { key: string; value: string }[] {
-  return oauthInputs(oauth)
+  return oauthClientInputs(oauth)
     .map(({ defaultValue, key }) => ({
       key,
       value: formValue(formData, oauthFieldName(inputKey, key), defaultValue),
@@ -188,7 +188,7 @@ function firstMissingOAuthCredentialInput(
   oauth: OAuthCredentialMethod,
   formData: FormData,
 ): string | null {
-  for (const input of oauthInputs(oauth)) {
+  for (const input of oauthClientInputs(oauth)) {
     if (!input.required) continue
     const fallback = formValue(formData, oauthFieldName('', input.key), input.defaultValue)
     const scopedValue = formValue(formData, oauthFieldName(sourceInputKey, input.key), fallback)
@@ -197,24 +197,33 @@ function firstMissingOAuthCredentialInput(
   return null
 }
 
-interface OAuthInput {
+export interface OAuthClientInput {
   key: string
   defaultValue?: string
   required: boolean
+  secret: boolean
 }
 
-function oauthInputs(oauth: OAuthCredentialMethod): OAuthInput[] {
-  const out: OAuthInput[] = []
+/**
+ * Which client fields an OAuth method asks the user for. The parameter is the
+ * structural subset that both the generated proto method and its catalog
+ * projection satisfy, so form serialization and field rendering share one rule.
+ */
+export function oauthClientInputs(oauth: {
+  client?: { id?: { defaultValue?: string; input?: string }; secret?: { input?: string } }
+}): OAuthClientInput[] {
+  const out: OAuthClientInput[] = []
   const id = oauth.client?.id
   if (id?.input) {
     out.push({
       key: id.input,
       defaultValue: id.defaultValue,
       required: !id.defaultValue,
+      secret: false,
     })
   }
   const secret = oauth.client?.secret
-  if (secret?.input) out.push({ key: secret.input, required: true })
+  if (secret?.input) out.push({ key: secret.input, required: true, secret: true })
   return out
 }
 

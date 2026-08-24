@@ -5,6 +5,7 @@ import { TextInput } from '@/wax/components/inputs/text'
 
 import { Markdown } from '@/components/markdown'
 import { OAuthFields, type OAuthField } from '@/components/sources/install/oauth-fields'
+import { oauthClientInputs } from '@/lib/source-install-form'
 import type {
   CatalogOAuthCredentialMethod,
   CatalogSourceCredentialMethod,
@@ -267,7 +268,7 @@ function CredentialMethodFields({
     return (
       <OAuthFields
         disabled={disabled}
-        fields={oauthInputs(method.method.value)}
+        fields={oauthFields(method.method.value)}
         inputKey={inputKey}
         onValueChange={onValueChange}
         values={values}
@@ -285,39 +286,19 @@ function methodLabel(method: CatalogSourceCredentialMethod, index: number): stri
   return `Method ${index + 1}`
 }
 
-interface OAuthInput extends OAuthField {
-  required: boolean
-}
-
-function oauthInputs(oauth: CatalogOAuthCredentialMethod): OAuthInput[] {
-  const out: OAuthInput[] = []
-  const id = oauth.client?.id
-  if (id?.input) {
-    out.push({
-      key: id.input,
-      label: formatFieldName(id.input),
-      secret: false,
-      defaultValue: id.defaultValue,
-      required: !id.defaultValue,
-    })
-  }
-  const secret = oauth.client?.secret
-  if (secret?.input) {
-    out.push({
-      key: secret.input,
-      label: formatFieldName(secret.input),
-      secret: true,
-      required: true,
-    })
-  }
-  return out
+/** Labels the shared client-input rule for display. */
+function oauthFields(oauth: CatalogOAuthCredentialMethod): OAuthField[] {
+  return oauthClientInputs(oauth).map((input) => ({
+    ...input,
+    label: formatFieldName(input.key),
+  }))
 }
 
 function oauthMethodReady(
   oauth: CatalogOAuthCredentialMethod,
   values: Record<string, string>,
 ): boolean {
-  return oauthInputs(oauth).every((input) => {
+  return oauthClientInputs(oauth).every((input) => {
     if (!input.required) return true
     return (values[input.key] ?? input.defaultValue ?? '').trim().length > 0
   })
@@ -329,7 +310,7 @@ function credentialMethodValueKeys(input: CatalogSourceInputSpec, methodIndex: n
   const method = input.input.value.credential?.methods[methodIndex]
   if (!method || method.method.case === 'sourceConfig') return [input.key]
   if (method.method.case === 'oauth') {
-    return oauthInputs(method.method.value).map((field) => field.key)
+    return oauthClientInputs(method.method.value).map((field) => field.key)
   }
   return []
 }

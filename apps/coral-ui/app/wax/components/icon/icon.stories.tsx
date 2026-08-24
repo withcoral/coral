@@ -43,6 +43,7 @@ const productIconNames = [
   'Copy',
   'Coral',
   'ExternalLink',
+  'FileCode',
   'Eye',
   'EyeOff',
   'Info',

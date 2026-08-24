@@ -38,6 +38,7 @@ import { EllipsisIcon } from '@/wax/components/icon/custom-icons/ellipsis'
 import { ExternalLinkIcon } from '@/wax/components/icon/custom-icons/external-link'
 import { EyeIcon } from '@/wax/components/icon/custom-icons/eye'
 import { EyeOffIcon } from '@/wax/components/icon/custom-icons/eye-off'
+import { FileCodeIcon } from '@/wax/components/icon/custom-icons/file-code'
 import { FlagIcon } from '@/wax/components/icon/custom-icons/flag'
 import { FolderIcon } from '@/wax/components/icon/custom-icons/folder'
 import { FoldersIcon } from '@/wax/components/icon/custom-icons/folders'
@@ -133,6 +134,7 @@ export const customIcons = {
   ExternalLink: ExternalLinkIcon,
   Eye: EyeIcon,
   EyeOff: EyeOffIcon,
+  FileCode: FileCodeIcon,
   Flag: FlagIcon,
   Folder: FolderIcon,
   Folders: FoldersIcon,
