@@ -731,9 +731,15 @@ pub(crate) mod tests {
         let rotating_provider = Arc::new(MutationKeyProvider::new(vec![old_key, new_key]));
         let manager = IdentitySpecManager::new(Arc::clone(db), rotating_provider.clone());
         assert!(
-            mutate(&manager, IdentitySpecScope::global(), &name, "v2", &[],)
-                .await
-                .1
+            mutate(
+                &manager,
+                IdentitySpecScope::global(),
+                &name,
+                "v2",
+                &[("CLIENT_SECRET", "global-secret")],
+            )
+            .await
+            .1
         );
         assert_exact(&manager, &global_key, "tenant-v2", "global-secret").await;
         assert_eq!(
@@ -885,7 +891,10 @@ pub(crate) mod tests {
                 left.add_or_replace_exact(
                     IdentitySpecScope::global(),
                     &manifest,
-                    vec![IdentitySpecInputValue::new("TENANT", "left")],
+                    vec![
+                        IdentitySpecInputValue::new("TENANT", "left"),
+                        IdentitySpecInputValue::new("CLIENT_SECRET", "right"),
+                    ],
                 ),
                 right.add_or_replace_exact(
                     IdentitySpecScope::global(),
