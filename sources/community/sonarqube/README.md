@@ -32,7 +32,7 @@ export SONARQUBE_API_BASE="https://sonarcloud.io/api" # Or your self-hosted URL
 coral source add --file sources/community/sonarqube/manifest.yaml
 
 # Test the connection by running a simple query
-coral sql "SELECT * FROM sonar.metrics_catalog LIMIT 5"
+coral sql "SELECT * FROM sonarqube.metrics_catalog LIMIT 5"
 ```
 
 ## Available Tables
@@ -68,14 +68,14 @@ Once loaded into Coral with your `SONARQUBE_API_KEY` set in your environment, yo
 **Get all issues for a specific project (SonarCloud uses `component_keys`, self-hosted uses `components`):**
 ```sql
 SELECT key, message, severity, status
-FROM sonar.issues
+FROM sonarqube.issues
 WHERE component_keys = 'my-project-key';
 ```
 
 **Find security hotspots (SonarCloud):**
 ```sql
 SELECT message, vulnerability_probability
-FROM sonar.hotspots_cloud
+FROM sonarqube.hotspots_cloud
 WHERE project_key = 'my-project-key';
 ```
 
@@ -83,5 +83,5 @@ WHERE project_key = 'my-project-key';
 *(Note: SonarCloud does not expose this endpoint. It is only available for self-hosted SonarQube Server instances.)*
 ```sql
 SELECT login, name, email
-FROM sonar.users;
+FROM sonarqube.users;
 ```

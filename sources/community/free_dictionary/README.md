@@ -7,7 +7,7 @@ Query English word definitions, phonetics, and meanings using the [Free Dictiona
 No API key or authentication is needed. Add the source directly:
 
 ```bash
-coral source add --file sources/community/free-dictionary/manifest.yaml
+coral source add --file sources/community/free_dictionary/manifest.yaml
 ```
 
 ## Unknown Words

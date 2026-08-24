@@ -7,7 +7,7 @@ Real-time data about the International Space Station and astronauts in space fro
 No authentication is required. Add the source:
 
 ```bash
-coral source add --file sources/community/open-notify/manifest.yaml
+coral source add --file sources/community/open_notify/manifest.yaml
 ```
 
 ## Local Testing

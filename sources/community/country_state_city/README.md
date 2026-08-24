@@ -8,7 +8,7 @@ This source requires a free API key from countrystatecity.in.
 Provide it during setup:
 
 ```bash
-coral source add --file sources/community/country-state-city/manifest.yaml --interactive
+coral source add --file sources/community/country_state_city/manifest.yaml --interactive
 ```
 *(When prompted for `api_key`, paste your `X-CSCAPI-KEY` value.)*
 

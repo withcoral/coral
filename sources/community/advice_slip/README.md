@@ -7,7 +7,7 @@ Generate random advice or search for specific advice using the [Advice Slip API]
 No authentication is required. Add the source:
 
 ```bash
-coral source add --file sources/community/advice-slip/manifest.yaml
+coral source add --file sources/community/advice_slip/manifest.yaml
 ```
 
 ## Local Testing
