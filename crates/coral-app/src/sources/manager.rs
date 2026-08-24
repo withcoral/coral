@@ -419,11 +419,8 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         command: &ImportSourceCommand,
     ) -> Result<InstalledSource, AppError> {
-        let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
-        let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
-        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        let (manifest_yaml, candidate) =
+            self.prepare_imported_manifest(workspace_name, &command.manifest_yaml)?;
         self.install_validated_source(
             workspace_name,
             &candidate,
@@ -441,11 +438,8 @@ impl SourceManager {
         command: ImportSourceWithCredentialsCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
-        let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
-        let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
-        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        let (manifest_yaml, candidate) =
+            self.prepare_imported_manifest(workspace_name, &command.manifest_yaml)?;
         self.install_source_with_oauth(
             workspace_name.clone(),
             revision,
@@ -739,6 +733,24 @@ impl SourceManager {
         Ok(removed)
     }
 
+    /// Parses one imported manifest and describes what installing it would
+    /// produce: the canonicalized YAML that gets persisted, and the candidate it
+    /// describes. Preview and both install paths share this so a preview cannot
+    /// describe a source that the install then builds differently.
+    fn prepare_imported_manifest(
+        &self,
+        workspace_name: &WorkspaceName,
+        manifest_yaml: &str,
+    ) -> Result<(String, CandidateSource), AppError> {
+        let manifest = parse_source_manifest_yaml(manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let manifest_yaml = durable_import_manifest_yaml(manifest_yaml, &manifest)?;
+        let mut candidate =
+            describe_manifest(manifest_yaml.as_str(), SourceOrigin::Imported, false)?;
+        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        Ok((manifest_yaml, candidate))
+    }
+
     /// Describes one user-supplied manifest without installing it. Import applies
     /// the same descriptor canonicalization, so running it here surfaces a relative
     /// file descriptor while the user still has the manifest in front of them.
@@ -747,12 +759,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         manifest_yaml: &str,
     ) -> Result<CandidateSource, AppError> {
-        let manifest = parse_source_manifest_yaml(manifest_yaml)
-            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-        let manifest_yaml = durable_import_manifest_yaml(manifest_yaml, &manifest)?;
-        let mut candidate =
-            describe_manifest(manifest_yaml.as_str(), SourceOrigin::Imported, false)?;
-        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        let (_, candidate) = self.prepare_imported_manifest(workspace_name, manifest_yaml)?;
         Ok(candidate)
     }
 
