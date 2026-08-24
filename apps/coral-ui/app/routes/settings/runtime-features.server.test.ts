@@ -1,4 +1,5 @@
 import { create } from '@bufbuild/protobuf'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { describe, expect, it, vi } from 'vitest'
 
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
@@ -105,6 +106,19 @@ describe('runtime features action', () => {
       expect.objectContaining({ enabled: false, key: 'feedback' }),
       expect.anything(),
     )
+  })
+
+  // Features belong to the host, so on a shared deployment every write is
+  // refused for the same reason. The page turns that into a read-only view, and
+  // it can only do so if the refusal arrives as its own outcome rather than as
+  // one more per-row error message.
+  it('reports a refused write as host-managed rather than as an error', async () => {
+    setFeature.mockRejectedValue(new ConnectError('host only', Code.PermissionDenied))
+    featureClientForRequest.mockReturnValue({ setFeature })
+
+    const result = await action(authRouteTestArgs(toggleRequest('feedback', 'true'), {}))
+
+    expect(result).toEqual({ key: 'feedback', status: 'host-managed' })
   })
 
   it('returns a write error as data rather than throwing', async () => {

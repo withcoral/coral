@@ -1,5 +1,6 @@
 import { create } from '@bufbuild/protobuf'
-import { useFetcher } from 'react-router'
+import { Code, ConnectError } from '@connectrpc/connect'
+import { useFetcher, useFetchers } from 'react-router'
 
 import type { Route } from './+types/runtime-features'
 
@@ -29,6 +30,13 @@ const RESTART_MESSAGE = isCoralDesktopBuild()
   ? 'Coral is running with different settings. Quit and reopen Coral to apply your changes.'
   : 'Coral is running with different settings. Restart the Coral server to apply your changes.'
 
+// Features belong to the machine running Coral, not to any workspace, so a
+// shared deployment lets everyone read the state and nobody change it. The
+// server is the only place that knows which of the two this is, and it says so
+// by refusing the write.
+const HOST_MANAGED_MESSAGE =
+  'Runtime features are configured on the host that runs this Coral server. You can see what is on here, but changing it has to happen on the host.'
+
 export interface RuntimeFeaturesRouteData {
   features: RuntimeFeatureListItem[]
   loadError: string | null
@@ -38,6 +46,7 @@ export interface RuntimeFeaturesRouteData {
 
 export type RuntimeFeaturesActionData =
   | { key: string; message: string; status: 'error' }
+  | { key: string; status: 'host-managed' }
   | { key: string; status: 'success' }
 
 export async function action({
@@ -56,6 +65,11 @@ export async function action({
     )
     return { key, status: 'success' }
   } catch (error) {
+    // A refused write is not a failure to report row by row: it says this
+    // whole page is a read-only view of somebody else's machine.
+    if (error instanceof ConnectError && error.code === Code.PermissionDenied) {
+      return { key, status: 'host-managed' }
+    }
     return { key, message: errorMessage(error), status: 'error' }
   }
 }
@@ -84,6 +98,7 @@ export async function loader({
 
 export default function RuntimeFeaturesRoute({ loaderData }: Route.ComponentProps) {
   const { features, loadError, restartPending } = loaderData
+  const hostManaged = useHostManaged()
 
   return (
     <SettingsPage
@@ -91,16 +106,21 @@ export default function RuntimeFeaturesRoute({ loaderData }: Route.ComponentProp
         <div className={styles.headerText}>
           <Typography.HeadingLarge as="h1">Features</Typography.HeadingLarge>
           <Typography.Body variant="secondary">
-            Turn experimental Coral capabilities on or off for this machine. Changes are saved right
-            away and apply the next time Coral starts.
+            {hostManaged
+              ? 'Experimental Coral capabilities this server is running with.'
+              : 'Turn experimental Coral capabilities on or off for this machine. Changes are saved right away and apply the next time Coral starts.'}
           </Typography.Body>
         </div>
       }
     >
+      {hostManaged && <Banner>{HOST_MANAGED_MESSAGE}</Banner>}
+
       <RuntimeFeaturesList
         error={loadError ?? undefined}
         features={features}
-        renderRow={(feature) => <RuntimeFeatureToggleRow feature={feature} />}
+        renderRow={(feature) => (
+          <RuntimeFeatureToggleRow feature={feature} readOnly={hostManaged} />
+        )}
       />
 
       {/* Below the list, so appearing after a toggle grows into empty page space
@@ -113,7 +133,13 @@ export default function RuntimeFeaturesRoute({ loaderData }: Route.ComponentProp
 // Every row writes through its own fetcher. React Router aborts the request in
 // flight when the same fetcher submits again, so one fetcher for the whole page
 // would drop the first toggle when a reader moves two switches in a row.
-function RuntimeFeatureToggleRow({ feature }: { feature: RuntimeFeatureListItem }) {
+function RuntimeFeatureToggleRow({
+  feature,
+  readOnly,
+}: {
+  feature: RuntimeFeatureListItem
+  readOnly: boolean
+}) {
   const fetcher = useFetcher<RuntimeFeaturesActionData>({ key: fetcherKey(feature.key) })
   // The switch has to move on click, but the value it settles on comes from the
   // server. Read the in-flight submission so the row does not snap back while
@@ -131,14 +157,28 @@ function RuntimeFeatureToggleRow({ feature }: { feature: RuntimeFeatureListItem 
         fetcher.submit({ enabled: String(next), key: feature.key }, { method: 'post' })
       }
       pending={fetcher.state !== 'idle'}
+      readOnly={readOnly}
     />
+  )
+}
+
+// One refused write settles the whole page: the server refuses on who is
+// asking, not on which feature was asked for. Every row writes through its own
+// fetcher, so the answer is read back out of whichever row was toggled.
+function useHostManaged(): boolean {
+  return useFetchers().some(
+    (fetcher) =>
+      fetcher.key.startsWith(FETCHER_KEY_PREFIX) &&
+      (fetcher.data as RuntimeFeaturesActionData | undefined)?.status === 'host-managed',
   )
 }
 
 // Fetcher keys are global to the app, so the feature key alone is not enough to
 // keep this page's writes apart from anyone else's.
+const FETCHER_KEY_PREFIX = 'runtime-feature:'
+
 function fetcherKey(featureKey: string): string {
-  return `runtime-feature:${featureKey}`
+  return `${FETCHER_KEY_PREFIX}${featureKey}`
 }
 
 export function toRuntimeFeature(feature: FeatureStatus): RuntimeFeatureListItem {

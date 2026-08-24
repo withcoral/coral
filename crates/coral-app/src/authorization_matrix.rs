@@ -33,9 +33,9 @@ pub(crate) enum Classification {
     /// No principal is required. Reserved for the transport's own liveness
     /// surface, which must answer before authentication exists to fail.
     Open,
-    /// Any admitted caller, answered only about themselves. The response is
-    /// filtered to the caller's own rows, so there is nothing further to
-    /// authorize.
+    /// Any admitted caller, with nothing further to authorize: either the
+    /// response is filtered to the caller's own rows, or it holds nothing that
+    /// differs between callers.
     SelfScoped,
     /// Any admitted caller that is a person rather than an agent credential.
     /// Agents are excluded because the act creates authority rather than
@@ -95,8 +95,12 @@ pub(crate) const AUTHORIZATION_MATRIX: &[RpcRule] = &[
     rule("coral.v1.CatalogService", "DescribeCatalogSurface", Read),
     rule("coral.v1.CatalogService", "ListColumns", Read),
     // Feature flags are host-global rather than workspace-scoped: there is no
-    // workspace whose owner could be entitled to them.
-    rule("coral.v1.FeatureService", "ListFeatures", LocalOnly),
+    // workspace whose owner could be entitled to them. Reading is `SelfScoped`
+    // in the sense that admission is the whole check — the listing carries the
+    // same keys, descriptions, and enabled state for every caller, and a page
+    // that cannot read it cannot say why its switches do nothing. Changing
+    // them is what stays with the host.
+    rule("coral.v1.FeatureService", "ListFeatures", SelfScoped),
     rule("coral.v1.FeatureService", "SetFeature", LocalOnly),
     rule("coral.v1.FeedbackService", "SubmitFeedback", Read),
     // Listing and using functions is reading; changing the function set
@@ -276,21 +280,27 @@ mod tests {
     }
 
     /// Feature state is host-global, and a shared deployment has no superuser
-    /// to entrust it to, so it stays with the local principal.
+    /// to entrust it to, so *changing* it stays with the local principal.
+    /// Reading it does not: the page that renders the switches has to say
+    /// which ones are on. The split is asserted rather than assumed, so
+    /// widening the mutation half would have to be written down here first.
     #[test]
-    fn every_feature_rpc_is_local_only() {
+    fn only_changing_a_feature_is_local_only() {
         let features: Vec<&super::RpcRule> = AUTHORIZATION_MATRIX
             .iter()
             .filter(|rule| rule.service == "coral.v1.FeatureService")
             .collect();
         assert!(!features.is_empty(), "the feature service lost its rules");
         for rule in features {
+            let expected = match rule.method {
+                "SetFeature" => Classification::LocalOnly,
+                "ListFeatures" => Classification::SelfScoped,
+                method => panic!("the feature service gained {method} without a decision"),
+            };
             assert_eq!(
-                rule.classification,
-                Classification::LocalOnly,
-                "{}/{} escaped the local principal",
-                rule.service,
-                rule.method
+                rule.classification, expected,
+                "{}/{} no longer answers to the rule it was split under",
+                rule.service, rule.method
             );
         }
     }

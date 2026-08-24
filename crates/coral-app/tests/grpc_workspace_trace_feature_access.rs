@@ -461,8 +461,11 @@ async fn a_non_members_trace_refusals_read_exactly_like_an_absent_workspace() {
 }
 
 /// Runtime features configure the machine this server runs on, so a shared
-/// deployment has nobody to entrust them to: neither a person nor their agent
-/// reaches either RPC, whatever workspaces they own.
+/// deployment has nobody to entrust the *configuring* to: neither a person nor
+/// their agent changes one, whatever workspaces they own. Reading the same
+/// state is not host-global — the settings page has to say which features are
+/// on before it can explain that they are the host's to change — so both of
+/// them still list it.
 ///
 /// The probe key is what makes each refusal an absence rather than an error
 /// code: `nope` is a key the registry itself would reject, so a caller who
@@ -478,10 +481,11 @@ async fn no_shared_credential_configures_this_hosts_runtime_features() {
     let owners_agent = agent(&deployment, "agent-tf-features").await;
 
     for (who, caller) in [("an owner", &owner), ("their agent", &owners_agent)] {
-        assert_eq!(
-            refusal(caller.list_features().await),
-            Code::PermissionDenied,
-            "{who} listed this host's features",
+        assert!(
+            caller.list_features().await.unwrap_or_else(|status| panic!(
+                "{who} could not read the feature state: {status}"
+            )) > 0,
+            "{who} was shown an empty feature registry",
         );
         assert_eq!(
             refusal(caller.set_feature(UNKNOWN_FEATURE).await),

@@ -8,9 +8,9 @@ use coral_api::v1::{
 };
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::{AppError, app_status};
+use crate::bootstrap::app_status;
 use crate::features::{FeatureConfiguredState, FeatureStatus, FeatureStore, Features};
-use crate::identity::{LOCAL_PRINCIPAL_ID, Principal};
+use crate::identity::Principal;
 use crate::transport::{grpc_span, instrument_grpc, request_context};
 use crate::workspaces::authorization::WorkspaceAuthorizer;
 
@@ -40,20 +40,17 @@ impl FeatureService {
         }
     }
 
-    /// Settles access to host-global feature state.
+    /// Settles who may change host-global feature state.
     ///
     /// Features configure the machine this server runs on rather than any one
-    /// workspace, so no workspace role can entitle a caller to them and a
-    /// shared deployment has no superuser to entrust them to. Only the
-    /// built-in local principal reaches them, and only where the deployment
-    /// admits that principal at all.
+    /// workspace, so no workspace role can entitle a caller to change them and
+    /// a shared deployment has no superuser to entrust them to. The rule
+    /// itself lives with its siblings on the authorizer; this is only where
+    /// its refusal becomes a gRPC status.
     fn authorize_host_global(&self, principal: &Principal) -> Result<(), Status> {
-        if principal.id().as_str() != LOCAL_PRINCIPAL_ID {
-            return Err(app_status(AppError::PermissionDenied(
-                "runtime features are configured on the host that runs this server".to_string(),
-            )));
-        }
-        self.authorizer.admit(principal).map_err(app_status)
+        self.authorizer
+            .authorize_host_global(principal)
+            .map_err(app_status)
     }
 
     fn status_to_proto(&self, status: &FeatureStatus) -> ProtoFeatureStatus {
@@ -77,10 +74,14 @@ impl FeatureServiceApi for FeatureService {
         let span = grpc_span(&request);
         let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
-            // Settled before the feature store is read at all: a caller this
-            // deployment does not entrust with host state learns nothing from
-            // it, not even whether its config file parses.
-            self.authorize_host_global(&principal)?;
+            // Reading is open to every caller this deployment admits: the
+            // response carries the same feature keys, descriptions, and
+            // enabled state for all of them, and a page that cannot read it
+            // cannot explain why its switches do nothing. Changing that state
+            // is what stays with the host. Settled before the feature store is
+            // read at all, so an unadmitted caller learns nothing from it, not
+            // even whether its config file parses.
+            self.authorizer.admit(&principal).map_err(app_status)?;
             let features = self
                 .store
                 .statuses()
@@ -354,19 +355,19 @@ mod tests {
         assert!(status.message().contains("unknown feature 'nope'"));
     }
 
-    /// Host-global state has no workspace to scope to, so it reaches only the
-    /// local principal, and only where the deployment admits it: a federated
-    /// caller is refused even under the policy that hands `coral:local`
-    /// everything, and `coral:local` itself is refused on a shared deployment.
+    /// Changing feature state has no workspace to scope to, so it reaches only
+    /// the local principal, and only where the deployment admits it: a
+    /// federated caller is refused even under the policy that hands
+    /// `coral:local` everything, and `coral:local` itself is refused on a
+    /// shared deployment.
     ///
     /// The probes are what make each refusal an absence rather than an error
-    /// code: the config file is unparseable, so a read would choke on it, and
-    /// `nope` is a key the registry would reject. Every refusal answers
-    /// `PermissionDenied` instead, the file keeps the bytes it started with,
-    /// and the admitted caller does hit the parse failure — which is what
-    /// proves the others never attempted the read.
+    /// code: `nope` is a key the registry would reject, and the config file is
+    /// unparseable, so a caller that reached the store at all would choke on
+    /// it. Every refusal answers `PermissionDenied` instead and the file keeps
+    /// the bytes it started with.
     #[tokio::test]
-    async fn feature_state_reaches_only_a_local_principal_the_deployment_admits() {
+    async fn changing_feature_state_reaches_only_a_local_principal_the_deployment_admits() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("config");
         std::fs::create_dir_all(&config_dir).expect("create config dir");
@@ -391,14 +392,6 @@ mod tests {
         ] {
             assert_eq!(
                 service
-                    .list_features(request(ListFeaturesRequest {}, principal.clone()))
-                    .await
-                    .expect_err("this caller inspects nothing")
-                    .code(),
-                Code::PermissionDenied
-            );
-            assert_eq!(
-                service
                     .set_feature(request(
                         SetFeatureRequest {
                             key: "nope".to_string(),
@@ -417,13 +410,53 @@ mod tests {
             "[features\n",
             "a refused caller must not have rewritten the host's config"
         );
+    }
+
+    /// Reading feature state is the half that is not host-global: the page
+    /// that shows the switches has to say which ones are on, so every caller
+    /// this deployment admits reaches it. Hitting the unparseable file is what
+    /// proves the read was attempted rather than refused early — and the
+    /// principal the deployment does not admit is still turned away before it.
+    #[tokio::test]
+    async fn listing_feature_state_reaches_every_caller_the_deployment_admits() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(config_dir.join("config.toml"), "[features\n")
+            .expect("write unparseable config");
+        let someone = Principal::parse("someone", PrincipalKind::User).expect("federated user");
+        let single_user = service_for(
+            &config_dir,
+            Features::default(),
+            local_authorizer(&temp).await,
+        );
+        let shared = service_for(
+            &config_dir,
+            Features::default(),
+            authorizer_with(&temp, LocalPrincipalPolicy::NoLocalPrincipal).await,
+        );
+
+        for (service, principal) in [
+            (&single_user, someone.clone()),
+            (&single_user, Principal::local()),
+            (&shared, someone),
+        ] {
+            assert_eq!(
+                service
+                    .list_features(request(ListFeaturesRequest {}, principal))
+                    .await
+                    .expect_err("an admitted caller reaches the file")
+                    .code(),
+                Code::Internal
+            );
+        }
         assert_eq!(
-            single_user
+            shared
                 .list_features(local(ListFeaturesRequest {}))
                 .await
-                .expect_err("the admitted local principal does reach the file")
+                .expect_err("a shared deployment admits the local principal to nothing")
                 .code(),
-            Code::Internal
+            Code::PermissionDenied
         );
     }
 }

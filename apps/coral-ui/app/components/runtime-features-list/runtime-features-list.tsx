@@ -21,6 +21,8 @@ export interface RuntimeFeatureRowProps {
   readonly feature: RuntimeFeatureListItem
   readonly onToggle: (enabled: boolean) => void
   readonly pending?: boolean
+  /** Whether this feature is somebody else's to change, leaving the row a view of it. */
+  readonly readOnly?: boolean
 }
 
 export interface RuntimeFeaturesListProps {
@@ -67,6 +69,7 @@ export function RuntimeFeatureRow({
   feature,
   onToggle,
   pending = false,
+  readOnly = false,
 }: RuntimeFeatureRowProps) {
   return (
     <Table.Row>
@@ -87,7 +90,7 @@ export function RuntimeFeatureRow({
         <Inputs.Switch
           aria-label={feature.label}
           checked={feature.enabled}
-          disabled={pending}
+          disabled={pending || readOnly}
           onCheckedChange={onToggle}
         />
       </Table.Cell>
