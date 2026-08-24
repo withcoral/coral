@@ -541,10 +541,20 @@ pub(crate) async fn membership_rows(client: &AppClient) -> Vec<(String, Workspac
 /// workspace name they supplied themselves factored out, and the structured
 /// reasons. Two refusals that agree here are indistinguishable to that caller,
 /// which is what separates a concealed workspace from a denial confirming one.
+/// Reduces a refusal to what it says about a workspace, with the workspace's
+/// own name removed so two refusals can be compared.
+///
+/// Only the quoted occurrence is replaced. A bare substring replacement also
+/// rewrites the name where it sits inside another identifier, which can make
+/// two genuinely different refusals compare equal — and this comparison is the
+/// whole assertion, so a false match would report concealment that is not
+/// there.
 pub(crate) fn concealed_refusal(status: &Status, name: &str) -> (Code, String, Vec<String>) {
     (
         status.code(),
-        status.message().replace(name, "<workspace>"),
+        status
+            .message()
+            .replace(&format!("'{name}'"), "'<workspace>'"),
         status
             .get_error_details_vec()
             .iter()

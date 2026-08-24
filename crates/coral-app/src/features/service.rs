@@ -414,9 +414,12 @@ mod tests {
 
     /// Reading feature state is the half that is not host-global: the page
     /// that shows the switches has to say which ones are on, so every caller
-    /// this deployment admits reaches it. Hitting the unparseable file is what
-    /// proves the read was attempted rather than refused early — and the
-    /// principal the deployment does not admit is still turned away before it.
+    /// this deployment admits reaches it. A well-formed config proves the read
+    /// answers rather than merely passing the gate, and the unparseable one
+    /// proves the read was attempted rather than refused early — a refusal and
+    /// a broken listing would otherwise be indistinguishable here. The
+    /// principal the deployment does not admit is still turned away before
+    /// either.
     #[tokio::test]
     async fn listing_feature_state_reaches_every_caller_the_deployment_admits() {
         let temp = TempDir::new().expect("temp dir");
@@ -457,6 +460,34 @@ mod tests {
                 .expect_err("a shared deployment admits the local principal to nothing")
                 .code(),
             Code::PermissionDenied
+        );
+
+        // Reaching the read is not the same as the read working: with the file
+        // readable, an admitted caller must actually be answered, or a listing
+        // broken anywhere past the gate would still satisfy everything above.
+        let readable = TempDir::new().expect("temp dir");
+        let readable_dir = readable.path().join("config");
+        std::fs::create_dir_all(&readable_dir).expect("create config dir");
+        let service = service_for(
+            &readable_dir,
+            Features::default(),
+            authorizer_with(&readable, LocalPrincipalPolicy::NoLocalPrincipal).await,
+        );
+        let listed = service
+            .list_features(request(
+                ListFeaturesRequest {},
+                Principal::parse("someone", PrincipalKind::User).expect("federated user"),
+            ))
+            .await
+            .expect("an admitted caller is answered")
+            .into_inner();
+        assert!(
+            !listed.features.is_empty(),
+            "the listing must carry the features this build ships"
+        );
+        assert!(
+            listed.features.iter().all(|status| !status.key.is_empty()),
+            "every listed feature must name itself"
         );
     }
 }
