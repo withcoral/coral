@@ -12,6 +12,7 @@ use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::search_service_client::SearchServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::v1::task_service_client::TaskServiceClient;
+use coral_api::v1::workspace_identity_service_client::WorkspaceIdentityServiceClient;
 use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
@@ -65,6 +66,9 @@ pub type IdentitySpecClient = IdentitySpecServiceClient<GrpcService>;
 /// Public current-user stored-identity gRPC client.
 pub type IdentityClient = IdentityServiceClient<GrpcService>;
 
+/// Public workspace-owned stored-identity gRPC client.
+pub type WorkspaceIdentityClient = WorkspaceIdentityServiceClient<GrpcService>;
+
 /// Public catalog-discovery gRPC client.
 pub type CatalogClient = CatalogServiceClient<GrpcService>;
 
@@ -95,6 +99,7 @@ pub struct AppClient {
     workspace: WorkspaceClient,
     identity_spec: IdentitySpecClient,
     identity: IdentityClient,
+    workspace_identity: WorkspaceIdentityClient,
     catalog: CatalogClient,
     query: QueryClient,
     search: SearchClient,
@@ -222,6 +227,12 @@ impl AppClient {
             static_metadata.clone(),
         ))
         .max_decoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE);
+        let workspace_identity_client = WorkspaceIdentityClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ))
+        .max_decoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE);
         let catalog_client = CatalogClient::new(grpc_service(
             channel.clone(),
             &grpc_endpoint,
@@ -263,6 +274,7 @@ impl AppClient {
             workspace: workspace_client,
             identity_spec: identity_spec_client,
             identity: identity_client,
+            workspace_identity: workspace_identity_client,
             catalog: catalog_client,
             query: query_client,
             search: search_client,
@@ -295,6 +307,12 @@ impl AppClient {
     /// Returns a cloned current-user stored-identity client.
     pub fn identity_client(&self) -> IdentityClient {
         self.identity.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned workspace-owned stored-identity client.
+    pub fn workspace_identity_client(&self) -> WorkspaceIdentityClient {
+        self.workspace_identity.clone()
     }
 
     #[must_use]
@@ -470,14 +488,21 @@ mod tests {
     use coral_api::v1::identity_spec_service_server::{
         IdentitySpecService, IdentitySpecServiceServer,
     };
+    use coral_api::v1::workspace_identity_service_server::{
+        WorkspaceIdentityService, WorkspaceIdentityServiceServer,
+    };
     use coral_api::v1::{
         AddIdentitySpecRequest, AddIdentitySpecResponse, CreateUserOwnedFixedTokenIdentityRequest,
-        CreateUserOwnedFixedTokenIdentityResponse, DeleteIdentitySpecRequest,
+        CreateUserOwnedFixedTokenIdentityResponse, CreateWorkspaceOwnedFixedTokenIdentityRequest,
+        CreateWorkspaceOwnedFixedTokenIdentityResponse, DeleteIdentitySpecRequest,
         DeleteIdentitySpecResponse, DeleteUserOwnedIdentityRequest,
-        DeleteUserOwnedIdentityResponse, GetIdentitySpecRequest, GetIdentitySpecResponse,
-        GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse, Identity, IdentitySpecReference,
-        IdentitySpecSummary, ListIdentitySpecsRequest, ListIdentitySpecsResponse,
-        ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
+        DeleteUserOwnedIdentityResponse, DeleteWorkspaceOwnedIdentityRequest,
+        DeleteWorkspaceOwnedIdentityResponse, GetIdentitySpecRequest, GetIdentitySpecResponse,
+        GetUserOwnedIdentityRequest, GetUserOwnedIdentityResponse,
+        GetWorkspaceOwnedIdentityRequest, GetWorkspaceOwnedIdentityResponse, Identity,
+        IdentitySpecReference, IdentitySpecSummary, ListIdentitySpecsRequest,
+        ListIdentitySpecsResponse, ListUserOwnedIdentitiesRequest, ListUserOwnedIdentitiesResponse,
+        ListWorkspaceOwnedIdentitiesRequest, ListWorkspaceOwnedIdentitiesResponse,
     };
     use coral_api::v1::{SubmitFeedbackRequest, SubmitFeedbackResponse};
     use opentelemetry::trace::TracerProvider as _;
@@ -782,6 +807,39 @@ mod tests {
         }
     }
 
+    #[tonic::async_trait]
+    impl WorkspaceIdentityService for LargeIdentityFixture {
+        async fn create_workspace_owned_fixed_token_identity(
+            &self,
+            _request: Request<CreateWorkspaceOwnedFixedTokenIdentityRequest>,
+        ) -> Result<Response<CreateWorkspaceOwnedFixedTokenIdentityResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+
+        async fn list_workspace_owned_identities(
+            &self,
+            _request: Request<ListWorkspaceOwnedIdentitiesRequest>,
+        ) -> Result<Response<ListWorkspaceOwnedIdentitiesResponse>, Status> {
+            Ok(Response::new(ListWorkspaceOwnedIdentitiesResponse {
+                identities: large_identities(),
+            }))
+        }
+
+        async fn get_workspace_owned_identity(
+            &self,
+            _request: Request<GetWorkspaceOwnedIdentityRequest>,
+        ) -> Result<Response<GetWorkspaceOwnedIdentityResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+
+        async fn delete_workspace_owned_identity(
+            &self,
+            _request: Request<DeleteWorkspaceOwnedIdentityRequest>,
+        ) -> Result<Response<DeleteWorkspaceOwnedIdentityResponse>, Status> {
+            Err(Status::unimplemented("fixture only supports listing"))
+        }
+    }
+
     fn assert_large_identity_aggregate(identities: &[Identity]) {
         assert_eq!(identities.len(), SPEC_COUNT);
         let issuer_bytes = identities
@@ -852,7 +910,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_client_decodes_large_identity_aggregates() {
+    async fn app_client_decodes_large_identity_aggregates_for_both_owner_services() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind identity fixture");
@@ -861,6 +919,10 @@ mod tests {
             Server::builder()
                 .add_service(
                     IdentityServiceServer::new(LargeIdentityFixture)
+                        .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
+                )
+                .add_service(
+                    WorkspaceIdentityServiceServer::new(LargeIdentityFixture)
                         .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
                 )
                 .serve_with_incoming(TcpListenerStream::new(listener))
@@ -877,6 +939,14 @@ mod tests {
             .expect("decode current-user identity aggregate")
             .into_inner();
         assert_large_identity_aggregate(&user.identities);
+
+        let workspace = app_client
+            .workspace_identity_client()
+            .list_workspace_owned_identities(ListWorkspaceOwnedIdentitiesRequest::default())
+            .await
+            .expect("decode workspace identity aggregate")
+            .into_inner();
+        assert_large_identity_aggregate(&workspace.identities);
         server.abort();
     }
 }
