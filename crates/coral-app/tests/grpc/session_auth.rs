@@ -6,6 +6,7 @@
 //! stub that agrees with neither.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -49,6 +50,12 @@ impl SessionAuthFixture {
         let key_file = config_dir.join("session.key");
         let signing_key = match fs::read(&key_file) {
             Ok(existing) => existing,
+            // Only an absent key may be minted. Any other fault would replace a
+            // key that is still in use, invalidating the tokens minted from it
+            // and surfacing far away as an authentication failure.
+            Err(fault) if fault.kind() != io::ErrorKind::NotFound => {
+                panic!("read the session signing key: {fault}")
+            }
             Err(_absent) => {
                 let generated = EcdsaKeyPair::generate_pkcs8(
                     &ECDSA_P256_SHA256_FIXED_SIGNING,
