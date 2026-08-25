@@ -20,8 +20,9 @@ These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
 
 ## Global workspace selection
 
-Commands that operate on local source state target the `default` workspace
-unless you select another workspace.
+Commands that operate on local source state run against the workspace you
+select. A fresh install has no workspaces, so create one with
+`coral workspace create <NAME>` before running them.
 
 ```shellscript
 coral --workspace work source list
@@ -33,6 +34,8 @@ CORAL_WORKSPACE=work coral sql "select * from coral.tables"
 The `--workspace <NAME>` flag overrides `CORAL_WORKSPACE` for that process.
 Coral does not persist a separate active-workspace setting; set
 `CORAL_WORKSPACE` in your shell when you want a default for repeated commands.
+With neither set, commands fall back to a workspace named `default`, which is
+an ordinary workspace that exists only if you created it.
 
 ## `coral sql`
 
@@ -322,7 +325,8 @@ coral workspace list
 
 ### `coral workspace create <NAME>`
 
-Create an empty workspace.
+Create an empty workspace. The workspace belongs to whoever creates it; on a
+deployment that authenticates no one, that is the local user.
 
 ```shellscript
 coral workspace create work
@@ -339,7 +343,8 @@ workspace configured.
 coral workspace remove work
 ```
 
-The `default` workspace cannot be removed.
+No workspace name is reserved: `default` is an ordinary workspace and is
+removed like any other.
 
 ## `coral functions`
 

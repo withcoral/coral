@@ -239,7 +239,7 @@ If an answer needs data from multiple connected sources, ask the agent to combin
 
 ## Workspaces
 
-By default, `coral mcp-stdio` uses your default Coral workspace. If you use a named workspace, add `--workspace <name>` to the server args in your MCP config. For JSON-style clients, that looks like:
+`coral mcp-stdio` serves one workspace, which you name with `--workspace <name>` in the server args of your MCP config. With no name it falls back to a workspace called `default`, which exists only if you created it. For JSON-style clients, naming the workspace looks like:
 
 ```json
 {
