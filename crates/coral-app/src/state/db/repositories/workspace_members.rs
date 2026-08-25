@@ -576,16 +576,21 @@ mod tests {
             .expect("seed a human owner");
         tx.commit().await.expect("commit legacy seed");
 
+        // The local principal is a singleton row, so unlike the ids above it
+        // cannot be suffixed per run: a shared Postgres database may already
+        // hold it, written by an earlier run at its own timestamps, and
+        // `ensure_local` leaves such a row alone. Its identity is what the
+        // helper guarantees on every database, so assert that and not when it
+        // was first written.
+        let local = local_user(db).await;
         assert_eq!(
-            local_user(db).await,
-            UserRecord {
-                user_id: LOCAL_PRINCIPAL_ID.to_string(),
-                issuer: LOCAL_PRINCIPAL_ID.to_string(),
-                subject: String::new(),
-                display_name: Some("Local".to_string()),
-                created_at_unix_nanos: 5,
-                last_login_at_unix_nanos: 5,
-            }
+            (
+                local.user_id.as_str(),
+                local.issuer.as_str(),
+                local.subject.as_str(),
+                local.display_name.as_deref()
+            ),
+            (LOCAL_PRINCIPAL_ID, LOCAL_PRINCIPAL_ID, "", Some("Local"))
         );
         legacy
     }
