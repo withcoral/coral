@@ -254,13 +254,13 @@ mod tests {
         let (exporter, provider, subscriber) = telemetry_fixture();
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        for tool_name in [
-            Some(ToolName::Sql),
-            Some(ToolName::Search),
-            Some(ToolName::ListCatalog),
-            None,
+        for (requested_tool_name, tool_name) in [
+            ("sql", Some(ToolName::Sql)),
+            ("search", Some(ToolName::Search)),
+            ("list_catalog", Some(ToolName::ListCatalog)),
+            (UNKNOWN_TOOL_NAME, None),
+            ("extension_tool", None),
         ] {
-            let requested_tool_name = tool_name.map_or(UNKNOWN_TOOL_NAME, ToolName::as_str);
             let span = call_tool_span(requested_tool_name, tool_name, "alpha", None);
             span.in_scope(|| {});
         }
@@ -272,6 +272,7 @@ mod tests {
             ("search", coral_telemetry::QUERY_STREAM_KIND_SEARCH),
             ("list_catalog", coral_telemetry::QUERY_STREAM_KIND_TOOL),
             (UNKNOWN_TOOL_NAME, coral_telemetry::QUERY_STREAM_KIND_TOOL),
+            ("extension_tool", coral_telemetry::QUERY_STREAM_KIND_TOOL),
         ];
         for (tool_name, expected_kind) in expected {
             let tool_call = spans
@@ -292,6 +293,10 @@ mod tests {
             assert_eq!(
                 string_attribute(tool_call, "mcp.method").as_deref(),
                 Some("tools/call")
+            );
+            assert_eq!(
+                string_attribute(tool_call, "mcp.tool.name").as_deref(),
+                Some(tool_name)
             );
         }
 

@@ -110,3 +110,66 @@ fn bootstrap_endpoint() -> Option<String> {
 fn bootstrap_endpoint() -> Option<String> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use coral_api::v1::ExecuteSqlRequest;
+    use coral_app::{EngineExtensions, QuerySource};
+    use coral_client::default_workspace;
+    use tempfile::TempDir;
+    use tonic::Request;
+
+    use super::*;
+
+    struct RecordingProvider {
+        name: &'static str,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl EngineExtensionsProvider for RecordingProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            self.calls.lock().expect("calls lock").push(self.name);
+            EngineExtensions::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_builder_runs_host_engine_providers_in_order() {
+        let temp = TempDir::new().expect("temp dir");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let providers = ["first", "second"]
+            .map(|name| {
+                Arc::new(RecordingProvider {
+                    name,
+                    calls: Arc::clone(&calls),
+                }) as Arc<dyn EngineExtensionsProvider>
+            })
+            .into();
+        let server = configure_server_builder(
+            ServerBuilder::new().with_config_dir(temp.path()),
+            BootstrapOptions::default(),
+            providers,
+        )
+        .start()
+        .await
+        .expect("start server");
+        let app = AppClient::connect(server.endpoint_uri())
+            .await
+            .expect("connect client");
+
+        app.query_client()
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: "SELECT 1".to_string(),
+                guide_read_context: None,
+                task_attribution: None,
+            }))
+            .await
+            .expect("execute query");
+
+        assert_eq!(*calls.lock().expect("calls lock"), ["first", "second"]);
+        server.shutdown().await.expect("stop server");
+    }
+}
