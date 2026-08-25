@@ -123,16 +123,23 @@ impl SearchManager {
             .map(|store| ObservedValuesProvider::from_store(store, write_coordinator));
         let observed_scope_loader =
             ObservedValuesLiveScopeLoader::new(layout, config_store.clone(), diagnostic_reporter);
+        let registry = match &observed {
+            Some(observed) => SearchProviderRegistry::local(
+                catalog.clone(),
+                observed_values_search_enabled.then(|| observed.clone()),
+            ),
+            None => SearchProviderRegistry::local_without_observed_values(
+                catalog.clone(),
+                storage.backend_name(),
+            ),
+        };
         Self {
             catalog_discovery,
-            catalog: catalog.clone(),
-            observed: observed.clone(),
+            catalog,
+            observed,
             observed_scope_loader,
             observed_values_search_enabled,
-            engine: UniversalSearchEngine::new(SearchProviderRegistry::local(
-                catalog,
-                observed_values_search_enabled.then_some(observed).flatten(),
-            )),
+            engine: UniversalSearchEngine::new(registry),
             workspaces: workspace_manager,
             lifecycle_lock,
             storage,

@@ -126,6 +126,113 @@ pub(super) mod contract {
         assert_eq!(catalog.document_count().expect("count after clear"), 0);
     }
 
+    /// The benchmark strata (substring, word, phrase, 3-char floor,
+    /// negatives) on a synthetic fixture: presence is the contract; order is
+    /// asserted only where the ranking contract demands it.
+    pub(crate) fn assert_match_semantics(store: &SearchStore) {
+        let catalog = store.catalog();
+        catalog
+            .refresh_projection(&semantics_snapshot())
+            .expect("refresh");
+        let entries = |terms: &[&str]| {
+            let terms = terms
+                .iter()
+                .map(|term| (*term).to_string())
+                .collect::<Vec<_>>();
+            hit_ids(
+                &catalog
+                    .search(&terms, 10, CatalogDocumentClass::Entries)
+                    .expect("search")
+                    .hits,
+            )
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        };
+        let sorted = |mut ids: Vec<String>| {
+            ids.sort();
+            ids
+        };
+
+        // Substring, mid-identifier.
+        assert_eq!(entries(&["enchmark"]), vec!["table:benchmark_runs"]);
+        // Whole word, wherever it appears.
+        assert_eq!(
+            sorted(entries(&["labels"])),
+            vec!["table:issue_labels", "table:label_issue_counts"]
+        );
+        // Phrase: the whole-phrase match outranks a co-occurrence match. The
+        // query construction upstream appends the whole query as a term.
+        assert_eq!(
+            entries(&["issue", "issue labels", "labels"]),
+            vec!["table:issue_labels", "table:label_issue_counts"]
+        );
+        // Three-character floor: shorter terms are dropped, not matched.
+        assert!(entries(&["ru"]).is_empty());
+        assert_eq!(entries(&["run"]), vec!["table:benchmark_runs"]);
+        // Pattern metacharacters are literal: `_` never acts as a wildcard.
+        assert_eq!(entries(&["deploy_url"]), vec!["table:deploy_url"]);
+        // Negatives: no junk from near misses.
+        assert!(entries(&["benchmarq"]).is_empty());
+        assert!(entries(&["zzqxv"]).is_empty());
+        // Deterministic order across repeated calls.
+        assert_eq!(entries(&["issue"]), entries(&["issue"]));
+    }
+
+    fn semantics_snapshot() -> CatalogIndexSnapshot {
+        let table = |doc_id: &str, surface_name: &str, title: &str, description: &str| {
+            CatalogIndexDocument {
+                doc_id: doc_id.to_string(),
+                doc_kind: CatalogIndexDocumentKind::CatalogTable,
+                source_name: "fixture".to_string(),
+                catalog_name: None,
+                surface_kind: "table".to_string(),
+                surface_name: surface_name.to_string(),
+                field_name: String::new(),
+                field_role: String::new(),
+                qualified_name: format!("fixture.{surface_name}"),
+                title: title.to_string(),
+                description: description.to_string(),
+                searchable_text: format!("fixture {surface_name}"),
+            }
+        };
+        CatalogIndexSnapshot {
+            fingerprint: "semantics-v1".to_string(),
+            documents: vec![
+                table(
+                    "table:benchmark_runs",
+                    "benchmark_runs",
+                    "benchmark_runs",
+                    "One row per benchmark run",
+                ),
+                table(
+                    "table:issue_labels",
+                    "issue_labels",
+                    "issue labels",
+                    "Labels attached to issues",
+                ),
+                table(
+                    "table:label_issue_counts",
+                    "label_issue_counts",
+                    "label counts",
+                    "How many issues carry each label; labels and issue counts",
+                ),
+                table(
+                    "table:deploy_url",
+                    "deploy_url",
+                    "deploy_url",
+                    "Deployment URLs",
+                ),
+                table(
+                    "table:deployxurl",
+                    "deployxurl",
+                    "deployxurl",
+                    "Not the same identifier",
+                ),
+            ],
+        }
+    }
+
     pub(crate) fn hit_ids(hits: &[crate::search::catalog::index::CatalogSearchHit]) -> Vec<&str> {
         hits.iter().map(|hit| hit.doc_id.as_str()).collect()
     }
@@ -229,6 +336,16 @@ fn sqlite_store_serves_the_catalog_contract() {
 
     assert_eq!(store.backend_name(), "sqlite");
     contract::assert_catalog_store_contract(&store);
+}
+
+#[test]
+fn sqlite_store_follows_the_benchmark_match_strata() {
+    let (_temp, storage) = sqlite_storage();
+    let store = storage
+        .open_workspace(&WorkspaceName::default())
+        .expect("open workspace store");
+
+    contract::assert_match_semantics(&store);
 }
 
 #[test]

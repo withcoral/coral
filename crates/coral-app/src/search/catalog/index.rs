@@ -85,6 +85,23 @@ pub(crate) struct CatalogSearchHit {
     pub(crate) field_role: String,
 }
 
+/// Vocabulary a stored `surface_kind` may take; both backends enforce it as a
+/// CHECK constraint and re-validate rows on read.
+pub(crate) fn is_known_surface_kind(value: &str) -> bool {
+    matches!(value, "" | "table" | "table_function")
+}
+
+/// Vocabulary a stored `field_role` may take.
+pub(crate) fn is_known_field_role(value: &str) -> bool {
+    matches!(
+        value,
+        "" | "table_column"
+            | "table_filter"
+            | "table_function_argument"
+            | "table_function_result_column"
+    )
+}
+
 /// Which population of documents a retriever is asking for.
 ///
 /// Entry documents and field documents share an index, but not a candidate

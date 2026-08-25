@@ -53,7 +53,7 @@ use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
 use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
-use crate::search::store::{ResolvedSearchConfig, SearchConfig, SearchStorage};
+use crate::search::store::{ResolvedSearchConfig, SearchConfig, SearchStorage, SearchStoreError};
 use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
@@ -360,7 +360,7 @@ impl ServerBuilder {
         let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
         let database_sources_enabled = features.enabled(Feature::DatabaseSources);
-        let search_storage = init_search_storage(&layout, &database_config)?;
+        let search_storage = init_search_storage(&layout, &database_config).await?;
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
             credential_manager.clone(),
@@ -498,15 +498,28 @@ async fn init_database(
 }
 
 /// Resolves `[search]` against the database config and opens the backend.
-fn init_search_storage(
+///
+/// A backend that cannot serve search fails startup here, naming the missing
+/// capability, rather than serving degraded results later.
+async fn init_search_storage(
     layout: &AppStateLayout,
     database_config: &ResolvedDatabaseConfig,
 ) -> Result<SearchStorage, AppError> {
     match SearchConfig::load(layout)?.resolve(database_config)? {
         ResolvedSearchConfig::Sqlite => Ok(SearchStorage::sqlite(layout.clone())),
-        ResolvedSearchConfig::Postgres { .. } => Err(AppError::FailedPrecondition(
-            "search backend 'postgres' is not available in this build yet".to_string(),
-        )),
+        ResolvedSearchConfig::Postgres { url } => {
+            SearchStorage::postgres(&url, tokio::runtime::Handle::current())
+                .await
+                .map_err(|error| search_storage_open_error(&error))
+        }
+    }
+}
+
+fn search_storage_open_error(error: &SearchStoreError) -> AppError {
+    if error.is_unsupported() {
+        AppError::FailedPrecondition(format!("search storage is not supported: {error}"))
+    } else {
+        AppError::Internal(format!("search storage failed to open: {error}"))
     }
 }
 

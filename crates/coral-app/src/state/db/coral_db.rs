@@ -72,7 +72,9 @@ async fn open_postgres(url: &str) -> Result<CoralDb, DbError> {
     })
 }
 
-fn postgres_connect_options(url: &str) -> Result<PgConnectOptions, DbError> {
+/// Connect options for the app-state URL, enforcing the TLS posture every
+/// consumer of that URL must share (the search backend reuses it).
+pub(crate) fn postgres_connect_options(url: &str) -> Result<PgConnectOptions, DbError> {
     let parsed_url = url::Url::parse(url)
         .map_err(|error| DbError::Config(format!("invalid Postgres database URL: {error}")))?;
     let explicit_ssl_mode = postgres_url_ssl_mode(&parsed_url)?;

@@ -7,7 +7,8 @@ use rusqlite::{
 use crate::search::catalog::index::{
     CatalogClearResult, CatalogDocumentClass, CatalogIndexSnapshot, CatalogRebuildResult,
     CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits, indexed_searchable_text,
-    normalized_search_terms, probe_limit, truncate_probe_hits,
+    is_known_field_role, is_known_surface_kind, normalized_search_terms, probe_limit,
+    truncate_probe_hits,
 };
 use crate::search::sqlite_store::SqliteSearchError;
 use crate::workspaces::WorkspaceName;
@@ -487,20 +488,18 @@ fn hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogSearchHit> {
 }
 
 fn surface_kind_from_storage(value: &str) -> rusqlite::Result<String> {
-    match value {
-        "" | "table" | "table_function" => Ok(value.to_string()),
-        _ => invalid_catalog_storage_value(2, "surface_kind", value),
+    if is_known_surface_kind(value) {
+        Ok(value.to_string())
+    } else {
+        invalid_catalog_storage_value(2, "surface_kind", value)
     }
 }
 
 fn field_role_from_storage(value: &str) -> rusqlite::Result<String> {
-    match value {
-        ""
-        | "table_column"
-        | "table_filter"
-        | "table_function_argument"
-        | "table_function_result_column" => Ok(value.to_string()),
-        _ => invalid_catalog_storage_value(5, "field_role", value),
+    if is_known_field_role(value) {
+        Ok(value.to_string())
+    } else {
+        invalid_catalog_storage_value(5, "field_role", value)
     }
 }
 

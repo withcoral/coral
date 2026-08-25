@@ -15,16 +15,19 @@
 //! whichever backend serves it.
 
 mod config;
+mod postgres;
 mod sqlite;
 
 use std::sync::Arc;
+
+use tokio::runtime::Handle;
 
 use crate::bootstrap::AppError;
 use crate::search::catalog::index::{
     CatalogClearResult, CatalogDocumentClass, CatalogIndexSnapshot, CatalogRebuildResult,
     CatalogRefreshResult, CatalogSearchHits,
 };
-use crate::search::maintenance::SearchStorageCleanupResult;
+use crate::search::maintenance::{SearchMaintenanceState, SearchStorageCleanupResult};
 use crate::search::observed::{
     ObservedValuesClearResult, ObservedValuesDrainBudget, ObservedValuesDrainResult,
     ObservedValuesRebuildResult, ObservedValuesRetrievalPolicy, ObservedValuesSearchHits,
@@ -34,6 +37,8 @@ use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) use config::{ResolvedSearchConfig, SearchConfig, SearchConfigError};
+pub(crate) use postgres::MigratedWorkspaceSchema;
+use postgres::{PostgresSearchError, PostgresSearchStorage, PostgresSearchStore};
 use sqlite::SqliteSearchStorage;
 
 /// Catalog projection storage for one Workspace.
@@ -132,6 +137,7 @@ pub(crate) struct SearchStorage {
 #[derive(Debug, Clone)]
 enum SearchStorageBackend {
     Sqlite(SqliteSearchStorage),
+    Postgres(PostgresSearchStorage),
 }
 
 impl SearchStorage {
@@ -142,9 +148,21 @@ impl SearchStorage {
         }
     }
 
+    /// One Postgres schema per Workspace in the `[database]` Postgres database, reached
+    /// through a small dedicated pool on the same URL. Bootstraps the
+    /// registry and verifies `pg_trgm`, failing loud when it is missing.
+    pub(crate) async fn postgres(url: &str, handle: Handle) -> Result<Self, SearchStoreError> {
+        Ok(Self {
+            backend: SearchStorageBackend::Postgres(
+                PostgresSearchStorage::open(url, handle).await?,
+            ),
+        })
+    }
+
     pub(crate) fn backend_name(&self) -> &'static str {
         match &self.backend {
             SearchStorageBackend::Sqlite(_) => "sqlite",
+            SearchStorageBackend::Postgres(_) => "postgres",
         }
     }
 
@@ -161,6 +179,9 @@ impl SearchStorage {
             SearchStorageBackend::Sqlite(storage) => Ok(SearchStore {
                 backend: SearchStoreBackend::Sqlite(storage.open_workspace(workspace_name)?),
             }),
+            SearchStorageBackend::Postgres(storage) => Ok(SearchStore {
+                backend: SearchStoreBackend::Postgres(storage.open_workspace(workspace_name)?),
+            }),
         }
     }
 
@@ -176,6 +197,45 @@ impl SearchStorage {
                 .map(|store| SearchStore {
                     backend: SearchStoreBackend::Sqlite(store),
                 })),
+            SearchStorageBackend::Postgres(storage) => Ok(storage
+                .open_existing_workspace(workspace_name)?
+                .map(|store| SearchStore {
+                    backend: SearchStoreBackend::Postgres(store),
+                })),
+        }
+    }
+
+    /// Removes every trace of the Workspace's search state. Returns whether
+    /// there was any. The `SQLite` sidecar lives inside the Workspace
+    /// directory, which Workspace deletion removes as a whole.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into Workspace deletion next in this stack")
+    )]
+    pub(crate) async fn delete_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<bool, SearchStoreError> {
+        match &self.backend {
+            SearchStorageBackend::Sqlite(_) => Ok(false),
+            SearchStorageBackend::Postgres(storage) => {
+                Ok(storage.delete_workspace(workspace_name).await?)
+            }
+        }
+    }
+
+    /// Boot-time ledger sweep: migrates every Workspace schema the backend
+    /// knows to be behind this binary. `SQLite` sidecars migrate on open.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into server startup next in this stack")
+    )]
+    pub(crate) async fn migrate_all(
+        &self,
+    ) -> Result<Vec<MigratedWorkspaceSchema>, SearchStoreError> {
+        match &self.backend {
+            SearchStorageBackend::Sqlite(_) => Ok(Vec::new()),
+            SearchStorageBackend::Postgres(storage) => Ok(storage.migrate_all().await?),
         }
     }
 
@@ -186,13 +246,11 @@ impl SearchStorage {
     }
 
     /// The observed-values store, when this backend keeps observed values.
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "backends without observed values answer None; SQLite is the only backend until the Postgres store lands"
-    )]
+    /// Postgres keeps none: cloud observed memory waits for lagoon #37.
     pub(crate) fn observed_values(&self) -> Option<Arc<dyn ObservedValuesStore>> {
         match &self.backend {
             SearchStorageBackend::Sqlite(storage) => Some(Arc::new(storage.observed_values())),
+            SearchStorageBackend::Postgres(_) => None,
         }
     }
 }
@@ -206,6 +264,7 @@ pub(crate) struct SearchStore {
 #[derive(Debug, Clone)]
 enum SearchStoreBackend {
     Sqlite(SqliteSearchStore),
+    Postgres(PostgresSearchStore),
 }
 
 /// Outcome of clearing every data class of a source or a Workspace at once.
@@ -219,12 +278,22 @@ impl SearchStore {
     pub(crate) fn backend_name(&self) -> &'static str {
         match &self.backend {
             SearchStoreBackend::Sqlite(_) => "sqlite",
+            SearchStoreBackend::Postgres(_) => "postgres",
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn postgres_schema_name(&self) -> String {
+        match &self.backend {
+            SearchStoreBackend::Sqlite(_) => panic!("not a Postgres store"),
+            SearchStoreBackend::Postgres(store) => store.schema_name(),
         }
     }
 
     pub(crate) fn catalog(&self) -> &dyn CatalogStore {
         match &self.backend {
             SearchStoreBackend::Sqlite(store) => store,
+            SearchStoreBackend::Postgres(store) => store,
         }
     }
 
@@ -239,6 +308,10 @@ impl SearchStore {
                 let (catalog, observed) = store.clear_source_all(source_name)?;
                 Ok(SearchClearAllResult { catalog, observed })
             }
+            SearchStoreBackend::Postgres(store) => Ok(SearchClearAllResult {
+                catalog: store.clear_source(source_name)?,
+                observed: ObservedValuesClearResult::default(),
+            }),
         }
     }
 
@@ -249,6 +322,10 @@ impl SearchStore {
                 let (catalog, observed) = store.clear_workspace_all()?;
                 Ok(SearchClearAllResult { catalog, observed })
             }
+            SearchStoreBackend::Postgres(store) => Ok(SearchClearAllResult {
+                catalog: store.clear_workspace()?,
+                observed: ObservedValuesClearResult::default(),
+            }),
         }
     }
 
@@ -259,6 +336,10 @@ impl SearchStore {
             SearchStoreBackend::Sqlite(store) => {
                 sqlite::storage_cleanup_result(&store.compact_after_clear())
             }
+            SearchStoreBackend::Postgres(_) => SearchStorageCleanupResult {
+                state: SearchMaintenanceState::Noop,
+                note: "no storage cleanup is needed on the postgres search backend".to_string(),
+            },
         }
     }
 }
@@ -267,6 +348,8 @@ impl SearchStore {
 pub(crate) enum SearchStoreError {
     #[error(transparent)]
     Sqlite(#[from] SqliteSearchError),
+    #[error(transparent)]
+    Postgres(#[from] PostgresSearchError),
 }
 
 impl SearchStoreError {
@@ -274,12 +357,14 @@ impl SearchStoreError {
     pub(crate) fn is_lock_contention(&self) -> bool {
         match self {
             Self::Sqlite(error) => error.is_lock_contention(),
+            Self::Postgres(error) => error.is_lock_contention(),
         }
     }
 
     pub(crate) fn is_storage_exhaustion(&self) -> bool {
         match self {
             Self::Sqlite(error) => error.is_storage_exhaustion(),
+            Self::Postgres(error) => error.is_storage_exhaustion(),
         }
     }
 
@@ -292,6 +377,7 @@ impl SearchStoreError {
                 SqliteSearchError::UnsupportedCapability { .. }
                     | SqliteSearchError::UnsupportedSchemaVersion { .. }
             ),
+            Self::Postgres(error) => error.is_unsupported(),
         }
     }
 }
