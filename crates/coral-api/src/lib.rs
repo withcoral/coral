@@ -70,6 +70,12 @@ pub const SOURCE_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE
 /// default even though full manifest YAML is only returned by Add and Get.
 pub const IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
 
+/// Maximum gRPC message size for stored-identity service *responses*, in bytes.
+///
+/// Identity listing is unpaginated and may aggregate enough safe metadata to
+/// exceed tonic's 4 MB default.
+pub const IDENTITY_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
+
 /// Maximum gRPC message size for `SearchService` *responses*, in bytes.
 ///
 /// Universal Search returns bounded metadata hints, but it may include table,
