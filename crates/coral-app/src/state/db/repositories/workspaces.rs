@@ -106,7 +106,14 @@ where
         self.session.execute(statement).await
     }
 
-    /// Reports the workspaces an authenticated caller cannot reach.
+    /// Reports the workspaces no authenticated caller can manage.
+    ///
+    /// Neither half has a reachable owner, which is what management needs:
+    /// [`InaccessibleWorkspaces::without_owner`] has no owner at all and is
+    /// concealed from every caller, while
+    /// [`InaccessibleWorkspaces::local_owner_only`] is owned solely by the
+    /// synthetic local principal and stays unmanageable until ownership is
+    /// transferred — the members it already has keep their read access.
     pub(crate) async fn inaccessible(&mut self) -> Result<InaccessibleWorkspaces, DbError> {
         let without_owner = self
             .ids(
