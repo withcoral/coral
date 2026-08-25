@@ -7,11 +7,11 @@ use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::identity::Principal;
 use crate::sources::materialization::SourceDiagnosticReporter;
-use crate::state::ConfigStore;
 use crate::state::db::{
-    AddMemberOutcome, CoralDb, CreateWorkspaceOutcome, DbRepos, RemoveMemberOutcome,
+    AddMemberOutcome, CoralDb, CreateWorkspaceOutcome, DbError, DbRepos, RemoveMemberOutcome,
     WorkspaceDeletion, WorkspaceMemberRecord, now_unix_nanos_i64,
 };
+use crate::state::{ConfigStore, RemovedWorkspaceConfig};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
     DeletedWorkspace, MemberRole, WorkspaceLifecycleLock, WorkspaceLifecycleRevision,
@@ -30,6 +30,10 @@ pub(crate) struct WorkspaceManager {
     db: Arc<CoralDb>,
     diagnostic_reporter: SourceDiagnosticReporter,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    /// Makes the deletion transaction refuse to commit, so a test can drive
+    /// the recovery that puts the removed config entries back.
+    #[cfg(test)]
+    deletion_commit_fails: bool,
 }
 
 impl WorkspaceManager {
@@ -70,11 +74,19 @@ impl WorkspaceManager {
             db,
             diagnostic_reporter,
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
+            #[cfg(test)]
+            deletion_commit_fails: false,
         }
     }
 
     pub(crate) fn with_pool_registry(mut self, pool_registry: Arc<WorkspacePoolRegistry>) -> Self {
         self.pool_registry = pool_registry;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_failing_deletion_commit(mut self) -> Self {
+        self.deletion_commit_fails = true;
         self
     }
 
@@ -147,22 +159,33 @@ impl WorkspaceManager {
             else {
                 return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
             };
-            let deleted = match self
+            let removed = match self
                 .config_store
                 .remove_workspace_config_entries(workspace_name)
             {
-                Ok(deleted) => deleted.unwrap_or_else(|| DeletedWorkspace {
-                    workspace: WorkspaceRecord {
-                        name: workspace_name.clone(),
-                    },
-                    sources: Vec::new(),
-                }),
+                Ok(removed) => removed,
                 Err(error) => {
                     Self::roll_back_workspace_deletion(workspace_name, deletion).await;
                     return Err(error);
                 }
             };
-            deletion.commit().await?;
+            if let Err(error) = self.commit_workspace_deletion(deletion).await {
+                // The transaction rolled back, so the workspace is still in
+                // the catalog while its config entries are already gone. The
+                // removal is durable and carries everything it took away, so
+                // put it back rather than leave the two disagreeing.
+                self.restore_workspace_config_entries(workspace_name, removed);
+                return Err(error.into());
+            }
+            let deleted = removed.map_or_else(
+                || DeletedWorkspace {
+                    workspace: WorkspaceRecord {
+                        name: workspace_name.clone(),
+                    },
+                    sources: Vec::new(),
+                },
+                RemovedWorkspaceConfig::into_deleted_workspace,
+            );
             self.pool_registry.remove(workspace_name);
             self.remove_deleted_workspace_credentials(&deleted);
             // Staging comes last, and failing to move the directory only
@@ -236,6 +259,47 @@ impl WorkspaceManager {
             warn!(
                 workspace = %workspace_name,
                 "workspace deletion was aborted, and the database rollback also failed: {rollback_error}"
+            );
+        }
+    }
+
+    /// Commits the deletion transaction.
+    ///
+    /// A seam rather than a call at the one site that needs it, because
+    /// nothing a test can do to a real transaction makes its commit fail on
+    /// demand, and the recovery that failure drives — putting the config
+    /// entries back — is the part worth pinning.
+    async fn commit_workspace_deletion(
+        &self,
+        deletion: WorkspaceDeletion<'_>,
+    ) -> Result<(), DbError> {
+        #[cfg(test)]
+        if self.deletion_commit_fails {
+            deletion.rollback().await?;
+            return Err(DbError::Config(
+                "workspace deletion commit failed for tests".to_string(),
+            ));
+        }
+        deletion.commit().await
+    }
+
+    /// Undoes the config removal of a deletion that could not go through.
+    ///
+    /// Best effort, like every other recovery here: a restore that fails
+    /// leaves the divergence it was meant to close, and saying so is all that
+    /// is left to do about it.
+    fn restore_workspace_config_entries(
+        &self,
+        workspace_name: &WorkspaceName,
+        removed: Option<RemovedWorkspaceConfig>,
+    ) {
+        let Some(removed) = removed else {
+            return;
+        };
+        if let Err(error) = self.config_store.restore_workspace_config_entries(removed) {
+            warn!(
+                workspace = %workspace_name,
+                "workspace deletion was aborted, but its config entries could not be put back: {error}"
             );
         }
     }
@@ -669,6 +733,58 @@ mod tests {
                 .await
                 .unwrap_or_else(|error| panic!("'{name}' should be creatable again: {error}"));
         }
+    }
+
+    /// The config removal is durable the moment it returns, while the
+    /// transaction it accompanies is not. A commit that fails after it has to
+    /// put the entries back, or the workspace stays in the catalog with its
+    /// sources missing from `config.toml`.
+    #[tokio::test]
+    async fn a_deletion_whose_commit_fails_leaves_config_and_database_agreeing() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout).await;
+        let manager = WorkspaceManager::new_for_tests(
+            store.clone(),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+            None,
+            Arc::clone(&db),
+        )
+        .with_failing_deletion_commit();
+        let workspace_name = workspace("work");
+        let owner = seed_user(&db, "owner").await;
+        manager
+            .create_workspace_for_user(&workspace_name, &owner)
+            .await
+            .expect("create workspace");
+        store
+            .upsert_source(&workspace_name, installed_source("github"))
+            .expect("upsert source");
+
+        manager
+            .delete_workspace(&workspace_name)
+            .await
+            .expect_err("a deletion whose commit fails must report the failure");
+
+        assert_eq!(
+            manager.list_workspaces().await.expect("list workspaces"),
+            vec![WorkspaceRecord {
+                name: workspace_name.clone()
+            }],
+            "a failed commit leaves the workspace in the catalog"
+        );
+        assert_eq!(
+            store
+                .list_workspace_sources(&workspace_name)
+                .expect("list workspace sources")
+                .into_iter()
+                .map(|source| source.name)
+                .collect::<Vec<_>>(),
+            vec![SourceName::parse("github").expect("source")],
+            "a workspace still in the catalog keeps its sources in the config"
+        );
     }
 
     #[tokio::test]

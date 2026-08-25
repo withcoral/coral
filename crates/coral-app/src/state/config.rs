@@ -505,6 +505,25 @@ fn write_config_document(layout: &AppStateLayout, doc: &DocumentMut) -> Result<(
     Ok(())
 }
 
+/// Everything one workspace deletion took out of `config.toml`.
+///
+/// Held rather than dropped because the removal is the deletion's one durable
+/// step before the database commit: the material it carries is what puts the
+/// file back when a later step fails.
+#[derive(Debug, Clone)]
+pub(crate) struct RemovedWorkspaceConfig {
+    deleted: DeletedWorkspace,
+    functions: Vec<InstalledFunction>,
+}
+
+impl RemovedWorkspaceConfig {
+    /// The workspace and its sources, as post-deletion artifact cleanup reads
+    /// them. Functions own no artifacts, so they stay behind the restore.
+    pub(crate) fn into_deleted_workspace(self) -> DeletedWorkspace {
+        self.deleted
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ConfigStore {
     layout: AppStateLayout,
@@ -617,10 +636,16 @@ impl ConfigStore {
         })
     }
 
+    /// Removes one workspace's entry, sources and functions from `config.toml`.
+    ///
+    /// What comes back carries everything the removal took away, so a caller
+    /// whose next step fails can hand it to
+    /// [`Self::restore_workspace_config_entries`] rather than leave the file
+    /// disagreeing with the catalog it accompanies.
     pub(crate) fn remove_workspace_config_entries(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Option<DeletedWorkspace>, AppError> {
+    ) -> Result<Option<RemovedWorkspaceConfig>, AppError> {
         self.update_config(|config| {
             let removed = config.workspaces.remove(workspace_name);
             if removed {
@@ -630,15 +655,46 @@ impl ConfigStore {
                     .map(BTreeMap::into_values)
                     .map(Iterator::collect)
                     .unwrap_or_default();
-                config.functions.remove_workspace(workspace_name);
-                return Ok(Some(DeletedWorkspace {
-                    workspace: WorkspaceRecord {
-                        name: workspace_name.clone(),
+                let functions = config
+                    .functions
+                    .remove_workspace(workspace_name)
+                    .map(BTreeMap::into_values)
+                    .map(Iterator::collect)
+                    .unwrap_or_default();
+                return Ok(Some(RemovedWorkspaceConfig {
+                    deleted: DeletedWorkspace {
+                        workspace: WorkspaceRecord {
+                            name: workspace_name.clone(),
+                        },
+                        sources,
                     },
-                    sources,
+                    functions,
                 }));
             }
             Ok(None)
+        })
+    }
+
+    /// Puts back everything [`Self::remove_workspace_config_entries`] removed.
+    ///
+    /// The removal is durable the moment it returns while the database
+    /// transaction it accompanies is not, so a deletion that fails to commit
+    /// needs a genuine inverse here — without one the workspace stays in the
+    /// catalog with its sources and functions gone from the file.
+    pub(crate) fn restore_workspace_config_entries(
+        &self,
+        removed: RemovedWorkspaceConfig,
+    ) -> Result<(), AppError> {
+        self.update_config(|config| {
+            let workspace_name = &removed.deleted.workspace.name;
+            config.workspaces.insert(workspace_name.clone());
+            for source in removed.deleted.sources {
+                config.catalog.upsert_source(workspace_name, source);
+            }
+            for function in removed.functions {
+                config.functions.upsert_function(workspace_name, function);
+            }
+            Ok(())
         })
     }
 
@@ -1590,10 +1646,11 @@ origin = "bundled"
             .upsert_function(&workspace_name, installed_function("review_queue"))
             .expect("upsert function");
 
-        let deleted = store
+        let removed = store
             .remove_workspace_config_entries(&workspace_name)
             .expect("remove workspace config entries")
             .expect("workspace config should be removed");
+        let deleted = removed.into_deleted_workspace();
 
         assert_eq!(deleted.workspace.name, workspace_name);
         assert_eq!(deleted.sources.len(), 1);
@@ -1615,6 +1672,64 @@ origin = "bundled"
         assert!(!rendered.contains("[workspaces.work.functions.review_queue]"));
     }
 
+    /// The removal is durable before the database commit it accompanies, so
+    /// its inverse has to put back every kind of entry it took — functions
+    /// included, which nothing later in the deletion reads and which a
+    /// restore built from the deleted workspace alone would drop.
+    #[test]
+    fn restoring_removed_workspace_config_entries_puts_every_entry_back() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+        let workspace_name = WorkspaceName::parse("work").expect("workspace");
+
+        store
+            .create_legacy_workspace_entry_for_tests(&workspace_name)
+            .expect("create legacy workspace entry");
+        store
+            .upsert_source(&workspace_name, installed_source("github"))
+            .expect("upsert source");
+        store
+            .upsert_function(&workspace_name, installed_function("review_queue"))
+            .expect("upsert function");
+        let removed = store
+            .remove_workspace_config_entries(&workspace_name)
+            .expect("remove workspace config entries")
+            .expect("workspace config should be removed");
+
+        store
+            .restore_workspace_config_entries(removed)
+            .expect("restore workspace config entries");
+
+        assert_eq!(
+            store
+                .load_config()
+                .expect("load config")
+                .legacy_workspace_records()
+                .into_iter()
+                .map(|workspace| workspace.name)
+                .collect::<Vec<_>>(),
+            vec![workspace_name.clone()]
+        );
+        assert_eq!(
+            store
+                .list_workspace_sources(&workspace_name)
+                .expect("list source definitions")
+                .into_iter()
+                .map(|source| source.name)
+                .collect::<Vec<_>>(),
+            vec![SourceName::parse("github").expect("source")]
+        );
+        assert_eq!(
+            store
+                .list_workspace_functions(&workspace_name)
+                .expect("list function definitions")
+                .into_iter()
+                .map(|function| function.name)
+                .collect::<Vec<_>>(),
+            vec![FunctionName::parse("review_queue").expect("function")]
+        );
+    }
+
     /// Removal reads the name as data. `default` and the `default-*` shapes
     /// were the ones a reserved-name rule used to protect, so they are the ones
     /// that prove no name is protected any more.
@@ -1634,12 +1749,15 @@ origin = "bundled"
                 .create_legacy_workspace_entry_for_tests(&workspace_name)
                 .expect("create legacy workspace entry");
 
-            let deleted = store
+            let removed = store
                 .remove_workspace_config_entries(&workspace_name)
                 .expect("remove workspace config entries")
                 .unwrap_or_else(|| panic!("'{name}' should be removable"));
 
-            assert_eq!(deleted.workspace.name, workspace_name);
+            assert_eq!(
+                removed.into_deleted_workspace().workspace.name,
+                workspace_name
+            );
             assert!(
                 store
                     .remove_workspace_config_entries(&workspace_name)
