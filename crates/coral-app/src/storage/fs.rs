@@ -133,12 +133,17 @@ impl DirectoryBackup {
     }
 
     /// Stages `path` aside for deletion inside `staging_dir`, which is created
-    /// if it is not there yet.
+    /// when there is something to move into it.
     ///
     /// Keeping the staged directory out of the original's parent is what lets
     /// a scan of that parent read every entry it finds as live. Pass a
     /// `staging_dir` on the same filesystem as `path`, so the move stays a
     /// rename.
+    ///
+    /// A `path` that is not there stages nothing and creates no directory: the
+    /// backup it returns names a place inside `staging_dir` that both
+    /// [`Self::restore`] and [`Self::commit`] then leave alone, so making the
+    /// root for it would be work with nothing behind it.
     pub(crate) fn move_for_delete_into(
         path: &Path,
         staging_dir: &Path,
@@ -428,6 +433,26 @@ mod tests {
         backup.restore().expect("restore backup");
 
         assert!(workspace_dir.join("marker").exists());
+    }
+
+    /// A workspace that never wrote a directory still gets staged for
+    /// deletion, and staging nothing must neither fail nor leave a staging
+    /// root behind for a caller that has nothing to put in it.
+    #[test]
+    fn staging_a_missing_directory_creates_no_staging_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_dir = temp.path().join("workspaces").join("work");
+        let staging_root = temp.path().join("deleted-workspaces");
+
+        let backup = DirectoryBackup::move_for_delete_into(&workspace_dir, &staging_root, "work")
+            .expect("staging a missing directory should succeed");
+
+        assert_eq!(backup.backup_path().parent(), Some(staging_root.as_path()));
+        assert!(!staging_root.exists());
+        backup.restore().expect("restore a backup of nothing");
+        backup.commit().expect("commit a backup of nothing");
+        assert!(!staging_root.exists());
+        assert!(!workspace_dir.exists());
     }
 
     #[test]
