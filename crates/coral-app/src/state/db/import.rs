@@ -91,26 +91,27 @@ async fn cutover_legacy_workspace_catalog_at(
 /// from there. It does not fall back to a fixed `default`: a genuinely fresh
 /// install has no workspace directory and must cut over to no workspaces.
 ///
-/// Reading a directory as a live workspace is sound because deletion moves the
-/// directory out of the workspaces root before it commits anything, so this
-/// root holds live workspaces only. That holds for deletions this version
-/// performed. A directory an older Coral orphaned — it staged the deletion
-/// beside the live workspaces and failed to remove it, or failed to stage it
-/// at all after committing — carries no evidence of being deleted, and this
-/// scan does resurrect it. Nothing on disk can tell the two apart after the
-/// fact; the residue is bounded by installs that hit that failure before
-/// upgrading.
+/// Every entry here is read as a live workspace, and one class of them is
+/// not: a deletion stages the workspace directory into its own root, outside
+/// this one, but only after the deletion has committed, and staging that fails
+/// only warns. A directory such a deletion left behind — or an older Coral
+/// staged beside the live workspaces and failed to remove — carries no
+/// evidence that it was deleted, so this scan resurrects it. That window is
+/// deliberately open rather than closed: staging before the commit would shut
+/// it, at the price of a crash between the rename and the commit leaving a
+/// live workspace whose directory is already gone, which is worse than a
+/// directory that outlives its workspace. Nothing on disk can tell the two
+/// apart after the fact.
 ///
 /// Deliberately a fallback and not a union with the config's own names, which
 /// leaves one residual open. A config that named `analytics` and nothing else
 /// could still have had a live implicit workspace beside it, and that one is
 /// orphaned for good because the cutover marker never re-runs. Closing it by
-/// unioning would resurrect exactly the older-Coral orphans described above,
-/// and `cuts_over_legacy_workspaces_into_database` pins that a leftover
-/// directory must not come back beside a config that names workspaces. The
-/// exposed population is narrow: every config Coral itself persisted
-/// serializes its workspaces back, so only a hand-edited config reaches this
-/// shape.
+/// unioning would resurrect exactly the orphans described above, and
+/// `cuts_over_legacy_workspaces_into_database` pins that a leftover directory
+/// must not come back beside a config that names workspaces. The exposed
+/// population is narrow: every config Coral itself persisted serializes its
+/// workspaces back, so only a hand-edited config reaches this shape.
 fn implicitly_provisioned_workspaces(
     layout: &AppStateLayout,
 ) -> Result<Vec<WorkspaceRecord>, AppError> {

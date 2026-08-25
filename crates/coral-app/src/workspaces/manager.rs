@@ -4,15 +4,14 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crate::bootstrap::AppError;
-use crate::credentials::CredentialStorageKind;
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::identity::Principal;
 use crate::sources::materialization::SourceDiagnosticReporter;
+use crate::state::ConfigStore;
 use crate::state::db::{
     AddMemberOutcome, CoralDb, CreateWorkspaceOutcome, DbRepos, RemoveMemberOutcome,
     WorkspaceDeletion, WorkspaceMemberRecord, now_unix_nanos_i64,
 };
-use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
     DeletedWorkspace, MemberRole, WorkspaceLifecycleLock, WorkspaceLifecycleRevision,
@@ -148,24 +147,6 @@ impl WorkspaceManager {
             else {
                 return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
             };
-            // Move the directory out of the workspaces root before anything
-            // commits. Nothing on disk records that a workspace was deleted,
-            // so a directory still sitting there afterwards reads as a live
-            // workspace to every later scan — the legacy catalog cutover
-            // included, which would resurrect it. Staging is also the only
-            // step here that is still fully reversible, the config removal
-            // below being durable, so a failure to move aborts the deletion
-            // and the caller retries once whatever held the directory lets go.
-            // That trades an undeletable workspace on a filesystem that
-            // refuses the rename for never reporting a deletion that left the
-            // workspace's contents in place.
-            let workspace_dir_backup = match self.stage_deleted_workspace_dir(workspace_name) {
-                Ok(backup) => backup,
-                Err(error) => {
-                    Self::roll_back_workspace_deletion(workspace_name, deletion).await;
-                    return Err(error);
-                }
-            };
             let deleted = match self
                 .config_store
                 .remove_workspace_config_entries(workspace_name)
@@ -177,17 +158,23 @@ impl WorkspaceManager {
                     sources: Vec::new(),
                 }),
                 Err(error) => {
-                    Self::restore_staged_workspace_dir(workspace_name, &workspace_dir_backup);
                     Self::roll_back_workspace_deletion(workspace_name, deletion).await;
                     return Err(error);
                 }
             };
-            if let Err(error) = deletion.commit().await {
-                Self::restore_staged_workspace_dir(workspace_name, &workspace_dir_backup);
-                return Err(error.into());
-            }
+            deletion.commit().await?;
             self.pool_registry.remove(workspace_name);
-            self.remove_deleted_workspace_credentials(&deleted, workspace_dir_backup.backup_path());
+            self.remove_deleted_workspace_credentials(&deleted);
+            // Staging comes last, and failing to move the directory only
+            // warns. Everything above it is already durable, so an abort here
+            // would report a failure for a deletion that happened. The cost is
+            // an accepted one: a directory left in the workspaces root carries
+            // no evidence that it was deleted, so a later scan — the legacy
+            // catalog cutover — reads it as a live workspace and resurrects it.
+            // Staging before the commit would close that, but a crash between
+            // the rename and the commit would then leave a live workspace with
+            // no directory at all, which is worse.
+            let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)
         };
         drop(deletion_marker);
@@ -195,7 +182,7 @@ impl WorkspaceManager {
         let deleted_workspace_name = deleted.workspace.name.clone();
         self.diagnostic_reporter
             .clear_workspace(&deleted_workspace_name);
-        Self::commit_deleted_workspace_dir(&deleted_workspace_name, &workspace_dir_backup);
+        Self::commit_deleted_workspace_dir(&deleted_workspace_name, workspace_dir_backup);
         self.prune_deleted_workspace_traces(&deleted_workspace_name)
             .await;
         Ok(deleted.workspace)
@@ -203,35 +190,16 @@ impl WorkspaceManager {
 
     /// Erases the credential material of a workspace that has just been deleted.
     ///
-    /// The workspace directory is already staged aside by this point, so
-    /// file-backed material is addressed at its staged path: the live layout
-    /// no longer reaches it, and asking the store to erase it there would find
-    /// nothing and report success while the secret sat in the staged copy.
-    /// Keychain material lives outside the directory and is erased through the
-    /// store as before.
-    fn remove_deleted_workspace_credentials(
-        &self,
-        deleted: &DeletedWorkspace,
-        staged_workspace_dir: &std::path::Path,
-    ) {
+    /// Runs while the workspace directory is still in place, because staging
+    /// it aside is the step after this one: file-backed material is where the
+    /// live layout says it is, and keychain material lives outside the
+    /// directory either way.
+    fn remove_deleted_workspace_credentials(&self, deleted: &DeletedWorkspace) {
         let workspace_name = &deleted.workspace.name;
         for source in &deleted.sources {
             let Some(storage) = source.credential_storage_for_material() else {
                 continue;
             };
-            if storage == CredentialStorageKind::File {
-                let staged_secret =
-                    AppStateLayout::staged_secret_file(staged_workspace_dir, &source.name);
-                if let Err(error) = crate::storage::fs::remove_file_if_exists(&staged_secret) {
-                    warn!(
-                        workspace = %workspace_name,
-                        source = %source.name,
-                        staged_secret = %staged_secret.display(),
-                        "workspace deleted, but failed to remove staged credential material: {error}"
-                    );
-                }
-                continue;
-            }
             let credential_set_id = CredentialSetId::for_source(&source.name);
             let guard = match self
                 .credential_manager
@@ -272,35 +240,35 @@ impl WorkspaceManager {
         }
     }
 
-    fn restore_staged_workspace_dir(workspace_name: &WorkspaceName, backup: &DirectoryBackup) {
-        if let Err(error) = backup.restore() {
-            warn!(
-                workspace = %workspace_name,
-                backup_path = %backup.backup_path().display(),
-                "workspace deletion was aborted, but the staged workspace directory could not be put back: {error}"
-            );
-        }
-    }
-
     fn stage_deleted_workspace_dir(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<DirectoryBackup, AppError> {
+    ) -> Option<DirectoryBackup> {
         let workspace_dir = self.workspace_dir(workspace_name);
-        DirectoryBackup::move_for_delete_into(
+        match DirectoryBackup::move_for_delete_into(
             &workspace_dir,
             &self.paths.deleted_workspaces_root(),
             workspace_name,
-        )
-        .map_err(|error| {
-            AppError::Internal(format!(
-                "failed to stage workspace directory '{}' for deletion: {error}",
-                workspace_dir.display()
-            ))
-        })
+        ) {
+            Ok(backup) => Some(backup),
+            Err(error) => {
+                warn!(
+                    workspace = %workspace_name,
+                    workspace_dir = %workspace_dir.display(),
+                    "workspace deleted, but failed to stage workspace directory cleanup: {error}"
+                );
+                None
+            }
+        }
     }
 
-    fn commit_deleted_workspace_dir(workspace_name: &WorkspaceName, backup: &DirectoryBackup) {
+    fn commit_deleted_workspace_dir(
+        workspace_name: &WorkspaceName,
+        backup: Option<DirectoryBackup>,
+    ) {
+        let Some(backup) = backup else {
+            return;
+        };
         if let Err(error) = backup.commit() {
             warn!(
                 workspace = %workspace_name,
@@ -701,58 +669,6 @@ mod tests {
                 .await
                 .unwrap_or_else(|error| panic!("'{name}' should be creatable again: {error}"));
         }
-    }
-
-    /// Nothing on disk records that a workspace was deleted, so a directory
-    /// left in the workspaces root reads as a live workspace to every later
-    /// scan. A deletion that cannot move the directory out therefore aborts
-    /// whole rather than reporting a success that left the contents in place —
-    /// the caller retries once whatever refused the move lets go.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_workspace_whose_directory_cannot_be_staged_is_not_deleted() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (temp, db, manager) = membership_manager().await;
-        let creator = seed_user(&db, "creator").await;
-        let name = workspace("work");
-        manager
-            .create_workspace_for_user(&name, &creator)
-            .await
-            .expect("create workspace");
-        let workspaces_root = temp.path().join("coral-config").join("workspaces");
-        let workspace_dir = workspaces_root.join("work");
-        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
-        std::fs::set_permissions(&workspaces_root, std::fs::Permissions::from_mode(0o500))
-            .expect("refuse the move out of the workspaces root");
-
-        let error = manager
-            .delete_workspace(&name)
-            .await
-            .expect_err("a directory that cannot be staged must fail the deletion");
-
-        std::fs::set_permissions(&workspaces_root, std::fs::Permissions::from_mode(0o700))
-            .expect("restore the workspaces root");
-        assert!(
-            error
-                .to_string()
-                .contains("failed to stage workspace directory"),
-            "unexpected error: {error}"
-        );
-        assert!(
-            workspace_dir.exists(),
-            "an aborted deletion keeps the workspace's contents"
-        );
-        assert_eq!(
-            manager.list_workspaces().await.expect("list workspaces"),
-            vec![WorkspaceRecord { name: name.clone() }],
-            "an aborted deletion leaves the workspace live"
-        );
-        assert_eq!(
-            role_for(&db, &name, &creator).await,
-            Some(MemberRole::Owner),
-            "an aborted deletion leaves its memberships alone"
-        );
     }
 
     #[tokio::test]
