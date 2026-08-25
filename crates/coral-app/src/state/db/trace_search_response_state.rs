@@ -180,10 +180,6 @@ impl CoralDb {
             .await
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "next stack layer wires trace reads")
-    )]
     pub(crate) async fn get_trace_search_response(
         &self,
         workspace_id: &str,
@@ -301,6 +297,25 @@ impl CoralDb {
             Some(mutation_barrier),
         )
         .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn drop_trace_search_responses_for_test(&self) -> Result<(), DbError> {
+        use super::backend::CoralDbBackend;
+
+        match &self.backend {
+            CoralDbBackend::Sqlite(db) => {
+                sqlx::query("DROP TABLE trace_search_responses")
+                    .execute(&db.pool)
+                    .await?;
+            }
+            CoralDbBackend::Postgres(db) => {
+                sqlx::query("DROP TABLE trace_search_responses")
+                    .execute(&db.pool)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 }
 

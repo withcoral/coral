@@ -1,10 +1,17 @@
 //! App-level orchestration for local trace inspection.
 
+use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::local_store::{TraceDetailRecord, TraceStore, TraceStoreError, TraceSummaryRecord};
+use crate::state::db::CoralDb;
 use crate::workspaces::WorkspaceName;
+
+mod search_response_history;
+
+use search_response_history::SearchResponseHistoryReader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TraceListView {
@@ -33,6 +40,30 @@ pub(crate) struct GetTraceQuery {
     pub(crate) view: TraceListView,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum RetainedSearchResponse {
+    Response(Vec<u8>),
+    TooLarge,
+}
+
+impl fmt::Debug for RetainedSearchResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Response(response_proto) => formatter
+                .debug_struct("Response")
+                .field("response_proto_bytes", &response_proto.len())
+                .finish(),
+            Self::TooLarge => formatter.write_str("TooLarge"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TraceDetail {
+    pub(crate) trace: TraceDetailRecord,
+    pub(crate) search_response: Option<RetainedSearchResponse>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TraceManagerError {
     #[error("trace '{trace_id}' not found")]
@@ -52,14 +83,25 @@ impl From<TraceStoreError> for TraceManagerError {
 
 #[derive(Debug, Clone)]
 pub(crate) struct TraceManager {
+    search_response_history: Option<SearchResponseHistoryReader>,
     traces: TraceStore,
 }
 
 impl TraceManager {
     pub(crate) fn new(trace_store_dir: PathBuf, retention: Duration) -> Self {
         Self {
+            search_response_history: None,
             traces: TraceStore::with_retention(trace_store_dir, retention),
         }
+    }
+
+    pub(crate) fn with_search_response_history(
+        mut self,
+        db: Arc<CoralDb>,
+        retention: Duration,
+    ) -> Self {
+        self.search_response_history = Some(SearchResponseHistoryReader::new(db, retention));
+        self
     }
 
     pub(crate) async fn list_traces(
@@ -102,29 +144,37 @@ impl TraceManager {
     pub(crate) async fn get_trace(
         &self,
         query: GetTraceQuery,
-    ) -> Result<TraceDetailRecord, TraceManagerError> {
+    ) -> Result<TraceDetail, TraceManagerError> {
         let GetTraceQuery {
             trace_id,
             workspace,
             view,
         } = query;
         let workspace = workspace.map(|workspace| workspace.as_str().to_string());
-        match view {
-            TraceListView::All => match workspace {
+        let trace = match view {
+            TraceListView::All => match workspace.as_deref() {
                 Some(workspace) => {
                     self.traces
-                        .get_trace_for_workspace(trace_id, workspace)
+                        .get_trace_for_workspace(trace_id, workspace.to_string())
                         .await
                 }
                 None => self.traces.get_trace(trace_id).await,
             },
             TraceListView::QueryStream => {
                 self.traces
-                    .get_query_stream_trace(trace_id, workspace)
+                    .get_query_stream_trace(trace_id, workspace.clone())
                     .await
             }
         }
-        .map_err(TraceManagerError::from)
+        .map_err(TraceManagerError::from)?;
+        let search_response = match &self.search_response_history {
+            Some(reader) => reader.read(&trace, view, workspace.as_deref()).await,
+            None => None,
+        };
+        Ok(TraceDetail {
+            trace,
+            search_response,
+        })
     }
 }
 
@@ -135,8 +185,22 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError};
+    use super::{
+        GetTraceQuery, ListTracesQuery, RetainedSearchResponse, TraceListView, TraceManager,
+        TraceManagerError,
+    };
     use crate::workspaces::WorkspaceName;
+
+    #[test]
+    fn retained_search_response_debug_redacts_payload() {
+        let payload = b"private-search-response".to_vec();
+        let raw_payload_debug = format!("{payload:?}");
+        let debug_output = format!("{:?}", RetainedSearchResponse::Response(payload));
+
+        assert!(!debug_output.contains("private-search-response"));
+        assert!(!debug_output.contains(&raw_payload_debug));
+        assert!(debug_output.contains("response_proto_bytes: 23"));
+    }
 
     #[tokio::test]
     async fn manager_scopes_and_paginates_all_trace_lists() {
@@ -197,7 +261,7 @@ mod tests {
             })
             .await
             .expect("unscoped beta trace");
-        assert_eq!(detail.summary.trace_id, "beta");
+        assert_eq!(detail.trace.summary.trace_id, "beta");
 
         let error = manager
             .get_trace(GetTraceQuery {

@@ -40,7 +40,7 @@ use crate::search::sqlite_store::{
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
-use crate::telemetry::{app_error_type, record_local_only_span_attribute};
+use crate::telemetry::{SEARCH_SPAN_NAME, app_error_type, record_local_only_span_attribute};
 use crate::workspaces::{
     WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
 };
@@ -698,11 +698,11 @@ fn search_execution_identity(span: &tracing::Span) -> Option<SearchExecutionIden
 
 fn create_search_span(request: &SearchRequest, task_id: Option<&TaskId>) -> tracing::Span {
     let span = tracing::info_span!(
-        "coral.search",
+        SEARCH_SPAN_NAME,
         coral.stream.entry = true,
         coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_SEARCH,
         coral.stream.name = "search",
-        otel.name = "coral.search",
+        otel.name = SEARCH_SPAN_NAME,
         operation = "search",
         workspace = field::Empty,
         query_len_bytes = request.query.len(),

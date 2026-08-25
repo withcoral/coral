@@ -8,6 +8,7 @@ use coral_telemetry::{
 use serde_json::Value as JsonValue;
 
 use super::super::{StoredTraceInvocationKind, StoredTraceOperationKind, attr_bool, attr_string};
+use crate::telemetry::SEARCH_SPAN_NAME;
 
 const MCP_METHOD_ATTRIBUTE: &str = "mcp.method";
 const MCP_TOOL_NAME_ATTRIBUTE: &str = "mcp.tool.name";
@@ -77,7 +78,7 @@ fn legacy_query_stream_metadata(
     }
     let (kind, default_name) = match span_name {
         "coral.query" => (StoredTraceOperationKind::Query, "sql"),
-        "coral.search" => (StoredTraceOperationKind::Search, "search"),
+        SEARCH_SPAN_NAME => (StoredTraceOperationKind::Search, "search"),
         _ => return None,
     };
     let name = attributes

@@ -7,10 +7,13 @@
 
 use std::path::{Path, PathBuf};
 
+use coral_api::v1::search_service_client::SearchServiceClient;
 use coral_api::v1::trace_service_client::TraceServiceClient;
-use coral_api::v1::{ListTracesRequest, TraceView};
-use coral_client::local::ServerBuilder;
+use coral_api::v1::{ListTracesRequest, SearchRequest, TraceView};
+use coral_client::{default_workspace, local::ServerBuilder};
 use serde_json::json;
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::{Connection as _, SqliteConnection};
 use tempfile::TempDir;
 use tonic::Request;
 use tonic::transport::Endpoint;
@@ -55,10 +58,17 @@ async fn repeated_starts_read_the_process_local_trace_store() {
         "second server should not read from its own unwritten trace store: {trace_ids:?}"
     );
 
+    search(second_server.endpoint_uri()).await;
+
     second_server
         .shutdown()
         .await
         .expect("shutdown second server");
+    assert_eq!(
+        retained_response_count(&second_config_dir.join("coral.db")).await,
+        0,
+        "the second database must not retain responses for the process-owned first trace store"
+    );
 }
 
 fn enable_local_tracing(config_dir: &Path) {
@@ -132,4 +142,33 @@ async fn list_trace_ids(endpoint_uri: &str) -> Vec<String> {
         .into_iter()
         .map(|trace| trace.trace_id)
         .collect()
+}
+
+async fn search(endpoint_uri: &str) {
+    let channel = Endpoint::from_shared(endpoint_uri.to_string())
+        .expect("endpoint")
+        .connect()
+        .await
+        .expect("connect");
+    SearchServiceClient::new(channel)
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "history".to_string(),
+            limit: 0,
+        }))
+        .await
+        .expect("search second server");
+}
+
+async fn retained_response_count(database_path: &Path) -> i64 {
+    let options = SqliteConnectOptions::new()
+        .filename(database_path)
+        .read_only(true);
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .expect("open second database");
+    sqlx::query_scalar("SELECT COUNT(*) FROM trace_search_responses")
+        .fetch_one(&mut connection)
+        .await
+        .expect("count retained Search responses")
 }
