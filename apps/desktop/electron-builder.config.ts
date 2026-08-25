@@ -141,6 +141,20 @@ export function createConfig(
       // Without this the package name falls back to the product name, `coral`,
       // which would collide with a future CLI package.
       packageName: 'coral-desktop',
+      // Keeps the deb out of latest-linux.yml. FpmTarget reports the deb with
+      // `isWriteUpdateInfo: true` whenever a publish config resolves, and
+      // writeUpdateInfoFiles() merges every reported artifact into the one feed.
+      // The sort there breaks ties by zip-vs-non-zip and then arch, which the
+      // deb and the AppImage tie on, so the top-level `path:` the updater reads
+      // would come from whichever target hashed first. A target-level null
+      // short-circuits getPublishConfigs() for the artifact event, so the feed
+      // names the AppImage and nothing else.
+      //
+      // It does not stop FpmTarget writing `resources/package-type` — that call
+      // passes the target options through but resolves against `linux.publish`
+      // and the global config only. auto-update.ts names the updater class for
+      // that reason.
+      publish: null,
     },
   }
 }

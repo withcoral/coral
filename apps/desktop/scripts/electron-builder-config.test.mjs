@@ -124,7 +124,7 @@ test('non-release packaging config is identical on every host platform', () => {
   assert.deepEqual(linuxHost, createConfig({}, 'win32'))
 })
 
-test('linux packages target AppImage and deb, and publish an update feed', () => {
+test('linux packages target AppImage and deb, and publish an AppImage-only feed', () => {
   const { linux, deb, publish } = createConfig({}, 'linux')
 
   assert.deepEqual(linux?.target, [
@@ -136,6 +136,10 @@ test('linux packages target AppImage and deb, and publish an update feed', () =>
   // than override it.
   assert.equal(linux?.publish, undefined)
   assert.equal(publish?.[0]?.provider, 'github')
+  // The deb opts out at target level, so it stays out of latest-linux.yml.
+  // Nulling it on `linux` instead would take the AppImage's app-update.yml with
+  // it, since that file resolves against the platform config.
+  assert.equal(deb?.publish, null)
   // Neither the executable nor the deb may claim the `coral` name; the deb
   // symlinks its executable into /usr/bin and would shadow the CLI.
   assert.equal(linux?.executableName, 'coral-desktop')

@@ -5,6 +5,7 @@ import {
   STARTUP_UPDATE_CHECK_DELAY_MS,
   appImagePath,
   createDesktopUpdater,
+  relaunchImagePath,
   type DesktopUpdaterDeps,
   type UpdateCheckResultLike,
   type UpdaterLike,
@@ -135,6 +136,35 @@ describe('appImagePath', () => {
     // The updater reads APPIMAGE verbatim, so a value it rejects must not be
     // repaired into one this accepts.
     expect(appImagePath({ APPIMAGE: ' /opt/coral.AppImage' })).toBe(null)
+  })
+})
+
+describe('relaunchImagePath', () => {
+  const env = { APPIMAGE: '/home/dev/Apps/coral-desktop-0.14.0.AppImage' }
+
+  it('prefers the destination the updater reported', () => {
+    // AppImageUpdater unlinked APPIMAGE and wrote the new image beside it under
+    // the artifact name, because the old basename carried an x.y.z.
+    expect(relaunchImagePath(env, '/home/dev/Apps/coral-desktop-linux-x64.AppImage')).toBe(
+      '/home/dev/Apps/coral-desktop-linux-x64.AppImage',
+    )
+  })
+
+  it('falls back to APPIMAGE when the install overwrote it in place', () => {
+    // An in-place replacement emits no `appimage-filename-updated`.
+    expect(relaunchImagePath(env, null)).toBe(env.APPIMAGE)
+  })
+
+  it.each([
+    ['relative', 'coral-desktop.AppImage'],
+    ['NUL-bearing', '/home/dev/Apps/coral\0.AppImage'],
+    ['empty', ''],
+  ])('ignores a %s destination and falls back to APPIMAGE', (_label, installed) => {
+    expect(relaunchImagePath(env, installed)).toBe(env.APPIMAGE)
+  })
+
+  it('reports nothing when neither path is usable', () => {
+    expect(relaunchImagePath({}, null)).toBe(null)
   })
 })
 

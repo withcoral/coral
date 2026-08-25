@@ -24,6 +24,22 @@ export function appImagePath(env: NodeJS.ProcessEnv): string | null {
   return path
 }
 
+// Where the replacement image actually landed. AppImageUpdater overwrites
+// $APPIMAGE only when the running basename equals the downloaded one or carries
+// no x.y.z; a user who keeps `coral-desktop-0.14.0.AppImage` gets the new image
+// written beside it under the artifact name, and the old path is unlinked either
+// way. `appimage-filename-updated` reports that destination, so prefer it and
+// fall back to $APPIMAGE for the in-place case, which emits nothing.
+export function relaunchImagePath(
+  env: NodeJS.ProcessEnv,
+  installedPath: string | null,
+): string | null {
+  if (installedPath && isAbsolute(installedPath) && !installedPath.includes('\0')) {
+    return installedPath
+  }
+  return appImagePath(env)
+}
+
 export const STARTUP_UPDATE_CHECK_DELAY_MS = 5000
 // Long-running desktop sessions would otherwise only see new releases after a
 // restart; re-check periodically so a release ships to open apps too. The

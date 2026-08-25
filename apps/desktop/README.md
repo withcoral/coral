@@ -86,7 +86,8 @@ Use `npm run package:linux --prefix apps/desktop` for the x64 Linux AppImage and
 deb. The deb needs `ar` (binutils) and `xz` on PATH — `fpm` shells out to both.
 Linux packages are unsigned. The build writes `latest-linux.yml` for the AppImage,
 which replaces its own image file on update; the deb belongs to dpkg, so
-`desktopUpdatesSupported()` (`src/main/auto-update.ts`) returns false there and
+`deb.publish` is null (which keeps it out of that feed),
+`desktopUpdatesSupported()` (`src/main/auto-update.ts`) returns false there, and
 deb users install a new release themselves.
 
 `CORAL_DESKTOP_RELEASE=1` selects release mode: it bakes the updater into the main
@@ -99,3 +100,18 @@ Without it, packaging is deterministically unsigned and the updater is inert.
 
 > Run the `--prefix apps/desktop` commands from the repo root. If you are already in
 > `apps/desktop/`, drop the flag (e.g. `npm run package:dir`).
+
+### Verifying a Linux update by hand
+
+The AppImage update path only exists in a release build, so a cut release is the
+only way to exercise it. Two steps of it have no test:
+
+- **The relaunch.** `app.relaunch()` forks Electron's relauncher helper from the
+  mounted AppDir, and that helper waits for this process to exit before it starts
+  the new image — the same exit that makes the AppImage runtime unmount the AppDir
+  the helper is running from. Check that the app actually comes back.
+- **The destination.** Run the update once from an image named
+  `coral-desktop-linux-x64.AppImage` (replaced in place) and once from a renamed
+  `coral-desktop-<version>.AppImage` (new image written beside it, old one
+  unlinked, `appimage-filename-updated` carries the destination). The app must come
+  back in both.

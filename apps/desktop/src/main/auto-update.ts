@@ -1,12 +1,13 @@
 import { Notification, app, autoUpdater as nativeAutoUpdater, dialog } from 'electron'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import type { AppUpdater } from 'electron-updater'
+import type { AppImageUpdater, AppUpdater, MacUpdater } from 'electron-updater'
 
 import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/types'
 import {
   appImagePath,
   createDesktopUpdater,
+  relaunchImagePath,
   UNSUPPORTED_UPDATE_DETAIL,
   type DesktopUpdater,
 } from './auto-update-core'
@@ -38,17 +39,39 @@ export function desktopUpdatesSupported(): boolean {
   return process.platform === 'linux' && appImagePath(process.env) !== null
 }
 
-// Runs once the updater has moved the new image over the old path and is about
-// to quit. Electron starts the replacement only after this process exits, so the
-// new instance finds the single-instance lock free.
+// Set from `appimage-filename-updated`, which AppImageUpdater emits only when it
+// wrote the new image under a different basename than the running one. Read at
+// relaunch time, after the install step has run.
+let installedAppImagePath: string | null = null
+
+// Runs once the updater has moved the new image into place and is about to quit.
+// app.relaunch() forks Electron's relauncher helper, which blocks on this
+// process exiting before it launches the target, so the new instance finds the
+// single-instance lock free. That helper runs from the mounted AppDir, which the
+// AppImage runtime tears down at the same exit — an ordering this repo cannot
+// exercise without cutting a release. See apps/desktop/README.md.
 function scheduleAppImageRelaunch(): void {
   if (process.platform !== 'linux') return
-  const imagePath = appImagePath(process.env)
+  const imagePath = relaunchImagePath(process.env, installedAppImagePath)
   if (!imagePath) return
 
   // Empty args, not Electron's default `process.argv.slice(1)`: that carries
   // the flags AppRun added for this launch, and AppRun adds them again.
   app.relaunch({ execPath: imagePath, args: [] })
+}
+
+// Names the updater class instead of taking electron-updater's `autoUpdater`
+// singleton. That getter picks DebUpdater whenever `resources/package-type`
+// reads `deb`, and FpmTarget writes that file into dist/linux-unpacked/resources
+// — the same directory AppImageTarget squashes, concurrently. A DebUpdater
+// inside the AppImage would download the .deb and shell out to dpkg, leaving the
+// running image untouched. Picking the class here cannot be raced by packaging.
+function createPlatformUpdater(): AppUpdater {
+  const { AppImageUpdater: AppImage, MacUpdater: Mac } = require('electron-updater') as {
+    AppImageUpdater: new () => AppImageUpdater
+    MacUpdater: new () => MacUpdater
+  }
+  return process.platform === 'darwin' ? new Mac() : new AppImage()
 }
 
 let updater: DesktopUpdater | null = null
@@ -61,13 +84,18 @@ function updateIntentPath(): string {
 
 function desktopUpdater(): DesktopUpdater {
   if (!updater) {
-    const { autoUpdater } = require('electron-updater') as { autoUpdater: AppUpdater }
+    const autoUpdater = createPlatformUpdater()
     // Linux only: AppImageUpdater would start the new image from inside its
     // install step, while this process still holds the single-instance lock, so
     // scheduleAppImageRelaunch() starts it after the exit instead. MacUpdater
     // reads the same flag to pick the Squirrel hand-off over a plain quit, and
     // must keep it on.
-    if (process.platform === 'linux') autoUpdater.autoRunAppAfterInstall = false
+    if (process.platform === 'linux') {
+      autoUpdater.autoRunAppAfterInstall = false
+      autoUpdater.on('appimage-filename-updated', (path) => {
+        installedAppImagePath = path
+      })
+    }
     updater = createDesktopUpdater({
       updater: autoUpdater,
       appVersion: () => app.getVersion(),
