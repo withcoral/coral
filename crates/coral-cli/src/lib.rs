@@ -838,11 +838,14 @@ async fn run_server(
     feature_overrides: coral_app::features::FeatureOverrides,
     extensions: CoralExtensions,
 ) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_standalone_server(
+    // Boxed to keep this function's own future under clippy's large-future
+    // threshold: the composed server startup is by far the largest state it
+    // holds, so moving it to the heap keeps `run_server` small.
+    let server = Box::pin(bootstrap::start_standalone_server(
         feature_overrides,
         extensions.engine_providers,
         extensions.mcp_surface_provider,
-    )
+    ))
     .await?;
     let endpoint = server.endpoint_uri().to_string();
 
