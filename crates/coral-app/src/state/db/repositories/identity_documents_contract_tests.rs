@@ -248,7 +248,7 @@ async fn assert_identity_document_repository_contract(db: &CoralDb) {
     tx.commit().await.expect("commit cleanup");
 }
 
-async fn seed_identity(
+pub(super) async fn seed_identity(
     tx: &mut CoralTx<'_>,
     owner: &IdentityOwner,
     name: &IdentityName,
@@ -261,7 +261,7 @@ async fn seed_identity(
         .expect("seed identity document parent");
 }
 
-async fn assert_document(
+pub(super) async fn assert_document(
     db: &CoralDb,
     owner: &IdentityOwner,
     name: &IdentityName,
@@ -279,7 +279,11 @@ async fn assert_document(
     );
 }
 
-async fn assert_document_absent(db: &CoralDb, owner: &IdentityOwner, name: &IdentityName) {
+pub(super) async fn assert_document_absent(
+    db: &CoralDb,
+    owner: &IdentityOwner,
+    name: &IdentityName,
+) {
     let mut session = db;
     assert!(
         session
@@ -291,7 +295,7 @@ async fn assert_document_absent(db: &CoralDb, owner: &IdentityOwner, name: &Iden
     );
 }
 
-fn expected_record(
+pub(super) fn expected_record(
     owner: &IdentityOwner,
     name: &IdentityName,
     version: i64,
@@ -309,7 +313,7 @@ fn expected_record(
     }
 }
 
-fn document(seed: u8) -> EncryptedEnvelopeDocument {
+pub(super) fn document(seed: u8) -> EncryptedEnvelopeDocument {
     EncryptedEnvelopeDocument::new(
         vec![seed; 3],
         vec![seed + 1; 2],
@@ -322,15 +326,15 @@ fn document(seed: u8) -> EncryptedEnvelopeDocument {
     .expect("valid identity document")
 }
 
-fn reference(owner: &IdentityOwner, key: IdentitySpecKey) -> IdentitySpecReference {
+pub(super) fn reference(owner: &IdentityOwner, key: IdentitySpecKey) -> IdentitySpecReference {
     IdentitySpecReference::new(owner, key, "fingerprint", "issuer", "fixed_token")
         .expect("identity spec reference")
 }
 
-fn parsed_workspace(value: &str) -> WorkspaceName {
+pub(super) fn parsed_workspace(value: &str) -> WorkspaceName {
     WorkspaceName::parse(value).expect("workspace")
 }
 
-fn identity_name(value: &str) -> IdentityName {
+pub(super) fn identity_name(value: &str) -> IdentityName {
     IdentityName::parse(value).expect("identity name")
 }

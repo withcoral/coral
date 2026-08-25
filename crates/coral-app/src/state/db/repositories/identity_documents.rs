@@ -247,10 +247,38 @@ fn identity_document_key_where(
 
 #[cfg(test)]
 mod tests {
-    use super::IdentityDocumentRecord;
+    use super::{IdentityDocumentRecord, IdentityDocumentRow};
     use crate::encrypted_document::EncryptedEnvelopeDocument;
     use crate::identities::model::{IdentityName, IdentityOwner};
     use crate::identity::Principal;
+    use crate::state::db::DbError;
+
+    #[test]
+    fn persisted_identity_document_keys_fail_closed() {
+        let row = |owner_kind: &str, owner_key: &str, name: &str| IdentityDocumentRow {
+            owner_kind: owner_kind.to_string(),
+            owner_key: owner_key.to_string(),
+            name: name.to_string(),
+            document_version: 1,
+            ciphertext: vec![1],
+            nonce: vec![2],
+            wrapped_dek: vec![3],
+            wrapped_dek_nonce: vec![4],
+            key_id: "key".to_string(),
+            algorithm: "algorithm".to_string(),
+            binding_version: 1,
+            created_at_unix_nanos: 1,
+            updated_at_unix_nanos: 1,
+        };
+        for corrupt in [
+            row("tenant", "member", "github"),
+            row("user", " member ", "github"),
+            row("workspace", "bad/name", "github"),
+            row("user", "member", " github "),
+        ] {
+            assert!(matches!(corrupt.validate(), Err(DbError::CorruptData(_))));
+        }
+    }
 
     #[test]
     fn identity_document_debug_omits_envelope_material() {
