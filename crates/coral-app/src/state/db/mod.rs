@@ -42,5 +42,6 @@ pub(crate) use task_state::{TaskCreation, TaskCreationResult};
 pub(crate) use transaction::CoralTx;
 pub(crate) use user_state::{LoginIdentity, LoginProvisioning};
 pub(crate) use workspace_state::{
-    AddMemberOutcome, CreateWorkspaceOutcome, RemoveMemberOutcome, WorkspaceMemberRecord,
+    AddMemberOutcome, CreateWorkspaceOutcome, RemoveMemberOutcome, WorkspaceDeletion,
+    WorkspaceMemberRecord,
 };

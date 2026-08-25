@@ -112,20 +112,6 @@ pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
 /// [`DirectoryBackup::move_for_delete`] stages a deletion under.
 pub(crate) const DELETION_BACKUP_INFIX: &str = ".delete.rollback.";
 
-/// Reports whether `name` is a directory staged aside for deletion.
-///
-/// Callers that walk a directory listing rather than hold a [`DirectoryBackup`]
-/// ask here, so the staging spelling lives in one place. The whole shape
-/// [`DirectoryBackup::move_for_delete`] writes has to match — the infix
-/// followed by the unique suffix — because a workspace name may legitimately
-/// contain the infix, and reading such a name as staged would drop a live
-/// workspace from a directory scan. The last occurrence is the one that counts,
-/// so a name containing the infix cannot mask the staged suffix after it.
-pub(crate) fn is_deletion_backup(name: &str) -> bool {
-    name.rsplit_once(DELETION_BACKUP_INFIX)
-        .is_some_and(|(_, unique_suffix)| Uuid::try_parse(unique_suffix).is_ok())
-}
-
 #[derive(Debug)]
 pub(crate) struct DirectoryBackup {
     original: PathBuf,
@@ -134,15 +120,44 @@ pub(crate) struct DirectoryBackup {
 }
 
 impl DirectoryBackup {
+    /// Stages `path` aside for deletion beside itself.
+    ///
+    /// Only for callers whose parent directory nothing enumerates for live
+    /// entries — the staged directory sits in it, and a name carries no
+    /// evidence of which of the two it is. Callers whose parent *is* scanned
+    /// take [`DirectoryBackup::move_for_delete_into`] instead.
     pub(crate) fn move_for_delete(path: &Path, name: impl fmt::Display) -> io::Result<Self> {
         let backup =
             path.with_file_name(format!("{name}{DELETION_BACKUP_INFIX}{}", Uuid::new_v4()));
+        Self::stage(path, backup)
+    }
+
+    /// Stages `path` aside for deletion inside `staging_dir`, which is created
+    /// if it is not there yet.
+    ///
+    /// Keeping the staged directory out of the original's parent is what lets
+    /// a scan of that parent read every entry it finds as live. Pass a
+    /// `staging_dir` on the same filesystem as `path`, so the move stays a
+    /// rename.
+    pub(crate) fn move_for_delete_into(
+        path: &Path,
+        staging_dir: &Path,
+        name: impl fmt::Display,
+    ) -> io::Result<Self> {
+        let backup = staging_dir.join(format!("{name}{DELETION_BACKUP_INFIX}{}", Uuid::new_v4()));
+        Self::stage(path, backup)
+    }
+
+    fn stage(path: &Path, backup: PathBuf) -> io::Result<Self> {
         if !path.try_exists()? {
             return Ok(Self {
                 original: path.to_path_buf(),
                 backup,
                 moved: false,
             });
+        }
+        if let Some(parent) = backup.parent() {
+            ensure_dir(parent)?;
         }
         if backup.try_exists()? {
             fs::remove_dir_all(&backup)?;
@@ -315,34 +330,7 @@ fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DELETION_BACKUP_INFIX, DirectoryBackup, Uuid, ensure_file_private, is_deletion_backup,
-        remove_file_if_exists,
-    };
-
-    /// The infix alone is not the staging spelling, and a workspace name is
-    /// free to contain it, so only the full staged shape may be read as one.
-    #[test]
-    fn only_the_staged_shape_reads_as_a_deletion_backup() {
-        assert!(is_deletion_backup(&format!(
-            "workspace{DELETION_BACKUP_INFIX}{}",
-            Uuid::new_v4()
-        )));
-        assert!(
-            is_deletion_backup(&format!(
-                "workspace{DELETION_BACKUP_INFIX}stale{DELETION_BACKUP_INFIX}{}",
-                Uuid::new_v4()
-            )),
-            "the last occurrence is the staged one"
-        );
-        assert!(!is_deletion_backup(&format!(
-            "left{DELETION_BACKUP_INFIX}right"
-        )));
-        assert!(!is_deletion_backup(&format!(
-            "workspace{DELETION_BACKUP_INFIX}7f1c5a4e"
-        )));
-        assert!(!is_deletion_backup("workspace"));
-    }
+    use super::{DirectoryBackup, ensure_file_private, remove_file_if_exists};
 
     #[test]
     fn ensure_file_private_rejects_existing_directory() {
@@ -411,6 +399,35 @@ mod tests {
 
         assert!(source_dir.join("manifest.yaml").exists());
         assert!(!backup.backup_path().exists());
+    }
+
+    /// Staging into a separate root is what keeps the original's parent
+    /// holding live entries only, so the staged directory has to land outside
+    /// it — and a root that is not there yet must not fail the staging.
+    #[test]
+    fn directory_backup_stages_into_a_separate_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspaces_root = temp.path().join("workspaces");
+        let workspace_dir = workspaces_root.join("work");
+        std::fs::create_dir_all(&workspace_dir).expect("create workspace dir");
+        std::fs::write(workspace_dir.join("marker"), "live").expect("write file");
+        let staging_root = temp.path().join("deleted-workspaces");
+
+        let backup = DirectoryBackup::move_for_delete_into(&workspace_dir, &staging_root, "work")
+            .expect("move backup");
+
+        assert_eq!(backup.backup_path().parent(), Some(staging_root.as_path()));
+        assert!(
+            std::fs::read_dir(&workspaces_root)
+                .expect("read workspaces root")
+                .next()
+                .is_none(),
+            "a scan of the original parent must see nothing left behind"
+        );
+
+        backup.restore().expect("restore backup");
+
+        assert!(workspace_dir.join("marker").exists());
     }
 
     #[test]

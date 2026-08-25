@@ -103,6 +103,18 @@ impl AppStateLayout {
         self.config_dir.join("workspaces")
     }
 
+    /// Where a workspace directory waits between the deletion committing and
+    /// its contents being removed.
+    ///
+    /// A sibling of [`Self::workspaces_root`] rather than a directory inside
+    /// it, so the rename stays on one filesystem while every entry a scan of
+    /// the workspaces root finds is a live workspace. A workspace name is free
+    /// to look like anything, staging included, so the location is the only
+    /// evidence that separates the two.
+    pub(crate) fn deleted_workspaces_root(&self) -> PathBuf {
+        self.config_dir.join("deleted-workspaces")
+    }
+
     pub(crate) fn remove_legacy_task_event_logs(&self) -> Result<(), std::io::Error> {
         let workspace_entries = match std::fs::read_dir(self.workspaces_root()) {
             Ok(entries) => entries,
@@ -307,6 +319,10 @@ impl AppStateLayout {
 impl WorkspacePaths for AppStateLayout {
     fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
         AppStateLayout::workspace_dir(self, workspace_name)
+    }
+
+    fn deleted_workspaces_root(&self) -> PathBuf {
+        AppStateLayout::deleted_workspaces_root(self)
     }
 }
 

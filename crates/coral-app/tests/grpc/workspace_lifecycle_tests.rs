@@ -98,8 +98,8 @@ fn find_workspace_delete_backup(
     workspace_name: &str,
 ) -> std::path::PathBuf {
     let prefix = format!("{workspace_name}.delete.rollback.");
-    fs::read_dir(config_dir.join("workspaces"))
-        .expect("read workspaces dir")
+    fs::read_dir(config_dir.join("deleted-workspaces"))
+        .expect("read deleted workspaces dir")
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .find(|path| {
@@ -108,6 +108,20 @@ fn find_workspace_delete_backup(
                 .is_some_and(|name| name.starts_with(&prefix))
         })
         .expect("workspace delete backup dir")
+}
+
+/// Every entry a scan of the workspaces root finds is read as a live
+/// workspace, so a deletion must leave none of its own behind there — the
+/// staged directory included, wherever its removal got to.
+fn workspace_root_entries(config_dir: &std::path::Path) -> Vec<String> {
+    match fs::read_dir(config_dir.join("workspaces")) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("read workspaces dir: {error}"),
+    }
 }
 
 fn local_trace_store_dir(harness: &GrpcHarness) -> std::path::PathBuf {
@@ -360,6 +374,11 @@ async fn delete_workspace_removes_config_entry_and_workspace_artifacts() {
     assert!(
         !source_dir.exists(),
         "delete should remove workspace artifacts"
+    );
+    assert_eq!(
+        workspace_root_entries(harness.config_dir()),
+        Vec::<String>::new(),
+        "delete should leave nothing in the workspaces root for a later scan to read as live"
     );
 
     let raw = fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
@@ -713,6 +732,15 @@ async fn delete_workspace_succeeds_when_backup_cleanup_fails_after_config_delete
         .workspace
         .expect("delete workspace response");
     assert_eq!(deleted.name, "work");
+
+    // The staged directory outlived the deletion, which is the whole point of
+    // this test — but it did so outside the workspaces root, so nothing left
+    // there can be read back as a live workspace.
+    assert_eq!(
+        workspace_root_entries(harness.config_dir()),
+        Vec::<String>::new(),
+        "a deletion whose cleanup failed still leaves the workspaces root empty"
+    );
 
     let backup = find_workspace_delete_backup(harness.config_dir(), "work");
     fs::set_permissions(backup.join("sources"), fs::Permissions::from_mode(0o700))

@@ -4,7 +4,6 @@ use super::session::DbRepos;
 use super::{CoralDb, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::state::{AppStateLayout, ConfigStore};
-use crate::storage::fs::is_deletion_backup;
 use crate::workspaces::{WorkspaceName, WorkspaceRecord};
 
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
@@ -92,17 +91,26 @@ async fn cutover_legacy_workspace_catalog_at(
 /// from there. It does not fall back to a fixed `default`: a genuinely fresh
 /// install has no workspace directory and must cut over to no workspaces.
 ///
+/// Reading a directory as a live workspace is sound because deletion moves the
+/// directory out of the workspaces root before it commits anything, so this
+/// root holds live workspaces only. That holds for deletions this version
+/// performed. A directory an older Coral orphaned — it staged the deletion
+/// beside the live workspaces and failed to remove it, or failed to stage it
+/// at all after committing — carries no evidence of being deleted, and this
+/// scan does resurrect it. Nothing on disk can tell the two apart after the
+/// fact; the residue is bounded by installs that hit that failure before
+/// upgrading.
+///
 /// Deliberately a fallback and not a union with the config's own names, which
 /// leaves one residual open. A config that named `analytics` and nothing else
 /// could still have had a live implicit workspace beside it, and that one is
 /// orphaned for good because the cutover marker never re-runs. Closing it by
-/// unioning is not safe from here: a directory alone cannot distinguish a
-/// workspace that was implicitly provisioned from one a user deleted, and
-/// `cuts_over_legacy_workspaces_into_database` pins that a leftover directory
-/// must not come back — resurrecting deleted content is the worse failure. Any
-/// real fix needs evidence a directory scan does not carry. The exposed
-/// population is narrow: every config Coral itself persisted serializes its
-/// workspaces back, so only a hand-edited config reaches this shape.
+/// unioning would resurrect exactly the older-Coral orphans described above,
+/// and `cuts_over_legacy_workspaces_into_database` pins that a leftover
+/// directory must not come back beside a config that names workspaces. The
+/// exposed population is narrow: every config Coral itself persisted
+/// serializes its workspaces back, so only a hand-edited config reaches this
+/// shape.
 fn implicitly_provisioned_workspaces(
     layout: &AppStateLayout,
 ) -> Result<Vec<WorkspaceRecord>, AppError> {
@@ -130,7 +138,6 @@ fn implicitly_provisioned_workspaces(
         let directory_name = entry.file_name();
         let Some(name) = directory_name
             .to_str()
-            .filter(|name| !is_deletion_backup(name))
             .and_then(|name| WorkspaceName::parse(name).ok())
         else {
             continue;
@@ -318,11 +325,12 @@ mod tests {
         layout.ensure().expect("ensure layout");
         // An install that has held a workspace and lost it looks the same as
         // one that never had one: an emptied root, and at most a directory a
-        // deletion staged aside and failed to remove.
-        std::fs::create_dir_all(layout.workspaces_root().join(format!(
+        // deletion staged aside — into its own root — and failed to remove.
+        std::fs::create_dir_all(layout.workspaces_root()).expect("create workspaces root");
+        std::fs::create_dir_all(layout.deleted_workspaces_root().join(format!(
             "default{DELETION_BACKUP_INFIX}{STAGED_DELETION_SUFFIX}"
         )))
-        .expect("create workspaces root");
+        .expect("stage a deletion that was never removed");
         let config_store = ConfigStore::new(layout.clone());
         let db = open_sqlite(&layout).await;
 
@@ -454,24 +462,25 @@ mod tests {
         assert_eq!(workspace_ids(&db).await, vec!["analytics".to_string()]);
     }
 
-    /// Workspace names may contain the infix a staged deletion is spelled with,
-    /// and one that does is an ordinary workspace: only the full staged shape
-    /// is excluded from the import.
+    /// A workspace name is free to look exactly like a staged deletion, so a
+    /// name can never say which of the two a directory is. Location can: the
+    /// live workspace stays in the workspaces root and the staged deletion
+    /// sits in its own, and only the former is imported.
     #[tokio::test]
-    async fn cutover_preserves_a_workspace_named_like_a_staged_deletion() {
+    async fn cutover_separates_a_staged_deletion_from_a_workspace_named_like_one() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
-        let named_like_a_backup = format!("analytics{DELETION_BACKUP_INFIX}archive");
+        let named_like_a_backup =
+            format!("analytics{DELETION_BACKUP_INFIX}{STAGED_DELETION_SUFFIX}");
         let implicit_workspace = WorkspaceName::parse(&named_like_a_backup).expect("workspace");
         std::fs::create_dir_all(layout.workspace_dir(&implicit_workspace))
             .expect("create the legacy workspace dir");
-        let staged = WorkspaceName::parse(&format!(
-            "analytics{DELETION_BACKUP_INFIX}{STAGED_DELETION_SUFFIX}"
-        ))
-        .expect("workspace");
-        std::fs::create_dir_all(layout.workspace_dir(&staged)).expect("stage a deletion beside it");
+        std::fs::create_dir_all(layout.deleted_workspaces_root().join(format!(
+            "work{DELETION_BACKUP_INFIX}{STAGED_DELETION_SUFFIX}"
+        )))
+        .expect("stage a deletion outside the workspaces root");
         let db = open_sqlite(&layout).await;
 
         cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
