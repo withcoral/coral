@@ -28,6 +28,8 @@ struct IdentityRow {
     identity_spec_fingerprint: String,
     issuer: String,
     identity_type: String,
+    identity_spec_audience_port: Option<i64>,
+    identity_spec_audience_host: Option<String>,
     created_at_unix_nanos: i64,
     updated_at_unix_nanos: i64,
 }
@@ -53,6 +55,8 @@ impl IdentityRow {
             self.identity_spec_fingerprint,
             self.issuer,
             self.identity_type,
+            self.identity_spec_audience_host,
+            self.identity_spec_audience_port,
         )?;
         Ok(IdentityRecord {
             owner,
@@ -171,6 +175,11 @@ impl IdentitiesRepo<'_, CoralTx<'_>> {
     ) -> Result<IdentityRecord, AppError> {
         validate_write_timestamp(now_unix_nanos)?;
         spec_reference.validate_for_owner(owner)?;
+        let audience = spec_reference.audience().ok_or_else(|| {
+            AppError::InvalidInput(
+                "identity spec reference is missing its pinned audience".to_string(),
+            )
+        })?;
         let current_updated_at = Expr::col((Identities::Table, Identities::UpdatedAtUnixNanos));
         let key = spec_reference.key();
         let statement = Query::insert()
@@ -190,6 +199,8 @@ impl IdentitiesRepo<'_, CoralTx<'_>> {
                 Expr::val(spec_reference.fingerprint()),
                 Expr::val(spec_reference.issuer()),
                 Expr::val(spec_reference.identity_type()),
+                Expr::val(audience.port().map(i64::from)),
+                Expr::val(audience.host()),
                 Expr::val(now_unix_nanos),
                 Expr::val(now_unix_nanos),
             ])
@@ -205,6 +216,8 @@ impl IdentitiesRepo<'_, CoralTx<'_>> {
                     Identities::IdentitySpecFingerprint,
                     Identities::Issuer,
                     Identities::IdentityType,
+                    Identities::IdentitySpecAudiencePort,
+                    Identities::IdentitySpecAudienceHost,
                 ])
                 .value(
                     Identities::UpdatedAtUnixNanos,
@@ -273,7 +286,7 @@ fn identity_select() -> sea_query::SelectStatement {
         .to_owned()
 }
 
-fn identity_columns() -> [Identities; 11] {
+fn identity_columns() -> [Identities; 13] {
     [
         Identities::OwnerKind,
         Identities::OwnerKey,
@@ -284,6 +297,8 @@ fn identity_columns() -> [Identities; 11] {
         Identities::IdentitySpecFingerprint,
         Identities::Issuer,
         Identities::IdentityType,
+        Identities::IdentitySpecAudiencePort,
+        Identities::IdentitySpecAudienceHost,
         Identities::CreatedAtUnixNanos,
         Identities::UpdatedAtUnixNanos,
     ]

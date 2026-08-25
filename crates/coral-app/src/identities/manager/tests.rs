@@ -716,7 +716,7 @@ pub(crate) async fn assert_workspace_fixed_token_create_contract(db: &Arc<CoralD
         ),
         (
             &shadowed_workspace,
-            fixed_manifest(&shadowed, "shadowed_workspace"),
+            fixed_manifest_with_port(&shadowed, "shadowed_workspace", 8443),
         ),
         (&wrong_global, fixed_manifest(&wrong_type, "wrong_global")),
         (&wrong_workspace, oauth_manifest(&wrong_type)),
@@ -837,7 +837,12 @@ pub(crate) async fn assert_workspace_fixed_token_create_contract(db: &Arc<CoralD
         )
         .await
         .expect("create from workspace override");
-    assert_reference_key(&shadowed_created, &shadowed_workspace, "shadowed_workspace");
+    assert_reference_key_with_port(
+        &shadowed_created,
+        &shadowed_workspace,
+        "shadowed_workspace",
+        Some(8443),
+    );
     let shadowed_pair = load_pair(db, &owner, &shadowed_identity).await;
     assert_eq!(shadowed_pair.0.as_ref(), Some(&shadowed_created));
     assert_eq!(
@@ -1214,8 +1219,20 @@ fn assert_reference(record: &IdentityRecord, spec_name: &str, revision: &str) {
 }
 
 fn assert_reference_key(record: &IdentityRecord, key: &IdentitySpecKey, revision: &str) {
-    let manifest = parse_identity_manifest_yaml(&fixed_manifest(key.name(), revision))
-        .expect("expected manifest");
+    assert_reference_key_with_port(record, key, revision, None);
+}
+
+fn assert_reference_key_with_port(
+    record: &IdentityRecord,
+    key: &IdentitySpecKey,
+    revision: &str,
+    port: Option<u16>,
+) {
+    let yaml = port.map_or_else(
+        || fixed_manifest(key.name(), revision),
+        |port| fixed_manifest_with_port(key.name(), revision, port),
+    );
+    let manifest = parse_identity_manifest_yaml(&yaml).expect("expected manifest");
     assert_eq!(record.spec_reference.key(), key);
     assert_eq!(
         record.spec_reference.fingerprint(),
@@ -1223,6 +1240,9 @@ fn assert_reference_key(record: &IdentityRecord, key: &IdentitySpecKey, revision
     );
     assert_eq!(record.spec_reference.issuer(), format!("issuer_{revision}"));
     assert_eq!(record.spec_reference.identity_type(), "fixed_token");
+    let audience = record.spec_reference.audience().expect("pinned audience");
+    assert_eq!(audience.host(), "api.example.com");
+    assert_eq!(audience.port(), port);
 }
 
 fn assert_material(
@@ -1250,8 +1270,20 @@ fn assert_material(
 }
 
 fn fixed_manifest(name: &str, revision: &str) -> String {
+    fixed_manifest_with_audience(name, revision, "{host: api.example.com}")
+}
+
+fn fixed_manifest_with_port(name: &str, revision: &str, port: u16) -> String {
+    fixed_manifest_with_audience(
+        name,
+        revision,
+        &format!("{{host: api.example.com, port: {port}}}"),
+    )
+}
+
+fn fixed_manifest_with_audience(name: &str, revision: &str, audience: &str) -> String {
     format!(
-        "kind: identity\nspec_version: 1\nname: {name}\nversion: {revision}\ndescription: {revision}\nissuer: issuer_{revision}\ntype: fixed_token\naudience: {{host: api.example.com}}\n"
+        "kind: identity\nspec_version: 1\nname: {name}\nversion: {revision}\ndescription: {revision}\nissuer: issuer_{revision}\ntype: fixed_token\naudience: {audience}\n"
     )
 }
 

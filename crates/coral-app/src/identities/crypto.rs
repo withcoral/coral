@@ -155,7 +155,9 @@ mod tests {
         encrypt_credential_values, seal_envelope_document,
     };
     use crate::encrypted_document::EncryptedEnvelopeDocument;
-    use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
+    use crate::identities::model::{
+        IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference,
+    };
     use crate::identity::spec_document::{
         decrypt_identity_spec_document, encrypt_identity_spec_document,
     };
@@ -481,6 +483,7 @@ mod tests {
             fingerprint,
             "github",
             "fixed_token",
+            IdentityAudience::new("api.github.com", None).expect("audience"),
         )
         .expect("reference")
     }
@@ -501,6 +504,7 @@ mod tests {
             fingerprint,
             "github",
             "fixed_token",
+            IdentityAudience::new("api.github.com", None).expect("audience"),
         )
         .expect("reference")
     }

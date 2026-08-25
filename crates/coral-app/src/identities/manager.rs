@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use coral_spec::IdentitySpecType;
 
 use super::crypto::{IdentityDocumentBinding, encrypt_identity_document};
-use super::model::{IdentityName, IdentityOwner, IdentitySpecReference};
+use super::model::{IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::bootstrap::AppError;
 use crate::credentials::encryption::CredentialKeyProvider;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
@@ -366,12 +366,14 @@ impl IdentityManager {
                 requested_key.name()
             )));
         }
+        let audience = IdentityAudience::from_manifest(&installed.manifest.audience)?;
         let reference = IdentitySpecReference::new(
             owner,
             installed.key,
             identity_spec_fingerprint(&installed.manifest)?,
             installed.manifest.issuer,
             "fixed_token",
+            audience,
         )?;
         Ok(SelectedFixedTokenSpec {
             requested_key: requested_key.clone(),

@@ -31,6 +31,9 @@ message IdentitySpecReference {
   string issuer = 4;
   // Identity mechanism copied from the selected identity spec.
   IdentitySpecType identity_type = 5;
+  // Normalized audience copied from the selected identity spec. Absent only
+  // for legacy identities written before audience snapshots were persisted.
+  IdentityAudience audience = 6;
 }
 
 // Safe metadata for one stored provider-facing identity.
