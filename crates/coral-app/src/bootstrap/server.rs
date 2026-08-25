@@ -53,6 +53,7 @@ use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
 use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
+use crate::search::store::SearchStorage;
 use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
@@ -354,14 +355,12 @@ impl ServerBuilder {
         let (telemetry_config, active_trace_store) =
             init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let credential_config = CredentialStorageConfig::load(&layout)?;
-        let credential_store =
-            CredentialStore::with_preference(layout.clone(), credential_config.storage);
-        let credential_manager = CredentialManager::new(credential_store);
+        let credential_manager = init_credential_manager(&layout)?;
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
         let database_sources_enabled = features.enabled(Feature::DatabaseSources);
+        let search_storage = SearchStorage::sqlite(layout.clone());
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
             credential_manager.clone(),
@@ -370,7 +369,8 @@ impl ServerBuilder {
             diagnostic_reporter.clone(),
         )
         .with_pool_registry(Arc::clone(&workspace_pool_registry))
-        .with_database_sources_enabled(database_sources_enabled);
+        .with_database_sources_enabled(database_sources_enabled)
+        .with_search_storage(search_storage.clone());
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
@@ -409,6 +409,7 @@ impl ServerBuilder {
         let search_observations =
             observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
         let search_manager = SearchManager::with_diagnostic_reporter(
+            search_storage,
             layout,
             &config_store,
             workspace_manager.clone(),
@@ -477,6 +478,13 @@ fn trace_components_for_store(
             ))),
         }
     })
+}
+
+fn init_credential_manager(layout: &AppStateLayout) -> Result<CredentialManager, AppError> {
+    let credential_config = CredentialStorageConfig::load(layout)?;
+    let credential_store =
+        CredentialStore::with_preference(layout.clone(), credential_config.storage);
+    Ok(CredentialManager::new(credential_store))
 }
 
 async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {

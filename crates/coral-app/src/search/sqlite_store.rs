@@ -6,10 +6,12 @@ use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
-use crate::search::catalog::sqlite_index::{
+use crate::search::catalog::index::{
     CatalogClearResult, CatalogDocumentClass, CatalogIndexSnapshot, CatalogRebuildResult,
-    CatalogRefreshResult, CatalogSearchHits, SqliteCatalogIndex,
-    clear_catalog_source_documents_in_transaction,
+    CatalogRefreshResult, CatalogSearchHits,
+};
+use crate::search::catalog::sqlite_index::{
+    SqliteCatalogIndex, clear_catalog_source_documents_in_transaction,
     clear_catalog_workspace_documents_in_transaction,
 };
 use crate::search::observed::{

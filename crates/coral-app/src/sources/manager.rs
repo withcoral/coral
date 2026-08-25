@@ -17,7 +17,7 @@ use crate::credentials::{
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
 use crate::search::observed::SearchObservationHandle;
-use crate::search::sqlite_store::SqliteSearchStore;
+use crate::search::store::SearchStorage;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
@@ -49,6 +49,7 @@ pub(crate) struct SourceManager {
     lifecycle_lock: WorkspaceLifecycleLock,
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
+    search_storage: SearchStorage,
     pool_registry: Arc<WorkspacePoolRegistry>,
     database_sources_enabled: bool,
 }
@@ -235,6 +236,7 @@ impl SourceManager {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
+            search_storage: SearchStorage::sqlite(layout.clone()),
             layout,
             lifecycle_lock,
             diagnostic_reporter,
@@ -242,6 +244,11 @@ impl SourceManager {
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
             database_sources_enabled: false,
         }
+    }
+
+    pub(crate) fn with_search_storage(mut self, search_storage: SearchStorage) -> Self {
+        self.search_storage = search_storage;
+        self
     }
 
     pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
@@ -951,27 +958,29 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) {
-        let search_sqlite_file = self.layout.search_sqlite_file(workspace_name);
-        if !search_sqlite_file.exists() {
-            return;
-        }
-        match SqliteSearchStore::open_workspace(&self.layout, workspace_name)
-            .and_then(|store| store.clear_catalog_workspace())
-        {
-            Ok(result) => {
+        match self
+            .search_storage
+            .open_existing_workspace(workspace_name)
+            .and_then(|store| {
+                store
+                    .map(|store| store.catalog().clear_workspace())
+                    .transpose()
+            }) {
+            Ok(None) => {}
+            Ok(Some(result)) => {
                 tracing::debug!(
                     workspace = %workspace_name,
                     source = %source_name,
                     deleted_document_count = result.deleted_document_count,
-                    "cleared SQLite catalog projection for source lifecycle change"
+                    "cleared catalog search projection for source lifecycle change"
                 );
             }
             Err(error) => {
                 warn!(
                     workspace = %workspace_name,
                     source = %source_name,
-                    search_sqlite_file = %search_sqlite_file.display(),
-                    "source lifecycle changed, but failed to clear SQLite catalog projection: {error}"
+                    search_backend = self.search_storage.backend_name(),
+                    "source lifecycle changed, but failed to clear catalog search projection: {error}"
                 );
             }
         }

@@ -7,7 +7,7 @@ use coral_engine::{
 use coral_spec::SourceTableFunctionKind;
 use sha2::{Digest as _, Sha256};
 
-use crate::search::catalog::sqlite_index::{
+use crate::search::catalog::index::{
     CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
 };
 use crate::search::result::{FieldRole, SearchSurfaceKind};
