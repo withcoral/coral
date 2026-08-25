@@ -115,9 +115,15 @@ pub(crate) const DELETION_BACKUP_INFIX: &str = ".delete.rollback.";
 /// Reports whether `name` is a directory staged aside for deletion.
 ///
 /// Callers that walk a directory listing rather than hold a [`DirectoryBackup`]
-/// ask here, so the staging spelling lives in one place.
+/// ask here, so the staging spelling lives in one place. The whole shape
+/// [`DirectoryBackup::move_for_delete`] writes has to match — the infix
+/// followed by the unique suffix — because a workspace name may legitimately
+/// contain the infix, and reading such a name as staged would drop a live
+/// workspace from a directory scan. The last occurrence is the one that counts,
+/// so a name containing the infix cannot mask the staged suffix after it.
 pub(crate) fn is_deletion_backup(name: &str) -> bool {
-    name.contains(DELETION_BACKUP_INFIX)
+    name.rsplit_once(DELETION_BACKUP_INFIX)
+        .is_some_and(|(_, unique_suffix)| Uuid::try_parse(unique_suffix).is_ok())
 }
 
 #[derive(Debug)]
@@ -309,7 +315,34 @@ fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryBackup, ensure_file_private, remove_file_if_exists};
+    use super::{
+        DELETION_BACKUP_INFIX, DirectoryBackup, Uuid, ensure_file_private, is_deletion_backup,
+        remove_file_if_exists,
+    };
+
+    /// The infix alone is not the staging spelling, and a workspace name is
+    /// free to contain it, so only the full staged shape may be read as one.
+    #[test]
+    fn only_the_staged_shape_reads_as_a_deletion_backup() {
+        assert!(is_deletion_backup(&format!(
+            "workspace{DELETION_BACKUP_INFIX}{}",
+            Uuid::new_v4()
+        )));
+        assert!(
+            is_deletion_backup(&format!(
+                "workspace{DELETION_BACKUP_INFIX}stale{DELETION_BACKUP_INFIX}{}",
+                Uuid::new_v4()
+            )),
+            "the last occurrence is the staged one"
+        );
+        assert!(!is_deletion_backup(&format!(
+            "left{DELETION_BACKUP_INFIX}right"
+        )));
+        assert!(!is_deletion_backup(&format!(
+            "workspace{DELETION_BACKUP_INFIX}7f1c5a4e"
+        )));
+        assert!(!is_deletion_backup("workspace"));
+    }
 
     #[test]
     fn ensure_file_private_rejects_existing_directory() {

@@ -193,6 +193,11 @@ mod tests {
     use crate::storage::fs::DELETION_BACKUP_INFIX;
     use crate::workspaces::WorkspaceName;
 
+    /// The unique suffix a staged deletion carries, fixed so the directories
+    /// these tests plant read exactly as `move_for_delete` would have written
+    /// them.
+    const STAGED_DELETION_SUFFIX: &str = "7f1c5a4e-1d29-4f3a-9f2b-2c6d0f9a1b34";
+
     #[tokio::test]
     async fn cuts_over_legacy_workspaces_into_database() {
         let temp = tempdir().expect("temp dir");
@@ -308,11 +313,9 @@ mod tests {
         // An install that has held a workspace and lost it looks the same as
         // one that never had one: an emptied root, and at most a directory a
         // deletion staged aside and failed to remove.
-        std::fs::create_dir_all(
-            layout
-                .workspaces_root()
-                .join(format!("default{DELETION_BACKUP_INFIX}7f1c5a4e")),
-        )
+        std::fs::create_dir_all(layout.workspaces_root().join(format!(
+            "default{DELETION_BACKUP_INFIX}{STAGED_DELETION_SUFFIX}"
+        )))
         .expect("create workspaces root");
         let config_store = ConfigStore::new(layout.clone());
         let db = open_sqlite(&layout).await;
@@ -407,6 +410,33 @@ mod tests {
             }
         );
         assert_eq!(workspace_ids(&db).await, vec!["default".to_string()]);
+    }
+
+    /// Workspace names may contain the infix a staged deletion is spelled with,
+    /// and one that does is an ordinary workspace: only the full staged shape
+    /// is excluded from the import.
+    #[tokio::test]
+    async fn cutover_preserves_a_workspace_named_like_a_staged_deletion() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let named_like_a_backup = format!("analytics{DELETION_BACKUP_INFIX}archive");
+        let implicit_workspace = WorkspaceName::parse(&named_like_a_backup).expect("workspace");
+        std::fs::create_dir_all(layout.workspace_dir(&implicit_workspace))
+            .expect("create the legacy workspace dir");
+        let staged = WorkspaceName::parse(&format!(
+            "analytics{DELETION_BACKUP_INFIX}{STAGED_DELETION_SUFFIX}"
+        ))
+        .expect("workspace");
+        std::fs::create_dir_all(layout.workspace_dir(&staged)).expect("stage a deletion beside it");
+        let db = open_sqlite(&layout).await;
+
+        cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
+            .await
+            .expect("cut over legacy workspace catalog");
+
+        assert_eq!(workspace_ids(&db).await, vec![named_like_a_backup]);
     }
 
     async fn workspace_ids(db: &CoralDb) -> Vec<String> {
