@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.14.1](https://github.com/withcoral/coral/compare/v0.14.0...v0.14.1) (2026-08-25)
+
+
+### Features
+
+* **app:** encrypt identity spec setup documents ([#1807](https://github.com/withcoral/coral/issues/1807)) ([0bef93f](https://github.com/withcoral/coral/commit/0bef93f10655eca99dfbe5aab54fa63479cd30d2))
+* **app:** resolve encrypted identity spec inputs ([#1810](https://github.com/withcoral/coral/issues/1810)) ([fa5233d](https://github.com/withcoral/coral/commit/fa5233d86b1c514609c785d80a7b1ca4146e3f9c))
+* **app:** resolve identity spec setup inputs ([#1809](https://github.com/withcoral/coral/issues/1809)) ([9ea2adb](https://github.com/withcoral/coral/commit/9ea2adbc7d0270ac6331a414cb750c826b7bd0c1))
+* **app:** resolve identity specs coherently ([#1808](https://github.com/withcoral/coral/issues/1808)) ([7b8313d](https://github.com/withcoral/coral/commit/7b8313d7f1f0c98611200c20adda680c381d1aad))
+* **coral-ui:** Add CSS [@layers](https://github.com/layers) to WAX ([#2233](https://github.com/withcoral/coral/issues/2233)) ([3ddf2aa](https://github.com/withcoral/coral/commit/3ddf2aa42976081c96acb1ef67a776c2ee4e89c8))
+* **desktop:** package the Linux desktop app as AppImage and deb ([#2217](https://github.com/withcoral/coral/issues/2217)) ([485c5e7](https://github.com/withcoral/coral/commit/485c5e793b790f2d5f7c3864e32c730d89d5af64))
+* **state:** persist trace Search responses ([#2129](https://github.com/withcoral/coral/issues/2129)) ([8df39c5](https://github.com/withcoral/coral/commit/8df39c5c99c2c84e5afa459bea869ae0b8dee9d7))
+* **ui:** add workspace users management component ([#2223](https://github.com/withcoral/coral/issues/2223)) ([6c3d4cc](https://github.com/withcoral/coral/commit/6c3d4cc05485d9ba5f331884c9d67e43cf2b05d7))
+
+
+### Bug Fixes
+
+* **coral-ui:** use unstyled react-toastify components ([#2243](https://github.com/withcoral/coral/issues/2243)) ([0c28f01](https://github.com/withcoral/coral/commit/0c28f011c2a247f4a093af45a52e253a2a1e8f42))
+* **ui:** show each credential method's own hint ([#2240](https://github.com/withcoral/coral/issues/2240)) ([c156e41](https://github.com/withcoral/coral/commit/c156e41ca884beb3fbdbe678d6e325925721ccc9))
+
 ## [0.14.0](https://github.com/withcoral/coral/compare/v0.13.0...v0.14.0) (2026-08-20)
 
 
