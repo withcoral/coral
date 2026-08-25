@@ -1593,11 +1593,6 @@ pub(crate) mod tests {
 
     /// Installing a spec that stores no setup-input document must not consult the key
     /// provider, and installing one that does must still require it.
-    ///
-    /// Only an `#[ignore]`d Postgres test covered this, so it silently skipped wherever
-    /// `CORAL_TEST_POSTGRES_URL` was unset — including every default `cargo test` run.
-    /// Resolving the sealing key eagerly therefore broke Postgres deployments, which
-    /// have no node-local key, without turning a single local test red.
     #[tokio::test]
     async fn sealing_key_is_required_only_when_a_document_is_written() {
         let temp = tempdir().unwrap();

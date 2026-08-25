@@ -820,7 +820,7 @@ async fn open_with_provider(
 }
 
 fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileEnvelopeKeyProvider {
-    LocalFileEnvelopeKeyProvider::new(layout, None)
+    LocalFileEnvelopeKeyProvider::new(layout)
 }
 
 async fn encrypt_credential_v1_for_test(
