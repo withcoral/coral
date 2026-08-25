@@ -121,7 +121,7 @@ only way to exercise it. Two steps of it have no test:
   the new image — the same exit that makes the AppImage runtime unmount the AppDir
   the helper is running from. Check that the app actually comes back.
 - **The destination.** Run the update once from an image named
-  `coral-desktop-linux-x64.AppImage` (replaced in place) and once from a renamed
+  `coral-desktop-linux-x86_64.AppImage` (replaced in place) and once from a renamed
   `coral-desktop-<version>.AppImage` (new image written beside it, old one
   unlinked, `appimage-filename-updated` carries the destination). The app must come
   back in both.

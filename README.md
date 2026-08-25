@@ -20,14 +20,14 @@ Everything is local: your data, credentials, and usage history never leave your
 machine.
 
 [![Download Coral for macOS](https://img.shields.io/badge/Download_for_macOS-universal_.dmg-398125?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-mac-universal.dmg)
+[![Download Coral for Linux](https://img.shields.io/badge/Download_for_Linux-x64_.AppImage-398125?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-linux-x86_64.AppImage)
+[![Download Coral for Windows](https://img.shields.io/badge/Download_for_Windows-x64_.exe-398125?style=for-the-badge&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTIgM2gyMGExIDEgMCAwMTEgMXYxMmExIDEgMCAwMS0xIDFoLTd2M2g0djJINXYtMmg0di0zSDJhMSAxIDAgMDEtMS0xVjRhMSAxIDAgMDExLTF6bTEgMnYxMGgxOFY1eiIvPjwvc3ZnPg==)](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-win-x64.exe)
 
-Coral ships as a macOS desktop app, and the app bundles the `coral` binary it
-runs queries with. On Linux or Windows, and for servers and automation, use the
-[CLI](#cli-quickstart).
+Coral ships as a desktop app on macOS, Linux, and Windows. For servers and automation, use the [CLI](#cli-quickstart).
 
 ## Get started
 
-1. **Install Coral.** Use the download above, or see
+1. **Install Coral.** Use a download above, or see
    [all installation options](https://withcoral.com/docs/getting-started/installation).
 2. **Add your sources.** Connect GitHub, Slack, Datadog, and other
    [bundled sources](https://withcoral.com/docs/reference/bundled-sources) from

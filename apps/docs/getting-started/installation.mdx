@@ -3,179 +3,105 @@ title: "Installation"
 description: "Install the Coral desktop app or CLI"
 ---
 
-Coral ships as a desktop app on macOS. For Linux, Windows, servers, or for automation, it is also available as a CLI.
+Coral ships as a desktop app on macOS, Linux, and Windows. For servers, or for automation, it is also available as a [CLI](#cli).
 
 ## Install Coral
 
 <Tabs>
-<Tab title="Desktop app">
+<Tab title="macOS">
 
-The Coral desktop app is a universal macOS build that runs on both Apple silicon and Intel Macs.
+The macOS desktop app is a universal build that runs on both Apple silicon and Intel Macs.
 
-1. [Download the Coral desktop app](https://withcoral.com/download). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
+1. [Download the Coral desktop app](https://withcoral.com/download/mac). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
 2. Open the DMG and drag **Coral** into your Applications folder.
 3. Launch Coral and add your first [sources](/reference/bundled-sources) from the app.
 
+The macOS app updates itself.
+
+</Tab>
+
+<Tab title="Linux">
+
+The Linux desktop app is x64 only. Take the AppImage to run it without installing, or the deb on Debian and Ubuntu.
+
+1. Download the [AppImage](https://withcoral.com/download/linux/appimage) or the [deb](https://withcoral.com/download/linux/deb). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
+2. For the AppImage, make it executable and run it:
+
+   ```shellscript
+   chmod +x coral-desktop-linux-x86_64.AppImage
+   ./coral-desktop-linux-x86_64.AppImage
+   ```
+
+   For the deb, install it and launch **Coral** from your application menu:
+
+   ```shellscript
+   sudo dpkg -i coral-desktop-linux-amd64.deb
+   ```
+
+3. Launch Coral and add your first [sources](/reference/bundled-sources) from the app.
+
+<Note>
+The AppImage updates itself. The deb does not, because dpkg owns the installed
+package: install a new release to upgrade it.
+</Note>
+
+</Tab>
+
+<Tab title="Windows">
+
+The Windows desktop app is x64 only. It is an unsigned preview.
+
+1. [Download the Coral desktop app](https://withcoral.com/download/windows). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
+2. Run the installer. Windows SmartScreen shows a warning for an unrecognized app, because the installer is unsigned. Select **More info**, then **Run anyway**.
+3. The installer writes Coral under `%LOCALAPPDATA%` for your user only, and asks for no administrator rights. You can select a different directory on the install page.
+4. Launch **Coral** from the Start menu and add your first [sources](/reference/bundled-sources) from the app.
+
+<Note>
+The Windows app does not update itself. Download and run the new installer to
+upgrade.
+</Note>
+
+<Note>
+A release can ship without a Windows installer. The download link fails if the
+latest release has no `.exe` asset. Take the installer from the release before
+it.
+</Note>
+
+</Tab>
+</Tabs>
+
 The desktop app bundles the `coral` binary it runs queries with, so you don't need a separate CLI install.
-
-</Tab>
-
-<Tab title="CLI">
-
-<Tabs>
-  <Tab title="Homebrew">
-    ```shellscript
-    brew install withcoral/tap/coral
-    ```
-  </Tab>
-
-  <Tab title="Install script">
-    ```shellscript
-    curl -fsSL https://withcoral.com/install.sh | sh
-    ```
-  </Tab>
-
-  <Tab title="Windows ZIP">
-    Download and install the Windows x86_64 release ZIP:
-
-    ```powershell
-    Invoke-WebRequest `
-      -Uri "https://github.com/withcoral/coral/releases/latest/download/coral-x86_64-pc-windows-msvc.zip" `
-      -OutFile "coral-x86_64-pc-windows-msvc.zip"
-    Expand-Archive -Path "coral-x86_64-pc-windows-msvc.zip" -DestinationPath "coral" -Force
-    New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.local\bin"
-    Copy-Item "coral\coral.exe" "$env:USERPROFILE\.local\bin\coral.exe"
-    ```
-
-    If that directory is not already on your user `PATH`, add it:
-
-    ```powershell
-    [Environment]::SetEnvironmentVariable("Path", "$env:USERPROFILE\.local\bin;$env:Path", "User")
-    $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
-    ```
-
-    Verify the install:
-
-    ```powershell
-    coral --version
-    coral source discover
-    coral onboard
-    ```
-
-  </Tab>
-
-  <Tab title="Build from source">
-    Requires [Rust and Cargo](https://www.rust-lang.org/tools/install), Node.js/npm, and Make.
-
-    ```shellscript
-    make install
-    coral --help
-    ```
-
-    This installs Coral's source-management, SQL, and MCP surfaces.
-
-  </Tab>
-
-  <Tab title="Build for Windows">
-    Native Windows source builds target Windows 10 or 11 on
-    `x86_64-pc-windows-msvc`. WSL is not required for this path.
-
-    Prerequisites:
-
-    - [Git for Windows](https://git-scm.com/download/win)
-    - [Rust via rustup](https://www.rust-lang.org/tools/install), using the
-      default MSVC toolchain
-    - Visual Studio Build Tools with the "Desktop development with C++" workload
-    - Windows 10 SDK or Windows 11 SDK
-
-    Build the CLI:
-
-    ```powershell
-    cargo build --release --locked -p coral-cli
-    ```
-
-    The compiled binary is:
-
-    ```text
-    target\release\coral.exe
-    ```
-
-    Install it under your user profile:
-
-    ```powershell
-    New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.local\bin"
-    Copy-Item "target\release\coral.exe" "$env:USERPROFILE\.local\bin\coral.exe"
-    ```
-
-    If that directory is not already on your user `PATH`, add it:
-
-    ```powershell
-    [Environment]::SetEnvironmentVariable("Path", "$env:USERPROFILE\.local\bin;$env:Path", "User")
-    $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
-    ```
-
-    Verify the build:
-
-    ```powershell
-    coral --version
-    coral source discover
-    coral onboard
-    ```
-
-    This build includes Coral's source-management, SQL, and MCP surfaces.
-
-  </Tab>
-</Tabs>
-
-<Tip>
-  Once installed, run `coral onboard` to start the interactive wizard to
-  complete the setup.
-</Tip>
-
-</Tab>
-</Tabs>
 
 ## Upgrade
 
 <Tabs>
-<Tab title="Desktop app">
+<Tab title="macOS">
 
 When a new version is available, Coral will show a notification in the UI. You can use the menu bar to check for an update manually.
 
 </Tab>
 
-<Tab title="CLI">
+<Tab title="Linux">
 
-<Tabs>
-  <Tab title="Homebrew">
-    ```shellscript
-    brew upgrade withcoral/tap/coral
-    ```
-  </Tab>
+The AppImage updates itself. Coral shows a notification in the UI when a new
+version is available, and you can use the menu bar to check for an update
+manually. Coral replaces your image file and restarts.
 
-  <Tab title="Install script">
-    Re-run the installer to upgrade a direct install:
+The deb has no updater, and it shows no update notification. Download the
+[latest deb](https://withcoral.com/download/linux/deb) and install it over the
+old package:
 
-    ```shellscript
-    curl -fsSL https://withcoral.com/install.sh | sh
-    ```
+```shellscript
+sudo dpkg -i coral-desktop-linux-amd64.deb
+```
 
-  </Tab>
+</Tab>
 
-  <Tab title="Windows ZIP">
-    Download the latest `coral-x86_64-pc-windows-msvc.zip`, expand it, and
-    overwrite the installed `coral.exe`:
+<Tab title="Windows">
 
-    ```powershell
-    Invoke-WebRequest `
-      -Uri "https://github.com/withcoral/coral/releases/latest/download/coral-x86_64-pc-windows-msvc.zip" `
-      -OutFile "coral-x86_64-pc-windows-msvc.zip"
-    Expand-Archive -Path "coral-x86_64-pc-windows-msvc.zip" -DestinationPath "coral" -Force
-    Copy-Item "coral\coral.exe" "$env:USERPROFILE\.local\bin\coral.exe"
-    ```
-
-  </Tab>
-</Tabs>
+The Windows app does not update itself, and it has no update notification or
+menu item. Download the [latest installer](https://withcoral.com/download/windows)
+and run it. The installer replaces your installed copy.
 
 </Tab>
 </Tabs>
@@ -183,38 +109,221 @@ When a new version is available, Coral will show a notification in the UI. You c
 ## Uninstall
 
 <Tabs>
-<Tab title="Desktop app">
+<Tab title="macOS">
 
 Quit Coral and move it to the trash.
+
+</Tab>
+
+<Tab title="Linux">
+
+For the AppImage, quit Coral and delete the image file.
+
+For the deb, remove the package:
+
+```shellscript
+sudo apt remove coral-desktop
+```
+
+</Tab>
+
+<Tab title="Windows">
+
+Quit Coral, then remove it from **Settings** > **Apps** > **Installed apps**. You
+can also run `Uninstall Coral.exe` in the installation directory.
+
+</Tab>
+</Tabs>
 
 Coral's [local state](#local-state) lives in the config directory and is left in place, so a reinstall keeps your sources.
 You can delete that manually if needed.
 
-</Tab>
+## CLI
 
-<Tab title="CLI">
+The CLI runs Coral on a server, in a script, or on a platform the desktop app does not cover. The desktop app already includes it, so you only need this if you want `coral` on your `PATH`.
+
+### Install the CLI
 
 <Tabs>
-  <Tab title="Homebrew">
-    ```shellscript
-    brew uninstall withcoral/tap/coral
-    ```
-  </Tab>
+<Tab title="Homebrew">
 
-  <Tab title="Install script">
-    ```shellscript
-    rm -f ~/.local/bin/coral
-    rm -rf ~/.config/coral
-    ```
-  </Tab>
+```shellscript
+brew install withcoral/tap/coral
+```
 
-  <Tab title="Windows ZIP">
-    ```powershell
-    Remove-Item "$env:USERPROFILE\.local\bin\coral.exe" -ErrorAction SilentlyContinue
-    Remove-Item "$env:APPDATA\withcoral\coral\config" -Recurse -Force -ErrorAction SilentlyContinue
-    ```
-  </Tab>
+</Tab>
+
+<Tab title="Install script">
+
+```shellscript
+curl -fsSL https://withcoral.com/install.sh | sh
+```
+
+</Tab>
+
+<Tab title="Windows ZIP">
+
+Download and install the Windows x86_64 release ZIP:
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://github.com/withcoral/coral/releases/latest/download/coral-x86_64-pc-windows-msvc.zip" `
+  -OutFile "coral-x86_64-pc-windows-msvc.zip"
+Expand-Archive -Path "coral-x86_64-pc-windows-msvc.zip" -DestinationPath "coral" -Force
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.local\bin"
+Copy-Item "coral\coral.exe" "$env:USERPROFILE\.local\bin\coral.exe"
+```
+
+If that directory is not already on your user `PATH`, add it:
+
+```powershell
+[Environment]::SetEnvironmentVariable("Path", "$env:USERPROFILE\.local\bin;$env:Path", "User")
+$env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+```
+
+Verify the install:
+
+```powershell
+coral --version
+coral source discover
+coral onboard
+```
+
+</Tab>
+
+<Tab title="Build from source">
+
+Requires [Rust and Cargo](https://www.rust-lang.org/tools/install), Node.js/npm, and Make.
+
+```shellscript
+make install
+coral --help
+```
+
+This installs Coral's source-management, SQL, and MCP surfaces.
+
+</Tab>
+
+<Tab title="Build for Windows">
+
+Native Windows source builds target Windows 10 or 11 on
+`x86_64-pc-windows-msvc`. WSL is not required for this path.
+
+Prerequisites:
+
+- [Git for Windows](https://git-scm.com/download/win)
+- [Rust via rustup](https://www.rust-lang.org/tools/install), using the
+  default MSVC toolchain
+- Visual Studio Build Tools with the "Desktop development with C++" workload
+- Windows 10 SDK or Windows 11 SDK
+
+Build the CLI:
+
+```powershell
+cargo build --release --locked -p coral-cli
+```
+
+The compiled binary is:
+
+```text
+target\release\coral.exe
+```
+
+Install it under your user profile:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.local\bin"
+Copy-Item "target\release\coral.exe" "$env:USERPROFILE\.local\bin\coral.exe"
+```
+
+If that directory is not already on your user `PATH`, add it:
+
+```powershell
+[Environment]::SetEnvironmentVariable("Path", "$env:USERPROFILE\.local\bin;$env:Path", "User")
+$env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+```
+
+Verify the build:
+
+```powershell
+coral --version
+coral source discover
+coral onboard
+```
+
+This build includes Coral's source-management, SQL, and MCP surfaces.
+
+</Tab>
 </Tabs>
+
+<Tip>
+  Once installed, run `coral onboard` to start the interactive wizard to
+  complete the setup.
+</Tip>
+
+### Upgrade the CLI
+
+<Tabs>
+<Tab title="Homebrew">
+
+```shellscript
+brew upgrade withcoral/tap/coral
+```
+
+</Tab>
+
+<Tab title="Install script">
+
+Re-run the installer to upgrade a direct install:
+
+```shellscript
+curl -fsSL https://withcoral.com/install.sh | sh
+```
+
+</Tab>
+
+<Tab title="Windows ZIP">
+
+Download the latest `coral-x86_64-pc-windows-msvc.zip`, expand it, and
+overwrite the installed `coral.exe`:
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://github.com/withcoral/coral/releases/latest/download/coral-x86_64-pc-windows-msvc.zip" `
+  -OutFile "coral-x86_64-pc-windows-msvc.zip"
+Expand-Archive -Path "coral-x86_64-pc-windows-msvc.zip" -DestinationPath "coral" -Force
+Copy-Item "coral\coral.exe" "$env:USERPROFILE\.local\bin\coral.exe"
+```
+
+</Tab>
+</Tabs>
+
+### Uninstall the CLI
+
+<Tabs>
+<Tab title="Homebrew">
+
+```shellscript
+brew uninstall withcoral/tap/coral
+```
+
+</Tab>
+
+<Tab title="Install script">
+
+```shellscript
+rm -f ~/.local/bin/coral
+rm -rf ~/.config/coral
+```
+
+</Tab>
+
+<Tab title="Windows ZIP">
+
+```powershell
+Remove-Item "$env:USERPROFILE\.local\bin\coral.exe" -ErrorAction SilentlyContinue
+Remove-Item "$env:APPDATA\withcoral\coral\config" -Recurse -Force -ErrorAction SilentlyContinue
+```
 
 </Tab>
 </Tabs>
