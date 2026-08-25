@@ -50,7 +50,7 @@ The examples show one workspace called `analytics`; substitute your own.
 
   <Tab title="Claude Code">
   ```shellscript
-  claude mcp add --scope user coral -- coral mcp-stdio
+  claude mcp add --scope user coral -- coral mcp-stdio --workspace analytics
   ```
 </Tab>
 
@@ -58,7 +58,7 @@ The examples show one workspace called `analytics`; substitute your own.
   **CLI**
 
   ```shellscript
-  codex mcp add coral -- coral mcp-stdio
+  codex mcp add coral -- coral mcp-stdio --workspace analytics
   ```
 
   **Manual config**
@@ -68,7 +68,7 @@ The examples show one workspace called `analytics`; substitute your own.
   ```toml
   [mcp_servers.coral]
   command = "coral"
-  args = ["mcp-stdio"]
+  args = ["mcp-stdio", "--workspace", "analytics"]
   ```
 
   Codex uses user-scoped config shared between the CLI and IDE extension, so you only need to configure it once.
@@ -93,7 +93,7 @@ The examples show one workspace called `analytics`; substitute your own.
     "mcp": {
       "coral": {
         "type": "local",
-        "command": ["coral", "mcp-stdio"],
+        "command": ["coral", "mcp-stdio", "--workspace", "analytics"],
         "enabled": true
       }
     }
@@ -118,7 +118,7 @@ The examples show one workspace called `analytics`; substitute your own.
       "coral": {
         "type": "stdio",
         "command": "coral",
-        "args": ["mcp-stdio"]
+        "args": ["mcp-stdio", "--workspace", "analytics"]
       }
     }
   }
@@ -143,7 +143,7 @@ The examples show one workspace called `analytics`; substitute your own.
       "coral": {
         "type": "stdio",
         "command": "coral",
-        "args": ["mcp-stdio"]
+        "args": ["mcp-stdio", "--workspace", "analytics"]
       }
     }
   }
@@ -167,7 +167,7 @@ The examples show one workspace called `analytics`; substitute your own.
     "mcpServers": {
       "coral": {
         "command": "coral",
-        "args": ["mcp-stdio"]
+        "args": ["mcp-stdio", "--workspace", "analytics"]
       }
     }
   }
@@ -182,7 +182,7 @@ The examples show one workspace called `analytics`; substitute your own.
 
     ```text
     command: coral
-    args: ["mcp-stdio"]
+    args: ["mcp-stdio", "--workspace", "analytics"]
     ```
 
     Consult your client's documentation for the exact config format.
