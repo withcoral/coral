@@ -227,6 +227,10 @@ impl IdentityManager {
         let mut tx = self.db.begin_read_snapshot().await?;
         let result = async {
             owner_workspace_created_at(&mut tx, owner).await?;
+            #[cfg(test)]
+            if let Some(gate) = &self.before_write_gate {
+                gate.wait().await;
+            }
             Ok(tx.identities().list(owner).await?)
         }
         .await;
@@ -249,6 +253,10 @@ impl IdentityManager {
         let mut tx = self.db.begin_read_snapshot().await?;
         let result = async {
             owner_workspace_created_at(&mut tx, owner).await?;
+            #[cfg(test)]
+            if let Some(gate) = &self.before_write_gate {
+                gate.wait().await;
+            }
             let name = match user_name {
                 Some(name) => name,
                 None => IdentityName::parse(identity_name)?,
@@ -277,6 +285,10 @@ impl IdentityManager {
             {
                 Ok(()) => return Ok(()),
                 Err(AppError::RetryableTransactionConflict) => {
+                    #[cfg(test)]
+                    if let Some(gate) = &self.before_retry_gate {
+                        gate.wait().await;
+                    }
                     tokio::task::yield_now().await;
                 }
                 Err(error) => return Err(error),
@@ -316,6 +328,10 @@ impl IdentityManager {
                 owner_workspace_created_at(&mut tx, owner).await?;
             if workspace_created_at_unix_nanos != expected_workspace_created_at_unix_nanos {
                 return Err(owner_workspace_not_found(owner));
+            }
+            #[cfg(test)]
+            if let Some(gate) = &self.before_write_gate {
+                gate.wait().await;
             }
             if !tx.identities().delete(owner, name).await? {
                 return Err(identity_not_found(name));

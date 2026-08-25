@@ -231,6 +231,208 @@ pub(crate) async fn assert_identity_management_contract(db: &Arc<CoralDb>) {
     cleanup.commit().await.expect("commit identity cleanup");
 }
 
+#[derive(Clone, Copy)]
+enum ManagementRead {
+    List,
+    Get,
+}
+
+pub(crate) async fn assert_identity_management_race_contract(db: &Arc<CoralDb>) {
+    db.enable_sqlite_wal_for_tests()
+        .await
+        .expect("enable SQLite WAL for committed snapshot races");
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let spec = format!("manage_race_spec_{suffix}");
+    put_global_spec(db, &spec, &fixed_manifest(&spec, "manage_race")).await;
+    let provider = Arc::new(TestKeyProvider(vec![
+        CredentialEncryptionKey::from_static_bytes_for_test([76; 32]),
+    ]));
+    let manager = IdentityManager::new(db.clone(), provider.clone());
+
+    for (operation, prefix) in [(ManagementRead::List, "list"), (ManagementRead::Get, "get")] {
+        let workspace =
+            WorkspaceName::parse(&format!("{prefix}race{suffix}")).expect("read-race workspace");
+        put_workspace(db, &workspace).await;
+        let identity = format!("{prefix}_identity_{suffix}");
+        let expected = manager
+            .create_or_replace_workspace_fixed_token(
+                &workspace,
+                &identity,
+                &spec,
+                format!("{prefix}-token"),
+            )
+            .await
+            .expect("create read-race identity");
+        assert_workspace_read_delete_race(
+            db, &manager, &workspace, &identity, &expected, operation,
+        )
+        .await;
+    }
+
+    let generation_workspace =
+        WorkspaceName::parse(&format!("deleterace{suffix}")).expect("delete-race workspace");
+    put_workspace(db, &generation_workspace).await;
+    let generation_identity = format!("generation_identity_{suffix}");
+    manager
+        .create_or_replace_workspace_fixed_token(
+            &generation_workspace,
+            &generation_identity,
+            &spec,
+            "old-generation-token".to_string(),
+        )
+        .await
+        .expect("create old-generation identity");
+    assert_workspace_delete_recreate_race(
+        db,
+        &manager,
+        provider.as_ref(),
+        &generation_workspace,
+        &generation_identity,
+        &spec,
+    )
+    .await;
+
+    let mut cleanup = db.begin().await.expect("begin race cleanup");
+    cleanup
+        .workspaces()
+        .delete(generation_workspace.as_str())
+        .await
+        .expect("delete recreated workspace");
+    let spec_key = IdentitySpecKey::global(&spec).expect("race spec key");
+    assert!(
+        cleanup
+            .identity_specs()
+            .delete(&spec_key)
+            .await
+            .expect("delete race spec")
+    );
+    cleanup.commit().await.expect("commit race cleanup");
+}
+
+async fn assert_workspace_read_delete_race(
+    db: &Arc<CoralDb>,
+    manager: &IdentityManager,
+    workspace: &WorkspaceName,
+    identity: &str,
+    expected: &IdentityRecord,
+    operation: ManagementRead,
+) {
+    let owner = IdentityOwner::workspace(workspace.clone());
+    let prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(prepared.clone(), resume.clone());
+
+    let (read_result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            async {
+                match operation {
+                    ManagementRead::List => gated.list_for_owner(&owner).await,
+                    ManagementRead::Get => gated.get(&owner, identity).await.map(|row| vec![row]),
+                }
+            },
+            async {
+                prepared.wait().await;
+                let mut tx = db.begin().await.expect("begin concurrent workspace delete");
+                tx.workspaces()
+                    .delete(workspace.as_str())
+                    .await
+                    .expect("stage concurrent workspace delete");
+                tx.commit()
+                    .await
+                    .expect("commit workspace delete before read resumes");
+                resume.wait().await;
+            }
+        )
+    })
+    .await
+    .expect("workspace read/delete race must not deadlock");
+
+    assert_eq!(
+        read_result.expect("read from one workspace snapshot"),
+        vec![expected.clone()]
+    );
+    let after_delete = match operation {
+        ManagementRead::List => manager.list_for_owner(&owner).await.map(drop),
+        ManagementRead::Get => manager.get(&owner, identity).await.map(drop),
+    };
+    assert!(matches!(
+        after_delete,
+        Err(AppError::WorkspaceNotFound(name)) if name == workspace.as_str()
+    ));
+}
+
+async fn assert_workspace_delete_recreate_race(
+    db: &Arc<CoralDb>,
+    manager: &IdentityManager,
+    provider: &dyn CredentialKeyProvider,
+    workspace: &WorkspaceName,
+    identity: &str,
+    spec: &str,
+) {
+    let owner = IdentityOwner::workspace(workspace.clone());
+    let prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let resume = Arc::new(tokio::sync::Barrier::new(2));
+    let retry_prepared = Arc::new(tokio::sync::Barrier::new(2));
+    let retry_resume = Arc::new(tokio::sync::Barrier::new(2));
+    let gated = manager
+        .clone()
+        .with_before_write_gate(prepared.clone(), resume.clone())
+        .with_before_retry_gate(retry_prepared.clone(), retry_resume.clone());
+
+    let (deleted, replacement) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(gated.delete(&owner, identity), async {
+            prepared.wait().await;
+            let mut tx = db.begin().await.expect("begin workspace recreation");
+            tx.workspaces()
+                .delete(workspace.as_str())
+                .await
+                .expect("delete old workspace generation");
+            tx.workspaces()
+                .ensure(workspace.as_str(), 2)
+                .await
+                .expect("stage new workspace generation");
+            tx.commit().await.expect("commit workspace recreation");
+            resume.wait().await;
+            retry_prepared.wait().await;
+            let replacement = manager
+                .create_or_replace_workspace_fixed_token(
+                    workspace,
+                    identity,
+                    spec,
+                    "new-generation-token".to_string(),
+                )
+                .await
+                .expect("create new-generation identity");
+            retry_resume.wait().await;
+            replacement
+        })
+    })
+    .await
+    .expect("workspace delete/recreate race must not deadlock");
+
+    assert!(matches!(
+        deleted,
+        Err(AppError::WorkspaceNotFound(name)) if name == workspace.as_str()
+    ));
+    assert_eq!(
+        manager
+            .get(&owner, identity)
+            .await
+            .expect("get new-generation identity"),
+        replacement
+    );
+    let (record, document) = load_pair(db, &owner, identity).await;
+    assert_eq!(record.as_ref(), Some(&replacement));
+    assert_material(
+        &replacement,
+        document.as_ref().expect("new-generation document"),
+        "new-generation-token",
+        provider,
+    );
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "shared SQLite/Postgres manager contract"
