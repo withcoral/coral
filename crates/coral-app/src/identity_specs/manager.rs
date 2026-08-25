@@ -16,9 +16,11 @@ use crate::identity_specs::inputs::{
     IdentitySpecInputValue, ResolvedIdentitySpecInputs, prepare_identity_spec_input_material,
     resolve_identity_spec_inputs_for_use,
 };
+#[cfg(test)]
+use crate::state::db::IdentitySpecMutationSnapshot;
 use crate::state::db::{
     CoralDb, CoralTx, DbError, DbRepos, IdentitySpecDocumentRecord, IdentitySpecId,
-    IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope, now_unix_nanos_i64,
+    IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -50,12 +52,6 @@ impl fmt::Debug for ResolvedIdentitySpec {
 
 struct IdentitySpecUseSnapshot {
     record: IdentitySpecRecord,
-    document: Option<IdentitySpecDocumentRecord>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct IdentitySpecMutationSnapshot {
-    record: Option<IdentitySpecRecord>,
     document: Option<IdentitySpecDocumentRecord>,
 }
 
@@ -101,64 +97,59 @@ impl IdentitySpecManager {
         let mut mutation_barrier = self.mutation_barrier.clone();
 
         for _ in 0..MAX_MUTATION_ATTEMPTS {
-            let snapshot = match self.load_mutation_snapshot(&key).await {
-                Ok(snapshot) => snapshot,
-                Err(AppError::RetryableTransactionConflict) => {
-                    tokio::task::yield_now().await;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
             #[cfg(test)]
-            if let Some(barrier) = mutation_barrier.take() {
-                barrier.wait().await;
-            }
-            let expected = snapshot.clone();
+            let barrier = mutation_barrier.take();
             let prepare_key = key.clone();
             let prepare_manifest = Arc::clone(&manifest);
             let prepare_inputs = Arc::clone(&input_values);
             let key_provider = Arc::clone(&self.key_provider);
-            let document = run_blocking_identity_spec_operation(move || {
-                let previous_identity_spec_id =
-                    snapshot.record.as_ref().map(|record| record.id.clone());
-                let previous = snapshot
-                    .record
-                    .clone()
-                    .map(record_to_installed)
-                    .transpose()?;
-                let previous_values = match previous_identity_spec_id {
-                    Some(identity_spec_id) => decrypt_input_material(
-                        &prepare_key,
-                        &identity_spec_id,
-                        snapshot.document,
-                        key_provider.as_ref(),
-                    )?,
-                    None => BTreeMap::new(),
-                };
-                let prepared = prepare_identity_spec_input_material(
-                    &prepare_key,
-                    prepare_manifest.as_ref(),
-                    previous.as_ref().map(|spec| &spec.manifest),
-                    &previous_values,
-                    prepare_inputs.as_slice(),
-                )?;
-                prepare_document_write(&prepare_key, prepared.values(), key_provider.as_ref())
-            })
-            .await?;
-            let replaced = expected.record.is_some();
-
-            match self
-                .try_write_mutation(
+            let result = self
+                .db
+                .identity_spec_state()
+                .add_or_replace_exact(
                     &key,
-                    &expected,
                     manifest.as_ref(),
                     manifest_yaml,
-                    document.as_ref(),
+                    move |snapshot| async move {
+                        #[cfg(test)]
+                        if let Some(barrier) = barrier {
+                            barrier.wait().await;
+                        }
+                        run_blocking_identity_spec_operation(move || {
+                            let previous_identity_spec_id =
+                                snapshot.record.as_ref().map(|record| record.id.clone());
+                            let previous = snapshot.record.map(record_to_installed).transpose()?;
+                            let previous_values = match previous_identity_spec_id {
+                                Some(identity_spec_id) => decrypt_input_material(
+                                    &prepare_key,
+                                    &identity_spec_id,
+                                    snapshot.document,
+                                    key_provider.as_ref(),
+                                )?,
+                                None => BTreeMap::new(),
+                            };
+                            let prepared = prepare_identity_spec_input_material(
+                                &prepare_key,
+                                prepare_manifest.as_ref(),
+                                previous.as_ref().map(|spec| &spec.manifest),
+                                &previous_values,
+                                prepare_inputs.as_slice(),
+                            )?;
+                            prepare_document_write(
+                                &prepare_key,
+                                prepared.values(),
+                                key_provider.as_ref(),
+                            )
+                        })
+                        .await
+                    },
                 )
-                .await
-            {
-                Ok(Some(installed)) => return Ok((installed, replaced)),
-                Ok(None) | Err(AppError::RetryableTransactionConflict) => {
+                .await;
+            match result {
+                Ok((record, replaced)) => {
+                    return Ok((record_to_installed(record)?, replaced));
+                }
+                Err(AppError::RetryableTransactionConflict) => {
                     tokio::task::yield_now().await;
                 }
                 Err(error) => return Err(error),
@@ -170,8 +161,9 @@ impl IdentitySpecManager {
     /// Delete one spec in exactly the selected scope.
     pub(crate) async fn delete_exact(&self, key: &IdentitySpecKey) -> Result<(), AppError> {
         for _ in 0..MAX_MUTATION_ATTEMPTS {
-            match self.try_delete_exact(key).await {
-                Ok(()) => return Ok(()),
+            match self.db.identity_spec_state().delete_exact(key).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => return Err(spec_not_found(key)),
                 Err(AppError::RetryableTransactionConflict) => {
                     tokio::task::yield_now().await;
                 }
@@ -295,77 +287,12 @@ impl IdentitySpecManager {
         convert_optional(record, key)
     }
 
+    #[cfg(test)]
     async fn load_mutation_snapshot(
         &self,
         key: &IdentitySpecKey,
     ) -> Result<IdentitySpecMutationSnapshot, AppError> {
-        let mut tx = self.db.begin_read_snapshot().await?;
-        let snapshot = load_mutation_snapshot(&mut tx, key).await?;
-        tx.commit().await?;
-        Ok(snapshot)
-    }
-
-    async fn try_write_mutation(
-        &self,
-        key: &IdentitySpecKey,
-        expected: &IdentitySpecMutationSnapshot,
-        manifest: &IdentityManifest,
-        manifest_yaml: &str,
-        document: Option<&EncryptedEnvelopeDocument>,
-    ) -> Result<Option<InstalledIdentitySpec>, AppError> {
-        let mut tx = self.db.begin_serializable().await?;
-        if load_mutation_snapshot(&mut tx, key).await? != *expected {
-            tx.rollback().await?;
-            return Ok(None);
-        }
-        let now = now_unix_nanos_i64()?;
-        let result = async {
-            let record = tx
-                .identity_specs()
-                .upsert(key, manifest, manifest_yaml, now)
-                .await?;
-            match document {
-                Some(document) => {
-                    tx.identity_spec_documents()
-                        .upsert(&record.id, document, now)
-                        .await?;
-                }
-                None => {
-                    tx.identity_spec_documents().delete(&record.id).await?;
-                }
-            }
-            record_to_installed(record).map_err(Into::into)
-        }
-        .await;
-        match result {
-            Ok(installed) => {
-                tx.commit().await?;
-                Ok(Some(installed))
-            }
-            Err(error) => {
-                tx.rollback().await?;
-                Err(error)
-            }
-        }
-    }
-
-    async fn try_delete_exact(&self, key: &IdentitySpecKey) -> Result<(), AppError> {
-        let mut tx = self.db.begin_serializable().await?;
-        require_scope_workspace(&mut tx, key.scope()).await?;
-        match tx.identity_specs().delete(key).await {
-            Ok(true) => {
-                tx.commit().await?;
-                Ok(())
-            }
-            Ok(false) => {
-                tx.rollback().await?;
-                Err(spec_not_found(key))
-            }
-            Err(error) => {
-                tx.rollback().await?;
-                Err(error.into())
-            }
-        }
+        self.db.identity_spec_state().load_exact(key).await
     }
 
     async fn resolve_snapshot_for_use(
@@ -400,19 +327,6 @@ async fn read_use_snapshot(
     };
     let document = tx.identity_spec_documents().get(&record.id).await?;
     Ok(Some(IdentitySpecUseSnapshot { record, document }))
-}
-
-async fn load_mutation_snapshot(
-    tx: &mut CoralTx<'_>,
-    key: &IdentitySpecKey,
-) -> Result<IdentitySpecMutationSnapshot, AppError> {
-    require_scope_workspace(tx, key.scope()).await?;
-    let record = tx.identity_specs().get(key).await?;
-    let document = match record.as_ref() {
-        Some(record) => tx.identity_spec_documents().get(&record.id).await?,
-        None => None,
-    };
-    Ok(IdentitySpecMutationSnapshot { record, document })
 }
 
 async fn run_blocking_identity_spec_operation<T, F>(operation: F) -> Result<T, AppError>
