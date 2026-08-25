@@ -79,11 +79,14 @@ async fn identity_spec_persistence_contract_on_postgres() {
     else {
         return;
     };
-    let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-        .await
-        .expect("open postgres");
+    let db = Arc::new(
+        CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres"),
+    );
     db.migrate().await.expect("migrate postgres");
     assert_identity_spec_persistence_contract(&db).await;
+    crate::identity_specs::manager::tests::assert_identity_spec_mutation_contract(&db).await;
 }
 
 #[expect(clippy::too_many_lines, reason = "shared backend contract fixture")]
