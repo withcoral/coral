@@ -1,6 +1,6 @@
 import classNames from 'classnames'
-import { type FormEvent, type RefObject, useEffect, useId, useRef, useState } from 'react'
-import { Form, useFetcher, useNavigation } from 'react-router'
+import { type FormEvent, type RefObject, useEffect, useId, useState } from 'react'
+import { Form, useNavigation } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
@@ -19,6 +19,7 @@ import type {
   SourceDocumentFormat,
 } from '@/routes/source-discovery'
 
+import type { DiscardGuard } from './source-add'
 import * as styles from './source-create.css'
 import { formatFieldName, SourceError, SourceField, SourceHeader } from './source-presentation'
 
@@ -61,79 +62,41 @@ const EMPTY_DRAFT: Draft = {
 
 const STEP_COUNT = 3
 
-export function SourceCreateDialog({
-  actionData,
-  discoveryPath,
-  fetchOAuthImport = fetch,
-  oauthImportPath = discoveryPath.replace(/\/discover$/, '/oauth-import'),
-  onOAuthImportComplete,
-  open,
-  openAuthorization = (url) => window.open(url, '_blank', 'noopener,noreferrer'),
-  onOpenChange,
-}: {
-  actionData: SourcesActionData
-  discoveryPath: string
-  fetchOAuthImport?: typeof fetch
-  oauthImportPath?: string
-  onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
-  open: boolean
-  openAuthorization?: (url: string) => unknown
-  onOpenChange: (open: boolean) => void
-}) {
-  const requestCancelRef = useRef<() => void>(() => onOpenChange(false))
+type DiscoveredSource = Extract<SourceDiscoveryData, { status: 'success' }>
 
-  return (
-    <Dialog.Root
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) requestCancelRef.current()
-      }}
-    >
-      <Dialog.Portal>
-        <Dialog.Backdrop />
-        <Dialog.Popup size="xl">
-          {open ? (
-            <SourceCreateDialogContent
-              actionData={actionData}
-              discoveryPath={discoveryPath}
-              fetchOAuthImport={fetchOAuthImport}
-              oauthImportPath={oauthImportPath}
-              onOAuthImportComplete={onOAuthImportComplete}
-              onCancel={() => onOpenChange(false)}
-              openAuthorization={openAuthorization}
-              requestCancelRef={requestCancelRef}
-            />
-          ) : null}
-        </Dialog.Popup>
-      </Dialog.Portal>
-    </Dialog.Root>
-  )
-}
-
-function SourceCreateDialogContent({
+/**
+ * The steps that follow a discovered URL. It is mounted per discovery, so its
+ * draft starts from what Coral detected and a second URL never inherits the
+ * first one's answers.
+ */
+export function SourceCreateFlow({
   actionData,
-  discoveryPath,
+  discardRef,
+  discovery,
   fetchOAuthImport,
   oauthImportPath,
-  onOAuthImportComplete,
+  onBack,
   onCancel,
+  onOAuthImportComplete,
   openAuthorization,
-  requestCancelRef,
+  requestCancel,
+  url,
 }: {
   actionData: SourcesActionData
-  discoveryPath: string
+  discardRef: RefObject<DiscardGuard | null>
+  discovery: DiscoveredSource
   fetchOAuthImport: typeof fetch
   oauthImportPath: string
-  onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
+  onBack: () => void
   onCancel: () => void
+  onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
   openAuthorization: (url: string) => unknown
-  requestCancelRef: RefObject<() => void>
+  requestCancel: () => void
+  url: string
 }) {
   const [step, setStep] = useState(0)
-  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
-  const [confirmingCancel, setConfirmingCancel] = useState(false)
+  const [draft, setDraft] = useState<Draft>(() => draftFromDiscovery(discovery, url))
   const formId = useId()
-  const discovery = useFetcher<SourceDiscoveryData>()
   const oauth = useOAuthInstallFlow({
     fetchOAuthInstall: fetchOAuthImport,
     openAuthorization,
@@ -149,61 +112,20 @@ function SourceCreateDialogContent({
   const submitting = navigationSubmitting || oauth.busy
   const importError =
     actionData?.status === 'error' && actionData.intent === 'import' ? actionData.message : null
-  const discovering = discovery.state !== 'idle'
-  const discoveryError =
-    discovery.data?.status === 'error' && discovery.data.url === draft.url.trim()
-      ? discovery.data.message
-      : null
-  const discoveryResult =
-    discovery.data?.status === 'success' && discovery.data.url === draft.url.trim()
-      ? discovery.data
-      : null
 
-  const appliedDiscovery = useRef<SourceDiscoveryData | undefined>(undefined)
+  // Past discovery there is always a draft to lose, so this branch answers for
+  // what closing the dialog costs for as long as it is mounted.
   useEffect(() => {
-    const result = discovery.data
-    if (!result || result === appliedDiscovery.current || result.status !== 'success') return
-    appliedDiscovery.current = result
-    if (step !== 0 || result.url !== draft.url.trim()) return
-    const detectedAuth = authChoiceFromDiscovery(result.auth)
-    setDraft((current) => ({
-      ...current,
-      ...(detectedAuth ? { auth: detectedAuth } : {}),
-      baseUrl: result.serverUrl || current.baseUrl,
-      description: result.description || current.description,
-      headerName: result.auth.headerName || current.headerName,
-      name: result.name,
-      surfaceType:
-        result.format === 'mcp'
-          ? 'mcp'
-          : result.format === 'unknown'
-            ? current.surfaceType
-            : 'openapi',
-    }))
-    setStep(1)
-  }, [discovery.data, draft.url, step])
-
-  const update = (patch: Partial<Draft>) => setDraft((prev) => ({ ...prev, ...patch }))
-  const updateUrl = (url: string) =>
-    setDraft((current) =>
-      url.trim() === current.url.trim() ? { ...current, url } : { ...EMPTY_DRAFT, url },
-    )
-  const inspectUrl = () =>
-    discovery.load(`${discoveryPath}?url=${encodeURIComponent(draft.url.trim())}`)
-  const requestCancel = () => {
-    if (draftIsDirty(draft)) {
-      setConfirmingCancel(true)
-      return
+    discardRef.current = { discard: oauth.cancel, isDirty: () => draftIsDirty(draft) }
+    return () => {
+      discardRef.current = null
     }
-    onCancel()
-  }
-  useEffect(() => {
-    requestCancelRef.current = requestCancel
   })
 
+  const update = (patch: Partial<Draft>) => setDraft((prev) => ({ ...prev, ...patch }))
+
   const stepValid = (() => {
-    if (step === 0) return draft.url.trim().startsWith('https://')
-    if (step === 1) {
+    if (step === 0) {
       if (!sourceNameIsValid(draft.name.trim())) return false
       if (draft.surfaceType === 'openapi' && baseUrlValidationError(draft.baseUrl)) return false
       return true
@@ -220,7 +142,7 @@ function SourceCreateDialogContent({
   })()
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    if (step === 2) {
+    if (step === 1) {
       if (draft.auth !== 'oauthDevice') return
       event.preventDefault()
       if (!stepValid || submitting) return
@@ -229,16 +151,14 @@ function SourceCreateDialogContent({
     }
 
     event.preventDefault()
-    if (!stepValid || discovering || submitting) return
-    if (step === 0) {
-      inspectUrl()
-      return
-    }
-    setStep(2)
+    if (!stepValid || submitting) return
+    setStep(1)
   }
 
   return (
-    <Form className={styles.dialogContent} id={formId} method="post" onSubmit={handleSubmit}>
+    // The steps are portalled popups, so the form holds only the hidden fields
+    // and the submit buttons reach it by id.
+    <Form className={styles.stepForm} id={formId} method="post" onSubmit={handleSubmit}>
       <input type="hidden" name="_intent" value="import" />
       <input type="hidden" name="name" value={draft.name.trim()} />
       <input type="hidden" name="manifest_yaml" value={buildManifestYaml(draft)} />
@@ -246,42 +166,17 @@ function SourceCreateDialogContent({
         <input type="hidden" name={`sec:${SECRET_KEY}`} value={draft.token.trim()} />
       ) : null}
 
-      <StepHeader step={0} />
-      <UrlStep draft={draft} updateUrl={updateUrl} />
-
-      {discoveryError ? <SourceError>{discoveryError}</SourceError> : null}
-
-      <Dialog.Actions>
-        <ButtonContainer
-          disabled={navigationSubmitting}
-          onClick={requestCancel}
-          size="32"
-          variant="bare"
-        >
-          <ButtonText>Cancel</ButtonText>
-        </ButtonContainer>
-        <ButtonContainer
-          disabled={!stepValid || discovering}
-          onClick={inspectUrl}
-          size="32"
-          variant="primary"
-        >
-          {discovering ? <SpinningButtonIcon name="Loader" /> : null}
-          <ButtonText>{discovering ? 'Inspecting…' : 'Next'}</ButtonText>
-        </ButtonContainer>
-      </Dialog.Actions>
-
       <Dialog.Root
-        open={step >= 1}
+        open
         onOpenChange={(open) => {
-          if (!open) setStep(0)
+          if (!open) onBack()
         }}
       >
         <Dialog.Portal>
           <Dialog.Popup size="xl">
             <div className={styles.dialogContent}>
               <StepHeader step={1} />
-              <DetailsStep discovery={discoveryResult} draft={draft} update={update} />
+              <DetailsStep discovery={discovery} draft={draft} update={update} />
 
               <Dialog.Actions>
                 <ButtonContainer
@@ -294,7 +189,7 @@ function SourceCreateDialogContent({
                 </ButtonContainer>
                 <ButtonContainer
                   disabled={submitting}
-                  onClick={() => setStep(0)}
+                  onClick={onBack}
                   size="32"
                   variant="secondary"
                 >
@@ -302,7 +197,7 @@ function SourceCreateDialogContent({
                 </ButtonContainer>
                 <ButtonContainer
                   disabled={!stepValid}
-                  onClick={() => setStep(2)}
+                  onClick={() => setStep(1)}
                   size="32"
                   variant="primary"
                 >
@@ -310,13 +205,13 @@ function SourceCreateDialogContent({
                 </ButtonContainer>
               </Dialog.Actions>
 
-              <Dialog.Root open={step >= 2}>
+              <Dialog.Root open={step >= 1}>
                 <Dialog.Portal>
                   <Dialog.Popup size="xl">
                     <div className={styles.dialogContent}>
                       <StepHeader step={2} />
                       <CredentialsStep
-                        discovery={discoveryResult}
+                        discovery={discovery}
                         draft={draft}
                         update={update}
                         disabled={submitting}
@@ -343,7 +238,7 @@ function SourceCreateDialogContent({
                         </ButtonContainer>
                         <ButtonContainer
                           disabled={submitting}
-                          onClick={() => setStep(1)}
+                          onClick={() => setStep(0)}
                           size="32"
                           variant="secondary"
                         >
@@ -360,12 +255,12 @@ function SourceCreateDialogContent({
                           <ButtonText>
                             {draft.auth === 'oauthDevice'
                               ? oauthActionLabel(oauth.progress, {
-                                  busy: 'Creating…',
-                                  idle: 'Create source',
+                                  busy: 'Adding…',
+                                  idle: 'Add source',
                                 })
                               : navigationSubmitting
-                                ? 'Creating…'
-                                : 'Create source'}
+                                ? 'Adding…'
+                                : 'Add source'}
                           </ButtonText>
                         </ButtonContainer>
                       </Dialog.Actions>
@@ -374,33 +269,6 @@ function SourceCreateDialogContent({
                 </Dialog.Portal>
               </Dialog.Root>
             </div>
-          </Dialog.Popup>
-        </Dialog.Portal>
-      </Dialog.Root>
-      <Dialog.Root open={confirmingCancel} onOpenChange={setConfirmingCancel}>
-        <Dialog.Portal>
-          <Dialog.Popup size="m">
-            <Dialog.Title>Discard source draft?</Dialog.Title>
-            <Dialog.Description>The information you entered will be lost.</Dialog.Description>
-            <Dialog.Actions>
-              <ButtonContainer
-                onClick={() => setConfirmingCancel(false)}
-                size="32"
-                variant="secondary"
-              >
-                <ButtonText>Keep editing</ButtonText>
-              </ButtonContainer>
-              <ButtonContainer
-                onClick={() => {
-                  oauth.cancel()
-                  onCancel()
-                }}
-                size="32"
-                variant="destructive"
-              >
-                <ButtonText>Discard</ButtonText>
-              </ButtonContainer>
-            </Dialog.Actions>
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
@@ -417,34 +285,29 @@ function StepHeader({ step }: { step: number }) {
           Step {step + 1}/{STEP_COUNT}
         </Pill>
       }
-      title={<Typography.HeadingMedium as="span">Create source</Typography.HeadingMedium>}
+      title={<Typography.HeadingMedium as="span">Add source</Typography.HeadingMedium>}
     />
   )
 }
 
-function UrlStep({ draft, updateUrl }: { draft: Draft; updateUrl: (url: string) => void }) {
-  const idUrl = useId()
-  return (
-    <div className={styles.fieldGroup}>
-      <SourceField
-        className={styles.fieldItem}
-        hint={
-          <Typography.BodySmall variant="tertiary">
-            Enter an OpenAPI document or streamable HTTP MCP endpoint.
-          </Typography.BodySmall>
-        }
-        htmlFor={idUrl}
-        label="Source URL"
-      >
-        <TextInput
-          id={idUrl}
-          value={draft.url}
-          onChange={updateUrl}
-          placeholder="https://example.com/openapi.yaml"
-        />
-      </SourceField>
-    </div>
-  )
+/** Seed the draft from what discovery detected, leaving the rest at its default. */
+function draftFromDiscovery(discovery: DiscoveredSource, url: string): Draft {
+  const detectedAuth = authChoiceFromDiscovery(discovery.auth)
+  return {
+    ...EMPTY_DRAFT,
+    ...(detectedAuth ? { auth: detectedAuth } : {}),
+    baseUrl: discovery.serverUrl || EMPTY_DRAFT.baseUrl,
+    description: discovery.description || EMPTY_DRAFT.description,
+    headerName: discovery.auth.headerName || EMPTY_DRAFT.headerName,
+    name: discovery.name,
+    surfaceType:
+      discovery.format === 'mcp'
+        ? 'mcp'
+        : discovery.format === 'unknown'
+          ? EMPTY_DRAFT.surfaceType
+          : 'openapi',
+    url,
+  }
 }
 
 function DetailsStep({
@@ -452,7 +315,7 @@ function DetailsStep({
   draft,
   update,
 }: {
-  discovery: Extract<SourceDiscoveryData, { status: 'success' }> | null
+  discovery: DiscoveredSource
   draft: Draft
   update: (patch: Partial<Draft>) => void
 }) {
@@ -468,9 +331,7 @@ function DetailsStep({
 
   return (
     <div className={styles.fieldGroup}>
-      {discovery ? (
-        <Typography.BodySmall variant="primary">{discoverySummary(discovery)}</Typography.BodySmall>
-      ) : null}
+      <Typography.BodySmall variant="primary">{discoverySummary(discovery)}</Typography.BodySmall>
       <SourceField
         className={styles.fieldItem}
         hint={
@@ -582,7 +443,7 @@ function CredentialsStep({
   update,
   disabled,
 }: {
-  discovery: Extract<SourceDiscoveryData, { status: 'success' }> | null
+  discovery: DiscoveredSource
   draft: Draft
   update: (patch: Partial<Draft>) => void
   disabled: boolean
@@ -609,7 +470,7 @@ function CredentialsStep({
         ]
   return (
     <div className={styles.fieldGroup}>
-      {discovery && discovery.auth.kind !== 'unknown' ? (
+      {discovery.auth.kind !== 'unknown' ? (
         <Typography.BodySmall variant="primary">{authSummary(discovery.auth)}</Typography.BodySmall>
       ) : null}
       <SourceField className={styles.fieldItem} label="Authentication">

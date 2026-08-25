@@ -44,28 +44,16 @@ export function SourcesIndex({
           routePath('workspaceSource', { sourceName: entry.name, workspaceId })
         }
         headerAction={
-          <>
-            <ButtonContainer
-              ariaLabel="Import source"
-              as={Link}
-              size="36"
-              to={routePath('workspaceSourceImport', { workspaceId })}
-              variant="secondary"
-            >
-              <ButtonIcon name="Upload" />
-              <ButtonText>Import</ButtonText>
-            </ButtonContainer>
-            <ButtonContainer
-              ariaLabel="Create source"
-              as={Link}
-              size="36"
-              to={routePath('workspaceSourceInstall', { workspaceId })}
-              variant="primary"
-            >
-              <ButtonIcon name="Plus" />
-              <ButtonText>Create</ButtonText>
-            </ButtonContainer>
-          </>
+          <ButtonContainer
+            ariaLabel="Add source"
+            as={Link}
+            size="36"
+            to={routePath('workspaceSourceInstall', { workspaceId })}
+            variant="primary"
+          >
+            <ButtonIcon name="Plus" />
+            <ButtonText>Add source</ButtonText>
+          </ButtonContainer>
         }
         loadState={loadError ? 'error' : loading ? 'loading' : 'idle'}
         onRetry={() => revalidator.revalidate()}

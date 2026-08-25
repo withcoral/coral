@@ -12,6 +12,11 @@ export const dialogContent = style({
   flexDirection: 'column',
 })
 
+/** The steps are portalled popups, so the form must not take a row of its own. */
+export const stepForm = style({
+  display: 'contents',
+})
+
 export const fieldGroup = style({
   display: 'flex',
   flexDirection: 'column',

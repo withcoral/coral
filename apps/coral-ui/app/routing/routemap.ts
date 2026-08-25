@@ -13,7 +13,6 @@ const WORKSPACE_SCHEMA_TABLE_FUNCTION_PATH =
   '/workspaces/:workspaceId/schema/:schemaName/functions/:functionName'
 const WORKSPACE_SOURCE_DISCOVERY_PATH = '/workspaces/:workspaceId/sources/discover'
 const WORKSPACE_SOURCE_DESCRIBE_PATH = '/workspaces/:workspaceId/sources/describe'
-const WORKSPACE_SOURCE_IMPORT_PATH = '/workspaces/:workspaceId/sources/import'
 const WORKSPACE_SOURCE_INSTALL_PATH = '/workspaces/:workspaceId/sources/install'
 const WORKSPACE_SOURCES_PATH = '/workspaces/:workspaceId/sources'
 const WORKSPACE_SOURCE_PATH = '/workspaces/:workspaceId/sources/:sourceName'
@@ -113,13 +112,6 @@ export const routeDefinitions = {
     path: WORKSPACE_SOURCE_DESCRIBE_PATH,
     toPath: (params: { workspaceId: string }) =>
       generatePath(WORKSPACE_SOURCE_DESCRIBE_PATH, {
-        workspaceId: params.workspaceId,
-      }),
-  },
-  workspaceSourceImport: {
-    path: WORKSPACE_SOURCE_IMPORT_PATH,
-    toPath: (params: { workspaceId: string }) =>
-      generatePath(WORKSPACE_SOURCE_IMPORT_PATH, {
         workspaceId: params.workspaceId,
       }),
   },
