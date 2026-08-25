@@ -134,6 +134,7 @@ pub(crate) const AUTHORIZATION_MATRIX: &[RpcRule] = &[
     // view needs a separate redacted response before it can be classified
     // Read.
     rule("coral.v1.SourceService", "DiscoverSources", Manage),
+    rule("coral.v1.SourceService", "DescribeSourceManifest", Manage),
     rule("coral.v1.SourceService", "ListSources", Manage),
     rule("coral.v1.SourceService", "GetSource", Manage),
     rule("coral.v1.SourceService", "GetSourceInfo", Manage),
