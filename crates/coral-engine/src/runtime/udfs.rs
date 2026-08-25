@@ -155,6 +155,7 @@ fn catalog_table_function(
 ) -> CatalogTableFunction {
     let publish = &udf.publish;
     CatalogTableFunction {
+        catalog_name: None,
         schema_name: key.schema.clone(),
         function_name: key.function.clone(),
         kind: coral_spec::SourceTableFunctionKind::Table,

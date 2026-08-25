@@ -325,10 +325,19 @@ fn resolve_table_function<'a>(
         return None;
     }
 
-    for candidate in SchemaQualifiedName::candidates(parts) {
-        if let Some(function) = table_functions
-            .iter()
-            .find(|function| candidate.matches(function))
+    for function in table_functions {
+        let qualified_parts = match function.catalog_name.as_deref() {
+            Some(catalog_name) => {
+                let (candidate_catalog, rest) = parts.split_first()?;
+                if !candidate_catalog.eq_ignore_ascii_case(catalog_name) {
+                    continue;
+                }
+                rest
+            }
+            None => parts,
+        };
+        if SchemaQualifiedName::candidates(qualified_parts)
+            .any(|candidate| candidate.matches(function))
         {
             return Some(function);
         }
@@ -382,6 +391,7 @@ mod tests {
 
     fn table_function(schema: &str, name: &str) -> TableFunctionInfo {
         TableFunctionInfo {
+            catalog_name: None,
             schema_name: schema.to_string(),
             function_name: name.to_string(),
             description: String::new(),
@@ -391,6 +401,13 @@ mod tests {
             result_columns: vec![],
             kind: coral_spec::SourceTableFunctionKind::Table,
             search_limits: None,
+        }
+    }
+
+    fn catalog_table_function(catalog: &str, schema: &str, name: &str) -> TableFunctionInfo {
+        TableFunctionInfo {
+            catalog_name: Some(catalog.to_string()),
+            ..table_function(schema, name)
         }
     }
 
@@ -455,6 +472,25 @@ mod tests {
 
         assert_eq!(function.schema_name, "datadog");
         assert_eq!(function.function_name, "metrics");
+    }
+
+    #[test]
+    fn table_function_ref_matches_catalog_qualified_function() {
+        let functions = vec![catalog_table_function(
+            "github_v4",
+            "issues",
+            "list_for_repo",
+        )];
+
+        let function = table_function_for_ref(
+            &table_ref(&["github_v4", "issues", "list_for_repo"]),
+            &functions,
+        )
+        .expect("catalog-qualified table function should match");
+
+        assert_eq!(function.catalog_name.as_deref(), Some("github_v4"));
+        assert_eq!(function.schema_name, "issues");
+        assert_eq!(function.function_name, "list_for_repo");
     }
 
     #[test]
