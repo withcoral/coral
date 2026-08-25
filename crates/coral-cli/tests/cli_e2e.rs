@@ -582,6 +582,236 @@ async fn identity_spec_invalid_scope_and_interactive_args_send_no_rpc() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn current_user_identity_add_reads_stdin_without_secret_egress_or_spec_lookup() {
+    let server = MockServer::start().await;
+    let token = "fixed-token-secret-sentinel";
+
+    let added = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args([
+            "identity",
+            "add",
+            "github_local",
+            "--identity-spec",
+            "global_token",
+            "--token-stdin",
+        ])
+        .write_stdin(format!("{token}\r\n"))
+        .assert()
+        .success()
+        .stdout(
+            "Stored current-user identity 'github_local' using global identity spec 'global_token'.\n",
+        );
+    let stderr = String::from_utf8_lossy(&added.get_output().stderr);
+    assert!(!stderr.contains(token), "secret leaked to stderr: {stderr}");
+    assert!(
+        !String::from_utf8_lossy(&added.get_output().stdout).contains(token),
+        "secret leaked to stdout"
+    );
+
+    let requests = server.create_user_identity_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].name, "github_local");
+    assert_eq!(requests[0].identity_spec_name, "global_token");
+    assert_eq!(
+        requests[0].setup.as_ref().map(|setup| setup.token.as_str()),
+        Some(token)
+    );
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_user_identity_list_and_info_render_exact_metadata_safely() {
+    let server = MockServer::start().await;
+
+    let listed = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args(["identity", "list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&listed.get_output().stdout);
+    let rows = nonempty_lines(&stdout);
+    for expected in [
+        [
+            "with_port",
+            "global_token",
+            "demo",
+            "fixed_token",
+            "api.example.com:443",
+            "global",
+        ],
+        [
+            "host_only",
+            "global_oauth",
+            "demo",
+            "oauth",
+            "login.example.com",
+            "global",
+        ],
+        ["legacy", "global_legacy", "demo", "unknown", "-", "global"],
+    ] {
+        assert!(
+            rows.iter().any(|row| row.split_whitespace().eq(expected)),
+            "missing row {expected:?}: {stdout}"
+        );
+    }
+    assert_eq!(server.list_user_identities_requests().len(), 1);
+
+    let info = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args(["identity", "info", "with_port"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&info.get_output().stdout);
+    for expected in [
+        "with_port",
+        "Owner:         current_user",
+        "Identity spec: global_token",
+        "Spec scope:    global",
+        "Fingerprint:   fingerprint-global_token",
+        "Type:          fixed_token",
+        "Audience:      api.example.com:443",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected:?}: {stdout}");
+    }
+    let gets = server.get_user_identity_requests();
+    assert_eq!(gets.len(), 1);
+    assert_eq!(gets[0].name, "with_port");
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_user_identity_remove_sends_exact_request() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "ignored")
+        .args(["identity", "remove", "github_local"])
+        .assert()
+        .success()
+        .stdout("Removed current-user identity 'github_local'.\n");
+    let requests = server.delete_user_identity_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].name, "github_local");
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_user_identity_rejects_unsafe_invocations_without_rpc() {
+    let server = MockServer::start().await;
+
+    let workspace = server
+        .cmd()
+        .args(["--workspace", "work", "identity", "list"])
+        .assert()
+        .failure();
+    assert!(
+        String::from_utf8_lossy(&workspace.get_output().stderr)
+            .contains("--workspace cannot be used with current-user identity commands")
+    );
+    let non_tty = server
+        .cmd()
+        .args(["identity", "add", "demo", "--identity-spec", "global_token"])
+        .assert()
+        .failure();
+    assert!(
+        String::from_utf8_lossy(&non_tty.get_output().stderr)
+            .contains("fixed-token identity setup requires a TTY or an explicit --token-stdin")
+    );
+    let blank = server
+        .cmd()
+        .args([
+            "identity",
+            "add",
+            "demo",
+            "--identity-spec",
+            "global_token",
+            "--token-stdin",
+        ])
+        .write_stdin("\r\n")
+        .assert()
+        .failure();
+    assert!(
+        String::from_utf8_lossy(&blank.get_output().stderr)
+            .contains("fixed-token identity token must not be blank")
+    );
+    server
+        .cmd()
+        .args([
+            "identity",
+            "add",
+            "demo",
+            "--identity-spec",
+            "global_token",
+            "--token",
+            "plaintext-token-must-be-rejected",
+        ])
+        .assert()
+        .failure();
+    server
+        .cmd()
+        .args(["identity", "list", "--global"])
+        .assert()
+        .failure();
+    for flag in ["--force", "--orphan"] {
+        server
+            .cmd()
+            .args(["identity", "remove", "demo", flag])
+            .assert()
+            .failure();
+    }
+    assert_eq!(server.current_user_identity_request_count(), 0);
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_user_identity_malformed_responses_fail_closed() {
+    let server = MockServer::start().await;
+    let cases = [
+        ("missing_owner", "missing exact owner"),
+        ("workspace_owner", "workspace owner"),
+        ("missing_spec", "missing identity spec reference"),
+        ("missing_scope", "missing exact identity-spec scope"),
+        ("workspace_scope", "workspace identity-spec scope"),
+    ];
+
+    for (name, expected) in cases {
+        let result = server
+            .cmd()
+            .env("CORAL_WORKSPACE", "ignored")
+            .args(["identity", "info", name])
+            .assert()
+            .failure()
+            .stdout("");
+        let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+        assert!(stderr.contains(expected), "missing {expected:?}: {stderr}");
+    }
+    assert_eq!(
+        server
+            .get_user_identity_requests()
+            .iter()
+            .map(|request| request.name.as_str())
+            .collect::<Vec<_>>(),
+        cases.map(|(name, _)| name).as_slice()
+    );
+    assert_eq!(server.identity_spec_request_count(), 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_list_renders_configured_sources() {
     let server = MockServer::start().await;
 
