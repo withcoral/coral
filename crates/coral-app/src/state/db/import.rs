@@ -117,9 +117,15 @@ fn implicitly_provisioned_workspaces(
         let entry = entry?;
         // Metadata, not `file_type`: a workspace directory may be a symlink to
         // another volume, and skipping it here would orphan it for good once
-        // the cutover marker commits.
-        if !std::fs::metadata(entry.path())?.is_dir() {
-            continue;
+        // the cutover marker commits. Following the link means a dangling one
+        // reports `NotFound`, which is this scan's answer for "not a workspace
+        // directory" rather than a reason to fail startup; every other io error
+        // still surfaces.
+        match std::fs::metadata(entry.path()) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
         }
         let directory_name = entry.file_name();
         let Some(name) = directory_name
@@ -410,6 +416,42 @@ mod tests {
             }
         );
         assert_eq!(workspace_ids(&db).await, vec!["default".to_string()]);
+    }
+
+    /// Following the link is what carries a relocated workspace across, and a
+    /// link whose target is gone is the cost of that. It names no workspace, so
+    /// the cutover skips it — refusing to start over a broken link would strand
+    /// the whole install.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cutover_skips_a_dangling_workspace_symlink() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let live_workspace = WorkspaceName::parse("analytics").expect("workspace");
+        let dangling_workspace = WorkspaceName::parse("relocated").expect("workspace");
+        std::fs::create_dir_all(layout.workspace_dir(&live_workspace))
+            .expect("create the live workspace dir");
+        std::os::unix::fs::symlink(
+            temp.path().join("other-volume").join("relocated"),
+            layout.workspace_dir(&dangling_workspace),
+        )
+        .expect("link a workspace that is no longer there");
+        let db = open_sqlite(&layout).await;
+
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
+            .await
+            .expect("cut over legacy workspace catalog");
+
+        assert_eq!(
+            report,
+            WorkspaceCatalogCutoverReport {
+                workspace_count: 1,
+                cutover_performed: true
+            }
+        );
+        assert_eq!(workspace_ids(&db).await, vec!["analytics".to_string()]);
     }
 
     /// Workspace names may contain the infix a staged deletion is spelled with,
