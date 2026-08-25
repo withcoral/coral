@@ -1,5 +1,8 @@
-/* react-toastify ships unlayered rules for the same classes that
-   toast-container.css.ts restyles. An unlayered rule beats every layer whatever
-   its specificity, so the defaults have to be in a layer of their own, below wax.
+/* react-toastify ships its rules unlayered, and an unlayered rule beats every layer
+   whatever its specificity, so the toast-container.css.ts overrides would lose. The
+   package stylesheet comes in here, in a layer below wax, instead. The components
+   import react-toastify/unstyled: the default entry point appends the same rules to
+   the head as an inline style element when ToastContainer mounts, which is unlayered
+   again and beats this import.
    app/styles/globals.css and ../../theme/layers.css.ts state the layer order. */
 @import 'react-toastify/dist/ReactToastify.css' layer(vendor);

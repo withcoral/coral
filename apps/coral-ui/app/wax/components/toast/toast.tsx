@@ -1,6 +1,6 @@
 import type React from 'react'
 
-import { Bounce, toast, type ToastOptions } from 'react-toastify'
+import { Bounce, toast, type ToastOptions } from 'react-toastify/unstyled'
 
 import { ToastContent } from './toast-content'
 

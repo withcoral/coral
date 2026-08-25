@@ -252,6 +252,21 @@ describe('architecture', () => {
     ).toEqual([])
   })
 
+  it('takes react-toastify from the entry point that ships no styles', () => {
+    const importers = filesUnder(appDir, (name) => /\.tsx?$/.test(name)).filter((file) =>
+      importsFrom(fs.readFileSync(file, 'utf8')).includes('react-toastify'),
+    )
+
+    expect(
+      importers.map((file) => path.relative(appDir, file)),
+      "react-toastify has to come from 'react-toastify/unstyled'. The default entry point " +
+        'appends its stylesheet to the head as an inline style element when ToastContainer ' +
+        'mounts. Those rules are unlayered, an unlayered rule beats every layer whatever its ' +
+        'specificity, and they silently outrank both the vendor import in ' +
+        'app/wax/components/toast/toastify.css and the wax rules written to restyle them.',
+    ).toEqual([])
+  })
+
   it('states one layer order for the whole app', () => {
     const globals = fs.readFileSync(path.join(appDir, 'styles', 'globals.css'), 'utf8')
     const layers = fs.readFileSync(path.join(appDir, 'wax', 'theme', 'layers.css.ts'), 'utf8')

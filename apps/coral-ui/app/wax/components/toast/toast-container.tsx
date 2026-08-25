@@ -1,4 +1,4 @@
-import { Bounce, ToastContainer as ToastContainerComponent } from 'react-toastify'
+import { Bounce, ToastContainer as ToastContainerComponent } from 'react-toastify/unstyled'
 import './toastify.css'
 
 import * as styles from './toast-container.css'
