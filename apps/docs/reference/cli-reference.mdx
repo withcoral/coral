@@ -308,9 +308,8 @@ workspace-scoped artifacts such as source manifests, local credential material,
 feedback reports, and workspace-attributed local trace history.
 
 Imported source specs and source credential material are attached to the source
-installation in that workspace. Reusable global source specs and reusable
-credential references are separate concepts and are not represented by
-`coral workspace` today.
+installation in that workspace. Reusable identity specs are managed separately
+with `coral identity-spec`.
 
 ### `coral workspace list`
 
@@ -340,6 +339,52 @@ coral workspace remove work
 ```
 
 The `default` workspace cannot be removed.
+
+## `coral identity-spec`
+
+Manage reusable identity specifications in one exact scope. Commands target the selected workspace by default. Pass `--global` to target global scope instead; `--global` cannot be combined with an explicit `--workspace`.
+
+### `coral identity-spec add --file <PATH>`
+
+Validate, then install or replace an identity spec in the requested exact scope.
+
+```shellscript
+coral identity-spec add --file ./github-token.identity.yaml
+coral identity-spec --global add --file ./github-token.identity.yaml
+coral identity-spec add --file ./oauth.identity.yaml --interactive
+```
+
+By default, declare each setup value through an environment variable with the same name as its manifest input key. Pass `--interactive` in a terminal to prompt for missing values; secret prompts are hidden, and already-set environment values are preserved. Setup values are write-only and are never rendered by list or info commands.
+
+### `coral identity-spec list`
+
+List specs in the requested exact scope. For a workspace scope, `--include-global` also returns global specs without collapsing same-name specs from the two scopes.
+
+```shellscript
+coral identity-spec list
+coral identity-spec list --include-global --workspace work
+coral identity-spec --global list
+```
+
+### `coral identity-spec info <NAME>`
+
+Show the validated manifest and metadata for one spec in the requested exact scope.
+
+```shellscript
+coral identity-spec info github_token
+coral identity-spec --global info github_token
+```
+
+### `coral identity-spec remove <NAME>`
+
+Remove one spec from the requested exact scope. Coral rejects deletion while
+stored identities still reference that exact spec; remove those identities
+first.
+
+```shellscript
+coral identity-spec remove github_token
+coral identity-spec --global remove github_token
+```
 
 ## `coral functions`
 
