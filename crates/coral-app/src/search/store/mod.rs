@@ -14,6 +14,7 @@
 //! Retrieval order is the ranking and must be a deterministic total order,
 //! whichever backend serves it.
 
+mod config;
 mod sqlite;
 
 use std::sync::Arc;
@@ -32,6 +33,7 @@ use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
+pub(crate) use config::{ResolvedSearchConfig, SearchConfig, SearchConfigError};
 use sqlite::SqliteSearchStorage;
 
 /// Catalog projection storage for one Workspace.
@@ -175,6 +177,12 @@ impl SearchStorage {
                     backend: SearchStoreBackend::Sqlite(store),
                 })),
         }
+    }
+
+    /// Whether this backend keeps observed values at all; when it does not,
+    /// the capture pipeline has nowhere to write and must not start.
+    pub(crate) fn keeps_observed_values(&self) -> bool {
+        self.observed_values().is_some()
     }
 
     /// The observed-values store, when this backend keeps observed values.
