@@ -524,8 +524,8 @@ coral features disable feedback
 
 Start a long-running native gRPC server. Coral prints the selected endpoint and
 a `CORAL_ENDPOINT` hint for clients, then runs until you press `Ctrl-C` or send
-`SIGTERM` on Unix. When `[server.mcp_http]` is enabled, it also prints the bound
-MCP Streamable HTTP endpoint.
+`SIGTERM` on Unix. When `[server.mcp_http]` is enabled, it also prints the MCP
+Streamable HTTP listener's per-workspace URL template.
 
 ```shellscript
 coral server
@@ -538,47 +538,26 @@ container, see [Self-host Coral with Docker](/guides/self-host-with-docker).
 
 ### Which workspace MCP HTTP serves
 
-`coral server` selects no workspace of its own and ignores `--workspace` and
-`CORAL_WORKSPACE`: every gRPC request names the workspace it targets. The MCP
-Streamable HTTP listener it can start alongside gRPC is different — it serves
-exactly one workspace, taken from `server.mcp_http.workspace` in `config.toml`.
+`coral server` selects no workspace at all, and ignores `--workspace` and
+`CORAL_WORKSPACE`: every gRPC request names the workspace it targets, and the
+MCP Streamable HTTP listener it can start alongside gRPC serves every
+workspace at its own URL, `/mcp/workspace/{workspace}`. Which workspace an MCP
+session reaches is decided by the URL the client connects to — never by
+configuration, and never on the caller's behalf.
 
-Without `[auth]`, that listener is loopback-only and unauthenticated, and it
-resolves its workspace **once at startup, before the listener binds**:
+Whether a URL serves is answered per handshake, not at startup: a workspace
+created while the server runs is immediately reachable at its URL, a deleted
+one immediately answers not-found to new sessions, and a fresh install with no
+workspaces starts fine and serves its first workspace the moment
+`coral workspace create` makes one. Creating more workspaces never changes how
+the server starts — it just adds URLs.
 
-- If `server.mcp_http.workspace` names a workspace, that name is used as
-  written. Only its shape is checked at startup, so a listener configured today
-  still starts for a workspace you create tomorrow.
-- Otherwise, if the install has exactly one workspace, that one is used.
-- Otherwise — no workspace, or more than one — **startup fails**.
-
-<Warning>
-  Because resolution runs at startup, creating a second workspace can break the
-  next restart of a server that has been running fine. An install with exactly
-  one workspace serves happily with no `workspace` key; run
-  `coral workspace create` a second time and the next `coral server` refuses to
-  start with:
-
-  ```text
-  several workspaces are available (analytics, work). Name the one the local MCP server serves in `server.mcp_http.workspace`.
-  ```
-
-  A fresh install with no workspace refuses the same way, naming
-  `coral workspace create NAME` instead. Either failure takes the whole process
-  with it — MCP HTTP is started as part of one composite server, so when it
-  cannot start, Coral shuts the gRPC listener back down and exits. The gRPC
-  surface goes down with MCP, not beside it.
-
-  Set `server.mcp_http.workspace` explicitly on any install you intend to run as
-  a server. It is the only thing that makes the choice stable against later
-  workspace changes.
-</Warning>
-
-With `[auth]` configured the listener is authenticated, and
-`server.mcp_http.workspace` is still the key that names its workspace — but it
-is applied per session rather than at startup, so an unnamed or not-yet-existing
-workspace refuses sessions instead of blocking startup. See
-[Configuration](/reference/configuration#server).
+Without `[auth]` the listener is loopback-only and unauthenticated: requests
+act as the built-in local user, with full access to every workspace's URL.
+With `[auth]` the listener is authenticated and a session is admitted only
+when the URL's workspace is among the calling token's own memberships. See
+[Configuration](/reference/configuration#server) and
+[Shared server access control](/guides/shared-server-access-control).
 
 ## `coral mcp-stdio`
 

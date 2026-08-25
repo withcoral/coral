@@ -105,10 +105,10 @@ So a name that was never created, a workspace you are not a member of, and a
 workspace with no owner all produce the same answer. Treat "not found" as "not
 yours to see", not as evidence about what exists on the server.
 
-## Shared MCP serves one configured workspace
+## Shared MCP serves each workspace at its own URL
 
-An MCP HTTP listener with login enabled serves exactly one workspace, named in
-configuration:
+An MCP HTTP listener with login enabled serves every workspace at its own URL,
+`<public_url>/workspace/{workspace}`:
 
 ```toml
 [server.mcp_http]
@@ -116,8 +116,7 @@ enabled = true
 # Coral terminates no TLS on this listener. Bind it where only your TLS
 # terminator can reach it -- not 0.0.0.0 -- and put HTTPS in front.
 bind = "10.0.0.5:14556"
-public_url = "https://mcp.example.com/"
-workspace = "analytics"
+public_url = "https://mcp.example.com/mcp"
 ```
 
 <Warning>
@@ -129,20 +128,19 @@ terminator can reach. The server prints this same warning at startup when the
 bind is not loopback.
 </Warning>
 
-`workspace` is required for this surface to serve anybody, and `public_url` is
-required whenever login is enabled. The name is the operator's selection for the
-listener as a whole: it is not per-caller, and there is no default to fall back
-on. A listener that names nothing refuses every session rather than resolving a
-workspace on somebody's behalf.
-
-Startup validates that the name is a syntactically valid workspace name, and
-does not check that the workspace exists. Existence is a per-caller question, so
-it is answered per caller, at connect time — which also means you can name a
-workspace before creating it.
+`public_url` is required whenever login is enabled; it is the base the
+per-workspace URLs hang under, not an endpoint of its own. Nothing selects a
+workspace in configuration: the URL a client connects to —
+`https://mcp.example.com/mcp/workspace/analytics` for a workspace named
+`analytics` — names the workspace its sessions reach, a workspace is
+connectable as soon as it exists, and onboarding a teammate is handing them
+their workspace's URL. Each workspace URL is its own OAuth resource and token
+audience, so a token minted for one workspace's URL is invalid at every
+other's, and a session opened at one URL does not exist at another.
 
 When a client connects, Coral lists the memberships of the calling token, using
 that caller's own credentials and nothing else, and admits the session only when
-the configured name is exactly one of them. No workspace is substituted and none
+the URL's name is exactly one of them. No workspace is substituted and none
 is picked on the caller's behalf. The decision is made once per session, at the
 `initialize` handshake.
 
@@ -150,8 +148,8 @@ A refused session gets a JSON-RPC error on the `initialize` response rather than
 a bare connection failure, so the guidance actually reaches the client:
 
 ```
-Workspace `analytics` was not found. Name a workspace you can access in
-`server.mcp_http.workspace`, or create one in Reef.
+Workspace `analytics` was not found. Check the workspace URL, or ask a
+workspace owner to add you.
 ```
 
 <Warning>
@@ -164,13 +162,10 @@ Workspace `analytics` was not found. Name a workspace you can access in
   in from the response; ask an owner.
 </Warning>
 
-If the listener names no workspace at all, callers get a different message, and
-this one is about your configuration rather than about any workspace:
-
-```
-This MCP server has no workspace configured. Create a workspace in Reef, then
-name one you can access in `server.mcp_http.workspace`.
-```
+The concealment holds before login too: every well-formed workspace URL
+presents the identical authentication challenge and protected-resource
+metadata, whether or not such a workspace exists, so probing URLs enumerates
+nothing. Only members learn a workspace exists, by being admitted to it.
 
 ## What happens when a membership changes
 

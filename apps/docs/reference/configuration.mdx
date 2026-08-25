@@ -103,7 +103,6 @@ MCP Streamable HTTP is disabled by default. Enable its companion listener under
 [server.mcp_http]
 enabled = true
 bind = "127.0.0.1:14556"
-workspace = "analytics"
 ```
 
 | Key                                  | Type             | Default       | Description                                                                                          |
@@ -275,45 +274,27 @@ management of its own.
   Every authenticated user has the same full access to the instance and all of its sources — there are no per-user roles. Restrict who can log in through the upstream provider and `required_claims`.
 </Note>
 
-### MCP HTTP workspace
+### MCP HTTP workspace URLs
 
-`server.mcp_http.workspace` names the single workspace this MCP listener serves.
-It is optional, and Coral substitutes nothing for it: leaving it out means the
-listener has to work out a workspace by itself, which is where it can start
-refusing to run.
+Nothing under `[server.mcp_http]` selects a workspace: every workspace is
+served at its own URL, `/mcp/workspace/{workspace}` under the listener (and
+under `public_url` when `[auth]` is configured). A `workspace` key is rejected
+at startup — earlier releases used it to bind the listener to one workspace,
+and a value that silently stopped meaning that would be worse than an error.
 
-At startup Coral only checks the name's shape — it must be non-empty after
-trimming, must not be `.` or `..`, and must not contain `/` or `\`. A name that
-fails those rules aborts startup with an error naming
-`server.mcp_http.workspace`. A well-formed name for a workspace that does not
-exist yet is accepted, so you can configure the listener before you create the
-workspace.
+Whether a URL serves is a per-handshake question, never a startup one. The
+server starts with zero workspaces, a workspace created while it runs is
+immediately reachable at its URL, and a deleted one immediately answers
+not-found to new sessions. Only URL-safe workspace names (ASCII letters and
+digits plus `-`, `.`, `_`, `~`) are reachable over HTTP; a workspace named
+outside that set stays fully usable over gRPC and stdio but has no URL until
+it is recreated under a URL-safe name.
 
-<Warning>
-  **Without `[auth]`, an unnamed workspace is resolved once at startup — before
-  the listener binds — and creating a workspace can break your next restart.**
-
-  With no `workspace` key, the loopback listener starts only if the install has
-  exactly one workspace. So a server that has been running fine with one
-  workspace refuses to start after you add a second:
-
-  ```text
-  several workspaces are available (analytics, work). Name the one the local MCP server serves in `server.mcp_http.workspace`.
-  ```
-
-  An install with no workspace refuses the same way, naming
-  `coral workspace create NAME` instead. Both errors take the whole server with
-  them: MCP HTTP starts as part of one composite server, so a failure there
-  shuts the gRPC listener down again and `coral server` exits. Setting
-  `workspace` explicitly is what makes the choice stable against later workspace
-  changes.
-</Warning>
-
-With `[auth]` configured the key is accepted and validated identically, but it
-is applied per session instead of at startup: the listener starts either way,
-and a session is admitted only when the configured name is one the caller can
-reach. A listener that names no workspace starts, then refuses every session
-with guidance to name one.
+Without `[auth]`, requests act as the built-in local user with full access to
+every workspace URL. With `[auth]`, a session is admitted only when the URL's
+workspace is among the calling token's own memberships — see
+[Shared server access control](/guides/shared-server-access-control) for the
+admission and concealment contract.
 
 ## Runtime features
 

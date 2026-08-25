@@ -288,31 +288,25 @@ keeps the client working on the day you create a second.
 ### Loopback MCP over HTTP
 
 `coral server` can also expose MCP Streamable HTTP on loopback for clients that
-speak HTTP rather than stdio. That listener takes no command-line flag; name its
-workspace in `config.toml`:
+speak HTTP rather than stdio:
 
 ```toml
 [server.mcp_http]
 enabled = true
 bind = "127.0.0.1:14556"
-workspace = "analytics"
 ```
 
-Point the client at `http://127.0.0.1:14556/mcp`.
-
-<Warning>
-  The `workspace` key is optional, and leaving it out is what makes this listener
-  fragile. Coral resolves the workspace once when the server starts, and with no
-  key it starts only if the install has exactly one workspace — so an install
-  serving happily today refuses to start after you create a second workspace,
-  and takes the gRPC surface down with it. See
-  [MCP HTTP workspace](/reference/configuration#mcp-http-workspace).
-</Warning>
+Every workspace is served at its own URL; point the client at the one it
+should work in, for example `http://127.0.0.1:14556/mcp/workspace/analytics`.
+No configuration selects a workspace: the URL does, a workspace is reachable
+as soon as it exists, and creating another workspace later just adds another
+URL. An unknown name answers not-found until a workspace by that name exists.
 
 ## Troubleshooting
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` on macOS or Linux or `(Get-Command coral).Source` in PowerShell.
 - **The server exits immediately after your client launches it:** Run `coral workspace list`. With no workspaces, create one with `coral workspace create <name>`. With several and no `--workspace` in the client's args, Coral refuses to choose — add the flag naming the one you want.
-- **The server used to start and now does not:** Check whether you created another workspace since it last worked. A stdio server needs `--workspace` from that point on, and a loopback `[server.mcp_http]` listener needs a `workspace` key.
+- **A stdio server used to start and now does not:** Check whether you created another workspace since it last worked. A stdio server needs `--workspace` from that point on. The HTTP listener is unaffected — each workspace has its own URL.
+- **A workspace URL answers 404:** The path must be exactly `/mcp/workspace/<name>` and the workspace must exist — check the name with `coral workspace list`. The retired `/mcp` path no longer serves MCP.
 - **No tables visible:** Confirm the client is pointed at the workspace your sources are in, then run `coral source list --workspace <name>` in your terminal. If empty, add one with `coral source add`. See the [CLI reference](/reference/cli-reference#coral-source).
 - **The agent ignores Coral:** Ask it to use Coral by name. For stronger routing, install the Coral agent skills from [Installation](/getting-started/installation#skills).
