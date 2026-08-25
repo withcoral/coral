@@ -71,6 +71,8 @@ fn rows_match_current_migrations(rows: &[(i64, Vec<u8>, bool)]) -> bool {
 mod tests {
     use super::{MIGRATOR, rows_match_current_migrations};
 
+    type IdentityRow<'a> = (&'a str, &'a str, Option<&'a str>, &'a str, Option<&'a str>);
+
     #[test]
     fn current_migration_rows_must_match_versions_checksums_and_success() {
         let current_rows: Vec<_> = MIGRATOR
@@ -141,5 +143,102 @@ mod tests {
             columns.iter().all(|(column,)| column != "identity_type"),
             "identity_type must be derived from manifest_yaml"
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_identity_schema_enforces_owner_and_spec_scope_structure() {
+        let pool = sqlx::SqlitePool::connect(":memory:")
+            .await
+            .expect("sqlite pool");
+        MIGRATOR.run(&pool).await.expect("run migrations");
+        for workspace in ["alpha", "beta"] {
+            sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES (?, 0)")
+                .bind(workspace)
+                .execute(&pool)
+                .await
+                .expect("seed workspace");
+        }
+
+        for row in [
+            ("user", "local", None, "user-global", None),
+            (
+                "workspace",
+                "alpha",
+                Some("alpha"),
+                "workspace-global",
+                None,
+            ),
+            (
+                "workspace",
+                "alpha",
+                Some("alpha"),
+                "workspace-scoped",
+                Some("alpha"),
+            ),
+        ] {
+            insert_identity(&pool, row)
+                .await
+                .expect("valid identity row");
+        }
+        let identity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM identities")
+            .fetch_one(&pool)
+            .await
+            .expect("count identities");
+        assert_eq!(identity_count, 3);
+
+        for row in [
+            ("workspace", "alpha", Some("beta"), "owner-mismatch", None),
+            (
+                "workspace",
+                "missing",
+                Some("missing"),
+                "missing-workspace",
+                None,
+            ),
+            ("user", "member", None, "user-scoped", Some("alpha")),
+            (
+                "workspace",
+                "alpha",
+                Some("alpha"),
+                "cross-workspace",
+                Some("beta"),
+            ),
+        ] {
+            insert_identity(&pool, row)
+                .await
+                .expect_err("invalid identity row must be rejected");
+        }
+
+        sqlx::query("DELETE FROM workspaces WHERE id = 'alpha'")
+            .execute(&pool)
+            .await
+            .expect("delete workspace");
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM identities")
+            .fetch_one(&pool)
+            .await
+            .expect("count cascaded identity rows");
+        assert_eq!(remaining, 1);
+    }
+
+    async fn insert_identity(
+        pool: &sqlx::SqlitePool,
+        (owner_kind, owner_key, workspace_id, name, identity_spec_workspace_id): IdentityRow<'_>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO identities (
+                owner_kind, owner_key, workspace_id, name,
+                identity_spec_workspace_id, identity_spec_name,
+                identity_spec_fingerprint, issuer, identity_type,
+                created_at_unix_nanos, updated_at_unix_nanos
+             ) VALUES (?, ?, ?, ?, ?, 'missing-spec', 'fingerprint', 'issuer', 'fixed_token', 1, 1)",
+        )
+        .bind(owner_kind)
+        .bind(owner_key)
+        .bind(workspace_id)
+        .bind(name)
+        .bind(identity_spec_workspace_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
     }
 }

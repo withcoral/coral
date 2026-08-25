@@ -52,6 +52,7 @@ mod feedback;
 mod functions;
 mod gui_onboarding;
 mod hash;
+mod identities;
 mod identity;
 mod identity_specs;
 mod oauth_resource;
