@@ -1,4 +1,8 @@
 use std::future::Future;
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_spec::IdentityManifest;
 
@@ -11,6 +15,25 @@ use crate::encrypted_document::EncryptedEnvelopeDocument;
 
 pub(crate) struct IdentitySpecState<'a> {
     db: &'a CoralDb,
+    #[cfg(test)]
+    before_lifecycle_write: Option<BeforeLifecycleWriteGate>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct BeforeLifecycleWriteGate {
+    barrier: Arc<tokio::sync::Barrier>,
+    used: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+impl BeforeLifecycleWriteGate {
+    pub(crate) fn new(barrier: Arc<tokio::sync::Barrier>) -> Self {
+        Self {
+            barrier,
+            used: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -21,11 +44,24 @@ pub(crate) struct IdentitySpecMutationSnapshot {
 
 impl CoralDb {
     pub(crate) fn identity_spec_state(&self) -> IdentitySpecState<'_> {
-        IdentitySpecState { db: self }
+        IdentitySpecState {
+            db: self,
+            #[cfg(test)]
+            before_lifecycle_write: None,
+        }
     }
 }
 
 impl IdentitySpecState<'_> {
+    #[cfg(test)]
+    pub(crate) fn with_before_lifecycle_write(
+        mut self,
+        gate: Option<BeforeLifecycleWriteGate>,
+    ) -> Self {
+        self.before_lifecycle_write = gate;
+        self
+    }
+
     pub(crate) async fn add_or_replace_exact<F, Fut>(
         &self,
         key: &IdentitySpecKey,
@@ -44,6 +80,8 @@ impl IdentitySpecState<'_> {
             let replaced = snapshot.record.is_some();
             let (document, fingerprint) = prepare_mutation(snapshot).await?;
             require_equivalent_dependents(&mut tx, key, &fingerprint).await?;
+            #[cfg(test)]
+            self.wait_before_lifecycle_write().await;
             let now = now_unix_nanos_i64()?;
             let record = tx
                 .identity_specs()
@@ -89,6 +127,8 @@ impl IdentitySpecState<'_> {
                     scope_label(key.scope()),
                 )));
             }
+            #[cfg(test)]
+            self.wait_before_lifecycle_write().await;
             tx.identity_specs().delete(key).await.map_err(Into::into)
         }
         .await;
@@ -118,6 +158,15 @@ impl IdentitySpecState<'_> {
         let snapshot = load_mutation_snapshot(&mut tx, key).await?;
         tx.commit().await?;
         Ok(snapshot)
+    }
+
+    #[cfg(test)]
+    async fn wait_before_lifecycle_write(&self) {
+        if let Some(gate) = &self.before_lifecycle_write
+            && !gate.used.swap(true, Ordering::SeqCst)
+        {
+            gate.barrier.wait().await;
+        }
     }
 }
 

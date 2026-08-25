@@ -797,6 +797,20 @@ async fn load_pair(
     (identity, document)
 }
 
+pub(crate) async fn assert_persisted_fixed_token_material(
+    db: &CoralDb,
+    owner: &IdentityOwner,
+    identity_name: &str,
+    token: &str,
+    provider: &dyn CredentialKeyProvider,
+) -> IdentityRecord {
+    let (identity, document) = load_pair(db, owner, identity_name).await;
+    let identity = identity.expect("persisted identity");
+    let document = document.expect("persisted identity document");
+    assert_material(&identity, &document, token, provider);
+    identity
+}
+
 fn assert_reference(record: &IdentityRecord, spec_name: &str, revision: &str) {
     let key = IdentitySpecKey::global(spec_name).expect("global spec key");
     assert_reference_key(record, &key, revision);
