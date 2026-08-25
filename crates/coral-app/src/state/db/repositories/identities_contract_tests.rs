@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use sea_query::{Expr, ExprTrait, Query, SimpleExpr};
 use tempfile::tempdir;
 
@@ -14,14 +16,17 @@ use crate::workspaces::WorkspaceName;
 #[tokio::test(flavor = "current_thread")]
 async fn identity_repository_contract_holds_against_sqlite() {
     let temp = tempdir().expect("temp dir");
-    let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
-        path: temp.path().join("coral.sqlite"),
-    })
-    .await
-    .expect("open sqlite");
+    let db = Arc::new(
+        CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: temp.path().join("coral.sqlite"),
+        })
+        .await
+        .expect("open sqlite"),
+    );
     db.migrate().await.expect("migrate sqlite");
     assert_identity_repository_contract(&db).await;
     assert_identity_repository_corruption_contract(&db).await;
+    crate::identities::manager::tests::assert_user_global_fixed_token_create_contract(&db).await;
 }
 
 #[expect(clippy::too_many_lines, reason = "shared backend contract fixture")]

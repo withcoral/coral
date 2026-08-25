@@ -73,18 +73,10 @@ pub(crate) trait DbRepos: DbSession + Sized {
         IdentitySpecsRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Identity manager consumers land later.")
-    )]
     fn identities(&mut self) -> IdentitiesRepo<'_, Self> {
         IdentitiesRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Identity manager consumers land later.")
-    )]
     fn identity_documents(&mut self) -> IdentityDocumentsRepo<'_, Self> {
         IdentityDocumentsRepo::new(self)
     }
