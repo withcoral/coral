@@ -12,10 +12,10 @@ use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
     CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, DeleteSourceRequest,
     DeleteSourceResponse, DescribeSourceManifestRequest, DescribeSourceManifestResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, import_source_response,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    ListSourcesRequest, ListSourcesResponse, ValidateSourceRequest, ValidateSourceResponse,
+    Workspace, import_source_response,
     source_service_server::{SourceService, SourceServiceServer},
 };
 use coral_client::{
@@ -2842,6 +2842,13 @@ impl SourceService for RefusingSourceService {
         source_refusal()
     }
 
+    async fn describe_source_manifest(
+        &self,
+        _request: Request<DescribeSourceManifestRequest>,
+    ) -> Result<Response<DescribeSourceManifestResponse>, Status> {
+        source_refusal()
+    }
+
     async fn list_sources(
         &self,
         _request: Request<ListSourcesRequest>,
@@ -2860,13 +2867,6 @@ impl SourceService for RefusingSourceService {
         &self,
         _request: Request<GetSourceInfoRequest>,
     ) -> Result<Response<GetSourceInfoResponse>, Status> {
-        source_refusal()
-    }
-
-    async fn describe_source_manifest(
-        &self,
-        _request: Request<DescribeSourceManifestRequest>,
-    ) -> Result<Response<DescribeSourceManifestResponse>, Status> {
         source_refusal()
     }
 
