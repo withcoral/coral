@@ -485,6 +485,10 @@ mod tests {
         local_member: String,
         owned: String,
         human: String,
+        /// What the singleton local row already said before the migration ran.
+        /// The row cannot be suffixed per run, so the only stable claim about
+        /// it is that re-ensuring leaves whatever was there untouched.
+        local_last_login_at_unix_nanos: i64,
     }
 
     /// Drives the whole one-time local ownership migration through the
@@ -542,7 +546,7 @@ mod tests {
 
     async fn seed_legacy_ownership(db: &CoralDb) -> LegacyOwnership {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
-        let legacy = LegacyOwnership {
+        let mut legacy = LegacyOwnership {
             // The real marker id would stay claimed in the shared Postgres
             // test database and fail every later run, so the shape is
             // exercised under a per-run id derived from it.
@@ -551,6 +555,8 @@ mod tests {
             local_member: format!("workspace_local_member_{suffix}"),
             owned: format!("workspace_owned_{suffix}"),
             human: seed_user(db, &format!("human_{suffix}"), None).await,
+            // Read back below, once the seed has ensured the row exists.
+            local_last_login_at_unix_nanos: 0,
         };
 
         let mut tx = db.begin().await.expect("begin legacy seed");
@@ -592,6 +598,7 @@ mod tests {
             ),
             (LOCAL_PRINCIPAL_ID, LOCAL_PRINCIPAL_ID, "", Some("Local"))
         );
+        legacy.local_last_login_at_unix_nanos = local.last_login_at_unix_nanos;
         legacy
     }
 
@@ -695,7 +702,7 @@ mod tests {
         );
         assert_eq!(
             local_user(db).await.last_login_at_unix_nanos,
-            5,
+            legacy.local_last_login_at_unix_nanos,
             "re-ensuring the local user must not rewrite the stored row"
         );
     }
