@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS identity_documents (
     wrapped_dek_nonce BYTEA NOT NULL,
     key_id TEXT NOT NULL,
     algorithm TEXT NOT NULL,
-    aad_version BIGINT NOT NULL,
+    binding_version BIGINT NOT NULL,
     created_at_unix_nanos BIGINT NOT NULL,
     updated_at_unix_nanos BIGINT NOT NULL,
     PRIMARY KEY (owner_kind, owner_key, name),
