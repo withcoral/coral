@@ -217,11 +217,6 @@ function ManualConnectInstructions() {
         <Typography.CodeInline as="code">coral</Typography.CodeInline>.
       </Typography.Body>
 
-      <Typography.BodySmall variant="tertiary">
-        Open this step in Coral Desktop to connect a client for you. This browser cannot configure a
-        local MCP server, and web agents cannot launch a local stdio one.
-      </Typography.BodySmall>
-
       <Typography.Body variant="tertiary">
         See the{' '}
         <OnboardingLink href="https://withcoral.com/docs/guides/use-coral-over-mcp">
