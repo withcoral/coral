@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use coral_app::{
-    AwsEngineExtensionsProvider,
+    AwsEngineExtensionsProvider, EngineExtensionsProvider,
     features::{Feature, FeatureOverrides, FeatureStore},
 };
 use coral_client::{
@@ -39,7 +39,10 @@ pub(crate) enum BootstrapError {
     Serve(#[from] crate::serve::ServeError),
 }
 
-pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, BootstrapError> {
+pub(crate) async fn bootstrap(
+    options: BootstrapOptions,
+    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+) -> Result<Bootstrap, BootstrapError> {
     if let Some(endpoint) = bootstrap_endpoint() {
         return Ok(Bootstrap {
             app: AppClient::connect(&endpoint).await?,
@@ -47,9 +50,10 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
         });
     }
 
-    let server = configure_server_builder(ServerBuilder::new(), options)
-        .start()
-        .await?;
+    let server =
+        configure_server_builder(ServerBuilder::new(), options, engine_extensions_providers)
+            .start()
+            .await?;
     let app = AppClient::connect(server.endpoint_uri()).await?;
     Ok(Bootstrap {
         app,
@@ -59,6 +63,7 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
 
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
+    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
 ) -> Result<crate::serve::RunningServer, BootstrapError> {
     let features = FeatureStore::discover(None)?.load_with_overrides(&feature_overrides)?;
     let mcp_options = McpOptions {
@@ -72,17 +77,27 @@ pub(crate) async fn start_standalone_server(
             feature_overrides,
             ..BootstrapOptions::default()
         },
+        engine_extensions_providers,
     );
     crate::serve::start(builder, mcp_options)
         .await
         .map_err(Into::into)
 }
 
-fn configure_server_builder(builder: ServerBuilder, options: BootstrapOptions) -> ServerBuilder {
-    builder
+fn configure_server_builder(
+    builder: ServerBuilder,
+    options: BootstrapOptions,
+    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+) -> ServerBuilder {
+    let builder = builder
         .with_stderr_logs(options.enable_stderr_logs)
         .with_feature_overrides(options.feature_overrides)
-        .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
+        .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider));
+    engine_extensions_providers
+        .into_iter()
+        .fold(builder, |builder, provider| {
+            builder.add_engine_extensions_provider(provider)
+        })
 }
 
 #[cfg(feature = "cli-test-server")]

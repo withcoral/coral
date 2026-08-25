@@ -21,6 +21,7 @@ use std::fmt::Write as _;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{
     Arg, ArgAction, ArgGroup, ArgMatches, Args, CommandFactory, Error as ClapError, FromArgMatches,
@@ -35,7 +36,7 @@ use coral_api::v1::{
     SearchProvider, SearchRequest, Workspace, function, search_clear_target,
     search_maintenance_result,
 };
-use coral_app::bootstrap::is_loopback_ip;
+use coral_app::{EngineExtensionsProvider, bootstrap::is_loopback_ip};
 use coral_client::{
     AppClient, DEFAULT_WORKSPACE_ID, decode_execute_sql_response, format_batches_json,
     format_batches_table, format_search_response_json, format_search_response_text,
@@ -606,6 +607,19 @@ where
 /// Returns an error if runtime startup, command execution, or output
 /// formatting fails.
 pub async fn run_from_env() -> Result<(), CliError> {
+    Box::pin(run_from_env_with_engine_extensions(Vec::new())).await
+}
+
+/// Parses CLI arguments and runs the selected command with additional engine
+/// extensions providers.
+///
+/// # Errors
+///
+/// Returns an error if runtime startup, command execution, or output
+/// formatting fails.
+pub async fn run_from_env_with_engine_extensions(
+    providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+) -> Result<(), CliError> {
     let Cli {
         feature_overrides,
         workspace_selection,
@@ -626,10 +640,13 @@ pub async fn run_from_env() -> Result<(), CliError> {
                 workspace_resource(DEFAULT_WORKSPACE_ID)
             };
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
-            let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
-                enable_stderr_logs: command.enables_stderr_logs(),
-                feature_overrides: feature_overrides.clone(),
-            })
+            let bootstrap = bootstrap::bootstrap(
+                bootstrap::BootstrapOptions {
+                    enable_stderr_logs: command.enables_stderr_logs(),
+                    feature_overrides: feature_overrides.clone(),
+                },
+                providers,
+            )
             .await
             .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
@@ -654,7 +671,11 @@ pub async fn run_from_env() -> Result<(), CliError> {
         RequiredRuntime::None => {
             coral_app::run_with_context(
                 &ctx,
-                Box::pin(run_no_runtime_command(command, &feature_overrides)),
+                Box::pin(run_no_runtime_command(
+                    command,
+                    &feature_overrides,
+                    providers,
+                )),
             )
             .await
         }
@@ -673,8 +694,10 @@ fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<
 
 async fn run_server(
     feature_overrides: coral_app::features::FeatureOverrides,
+    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
 ) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_standalone_server(feature_overrides).await?;
+    let server =
+        bootstrap::start_standalone_server(feature_overrides, engine_extensions_providers).await?;
     let endpoint = server.endpoint_uri().to_string();
 
     // An endpoint that does not parse back to an address is treated as exposed:
@@ -819,6 +842,7 @@ async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
 async fn run_no_runtime_command(
     command: Command,
     feature_overrides: &coral_app::features::FeatureOverrides,
+    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
 ) -> Result<(), CliError> {
     match command {
         Command::Completion(args) => {
@@ -828,9 +852,12 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
-        Command::Server => Box::pin(run_server(feature_overrides.clone()))
-            .await
-            .map_err(Into::into),
+        Command::Server => Box::pin(run_server(
+            feature_overrides.clone(),
+            engine_extensions_providers,
+        ))
+        .await
+        .map_err(Into::into),
         Command::Sql(_)
         | Command::Search(_)
         | Command::SearchIndex(_)
