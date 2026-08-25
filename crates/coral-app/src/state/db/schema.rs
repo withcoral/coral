@@ -99,10 +99,6 @@ pub(in crate::state::db) enum GuiOnboardingCompletions {
     CompletedAtUnixNanos,
 }
 
-#[expect(
-    dead_code,
-    reason = "Identity repository consumers land in the next stack units."
-)]
 #[derive(Iden)]
 pub(in crate::state::db) enum Identities {
     Table,

@@ -129,6 +129,13 @@ impl IdentitySpecKey {
             name: parse_persisted_identity_spec_name(name)?,
         })
     }
+
+    pub(crate) fn from_reference_storage_parts(
+        workspace_id: Option<&str>,
+        name: &str,
+    ) -> Result<Self, DbError> {
+        Self::from_spec_storage_parts(workspace_id, name)
+    }
 }
 
 /// Persisted authored definition for one identity spec.
@@ -723,7 +730,8 @@ mod tests {
         for result in [
             IdentitySpecKey::from_spec_storage_parts(None, " github"),
             IdentitySpecKey::from_spec_storage_parts(Some(" default"), "github"),
-            IdentitySpecKey::from_spec_storage_parts(None, "github "),
+            IdentitySpecKey::from_reference_storage_parts(None, "github "),
+            IdentitySpecKey::from_reference_storage_parts(Some(" default"), "github"),
             IdentitySpecKey::from_spec_storage_parts(None, "github-oauth"),
         ] {
             assert!(matches!(result, Err(DbError::CorruptData(_))));
