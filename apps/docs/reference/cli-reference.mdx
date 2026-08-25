@@ -340,6 +340,56 @@ coral workspace remove work
 
 The `default` workspace cannot be removed.
 
+## `coral identity`
+
+Manage fixed-token identities owned by the current Coral user. Identity commands
+are not workspace-scoped and reject an explicit `--workspace`; each identity
+uses an exact revision of a globally installed identity spec.
+
+### `coral identity add <NAME> --identity-spec <SPEC>`
+
+Create or replace a current-user identity from a global fixed-token identity
+spec. In a terminal, Coral prompts for the token without echoing it.
+
+```shellscript
+coral identity add github_local --identity-spec github_token
+```
+
+For automation, pass `--token-stdin` and pipe the token on standard input:
+
+```shellscript
+printf '%s\n' "$GITHUB_TOKEN" | coral identity add github_local --identity-spec github_token --token-stdin
+```
+
+Token setup material is write-only. Coral encrypts it for storage and never
+returns it from identity management APIs or renders it in command output.
+
+### `coral identity list`
+
+List identities owned by the current user, including each identity's global
+spec name, scope, and provider audience. Use `identity info` to inspect the
+exact pinned fingerprint.
+
+```shellscript
+coral identity list
+```
+
+### `coral identity info <NAME>`
+
+Show one current-user identity's safe metadata and pinned spec fingerprint.
+
+```shellscript
+coral identity info github_local
+```
+
+### `coral identity remove <NAME>`
+
+Remove one current-user identity and its encrypted token material.
+
+```shellscript
+coral identity remove github_local
+```
+
 ## `coral identity-spec`
 
 Manage reusable identity specifications in one exact scope. Commands target the selected workspace by default. Pass `--global` to target global scope instead; `--global` cannot be combined with an explicit `--workspace`.

@@ -11,6 +11,7 @@ mod bootstrap;
 mod branding;
 mod browser;
 pub mod env;
+mod identity_ops;
 mod identity_spec_ops;
 mod onboard;
 mod query_error;
@@ -79,6 +80,8 @@ enum Command {
     SearchIndex(SearchIndexArgs),
     /// Manage data sources
     Source(SourceArgs),
+    /// Manage identities owned by the current Coral user
+    Identity(identity_ops::IdentityArgs),
     /// Manage installed identity specifications
     IdentitySpec(identity_spec_ops::IdentitySpecArgs),
     /// Manage workspaces
@@ -516,6 +519,7 @@ impl Command {
             | Command::Search(_)
             | Command::SearchIndex(_)
             | Command::Source(_)
+            | Command::Identity(_)
             | Command::IdentitySpec(_)
             | Command::Workspace(_)
             | Command::Function(_)
@@ -618,8 +622,16 @@ pub async fn run_from_env() -> Result<(), CliError> {
     } = Cli::parse();
     let workspace_flag_present = workspace_selection.workspace.is_some();
     command.apply_workspace_flag_presence(workspace_flag_present);
-    if let Command::IdentitySpec(args) = &command {
-        args.validate_explicit_workspace(workspace_selection.workspace.as_deref())?;
+    match &command {
+        Command::Identity(_) => {
+            identity_ops::IdentityArgs::validate_explicit_workspace(
+                workspace_selection.workspace.as_deref(),
+            )?;
+        }
+        Command::IdentitySpec(args) => {
+            args.validate_explicit_workspace(workspace_selection.workspace.as_deref())?;
+        }
+        _ => {}
     }
     let feature_overrides = feature_overrides.into_overrides();
     let ctx = coral_app::RunContext {
@@ -843,6 +855,7 @@ async fn run_no_runtime_command(
         | Command::Search(_)
         | Command::SearchIndex(_)
         | Command::Source(_)
+        | Command::Identity(_)
         | Command::IdentitySpec(_)
         | Command::Workspace(_)
         | Command::Function(_)
@@ -887,6 +900,7 @@ async fn run_app_command(
         Command::Search(args) => run_search(&app, workspace, args).await?,
         Command::SearchIndex(args) => run_search_index(&app, workspace, args).await?,
         Command::Source(args) => run_source(&app, workspace, args).await?,
+        Command::Identity(args) => identity_ops::run(&app, args).await?,
         Command::IdentitySpec(args) => identity_spec_ops::run(&app, workspace, args).await?,
         Command::Workspace(args) => run_workspace(&app, args).await?,
         Command::Function(args) => run_function(&app, workspace, args).await?,
@@ -2045,6 +2059,8 @@ mod tests {
         let search =
             Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
         let source = Cli::try_parse_from(["coral", "source", "list"]).expect("source parses");
+        let identity =
+            Cli::try_parse_from(["coral", "identity", "list"]).expect("identity list parses");
         let identity_spec = Cli::try_parse_from(["coral", "identity-spec", "list"])
             .expect("identity-spec list parses");
         let functions =
@@ -2057,6 +2073,7 @@ mod tests {
         assert!(sql.command.uses_selected_workspace());
         assert!(search.command.uses_selected_workspace());
         assert!(source.command.uses_selected_workspace());
+        assert!(!identity.command.uses_selected_workspace());
         assert!(identity_spec.command.uses_selected_workspace());
         assert!(functions.command.uses_selected_workspace());
         assert!(onboard.command.uses_selected_workspace());
