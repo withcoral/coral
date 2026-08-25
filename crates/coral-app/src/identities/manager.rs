@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_spec::IdentitySpecType;
 
@@ -33,6 +35,25 @@ const MAX_MUTATION_ATTEMPTS: usize = 8;
 pub(crate) struct IdentityManager {
     db: Arc<CoralDb>,
     key_provider: Arc<dyn CredentialKeyProvider>,
+    #[cfg(test)]
+    before_write_gate: Option<BeforeWriteGate>,
+    #[cfg(test)]
+    before_upsert_gate: Option<BeforeUpsertGate>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BeforeWriteGate {
+    prepared: Arc<tokio::sync::Barrier>,
+    resume: Arc<tokio::sync::Barrier>,
+    used: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BeforeUpsertGate {
+    barrier: Arc<tokio::sync::Barrier>,
+    used: Arc<AtomicBool>,
 }
 
 struct SelectedFixedTokenSpec {
@@ -42,7 +63,37 @@ struct SelectedFixedTokenSpec {
 
 impl IdentityManager {
     pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn CredentialKeyProvider>) -> Self {
-        Self { db, key_provider }
+        Self {
+            db,
+            key_provider,
+            #[cfg(test)]
+            before_write_gate: None,
+            #[cfg(test)]
+            before_upsert_gate: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_before_write_gate(
+        mut self,
+        prepared: Arc<tokio::sync::Barrier>,
+        resume: Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.before_write_gate = Some(BeforeWriteGate {
+            prepared,
+            resume,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn with_before_upsert_gate(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
+        self.before_upsert_gate = Some(BeforeUpsertGate {
+            barrier,
+            used: Arc::new(AtomicBool::new(false)),
+        });
+        self
     }
 
     /// Create or replace one user-owned fixed-token identity from an exact global spec.
@@ -74,6 +125,13 @@ impl IdentityManager {
             let document = self
                 .prepare_fixed_token_document(&owner, &name, &selected.reference, token.clone())
                 .await?;
+            #[cfg(test)]
+            if let Some(gate) = &self.before_write_gate
+                && !gate.used.swap(true, Ordering::SeqCst)
+            {
+                gate.prepared.wait().await;
+                gate.resume.wait().await;
+            }
             match self.try_write(&owner, &name, &selected, &document).await {
                 Ok(Some(record)) => return Ok(record),
                 Ok(None) | Err(AppError::RetryableTransactionConflict) => {
@@ -148,6 +206,12 @@ impl IdentityManager {
         if current.as_ref() != Some(&selected.record) {
             tx.rollback().await?;
             return Ok(None);
+        }
+        #[cfg(test)]
+        if let Some(gate) = &self.before_upsert_gate
+            && !gate.used.swap(true, Ordering::SeqCst)
+        {
+            gate.barrier.wait().await;
         }
         let now = match now_unix_nanos_i64() {
             Ok(now) => now,
