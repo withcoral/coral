@@ -45,12 +45,13 @@ export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?ssl
 
 ## Workspaces
 
-Workspace metadata is stored under `[workspaces]`. Coral provisions no
-workspace of its own; workspaces are created and removed with
-`coral workspace`.
+Workspace metadata is stored under `[workspaces]`. Coral provisions no workspace
+of its own — create and remove them yourself with `coral workspace create` and
+`coral workspace remove`. `default` is an ordinary name like any other; nothing
+creates it for you and nothing protects it.
 
 ```toml
-[workspaces.default]
+[workspaces.analytics]
 
 [workspaces.work]
 

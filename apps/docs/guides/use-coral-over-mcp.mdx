@@ -15,6 +15,16 @@ Before setting up a client, make sure you have [connected at least one source](/
 
 Coral uses stdio transport. If a client supports a command-based install flow, point it at `coral mcp-stdio`.
 
+Create a workspace first — a fresh install has none, and `coral mcp-stdio` cannot
+serve one that does not exist:
+
+```shellscript
+coral workspace create analytics
+```
+
+Name that workspace with `--workspace` in the server args of every client below.
+The examples show one workspace called `analytics`; substitute your own.
+
 <Tabs>
 <Tab title="npx add-mcp">
 
@@ -24,12 +34,12 @@ Coral uses stdio transport. If a client supports a command-based install flow, p
   <Tabs>
     <Tab title="macOS / Linux">
     ```shellscript
-    npx add-mcp -n coral -g "$(which coral) mcp-stdio"
+    npx add-mcp -n coral -g "$(which coral) mcp-stdio --workspace analytics"
     ```
     </Tab>
     <Tab title="Windows PowerShell">
     ```powershell
-    npx add-mcp -n coral -g "$((Get-Command coral).Source) mcp-stdio"
+    npx add-mcp -n coral -g "$((Get-Command coral).Source) mcp-stdio --workspace analytics"
     ```
     </Tab>
   </Tabs>
