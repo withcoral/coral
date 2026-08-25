@@ -5,10 +5,6 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "isolatedModules": true,
-    // electron-builder.config.ts is loaded by jiti and by node --test, neither
-    // of which resolves an extensionless specifier to a .ts file, so its import
-    // of the release-target table must spell the extension out.
-    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["node", "electron"],

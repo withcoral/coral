@@ -2,7 +2,10 @@ import { accessSync, constants, statSync } from 'node:fs'
 
 import type { Configuration } from 'electron-builder'
 
-import { RELEASE_PLATFORMS, releaseTarget } from './src/shared/release-targets.ts'
+// Release mode ships an active updater, so it only applies where the app can
+// replace itself: the macOS app and the Linux AppImage. Windows has no updater
+// and no signing story yet.
+const RELEASE_PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux']
 
 const API_KEY_NOTARIZATION_ENV = [
   'APPLE_API_KEY',
@@ -42,18 +45,17 @@ export function createConfig(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Configuration {
-  // Release mode means the build ships an active updater; src/shared/release-targets.ts
-  // lists where that is possible and what it costs. Reject the flag on a host
-  // that ships no release build, so the build fails on the flag rather than on
-  // a preflight it could never satisfy.
+  // Reject the flag up front, so the build fails on the flag rather than on a
+  // preflight it could never satisfy.
   const releaseBuild = env.CORAL_DESKTOP_RELEASE === '1'
-  const target = releaseTarget(platform)
-  if (releaseBuild && !target) {
+  if (releaseBuild && !RELEASE_PLATFORMS.includes(platform)) {
     throw new Error(
       `CORAL_DESKTOP_RELEASE=1 supports ${RELEASE_PLATFORMS.join(', ')} hosts only, not ${platform}`,
     )
   }
-  const appleRelease = releaseBuild && target?.appleSigning === true
+  // Signing and notarization are the macOS half of release mode; the AppImage
+  // updates itself unsigned.
+  const appleRelease = releaseBuild && platform === 'darwin'
   if (appleRelease) requireNotarizationCredentials(env)
 
   return {
@@ -119,21 +121,16 @@ export function createConfig(
       // put a /usr/bin/coral symlink to the desktop app in the deb payload and
       // shadow the CLI the user installed.
       executableName: 'coral-desktop',
-      // The directory, not icon.png. electron-builder returns a lone .png
-      // source verbatim (iconConverter.js `set: source is already a .png`), so
-      // naming the file installs a single 1024x1024 icon — a size hicolor's
-      // index.theme does not declare, leaving launchers with no icon at all.
-      // A directory routes icon.png through the generator and yields a real set.
+      // The directory, not icon.png: electron-builder passes a lone .png through
+      // verbatim, installing one 1024x1024 icon at a size hicolor's index.theme
+      // does not declare. A directory routes it through the size generator.
       icon: 'resources/icons',
       // Debian requires a contact address for the Maintainer field, and fpm
       // refuses to build without one — `author` carries no email.
       maintainer: 'Coral Eng Team <eng@withcoral.com>',
       synopsis: 'Coral desktop app',
-      // Electron sets the window's WM_CLASS from `desktopName` in package.json,
-      // and electron-builder writes StartupWMClass from the same value. Without
-      // it the two disagree — WM_CLASS is `withcoral-desktop`, derived from the
-      // package name, while StartupWMClass would be `Coral` — and no desktop
-      // environment can link a running window to the installed launcher.
+      // Makes StartupWMClass match the WM_CLASS Electron takes from `desktopName`
+      // in package.json. Without it the launcher cannot claim its own window.
       syncDesktopName: true,
       target: [
         { target: 'AppImage', arch: ['x64'] },

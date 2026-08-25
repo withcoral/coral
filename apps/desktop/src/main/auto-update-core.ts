@@ -12,22 +12,12 @@ import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/t
 export const UNSUPPORTED_UPDATE_DETAIL =
   'Coral checks for updates from the released macOS app and the Linux AppImage only.'
 
-// The path electron-updater's AppImageUpdater operates on: it downloads against
-// this file, unlinks it, and moves the new image over it (doInstall). Reading
-// the same variable the updater reads matches its precondition rather than
-// trying to detect an AppImage independently. An extracted AppDir does not set
-// it — the AppRun template assigns a fallback without exporting it.
-//
-// The absolute check is the whole point of doing this here. electron-updater
-// splits its own validation: isUpdaterActive() only asks whether the variable
-// is set, while doInstall() also demands an absolute, NUL-free path and throws
-// ERR_UPDATER_OLD_FILE_NOT_FOUND otherwise — at the end of the flow, after the
-// user clicked and the download ran. A value that cannot install must not
-// enable updates in the first place. The same value becomes app.relaunch()'s
-// execPath, which a relative path would resolve against the new process's cwd.
-//
-// Deliberately unsanitised: doInstall reads process.env.APPIMAGE verbatim, so
-// trimming here would validate a different string than the one it uses.
+// The image file AppImageUpdater replaces on install, read from the same
+// variable the updater reads. electron-updater only checks that it is set before
+// offering an update, then demands an absolute, NUL-free path at install time —
+// after the download. Checking here keeps a value that cannot install from
+// enabling updates at all. Left unsanitised on purpose: the updater reads
+// process.env.APPIMAGE verbatim, so trimming would validate a different string.
 export function appImagePath(env: NodeJS.ProcessEnv): string | null {
   const path = env.APPIMAGE
   if (!path || !isAbsolute(path) || path.includes('\0')) return null

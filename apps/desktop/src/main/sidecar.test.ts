@@ -22,8 +22,8 @@ vi.mock('./coral-config', () => ({
 
 import { startCoralSidecar } from './sidecar'
 
-// Enough of a ChildProcess to drive the startup handshake: startCoralSidecar
-// resolves on the ready line, which also clears the packaged startup timeout.
+// Enough of a ChildProcess for the startup handshake: startCoralSidecar resolves
+// on the ready line.
 function fakeChild() {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter
@@ -43,8 +43,7 @@ describe('packaged sidecar spawn', () => {
     vi.clearAllMocks()
     mocks.getPath.mockReturnValue(userData)
     mocks.ensureDesktopCoralConfig.mockResolvedValue(`${userData}/coral`)
-    // Electron defines resourcesPath; plain Node does not, and bundledCoralPath
-    // joins it to locate the binary.
+    // Electron defines resourcesPath; plain Node does not.
     Object.defineProperty(process, 'resourcesPath', {
       value: '/tmp/.mount_Coral/usr/lib/coral-desktop/resources',
       configurable: true,

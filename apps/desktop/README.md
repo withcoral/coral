@@ -97,10 +97,5 @@ app — Squirrel.Mac refuses to update an unsigned app. The AppImage needs no
 signature, so a Linux release build takes no credentials. Windows rejects the flag.
 Without it, packaging is deterministically unsigned and the updater is inert.
 
-`src/shared/release-targets.ts` holds the one list of platforms a release build
-ships to, and whether each signs with Apple. The packaging config and the running
-app both read it, so they cannot disagree about who updates; putting Windows on
-par starts by adding it there.
-
 > Run the `--prefix apps/desktop` commands from the repo root. If you are already in
 > `apps/desktop/`, drop the flag (e.g. `npm run package:dir`).

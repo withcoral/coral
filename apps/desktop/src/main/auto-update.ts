@@ -3,7 +3,6 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { AppUpdater } from 'electron-updater'
 
-import { releaseTarget } from '../shared/release-targets'
 import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/types'
 import {
   appImagePath,
@@ -30,20 +29,18 @@ const isReleaseBuild =
   typeof __CORAL_DESKTOP_RELEASE__ !== 'undefined' && __CORAL_DESKTOP_RELEASE__
 
 // Updates need a release build of a package that can replace itself in place.
-// The platform half of that is the shared release-target table; the rest is
-// local: an unsigned QA or local build never polls, and on Linux only the
-// AppImage can swap itself, because dpkg owns the files of an installed deb.
-// Anything excluded here gets no polling and no menu item.
+// Squirrel.Mac refuses to install into an unsigned app, so unsigned QA and local
+// builds are out; on Linux dpkg owns an installed deb, so only the AppImage
+// qualifies. Everything else gets no polling and no menu item.
 export function desktopUpdatesSupported(): boolean {
   if (!isReleaseBuild || !app.isPackaged) return false
-  if (!releaseTarget(process.platform)) return false
-  return process.platform !== 'linux' || appImagePath(process.env) !== null
+  if (process.platform === 'darwin') return true
+  return process.platform === 'linux' && appImagePath(process.env) !== null
 }
 
 // Runs once the updater has moved the new image over the old path and is about
-// to quit. Electron starts the replacement only after this process exits, so
-// the new instance finds the single-instance lock free. See desktopUpdater()
-// for why the updater itself starts nothing.
+// to quit. Electron starts the replacement only after this process exits, so the
+// new instance finds the single-instance lock free.
 function scheduleAppImageRelaunch(): void {
   if (process.platform !== 'linux') return
   const imagePath = appImagePath(process.env)
@@ -65,13 +62,11 @@ function updateIntentPath(): string {
 function desktopUpdater(): DesktopUpdater {
   if (!updater) {
     const { autoUpdater } = require('electron-updater') as { autoUpdater: AppUpdater }
-    // Linux only, and the platform check is load-bearing: the two updaters read
-    // this flag for different things. AppImageUpdater starts the new image from
-    // inside its install step, while this process still holds the
-    // single-instance lock — false there, and scheduleAppImageRelaunch() starts
-    // it after the exit instead. MacUpdater reads the same flag to choose
-    // between the Squirrel hand-off and a plain app.quit(); false there would
-    // skip the hand-off and leave the staged update uninstalled.
+    // Linux only: AppImageUpdater would start the new image from inside its
+    // install step, while this process still holds the single-instance lock, so
+    // scheduleAppImageRelaunch() starts it after the exit instead. MacUpdater
+    // reads the same flag to pick the Squirrel hand-off over a plain quit, and
+    // must keep it on.
     if (process.platform === 'linux') autoUpdater.autoRunAppAfterInstall = false
     updater = createDesktopUpdater({
       updater: autoUpdater,

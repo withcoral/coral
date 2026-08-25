@@ -122,9 +122,7 @@ describe('appImagePath', () => {
   it.each([
     ['unset', {}],
     ['empty', { APPIMAGE: '' }],
-    // AppImageUpdater.doInstall rejects each of these and throws
-    // ERR_UPDATER_OLD_FILE_NOT_FOUND, which would land after the download.
-    // Refusing here keeps the build out of the updater entirely.
+    // The updater rejects each of these, but only after the download.
     ['relative', { APPIMAGE: 'coral-desktop.AppImage' }],
     ['dot-relative', { APPIMAGE: './coral-desktop.AppImage' }],
     ['blank', { APPIMAGE: '   ' }],
@@ -134,14 +132,14 @@ describe('appImagePath', () => {
   })
 
   it('passes a leading space through rather than trimming it', () => {
-    // doInstall reads process.env.APPIMAGE verbatim, so a value it would
-    // reject must not be repaired into one this accepts.
+    // The updater reads APPIMAGE verbatim, so a value it rejects must not be
+    // repaired into one this accepts.
     expect(appImagePath({ APPIMAGE: ' /opt/coral.AppImage' })).toBe(null)
   })
 })
 
 describe('install', () => {
-  it('leaves every automatic step to the caller', async () => {
+  it('leaves every automatic step to the caller', () => {
     const updater = createFakeUpdater()
     createDesktopUpdater(createDeps(updater)).install()
 

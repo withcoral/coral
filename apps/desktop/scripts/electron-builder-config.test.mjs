@@ -6,7 +6,6 @@ import { join } from 'node:path'
 import test, { after } from 'node:test'
 
 import { createConfig } from '../electron-builder.config.ts'
-import { RELEASE_PLATFORMS, releaseTarget } from '../src/shared/release-targets.ts'
 
 const tempDir = mkdtempSync(join(tmpdir(), 'coral-desktop-signing-config-'))
 const apiKeyPath = join(tempDir, 'AuthKey_TEST.p8')
@@ -105,26 +104,17 @@ test('release packages require a readable, non-empty API key file', async () => 
 })
 
 test('release mode is rejected off a release platform before any preflight', () => {
-  assert.equal(releaseTarget('win32'), null)
   assert.throws(
     () => createConfig({ CORAL_DESKTOP_RELEASE: '1', ...apiKeyCredentials }, 'win32'),
     /CORAL_DESKTOP_RELEASE=1 supports darwin, linux hosts only, not win32/,
   )
 })
 
-test('every release platform demands Apple credentials only if it signs', () => {
-  for (const platform of RELEASE_PLATFORMS) {
-    const signs = releaseTarget(platform).appleSigning
-    // A platform that signs nothing must package without credentials in the
-    // environment; one that signs must refuse to package without them.
-    const build = () => createConfig({ CORAL_DESKTOP_RELEASE: '1' }, platform)
-    if (signs) {
-      assert.throws(build, /App Store Connect API key credential set/)
-    } else {
-      assert.equal(build().forceCodeSigning, false)
-      assert.equal(build().mac?.notarize, false)
-    }
-  }
+test('a Linux release build needs no Apple credentials', () => {
+  const config = createConfig({ CORAL_DESKTOP_RELEASE: '1' }, 'linux')
+
+  assert.equal(config.forceCodeSigning, false)
+  assert.equal(config.mac?.notarize, false)
 })
 
 test('non-release packaging config is identical on every host platform', () => {

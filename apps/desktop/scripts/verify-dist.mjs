@@ -2,18 +2,10 @@
 // Verifies a release-shaped desktop dist directory. Shared by the Desktop
 // package workflow and the release workflow so the two checks cannot drift.
 //
-// The artifact shape is per platform, and each platform publishes the update
-// feed its updater reads (see desktopUpdatesSupported in
-// src/main/auto-update.ts):
-//
-//   mac    exactly one DMG and one ZIP, a blockmap next to the ZIP
-//          (electron-updater fetches <file>.blockmap for differential
-//          updates), and a non-empty latest-mac.yml whose every referenced
-//          file is present.
-//   linux  exactly one AppImage and one deb, and a non-empty latest-linux.yml
-//          that references the AppImage. The deb has no updater, and the
-//          AppImage carries its blockmap inside the image, so no separate
-//          blockmap file exists here.
+//   mac    one DMG, one ZIP, the ZIP's blockmap (electron-updater fetches it for
+//          differential updates), and latest-mac.yml.
+//   linux  one AppImage, one deb, and latest-linux.yml. The deb has no updater,
+//          and the AppImage carries its blockmap inside the image.
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 

@@ -26,8 +26,17 @@ jobs:
         include:
           - platform: mac
             os: blacksmith-6vcpu-macos-26
+            artifacts: |
+              apps/desktop/dist/coral-desktop-*.dmg
+              apps/desktop/dist/coral-desktop-*.zip
+              apps/desktop/dist/coral-desktop-*.blockmap
+              apps/desktop/dist/latest-mac.yml
           - platform: linux
             os: blacksmith-4vcpu-ubuntu-2404
+            artifacts: |
+              apps/desktop/dist/coral-desktop-*.AppImage
+              apps/desktop/dist/coral-desktop-*.deb
+              apps/desktop/dist/latest-linux.yml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -69,9 +78,9 @@ jobs:
             apps/desktop/resources/entitlements.mac.plist \
             apps/desktop/resources/entitlements.mac.inherit.plist
 
-      # fpm shells out to `ar` (binutils) to assemble the .deb and to `xz` for
-      # its control tarball. Both ship in the runner image; installing them
-      # explicitly keeps the dependency visible instead of implicit.
+      # fpm shells out to `ar` (binutils) for the .deb and `xz` for its control
+      # tarball. Both ship in the runner image; naming them keeps the dependency
+      # visible.
       - name: Install deb packaging tools
         if: ${{ matrix.platform == 'linux' }}
         run: sudo apt-get install -y --no-install-recommends binutils xz-utils
@@ -85,27 +94,11 @@ jobs:
         run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist ${{ matrix.platform }}
 
       # PR and manual builds are available for inspection for one week.
-      - name: Upload macOS package artifact
-        if: ${{ matrix.platform == 'mac' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
+      - name: Upload desktop package artifact
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: coral-desktop-mac-unsigned
+          name: coral-desktop-${{ matrix.platform }}-unsigned
           if-no-files-found: error
           retention-days: 7
-          path: |
-            apps/desktop/dist/coral-desktop-*.dmg
-            apps/desktop/dist/coral-desktop-*.zip
-            apps/desktop/dist/coral-desktop-*.blockmap
-            apps/desktop/dist/latest-mac.yml
-
-      - name: Upload Linux package artifact
-        if: ${{ matrix.platform == 'linux' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: coral-desktop-linux-unsigned
-          if-no-files-found: error
-          retention-days: 7
-          path: |
-            apps/desktop/dist/coral-desktop-*.AppImage
-            apps/desktop/dist/coral-desktop-*.deb
-            apps/desktop/dist/latest-linux.yml
+          path: ${{ matrix.artifacts }}

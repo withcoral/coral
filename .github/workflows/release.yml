@@ -332,10 +332,8 @@ jobs:
             apps/desktop/dist/coral-desktop-*.blockmap
             apps/desktop/dist/latest-mac.yml
 
-  # Far simpler than the macOS leg: no universal binary, no signing, and no
-  # notarization, so no xtask and no credentials. It does publish an update
-  # feed: the AppImage updates itself (see desktopUpdatesSupported in
-  # apps/desktop/src/main/auto-update.ts).
+  # No universal binary, no signing, and no notarization, so no xtask and no
+  # credentials. It still publishes an update feed: the AppImage updates itself.
   build-desktop-linux:
     needs:
       - validate-release-ref
@@ -385,9 +383,9 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
-      # fpm shells out to `ar` (binutils) to assemble the .deb and to `xz` for
-      # its control tarball. Both ship in the runner image; installing them
-      # explicitly keeps the dependency visible instead of implicit.
+      # fpm shells out to `ar` (binutils) for the .deb and `xz` for its control
+      # tarball. Both ship in the runner image; naming them keeps the dependency
+      # visible.
       - name: Install deb packaging tools
         run: sudo apt-get install -y --no-install-recommends binutils xz-utils
 
