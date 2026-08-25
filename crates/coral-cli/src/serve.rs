@@ -3,8 +3,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use coral_app::{
-    AuthServerError, CoralAuthorizationServer, McpHttpServeConfig, RunningCoralAuthorizationServer,
-    SessionAuthSettings, SessionPrincipalProvider,
+    AuthServerError, CanonicalOauthUrl, CoralAuthorizationServer, McpHttpServeConfig,
+    RunningCoralAuthorizationServer, SessionAuthSettings, SessionPrincipalProvider,
+    WorkspaceMcpUrls,
 };
 use coral_client::{
     AppClient, BearerToken, ClientError,
@@ -126,6 +127,7 @@ pub(crate) struct RunningServer {
     mcp_http: Option<RunningMcpHttpServer>,
     grpc_authentication_enabled: bool,
     mcp_http_authentication_enabled: bool,
+    mcp_http_workspace_url_path: Option<String>,
 }
 
 impl RunningServer {
@@ -135,6 +137,17 @@ impl RunningServer {
 
     pub(crate) fn mcp_http_addr(&self) -> Option<SocketAddr> {
         self.mcp_http.as_ref().map(RunningMcpHttpServer::local_addr)
+    }
+
+    /// The listener-relative per-workspace URL template, when MCP HTTP serves.
+    ///
+    /// The authenticated surface mounts the workspace family under the path of
+    /// its `public_url`, so a root public URL serves `/workspace/{workspace}`
+    /// and the usual `/mcp` base serves `/mcp/workspace/{workspace}`. The
+    /// auth-disabled surface has no public URL and always uses `/mcp`. Printing
+    /// a hardcoded path would name one that 404s for any other base.
+    pub(crate) fn mcp_http_workspace_url_path(&self) -> Option<&str> {
+        self.mcp_http_workspace_url_path.as_deref()
     }
 
     pub(crate) fn grpc_authentication_enabled(&self) -> bool {
@@ -163,6 +176,7 @@ impl RunningServer {
             mcp_http,
             grpc_authentication_enabled: _,
             mcp_http_authentication_enabled: _,
+            mcp_http_workspace_url_path: _,
         } = self;
         shutdown_components(grpc, oauth, mcp_http)
             .await
@@ -197,6 +211,7 @@ pub(crate) async fn start(
             )))
         })?;
     }
+    let mcp_http_workspace_url_path = mcp_config.as_ref().map(mcp_http_workspace_url_path);
     let (builder, mcp_principal_provider) =
         compose_session_policies(builder, session_auth, mcp_config.as_ref());
     // App startup owns the state database, so it also builds the authorization
@@ -241,7 +256,29 @@ pub(crate) async fn start(
         mcp_http,
         grpc_authentication_enabled,
         mcp_http_authentication_enabled,
+        mcp_http_workspace_url_path,
     })
+}
+
+/// The listener-relative per-workspace URL template a resolved MCP config serves.
+///
+/// The authenticated surface mounts the workspace family under its
+/// `public_url`'s path (a root URL → `/workspace/{workspace}`, `…/mcp` →
+/// `/mcp/workspace/{workspace}`); the auth-disabled surface has no public URL
+/// and always mounts under `/mcp`. The `public_url` was canonicalized during
+/// resolution, so parsing it here is idempotent — a failure would only mean the
+/// resolver changed, and the loopback template is a safe fallback for a print.
+fn mcp_http_workspace_url_path(config: &McpHttpServeConfig) -> String {
+    let base_path = match config {
+        McpHttpServeConfig::AuthDisabled { .. } => "/mcp".to_string(),
+        McpHttpServeConfig::Authenticated { public_url, .. } => {
+            CanonicalOauthUrl::parse(public_url).map_or_else(
+                |_| "/mcp".to_string(),
+                |base| WorkspaceMcpUrls::new(base).base_path().to_string(),
+            )
+        }
+    };
+    format!("{base_path}/workspace/{{workspace}}")
 }
 
 /// Installs the session policy each served surface enforces.

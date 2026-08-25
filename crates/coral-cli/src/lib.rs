@@ -856,9 +856,14 @@ async fn run_server(
     }
     println!("Coral gRPC server listening on {endpoint}");
     if let Some(address) = server.mcp_http_addr() {
-        // Each workspace is served at its own URL under this listener; the
-        // template is the endpoint story, since no single URL is one.
-        let mcp_endpoint = format!("http://{address}/mcp/workspace/{{workspace}}");
+        // Each workspace is served at its own URL under this listener, mounted
+        // under the configured base path — so the template comes from the
+        // running config rather than a hardcoded `/mcp`, which would name a
+        // path that 404s for any other base.
+        let url_path = server
+            .mcp_http_workspace_url_path()
+            .unwrap_or("/mcp/workspace/{workspace}");
+        let mcp_endpoint = format!("http://{address}{url_path}");
         if server_requires_security_warning(address) {
             eprintln!(
                 "{}",

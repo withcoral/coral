@@ -2089,6 +2089,22 @@ async fn authenticated_admission_binds_each_caller_to_the_urls_workspace() {
         "a session opened at one workspace's URL does not exist at another's, \
          even for the bearer that owns it where it lives"
     );
+    // The discriminating case for the workspace-before-fingerprint ordering:
+    // alpha's own bearer — valid at this URL — presenting beta's foreign
+    // session id. Both the workspace and the fingerprint mismatch, so a
+    // fingerprint-first check would answer 403 and confirm the foreign id
+    // exists to a caller who belongs here; the workspace-first check answers
+    // the same 404 an invented id gets, disclosing nothing.
+    assert_eq!(
+        send(
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer alpha", Some(&beta_session), PING)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "a foreign workspace's session id is not-found even to a bearer valid at this URL"
+    );
 
     let beta_on_alpha = refusal_error(
         send(

@@ -935,6 +935,11 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             "the family is a template, not an enumerated resource — and the \
              base is not a resource at all"
         );
+        assert!(
+            authorization_server.serves_workspace_resource_family(),
+            "the family must be registered even though it enumerates to nothing, \
+             or every real MCP login is refused invalid_target"
+        );
     }
 
     #[test]

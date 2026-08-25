@@ -104,6 +104,15 @@ enum SessionAuthorization {
 struct AuthenticatedSessions {
     records: RwLock<HashMap<SessionId, AuthenticatedSession>>,
     config: SessionConfig,
+    /// The session-admission budget, deliberately **server-global** rather than
+    /// per workspace: adding workspace URLs must not multiply the listener's
+    /// effective session-capacity limit, so every workspace on this listener
+    /// draws from the one pool. A single member can therefore hold the whole
+    /// budget — that is the intended cap, not an isolation gap, and partitioning
+    /// it per workspace would let N workspaces multiply capacity N-fold. The
+    /// permit is reserved before the bearer-bound membership listing so the same
+    /// budget also bounds concurrent admission work, and a refused handshake
+    /// releases it immediately.
     admission: Arc<Semaphore>,
 }
 

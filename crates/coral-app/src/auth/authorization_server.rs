@@ -170,6 +170,16 @@ impl CoralAuthorizationServer {
         &self.authorization_resources
     }
 
+    /// Whether the per-workspace MCP family is registered, for assertions
+    /// outside this module. The family is not an enumerable resource, so a
+    /// test that only inspects [`Self::authorization_resources`] cannot catch a
+    /// composition that forgot to register it — and forgetting would refuse
+    /// every real MCP login.
+    #[cfg(test)]
+    pub(crate) fn serves_workspace_resource_family(&self) -> bool {
+        self.workspace_resource_family.is_some()
+    }
+
     /// Starts the HTTP listener.
     ///
     /// The server is intended to run on loopback or behind a TLS-terminating
@@ -560,6 +570,65 @@ mod tests {
             prepared.authorization_resources,
             ["https://coral-ui.example.test".to_string()].into()
         );
+    }
+
+    /// The per-workspace MCP family is an authorization resource an authorize
+    /// request may target, decided by the URL template rather than by any
+    /// registered set: every canonical `<base>/workspace/<name>` is accepted,
+    /// the base itself is not, and no non-canonical spelling sneaks in. Every
+    /// exactly-registered resource still stands beside the family. This is the
+    /// acceptance `authorize` consults, so a regression that dropped the family
+    /// would refuse every real MCP login with `invalid_target`.
+    #[test]
+    fn accepts_the_workspace_family_beside_exact_resources() {
+        use crate::oauth_resource::CanonicalOauthUrl;
+        use crate::workspace_mcp_urls::WorkspaceMcpUrls;
+
+        let dir = authorization_server("");
+        let base = CanonicalOauthUrl::parse("https://mcp.example.test/mcp").expect("base");
+        let prepared = server(&dir)
+            .with_authorization_resource("https://coral-ui.example.test/")
+            .expect("register the exact extra")
+            .with_workspace_resource_family(WorkspaceMcpUrls::new(base));
+
+        let state = super::AuthorizationServerHttpState::new(
+            prepared.settings,
+            prepared.session_tokens,
+            prepared.state_store,
+            Arc::new(prepared.authorization_resources),
+            prepared.workspace_resource_family,
+            prepared.database,
+        )
+        .expect("authorization server state");
+
+        for accepted in [
+            "https://mcp.example.test/mcp/workspace/team",
+            "https://mcp.example.test/mcp/workspace/analytics-staging",
+            "https://coral-ui.example.test",
+        ] {
+            assert!(
+                state.accepts_authorization_resource(accepted),
+                "must accept {accepted}"
+            );
+        }
+
+        for refused in [
+            // The base is the family's root, not a resource of its own.
+            "https://mcp.example.test/mcp",
+            // Non-canonical members never match: no name, trailing slash,
+            // percent-encoding, an extra segment, or the wrong origin.
+            "https://mcp.example.test/mcp/workspace",
+            "https://mcp.example.test/mcp/workspace/",
+            "https://mcp.example.test/mcp/workspace/team/",
+            "https://mcp.example.test/mcp/workspace/te%61m",
+            "https://mcp.example.test/mcp/workspace/team/extra",
+            "https://other.example.test/mcp/workspace/team",
+        ] {
+            assert!(
+                !state.accepts_authorization_resource(refused),
+                "must refuse {refused}"
+            );
+        }
     }
 
     /// `from_toml` holds `trusted_clients` to canonical spellings, but whether

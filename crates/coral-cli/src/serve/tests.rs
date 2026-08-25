@@ -520,6 +520,45 @@ fn loopback_grpc_endpoint_maps_wildcards_and_rejects_public_addresses() {
     .expect_err("IPv4-mapped IPv6 address must be rejected");
 }
 
+/// The printed per-workspace URL template follows the served base path, so it
+/// never names a route that would 404 on the listener.
+///
+/// The auth-disabled surface has no public URL and always mounts under `/mcp`;
+/// the authenticated surface mounts under its `public_url`'s path, so a base
+/// with a non-`/mcp` path — the shape older docs recommended — must print that
+/// path rather than a hardcoded one.
+#[test]
+fn mcp_workspace_url_path_follows_the_served_base_path() {
+    let auth_disabled = McpHttpServeConfig::AuthDisabled {
+        bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        expose_non_loopback: false,
+        allowed_hosts: Vec::new(),
+    };
+    assert_eq!(
+        mcp_http_workspace_url_path(&auth_disabled),
+        "/mcp/workspace/{workspace}"
+    );
+
+    let authenticated = |public_url: &str| McpHttpServeConfig::Authenticated {
+        bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        public_url: public_url.to_string(),
+        authorization_server: "https://auth.example".to_string(),
+    };
+    assert_eq!(
+        mcp_http_workspace_url_path(&authenticated("https://mcp.example.com/mcp")),
+        "/mcp/workspace/{workspace}"
+    );
+    assert_eq!(
+        mcp_http_workspace_url_path(&authenticated("https://mcp.example.com")),
+        "/workspace/{workspace}",
+        "a root public_url mounts the family at the origin root"
+    );
+    assert_eq!(
+        mcp_http_workspace_url_path(&authenticated("https://mcp.example.com/base/mcp")),
+        "/base/mcp/workspace/{workspace}"
+    );
+}
+
 #[test]
 fn shutdown_failures_retain_every_component_in_order() {
     let failures = ShutdownFailures::from_results(
@@ -805,6 +844,7 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         mcp_http,
         grpc_authentication_enabled: _,
         mcp_http_authentication_enabled: _,
+        mcp_http_workspace_url_path: _,
     } = server;
     grpc.shutdown().await.expect("shutdown gRPC server");
     let unready = reqwest::get(format!("{base}/readyz"))
