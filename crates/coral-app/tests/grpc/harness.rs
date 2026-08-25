@@ -357,6 +357,13 @@ impl Install {
     }
 
     /// The configuration this install held before any server started over it.
+    ///
+    /// Read once and remembered, and every start rewrites `config.toml` as this
+    /// snapshot plus the admission section — so whatever a running server
+    /// persisted into that file is discarded by the next restart. A test that
+    /// needs config-backed state across restarts declares it here, in the
+    /// configuration the install starts life with, rather than installing it
+    /// through an RPC and expecting the file to keep it.
     fn base_config(&self) -> String {
         let mut base = self.base_config.lock().expect("install base config");
         base.get_or_insert_with(|| {
