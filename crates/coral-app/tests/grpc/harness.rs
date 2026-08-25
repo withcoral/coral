@@ -20,6 +20,7 @@ use coral_client::{
 use serde_json::{Value, json};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
+use toml_edit::{DocumentMut, Item, Table};
 use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
@@ -275,23 +276,150 @@ impl GrpcHarness {
 /// which is what leaves the local principal owning everything.
 const LOCAL_PRINCIPAL_CONFIG: &str = "[credentials]\nstorage = \"file\"\n";
 
-/// Writes `config.toml` as the install's own configuration plus `mode`.
+/// Rewrites `config.toml` so the install runs under `mode`, keeping the rest of
+/// the file.
 ///
-/// Composing from the base each time is what lets one install move between
-/// modes: an `[auth]` section a previous start wrote is gone rather than
-/// lingering to contradict the mode being started now.
-fn write_config(config_dir: &Path, base: &str, mode: &str) {
+/// Only the tables that say how callers are admitted are replaced. Everything
+/// else — the legacy workspace tables a test seeds, the sources a running
+/// server installed — survives, because moving an install between modes is a
+/// change to its auth configuration rather than a new install.
+///
+/// The admission tables a previous mode wrote are removed rather than merged
+/// over, so an `[auth]` section cannot linger and contradict the mode being
+/// started now.
+fn write_config(config_dir: &Path, mode: &str) {
     std::fs::create_dir_all(config_dir).expect("create config dir");
-    let separator = if base.is_empty() || base.ends_with('\n') {
-        ""
-    } else {
-        "\n"
+    let config_file = config_dir.join("config.toml");
+    let mut config: DocumentMut = std::fs::read_to_string(&config_file)
+        .unwrap_or_default()
+        .parse()
+        .expect("the install's config.toml is valid TOML");
+
+    config.remove("auth");
+    if let Some(server) = config.get_mut("server").and_then(Item::as_table_mut) {
+        server.remove("mcp_http");
+        if server.is_empty() {
+            config.remove("server");
+        }
+    }
+
+    let incoming: DocumentMut = mode.parse().expect("the mode's config is valid TOML");
+    for (key, value) in incoming.iter() {
+        merge_config_table(config.as_table_mut(), key, value);
+    }
+
+    std::fs::write(config_file, config.to_string()).expect("write the deployment config");
+}
+
+/// Puts `value` into `table` under `key`, descending one level into a table the
+/// two share.
+///
+/// Descending rather than overwriting is what lets a mode name
+/// `[server.mcp_http]` without taking the rest of `[server]` with it. One level
+/// is all the admission configuration nests, and stopping there keeps what a
+/// deeper merge would have to guess at out of the harness.
+fn merge_config_table(table: &mut Table, key: &str, value: &Item) {
+    let (Some(incoming), Some(existing)) = (value.as_table(), table.get_mut(key)) else {
+        table.insert(key, value.clone());
+        return;
     };
-    std::fs::write(
-        config_dir.join("config.toml"),
-        format!("{base}{separator}\n{mode}"),
-    )
-    .expect("write the deployment config");
+    let Some(existing) = existing.as_table_mut() else {
+        table.insert(key, value.clone());
+        return;
+    };
+    for (nested_key, nested_value) in incoming {
+        existing.insert(nested_key, nested_value.clone());
+    }
+}
+
+#[cfg(test)]
+mod write_config_tests {
+    use super::{LOCAL_PRINCIPAL_CONFIG, write_config};
+    use crate::session_auth::SessionAuthFixture;
+    use tempfile::TempDir;
+
+    fn config_after(seed: &str, modes: &[&str]) -> String {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        std::fs::write(config_dir.join("config.toml"), seed).expect("seed config");
+        for mode in modes {
+            write_config(&config_dir, mode);
+        }
+        std::fs::read_to_string(config_dir.join("config.toml")).expect("read config")
+    }
+
+    /// What a running server persisted between two starts has to outlive the
+    /// second one, or a restart silently undoes work the deployment did. This
+    /// is the case a snapshot taken before the first start cannot express.
+    #[test]
+    fn a_restart_keeps_what_the_running_server_persisted() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        let config_file = config_dir.join("config.toml");
+        std::fs::write(&config_file, "[workspaces.analytics]\n").expect("seed config");
+
+        write_config(&config_dir, LOCAL_PRINCIPAL_CONFIG);
+
+        // The server comes up and installs a source, which it persists here.
+        let running = std::fs::read_to_string(&config_file).expect("read config");
+        std::fs::write(
+            &config_file,
+            format!("{running}\n[workspaces.analytics.sources.installed]\norigin = \"imported\"\n"),
+        )
+        .expect("persist a source the way a running server would");
+
+        write_config(&config_dir, LOCAL_PRINCIPAL_CONFIG);
+
+        let written = std::fs::read_to_string(&config_file).expect("read config");
+        assert!(
+            written.contains("[workspaces.analytics.sources.installed]"),
+            "a source installed between starts must survive the next one: {written}"
+        );
+        assert!(
+            written.contains("[credentials]"),
+            "the mode's own tables must still be written: {written}"
+        );
+    }
+
+    /// Moving back to single-user has to take the login configuration with it,
+    /// or the next start reads an `[auth]` section the mode does not want.
+    #[test]
+    fn leaving_token_admission_removes_what_it_wrote() {
+        let written = config_after(
+            "[workspaces.analytics]\n",
+            &[&SessionAuthFixture::config_toml(), LOCAL_PRINCIPAL_CONFIG],
+        );
+
+        assert!(
+            !written.contains("[auth"),
+            "an auth section must not linger into single-user mode: {written}"
+        );
+        assert!(
+            !written.contains("mcp_http"),
+            "the shared listener must not linger either: {written}"
+        );
+        assert!(
+            written.contains("[workspaces.analytics]"),
+            "the install's own tables survive the mode change: {written}"
+        );
+    }
+
+    /// The mode names one key inside `[server]`, so the rest of that table is
+    /// not its to take away.
+    #[test]
+    fn swapping_the_listener_leaves_the_rest_of_server_alone() {
+        let written = config_after(
+            "[server]\nbind = '127.0.0.1:7777'\n",
+            &[&SessionAuthFixture::config_toml(), LOCAL_PRINCIPAL_CONFIG],
+        );
+
+        assert!(
+            written.contains("bind = '127.0.0.1:7777'"),
+            "an unrelated server key must survive the listener being removed: {written}"
+        );
+    }
 }
 
 fn ensure_file_credentials_config(config_dir: &Path) {
@@ -332,13 +460,6 @@ pub(crate) enum Admission {
 pub(crate) struct Install {
     temp: Mutex<Option<TempDir>>,
     config_dir: PathBuf,
-    /// The `config.toml` this install started life with, captured before any
-    /// mode wrote its own sections over it.
-    ///
-    /// The legacy tables a test seeds here are the subject of these tests, so
-    /// each start composes its configuration on top of them rather than
-    /// replacing them.
-    base_config: Mutex<Option<String>>,
 }
 
 impl Install {
@@ -348,28 +469,11 @@ impl Install {
         Arc::new(Self {
             temp: Mutex::new(Some(temp)),
             config_dir,
-            base_config: Mutex::new(None),
         })
     }
 
     pub(crate) fn config_dir(&self) -> &Path {
         &self.config_dir
-    }
-
-    /// The configuration this install held before any server started over it.
-    ///
-    /// Read once and remembered, and every start rewrites `config.toml` as this
-    /// snapshot plus the admission section — so whatever a running server
-    /// persisted into that file is discarded by the next restart. A test that
-    /// needs config-backed state across restarts declares it here, in the
-    /// configuration the install starts life with, rather than installing it
-    /// through an RPC and expecting the file to keep it.
-    fn base_config(&self) -> String {
-        let mut base = self.base_config.lock().expect("install base config");
-        base.get_or_insert_with(|| {
-            std::fs::read_to_string(self.config_dir.join("config.toml")).unwrap_or_default()
-        })
-        .clone()
     }
 
     /// Starts a server over whatever this install already holds, so a restart
@@ -386,15 +490,14 @@ impl Install {
         // than varying how the server is built. The `[auth]` section is the
         // whole of the difference: with it the server authenticates session
         // tokens, and without it the local principal owns everything.
-        let base = self.base_config();
         let session_auth = match admission {
             Admission::LocalPrincipal => {
-                write_config(&self.config_dir, &base, LOCAL_PRINCIPAL_CONFIG);
+                write_config(&self.config_dir, LOCAL_PRINCIPAL_CONFIG);
                 None
             }
             Admission::Tokens => {
                 let session_auth = SessionAuthFixture::key_in(&self.config_dir);
-                write_config(&self.config_dir, &base, &SessionAuthFixture::config_toml());
+                write_config(&self.config_dir, &SessionAuthFixture::config_toml());
                 Some(session_auth)
             }
         };
