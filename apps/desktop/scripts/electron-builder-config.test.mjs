@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test, { after } from 'node:test'
 
 import { createConfig } from '../electron-builder.config.ts'
+import { APP_ID } from '../src/shared/app-id.ts'
 
 const tempDir = mkdtempSync(join(tmpdir(), 'coral-desktop-signing-config-'))
 const apiKeyPath = join(tempDir, 'AuthKey_TEST.p8')
@@ -169,6 +170,16 @@ test('windows packages target a single NSIS installer with no updater', () => {
   assert.equal(win?.icon, 'resources/icons/icon.ico')
   // Only the deb needs a renamed executable, because it symlinks into /usr/bin.
   assert.equal(win?.executableName, undefined)
+})
+
+test('the main process registers the app id electron-builder stamps on the shortcut', () => {
+  const main = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+
+  // Windows reads two spellings of the id as two applications, so the id on the
+  // shortcut and the id the process registers have to be one string. The shared
+  // constant makes them one; this catches a re-inlined literal.
+  assert.match(main, /app\.setAppUserModelId\(APP_ID\)/)
+  assert.equal(createConfig({}, 'win32').appId, APP_ID)
 })
 
 test('deb metadata inputs that live in package.json are present', () => {

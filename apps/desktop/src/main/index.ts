@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu, ipcMain, nativeTheme, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { APP_ID } from '../shared/app-id'
 import type { DesktopUpdateState } from '../shared/types'
 import {
   configureMcpClient,
@@ -375,10 +376,10 @@ function installMenu() {
 
 function startApplication(): void {
   // Windows keys toasts, taskbar grouping, and jump lists off this id, and
-  // silently drops a notification from a process that never set one. Must match
-  // `appId` in electron-builder.config.ts, which is what the installer stamps on
-  // the shortcut, and must run before the app is ready. Inert elsewhere.
-  app.setAppUserModelId('com.withcoral.desktop')
+  // silently drops a notification from a process that never set one. Shared with
+  // electron-builder, which stamps the same id on the shortcut. Must run before
+  // the app is ready. Inert elsewhere.
+  app.setAppUserModelId(APP_ID)
 
   const gotLock = app.requestSingleInstanceLock()
   if (!gotLock) {

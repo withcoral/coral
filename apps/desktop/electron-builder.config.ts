@@ -2,6 +2,8 @@ import { accessSync, constants, statSync } from 'node:fs'
 
 import type { Configuration } from 'electron-builder'
 
+import { APP_ID } from './src/shared/app-id.ts'
+
 // Release mode ships an active updater, so it only applies where the app can
 // replace itself: the macOS app and the Linux AppImage.
 const RELEASE_PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux']
@@ -58,7 +60,7 @@ export function createConfig(
   if (appleRelease) requireNotarizationCredentials(env)
 
   return {
-    appId: 'com.withcoral.desktop',
+    appId: APP_ID,
     productName: 'Coral',
     artifactName: 'coral-desktop-${os}-${arch}.${ext}',
     forceCodeSigning: appleRelease,
