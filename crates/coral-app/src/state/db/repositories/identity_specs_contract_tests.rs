@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use sea_query::{Expr, ExprTrait, Query};
@@ -13,16 +14,35 @@ use crate::state::db::{CoralDb, CoralTx, DbRepos, ResolvedDatabaseConfig};
 use crate::workspaces::WorkspaceName;
 use coral_spec::{IdentityManifest, parse_identity_manifest_yaml};
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn identity_spec_persistence_contract_holds_against_sqlite() {
     let temp = tempdir().expect("temp dir");
-    let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
-        path: temp.path().join("coral.sqlite"),
-    })
-    .await
-    .expect("open sqlite");
+    let db = Arc::new(
+        CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: temp.path().join("coral.sqlite"),
+        })
+        .await
+        .expect("open sqlite"),
+    );
     db.migrate().await.expect("migrate sqlite");
     assert_identity_spec_persistence_contract(&db).await;
+    crate::identity_specs::manager::tests::assert_identity_spec_mutation_contract(&db).await;
+}
+
+pub(crate) async fn set_identity_spec_document_version(
+    tx: &mut CoralTx<'_>,
+    identity_spec_id: &IdentitySpecId,
+    version: i64,
+) {
+    tx.execute(
+        Query::update()
+            .table(IdentitySpecDocuments::Table)
+            .value(IdentitySpecDocuments::DocumentVersion, version)
+            .and_where(document_id_where(identity_spec_id))
+            .to_owned(),
+    )
+    .await
+    .expect("set identity spec document version");
 }
 
 #[tokio::test]
@@ -59,11 +79,14 @@ async fn identity_spec_persistence_contract_on_postgres() {
     else {
         return;
     };
-    let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-        .await
-        .expect("open postgres");
+    let db = Arc::new(
+        CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres"),
+    );
     db.migrate().await.expect("migrate postgres");
     assert_identity_spec_persistence_contract(&db).await;
+    crate::identity_specs::manager::tests::assert_identity_spec_mutation_contract(&db).await;
 }
 
 #[expect(clippy::too_many_lines, reason = "shared backend contract fixture")]
