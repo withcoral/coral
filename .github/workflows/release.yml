@@ -429,6 +429,14 @@ jobs:
       - validate-release-ref
       - build
     runs-on: blacksmith-4vcpu-windows-2025
+    # The Windows installer is an unsigned preview, so it must not gate the whole
+    # release. Everything downstream tolerates a missing .exe: both archive lists
+    # run under nullglob and stay non-empty from the other platforms, and the
+    # `test -s` literals are the mac and linux feeds. A failure here therefore
+    # degrades to "no Windows installer this release" instead of publishing a
+    # release with no assets at all, which would also stall macOS and AppImage
+    # auto-updates. publish-version warns when the installer is missing.
+    continue-on-error: true
     env:
       TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
     steps:
@@ -587,6 +595,12 @@ jobs:
           if [ "${#archives[@]}" -eq 0 ]; then
             echo "No Coral release archives found" >&2
             exit 1
+          fi
+          # build-desktop-windows is allowed to fail, so say so rather than
+          # shipping a quietly Windows-less release.
+          installers=(artifacts/coral-desktop-*.exe)
+          if [ "${#installers[@]}" -eq 0 ]; then
+            echo "::warning title=No Windows installer::build-desktop-windows produced no installer; ${TAG_NAME} ships without one"
           fi
           test -s artifacts/latest-mac.yml
           test -s artifacts/latest-linux.yml
