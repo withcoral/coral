@@ -10,8 +10,8 @@ use coral_api::v1::{
 use coral_app::EngineExtensionsProvider;
 use coral_app::features::{Feature, FeatureOverrides};
 use coral_client::{
-    AppClient, CatalogClient, FunctionClient, IdentitySpecClient, QueryClient, SearchClient,
-    SourceClient, WorkspaceClient, batches_to_json_rows, decode_execute_sql_response,
+    AppClient, CatalogClient, FunctionClient, IdentityClient, IdentitySpecClient, QueryClient,
+    SearchClient, SourceClient, WorkspaceClient, batches_to_json_rows, decode_execute_sql_response,
     default_workspace,
     local::{RunningServer, ServerBuilder},
 };
@@ -45,6 +45,20 @@ impl GrpcHarness {
         let mut feature_overrides = FeatureOverrides::default();
         feature_overrides.set(Feature::ObservedValuesSearch, true);
         Self::start_with_parts(temp_dir, config_dir, feature_overrides).await
+    }
+
+    pub(crate) async fn new_with_principal_provider(
+        principal_provider: Arc<dyn coral_app::PrincipalProvider>,
+    ) -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        Self::start_with_builder(
+            temp_dir,
+            config_dir,
+            FeatureOverrides::default(),
+            ServerBuilder::new().with_principal_provider(principal_provider),
+        )
+        .await
     }
 
     pub(crate) async fn start_with_config_dir(config_dir: PathBuf) -> Self {
@@ -140,6 +154,10 @@ impl GrpcHarness {
 
     pub(crate) fn identity_spec_client(&self) -> IdentitySpecClient {
         self.app.identity_spec_client()
+    }
+
+    pub(crate) fn identity_client(&self) -> IdentityClient {
+        self.app.identity_client()
     }
 
     pub(crate) fn search_client(&self) -> SearchClient {
