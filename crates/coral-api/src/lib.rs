@@ -119,6 +119,9 @@ pub const CORAL_ERROR_REASON_FUNCTION_NOT_FOUND: &str = "FUNCTION_NOT_FOUND";
 /// Machine-readable reason for an installed identity-spec lookup miss.
 pub const CORAL_ERROR_REASON_IDENTITY_SPEC_NOT_FOUND: &str = "IDENTITY_SPEC_NOT_FOUND";
 
+/// Machine-readable reason for a stored-identity lookup miss.
+pub const CORAL_ERROR_REASON_IDENTITY_NOT_FOUND: &str = "IDENTITY_NOT_FOUND";
+
 /// Machine-readable reason for a configured workspace lookup miss.
 pub const CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND: &str = "WORKSPACE_NOT_FOUND";
 
