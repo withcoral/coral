@@ -34,6 +34,8 @@ pub(crate) struct WorkspaceManager {
     /// the recovery that puts the removed config entries back.
     #[cfg(test)]
     deletion_commit_fails: bool,
+    #[cfg(test)]
+    config_restore_fails: bool,
 }
 
 impl WorkspaceManager {
@@ -76,6 +78,8 @@ impl WorkspaceManager {
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
             #[cfg(test)]
             deletion_commit_fails: false,
+            #[cfg(test)]
+            config_restore_fails: false,
         }
     }
 
@@ -87,6 +91,12 @@ impl WorkspaceManager {
     #[cfg(test)]
     pub(crate) const fn with_failing_deletion_commit(mut self) -> Self {
         self.deletion_commit_fails = true;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_failing_config_restore(mut self) -> Self {
+        self.config_restore_fails = true;
         self
     }
 
@@ -169,13 +179,24 @@ impl WorkspaceManager {
                     return Err(error);
                 }
             };
-            if let Err(error) = self.commit_workspace_deletion(deletion).await {
+            if let Err(commit_error) = self.commit_workspace_deletion(deletion).await {
                 // The transaction rolled back, so the workspace is still in
                 // the catalog while its config entries are already gone. The
                 // removal is durable and carries everything it took away, so
                 // put it back rather than leave the two disagreeing.
-                self.restore_workspace_config_entries(workspace_name, removed);
-                return Err(error.into());
+                if let Err(restore_error) = self.restore_workspace_config_entries(removed) {
+                    // Both halves failed, which is the split this restore
+                    // exists to prevent. Report it instead of the commit
+                    // failure alone, so the caller knows the deployment needs
+                    // attention rather than a retry.
+                    return Err(AppError::Internal(format!(
+                        "deleting workspace '{workspace_name}' failed to commit ({commit_error}), \
+                         and its config entries could not be put back ({restore_error}); the \
+                         workspace is still in the catalog while its sources and functions are \
+                         missing from config.toml"
+                    )));
+                }
+                return Err(commit_error.into());
             }
             let deleted = removed.map_or_else(
                 || DeletedWorkspace {
@@ -288,20 +309,26 @@ impl WorkspaceManager {
     /// Best effort, like every other recovery here: a restore that fails
     /// leaves the divergence it was meant to close, and saying so is all that
     /// is left to do about it.
+    /// Puts back what the aborted deletion removed from `config.toml`.
+    ///
+    /// The failure is returned rather than logged: it is the one that leaves
+    /// the database holding a workspace whose sources and functions are gone
+    /// from the file, and a caller that only hears about the step which
+    /// triggered the abort would never learn the two now disagree.
     fn restore_workspace_config_entries(
         &self,
-        workspace_name: &WorkspaceName,
         removed: Option<RemovedWorkspaceConfig>,
-    ) {
+    ) -> Result<(), AppError> {
         let Some(removed) = removed else {
-            return;
+            return Ok(());
         };
-        if let Err(error) = self.config_store.restore_workspace_config_entries(removed) {
-            warn!(
-                workspace = %workspace_name,
-                "workspace deletion was aborted, but its config entries could not be put back: {error}"
-            );
+        #[cfg(test)]
+        if self.config_restore_fails {
+            return Err(AppError::Internal(
+                "workspace config restore failed for tests".to_string(),
+            ));
         }
+        self.config_store.restore_workspace_config_entries(removed)
     }
 
     fn stage_deleted_workspace_dir(
@@ -733,6 +760,50 @@ mod tests {
                 .await
                 .unwrap_or_else(|error| panic!("'{name}' should be creatable again: {error}"));
         }
+    }
+
+    /// Both halves of the recovery can fail. When they do, the caller must
+    /// hear that the two disagree rather than only that the commit failed,
+    /// because the deployment needs attention and a retry will not give it.
+    #[tokio::test]
+    async fn a_deletion_that_cannot_put_its_config_back_reports_the_split() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout).await;
+        let manager = WorkspaceManager::new_for_tests(
+            store.clone(),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+            None,
+            Arc::clone(&db),
+        )
+        .with_failing_deletion_commit()
+        .with_failing_config_restore();
+        let workspace_name = workspace("work");
+        let owner = seed_user(&db, "owner").await;
+        manager
+            .create_workspace_for_user(&workspace_name, &owner)
+            .await
+            .expect("create workspace");
+        store
+            .upsert_source(&workspace_name, installed_source("github"))
+            .expect("upsert source");
+
+        let error = manager
+            .delete_workspace(&workspace_name)
+            .await
+            .expect_err("a deletion that cannot restore its config must report the failure");
+
+        let reported = error.to_string();
+        assert!(
+            reported.contains("could not be put back"),
+            "the failure must name the unrestored config, not just the commit: {reported}"
+        );
+        assert!(
+            reported.contains("missing from config.toml"),
+            "the failure must say what state the deployment is left in: {reported}"
+        );
     }
 
     /// The config removal is durable the moment it returns, while the
