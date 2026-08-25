@@ -27,6 +27,7 @@
 )]
 
 mod error;
+mod extensions;
 mod guide_block;
 pub mod http;
 mod server;
@@ -40,7 +41,11 @@ use coral_client::AppClient;
 use rmcp::ServiceExt;
 
 pub use error::McpError;
+pub use extensions::{
+    McpExtensions, McpExtensionsError, McpExtensionsProvider, McpToolContext, McpToolRouter,
+};
 pub(crate) use server::CoralMcpServerFactory;
+pub use server::CoralToolset;
 
 /// A successful SQL query example for MCP initialize instructions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +120,8 @@ pub struct McpOptions {
     pub query_examples: Vec<McpQueryExample>,
     /// Workspace scoped to this MCP server instance.
     pub workspace: Option<coral_api::v1::Workspace>,
+    /// Static MCP tool additions and public tool-name projection.
+    pub extensions: McpExtensions,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.
@@ -123,7 +130,11 @@ pub struct McpOptions {
 ///
 /// Returns [`McpError`] if the stdio server cannot complete its `MCP`
 /// lifecycle.
-pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
+pub async fn run_stdio_with_client(
+    app: AppClient,
+    mut options: McpOptions,
+) -> Result<(), McpError> {
+    options.extensions.finalize()?;
     let handler = CoralMcpServerFactory::new(app, options).create();
     let server = Box::pin(handler.serve((tokio::io::stdin(), tokio::io::stdout()))).await?;
     let _ = server.waiting().await?;

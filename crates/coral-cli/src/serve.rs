@@ -13,7 +13,7 @@ use coral_client::{
     },
 };
 use coral_mcp::{
-    McpOptions,
+    McpExtensions, McpExtensionsProvider, McpOptions,
     http::{
         AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime, McpHttpConfig, McpHttpError,
         RunningMcpHttpServer, start_auth_disabled, start_authenticated,
@@ -113,6 +113,8 @@ enum McpStartError {
     #[error("authenticated MCP HTTP requires a session authenticator")]
     MissingSessionProvider,
     #[error(transparent)]
+    Extensions(#[from] coral_mcp::McpExtensionsError),
+    #[error(transparent)]
     Client(#[from] ClientError),
     #[error(transparent)]
     Http(#[from] McpHttpError),
@@ -176,6 +178,7 @@ impl RunningServer {
 pub(crate) async fn start(
     builder: ServerBuilder,
     mcp_options: McpOptions,
+    mcp_extensions_providers: Vec<Arc<dyn McpExtensionsProvider>>,
 ) -> Result<RunningServer, ServeError> {
     let mut settings = builder
         .serve_settings()
@@ -211,17 +214,24 @@ pub(crate) async fn start(
             return Err(ServeError(error));
         }
     };
-    let mcp_http =
-        match start_mcp_http(mcp_config, mcp_principal_provider, grpc_addr, mcp_options).await {
-            Ok(server) => server,
-            Err(mcp) => {
-                let error = match shutdown_components(grpc, oauth, None).await {
-                    Ok(()) => ServeErrorKind::McpStart(mcp),
-                    Err(cleanup) => ServeErrorKind::McpStartCleanup { mcp, cleanup },
-                };
-                return Err(ServeError(error));
-            }
-        };
+    let mcp_http = match Box::pin(start_mcp_http(
+        mcp_config,
+        mcp_principal_provider,
+        grpc_addr,
+        mcp_options,
+        &mcp_extensions_providers,
+    ))
+    .await
+    {
+        Ok(server) => server,
+        Err(mcp) => {
+            let error = match shutdown_components(grpc, oauth, None).await {
+                Ok(()) => ServeErrorKind::McpStart(mcp),
+                Err(cleanup) => ServeErrorKind::McpStartCleanup { mcp, cleanup },
+            };
+            return Err(ServeError(error));
+        }
+    };
     Ok(RunningServer {
         grpc,
         oauth,
@@ -289,11 +299,13 @@ async fn start_mcp_http(
     settings: Option<McpHttpServeConfig>,
     mcp_principal_provider: Option<Arc<dyn BearerAuthenticator>>,
     grpc_addr: SocketAddr,
-    mcp_options: McpOptions,
+    mut mcp_options: McpOptions,
+    mcp_extensions_providers: &[Arc<dyn McpExtensionsProvider>],
 ) -> Result<Option<RunningMcpHttpServer>, McpStartError> {
     let Some(settings) = settings else {
         return Ok(None);
     };
+    mcp_options.extensions = McpExtensions::from_providers(mcp_extensions_providers)?;
     let grpc_endpoint_uri = loopback_grpc_endpoint_uri(grpc_addr)?;
     let server = match settings {
         McpHttpServeConfig::AuthDisabled {

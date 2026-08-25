@@ -42,6 +42,7 @@ use coral_client::{
     format_batches_table, format_search_response_json, format_search_response_text,
     manifest_input_from_proto, workspace as workspace_resource,
 };
+use coral_mcp::McpExtensionsProvider;
 use dialoguer::console::measure_text_width;
 use tonic::Request;
 
@@ -607,19 +608,43 @@ where
 /// Returns an error if runtime startup, command execution, or output
 /// formatting fails.
 pub async fn run_from_env() -> Result<(), CliError> {
-    Box::pin(run_from_env_with_engine_extensions(Vec::new())).await
+    Box::pin(run_from_env_with_extensions(CoralExtensions::default())).await
 }
 
-/// Parses CLI arguments and runs the selected command with additional engine
-/// extensions providers.
+/// Typed extensions supplied by a sibling Coral host binary.
+#[derive(Default)]
+pub struct CoralExtensions {
+    engine_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    mcp_providers: Vec<Arc<dyn McpExtensionsProvider>>,
+}
+
+impl CoralExtensions {
+    /// Adds an app-owned engine extension provider.
+    #[must_use]
+    pub fn add_engine_extensions_provider(
+        mut self,
+        provider: Arc<dyn EngineExtensionsProvider>,
+    ) -> Self {
+        self.engine_providers.push(provider);
+        self
+    }
+
+    /// Adds a static MCP extension provider.
+    #[must_use]
+    pub fn add_mcp_extensions_provider(mut self, provider: Arc<dyn McpExtensionsProvider>) -> Self {
+        self.mcp_providers.push(provider);
+        self
+    }
+}
+
+/// Parses CLI arguments and runs the selected command with host-supplied
+/// Coral extensions.
 ///
 /// # Errors
 ///
 /// Returns an error if runtime startup, command execution, or output
 /// formatting fails.
-pub async fn run_from_env_with_engine_extensions(
-    providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-) -> Result<(), CliError> {
+pub async fn run_from_env_with_extensions(extensions: CoralExtensions) -> Result<(), CliError> {
     let Cli {
         feature_overrides,
         workspace_selection,
@@ -631,6 +656,10 @@ pub async fn run_from_env_with_engine_extensions(
     let ctx = coral_app::RunContext {
         trace_parent: env::trace_parent(),
     };
+    let CoralExtensions {
+        engine_providers,
+        mcp_providers,
+    } = extensions;
 
     match command.required_runtime() {
         RequiredRuntime::AppClient => {
@@ -645,13 +674,21 @@ pub async fn run_from_env_with_engine_extensions(
                     enable_stderr_logs: command.enables_stderr_logs(),
                     feature_overrides: feature_overrides.clone(),
                 },
-                providers,
+                engine_providers,
             )
             .await
             .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
             let result = if is_mcp_stdio {
-                run_app_command(app, command, Some(&ctx), &feature_overrides, &workspace).await
+                run_app_command(
+                    app,
+                    command,
+                    Some(&ctx),
+                    &feature_overrides,
+                    &workspace,
+                    &mcp_providers,
+                )
+                .await
             } else {
                 coral_app::run_with_context(
                     &ctx,
@@ -661,6 +698,7 @@ pub async fn run_from_env_with_engine_extensions(
                         None,
                         &feature_overrides,
                         &workspace,
+                        &mcp_providers,
                     )),
                 )
                 .await
@@ -674,7 +712,10 @@ pub async fn run_from_env_with_engine_extensions(
                 Box::pin(run_no_runtime_command(
                     command,
                     &feature_overrides,
-                    providers,
+                    CoralExtensions {
+                        engine_providers,
+                        mcp_providers,
+                    },
                 )),
             )
             .await
@@ -694,10 +735,14 @@ fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<
 
 async fn run_server(
     feature_overrides: coral_app::features::FeatureOverrides,
-    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    extensions: CoralExtensions,
 ) -> Result<(), anyhow::Error> {
-    let server =
-        bootstrap::start_standalone_server(feature_overrides, engine_extensions_providers).await?;
+    let server = bootstrap::start_standalone_server(
+        feature_overrides,
+        extensions.engine_providers,
+        extensions.mcp_providers,
+    )
+    .await?;
     let endpoint = server.endpoint_uri().to_string();
 
     // An endpoint that does not parse back to an address is treated as exposed:
@@ -842,7 +887,7 @@ async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
 async fn run_no_runtime_command(
     command: Command,
     feature_overrides: &coral_app::features::FeatureOverrides,
-    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    extensions: CoralExtensions,
 ) -> Result<(), CliError> {
     match command {
         Command::Completion(args) => {
@@ -852,12 +897,9 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
-        Command::Server => Box::pin(run_server(
-            feature_overrides.clone(),
-            engine_extensions_providers,
-        ))
-        .await
-        .map_err(Into::into),
+        Command::Server => Box::pin(run_server(feature_overrides.clone(), extensions))
+            .await
+            .map_err(Into::into),
         Command::Sql(_)
         | Command::Search(_)
         | Command::SearchIndex(_)
@@ -877,6 +919,7 @@ async fn run_app_command(
     ctx: Option<&coral_app::RunContext>,
     feature_overrides: &coral_app::features::FeatureOverrides,
     workspace: &Workspace,
+    mcp_extensions_providers: &[Arc<dyn McpExtensionsProvider>],
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
@@ -958,6 +1001,8 @@ async fn run_app_command(
                     source_names,
                     query_examples,
                     workspace: Some(workspace.clone()),
+                    extensions: coral_mcp::McpExtensions::from_providers(mcp_extensions_providers)
+                        .map_err(anyhow::Error::from)?,
                 },
             ))
             .await

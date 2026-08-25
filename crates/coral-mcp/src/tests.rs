@@ -4,19 +4,23 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use coral_api::v1::{ImportSourceRequest, Workspace, import_source_response};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
+use futures::future::BoxFuture;
 use jsonschema::Validator;
 use opentelemetry::trace::{SpanId, SpanKind, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
 use rmcp::{
-    RoleClient, ServerHandler, ServiceExt,
+    ErrorData, Json, RoleClient, ServerHandler, ServiceExt,
+    handler::server::router::tool::ToolRouter,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
@@ -28,11 +32,110 @@ use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 use crate::{
-    CoralMcpServerFactory, McpOptions,
+    CoralMcpServerFactory, McpExtensions, McpExtensionsError, McpExtensionsProvider, McpOptions,
+    McpToolContext,
     telemetry::{MCP_PROTOCOL_ERROR_MESSAGE, UNKNOWN_TOOL_NAME},
 };
 
 type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
+
+#[rmcp::tool(description = "Prove that an extension can use its session-bound core Coral tools")]
+fn core_probe(context: &McpToolContext) -> BoxFuture<'_, Result<Json<Value>, ErrorData>> {
+    Box::pin(async move {
+        let inner_tools = context.core_tools().retain(["start_task", "sql"]);
+        let core_tool_names = inner_tools
+            .definitions()
+            .await?
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        let started = inner_tools
+            .call(
+                CallToolRequestParams::new("start_task").with_arguments(raw_json_object(&json!({
+                    "intent": "Test the session-bound core tool set"
+                }))),
+            )
+            .await?
+            .structured_content
+            .ok_or_else(|| ErrorData::internal_error("start_task returned no content", None))?;
+        let task_id = started["task_id"]
+            .as_str()
+            .ok_or_else(|| ErrorData::internal_error("start_task returned no task id", None))?;
+        let query = inner_tools
+            .call(
+                CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                    task_id,
+                    &json!({"queries": ["select 7 as value"]}),
+                )),
+            )
+            .await?
+            .structured_content
+            .ok_or_else(|| ErrorData::internal_error("sql returned no content", None))?;
+        let query_value = query["results"][0]["rows"][0]["value"]
+            .as_str()
+            .ok_or_else(|| ErrorData::internal_error("sql returned no value", None))?
+            .to_string();
+        Ok(Json(json!({
+            "core_tool_names": core_tool_names,
+            "query_value": query_value,
+        })))
+    })
+}
+
+#[derive(Clone)]
+struct StaticMcpExtensionsProvider(McpExtensions);
+
+impl McpExtensionsProvider for StaticMcpExtensionsProvider {
+    fn extensions(&self) -> McpExtensions {
+        self.0.clone()
+    }
+}
+
+fn core_probe_extensions() -> McpExtensions {
+    let router = core_probe_router("core_probe");
+    McpExtensions::default()
+        .add_tools(router)
+        .retain_tools(["core_probe"])
+}
+
+fn core_probe_router(name: &'static str) -> ToolRouter<McpToolContext> {
+    let mut tool = core_probe_tool_attr();
+    tool.name = name.into();
+    ToolRouter::new().with_route((tool, core_probe))
+}
+
+fn extension_provider(extensions: McpExtensions) -> Arc<dyn McpExtensionsProvider> {
+    Arc::new(StaticMcpExtensionsProvider(extensions))
+}
+
+#[test]
+fn extension_registry_rejects_collisions_and_intersects_retain_sets() {
+    let first = extension_provider(McpExtensions::default().retain_tools(["a", "b"]));
+    let second = extension_provider(McpExtensions::default().retain_tools(["b", "c"]));
+    for providers in [
+        vec![Arc::clone(&first), Arc::clone(&second)],
+        vec![Arc::clone(&second), Arc::clone(&first)],
+    ] {
+        let merged = McpExtensions::from_providers(&providers).expect("merge extensions");
+        assert_eq!(
+            merged.retained_tool_names(),
+            Some(&BTreeSet::from(["b".to_string()]))
+        );
+    }
+
+    let reserved = extension_provider(McpExtensions::default().add_tools(core_probe_router("sql")));
+    assert!(matches!(
+        McpExtensions::from_providers(&[reserved]),
+        Err(McpExtensionsError::ReservedToolName(name)) if name == "sql"
+    ));
+
+    let duplicate =
+        || extension_provider(McpExtensions::default().add_tools(core_probe_router("extra")));
+    assert!(matches!(
+        McpExtensions::from_providers(&[duplicate(), duplicate()]),
+        Err(McpExtensionsError::DuplicateToolName(name)) if name == "extra"
+    ));
+}
 
 fn span_string_attribute(span: &SpanData, name: &str) -> Option<String> {
     span.attributes
@@ -347,6 +450,52 @@ async fn start_mcp_session(
     });
     let client = ().serve(client_transport).await.expect("start rmcp client");
     (client, mcp_server_task)
+}
+
+#[tokio::test]
+async fn extension_surface_filters_public_tools_but_keeps_session_core_tools() {
+    let temp = TempDir::new().expect("temp dir");
+    let provider = extension_provider(core_probe_extensions());
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            extensions: McpExtensions::from_providers(&[provider]).expect("merge extensions"),
+            ..McpOptions::default()
+        },
+    )
+    .await;
+
+    let tools = session.client.list_all_tools().await.expect("list tools");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["core_probe"]
+    );
+    let hidden = session
+        .client
+        .call_tool(CallToolRequestParams::new("sql"))
+        .await
+        .expect_err("hidden core tool should not be callable");
+    assert!(hidden.to_string().contains("tool 'sql' not found"));
+
+    let result = session
+        .client
+        .call_tool(CallToolRequestParams::new("core_probe"))
+        .await
+        .expect("call extension tool")
+        .structured_content
+        .expect("extension structured result");
+    assert_eq!(result["query_value"], "7");
+    let core_names = result["core_tool_names"]
+        .as_array()
+        .expect("core tool names");
+    assert!(core_names.iter().any(|name| name == "start_task"));
+    assert!(core_names.iter().any(|name| name == "sql"));
+    assert!(!core_names.iter().any(|name| name == "core_probe"));
+
+    session.shutdown().await;
 }
 
 async fn shutdown_mcp_session(client: RunningService<RoleClient, ()>, task: McpServerTask) {

@@ -51,12 +51,17 @@ pub(crate) fn list_tools_span(trace_parent: Option<&str>) -> tracing::Span {
 }
 
 pub(crate) fn call_tool_span(
+    requested_tool_name: &str,
     tool_name: Option<ToolName>,
     workspace: &str,
     trace_parent: Option<&str>,
 ) -> tracing::Span {
     let operation_kind = query_stream_kind_for_tool(tool_name);
-    let tool_name = tool_name.map_or(UNKNOWN_TOOL_NAME, ToolName::as_str);
+    let tool_name = if requested_tool_name.is_empty() {
+        UNKNOWN_TOOL_NAME
+    } else {
+        requested_tool_name
+    };
     let span = tracing::info_span!(
         target: "coral_mcp::server",
         "coral.mcp.call_tool",
@@ -202,7 +207,7 @@ mod tests {
         let (exporter, provider, subscriber) = telemetry_fixture();
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let span = call_tool_span(Some(ToolName::ListCatalog), "alpha", None);
+        let span = call_tool_span("list_catalog", Some(ToolName::ListCatalog), "alpha", None);
         span.in_scope(|| {});
         drop(span);
 
@@ -255,7 +260,8 @@ mod tests {
             Some(ToolName::ListCatalog),
             None,
         ] {
-            let span = call_tool_span(tool_name, "alpha", None);
+            let requested_tool_name = tool_name.map_or(UNKNOWN_TOOL_NAME, ToolName::as_str);
+            let span = call_tool_span(requested_tool_name, tool_name, "alpha", None);
             span.in_scope(|| {});
         }
 
@@ -298,7 +304,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
         let sentinel = "SENSITIVE_TONIC_ERROR_MARKER";
 
-        let span = call_tool_span(Some(ToolName::ListCatalog), "default", None);
+        let span = call_tool_span("list_catalog", Some(ToolName::ListCatalog), "default", None);
         record_tonic_status(
             &span,
             &tonic::Status::invalid_argument(format!("invalid kind: {sentinel}")),
@@ -345,7 +351,7 @@ mod tests {
             ))],
         );
 
-        let span = call_tool_span(Some(ToolName::ListCatalog), "default", None);
+        let span = call_tool_span("list_catalog", Some(ToolName::ListCatalog), "default", None);
         record_tonic_status(&span, &status);
         drop(span);
 

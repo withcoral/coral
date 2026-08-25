@@ -8,8 +8,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
 use coral_client::{AppClient, local::ServerBuilder};
-use futures::poll;
-use rmcp::ServiceExt as _;
+use futures::{future::BoxFuture, poll};
 use rmcp::model::{CallToolRequestParams, ClientJsonRpcMessage};
 use rmcp::transport::{
     StreamableHttpClientTransport,
@@ -19,12 +18,13 @@ use rmcp::transport::{
         local::{SessionConfig, create_local_session},
     },
 };
+use rmcp::{ErrorData, Json, ServiceExt as _};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tower::ServiceExt as _;
 
-use crate::McpOptions;
+use crate::{McpExtensions, McpOptions, McpToolContext, McpToolRouter};
 
 use super::{
     AUTHENTICATED_SESSION_IDLE_TIMEOUT, AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime,
@@ -37,6 +37,26 @@ use super::{
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
 const PING: &str = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+
+#[rmcp::tool(description = "Return the workspace bound to this MCP session")]
+fn extension_workspace(
+    context: &McpToolContext,
+) -> BoxFuture<'_, Result<Json<serde_json::Value>, ErrorData>> {
+    Box::pin(async move {
+        Ok(Json(serde_json::json!({
+            "workspace": context.workspace().name,
+        })))
+    })
+}
+
+fn extension_options() -> McpOptions {
+    McpOptions {
+        extensions: McpExtensions::default().add_tools(
+            McpToolRouter::new().with_route((extension_workspace_tool_attr(), extension_workspace)),
+        ),
+        ..McpOptions::default()
+    }
+}
 
 fn raw_mcp_request(body: impl Into<Body>) -> Request<Body> {
     Request::builder()
@@ -1092,7 +1112,7 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        McpOptions::default(),
+        extension_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let server = start_authenticated(
@@ -1109,6 +1129,16 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
         .auth_header("token-a"),
     );
     let client = ().serve(transport).await.expect("initialize MCP client");
+    let extension = client
+        .call_tool(CallToolRequestParams::new("extension_workspace"))
+        .await
+        .expect("call authenticated extension tool")
+        .structured_content
+        .expect("extension structured content");
+    assert_eq!(
+        extension.get("workspace"),
+        Some(&serde_json::json!("default"))
+    );
     let sessions = authenticated_sessions(&server);
     let state = Arc::downgrade(&server.state);
     assert_eq!(sessions.upgrade().expect("sessions").len().await, 1);

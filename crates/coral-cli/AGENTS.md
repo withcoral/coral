@@ -24,6 +24,13 @@
 - Keep server orchestration internal to this crate while CLI commands are its
   only consumers (see the root `AGENTS.md` for when it may move to a shared
   crate).
+- Sibling host binaries compose Coral through `CoralExtensions` and
+  `run_from_env_with_extensions`. Keep argument parsing, command routing,
+  transport startup, shutdown, and the compatible `run_from_env` default in
+  this crate.
+- Forward host engine providers to every local `ServerBuilder` after the OSS
+  providers. Resolve MCP providers only for MCP stdio or an enabled MCP HTTP
+  runtime; help and unrelated commands must not require them.
 - Server and transport lifecycles remain in their owning components (`coral-app`
   for gRPC, `coral-mcp::http` for MCP HTTP).
 - Keep CLI-owned process environment access purpose-specific and locally

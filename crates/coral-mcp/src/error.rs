@@ -3,6 +3,9 @@
 /// Errors surfaced by the `MCP` stdio server.
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
+    /// Static MCP extension composition was invalid.
+    #[error(transparent)]
+    Extensions(#[from] crate::McpExtensionsError),
     /// Building or using the Coral client failed.
     #[error(transparent)]
     Client(#[from] coral_client::ClientError),

@@ -31,6 +31,15 @@ and Streamable HTTP transport adapters.
   per protocol session. Keep standalone process launch outside this crate.
 - Configure tool availability through `McpOptions` consistently across stdio
   and alternate transports; transport choice is not a capability boundary.
+- Compose host tools once at MCP runtime startup through
+  `McpExtensionsProvider`. Reject core-name and duplicate extension collisions,
+  intersect retained-name sets, and keep the selected public tool surface
+  fixed for that runtime. A hidden tool must be absent from discovery and
+  dispatch.
+- Give each extension route an `McpToolContext` built from that session's
+  authorized `AppClient`. Its `CoralToolset` is the core-only projection before
+  public additions and filtering. Do not expose bearer tokens or let extension
+  routes enter that private core projection.
 - Keep HTTP tools and resources in the shared MCP surface. The HTTP adapter owns
   routing, host protection, health, and lifecycle; keep `/livez` process-only,
   while `/readyz` may probe reachability without requiring authentication.

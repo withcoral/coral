@@ -1,6 +1,6 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use coral_api::v1::{
     AddFunctionRequest, CatalogItemKind as ProtoCatalogItemKind, DescribeCatalogSurfaceRequest,
@@ -17,10 +17,11 @@ use coral_client::{
 };
 use rmcp::{
     ErrorData, ServerHandler,
+    handler::server::tool::ToolCallContext,
     model::{
         CallToolRequestParams, CallToolResult, Implementation, ListResourcesResult,
         ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-        ResourceContents, ServerCapabilities, ServerInfo,
+        ResourceContents, ServerCapabilities, ServerInfo, Tool,
     },
     service::{RequestContext, RoleServer},
 };
@@ -33,7 +34,7 @@ use tonic::{
 use tracing::Instrument as _;
 
 use crate::{
-    McpOptions, McpQueryExample,
+    McpOptions, McpQueryExample, McpToolContext, McpToolRouter,
     guide_block::GuideBlockState,
     surface::{
         AddFunctionArguments, CatalogToolKind, EndTaskArguments, FeedbackStoredValue,
@@ -276,7 +277,7 @@ impl CoralMcpServerFactory {
     ///
     /// Handlers from this factory share task-scoped guide-block state.
     #[must_use]
-    pub(crate) fn create(&self) -> impl ServerHandler + Clone + use<> {
+    pub(crate) fn create(&self) -> CoralMcpServer {
         CoralMcpServer::new(
             &self.app,
             self.options.clone(),
@@ -285,8 +286,9 @@ impl CoralMcpServerFactory {
     }
 }
 
+/// Session-bound implementation of Coral's built-in MCP tools.
 #[derive(Clone)]
-pub(crate) struct CoralMcpServer {
+pub struct CoralToolset {
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
@@ -297,6 +299,7 @@ pub(crate) struct CoralMcpServer {
     guide_block: Arc<GuideBlockState>,
     startup_context: McpStartupContext,
     options: McpOptions,
+    retained_tool_names: Option<Arc<BTreeSet<String>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -337,7 +340,7 @@ impl McpStartupContext {
     }
 }
 
-impl CoralMcpServer {
+impl CoralToolset {
     fn new(app: &AppClient, options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
         let startup_context = McpStartupContext::from_options(&options);
         Self::new_with_startup_context(app, options, startup_context, guide_block)
@@ -360,14 +363,20 @@ impl CoralMcpServer {
             guide_block,
             startup_context,
             options,
+            retained_tool_names: None,
         }
     }
 
     fn tool_allowed(&self, tool: ToolName) -> bool {
-        match tool {
+        let feature_allows = match tool {
             ToolName::Feedback => self.options.feedback_enabled,
             _ => true,
-        }
+        };
+        feature_allows
+            && self
+                .retained_tool_names
+                .as_ref()
+                .is_none_or(|names| names.contains(tool.as_str()))
     }
 
     fn workspace(&self) -> coral_api::v1::Workspace {
@@ -375,6 +384,18 @@ impl CoralMcpServer {
             .workspace
             .clone()
             .unwrap_or_else(default_workspace)
+    }
+
+    /// Returns an enforced view containing only the named core tools.
+    #[must_use]
+    pub fn retain(&self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let mut retained = names.into_iter().map(Into::into).collect::<BTreeSet<_>>();
+        if let Some(current) = &self.retained_tool_names {
+            retained.retain(|name| current.contains(name));
+        }
+        let mut projected = self.clone();
+        projected.retained_tool_names = Some(Arc::new(retained));
+        projected
     }
 
     async fn load_sources(&self) -> Result<Vec<Source>, tonic::Status> {
@@ -893,86 +914,81 @@ impl CoralMcpServer {
             }),
         }
     }
-}
 
-impl ServerHandler for CoralMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_resources()
-                .enable_tools()
-                .build(),
+    /// Returns the definitions for the tools in this core-tool projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an MCP error when the current catalog description cannot be
+    /// loaded.
+    pub async fn definitions(&self) -> Result<Vec<Tool>, ErrorData> {
+        let (visible_table_count, visible_function_count) = self
+            .load_catalog_counts()
+            .await
+            .map_err(|status| status_to_error_data(&status))?;
+        let source_names = match self.load_sources().await {
+            Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
+            Err(status) => {
+                tracing::warn!(
+                    error = %status,
+                    "failed to load source names for MCP tool descriptions"
+                );
+                Vec::new()
+            }
+        };
+        let tool_context =
+            ToolDescriptionContext::new(visible_table_count, visible_function_count, source_names);
+        Ok(available_tools(
+            &tool_context,
+            ToolAvailability {
+                feedback_enabled: self.options.feedback_enabled,
+                observed_values_search_enabled: self.options.observed_values_search_enabled,
+            },
         )
-        .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
-        .with_instructions(initial_instructions(
-            &self.workspace().name,
-            self.startup_context.source_names(),
-            self.startup_context.query_examples(),
-            self.options.observed_values_search_enabled,
-        ))
-    }
-
-    async fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
-        telemetry::instrument_protocol(span, async {
-            let (visible_table_count, visible_function_count) = self
-                .load_catalog_counts()
-                .await
-                .map_err(|status| status_to_error_data(&status))?;
-            let source_names = match self.load_sources().await {
-                Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
-                Err(status) => {
-                    tracing::warn!(
-                        error = %status,
-                        "failed to load source names for MCP tool descriptions"
-                    );
-                    Vec::new()
-                }
-            };
-            let tool_context = ToolDescriptionContext::new(
-                visible_table_count,
-                visible_function_count,
-                source_names,
-            );
-            let tools = available_tools(
-                &tool_context,
-                ToolAvailability {
-                    feedback_enabled: self.options.feedback_enabled,
-                    observed_values_search_enabled: self.options.observed_values_search_enabled,
-                },
-            );
-            Ok(ListToolsResult::with_all_items(tools))
+        .into_iter()
+        .filter(|tool| {
+            self.retained_tool_names
+                .as_ref()
+                .is_none_or(|names| names.contains(tool.name.as_ref()))
         })
-        .await
+        .collect())
     }
 
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    /// Calls one tool in this core-tool projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns the normal MCP tool error when the tool is hidden, unknown, or
+    /// called with invalid arguments.
+    pub async fn call(&self, request: CallToolRequestParams) -> Result<CallToolResult, ErrorData> {
         let tool_name = request.name.as_ref().parse::<ToolName>().ok();
         let span = telemetry::call_tool_span(
+            tool_name.map_or("", |_| request.name.as_ref()),
             tool_name,
             &self.workspace().name,
             self.options.trace_parent.as_deref(),
         );
+        self.call_with_span(request, tool_name, &span).await
+    }
+
+    async fn call_with_span(
+        &self,
+        request: CallToolRequestParams,
+        tool_name: Option<ToolName>,
+        span: &tracing::Span,
+    ) -> Result<CallToolResult, ErrorData> {
         let inject_task_metadata = !matches!(
             tool_name,
             Some(ToolName::StartTask | ToolName::EndTask | ToolName::Sql)
         );
         let task_context = TaskCallContext::from_tool_request(
             &self.options,
-            tool_name,
+            tool_name.filter(|tool| self.tool_allowed(*tool)),
             request.arguments.as_ref(),
         );
         match task_context {
             Ok(task_context) => {
-                task_context.record_telemetry(&span);
+                task_context.record_telemetry(span);
                 let task_id_metadata = if inject_task_metadata {
                     task_context.task_id_metadata()
                 } else {
@@ -986,10 +1002,102 @@ impl ServerHandler for CoralMcpServer {
                     ),
                 )
                 .await;
-                finish_tool_call(&span, outcome)
+                finish_tool_call(span, outcome)
             }
-            Err(error) => finish_tool_call(&span, Err(error)),
+            Err(error) => finish_tool_call(span, Err(error)),
         }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CoralMcpServer {
+    core_tools: CoralToolset,
+    extension_tools: McpToolRouter,
+    tool_context: McpToolContext,
+}
+
+impl CoralMcpServer {
+    fn new(app: &AppClient, mut options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
+        let extensions = std::mem::take(&mut options.extensions);
+        let core_tools = CoralToolset::new(app, options, guide_block);
+        let tool_context = McpToolContext::new(core_tools.clone(), core_tools.workspace());
+        let public_core_tools = extensions.retained_tool_names().map_or_else(
+            || core_tools.clone(),
+            |names| core_tools.retain(names.clone()),
+        );
+        Self {
+            core_tools: public_core_tools,
+            extension_tools: extensions.added_tools().clone(),
+            tool_context,
+        }
+    }
+}
+
+impl ServerHandler for CoralMcpServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_resources()
+                .enable_tools()
+                .build(),
+        )
+        .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
+        .with_instructions(initial_instructions(
+            &self.core_tools.workspace().name,
+            self.core_tools.startup_context.source_names(),
+            self.core_tools.startup_context.query_examples(),
+            self.core_tools.options.observed_values_search_enabled,
+        ))
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let span = telemetry::list_tools_span(self.core_tools.options.trace_parent.as_deref());
+        telemetry::instrument_protocol(span, async {
+            let mut tools = self.core_tools.definitions().await?;
+            tools.extend(self.extension_tools.list_all());
+            Ok(ListToolsResult::with_all_items(tools))
+        })
+        .await
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let tool_name = request.name.as_ref().parse::<ToolName>().ok();
+        let requested_tool_name =
+            if tool_name.is_some() || self.extension_tools.has_route(request.name.as_ref()) {
+                request.name.as_ref()
+            } else {
+                ""
+            };
+        let span = telemetry::call_tool_span(
+            requested_tool_name,
+            tool_name,
+            &self.core_tools.workspace().name,
+            self.core_tools.options.trace_parent.as_deref(),
+        );
+        if tool_name.is_some_and(|tool| self.core_tools.tool_allowed(tool)) {
+            return self
+                .core_tools
+                .call_with_span(request, tool_name, &span)
+                .await;
+        }
+        if self.extension_tools.has_route(request.name.as_ref()) {
+            let tool_context = ToolCallContext::new(&self.tool_context, request, context);
+            let result =
+                telemetry::instrument(span.clone(), self.extension_tools.call(tool_context)).await;
+            telemetry::record_protocol_result(&span, &result);
+            return result;
+        }
+        let error = ErrorData::invalid_params(format!("tool '{}' not found", request.name), None);
+        telemetry::record_protocol_error(&span, &error);
+        Err(error)
     }
 
     async fn list_resources(
@@ -997,9 +1105,10 @@ impl ServerHandler for CoralMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        let span = telemetry::list_resources_span(self.options.trace_parent.as_deref());
+        let span = telemetry::list_resources_span(self.core_tools.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
             let (sources, visible_table_count, visible_function_count) = self
+                .core_tools
                 .load_sources_and_catalog_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
@@ -1018,12 +1127,13 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ReadResourceResult, ErrorData> {
         let span = telemetry::read_resource_span(
             request.uri.as_str(),
-            self.options.trace_parent.as_deref(),
+            self.core_tools.options.trace_parent.as_deref(),
         );
         telemetry::instrument_protocol(span, async {
             match request.uri.as_str() {
                 "coral://guide" => {
                     let (sources, tables, table_function_schema_names) = self
+                        .core_tools
                         .load_sources_and_guide_catalog()
                         .await
                         .map_err(|status| status_to_error_data(&status))?;
@@ -1033,7 +1143,7 @@ impl ServerHandler for CoralMcpServer {
                                 &sources,
                                 &tables,
                                 &table_function_schema_names,
-                                self.options.observed_values_search_enabled,
+                                self.core_tools.options.observed_values_search_enabled,
                             ),
                             request.uri,
                         )
@@ -1042,6 +1152,7 @@ impl ServerHandler for CoralMcpServer {
                 }
                 "coral://tables" => {
                     let tables = self
+                        .core_tools
                         .load_all_table_summaries()
                         .await
                         .map_err(|status| status_to_error_data(&status))?;
@@ -1303,7 +1414,8 @@ mod tool_call_telemetry_tests {
         let Err(error) = list_catalog_arguments(Some(&arguments)) else {
             panic!("unknown list_catalog kind should fail argument parsing");
         };
-        let span = telemetry::call_tool_span(Some(ToolName::ListCatalog), "default", None);
+        let span =
+            telemetry::call_tool_span("list_catalog", Some(ToolName::ListCatalog), "default", None);
         let returned = finish_tool_call(&span, Err(error))
             .expect_err("invalid list_catalog kind should remain a caller-visible protocol error");
         assert!(returned.message.contains(sentinel));
