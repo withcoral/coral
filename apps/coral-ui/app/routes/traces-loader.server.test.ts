@@ -35,6 +35,7 @@ function summary(
     startTimeUnixNanos: '1000000',
     status: TraceStatus.OK,
     traceId,
+    userId: '',
   }
 }
 
