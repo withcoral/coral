@@ -10,6 +10,7 @@ use coral_api::v1::feature_service_server::FeatureServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::function_service_server::FunctionServiceServer;
 use coral_api::v1::gui_onboarding_service_server::GuiOnboardingServiceServer;
+use coral_api::v1::identity_spec_service_server::IdentitySpecServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
@@ -17,7 +18,8 @@ use coral_api::v1::task_service_server::TaskServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
-    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
+    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
+    IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
     TRACE_RESPONSE_MAX_MESSAGE_SIZE,
 };
@@ -36,6 +38,7 @@ use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
+use crate::credentials::encryption::{CredentialKeyProvider, LocalFileCredentialKeyProvider};
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::features::service::FeatureService;
 use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
@@ -48,6 +51,8 @@ use crate::functions::service::FunctionService;
 use crate::gui_onboarding::manager::GuiOnboardingManager;
 use crate::gui_onboarding::service::GuiOnboardingService;
 use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
+use crate::identity_specs::manager::IdentitySpecManager;
+use crate::identity_specs::service::IdentitySpecService;
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
@@ -338,6 +343,10 @@ impl ServerBuilder {
     /// Returns [`AppError`] if the config directory cannot be determined,
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "startup composition stays explicit so initialization order and ownership remain visible"
+    )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
@@ -345,16 +354,22 @@ impl ServerBuilder {
         let principal_provider = self.config.principal_provider.clone();
         let grpc_listener = self.config.grpc_listener.clone();
         layout.ensure()?;
+        let credential_config = CredentialStorageConfig::load(&layout)?;
+        let database_config = resolve_database_config(&layout)?;
+        let identity_spec_key_provider: Arc<dyn CredentialKeyProvider> =
+            Arc::new(LocalFileCredentialKeyProvider::new(&layout, None));
         let feature_store = FeatureStore::from_layout(layout.clone());
         let features = feature_store.load_with_overrides(&self.config.feature_overrides)?;
-        let coral_db = init_database(&layout).await?;
+        let coral_db = init_database(database_config).await?;
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store, &layout).await?;
         let coral_db = Arc::new(coral_db);
+        let identity_specs =
+            IdentitySpecManager::new(Arc::clone(&coral_db), identity_spec_key_provider);
         let (telemetry_config, active_trace_store) =
             init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let credential_config = CredentialStorageConfig::load(&layout)?;
+        let trace_components = trace_components_for_store(active_trace_store);
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
@@ -417,7 +432,6 @@ impl ServerBuilder {
             CatalogDiscovery::new(query_manager.clone()),
             workspace_lifecycle_lock,
         );
-        let trace_components = trace_components_for_store(active_trace_store);
         start_server(
             ServerDependencies {
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
@@ -430,6 +444,7 @@ impl ServerBuilder {
                 task: task_manager,
                 feature_store,
                 active_features: features,
+                identity_specs,
             },
             trace_components,
             principal_provider,
@@ -479,8 +494,7 @@ fn trace_components_for_store(
     })
 }
 
-async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
-    let database_config = resolve_database_config(layout)?;
+async fn init_database(database_config: ResolvedDatabaseConfig) -> Result<CoralDb, AppError> {
     let coral_db = CoralDb::open(database_config).await?;
     coral_db.migrate().await?;
     Ok(coral_db)
@@ -647,6 +661,7 @@ struct ServerDependencies {
     // The resolution `start` performed, carried forward so the feature service
     // can report what this server is running rather than only what config says.
     active_features: Features,
+    identity_specs: IdentitySpecManager,
 }
 
 /// Builds the gRPC routes for every application service, and returns the query
@@ -666,6 +681,7 @@ fn application_routes(
         task,
         feature_store,
         active_features,
+        identity_specs,
     } = dependencies;
     let (source, query) = match search_observations.as_ref() {
         Some(search_observations) => (
@@ -685,6 +701,7 @@ fn application_routes(
     let feature_service = FeatureService::new(feature_store, active_features);
     let task_service = TaskService::new(task);
     let gui_onboarding_service = GuiOnboardingService::new(gui_onboarding);
+    let identity_spec_service = IdentitySpecService::new(identity_specs);
     let mut routes = Routes::default()
         .add_service(GuiOnboardingServiceServer::new(gui_onboarding_service))
         .add_service(
@@ -698,6 +715,10 @@ fn application_routes(
         )
         .add_service(FeedbackServiceServer::new(feedback_service))
         .add_service(FeatureServiceServer::new(feature_service))
+        .add_service(
+            IdentitySpecServiceServer::new(identity_spec_service)
+                .max_encoding_message_size(IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE),
+        )
         .add_service(FunctionServiceServer::new(function_service))
         .add_service(TaskServiceServer::new(task_service))
         .add_service(
@@ -841,10 +862,12 @@ mod tests {
     };
     use crate::bootstrap::AppError;
     use crate::catalog::discovery::CatalogDiscovery;
+    use crate::credentials::encryption::LocalFileCredentialKeyProvider;
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
     use crate::feedback::manager::FeedbackManager;
     use crate::gui_onboarding::manager::GuiOnboardingManager;
+    use crate::identity_specs::manager::IdentitySpecManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
     use crate::search::observed::{
@@ -937,6 +960,16 @@ enabled = false
             .await
             .expect("run state migrations");
         Arc::new(db)
+    }
+
+    fn test_identity_spec_manager(
+        layout: &AppStateLayout,
+        db: &Arc<CoralDb>,
+    ) -> IdentitySpecManager {
+        IdentitySpecManager::new(
+            Arc::clone(db),
+            Arc::new(LocalFileCredentialKeyProvider::new(layout, None)),
+        )
     }
 
     #[tokio::test]
@@ -1583,6 +1616,7 @@ backend = "unsupported"
                 task: task_manager,
                 feature_store: FeatureStore::from_layout(layout.clone()),
                 active_features: Features::default(),
+                identity_specs: test_identity_spec_manager(&layout, &db),
             },
             TraceServerComponents {
                 service: Some(trace_service),
@@ -1731,6 +1765,7 @@ backend = "unsupported"
                 task: task_manager,
                 feature_store: FeatureStore::from_layout(layout.clone()),
                 active_features: Features::default(),
+                identity_specs: test_identity_spec_manager(&layout, &db),
             },
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
@@ -1863,6 +1898,7 @@ tables:
                 task: task_manager,
                 feature_store: FeatureStore::from_layout(layout.clone()),
                 active_features: Features::default(),
+                identity_specs: test_identity_spec_manager(&layout, &db),
             },
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
@@ -1995,6 +2031,7 @@ tables:
                 task: task_manager,
                 feature_store: FeatureStore::from_layout(layout.clone()),
                 active_features: Features::default(),
+                identity_specs: test_identity_spec_manager(&layout, &db),
             },
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),

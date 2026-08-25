@@ -39,6 +39,9 @@ trust boundary:
 
 - Source secrets are stored separately from non-secret source variables and are
   never written into `config.toml`.
+- Identity-spec setup inputs use a separate envelope-encryption path. Coral
+  stores their encrypted documents in the app database and does not return the
+  input values from identity-spec management APIs.
 - By default, sources use the operating-system credential store when Coral
   can successfully write, read, and delete a probe item. On macOS this uses
   Keychain; on Windows, Credential Manager; on Linux, Secret Service.
@@ -56,9 +59,9 @@ trust boundary:
 - MCP clients can query installed sources, but they do not receive raw stored
   secret values through the discovery tables or resources.
 
-## Secret storage configuration
+## Source secret storage
 
-Coral reads the credential storage preference from `config.toml`:
+Coral reads the source-secret storage preference from `config.toml`:
 
 ```toml
 [credentials]
@@ -76,6 +79,28 @@ Supported values:
 <Note>
 Changing the global preference does not rewrite existing credentials. To update those, remove and re-add the source you want to update.
 </Note>
+
+This preference does not control identity setup inputs. Source secrets use the
+keychain or plaintext file backend described above; identity setup inputs use
+the envelope encryption described next.
+
+## Identity setup input encryption
+
+Coral envelope-encrypts persisted identity setup inputs. A per-document
+data-encryption key encrypts the input values, and a longer-lived
+key-encryption key (KEK) wraps that data key. The database stores the encrypted
+document and its key identifier, not the KEK itself.
+
+Coral creates the KEK in the private `credentials/encryption.key` file under
+its local config directory when it first needs to encrypt identity setup input.
+The same local key-file behavior applies regardless of the configured database
+backend. Protect the key file and database with your operating-system account
+controls, and back them up together: losing the key makes the encrypted inputs
+unreadable.
+
+Envelope encryption separates database contents from the KEK, but it does not
+protect against an attacker who controls the Coral process, its environment,
+or the local user account that can read the local key file.
 
 ## What you still need to trust
 
@@ -95,6 +120,9 @@ you configure; it does not make an otherwise untrusted local agent safe.
   configured sources. If a source uses file-backed secret storage, anyone who
   can read your local Coral config directory should also be treated as able to
   read its stored source secrets.
+- Anyone who can read the local envelope encryption key file or Coral process
+  memory should be treated as able to decrypt the corresponding identity setup
+  inputs when they also obtain the database.
 - Coral does not attempt to protect against a compromised machine, compromised
   MCP client, malicious shell environment, or malicious upstream API response.
 

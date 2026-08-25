@@ -8,6 +8,11 @@
 use std::collections::BTreeMap;
 use std::fs;
 
+use coral_api::v1::{
+    AddIdentitySpecRequest, GlobalIdentitySpecScope, IdentitySpecInputValue, IdentitySpecScope,
+    identity_spec_scope,
+};
+use coral_client::AppClient;
 use coral_client::local::ServerBuilder;
 use coral_engine::{
     CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
@@ -18,6 +23,7 @@ use coral_spec::{
 };
 use sqlx::postgres::PgPoolOptions;
 use tempfile::TempDir;
+use tonic::Request;
 
 #[tokio::test]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run configured Postgres startup coverage"]
@@ -40,6 +46,49 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
         .await
         .expect("start server with Postgres config");
     assert_postgres_db_is_migrated(&database_url).await;
+
+    let app = AppClient::connect(server.endpoint_uri())
+        .await
+        .expect("connect client");
+    let fixed = app
+        .identity_spec_client()
+        .add_identity_spec(Request::new(AddIdentitySpecRequest {
+            manifest_yaml: fixed_token_manifest().to_string(),
+            input_values: Vec::new(),
+            scope: Some(global_scope()),
+        }))
+        .await
+        .expect("install fixed-token identity spec without setup inputs")
+        .into_inner();
+    assert_eq!(
+        fixed.identity_spec.expect("installed identity spec").name,
+        "postgres_fixed_token"
+    );
+
+    let oauth = app
+        .identity_spec_client()
+        .add_identity_spec(Request::new(AddIdentitySpecRequest {
+            manifest_yaml: oauth_manifest().to_string(),
+            input_values: vec![IdentitySpecInputValue {
+                key: "CLIENT_SECRET".to_string(),
+                value: "not-persisted".to_string(),
+            }],
+            scope: Some(global_scope()),
+        }))
+        .await
+        .expect("install OAuth identity spec with setup inputs")
+        .into_inner();
+    assert_eq!(
+        oauth.identity_spec.expect("installed identity spec").name,
+        "postgres_oauth"
+    );
+    assert!(
+        config_dir
+            .join("credentials")
+            .join("encryption.key")
+            .exists(),
+        "identity setup-input persistence should create the local encryption key"
+    );
 
     server.shutdown().await.expect("shutdown server");
 }
@@ -152,6 +201,22 @@ fn postgres_source(database_url: &str) -> QuerySource {
         BTreeMap::new(),
     )
     .expect("build Postgres inventory source")
+}
+
+fn global_scope() -> IdentitySpecScope {
+    IdentitySpecScope {
+        value: Some(identity_spec_scope::Value::Global(
+            GlobalIdentitySpecScope {},
+        )),
+    }
+}
+
+fn fixed_token_manifest() -> &'static str {
+    "kind: identity\nspec_version: 1\nname: postgres_fixed_token\nversion: 1.0.0\nissuer: demo\ntype: fixed_token\naudience: {host: example.com}\n"
+}
+
+fn oauth_manifest() -> &'static str {
+    "kind: identity\nspec_version: 1\nname: postgres_oauth\nversion: 1.0.0\nissuer: demo\ntype: oauth\naudience: {host: example.com}\ninputs:\n  CLIENT_SECRET: {kind: secret, required: true}\noauth:\n  method:\n    flow: {type: authorization_code, pkce: disabled}\n    redirect_uri: http://127.0.0.1:53682/oauth/callback\n    endpoints: {authorization_url: 'https://example.com/authorize', token_url: 'https://example.com/token'}\n    client:\n      id: {default: demo}\n      secret: {input: CLIENT_SECRET, transport: basic_auth}\n"
 }
 
 async fn assert_postgres_db_is_migrated(database_url: &str) {

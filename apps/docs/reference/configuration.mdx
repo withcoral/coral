@@ -43,6 +43,18 @@ export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?ssl
   Remote Postgres URLs must set `sslmode=verify-full` so Coral verifies the server identity. Loopback and local-socket Postgres URLs may omit TLS for local development.
 </Note>
 
+## Credentials
+
+The `[credentials]` section controls source secret storage:
+
+- `storage` selects the storage backend (`auto`, `keychain`, or `file`). See
+  the [security model](/project/security#source-secret-storage).
+
+```toml
+[credentials]
+storage = "auto"
+```
+
 ## Workspaces
 
 Workspace metadata is stored under `[workspaces]`. The `default` workspace
