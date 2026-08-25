@@ -70,6 +70,16 @@ pub(crate) async fn assert_identity_management_contract(db: &Arc<CoralDb>) {
         .create_or_replace_user_fixed_token(&primary_user, &alpha, &spec, "alpha-token".to_string())
         .await
         .expect("create first user identity");
+    let resolved_alpha = manager
+        .get_for_use(&primary_owner, &alpha)
+        .await
+        .expect("resolve first user identity for use");
+    assert_eq!(resolved_alpha.identity, primary_alpha);
+    assert_eq!(resolved_alpha.identity_spec.spec.key, spec_key);
+    assert_eq!(
+        resolved_alpha.material().get("TOKEN").map(String::as_str),
+        Some("alpha-token")
+    );
     let other_alpha = manager
         .create_or_replace_user_fixed_token(&other_user, &alpha, &spec, "other-token".to_string())
         .await
