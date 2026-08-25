@@ -257,6 +257,23 @@ impl SessionTokenVerifier {
                 "accepted audiences must be non-empty and have no surrounding whitespace",
             ));
         }
+        self.validate_access_token_where(token, &|audience| {
+            accepted_audiences.contains(&audience)
+        })
+    }
+
+    /// Validates an access token whose audience is judged by `audience_ok`.
+    ///
+    /// This exists for audience families that cannot be enumerated into a
+    /// list — the per-workspace MCP resources. Every other check is identical
+    /// to [`Self::validate_access_token`]: the signature covers the audience
+    /// claim, so judging it after signature validation admits exactly the
+    /// tokens an enumerated allowlist would have.
+    pub(crate) fn validate_access_token_where(
+        &self,
+        token: &str,
+        audience_ok: &dyn Fn(&str) -> bool,
+    ) -> Result<ValidatedSession, SessionTokenError> {
         let header =
             decode_header(token).map_err(|error| format!("invalid Coral access token: {error}"))?;
         if header.alg != SESSION_TOKEN_ALGORITHM {
@@ -276,7 +293,7 @@ impl SessionTokenVerifier {
             .ok_or_else(|| invalid_token("unknown signing key id"))?;
 
         let mut validation = Validation::new(SESSION_TOKEN_ALGORITHM);
-        validation.set_audience(accepted_audiences);
+        validation.validate_aud = false;
         validation.set_issuer(&[self.issuer.as_str()]);
         validation.set_required_spec_claims(&[
             "aud",
@@ -293,6 +310,9 @@ impl SessionTokenVerifier {
         let claims = decode::<SessionTokenClaims>(token, verification_key, &validation)
             .map_err(|error| format!("invalid Coral access token: {error}"))?
             .claims;
+        if !audience_ok(&claims.aud) {
+            return Err(invalid_token("audience is not accepted by this surface"));
+        }
         self.validate_claims(&claims)?;
         Ok(ValidatedSession {
             token_id: claims.jti,

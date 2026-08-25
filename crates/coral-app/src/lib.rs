@@ -72,6 +72,7 @@ pub mod test_session_tokens;
 mod test_support;
 mod transport;
 mod users;
+mod workspace_mcp_urls;
 mod workspaces;
 
 pub use auth::{
@@ -92,4 +93,8 @@ pub use query::extensions::{
 };
 pub use request_auth::SessionPrincipalProvider;
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
+pub use workspace_mcp_urls::{
+    McpWorkspaceSegment, PROTECTED_RESOURCE_METADATA_ROOT, WORKSPACE_ROUTE_SEGMENT,
+    WorkspaceMcpUrls,
+};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

@@ -7,6 +7,7 @@ use tonic::metadata::MetadataMap;
 
 use crate::auth::session::SessionTokenVerifier;
 use crate::identity::{BearerAuthenticator, Principal, PrincipalProvider, PrincipalProviderError};
+use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 
 const AUTHORIZATION_METADATA: &str = "authorization";
 const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
@@ -29,7 +30,35 @@ const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
 #[derive(Clone)]
 pub struct SessionPrincipalProvider {
     verifier: SessionTokenVerifier,
-    accepted_audiences: Arc<[String]>,
+    audiences: AudiencePolicy,
+}
+
+/// Which minted audiences a surface's provider admits.
+#[derive(Clone)]
+enum AudiencePolicy {
+    /// An enumerated allowlist, the shape every surface had before
+    /// per-workspace MCP resources existed.
+    Exact(Arc<[String]>),
+    /// An enumerated allowlist plus every canonical per-workspace MCP
+    /// resource under one base URL. The family cannot be enumerated — its
+    /// members come and go with workspaces — so membership is decided by
+    /// parsing the audience against the one URL template.
+    ExactPlusWorkspaceFamily {
+        exact: Arc<[String]>,
+        family: Arc<WorkspaceMcpUrls>,
+    },
+}
+
+impl AudiencePolicy {
+    fn accepts(&self, audience: &str) -> bool {
+        match self {
+            Self::Exact(exact) => exact.iter().any(|accepted| accepted == audience),
+            Self::ExactPlusWorkspaceFamily { exact, family } => {
+                exact.iter().any(|accepted| accepted == audience)
+                    || family.parse_resource(audience).is_some()
+            }
+        }
+    }
 }
 
 impl SessionPrincipalProvider {
@@ -39,22 +68,59 @@ impl SessionPrincipalProvider {
     ) -> Self {
         Self {
             verifier,
-            accepted_audiences: accepted_audiences.into_iter().collect(),
+            audiences: AudiencePolicy::Exact(accepted_audiences.into_iter().collect()),
+        }
+    }
+
+    /// Builds a provider admitting `accepted_audiences` plus every
+    /// per-workspace MCP resource in `family`.
+    pub(crate) fn with_workspace_family(
+        verifier: SessionTokenVerifier,
+        accepted_audiences: impl IntoIterator<Item = String>,
+        family: Arc<WorkspaceMcpUrls>,
+    ) -> Self {
+        Self {
+            verifier,
+            audiences: AudiencePolicy::ExactPlusWorkspaceFamily {
+                exact: accepted_audiences.into_iter().collect(),
+                family,
+            },
         }
     }
 
     fn principal_for_token(&self, token: &str) -> Result<Principal, PrincipalProviderError> {
+        self.principal_where(token, &|audience| self.audiences.accepts(audience))
+    }
+
+    /// Authenticates a bearer token minted for exactly `audience`.
+    ///
+    /// This is the per-route check for surfaces whose resource identity varies
+    /// by request — a per-workspace MCP URL admits only tokens minted for that
+    /// exact URL, so the expected audience arrives with the call instead of
+    /// living in the provider's own policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same generic authentication failure as every other path.
+    pub fn principal_for_bearer_with_audience(
+        &self,
+        token: &str,
+        audience: &str,
+    ) -> Result<Principal, PrincipalProviderError> {
+        self.principal_where(token, &|minted| minted == audience)
+    }
+
+    fn principal_where(
+        &self,
+        token: &str,
+        audience_ok: &dyn Fn(&str) -> bool,
+    ) -> Result<Principal, PrincipalProviderError> {
         if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
             return Err(unauthenticated());
         }
-        let accepted = self
-            .accepted_audiences
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
         let session = self
             .verifier
-            .validate_access_token(token, &accepted)
+            .validate_access_token_where(token, audience_ok)
             .map_err(|_error| unauthenticated())?;
         // The token's subject is Coral's internal `user_id`, so the request
         // principal is that id verbatim — no upstream issuer, subject, or

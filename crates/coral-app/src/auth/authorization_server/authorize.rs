@@ -68,7 +68,7 @@ pub(super) async fn oauth_authorize_get(
     let Ok(resource) = canonical_authorization_resource(resource) else {
         return trusted.error("invalid_target", "resource is invalid");
     };
-    if !state.authorization_resources.contains(&resource) {
+    if !state.accepts_authorization_resource(&resource) {
         return trusted.error("invalid_target", "resource does not match this server");
     }
     let approval = OAuthAuthorizationApprovalRecord {

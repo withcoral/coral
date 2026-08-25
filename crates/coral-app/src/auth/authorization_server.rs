@@ -14,6 +14,7 @@ use super::session::SessionTokenIssuer;
 use super::state_store::{ApprovalStore, CodeStore, InMemoryStateStore, SessionStore};
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 use crate::state::db::CoralDb;
+use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 use axum::Router;
 use axum::extract::State;
 use axum::http::header;
@@ -40,6 +41,7 @@ pub struct CoralAuthorizationServer {
     session_tokens: SessionTokenIssuer,
     state_store: Arc<InMemoryStateStore>,
     authorization_resources: BTreeSet<String>,
+    workspace_resource_family: Option<WorkspaceMcpUrls>,
     database: Option<Arc<CoralDb>>,
 }
 
@@ -102,6 +104,7 @@ impl CoralAuthorizationServer {
             session_tokens,
             state_store: Arc::new(InMemoryStateStore::new()),
             authorization_resources: BTreeSet::new(),
+            workspace_resource_family: None,
             database: None,
         }
     }
@@ -146,6 +149,21 @@ impl CoralAuthorizationServer {
         Ok(self)
     }
 
+    /// Registers the per-workspace MCP resource family under one base URL.
+    ///
+    /// Authorization requests may then target any canonical per-workspace
+    /// resource — `<base>/workspace/<name>` — in addition to the exact
+    /// resources registered individually. Membership in the family is decided
+    /// by the URL template alone, never by whether a workspace by that name
+    /// exists: existence is concealed from the OAuth flow on purpose, and a
+    /// token minted for a workspace nobody created authorizes nothing because
+    /// MCP admission checks the caller's memberships per session.
+    #[must_use]
+    pub fn with_workspace_resource_family(mut self, family: WorkspaceMcpUrls) -> Self {
+        self.workspace_resource_family = Some(family);
+        self
+    }
+
     /// Returns registered resources for assertions outside this module.
     #[cfg(test)]
     pub(crate) fn authorization_resources(&self) -> &BTreeSet<String> {
@@ -168,6 +186,7 @@ impl CoralAuthorizationServer {
             self.session_tokens,
             self.state_store,
             Arc::new(self.authorization_resources),
+            self.workspace_resource_family,
             self.database,
         )?;
         start_listener(bind_addr, state).await
@@ -286,6 +305,7 @@ struct AuthorizationServerHttpState {
     code_store: Arc<dyn CodeStore>,
     provider_client: OidcProviderClient,
     authorization_resources: Arc<BTreeSet<String>>,
+    workspace_resource_family: Option<Arc<WorkspaceMcpUrls>>,
     client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
     /// Where the OIDC callback provisions a verified login.
     ///
@@ -300,11 +320,21 @@ impl AuthorizationServerHttpState {
         session_tokens: SessionTokenIssuer,
         state_store: Arc<InMemoryStateStore>,
         authorization_resources: Arc<BTreeSet<String>>,
+        workspace_resource_family: Option<WorkspaceMcpUrls>,
         database: Option<Arc<CoralDb>>,
     ) -> Result<Self, AuthServerError> {
+        // The workspace family cannot be enumerated, but loopback client-ID
+        // derivation needs a concrete set of resources to derive from — and the
+        // family's base is exactly the resource that used to be registered
+        // individually, so it joins the derivation set without becoming an
+        // acceptable audience of its own.
+        let mut client_id_derivation_resources = (*authorization_resources).clone();
+        if let Some(family) = &workspace_resource_family {
+            client_id_derivation_resources.insert(family.base().identifier().to_string());
+        }
         let client_metadata_resolver = HttpClientMetadataResolver::new(
             settings.authorization_server().issuer(),
-            &authorization_resources,
+            &client_id_derivation_resources,
         )
         .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?;
         // Config validation already held these entries to canonical spellings;
@@ -330,9 +360,25 @@ impl AuthorizationServerHttpState {
             provider_client: OidcProviderClient::new()
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,
+            workspace_resource_family: workspace_resource_family.map(Arc::new),
             client_metadata_resolver,
             database,
         })
+    }
+
+    /// Whether authorization requests may target `resource`.
+    ///
+    /// A canonical resource is acceptable when it was registered exactly or
+    /// when it is a member of the per-workspace family. Workspace existence is
+    /// deliberately not consulted: the OAuth flow answers identically for
+    /// every well-formed workspace resource, so it discloses nothing about
+    /// which workspaces exist.
+    pub(super) fn accepts_authorization_resource(&self, resource: &str) -> bool {
+        self.authorization_resources.contains(resource)
+            || self
+                .workspace_resource_family
+                .as_ref()
+                .is_some_and(|family| family.parse_resource(resource).is_some())
     }
 
     #[cfg(test)]
@@ -351,6 +397,7 @@ impl AuthorizationServerHttpState {
             code_store: state_store,
             provider_client: OidcProviderClient::new().map_err(|error| error.to_string())?,
             authorization_resources,
+            workspace_resource_family: None,
             client_metadata_resolver,
             database: None,
         })
@@ -585,6 +632,7 @@ mod tests {
             prepared.session_tokens,
             prepared.state_store,
             Arc::new(prepared.authorization_resources),
+            prepared.workspace_resource_family,
             prepared.database,
         )
         .expect("authorization server state");

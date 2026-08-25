@@ -320,6 +320,7 @@ mod tests {
             code_store: store,
             provider_client: OidcProviderClient::new().expect("client"),
             authorization_resources,
+            workspace_resource_family: None,
             client_metadata_resolver,
             database: None,
         }
