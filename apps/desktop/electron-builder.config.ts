@@ -168,15 +168,22 @@ export function createConfig(
       target: [{ target: 'nsis', arch: ['x64'] }],
     },
     nsis: {
+      // An assisted installer with `perMachine: false` still shows the install
+      // mode page, so the user can ask for an all-users install. Without this
+      // that choice tries to elevate, and a standard account hits a UAC prompt
+      // it cannot answer. With it the all-users radio is disabled and labelled
+      // "(must run as admin)", so only an already-elevated installer can pick
+      // Program Files.
+      allowElevation: false,
       allowToChangeInstallationDirectory: true,
       // Blockmaps are differential-update metadata, gated on this rather than on
       // `publish`, so without it a .exe.blockmap lands in dist and release.yml's
       // `coral-*.blockmap` glob sweeps it into the release.
       differentialPackage: false,
       oneClick: false,
-      // Per-user, under %LOCALAPPDATA%. A per-machine install puts
-      // resourcesPath under Program Files, which a standard user cannot write
-      // to, and costs a UAC prompt for a developer tool that needs none.
+      // Default to per-user, under %LOCALAPPDATA%: a developer tool needs no UAC
+      // prompt. Nothing writes into resourcesPath, so a per-machine install
+      // works too — it just costs the prompt.
       perMachine: false,
     },
   }

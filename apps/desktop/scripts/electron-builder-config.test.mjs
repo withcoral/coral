@@ -159,9 +159,12 @@ test('windows packages target a single NSIS installer with no updater', () => {
   // independently, so both settings are load-bearing.
   assert.equal(win?.publish, null)
   assert.equal(nsis?.differentialPackage, false)
-  // An assisted, per-user install: %LOCALAPPDATA% is writable without UAC.
+  // An assisted install that defaults to per-user: %LOCALAPPDATA% is writable
+  // without UAC. The mode page still offers all-users, so refusing elevation is
+  // what keeps a standard account off a UAC prompt it cannot answer.
   assert.equal(nsis?.oneClick, false)
   assert.equal(nsis?.perMachine, false)
+  assert.equal(nsis?.allowElevation, false)
   assert.equal(nsis?.allowToChangeInstallationDirectory, true)
   assert.equal(win?.icon, 'resources/icons/icon.ico')
   // Only the deb needs a renamed executable, because it symlinks into /usr/bin.

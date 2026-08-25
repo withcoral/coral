@@ -94,8 +94,10 @@ Use `npm run package:win --prefix apps/desktop` for the x64 Windows NSIS
 installer. It must run on Windows: NSIS builds its uninstaller by executing the
 freshly built installer, which off-Windows means wine. The installer is an
 unsigned preview, so SmartScreen shows an "unrecognized app" warning; ship it
-labelled as such. It installs per user under `%LOCALAPPDATA%`, needs no UAC
-prompt, and lets the user pick a directory. Windows ships no updater, so the
+labelled as such. It installs per user under `%LOCALAPPDATA%` by default, needs no
+UAC prompt, and lets the user pick a directory. The install mode page also offers
+an all-users install, but `allowElevation: false` disables that choice unless the
+installer already runs elevated. Windows ships no updater, so the
 build writes no feed and no blockmap.
 
 `CORAL_DESKTOP_RELEASE=1` selects release mode: it bakes the updater into the main
