@@ -3,8 +3,7 @@ import { accessSync, constants, statSync } from 'node:fs'
 import type { Configuration } from 'electron-builder'
 
 // Release mode ships an active updater, so it only applies where the app can
-// replace itself: the macOS app and the Linux AppImage. Windows has no updater
-// and no signing story yet.
+// replace itself: the macOS app and the Linux AppImage.
 const RELEASE_PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux']
 
 const API_KEY_NOTARIZATION_ENV = [
@@ -157,36 +156,27 @@ export function createConfig(
       publish: null,
     },
     win: {
-      // The file, not the directory. The .png trap the linux block works around
-      // is PNG-only: electron-builder validates that an .ico carries a >=256
-      // entry and then uses it as is, and resources/icons/icon.ico carries
-      // 16/24/32/48/64/128/256.
+      // The file, not the directory: the lone-.png trap the linux block works
+      // around is PNG-only, and electron-builder uses an .ico with a >=256
+      // entry as is.
       icon: 'resources/icons/icon.ico',
-      // Windows ships no updater, so desktopUpdatesSupported() is false there.
-      // `null` keeps electron-builder from writing a latest.yml feed nobody
-      // serves and from embedding app-update.yml in the package.
-      // getPublishConfigs reads this platform block before the top-level
-      // `publish`, so null short-circuits it.
+      // Windows ships no updater, so `null` keeps electron-builder from writing
+      // a latest.yml feed nobody serves and from embedding app-update.yml in the
+      // package. getPublishConfigs reads this block before the top-level
+      // `publish`, so it short-circuits there.
       publish: null,
-      // No executableName: the deb symlinks its executable into /usr/bin and
-      // would shadow the `coral` CLI, which is why linux renames it. The
-      // installer writes Coral.exe into its own directory, so there is nothing
-      // to collide with.
       target: [{ target: 'nsis', arch: ['x64'] }],
     },
     nsis: {
-      // An assisted installer, so the user can pick a directory.
       allowToChangeInstallationDirectory: true,
-      // A blockmap is differential-update metadata. NsisTarget gates it on
-      // `!isPortable && differentialPackage !== false` — not on `publish` — so
-      // without this a coral-desktop-win-x64.exe.blockmap lands in dist even
-      // with publish: null, and release.yml's `coral-*.blockmap` glob would
-      // sweep it into the GitHub release.
+      // Blockmaps are differential-update metadata, gated on this rather than on
+      // `publish`, so without it a .exe.blockmap lands in dist and release.yml's
+      // `coral-*.blockmap` glob sweeps it into the release.
       differentialPackage: false,
       oneClick: false,
       // Per-user, under %LOCALAPPDATA%. A per-machine install puts
-      // resourcesPath under C:\Program Files, which a standard user cannot
-      // write to, and costs a UAC prompt for a developer tool that needs none.
+      // resourcesPath under Program Files, which a standard user cannot write
+      // to, and costs a UAC prompt for a developer tool that needs none.
       perMachine: false,
     },
   }

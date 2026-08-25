@@ -12,12 +12,11 @@ import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/t
 export const UNSUPPORTED_UPDATE_DETAIL =
   'Coral checks for updates from the released macOS app and the Linux AppImage only.'
 
-// The image file AppImageUpdater replaces on install, read from the same
-// variable the updater reads. electron-updater only checks that it is set before
-// offering an update, then demands an absolute, NUL-free path at install time —
-// after the download. Checking here keeps a value that cannot install from
-// enabling updates at all. Left unsanitised on purpose: the updater reads
-// process.env.APPIMAGE verbatim, so trimming would validate a different string.
+// The image file AppImageUpdater replaces on install. electron-updater only
+// checks that APPIMAGE is set before offering an update, then demands an
+// absolute, NUL-free path at install time — after the download — so check it
+// here instead. Left unsanitised on purpose: the updater reads the variable
+// verbatim, and trimming would validate a different string.
 export function appImagePath(env: NodeJS.ProcessEnv): string | null {
   const path = env.APPIMAGE
   if (!path || !isAbsolute(path) || path.includes('\0')) return null

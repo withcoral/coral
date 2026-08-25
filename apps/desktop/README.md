@@ -95,10 +95,8 @@ installer. It must run on Windows: NSIS builds its uninstaller by executing the
 freshly built installer, which off-Windows means wine. The installer is an
 unsigned preview, so SmartScreen shows an "unrecognized app" warning; ship it
 labelled as such. It installs per user under `%LOCALAPPDATA%`, needs no UAC
-prompt, and lets the user pick a directory. Windows ships no updater, so
-`win.publish` is `null` and `nsis.differentialPackage` is `false` — the first
-suppresses `latest.yml` and the embedded `app-update.yml`, the second suppresses
-the `.exe.blockmap`, and NSIS gates them independently.
+prompt, and lets the user pick a directory. Windows ships no updater, so the
+build writes no feed and no blockmap.
 
 `CORAL_DESKTOP_RELEASE=1` selects release mode: it bakes the updater into the main
 process, so only builds made with it check for updates. On macOS it also requires a

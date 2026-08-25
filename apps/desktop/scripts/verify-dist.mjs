@@ -113,10 +113,9 @@ function verifyLinux() {
   return `${appImages[0]}, ${debs[0]}, latest-linux.yml references ${referenced.join(', ')}`
 }
 
-// Windows has no updater, so a feed or a blockmap here is a packaging mistake:
-// both would be published and then served to nobody. NSIS gates the blockmap on
-// `differentialPackage`, not on `publish`, so `publish: null` alone does not
-// suppress it — see the nsis block in electron-builder.config.ts.
+// Windows has no updater, so a feed or a blockmap here would be published and
+// served to nobody. The two are suppressed by separate settings (see the win and
+// nsis blocks in electron-builder.config.ts), so check both.
 function verifyWindows() {
   const installers = artifacts('.exe')
   if (installers.length !== 1) {
