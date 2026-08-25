@@ -492,6 +492,9 @@ pub(crate) mod tests {
     use crate::credentials::CredentialsError;
     use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
     use crate::encrypted_document::EncryptedEnvelopeDocument;
+    use crate::identities::manager::IdentityManager;
+    use crate::identities::model::{IdentityName, IdentityOwner};
+    use crate::identity::Principal;
     use crate::identity::spec_document::{
         encrypt_identity_spec_document, seal_identity_spec_plaintext_for_test,
     };
@@ -741,6 +744,148 @@ pub(crate) mod tests {
                 .version,
             "fixed"
         );
+
+        let principal = Principal::local();
+        let owner = IdentityOwner::for_user(principal.clone());
+        let workspace_owner = IdentityOwner::workspace(workspace.clone());
+        let user_identity = format!("user_dependent_{suffix}");
+        let fallback_identity = format!("fallback_dependent_{suffix}");
+        let exact_identity = format!("exact_dependent_{suffix}");
+        let identities = IdentityManager::new(Arc::clone(db), rotating_provider);
+        let user_created = identities
+            .create_or_replace_user_fixed_token(
+                &principal,
+                &user_identity,
+                &name,
+                "user-token".to_string(),
+            )
+            .await
+            .unwrap();
+        let fallback_created = identities
+            .create_or_replace_workspace_fixed_token(
+                &workspace,
+                &fallback_identity,
+                &name,
+                "fallback-token".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(user_created.spec_reference.key(), &global_key);
+        assert_eq!(fallback_created.spec_reference.key(), &global_key);
+        assert!(
+            !manager
+                .add_or_replace_exact(
+                    IdentitySpecScope::workspace(workspace.clone()),
+                    &manifest(&name, "workspace_fixed"),
+                    vec![],
+                )
+                .await
+                .unwrap()
+                .1
+        );
+        let exact_created = identities
+            .create_or_replace_workspace_fixed_token(
+                &workspace,
+                &exact_identity,
+                &name,
+                "exact-token".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(exact_created.spec_reference.key(), &workspace_key);
+
+        let global_error = manager.delete_exact(&global_key).await.unwrap_err();
+        assert!(
+            matches!(&global_error, AppError::FailedPrecondition(detail)
+                if detail.contains("global")
+                    && detail.contains("2 stored identity references")),
+            "unexpected global delete error: {global_error}"
+        );
+        let workspace_error = manager.delete_exact(&workspace_key).await.unwrap_err();
+        assert!(
+            matches!(&workspace_error, AppError::FailedPrecondition(detail)
+                if detail.contains(&format!("workspace:{workspace}"))
+                    && detail.contains("1 stored identity reference")),
+            "unexpected workspace delete error: {workspace_error}"
+        );
+        manager.get_global(&name).await.unwrap();
+        manager.get_exact(&workspace_key).await.unwrap();
+        let user_name = IdentityName::parse(&user_identity).unwrap();
+        let fallback_name = IdentityName::parse(&fallback_identity).unwrap();
+        let exact_name = IdentityName::parse(&exact_identity).unwrap();
+        for (identity_owner, identity_name) in [
+            (&owner, &user_name),
+            (&workspace_owner, &fallback_name),
+            (&workspace_owner, &exact_name),
+        ] {
+            let mut session = db.as_ref();
+            assert!(
+                session
+                    .identities()
+                    .get(identity_owner, identity_name)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                session
+                    .identity_documents()
+                    .get(identity_owner, identity_name)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let mut tx = db.begin().await.unwrap();
+        assert!(tx.identities().delete(&owner, &user_name).await.unwrap());
+        assert!(
+            tx.identities()
+                .delete(&workspace_owner, &fallback_name)
+                .await
+                .unwrap()
+        );
+        tx.commit().await.unwrap();
+        for (identity_owner, identity_name) in
+            [(&owner, &user_name), (&workspace_owner, &fallback_name)]
+        {
+            let mut session = db.as_ref();
+            assert!(
+                session
+                    .identity_documents()
+                    .get(identity_owner, identity_name)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        manager.delete_exact(&global_key).await.unwrap();
+        assert!(matches!(
+            manager.get_global(&name).await,
+            Err(AppError::IdentitySpecNotFound { .. })
+        ));
+        manager.get_exact(&workspace_key).await.unwrap();
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .identities()
+                .get(&workspace_owner, &exact_name)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let mut tx = db.begin().await.unwrap();
+        assert!(
+            tx.identities()
+                .delete(&workspace_owner, &exact_name)
+                .await
+                .unwrap()
+        );
+        tx.commit().await.unwrap();
+        manager.delete_exact(&workspace_key).await.unwrap();
+        assert!(matches!(
+            manager.get_exact(&workspace_key).await,
+            Err(AppError::IdentitySpecNotFound { .. })
+        ));
     }
 
     async fn mutate(
