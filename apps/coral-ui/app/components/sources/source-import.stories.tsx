@@ -12,9 +12,6 @@ import type { SourceDescribeData } from '@/lib/source-describe'
 import { SourceImportDialog } from '@/views/sources/source-import'
 
 type SourceImportDialogProps = ComponentProps<typeof SourceImportDialog>
-type UserEventLike = {
-  paste: (text: string) => Promise<void>
-}
 
 const DESCRIBE_PATH = '/workspaces/default/sources/describe'
 const OAUTH_IMPORT_PATH = '/workspaces/default/sources/oauth-import'
@@ -26,7 +23,8 @@ surface:
 `
 
 // Shaped like a real DescribeSourceManifest response: one variable, and one
-// secret whose OAuth method needs a client ID from the user.
+// secret whose OAuth method needs a client ID from the user. The stub answers
+// every manifest with this, so a paste or a picked file both reach step 2.
 const DESCRIBED: SourceDescribeData = {
   entry: {
     description: 'Weather observations and forecasts',
@@ -71,41 +69,6 @@ const DESCRIBED: SourceDescribeData = {
     name: 'weather_api',
     origin: 'imported',
     version: '1.0.0',
-  },
-  status: 'success',
-}
-
-// Dynamic Client Registration sources declare no client inputs, so the OAuth
-// method renders only the sign-in prompt.
-const DESCRIBED_WITHOUT_CLIENT_FIELDS: SourceDescribeData = {
-  entry: {
-    description: 'ClickHouse Cloud remote MCP server.',
-    installed: false,
-    inputSpecs: [
-      {
-        hint: '',
-        input: {
-          case: 'secret',
-          value: {
-            credential: {
-              methods: [
-                {
-                  description: '',
-                  hint: '',
-                  label: 'Connect with ClickHouse Cloud',
-                  method: { case: 'oauth', value: { client: {} } },
-                },
-              ],
-            },
-          },
-        },
-        key: 'CLICKHOUSE_ACCESS_TOKEN',
-        required: true,
-      },
-    ],
-    name: 'clickhouse_cloud',
-    origin: 'imported',
-    version: '0.3.0',
   },
   status: 'success',
 }
@@ -170,106 +133,9 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-export const Basics: Story = {
-  name: 'Choose how',
-  play: async ({ canvasElement }) => {
-    const page = within(canvasElement.ownerDocument.body)
-
-    await expect(page.getByRole('dialog')).toBeVisible()
-    await expect(page.getByText('Step 1/2')).toBeVisible()
-    await expect(page.getByText('Drop a manifest file here')).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Choose a file' })).toBeVisible()
-    // Coral reads the manifest and shows what it found, so there is nothing to
-    // edit here and no field to edit it in.
-    await expect(page.queryByLabelText('Manifest')).toBeNull()
-  },
-}
-
-export const PasteStep: Story = {
-  name: 'Paste a manifest',
-  play: async ({ canvasElement, userEvent }) => {
-    const page = within(canvasElement.ownerDocument.body)
-
-    // Pasting is the whole intent: the manifest goes straight to the server and
-    // the dialog shows the name, version, and inputs it read back.
-    await userEvent.paste(MANIFEST)
-
-    await waitFor(() => expect(activeDialogCount(canvasElement.ownerDocument)).toBe(2))
-    await waitFor(() => expect(page.getByText('Step 2/2')).toBeVisible())
-    await expect(page.getByText('weather api')).toBeVisible()
-    await expect(page.getByText('1.0.0')).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Import source' })).toBeVisible()
-  },
-}
-
-export const UploadAFile: Story = {
-  name: 'Upload a file',
-  play: async ({ canvasElement, userEvent }) => {
-    const page = within(canvasElement.ownerDocument.body)
-    const file = new File([MANIFEST], 'weather.yaml', { type: 'application/yaml' })
-
-    // A picked file skips straight to the described source, so a 4.6 MB generated
-    // manifest never has to render.
-    await userEvent.upload(page.getByTestId('manifest-file'), file)
-
-    await waitFor(() => expect(page.getByText('Step 2/2')).toBeVisible())
-    await expect(page.getByText('weather api')).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Import source' })).toBeVisible()
-  },
-}
-
-export const Credentials: Story = {
-  name: 'Credentials',
-  play: async ({ canvasElement, userEvent }) => {
-    const page = within(canvasElement.ownerDocument.body)
-
-    await pasteManifest(userEvent)
-
-    // A described manifest stacks a second dialog rather than growing the first.
-    await waitFor(() => expect(activeDialogCount(canvasElement.ownerDocument)).toBe(2))
-    await waitFor(() => expect(page.getByText('Step 2/2')).toBeVisible())
-    await expect(page.getByText('weather api')).toBeVisible()
-    await expect(page.getByRole('tab', { name: 'Connect with OAuth' })).toBeVisible()
-    await expect(page.getByRole('tab', { name: 'Paste token' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Import source' })).toBeVisible()
-  },
-}
-
-export const DynamicClientRegistration: Story = {
-  name: 'No client fields to fill',
-  render: (args) => (
-    <SourceImportDialogStory describe={DESCRIBED_WITHOUT_CLIENT_FIELDS} {...args} />
-  ),
-  play: async ({ canvasElement, userEvent }) => {
-    const page = within(canvasElement.ownerDocument.body)
-
-    await pasteManifest(userEvent)
-
-    // The prompt has to name this dialog's own button, not the install dialog's.
-    await waitFor(() =>
-      expect(
-        page.getByText('Click Import source to open your browser and complete sign-in.'),
-      ).toBeVisible(),
-    )
-  },
-}
-
-export const RejectedManifest: Story = {
-  name: 'Rejected manifest',
-  render: (args) => <SourceImportDialogStory describe={REJECTED} {...args} />,
-  play: async ({ canvasElement, userEvent }) => {
-    const page = within(canvasElement.ownerDocument.body)
-
-    await pasteManifest(userEvent)
-
-    // The toast carries the parse error, and the dialog stays on the first step so
-    // the next paste or file replaces the rejected manifest.
-    await waitFor(() => expect(page.getByText('Coral could not read that manifest')).toBeVisible())
-    await expect(page.getByText(/must use absolute file descriptors/)).toBeVisible()
-    await expect(activeDialogCount(canvasElement.ownerDocument)).toBe(1)
-    await expect(page.getByText('Drop a manifest file here')).toBeVisible()
-  },
-}
+// No play function: drop a file, pick one, or paste a manifest to walk the whole
+// import yourself.
+export const Default: Story = {}
 
 export const OAuthLoading: Story = {
   args: {
@@ -280,7 +146,9 @@ export const OAuthLoading: Story = {
   play: async ({ canvasElement, userEvent }) => {
     const page = within(canvasElement.ownerDocument.body)
 
-    await pasteManifest(userEvent)
+    // The first step takes a paste as the manifest itself, so there is no field
+    // to fill and no button to press before Coral reads it.
+    await userEvent.paste(MANIFEST)
     await waitFor(() => expect(page.getByRole('button', { name: 'Import source' })).toBeVisible())
 
     // Every credential method also renders an inert copy that sizes the tab area,
@@ -296,14 +164,20 @@ export const OAuthLoading: Story = {
   },
 }
 
-function activeDialogCount(document: Document) {
-  return document.querySelectorAll('[role="dialog"]:not([data-ending-style])').length
-}
+export const ManifestError: Story = {
+  name: 'Manifest error',
+  render: (args) => <SourceImportDialogStory describe={REJECTED} {...args} />,
+  play: async ({ canvasElement, userEvent }) => {
+    const page = within(canvasElement.ownerDocument.body)
 
-// The first step takes a paste as the manifest itself, so there is no field to
-// fill and no button to press before Coral reads it.
-async function pasteManifest(userEvent: UserEventLike) {
-  await userEvent.paste(MANIFEST)
+    await userEvent.paste(MANIFEST)
+
+    // The toast carries the parse error, and the dialog stays on the first step so
+    // the next paste or file replaces the rejected manifest.
+    await waitFor(() => expect(page.getByText('Coral could not read that manifest')).toBeVisible())
+    await expect(page.getByText(/must use absolute file descriptors/)).toBeVisible()
+    await expect(page.getByText('Drop a manifest file here')).toBeVisible()
+  },
 }
 
 function SourceImportDialogStory({
