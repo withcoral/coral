@@ -37,11 +37,12 @@ jobs:
               apps/desktop/dist/coral-desktop-*.AppImage
               apps/desktop/dist/coral-desktop-*.deb
               apps/desktop/dist/latest-linux.yml
-          # The installer alone: Windows ships no updater, and verify-dist fails
-          # the job if the build produced a feed or a blockmap.
           - platform: win
             os: blacksmith-4vcpu-windows-2025
-            artifacts: apps/desktop/dist/coral-desktop-*.exe
+            artifacts: |
+              apps/desktop/dist/coral-desktop-*.exe
+              apps/desktop/dist/coral-desktop-*.exe.blockmap
+              apps/desktop/dist/latest.yml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

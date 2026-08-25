@@ -5,8 +5,8 @@ import type { Configuration } from 'electron-builder'
 import { APP_ID } from './src/shared/app-id.ts'
 
 // Release mode ships an active updater, so it only applies where the app can
-// replace itself: the macOS app and the Linux AppImage.
-const RELEASE_PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux']
+// replace itself: the macOS app, the Linux AppImage, and the Windows installer.
+const RELEASE_PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux', 'win32']
 
 const API_KEY_NOTARIZATION_ENV = [
   'APPLE_API_KEY',
@@ -162,30 +162,29 @@ export function createConfig(
       // around is PNG-only, and electron-builder uses an .ico with a >=256
       // entry as is.
       icon: 'resources/icons/icon.ico',
-      // Windows ships no updater, so `null` keeps electron-builder from writing
-      // a latest.yml feed nobody serves and from embedding app-update.yml in the
-      // package. getPublishConfigs reads this block before the top-level
-      // `publish`, so it short-circuits there.
-      publish: null,
+      // No `publish` override, so the installer inherits the GitHub provider
+      // above: electron-builder writes latest.yml and embeds app-update.yml.
+      // `verifyUpdateCodeSignature` stays at its default true — an unsigned build
+      // resolves no publisherName, so NsisUpdater skips the Authenticode check,
+      // and signing the app is then all it takes to turn it on.
       target: [{ target: 'nsis', arch: ['x64'] }],
     },
+    // `differentialPackage` is deliberately not set: the default builds the
+    // blockmap a differential update needs. It also relaxes app.7z compression
+    // to keep block boundaries stable, so the installer itself grows a little.
     nsis: {
-      // An assisted installer with `perMachine: false` still shows the install
-      // mode page, so the user can ask for an all-users install. Without this
-      // that choice tries to elevate, and a standard account hits a UAC prompt
-      // it cannot answer. With it the all-users radio is disabled and labelled
-      // "(must run as admin)", so only an already-elevated installer can pick
-      // Program Files.
+      // The install mode page offers all-users even with `perMachine: false`.
+      // Refusing elevation disables that radio instead of walking a standard
+      // account into a UAC prompt it cannot answer.
       allowElevation: false,
       allowToChangeInstallationDirectory: true,
-      // Blockmaps are differential-update metadata, gated on this rather than on
-      // `publish`, so without it a .exe.blockmap lands in dist and release.yml's
-      // `coral-*.blockmap` glob sweeps it into the release.
-      differentialPackage: false,
       oneClick: false,
-      // Default to per-user, under %LOCALAPPDATA%: a developer tool needs no UAC
-      // prompt. Nothing writes into resourcesPath, so a per-machine install
-      // works too — it just costs the prompt.
+      // Per-user, under %LOCALAPPDATA%: the only mode that installs and updates
+      // with no UAC prompt at all. A per-machine install updates too — the NSIS
+      // script elevates a silent upgrade of one explicitly, since the mode page
+      // that would normally ask never runs — but that costs a prompt, and
+      // declining it quits the installer with the app already closed and not
+      // relaunched.
       perMachine: false,
     },
   }

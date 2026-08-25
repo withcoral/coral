@@ -5,6 +5,7 @@ import {
   STARTUP_UPDATE_CHECK_DELAY_MS,
   appImagePath,
   createDesktopUpdater,
+  installArgs,
   relaunchImagePath,
   type DesktopUpdaterDeps,
   type UpdateCheckResultLike,
@@ -27,7 +28,6 @@ function createFakeUpdater() {
     },
     checkForUpdates: vi.fn(async (): Promise<UpdateCheckResultLike | null> => null),
     downloadUpdate: vi.fn(async (): Promise<void> => {}),
-    quitAndInstall: vi.fn(),
     emit(event: string, ...args: unknown[]) {
       for (const listener of listeners.get(event) ?? []) listener(...args)
     },
@@ -72,6 +72,7 @@ function createDeps(updater: UpdaterLike): DesktopUpdaterDeps & {
     },
     recordUpdateIntent: vi.fn(),
     clearUpdateIntent: vi.fn(),
+    startInstall: vi.fn(),
     onInstallFailure: vi.fn(),
     notifications,
     infoDialogs,
@@ -165,6 +166,19 @@ describe('relaunchImagePath', () => {
 
   it('reports nothing when neither path is usable', () => {
     expect(relaunchImagePath({}, null)).toBe(null)
+  })
+})
+
+describe('installArgs', () => {
+  it('asks NSIS for a silent install that relaunches the app', () => {
+    expect(installArgs('win32')).toEqual([true, true])
+  })
+
+  // Forcing a run here would start the new AppImage before this process exits.
+  it('leaves the Squirrel and AppImage hand-offs on their defaults', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      expect(installArgs(platform)).toEqual([])
+    }
   })
 })
 
@@ -425,8 +439,8 @@ describe('explicit install hand-off', () => {
     vi.mocked(deps.recordUpdateIntent).mockImplementation((version) => {
       events.push(`intent:write:${version}`)
     })
-    updater.quitAndInstall.mockImplementation(() => {
-      events.push('updater:quitAndInstall')
+    vi.mocked(deps.startInstall).mockImplementation(() => {
+      events.push('updater:startInstall')
     })
     const desktopUpdater = createDesktopUpdater(deps)
     desktopUpdater.install()
@@ -435,14 +449,14 @@ describe('explicit install hand-off', () => {
     const started = desktopUpdater.download()
     expect(desktopUpdater.quitAndInstall()).toBe(false)
     expect(deps.recordUpdateIntent).not.toHaveBeenCalled()
-    expect(updater.quitAndInstall).not.toHaveBeenCalled()
+    expect(deps.startInstall).not.toHaveBeenCalled()
 
     download.resolve()
     await started
     expect(desktopUpdater.quitAndInstall()).toBe(true)
     expect(desktopUpdater.quitAndInstall()).toBe(true)
-    expect(updater.quitAndInstall).toHaveBeenCalledOnce()
-    expect(events).toEqual(['intent:write:1.2.4', 'updater:quitAndInstall'])
+    expect(deps.startInstall).toHaveBeenCalledOnce()
+    expect(events).toEqual(['intent:write:1.2.4', 'updater:startInstall'])
   })
 
   it('clears intent before finishing quit on an updater failure', async () => {
@@ -480,7 +494,7 @@ describe('explicit install hand-off', () => {
     await desktopUpdater.download()
 
     expect(desktopUpdater.quitAndInstall()).toBe(false)
-    expect(updater.quitAndInstall).not.toHaveBeenCalled()
+    expect(deps.startInstall).not.toHaveBeenCalled()
   })
 
   it('does not treat an updater error before hand-off as an install failure', () => {

@@ -420,10 +420,10 @@ jobs:
             apps/desktop/dist/coral-desktop-*.deb
             apps/desktop/dist/latest-linux.yml
 
-  # An unsigned preview: SmartScreen warns on install. No signing, no
-  # notarization, and no updater, so no xtask and no credentials — and unlike
-  # the Linux leg, no update feed either (see win.publish in
-  # apps/desktop/electron-builder.config.ts).
+  # An unsigned preview: SmartScreen warns on the first install. No signing and
+  # no notarization, so no xtask and no credentials. It still publishes an update
+  # feed: an unsigned NSIS package replaces itself, guarded by the sha512 in
+  # latest.yml rather than by Authenticode.
   build-desktop-windows:
     needs:
       - validate-release-ref
@@ -432,10 +432,11 @@ jobs:
     # The Windows installer is an unsigned preview, so it must not gate the whole
     # release. Everything downstream tolerates a missing .exe: both archive lists
     # run under nullglob and stay non-empty from the other platforms, and the
-    # `test -s` literals are the mac and linux feeds. A failure here therefore
-    # degrades to "no Windows installer this release" instead of publishing a
-    # release with no assets at all, which would also stall macOS and AppImage
-    # auto-updates. publish-version warns when the installer is missing.
+    # `test -s` literals are the mac and linux feeds, and latest.yml is uploaded
+    # only alongside the installer it names. A failure here therefore degrades to
+    # "no Windows installer this release" instead of publishing a release with no
+    # assets at all, which would also stall macOS and AppImage auto-updates.
+    # publish-version warns when the installer is missing.
     continue-on-error: true
     env:
       TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
@@ -445,11 +446,11 @@ jobs:
           ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
           persist-credentials: false
 
-      # Nothing downstream carries the version — the installer filename holds
-      # only the arch — so a manual tag on a commit whose desktop version was
-      # never bumped would ship an About panel and an Add/Remove Programs entry
-      # that disagree with the release. The macOS leg gets this from xtask; see
-      # ensure_version_matches_tag in xtask/src/release.rs.
+      # The updater compares the app's embedded version against release tags, so
+      # a manual tag on a commit whose desktop version was never bumped would
+      # publish latest.yml with a stale version. The installer filename carries
+      # only the arch, so nothing else downstream would catch it. The macOS leg
+      # gets this from xtask; see ensure_version_matches_tag in xtask/src/release.rs.
       - name: Verify desktop version matches the release tag
         shell: pwsh
         run: |
@@ -483,22 +484,38 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
-      # No CORAL_DESKTOP_RELEASE: it bakes in the updater, and Windows has none.
-      # createConfig() rejects the flag on a win32 host for that reason.
-      - name: Package desktop app
+      # CORAL_DESKTOP_RELEASE bakes the updater into the main process. On Windows
+      # it drives nothing else: signing and notarization are the macOS path.
+      - name: Build desktop inputs
         env:
           CORAL_DESKTOP_CLI_PATH: ${{ runner.temp }}/cli/coral.exe
-        run: npm run package:win --prefix apps/desktop
+          CORAL_DESKTOP_RELEASE: "1"
+        run: npm run build --prefix apps/desktop
+
+      - name: Verify release updater bundle
+        run: npm run verify:release-build --prefix apps/desktop
+
+      # The prepared variant, so packaging keeps the bundle just verified
+      # instead of rebuilding it.
+      - name: Package desktop app
+        env:
+          CORAL_DESKTOP_RELEASE: "1"
+        run: npm run package:win:prepared --prefix apps/desktop
 
       - name: Verify desktop package artifacts
         run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist win
 
+      # All three come from this one job, so a failure withholds the whole set
+      # rather than publishing a latest.yml that names an .exe nobody uploaded.
       - name: Upload desktop artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: coral-desktop-windows
           if-no-files-found: error
-          path: apps/desktop/dist/coral-desktop-*.exe
+          path: |
+            apps/desktop/dist/coral-desktop-*.exe
+            apps/desktop/dist/coral-desktop-*.exe.blockmap
+            apps/desktop/dist/latest.yml
 
   checksums:
     needs:
@@ -537,7 +554,12 @@ jobs:
           fi
           test -s latest-mac.yml
           test -s latest-linux.yml
-          sha256sum "${archives[@]}" latest-mac.yml latest-linux.yml > checksums.sha256
+          # latest.yml is absent whenever build-desktop-windows failed.
+          feeds=(latest-mac.yml latest-linux.yml)
+          if [ -s latest.yml ]; then
+            feeds+=(latest.yml)
+          fi
+          sha256sum "${archives[@]}" "${feeds[@]}" > checksums.sha256
           test -s checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -597,18 +619,23 @@ jobs:
             exit 1
           fi
           # build-desktop-windows is allowed to fail, so say so rather than
-          # shipping a quietly Windows-less release.
+          # shipping a quietly Windows-less release. latest.yml is absent exactly
+          # when the installer is, so gate it on the same check: an unconditional
+          # `test -s` would fail the whole release over Windows.
+          feeds=(artifacts/latest-mac.yml artifacts/latest-linux.yml)
           installers=(artifacts/coral-desktop-*.exe)
           if [ "${#installers[@]}" -eq 0 ]; then
-            echo "::warning title=No Windows installer::build-desktop-windows produced no installer; ${TAG_NAME} ships without one"
+            echo "::warning title=No Windows installer::build-desktop-windows produced no installer; ${TAG_NAME} gains no Windows assets from this run, and nothing here removes any a previous run left attached"
+          else
+            feeds+=(artifacts/latest.yml)
           fi
-          test -s artifacts/latest-mac.yml
-          test -s artifacts/latest-linux.yml
+          for feed in "${feeds[@]}"; do
+            test -s "$feed"
+          done
           test -s artifacts/checksums.sha256
           gh release upload "$TAG_NAME" \
             "${archives[@]}" \
-            artifacts/latest-mac.yml \
-            artifacts/latest-linux.yml \
+            "${feeds[@]}" \
             artifacts/checksums.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --clobber

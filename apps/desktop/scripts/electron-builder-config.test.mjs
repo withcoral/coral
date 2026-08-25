@@ -106,16 +106,18 @@ test('release packages require a readable, non-empty API key file', async () => 
 
 test('release mode is rejected off a release platform before any preflight', () => {
   assert.throws(
-    () => createConfig({ CORAL_DESKTOP_RELEASE: '1', ...apiKeyCredentials }, 'win32'),
-    /CORAL_DESKTOP_RELEASE=1 supports darwin, linux hosts only, not win32/,
+    () => createConfig({ CORAL_DESKTOP_RELEASE: '1', ...apiKeyCredentials }, 'freebsd'),
+    /CORAL_DESKTOP_RELEASE=1 supports darwin, linux, win32 hosts only, not freebsd/,
   )
 })
 
-test('a Linux release build needs no Apple credentials', () => {
-  const config = createConfig({ CORAL_DESKTOP_RELEASE: '1' }, 'linux')
+test('a Linux or Windows release build needs no Apple credentials', () => {
+  for (const platform of ['linux', 'win32']) {
+    const config = createConfig({ CORAL_DESKTOP_RELEASE: '1' }, platform)
 
-  assert.equal(config.forceCodeSigning, false)
-  assert.equal(config.mac?.notarize, false)
+    assert.equal(config.forceCodeSigning, false)
+    assert.equal(config.mac?.notarize, false)
+  }
 })
 
 test('non-release packaging config is identical on every host platform', () => {
@@ -152,14 +154,20 @@ test('linux packages target AppImage and deb, and publish an AppImage-only feed'
   assert.equal(linux?.icon, 'resources/icons')
 })
 
-test('windows packages target a single NSIS installer with no updater', () => {
-  const { win, nsis } = createConfig({}, 'win32')
+test('windows packages target a single NSIS installer with an update feed', () => {
+  const { win, nsis, publish } = createConfig({}, 'win32')
 
   assert.deepEqual(win?.target, [{ target: 'nsis', arch: ['x64'] }])
-  // No updater on Windows, so no feed and no blockmap. The two are gated
-  // independently, so both settings are load-bearing.
-  assert.equal(win?.publish, null)
-  assert.equal(nsis?.differentialPackage, false)
+  // NsisUpdater reads latest.yml and the app-update.yml the installer embeds, so
+  // win must inherit the GitHub publish config rather than override it.
+  assert.equal(win?.publish, undefined)
+  assert.equal(publish?.[0]?.provider, 'github')
+  // NsisTarget gates the installer blockmap on this, and a differential update
+  // needs one. Unset means the default, which builds it.
+  assert.equal(nsis?.differentialPackage, undefined)
+  // Left at its default true: an unsigned build resolves no publisherName, so
+  // NsisUpdater skips the check, and signing turns it on with no further change.
+  assert.equal(win?.verifyUpdateCodeSignature, undefined)
   // An assisted install that defaults to per-user: %LOCALAPPDATA% is writable
   // without UAC. The mode page still offers all-users, so refusing elevation is
   // what keeps a standard account off a UAC prompt it cannot answer.

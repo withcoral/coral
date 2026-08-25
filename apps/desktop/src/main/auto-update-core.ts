@@ -10,7 +10,7 @@ import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/t
 // Shown wherever a build cannot update itself; see desktopUpdatesSupported in
 // auto-update.ts for the packages that can.
 export const UNSUPPORTED_UPDATE_DETAIL =
-  'Coral checks for updates from the released macOS app and the Linux AppImage only.'
+  'Coral checks for updates from the released macOS app, the Windows installer, and the Linux AppImage only.'
 
 // The image file AppImageUpdater replaces on install. electron-updater only
 // checks that APPIMAGE is set before offering an update, then demands an
@@ -37,6 +37,18 @@ export function relaunchImagePath(
     return installedPath
   }
   return appImagePath(env)
+}
+
+// Windows needs an explicit silent install: the default replays the assisted
+// installer's whole wizard, directory picker included, on every update.
+// `isForceRunAfter` has to ride along, because the non-silent path reads
+// `autoRunAppAfterInstall` instead.
+//
+// macOS and the AppImage take the no-argument call. Forcing a run there would
+// launch the new AppImage while this process still holds the single-instance
+// lock; auto-update.ts schedules that relaunch after the exit instead.
+export function installArgs(platform: NodeJS.Platform): [] | [boolean, boolean] {
+  return platform === 'win32' ? [true, true] : []
 }
 
 export const STARTUP_UPDATE_CHECK_DELAY_MS = 5000
@@ -69,7 +81,6 @@ export interface UpdaterLike {
   on(event: 'error', listener: (error: Error) => void): unknown
   checkForUpdates(): Promise<UpdateCheckResultLike | null>
   downloadUpdate(): Promise<unknown>
-  quitAndInstall(): void
 }
 
 export interface DesktopUpdaterDeps {
@@ -81,6 +92,10 @@ export interface DesktopUpdaterDeps {
   showNotification: (title: string, body: string) => void
   recordUpdateIntent: (targetVersion: string) => void
   clearUpdateIntent: () => void
+  // Hands the staged update to the installer and quits. Injected rather than
+  // called on `updater` directly, because the arguments are platform-specific;
+  // auto-update.ts owns that choice.
+  startInstall: () => void
   onInstallFailure: (error: Error) => void
 }
 
@@ -402,7 +417,7 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
 
     installing = true
     try {
-      updater.quitAndInstall()
+      deps.startInstall()
       return true
     } catch (error) {
       installing = false

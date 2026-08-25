@@ -439,7 +439,7 @@ function startApplication(): void {
 
 // Evaluate the hand-off marker before taking the single-instance lock. A
 // rapidly reopened old binary exits independently instead of waking the
-// instance that is still handing its update to ShipIt.
+// instance that is still handing its update to the platform installer.
 if (shouldExitForPendingDesktopUpdate()) {
   console.info('[coral-updater] update installation is still in progress; exiting')
   app.exit(0)

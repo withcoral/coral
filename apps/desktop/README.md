@@ -34,8 +34,8 @@ uses `CORAL_ENDPOINT` to reach the supervised sidecar.
   notarized release mode
 - Linux AppImage and deb packaging (x64), unsigned
 - Windows NSIS installer packaging (x64), unsigned preview
-- GitHub Releases update metadata for packaged desktop auto-updates on macOS and
-  on the Linux AppImage
+- GitHub Releases update metadata for packaged desktop auto-updates on macOS, on
+  the Linux AppImage, and on the Windows installer
 - macOS system theme support
 
 ## Development
@@ -97,16 +97,20 @@ unsigned preview, so SmartScreen shows an "unrecognized app" warning; ship it
 labelled as such. It installs per user under `%LOCALAPPDATA%` by default, needs no
 UAC prompt, and lets the user pick a directory. The install mode page also offers
 an all-users install, but `allowElevation: false` disables that choice unless the
-installer already runs elevated. Windows ships no updater, so the
-build writes no feed and no blockmap.
+installer already runs elevated. The build writes `latest.yml` and the installer's
+blockmap, so an update downloads only the changed blocks. The missing signature
+does not stop it: app-builder-lib records a `publisherName` only when a
+certificate resolves, so `NsisUpdater` skips the Authenticode check and the
+sha512 in `latest.yml` guards the download instead.
 
 `CORAL_DESKTOP_RELEASE=1` selects release mode: it bakes the updater into the main
 process, so only builds made with it check for updates. On macOS it also requires a
 complete App Store Connect API key credential set, forces Developer ID signing,
 enables the hardened runtime with minimal Electron entitlements, and notarizes the
 app — Squirrel.Mac refuses to update an unsigned app. The AppImage needs no
-signature, so a Linux release build takes no credentials. Windows rejects the flag.
-Without it, packaging is deterministically unsigned and the updater is inert.
+signature, and neither does the NSIS installer, so a Linux or Windows release
+build takes no credentials. Without it, packaging is deterministically unsigned and
+the updater is inert.
 
 > Run the `--prefix apps/desktop` commands from the repo root. If you are already in
 > `apps/desktop/`, drop the flag (e.g. `npm run package:dir`).

@@ -7,8 +7,8 @@
 //   linux  one AppImage, one deb, and latest-linux.yml. The deb has no updater
 //          and must stay out of the feed, and the AppImage carries its blockmap
 //          inside the image.
-//   win    one NSIS installer .exe, and neither a feed nor a blockmap, because
-//          Windows ships no updater.
+//   win    one NSIS installer .exe, its blockmap (NsisUpdater fetches it for
+//          differential updates), and latest.yml.
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
@@ -113,25 +113,20 @@ function verifyLinux() {
   return `${appImages[0]}, ${debs[0]}, latest-linux.yml references ${referenced.join(', ')}`
 }
 
-// Windows has no updater, so a feed or a blockmap here would be published and
-// served to nobody. The two are suppressed by separate settings (see the win and
-// nsis blocks in electron-builder.config.ts), so check both.
 function verifyWindows() {
   const installers = artifacts('.exe')
   if (installers.length !== 1) {
     fail(`expected exactly one desktop installer .exe, got [${installers}]`)
   }
 
-  const feeds = entries.filter((f) => /^latest(-\w+)?\.yml$/.test(f))
-  if (feeds.length > 0) {
-    fail(`windows ships no updater, but the build produced update metadata: ${feeds.join(', ')}`)
-  }
-  const blockmaps = entries.filter((f) => f.endsWith('.blockmap'))
-  if (blockmaps.length > 0) {
-    fail(`windows ships no updater, but the build produced blockmaps: ${blockmaps.join(', ')}`)
+  const referenced = verifyFeed('latest.yml', installers[0])
+
+  const installerBlockmap = `${installers[0]}.blockmap`
+  if (!entries.includes(installerBlockmap)) {
+    fail(`missing ${installerBlockmap}; differential updates need the installer blockmap`)
   }
 
-  return installers[0]
+  return `${installers[0]} (+${installerBlockmap}), latest.yml references ${referenced.join(', ')}`
 }
 
 const summary = { mac: verifyMac, linux: verifyLinux, win: verifyWindows }[platform]()
