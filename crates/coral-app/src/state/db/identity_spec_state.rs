@@ -31,18 +31,19 @@ impl IdentitySpecState<'_> {
         key: &IdentitySpecKey,
         manifest: &IdentityManifest,
         manifest_yaml: &str,
-        prepare_document: F,
+        prepare_mutation: F,
     ) -> Result<(IdentitySpecRecord, bool), AppError>
     where
         F: FnOnce(IdentitySpecMutationSnapshot) -> Fut,
-        Fut: Future<Output = Result<Option<EncryptedEnvelopeDocument>, AppError>>,
+        Fut: Future<Output = Result<(Option<EncryptedEnvelopeDocument>, String), AppError>>,
     {
         let mut tx = self.db.begin_serializable().await?;
         let result = async {
             require_scope_workspace(&mut tx, key.scope()).await?;
             let snapshot = load_mutation_snapshot(&mut tx, key).await?;
             let replaced = snapshot.record.is_some();
-            let document = prepare_document(snapshot).await?;
+            let (document, fingerprint) = prepare_mutation(snapshot).await?;
+            require_equivalent_dependents(&mut tx, key, &fingerprint).await?;
             let now = now_unix_nanos_i64()?;
             let record = tx
                 .identity_specs()
@@ -125,6 +126,29 @@ fn scope_label(scope: &IdentitySpecScope) -> String {
         IdentitySpecScope::Global => "global".to_string(),
         IdentitySpecScope::Workspace(workspace) => format!("workspace:{workspace}"),
     }
+}
+
+async fn require_equivalent_dependents(
+    tx: &mut CoralTx<'_>,
+    key: &IdentitySpecKey,
+    fingerprint: &str,
+) -> Result<(), AppError> {
+    let dependent_count = tx.identities().count_dependents(key).await?;
+    if dependent_count == 0 {
+        return Ok(());
+    }
+    let equivalent_count = tx
+        .identities()
+        .count_exact_dependents(key, fingerprint)
+        .await?;
+    if equivalent_count == dependent_count {
+        return Ok(());
+    }
+    Err(AppError::FailedPrecondition(format!(
+        "identity spec '{}' in scope '{}' has {dependent_count} stored identity references and may only be installed or replaced with a semantically equivalent manifest",
+        key.name(),
+        scope_label(key.scope()),
+    )))
 }
 
 async fn load_mutation_snapshot(
