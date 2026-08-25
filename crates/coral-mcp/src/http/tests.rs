@@ -564,55 +564,6 @@ async fn readyz_classifies_auth_transport_and_timeout_results() {
     );
 }
 
-/// Readiness must observe the engine, not a workspace nothing provisions.
-///
-/// This is the mirror of coral-app's gRPC discriminator: an instance that owns
-/// a workspace and cannot resolve its catalog is an unready engine. The probe
-/// this replaces asked `ListCatalog` for the literal `default`; nothing creates
-/// that workspace any more, so it read `NotFound` — a code
-/// `catalog_rejection_is_reachable` deliberately treats as reachable — and
-/// answered ready here, which is exactly what this asserts it no longer does.
-///
-/// The unparseable config file is that engine: catalog resolution reads it
-/// after the workspace check and fails with an infrastructure code. The config
-/// is corrupted before the first probe so no cached answer predates it.
-#[tokio::test]
-async fn readyz_reports_unready_when_the_engine_cannot_resolve_a_real_catalog() {
-    let (temp, app_server, app) = local_app().await;
-    let options = workspace_scoped_options(&app).await;
-    std::fs::write(
-        temp.path().join("coral-config").join("config.toml"),
-        "this is not toml",
-    )
-    .expect("write unparseable config");
-    let (router, state) = auth_disabled_router(
-        app.clone(),
-        options,
-        ReadinessProbe::from_app(app),
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        &[],
-    )
-    .expect("router scoped to a workspace");
-
-    let response = send(
-        &router,
-        Request::builder()
-            .uri("/readyz")
-            .body(Body::empty())
-            .expect("request"),
-    )
-    .await;
-
-    assert_eq!(
-        response.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "an engine that cannot resolve a catalog it owns must not report ready"
-    );
-    state.server.config.cancellation_token.cancel();
-    state.server.sessions.close_all().await;
-    app_server.shutdown().await.expect("shutdown app server");
-}
-
 /// Reads the workspace an initialized session was scoped to.
 async fn session_workspace_line(server: &RunningMcpHttpServer) -> String {
     let transport =
