@@ -30,8 +30,9 @@ cleartext, all configured in `config.toml` (see
 
 - **Native gRPC** (`[server].bind_addr`, port `14555` in the image's default
   config) — the data plane Coral UI talks to.
-- **MCP Streamable HTTP** (`[server.mcp_http]`, opt-in) — serves `/mcp` for MCP
-  clients, plus health-check endpoints.
+- **MCP Streamable HTTP** (`[server.mcp_http]`, opt-in) — serves each
+  workspace at `/mcp/workspace/{workspace}` for MCP clients, plus health-check
+  endpoints.
 - **OAuth authorization server** (`[auth].http_bind_addr`, only with `[auth]`)
   — serves login, token, and discovery endpoints.
 
@@ -106,11 +107,12 @@ curl -fsS http://localhost:3000/readyz
 MCP Streamable HTTP is published on loopback too — the seed config opts the
 unauthenticated listener into a non-loopback bind with
 `allow_unauthenticated_non_loopback` (see
-[Configuration](/reference/configuration#server)). Point any MCP client that
-supports the transport at:
+[Configuration](/reference/configuration#server)). Every workspace is served
+at its own URL; point any MCP client that supports the transport at the
+workspace it should work in, for example:
 
 ```text
-http://localhost:14556/mcp
+http://localhost:14556/mcp/workspace/analytics
 ```
 
 The listener performs no authentication — reachability is the entire access
@@ -277,14 +279,16 @@ curl -fsS https://coral.example.com/readyz
 ```
 
 ```shellscript
-curl -i https://mcp.coral.example.com/mcp
+curl -i https://mcp.coral.example.com/mcp/workspace/analytics
 ```
 
 The first returns `{"coral":"reachable","status":"ok"}` once Coral UI can
 reach a ready Coral server. The second returns `401 Unauthorized` with a
-`WWW-Authenticate` header pointing at the OAuth resource metadata — that is an
-MCP client's entry point into the login flow, so a `401` here means MCP is
-wired correctly.
+`WWW-Authenticate` header pointing at that workspace URL's own OAuth resource
+metadata — that is an MCP client's entry point into the login flow, so a `401`
+here means MCP is wired correctly. Every well-formed workspace URL answers the
+same way whether or not the workspace exists; who can actually open a session
+there is decided by workspace membership at the handshake.
 
 Open `https://coral.example.com` in a browser. You are redirected to your
 identity provider's login and land back in Coral UI signed in. The
@@ -295,10 +299,11 @@ pause on the approval page instead (see
 
 ### Connect an MCP client
 
-Point any MCP client that supports Streamable HTTP and OAuth at:
+Point any MCP client that supports Streamable HTTP and OAuth at the URL of a
+workspace the signed-in teammate is a member of:
 
 ```text
-https://mcp.coral.example.com/mcp
+https://mcp.coral.example.com/mcp/workspace/analytics
 ```
 
 The client discovers Coral's authorization server from the protected-resource

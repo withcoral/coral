@@ -107,12 +107,16 @@ bind = "127.0.0.1:14556"
 | ------------------------------------ | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------- |
 | `enabled`                            | boolean          | `false`       | Starts the MCP Streamable HTTP listener alongside the gRPC server.                                    |
 | `bind`                               | string           | `127.0.0.1:0` | Listener address as a literal IP and port. Loopback-only without `[auth]` unless opted in below.      |
-| `public_url`                         | string           | unset         | Externally reachable identifier for the MCP endpoint. Required when the listener is enabled with `[auth]`; forbidden without `[auth]`. |
+| `public_url`                         | string           | unset         | Externally reachable base of the per-workspace MCP URLs. Required when the listener is enabled with `[auth]`; forbidden without `[auth]`. |
 | `allow_unauthenticated_non_loopback` | boolean          | `false`       | Opt-in that lets the unauthenticated listener bind non-loopback addresses. Rejected with `[auth]`.    |
 | `allowed_hosts`                      | array of strings | `[]`          | Extra `Host` header names the unauthenticated listener accepts. Rejected with `[auth]`.               |
 
-The MCP endpoint is always served at the `/mcp` path on this listener, next to
-`GET /livez` and `GET /readyz` health routes.
+Every workspace is served at its own MCP URL on this listener,
+`/mcp/workspace/{workspace}` — for example `/mcp/workspace/analytics` — next to
+`GET /livez` and `GET /readyz` health routes. There is no single-workspace
+endpoint and no `workspace` key: the URL a client connects to names the
+workspace its sessions reach, a workspace is reachable as soon as it exists,
+and the retired `/mcp` path answers not-found.
 
 Without `[auth]`, the listener is unauthenticated, `public_url` must stay
 unset, and the listener is restricted to loopback addresses by default. To
@@ -148,12 +152,16 @@ allowed_hosts = ["coral"]
 ```
 
 With `[auth]`, `bind` may be any address and an enabled listener must set
-`public_url`; its value is the OAuth resource identifier and token audience
-for the endpoint, so
-keep its path consistent with the served endpoint, for example
-`https://mcp.example.com/mcp`. Both opt-in keys are rejected when `[auth]` is
-configured: remote binds then need no opt-in, and accepted hosts derive from
-`public_url`, the bind IP, plus the loopback names.
+`public_url`; it is the public base the per-workspace URLs hang under, for
+example `https://mcp.example.com/mcp` serving each workspace at
+`https://mcp.example.com/mcp/workspace/{workspace}`. Each such workspace URL —
+never the base itself — is its own OAuth resource identifier and token
+audience, with its own protected-resource metadata document, so a token minted
+for one workspace's URL is invalid at every other's. The listener mounts the
+family under the base's path, so keep that path consistent with what the
+ingress forwards. Both opt-in keys are rejected when `[auth]` is configured:
+remote binds then need no opt-in, and accepted hosts derive from `public_url`,
+the bind IP, plus the loopback names.
 
 ## Authentication
 
