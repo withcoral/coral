@@ -977,6 +977,12 @@ async fn admit_local_workspace(
         return Err(StatusCode::NOT_FOUND.into_response());
     }
     let mut workspaces = state.workspaces.write().await;
+    // The listing above is the whole local inventory, so any cached entry whose
+    // workspace is gone from it and holds no live sessions is dead weight. Drop
+    // it here so repeated create/delete cycles cannot grow this map for the
+    // process's lifetime; a deleted workspace whose sessions are still draining
+    // keeps its entry until they close.
+    evict_deleted_workspaces(&mut workspaces, &names).await;
     if let Some(entry) = workspaces.get(workspace) {
         return Ok((entry.factory.clone(), entry.sessions.clone()));
     }
@@ -995,6 +1001,29 @@ async fn admit_local_workspace(
         },
     );
     Ok((factory, sessions))
+}
+
+/// Drops cached workspace entries that no longer exist and hold no sessions.
+///
+/// `existing` is the caller's full local workspace inventory. An entry whose
+/// name is absent from it names a deleted workspace; if that entry also has no
+/// live session it is safe to remove, since a later handshake for the same
+/// name rebuilds the factory from scratch. An entry with live sessions is kept
+/// so those sessions keep draining against the workspace they opened on.
+async fn evict_deleted_workspaces(
+    workspaces: &mut HashMap<McpWorkspaceSegment, WorkspaceSessions>,
+    existing: &[String],
+) {
+    let mut stale = Vec::new();
+    for (name, entry) in workspaces.iter() {
+        let still_exists = existing.iter().any(|existing| existing == name.as_str());
+        if !still_exists && entry.sessions.sessions.read().await.is_empty() {
+            stale.push(name.clone());
+        }
+    }
+    for name in stale {
+        workspaces.remove(&name);
+    }
 }
 
 /// Parses `<prefix>/workspace/<segment>` from a raw request path.

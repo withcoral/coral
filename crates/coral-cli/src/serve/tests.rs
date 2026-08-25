@@ -601,8 +601,8 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert!(server.oauth_addr().is_none());
     // The tools this asserts are workspace-scoped, and nothing provisions a
-    // workspace any more, so the fixture creates the one the config scopes MCP
-    // to. Nothing else names it: composition carries it from `config.toml`.
+    // workspace any more, so the fixture creates the one the dialed URL names.
+    // Nothing in config selects it: the workspace is named only by the URL path.
     create_test_workspace(server.endpoint_uri()).await;
     assert_catalog_tool(format!("http://{mcp_addr}{}", ws_path(TEST_WORKSPACE_NAME))).await;
     assert_cli_extension_filter(format!("http://{mcp_addr}{}", ws_path(TEST_WORKSPACE_NAME))).await;

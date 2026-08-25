@@ -291,6 +291,19 @@ async fn running_local_session_count(workspaces: &WeakLocalWorkspaces) -> usize 
     count
 }
 
+/// The workspace names the auth-disabled server currently caches an entry for.
+async fn cached_workspace_names(workspaces: &WeakLocalWorkspaces) -> Vec<String> {
+    let workspaces = workspaces.upgrade().expect("workspaces");
+    let mut names: Vec<String> = workspaces
+        .read()
+        .await
+        .keys()
+        .map(|name| name.as_str().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
 fn authenticated_sessions(
     server: &RunningMcpHttpServer,
 ) -> std::sync::Weak<super::AuthenticatedSessions> {
@@ -729,6 +742,66 @@ async fn auth_disabled_delete_makes_the_url_not_found_for_new_handshakes() {
     );
 
     let _cancel_result = client.cancel().await;
+    server.shutdown().await.expect("shutdown MCP HTTP server");
+    app_server.shutdown().await.expect("shutdown app server");
+}
+
+/// A deleted workspace's dead cache entry is evicted, not kept forever.
+///
+/// The map would otherwise grow for the process's lifetime across create/delete
+/// cycles. Eviction runs on the next handshake and only drops entries whose
+/// workspace is gone AND holds no live session, so the surface stays bounded
+/// without disturbing a session that is still draining.
+#[tokio::test]
+async fn auth_disabled_evicts_a_deleted_workspaces_dead_cache_entry() {
+    let (_temp, app_server, app) = local_app().await;
+    let options = workspace_scoped_options(&app).await;
+    create_workspace(&app, "reporting").await;
+    let config =
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
+    let server = start_auth_disabled(config, app.clone(), options)
+        .await
+        .expect("start MCP HTTP server");
+    let workspaces = local_workspaces(&server);
+
+    // A completed session at TEST_WORKSPACE leaves a cached entry with no live
+    // session behind it.
+    let opened = StreamableHttpClientTransport::from_uri(format!(
+        "http://{}{}",
+        server.local_addr(),
+        ws_path(TEST_WORKSPACE)
+    ));
+    let client = ().serve(opened).await.expect("initialize MCP client");
+    client.cancel().await.expect("close the session");
+    assert_eq!(running_local_session_count(&workspaces).await, 0);
+    assert_eq!(
+        cached_workspace_names(&workspaces).await,
+        vec![TEST_WORKSPACE.to_string()],
+        "the completed handshake cached its workspace"
+    );
+
+    app.workspace_client()
+        .delete_workspace(GrpcRequest::new(DeleteWorkspaceRequest {
+            workspace: Some(workspace(TEST_WORKSPACE)),
+        }))
+        .await
+        .expect("delete the workspace");
+
+    // A handshake for a workspace that still exists carries the current
+    // inventory, so it evicts the deleted one's dead entry.
+    let survivor = StreamableHttpClientTransport::from_uri(format!(
+        "http://{}{}",
+        server.local_addr(),
+        ws_path("reporting")
+    ));
+    let survivor = ().serve(survivor).await.expect("initialize survivor client");
+    assert_eq!(
+        cached_workspace_names(&workspaces).await,
+        vec!["reporting".to_string()],
+        "the deleted workspace's dead entry is gone, the live one remains"
+    );
+
+    survivor.cancel().await.expect("close survivor session");
     server.shutdown().await.expect("shutdown MCP HTTP server");
     app_server.shutdown().await.expect("shutdown app server");
 }

@@ -861,11 +861,13 @@ async fn run_server(
     if let Some(address) = server.mcp_http_addr() {
         // Each workspace is served at its own URL under this listener, mounted
         // under the configured base path — so the template comes from the
-        // running config rather than a hardcoded `/mcp`, which would name a
-        // path that 404s for any other base.
+        // running server rather than a hardcoded `/mcp`, which would name a
+        // path that 404s for any other base. A bound MCP HTTP listener always
+        // reports its template, so its absence is a wiring bug rather than a
+        // case to paper over with a fallback literal that could silently drift.
         let url_path = server
             .mcp_http_workspace_url_path()
-            .unwrap_or("/mcp/workspace/{workspace}");
+            .expect("a bound MCP HTTP listener reports its per-workspace URL template");
         let mcp_endpoint = format!("http://{address}{url_path}");
         if server_requires_security_warning(address) {
             eprintln!(

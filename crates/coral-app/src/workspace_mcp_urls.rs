@@ -77,16 +77,30 @@ impl WorkspaceMcpUrls {
         &self.base
     }
 
-    /// The listener-relative path of the base, with a root path as `""`.
+    /// `scheme://host[:port]`, with no path — borrowed from the base URL.
+    fn origin(&self) -> &str {
+        &self.base.url()[..Position::BeforePath]
+    }
+
+    /// The listener-relative path of the base, with a root path as `""` and no
+    /// trailing slash.
     ///
-    /// Routes and metadata paths are derived by appending to this, so the
-    /// public URL's path decides where the listener mounts the family.
+    /// Routes and metadata paths are derived by appending to this. Normalizing
+    /// here — `CanonicalOauthUrl` strips only a root path, so a non-root
+    /// trailing slash survives canonicalization — is what keeps a
+    /// trailing-slash `public_url` from producing a `//workspace/...` double
+    /// slash; trimming every trailing slash also folds the root path down to
+    /// the empty string under the same rule. The trimmed slice borrows the
+    /// base, so this costs nothing to compute.
     #[must_use]
     pub fn base_path(&self) -> &str {
-        match self.base.url().path() {
-            "/" => "",
-            path => path,
-        }
+        self.base.url().path().trim_end_matches('/')
+    }
+
+    /// The base as a resource identifier — `origin` plus the normalized base
+    /// path — the string every per-workspace resource extends.
+    fn base_identifier(&self) -> String {
+        format!("{}{}", self.origin(), self.base_path())
     }
 
     /// The one MCP resource URL for a workspace: routing key, OAuth resource,
@@ -95,7 +109,7 @@ impl WorkspaceMcpUrls {
     pub fn resource(&self, segment: &McpWorkspaceSegment) -> String {
         format!(
             "{}/{WORKSPACE_ROUTE_SEGMENT}/{segment}",
-            self.base.identifier()
+            self.base_identifier()
         )
     }
 
@@ -109,11 +123,7 @@ impl WorkspaceMcpUrls {
     /// suffix is inserted between the host and the resource's path.
     #[must_use]
     pub fn metadata_url(&self, segment: &McpWorkspaceSegment) -> String {
-        format!(
-            "{}{}",
-            &self.base.url()[..Position::BeforePath],
-            self.metadata_path(segment)
-        )
+        format!("{}{}", self.origin(), self.metadata_path(segment))
     }
 
     /// The listener-relative path [`Self::metadata_url`] is served at.
@@ -131,7 +141,7 @@ impl WorkspaceMcpUrls {
     /// the literal workspace segment, and one charset-valid name is refused.
     #[must_use]
     pub fn parse_resource(&self, resource: &str) -> Option<McpWorkspaceSegment> {
-        Self::parse_tail(resource.strip_prefix(self.base.identifier())?)
+        Self::parse_tail(resource.strip_prefix(&self.base_identifier())?)
     }
 
     /// Parses a listener-relative MCP route path back to its workspace segment.
@@ -248,6 +258,50 @@ mod tests {
         assert_eq!(
             urls.metadata_path(&team),
             "/.well-known/oauth-protected-resource/mcp/workspace/team"
+        );
+    }
+
+    /// A `public_url` with a non-root trailing slash canonicalizes with the
+    /// slash intact, so the family must normalize it — otherwise every derived
+    /// URL doubles the separator into `//workspace/...`.
+    #[test]
+    fn a_trailing_slash_base_does_not_double_the_separator() {
+        for base in [
+            "https://coral.example/mcp/",
+            "https://coral.example/base/mcp/",
+        ] {
+            let urls = urls(base);
+            let team = segment("team");
+            assert!(
+                !urls.resource(&team).contains("//workspace"),
+                "resource for {base}: {}",
+                urls.resource(&team)
+            );
+            assert!(
+                !urls.route_path(&team).contains("//workspace"),
+                "route for {base}: {}",
+                urls.route_path(&team)
+            );
+            assert!(
+                !urls.metadata_path(&team).contains("//workspace"),
+                "metadata for {base}: {}",
+                urls.metadata_path(&team)
+            );
+            // And the normalized derivations still round-trip.
+            assert_eq!(
+                urls.parse_resource(&urls.resource(&team)).as_ref(),
+                Some(&team)
+            );
+            assert_eq!(
+                urls.parse_route_path(&urls.route_path(&team)).as_ref(),
+                Some(&team)
+            );
+        }
+        let urls = urls("https://coral.example/mcp/");
+        assert_eq!(urls.base_path(), "/mcp");
+        assert_eq!(
+            urls.resource(&segment("team")),
+            "https://coral.example/mcp/workspace/team"
         );
     }
 
