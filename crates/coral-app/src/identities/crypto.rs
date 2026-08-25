@@ -16,8 +16,8 @@ use super::model::{IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{
-    CredentialEncryptionKey, CredentialKeyProvider, ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext,
-    open_envelope_document, rewrap_envelope_document, seal_envelope_document,
+    ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, EnvelopeEncryptionKey, open_envelope_document,
+    rewrap_envelope_document, seal_envelope_document,
 };
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 
@@ -68,7 +68,7 @@ impl<'a> IdentityDocumentBinding<'a> {
 pub(super) fn encrypt_identity_document(
     binding: &IdentityDocumentBinding<'_>,
     values: &BTreeMap<String, String>,
-    key_provider: &dyn CredentialKeyProvider,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
     let plaintext = PlaintextIdentityDocument {
         version: IDENTITY_DOCUMENT_VERSION,
@@ -78,7 +78,7 @@ pub(super) fn encrypt_identity_document(
         .map(Zeroizing::new)
         .map_err(|error| CredentialsError::Parse(error.to_string()))?;
     let context = identity_document_context(IDENTITY_DOCUMENT_BINDING_VERSION, binding)?;
-    seal_envelope_document(&context, document_bytes, key_provider)
+    seal_envelope_document(&context, document_bytes, active_kek)
 }
 
 /// Decrypt identity setup values for the exact authenticated identity metadata.
@@ -88,7 +88,7 @@ pub(super) fn encrypt_identity_document(
 pub(super) fn decrypt_identity_document(
     binding: &IdentityDocumentBinding<'_>,
     document: &EncryptedEnvelopeDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
     let context = identity_document_context(document.binding_version, binding)?;
     let plaintext = open_envelope_document(&context, document, kek)?;
@@ -107,10 +107,11 @@ pub(super) fn decrypt_identity_document(
 pub(super) fn rewrap_identity_document(
     binding: &IdentityDocumentBinding<'_>,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    old_kek: &EnvelopeEncryptionKey,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
     let context = identity_document_context(document.binding_version, binding)?;
-    rewrap_envelope_document(&context, document, key_provider)
+    rewrap_envelope_document(&context, document, old_kek, active_kek)
 }
 
 fn identity_document_context(
@@ -140,6 +141,7 @@ fn identity_document_context(
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use std::collections::BTreeMap;
 
     use zeroize::Zeroizing;
@@ -151,7 +153,7 @@ mod tests {
     };
     use crate::credentials::CredentialsError;
     use crate::credentials::encryption::{
-        CredentialEncryptionKey, CredentialKeyProvider, EnvelopeContext, decrypt_credential_values,
+        EnvelopeContext, EnvelopeEncryptionKey, EnvelopeKeyProvider, decrypt_credential_values,
         encrypt_credential_values, seal_envelope_document,
     };
     use crate::encrypted_document::EncryptedEnvelopeDocument;
@@ -169,14 +171,15 @@ mod tests {
     const OTHER_FINGERPRINT: &str = "identity-manifest-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
     #[derive(Clone)]
-    struct StaticKeyProvider(CredentialEncryptionKey);
+    struct StaticKeyProvider(EnvelopeEncryptionKey);
 
-    impl CredentialKeyProvider for StaticKeyProvider {
-        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    #[async_trait]
+    impl EnvelopeKeyProvider for StaticKeyProvider {
+        async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             Ok(self.0.clone())
         }
 
-        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             (self.0.key_id() == key_id)
                 .then(|| self.0.clone())
                 .ok_or_else(|| CredentialsError::Crypto("missing test key".to_string()))
@@ -185,16 +188,17 @@ mod tests {
 
     #[derive(Clone)]
     struct RotatingKeyProvider {
-        active: CredentialEncryptionKey,
-        keys: Vec<CredentialEncryptionKey>,
+        active: EnvelopeEncryptionKey,
+        keys: Vec<EnvelopeEncryptionKey>,
     }
 
-    impl CredentialKeyProvider for RotatingKeyProvider {
-        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    #[async_trait]
+    impl EnvelopeKeyProvider for RotatingKeyProvider {
+        async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             Ok(self.active.clone())
         }
 
-        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             self.keys
                 .iter()
                 .find(|key| key.key_id() == key_id)
@@ -203,19 +207,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn setup_documents_round_trip_and_authenticate_every_identity_binding() {
+    #[tokio::test]
+    async fn setup_documents_round_trip_and_authenticate_every_identity_binding() {
         let provider = static_provider(11);
         let owner = workspace_owner("acme");
         let name = identity_name("primary");
         let reference = global_reference(&owner, "github", FINGERPRINT);
         let binding = document_binding(&owner, &name, &reference);
         let values = secret_values();
-        let encrypted = encrypt(&binding, &values, &provider);
+        let encrypted = encrypt(&binding, &values, &provider).await;
 
         assert_eq!(encrypted.algorithm, IDENTITY_DOCUMENT_ALGORITHM);
         assert_eq!(encrypted.binding_version, IDENTITY_DOCUMENT_BINDING_VERSION);
-        assert_eq!(decrypt(&binding, &encrypted, &provider), values);
+        assert_eq!(decrypt(&binding, &encrypted, &provider).await, values);
 
         let wrong_kind_owner = user_owner("acme");
         let wrong_kind_reference = global_reference(&wrong_kind_owner, "github", FINGERPRINT);
@@ -237,6 +241,7 @@ mod tests {
             let wrong_binding = document_binding(wrong_owner, wrong_name, wrong_reference);
             assert_open_failed(
                 &decrypt_with_provider(&wrong_binding, &encrypted, &provider)
+                    .await
                     .expect_err("changed identity binding must fail"),
             );
         }
@@ -244,6 +249,7 @@ mod tests {
         let mut unsupported = encrypted;
         unsupported.binding_version += 1;
         let error = decrypt_with_provider(&binding, &unsupported, &provider)
+            .await
             .expect_err("unknown binding version must fail");
         assert!(
             error
@@ -252,8 +258,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn binding_rejects_a_workspace_reference_for_another_owner() {
+    #[tokio::test]
+    async fn binding_rejects_a_workspace_reference_for_another_owner() {
         let owner = workspace_owner("acme");
         let other_owner = workspace_owner("other");
         let name = identity_name("primary");
@@ -262,14 +268,14 @@ mod tests {
         assert!(IdentityDocumentBinding::new(&other_owner, &name, &reference).is_err());
     }
 
-    #[test]
-    fn identity_binding_is_not_colon_ambiguous() {
+    #[tokio::test]
+    async fn identity_binding_is_not_colon_ambiguous() {
         let provider = static_provider(13);
         let owner = user_owner("a:b");
         let name = identity_name("c");
         let reference = global_reference(&owner, "github", FINGERPRINT);
         let binding = document_binding(&owner, &name, &reference);
-        let encrypted = encrypt(&binding, &secret_values(), &provider);
+        let encrypted = encrypt(&binding, &secret_values(), &provider).await;
 
         let split_owner = user_owner("a");
         let split_name = identity_name("b:c");
@@ -277,12 +283,13 @@ mod tests {
         let split_binding = document_binding(&split_owner, &split_name, &split_reference);
         assert_open_failed(
             &decrypt_with_provider(&split_binding, &encrypted, &provider)
+                .await
                 .expect_err("colon-equivalent fields must not share a binding"),
         );
     }
 
-    #[test]
-    fn credential_spec_and_identity_document_domains_are_separate() {
+    #[tokio::test]
+    async fn credential_spec_and_identity_document_domains_are_separate() {
         let provider = static_provider(17);
         let owner = workspace_owner("acme");
         let name = identity_name("primary");
@@ -291,13 +298,15 @@ mod tests {
         let workspace = WorkspaceName::parse("acme").expect("workspace");
         let source = SourceName::parse("github").expect("source");
         let values = secret_values();
-        let credential = encrypt_credential_values(&workspace, &source, &values, &provider)
+        let active_kek = provider.active_key().await.expect("active key");
+        let credential = encrypt_credential_values(&workspace, &source, &values, &active_kek)
             .expect("credential encryption");
-        let spec = encrypt_identity_spec_document(reference.key(), &values, &provider)
+        let spec = encrypt_identity_spec_document(reference.key(), &values, &active_kek)
             .expect("spec encryption");
-        let identity = encrypt(&binding, &values, &provider);
+        let identity = encrypt(&binding, &values, &provider).await;
 
         let credential_error = decrypt_with_provider(&binding, &credential, &provider)
+            .await
             .expect_err("credential must not open as identity material");
         assert!(
             credential_error
@@ -307,6 +316,7 @@ mod tests {
         );
         assert_open_failed(
             &decrypt_with_provider(&binding, &spec, &provider)
+                .await
                 .expect_err("spec material must not open as identity material"),
         );
         assert_open_failed(
@@ -319,8 +329,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn setup_documents_reject_legacy_aad_unknown_plaintext_and_tampering() {
+    #[tokio::test]
+    async fn setup_documents_reject_legacy_aad_unknown_plaintext_and_tampering() {
         let provider = static_provider(23);
         let owner = user_owner("alice");
         let name = identity_name("github");
@@ -332,17 +342,19 @@ mod tests {
             &[owner.kind(), owner.key(), name.as_str()],
         )
         .expect("legacy context");
+        let legacy_kek = provider.active_key().await.expect("active key");
         let legacy = seal_envelope_document(
             &legacy_context,
             Zeroizing::new(
                 serde_json::to_vec(&serde_json::json!({"version": 1, "values": {}}))
                     .expect("legacy plaintext"),
             ),
-            &provider,
+            &legacy_kek,
         )
         .expect("legacy seal");
         assert_open_failed(
             &decrypt_with_provider(&binding, &legacy, &provider)
+                .await
                 .expect_err("legacy owner/name-only AAD must fail"),
         );
 
@@ -351,9 +363,11 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"version": 2, "values": {}}))
                 .expect("unknown plaintext"),
             &provider,
-        );
+        )
+        .await;
         assert!(
             decrypt_with_provider(&binding, &unknown, &provider)
+                .await
                 .expect_err("unknown version must fail")
                 .to_string()
                 .contains("identity document version 2")
@@ -367,25 +381,26 @@ mod tests {
             }))
             .expect("unsupported plaintext"),
         ] {
-            let invalid = seal_plaintext(&binding, plaintext, &provider);
+            let invalid = seal_plaintext(&binding, plaintext, &provider).await;
             assert!(matches!(
-                decrypt_with_provider(&binding, &invalid, &provider),
+                decrypt_with_provider(&binding, &invalid, &provider).await,
                 Err(CredentialsError::Parse(_))
             ));
         }
 
-        let mut tampered = encrypt(&binding, &secret_values(), &provider);
+        let mut tampered = encrypt(&binding, &secret_values(), &provider).await;
         *tampered.ciphertext.first_mut().expect("ciphertext") ^= 1;
         assert_open_failed(
             &decrypt_with_provider(&binding, &tampered, &provider)
+                .await
                 .expect_err("tampered ciphertext must fail"),
         );
     }
 
-    #[test]
-    fn setup_document_rewrap_preserves_payload_and_authenticates_noop() {
-        let old_key = CredentialEncryptionKey::from_static_bytes_for_test([29; 32]);
-        let new_key = CredentialEncryptionKey::from_static_bytes_for_test([31; 32]);
+    #[tokio::test]
+    async fn setup_document_rewrap_preserves_payload_and_authenticates_noop() {
+        let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([29; 32]);
+        let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([31; 32]);
         let old_provider = RotatingKeyProvider {
             active: old_key.clone(),
             keys: vec![old_key.clone()],
@@ -398,8 +413,13 @@ mod tests {
         let name = identity_name("github");
         let reference = global_reference(&owner, "github", FINGERPRINT);
         let binding = document_binding(&owner, &name, &reference);
-        let encrypted = encrypt(&binding, &secret_values(), &old_provider);
-        let rewrapped = rewrap_identity_document(&binding, &encrypted, &rotating_provider)
+        let encrypted = encrypt(&binding, &secret_values(), &old_provider).await;
+        let stale_kek = rotating_provider
+            .key(&encrypted.key_id)
+            .await
+            .expect("stored key");
+        let rotated_kek = rotating_provider.active_key().await.expect("active key");
+        let rewrapped = rewrap_identity_document(&binding, &encrypted, &stale_kek, &rotated_kek)
             .expect("rewrap")
             .expect("stale key must rewrap");
 
@@ -407,11 +427,11 @@ mod tests {
         assert_eq!(rewrapped.ciphertext, encrypted.ciphertext);
         assert_eq!(rewrapped.nonce, encrypted.nonce);
         assert_eq!(
-            decrypt(&binding, &rewrapped, &rotating_provider),
+            decrypt(&binding, &rewrapped, &rotating_provider).await,
             secret_values()
         );
         assert!(
-            rewrap_identity_document(&binding, &rewrapped, &rotating_provider)
+            rewrap_identity_document(&binding, &rewrapped, &rotated_kek, &rotated_kek)
                 .expect("current key")
                 .is_none()
         );
@@ -419,13 +439,13 @@ mod tests {
         let wrong_reference = global_reference(&wrong_owner, "github", FINGERPRINT);
         let wrong_binding = document_binding(&wrong_owner, &name, &wrong_reference);
         assert_open_failed(
-            &rewrap_identity_document(&wrong_binding, &rewrapped, &rotating_provider)
+            &rewrap_identity_document(&wrong_binding, &rewrapped, &rotated_kek, &rotated_kek)
                 .expect_err("same-key rewrap must still authenticate the document"),
         );
     }
 
-    #[test]
-    fn diagnostics_do_not_expose_plaintext_values() {
+    #[tokio::test]
+    async fn diagnostics_do_not_expose_plaintext_values() {
         let provider = static_provider(37);
         let owner = user_owner("alice");
         let name = identity_name("github");
@@ -433,7 +453,7 @@ mod tests {
         let binding = document_binding(&owner, &name, &reference);
         let marker = "TOP_SECRET_IDENTITY_MARKER";
         let values = BTreeMap::from([("TOKEN".to_string(), marker.to_string())]);
-        let mut encrypted = encrypt(&binding, &values, &provider);
+        let mut encrypted = encrypt(&binding, &values, &provider).await;
 
         let debug = format!("{encrypted:?}");
         assert!(debug.contains("ciphertext_len"));
@@ -445,14 +465,15 @@ mod tests {
                 .any(|window| window == marker.as_bytes())
         );
         *encrypted.ciphertext.first_mut().expect("ciphertext") ^= 1;
-        let error =
-            decrypt_with_provider(&binding, &encrypted, &provider).expect_err("tampered document");
+        let error = decrypt_with_provider(&binding, &encrypted, &provider)
+            .await
+            .expect_err("tampered document");
         assert!(!error.to_string().contains(marker));
         assert!(!format!("{error:?}").contains(marker));
     }
 
     fn static_provider(byte: u8) -> StaticKeyProvider {
-        StaticKeyProvider(CredentialEncryptionKey::from_static_bytes_for_test(
+        StaticKeyProvider(EnvelopeEncryptionKey::from_static_bytes_for_test(
             [byte; 32],
         ))
     }
@@ -521,40 +542,44 @@ mod tests {
         IdentityDocumentBinding::new(owner, name, reference).expect("binding")
     }
 
-    fn encrypt(
+    async fn encrypt(
         binding: &IdentityDocumentBinding<'_>,
         values: &BTreeMap<String, String>,
-        provider: &dyn CredentialKeyProvider,
+        provider: &dyn EnvelopeKeyProvider,
     ) -> EncryptedEnvelopeDocument {
-        encrypt_identity_document(binding, values, provider).expect("identity encryption")
+        let active_kek = provider.active_key().await.expect("active key");
+        encrypt_identity_document(binding, values, &active_kek).expect("identity encryption")
     }
 
-    fn decrypt(
+    async fn decrypt(
         binding: &IdentityDocumentBinding<'_>,
         document: &EncryptedEnvelopeDocument,
-        provider: &dyn CredentialKeyProvider,
+        provider: &dyn EnvelopeKeyProvider,
     ) -> BTreeMap<String, String> {
-        decrypt_with_provider(binding, document, provider).expect("identity decryption")
+        decrypt_with_provider(binding, document, provider)
+            .await
+            .expect("identity decryption")
     }
 
     /// Resolve the KEK a document names, then decrypt with it.
-    fn decrypt_with_provider(
+    async fn decrypt_with_provider(
         binding: &IdentityDocumentBinding<'_>,
         document: &EncryptedEnvelopeDocument,
-        provider: &dyn CredentialKeyProvider,
+        provider: &dyn EnvelopeKeyProvider,
     ) -> Result<BTreeMap<String, String>, CredentialsError> {
-        let kek = provider.key(&document.key_id)?;
+        let kek = provider.key(&document.key_id).await?;
         decrypt_identity_document(binding, document, &kek)
     }
 
-    fn seal_plaintext(
+    async fn seal_plaintext(
         binding: &IdentityDocumentBinding<'_>,
         plaintext: Vec<u8>,
-        provider: &dyn CredentialKeyProvider,
+        provider: &dyn EnvelopeKeyProvider,
     ) -> EncryptedEnvelopeDocument {
         let context = identity_document_context(IDENTITY_DOCUMENT_BINDING_VERSION, binding)
             .expect("identity document context");
-        seal_envelope_document(&context, Zeroizing::new(plaintext), provider)
+        let active_kek = provider.active_key().await.expect("active key");
+        seal_envelope_document(&context, Zeroizing::new(plaintext), &active_kek)
             .expect("seal plaintext")
     }
 

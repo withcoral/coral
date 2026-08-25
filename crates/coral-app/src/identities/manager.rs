@@ -13,12 +13,13 @@ use super::crypto::{
 };
 use super::model::{IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::bootstrap::AppError;
-use crate::credentials::encryption::CredentialKeyProvider;
+use crate::credentials::encryption::{EnvelopeEncryptionKey, EnvelopeKeyProvider};
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identity::Principal;
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::identity_specs::manager::{
-    InstalledIdentitySpec, ResolvedIdentitySpec, record_to_installed, resolve_installed_for_use,
+    InstalledIdentitySpec, ResolvedIdentitySpec, StoredSpecDocument, record_to_installed,
+    resolve_installed_for_use, resolve_stored_spec_document,
 };
 use crate::state::db::{
     CoralDb, CoralTx, DbError, DbRepos, IdentityDocumentRecord, IdentityRecord,
@@ -34,7 +35,7 @@ const MAX_MUTATION_ATTEMPTS: usize = 8;
 #[derive(Clone)]
 pub(crate) struct IdentityManager {
     db: Arc<CoralDb>,
-    key_provider: Arc<dyn CredentialKeyProvider>,
+    key_provider: Arc<dyn EnvelopeKeyProvider>,
     #[cfg(test)]
     before_write_gate: Option<OneShotGate>,
     #[cfg(test)]
@@ -118,7 +119,7 @@ struct IdentityUseSnapshot {
 }
 
 impl IdentityManager {
-    pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn CredentialKeyProvider>) -> Self {
+    pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn EnvelopeKeyProvider>) -> Self {
         Self {
             db,
             key_provider,
@@ -351,10 +352,21 @@ impl IdentityManager {
             load_identity_use_snapshot(&mut tx, owner, &name, identity).await
         }
         .await;
-        let snapshot = complete_transaction(tx, result).await?;
-        let key_provider = Arc::clone(&self.key_provider);
+        let mut snapshot = complete_transaction(tx, result).await?;
+        // Resolve both stored keys here, where awaiting the provider's I/O is free, so
+        // the blocking hop below is pure CPU.
+        let spec_document = resolve_stored_spec_document(
+            self.key_provider.as_ref(),
+            snapshot.identity_spec_document.take(),
+        )
+        .await?;
+        let identity_document = resolve_stored_identity_document(
+            self.key_provider.as_ref(),
+            snapshot.identity_document.take(),
+        )
+        .await?;
         run_blocking_identity_operation(move || {
-            prepare_identity_for_use(snapshot, &name, key_provider.as_ref())
+            prepare_identity_for_use(snapshot, &name, identity_document, spec_document)
         })
         .await
     }
@@ -482,11 +494,16 @@ impl IdentityManager {
         let owner = owner.clone();
         let name = name.clone();
         let reference = reference.clone();
-        let key_provider = Arc::clone(&self.key_provider);
+        // Mint or load the active key before the blocking hop; sealing itself is CPU only.
+        let active_kek = self
+            .key_provider
+            .active_key()
+            .await
+            .map_err(AppError::Credentials)?;
         run_blocking_identity_operation(move || {
             let values = BTreeMap::from([(FIXED_TOKEN_KEY.to_string(), token)]);
             let binding = IdentityDocumentBinding::new(&owner, &name, &reference)?;
-            encrypt_identity_document(&binding, &values, key_provider.as_ref()).map_err(Into::into)
+            encrypt_identity_document(&binding, &values, &active_kek).map_err(Into::into)
         })
         .await
     }
@@ -586,14 +603,35 @@ async fn load_identity_use_snapshot(
     })
 }
 
+/// One encrypted identity document paired with the stored key that opens it.
+///
+/// Bundled for the same reason as [`StoredSpecDocument`]: the key is resolved in async
+/// context and travels with its document into synchronous crypto.
+pub(crate) type StoredIdentityDocument = (IdentityDocumentRecord, EnvelopeEncryptionKey);
+
+/// Resolve the stored key an encrypted identity document names, if there is one.
+async fn resolve_stored_identity_document(
+    key_provider: &dyn EnvelopeKeyProvider,
+    document: Option<IdentityDocumentRecord>,
+) -> Result<Option<StoredIdentityDocument>, AppError> {
+    let Some(document) = document else {
+        return Ok(None);
+    };
+    let stored_kek = key_provider
+        .key(&document.envelope.key_id)
+        .await
+        .map_err(AppError::Credentials)?;
+    Ok(Some((document, stored_kek)))
+}
+
 fn prepare_identity_for_use(
     snapshot: IdentityUseSnapshot,
     name: &IdentityName,
-    key_provider: &dyn CredentialKeyProvider,
+    identity_document: Option<StoredIdentityDocument>,
+    spec_document: Option<StoredSpecDocument>,
 ) -> Result<ResolvedIdentityForUse, AppError> {
     let identity = snapshot.identity.ok_or_else(|| identity_not_found(name))?;
-    let identity_document = snapshot
-        .identity_document
+    let (identity_document, identity_kek) = identity_document
         .ok_or_else(|| recreate_identity(name, "has no encrypted setup document"))?;
     validate_identity_document_key(&identity, &identity_document)?;
     let identity_spec_record = snapshot.identity_spec.ok_or_else(|| {
@@ -606,13 +644,8 @@ fn prepare_identity_for_use(
     let identity_spec_id = identity_spec_record.id.clone();
     let installed = record_to_installed(identity_spec_record)?;
     validate_identity_reference(&identity, &installed)?;
-    let identity_spec = resolve_installed_for_use(
-        installed,
-        &identity_spec_id,
-        snapshot.identity_spec_document,
-        key_provider,
-    )?;
-    let material = decrypt_fixed_token_material(&identity, identity_document, key_provider)?;
+    let identity_spec = resolve_installed_for_use(installed, &identity_spec_id, spec_document)?;
+    let material = decrypt_fixed_token_material(&identity, identity_document, &identity_kek)?;
     Ok(ResolvedIdentityForUse {
         identity,
         identity_spec,
@@ -678,14 +711,9 @@ fn validate_identity_reference(
 fn decrypt_fixed_token_material(
     identity: &IdentityRecord,
     document: IdentityDocumentRecord,
-    key_provider: &dyn CredentialKeyProvider,
+    kek: &EnvelopeEncryptionKey,
 ) -> Result<BTreeMap<String, String>, AppError> {
     let envelope = document.envelope;
-    // Resolve the stored key first so an unavailable key provider stays a credential
-    // error; everything the envelope layer rejects afterward is stored-material fault.
-    let kek = key_provider
-        .key(&envelope.key_id)
-        .map_err(AppError::Credentials)?;
     let binding =
         IdentityDocumentBinding::new(&identity.owner, &identity.name, &identity.spec_reference)
             .map_err(|_error| {
@@ -695,7 +723,7 @@ fn decrypt_fixed_token_material(
                     "has invalid authenticated metadata",
                 )
             })?;
-    let material = decrypt_identity_document(&binding, &envelope, &kek).map_err(|_error| {
+    let material = decrypt_identity_document(&binding, &envelope, kek).map_err(|_error| {
         AppError::from(corrupt_identity(
             &identity.owner,
             &identity.name,

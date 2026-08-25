@@ -40,7 +40,7 @@ use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
-use crate::credentials::encryption::{CredentialKeyProvider, LocalFileCredentialKeyProvider};
+use crate::credentials::encryption::{EnvelopeKeyProvider, LocalFileEnvelopeKeyProvider};
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::features::service::FeatureService;
 use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
@@ -361,8 +361,8 @@ impl ServerBuilder {
         layout.ensure()?;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let database_config = resolve_database_config(&layout)?;
-        let identity_key_provider: Arc<dyn CredentialKeyProvider> =
-            Arc::new(LocalFileCredentialKeyProvider::new(&layout, None));
+        let identity_key_provider: Arc<dyn EnvelopeKeyProvider> =
+            Arc::new(LocalFileEnvelopeKeyProvider::new(&layout));
         let feature_store = FeatureStore::from_layout(layout.clone());
         let features = feature_store.load_with_overrides(&self.config.feature_overrides)?;
         let coral_db = init_database(database_config).await?;
@@ -372,10 +372,8 @@ impl ServerBuilder {
         let identity_specs =
             IdentitySpecManager::new(Arc::clone(&coral_db), Arc::clone(&identity_key_provider));
         let identities = IdentityManager::new(Arc::clone(&coral_db), identity_key_provider);
-        let (telemetry_config, active_trace_store) =
-            init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
-        let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let trace_components = trace_components_for_store(active_trace_store);
+        let (telemetry_config, active_trace_store_dir, trace_components) =
+            init_server_tracing(&layout, self.config.enable_stderr_logs)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
@@ -505,6 +503,16 @@ async fn init_database(database_config: ResolvedDatabaseConfig) -> Result<CoralD
     let coral_db = CoralDb::open(database_config).await?;
     coral_db.migrate().await?;
     Ok(coral_db)
+}
+
+fn init_server_tracing(
+    layout: &AppStateLayout,
+    enable_stderr_logs: bool,
+) -> Result<(TelemetryConfig, Option<PathBuf>, TraceServerComponents), AppError> {
+    let (telemetry_config, active_trace_store) = init_server_telemetry(layout, enable_stderr_logs)?;
+    let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
+    let trace_components = trace_components_for_store(active_trace_store);
+    Ok((telemetry_config, active_trace_store_dir, trace_components))
 }
 
 fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseConfig, AppError> {
@@ -881,7 +889,7 @@ mod tests {
     };
     use crate::bootstrap::AppError;
     use crate::catalog::discovery::CatalogDiscovery;
-    use crate::credentials::encryption::{CredentialKeyProvider, LocalFileCredentialKeyProvider};
+    use crate::credentials::encryption::{EnvelopeKeyProvider, LocalFileEnvelopeKeyProvider};
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
     use crate::feedback::manager::FeedbackManager;
@@ -986,8 +994,8 @@ enabled = false
         layout: &AppStateLayout,
         db: &Arc<CoralDb>,
     ) -> (IdentitySpecManager, IdentityManager) {
-        let key_provider: Arc<dyn CredentialKeyProvider> =
-            Arc::new(LocalFileCredentialKeyProvider::new(layout, None));
+        let key_provider: Arc<dyn EnvelopeKeyProvider> =
+            Arc::new(LocalFileEnvelopeKeyProvider::new(layout));
         (
             IdentitySpecManager::new(Arc::clone(db), Arc::clone(&key_provider)),
             IdentityManager::new(Arc::clone(db), key_provider),

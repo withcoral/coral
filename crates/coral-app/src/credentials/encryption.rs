@@ -24,6 +24,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use async_trait::async_trait;
 use base64::Engine as _;
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom as _, SystemRandom};
@@ -45,6 +46,7 @@ pub(crate) const CREDENTIAL_DOCUMENT_BINDING_VERSION: i64 = 2;
 const CREDENTIAL_DOCUMENT_VERSION: u32 = 1;
 const LEGACY_CREDENTIAL_BINDING_VERSION: i64 = 1;
 const KEY_FILE_VERSION: &str = "v1";
+const KEY_FILE_MAX_BYTES: u64 = 4 * 1024;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 
@@ -53,26 +55,26 @@ static LOCAL_KEY_FILE_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) type EncryptedCredentialDocument = EncryptedEnvelopeDocument;
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct CredentialEncryptionKey {
+pub(crate) struct EnvelopeEncryptionKey {
     key_id: String,
     bytes: [u8; KEY_LEN],
 }
 
-impl fmt::Debug for CredentialEncryptionKey {
+impl fmt::Debug for EnvelopeEncryptionKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CredentialEncryptionKey")
+        f.debug_struct("EnvelopeEncryptionKey")
             .field("key_id", &self.key_id)
             .finish_non_exhaustive()
     }
 }
 
-impl Drop for CredentialEncryptionKey {
+impl Drop for EnvelopeEncryptionKey {
     fn drop(&mut self) {
         self.bytes.zeroize();
     }
 }
 
-impl CredentialEncryptionKey {
+impl EnvelopeEncryptionKey {
     pub(crate) fn from_encoded_material(raw: &str) -> Result<Self, CredentialsError> {
         let trimmed = raw.trim();
         let Some(encoded) = trimmed.strip_prefix(&format!("{KEY_FILE_VERSION}:")) else {
@@ -116,14 +118,19 @@ impl CredentialEncryptionKey {
 
 /// Resolves KEKs, and mints one when a deployment has none yet.
 ///
-/// `active_key` is a minting capability: [`LocalFileCredentialKeyProvider`] creates
-/// durable key material on disk when none exists. Only sealing and rewrapping take a
-/// provider; opening takes the [`CredentialEncryptionKey`] its document names, so a
-/// read path cannot create or rotate key material.
-pub(crate) trait CredentialKeyProvider: Send + Sync {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError>;
+/// Async because resolving a key is I/O: [`LocalFileEnvelopeKeyProvider`] reads
+/// durable key material from disk. Every envelope operation takes already-resolved
+/// [`EnvelopeEncryptionKey`] values instead of a provider, so key resolution stays
+/// here — awaited once by the caller — and the crypto itself stays synchronous.
+///
+/// `active_key` is additionally a minting capability: it creates key material when a
+/// deployment has none. Only sealing and rewrapping need it, so a read path that
+/// resolves by `key_id` can neither create nor rotate key material.
+#[async_trait]
+pub(crate) trait EnvelopeKeyProvider: Send + Sync {
+    async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError>;
 
-    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError>;
+    async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError>;
 }
 
 /// Versioned authenticated context that binds an encrypted envelope to its owner.
@@ -168,42 +175,38 @@ impl EnvelopeContext {
     }
 }
 
-/// Resolves an explicitly supplied key or falls back to a key file scoped to
-/// this app-state config directory. Callers own config and environment resolution.
+/// Resolves the envelope key from a private file scoped to this app-state directory.
 #[derive(Debug, Clone)]
-pub(crate) struct LocalFileCredentialKeyProvider {
+pub(crate) struct LocalFileEnvelopeKeyProvider {
     path: PathBuf,
-    provided_key: Option<CredentialEncryptionKey>,
 }
 
-impl LocalFileCredentialKeyProvider {
-    pub(crate) fn new(
-        layout: &AppStateLayout,
-        provided_key: Option<CredentialEncryptionKey>,
-    ) -> Self {
+impl LocalFileEnvelopeKeyProvider {
+    pub(crate) fn new(layout: &AppStateLayout) -> Self {
         Self {
-            path: layout.credential_encryption_key_file(),
-            provided_key,
+            path: layout.envelope_encryption_key_file(),
         }
     }
 
-    fn load_key(&self) -> Result<Option<CredentialEncryptionKey>, CredentialsError> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(raw) => {
-                let raw = Zeroizing::new(raw);
-                CredentialEncryptionKey::from_encoded_material(raw.as_str()).map(Some)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
+    fn load_key(&self) -> Result<Option<EnvelopeEncryptionKey>, CredentialsError> {
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
         }
+        let raw = Zeroizing::new(storage_fs::read_to_string_private(
+            &self.path,
+            KEY_FILE_MAX_BYTES,
+        )?);
+        EnvelopeEncryptionKey::from_encoded_material(raw.as_str()).map(Some)
     }
 
-    fn load_or_create_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    fn load_or_create_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         let _thread_guard = LOCAL_KEY_FILE_LOCK.lock().map_err(|_error| {
             CredentialsError::Crypto("credential encryption key lock is poisoned".to_string())
         })?;
         if let Some(parent) = self.path.parent() {
-            storage_fs::ensure_private_dir(parent)?;
+            storage_fs::ensure_private_dir_no_symlink(parent)?;
         }
         let lock_path = self.path.with_extension("key.lock");
         let _process_guard = FileLock::exclusive(&lock_path)?;
@@ -221,35 +224,52 @@ impl LocalFileCredentialKeyProvider {
             path = %self.path.display(),
             "created local credential encryption key"
         );
-        Ok(CredentialEncryptionKey {
+        Ok(EnvelopeEncryptionKey {
             key_id: key_id_for_bytes(&bytes),
             bytes: *bytes,
         })
     }
 }
 
-impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        if let Some(key) = &self.provided_key {
-            return Ok(key.clone());
-        }
-        self.load_or_create_key()
+/// Runs one key-file operation off the async runtime.
+///
+/// The file helpers this provider relies on are deliberately blocking: they take a
+/// process-wide flock and perform symlink and permission checks that must not be
+/// split across an await. Containing that here keeps the blocking inside the
+/// implementation instead of pushing it onto every caller.
+async fn run_key_file_operation<T, F>(operation: F) -> Result<T, CredentialsError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, CredentialsError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| {
+            CredentialsError::Crypto(format!("credential key file task failed: {error}"))
+        })?
+}
+
+#[async_trait]
+impl EnvelopeKeyProvider for LocalFileEnvelopeKeyProvider {
+    async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        let provider = self.clone();
+        run_key_file_operation(move || provider.load_or_create_key()).await
     }
 
-    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        if let Some(key) = &self.provided_key
-            && key.key_id == key_id
-        {
-            return Ok(key.clone());
-        }
-        if let Some(key) = self.load_key()?
-            && key.key_id == key_id
-        {
-            return Ok(key);
-        }
-        Err(CredentialsError::Crypto(format!(
-            "credential encryption key '{key_id}' is unavailable"
-        )))
+    async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        let provider = self.clone();
+        let key_id = key_id.to_string();
+        run_key_file_operation(move || {
+            if let Some(key) = provider.load_key()?
+                && key.key_id == key_id
+            {
+                return Ok(key);
+            }
+            Err(CredentialsError::Unavailable(format!(
+                "credential encryption key '{key_id}' is unavailable"
+            )))
+        })
+        .await
     }
 }
 
@@ -269,7 +289,7 @@ pub(crate) fn encrypt_credential_values(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     values: &BTreeMap<String, String>,
-    key_provider: &dyn CredentialKeyProvider,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<EncryptedCredentialDocument, CredentialsError> {
     let plaintext = PlaintextCredentialDocument {
         version: CREDENTIAL_DOCUMENT_VERSION,
@@ -284,14 +304,14 @@ pub(crate) fn encrypt_credential_values(
         workspace_name,
         source_name,
     )?;
-    seal_envelope_document(&context, document_bytes, key_provider)
+    seal_envelope_document(&context, document_bytes, active_kek)
 }
 
 pub(crate) fn decrypt_credential_values(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     document: &EncryptedCredentialDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
     let plaintext = decrypt_credential_document_bytes(workspace_name, source_name, document, kek)?;
     let decoded: DecryptedCredentialDocument = serde_json::from_slice(&plaintext)
@@ -309,26 +329,26 @@ pub(crate) fn rewrap_credential_document(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     document: &EncryptedCredentialDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    old_kek: &EnvelopeEncryptionKey,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<Option<EncryptedCredentialDocument>, CredentialsError> {
     let context =
         credential_document_context(document.binding_version, workspace_name, source_name)?;
     if document.binding_version == LEGACY_CREDENTIAL_BINDING_VERSION {
         // Binding version 1 includes both historical credential AAD encodings.
         // Authenticate either shape, then reseal once into the exact v2 recipe.
-        let kek = key_provider.key(&document.key_id)?;
-        let values = decrypt_credential_values(workspace_name, source_name, document, &kek)?;
-        return encrypt_credential_values(workspace_name, source_name, &values, key_provider)
+        let values = decrypt_credential_values(workspace_name, source_name, document, old_kek)?;
+        return encrypt_credential_values(workspace_name, source_name, &values, active_kek)
             .map(Some);
     }
-    rewrap_envelope_document(&context, document, key_provider)
+    rewrap_envelope_document(&context, document, old_kek, active_kek)
 }
 
 fn decrypt_credential_document_bytes(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     document: &EncryptedCredentialDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
 ) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
     let context =
         credential_document_context(document.binding_version, workspace_name, source_name)?;
@@ -362,7 +382,7 @@ fn decrypt_credential_document_bytes(
 
 fn unwrap_credential_dek(
     document: &EncryptedCredentialDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
     context: &EnvelopeContext,
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
     match unwrap_current_dek(document, kek, context) {
@@ -386,7 +406,7 @@ fn unwrap_credential_dek(
 
 fn unwrap_current_dek(
     document: &EncryptedEnvelopeDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
     context: &EnvelopeContext,
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
     unwrap_dek_with_aad(document, kek, &context.dek_aad(&document.key_id))
@@ -394,7 +414,7 @@ fn unwrap_current_dek(
 
 fn unwrap_dek_with_aad(
     document: &EncryptedEnvelopeDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
     aad: &[u8],
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
     let mut dek = Zeroizing::new(document.wrapped_dek.clone());
@@ -423,7 +443,7 @@ fn validate_dek_plaintext(
 
 fn rewrap_dek(
     document: &EncryptedEnvelopeDocument,
-    active_kek: &CredentialEncryptionKey,
+    active_kek: &EnvelopeEncryptionKey,
     dek: &[u8; KEY_LEN],
     context: &EnvelopeContext,
 ) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
@@ -477,7 +497,7 @@ fn validate_document_metadata(
 /// bare AEAD failure. Key identifiers are non-secret digests, so naming both is safe.
 fn validate_unwrapping_key(
     document: &EncryptedEnvelopeDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
 ) -> Result<(), CredentialsError> {
     if kek.key_id() != document.key_id {
         return Err(CredentialsError::Crypto(format!(
@@ -493,9 +513,8 @@ fn validate_unwrapping_key(
 pub(crate) fn seal_envelope_document(
     context: &EnvelopeContext,
     mut document_bytes: Zeroizing<Vec<u8>>,
-    key_provider: &dyn CredentialKeyProvider,
+    kek: &EnvelopeEncryptionKey,
 ) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
-    let kek = key_provider.active_key()?;
     let dek = Zeroizing::new(random_array::<KEY_LEN>()?);
     let nonce = random_array::<NONCE_LEN>()?;
     let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
@@ -524,13 +543,13 @@ pub(crate) fn seal_envelope_document(
 
 /// Open an envelope document when its persisted and expected bindings match.
 ///
-/// Takes the KEK the document names rather than a [`CredentialKeyProvider`]: opening
+/// Takes the KEK the document names rather than a [`EnvelopeKeyProvider`]: opening
 /// needs no authority to mint or rotate keys, and resolving the KEK in the caller
 /// keeps provider failures distinguishable from authentication failures.
 pub(crate) fn open_envelope_document(
     context: &EnvelopeContext,
     document: &EncryptedEnvelopeDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
 ) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
     validate_document_metadata(document, context)?;
     validate_unwrapping_key(document, kek)?;
@@ -550,12 +569,12 @@ pub(crate) fn open_envelope_document(
 pub(crate) fn rewrap_envelope_document(
     context: &EnvelopeContext,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    old_kek: &EnvelopeEncryptionKey,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
     validate_document_metadata(document, context)?;
-    let old_kek = key_provider.key(&document.key_id)?;
-    let active_kek = key_provider.active_key()?;
-    let dek = unwrap_current_dek(document, &old_kek, context)?;
+    validate_unwrapping_key(document, old_kek)?;
+    let dek = unwrap_current_dek(document, old_kek, context)?;
     let mut document_probe = Zeroizing::new(document.ciphertext.clone());
     open(
         &*dek,
@@ -567,7 +586,7 @@ pub(crate) fn rewrap_envelope_document(
         return Ok(None);
     }
 
-    rewrap_dek(document, &active_kek, &dek, context).map(Some)
+    rewrap_dek(document, active_kek, &dek, context).map(Some)
 }
 
 fn seal(
@@ -684,20 +703,22 @@ fn key_id_for_bytes(bytes: &[u8; KEY_LEN]) -> String {
 /// Deterministic key providers shared by every envelope-crypto test suite.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{CredentialEncryptionKey, CredentialKeyProvider, CredentialsError};
+    use super::{CredentialsError, EnvelopeEncryptionKey, EnvelopeKeyProvider};
+    use async_trait::async_trait;
 
     /// Serves one fixed key and refuses every other key identifier.
     #[derive(Clone)]
     pub(crate) struct StaticKeyProvider {
-        pub(crate) key: CredentialEncryptionKey,
+        pub(crate) key: EnvelopeEncryptionKey,
     }
 
-    impl CredentialKeyProvider for StaticKeyProvider {
-        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    #[async_trait]
+    impl EnvelopeKeyProvider for StaticKeyProvider {
+        async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             Ok(self.key.clone())
         }
 
-        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             if self.key.key_id() == key_id {
                 Ok(self.key.clone())
             } else {
@@ -709,16 +730,17 @@ pub(crate) mod test_support {
     /// Wraps with `active` while keeping every key in `keys` unwrappable.
     #[derive(Clone)]
     pub(crate) struct RotatingKeyProvider {
-        pub(crate) active: CredentialEncryptionKey,
-        pub(crate) keys: Vec<CredentialEncryptionKey>,
+        pub(crate) active: EnvelopeEncryptionKey,
+        pub(crate) keys: Vec<EnvelopeEncryptionKey>,
     }
 
-    impl CredentialKeyProvider for RotatingKeyProvider {
-        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    #[async_trait]
+    impl EnvelopeKeyProvider for RotatingKeyProvider {
+        async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             Ok(self.active.clone())
         }
 
-        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             self.keys
                 .iter()
                 .find(|key| key.key_id() == key_id)
@@ -730,56 +752,27 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine as _;
     use tempfile::tempdir;
 
-    use super::{
-        CredentialEncryptionKey, CredentialKeyProvider, KEY_FILE_VERSION, KEY_LEN,
-        LocalFileCredentialKeyProvider,
-    };
+    use super::{EnvelopeKeyProvider, LocalFileEnvelopeKeyProvider};
     use crate::state::AppStateLayout;
 
-    #[test]
-    fn provided_key_does_not_create_a_local_key_file() {
+    #[tokio::test]
+    async fn missing_key_lookup_does_not_create_a_local_key_file() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let encoded = format!(
-            "{KEY_FILE_VERSION}:{}",
-            base64::engine::general_purpose::STANDARD.encode([7_u8; KEY_LEN])
-        );
-        let key = CredentialEncryptionKey::from_encoded_material(&encoded).expect("encoded key");
-        let provider = LocalFileCredentialKeyProvider::new(&layout, Some(key));
+        let provider = LocalFileEnvelopeKeyProvider::new(&layout);
 
-        let first = provider.active_key().expect("provided key");
-        let second = provider.key(first.key_id()).expect("provided key by id");
-
-        assert_eq!(first, second);
-        assert!(!layout.credential_encryption_key_file().exists());
-    }
-
-    #[test]
-    fn missing_key_lookup_does_not_create_a_local_key_file() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let provider = LocalFileCredentialKeyProvider::new(&layout, None);
-
-        let error = provider.key("missing-key").expect_err("missing key");
+        let error = provider.key("missing-key").await.expect_err("missing key");
 
         assert!(error.to_string().contains("is unavailable"));
-        assert!(!layout.credential_encryption_key_file().exists());
-    }
-
-    #[test]
-    fn provided_key_keeps_existing_file_key_available_for_rewrap() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let file_key = LocalFileCredentialKeyProvider::new(&layout, None)
-            .active_key()
-            .expect("file key");
-        let provided_key = CredentialEncryptionKey::from_static_bytes_for_test([9_u8; KEY_LEN]);
-        let provider = LocalFileCredentialKeyProvider::new(&layout, Some(provided_key.clone()));
-
-        assert_eq!(provider.active_key().expect("provided key"), provided_key);
-        assert_eq!(provider.key(file_key.key_id()).expect("file key"), file_key);
+        assert!(!layout.envelope_encryption_key_file().exists());
+        assert!(
+            !layout
+                .envelope_encryption_key_file()
+                .parent()
+                .unwrap()
+                .exists()
+        );
     }
 }

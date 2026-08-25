@@ -9,8 +9,8 @@ use zeroize::Zeroizing;
 use super::CredentialsError;
 use super::encryption::test_support::{RotatingKeyProvider, StaticKeyProvider};
 use super::encryption::{
-    CREDENTIAL_DOCUMENT_BINDING_VERSION, CredentialEncryptionKey, CredentialKeyProvider,
-    ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, LocalFileCredentialKeyProvider,
+    CREDENTIAL_DOCUMENT_BINDING_VERSION, ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext,
+    EnvelopeEncryptionKey, EnvelopeKeyProvider, LocalFileEnvelopeKeyProvider,
     decrypt_credential_values, encrypt_credential_values, open_envelope_document,
     rewrap_credential_document, rewrap_envelope_document, seal_envelope_document,
 };
@@ -19,44 +19,52 @@ use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
-#[test]
-fn encrypt_decrypt_authenticates_context_and_redacts_key_debug() {
+#[tokio::test]
+async fn encrypt_decrypt_authenticates_context_and_redacts_key_debug() {
     let workspace = WorkspaceName::parse("acme").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([7; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([7; 32]),
     };
     let values = BTreeMap::from([("token".to_string(), "s3cr3t".to_string())]);
 
-    let document = encrypt_credential_values(&workspace, &source, &values, &provider)
+    let document = encrypt_values_with_provider(&workspace, &source, &values, &provider)
+        .await
         .expect("encrypt credentials");
     assert_eq!(
         document.binding_version,
         CREDENTIAL_DOCUMENT_BINDING_VERSION
     );
     assert_eq!(
-        decrypt_values_with_provider(&workspace, &source, &document, &provider).expect("decrypt"),
+        decrypt_values_with_provider(&workspace, &source, &document, &provider)
+            .await
+            .expect("decrypt"),
         values
     );
 
     let mut tampered = document.clone();
     *tampered.ciphertext.first_mut().expect("ciphertext byte") ^= 1;
     decrypt_values_with_provider(&workspace, &source, &tampered, &provider)
+        .await
         .expect_err("tampered ciphertext should fail");
     let mut tampered = document.clone();
     *tampered.wrapped_dek.first_mut().expect("wrapped DEK byte") ^= 1;
     decrypt_values_with_provider(&workspace, &source, &tampered, &provider)
+        .await
         .expect_err("tampered wrapped DEK should fail");
     let other_workspace = WorkspaceName::parse("other").expect("workspace");
     decrypt_values_with_provider(&other_workspace, &source, &document, &provider)
+        .await
         .expect_err("wrong workspace should fail");
     let other_source = SourceName::parse("slack").expect("source");
     decrypt_values_with_provider(&workspace, &other_source, &document, &provider)
+        .await
         .expect_err("wrong source should fail");
     let mismatch = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([8; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([8; 32]),
     };
     decrypt_values_with_provider(&workspace, &source, &document, &mismatch)
+        .await
         .expect_err("wrong key should fail");
 
     let debug = format!("{:?}", provider.key);
@@ -65,49 +73,53 @@ fn encrypt_decrypt_authenticates_context_and_redacts_key_debug() {
     assert!(!debug.contains("[7, 7"));
 }
 
-#[test]
-fn credential_document_aad_disambiguates_colon_bearing_identities() {
+#[tokio::test]
+async fn credential_document_aad_disambiguates_colon_bearing_identities() {
     let workspace = WorkspaceName::parse("a:b").expect("workspace");
     let source = SourceName::parse("c").expect("source");
     let replay_workspace = WorkspaceName::parse("a").expect("workspace");
     let replay_source = SourceName::parse("b:c").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([10; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([10; 32]),
     };
-    let encrypted = encrypt_credential_values(
+    let encrypted = encrypt_values_with_provider(
         &workspace,
         &source,
         &BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
         &provider,
     )
+    .await
     .expect("encrypt");
 
     let error =
         decrypt_values_with_provider(&replay_workspace, &replay_source, &encrypted, &provider)
+            .await
             .expect_err("ambiguous colon-delimited identity should not decrypt");
 
     assert!(error.to_string().contains("open failed"));
 }
 
-#[test]
-fn credential_document_rejects_tampered_nonces() {
+#[tokio::test]
+async fn credential_document_rejects_tampered_nonces() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([11; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([11; 32]),
     };
-    let encrypted = encrypt_credential_values(
+    let encrypted = encrypt_values_with_provider(
         &workspace,
         &source,
         &BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
         &provider,
     )
+    .await
     .expect("encrypt");
 
     let mut tampered = encrypted.clone();
     *tampered.nonce.first_mut().expect("payload nonce") ^= 0x01;
     assert_open_failed(
         &decrypt_values_with_provider(&workspace, &source, &tampered, &provider)
+            .await
             .expect_err("tampered payload nonce should fail authentication"),
     );
 
@@ -118,28 +130,30 @@ fn credential_document_rejects_tampered_nonces() {
         .expect("wrapped DEK nonce") ^= 0x01;
     assert_open_failed(
         &decrypt_values_with_provider(&workspace, &source, &tampered, &provider)
+            .await
             .expect_err("tampered wrapped DEK nonce should fail authentication"),
     );
 }
 
-#[test]
-fn credential_document_rejects_key_id_aad_mismatch_even_when_key_resolves() {
+#[tokio::test]
+async fn credential_document_rejects_key_id_aad_mismatch_even_when_key_resolves() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let original_key_bytes = [12; 32];
     let mutated_key_bytes = [14; 32];
-    let original_key = CredentialEncryptionKey::from_static_bytes_for_test(original_key_bytes);
-    let mutated_key = CredentialEncryptionKey::from_static_bytes_for_test(mutated_key_bytes);
+    let original_key = EnvelopeEncryptionKey::from_static_bytes_for_test(original_key_bytes);
+    let mutated_key = EnvelopeEncryptionKey::from_static_bytes_for_test(mutated_key_bytes);
     let provider = RotatingKeyProvider {
         active: original_key.clone(),
         keys: vec![original_key, mutated_key.clone()],
     };
-    let mut encrypted = encrypt_credential_values(
+    let mut encrypted = encrypt_values_with_provider(
         &workspace,
         &source,
         &BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
         &provider,
     )
+    .await
     .expect("encrypt");
     let original_key_id = encrypted.key_id.clone();
     let dek = open_for_test(
@@ -169,31 +183,35 @@ fn credential_document_rejects_key_id_aad_mismatch_even_when_key_resolves() {
     encrypted.key_id = mutated_key.key_id().to_string();
     provider
         .key(&encrypted.key_id)
+        .await
         .expect("mutated key id should resolve");
 
     assert_open_failed(
         &decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
+            .await
             .expect_err("mismatched key-id AAD should fail authentication"),
     );
 }
 
-#[test]
-fn credential_document_rejects_binding_version_mismatch() {
+#[tokio::test]
+async fn credential_document_rejects_binding_version_mismatch() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([15; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([15; 32]),
     };
-    let mut encrypted = encrypt_credential_values(
+    let mut encrypted = encrypt_values_with_provider(
         &workspace,
         &source,
         &BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
         &provider,
     )
+    .await
     .expect("encrypt");
     encrypted.binding_version = CREDENTIAL_DOCUMENT_BINDING_VERSION + 1;
 
     let error = decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
+        .await
         .expect_err("unsupported binding version should fail");
 
     assert!(
@@ -204,16 +222,17 @@ fn credential_document_rejects_binding_version_mismatch() {
     );
 }
 
-#[test]
-fn decrypt_accepts_legacy_colon_delimited_dek_aad() {
+#[tokio::test]
+async fn decrypt_accepts_legacy_colon_delimited_dek_aad() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let key_bytes = [17; 32];
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test(key_bytes),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test(key_bytes),
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
-    let mut encrypted = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider);
+    let mut encrypted =
+        encrypt_credential_v1_for_test(&workspace, &source, &values, &provider).await;
     let key_id = encrypted.key_id.clone();
     let dek = open_for_test(
         &key_bytes,
@@ -232,21 +251,23 @@ fn decrypt_accepts_legacy_colon_delimited_dek_aad() {
 
     assert_eq!(
         decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
+            .await
             .expect("legacy DEK AAD should decrypt"),
         values
     );
 }
 
-#[test]
-fn decrypt_accepts_legacy_length_prefixed_dek_aad() {
+#[tokio::test]
+async fn decrypt_accepts_legacy_length_prefixed_dek_aad() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let key_bytes = [18; 32];
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test(key_bytes),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test(key_bytes),
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
-    let mut encrypted = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider);
+    let mut encrypted =
+        encrypt_credential_v1_for_test(&workspace, &source, &values, &provider).await;
     let key_id = encrypted.key_id.clone();
     let dek = open_for_test(
         &key_bytes,
@@ -265,19 +286,20 @@ fn decrypt_accepts_legacy_length_prefixed_dek_aad() {
 
     assert_eq!(
         decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
+            .await
             .expect("legacy length-prefixed DEK AAD should decrypt"),
         values
     );
 }
 
-#[test]
-fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
+#[tokio::test]
+async fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let old_key_bytes = [19; 32];
     let new_key_bytes = [23; 32];
-    let old_key = CredentialEncryptionKey::from_static_bytes_for_test(old_key_bytes);
-    let new_key = CredentialEncryptionKey::from_static_bytes_for_test(new_key_bytes);
+    let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test(old_key_bytes);
+    let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test(new_key_bytes);
     let old_provider = RotatingKeyProvider {
         active: old_key.clone(),
         keys: vec![old_key.clone()],
@@ -287,12 +309,15 @@ fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
         keys: vec![old_key, new_key.clone()],
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
-    let encrypted =
-        encrypt_credential_values(&workspace, &source, &values, &old_provider).expect("encrypt");
+    let encrypted = encrypt_values_with_provider(&workspace, &source, &values, &old_provider)
+        .await
+        .expect("encrypt");
 
-    let rewrapped = rewrap_credential_document(&workspace, &source, &encrypted, &rotating_provider)
-        .expect("rewrap")
-        .expect("stale key should rewrap");
+    let rewrapped =
+        rewrap_credential_with_provider(&workspace, &source, &encrypted, &rotating_provider)
+            .await
+            .expect("rewrap")
+            .expect("stale key should rewrap");
 
     assert_eq!(rewrapped.key_id, new_key.key_id());
     assert_eq!(rewrapped.ciphertext, encrypted.ciphertext);
@@ -316,50 +341,55 @@ fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
     );
     assert_eq!(
         decrypt_values_with_provider(&workspace, &source, &rewrapped, &rotating_provider)
+            .await
             .expect("decrypt rewrapped"),
         values
     );
 }
 
-#[test]
-fn credential_document_same_key_rewrap_authenticates_payload_context() {
+#[tokio::test]
+async fn credential_document_same_key_rewrap_authenticates_payload_context() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let other_workspace = WorkspaceName::parse("other").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([27; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([27; 32]),
     };
-    let encrypted = encrypt_credential_values(
+    let encrypted = encrypt_values_with_provider(
         &workspace,
         &source,
         &BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
         &provider,
     )
+    .await
     .expect("encrypt");
 
     assert_open_failed(
-        &rewrap_credential_document(&other_workspace, &source, &encrypted, &provider)
+        &rewrap_credential_with_provider(&other_workspace, &source, &encrypted, &provider)
+            .await
             .expect_err("same-key rewrap must authenticate context"),
     );
     let mut tampered = encrypted;
     *tampered.ciphertext.first_mut().expect("ciphertext") ^= 1;
     assert_open_failed(
-        &rewrap_credential_document(&workspace, &source, &tampered, &provider)
+        &rewrap_credential_with_provider(&workspace, &source, &tampered, &provider)
+            .await
             .expect_err("same-key rewrap must authenticate ciphertext"),
     );
 }
 
-#[test]
-fn credential_v1_rewrap_migrates_to_v2_with_same_key() {
+#[tokio::test]
+async fn credential_v1_rewrap_migrates_to_v2_with_same_key() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([28; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([28; 32]),
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
-    let v1 = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider);
+    let v1 = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider).await;
 
-    let migrated = rewrap_credential_document(&workspace, &source, &v1, &provider)
+    let migrated = rewrap_credential_with_provider(&workspace, &source, &v1, &provider)
+        .await
         .expect("rewrap v1")
         .expect("v1 must be resealed");
 
@@ -371,18 +401,19 @@ fn credential_v1_rewrap_migrates_to_v2_with_same_key() {
     assert_ne!(migrated.ciphertext, v1.ciphertext);
     assert_eq!(
         decrypt_values_with_provider(&workspace, &source, &migrated, &provider)
+            .await
             .expect("decrypt migrated credential"),
         values
     );
 }
 
-#[test]
-fn credential_document_rewrap_migrates_legacy_payload_aad() {
+#[tokio::test]
+async fn credential_document_rewrap_migrates_legacy_payload_aad() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let old_key_bytes = [29; 32];
-    let old_key = CredentialEncryptionKey::from_static_bytes_for_test(old_key_bytes);
-    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([31; 32]);
+    let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test(old_key_bytes);
+    let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([31; 32]);
     let old_provider = RotatingKeyProvider {
         active: old_key.clone(),
         keys: vec![old_key.clone()],
@@ -392,7 +423,8 @@ fn credential_document_rewrap_migrates_legacy_payload_aad() {
         keys: vec![old_key, new_key.clone()],
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
-    let mut legacy = encrypt_credential_v1_for_test(&workspace, &source, &values, &old_provider);
+    let mut legacy =
+        encrypt_credential_v1_for_test(&workspace, &source, &values, &old_provider).await;
     let key_id = legacy.key_id.clone();
     let dek: [u8; 32] = open_for_test(
         &old_key_bytes,
@@ -416,9 +448,11 @@ fn credential_document_rewrap_migrates_legacy_payload_aad() {
     );
     legacy.nonce = legacy_nonce.to_vec();
 
-    let migrated = rewrap_credential_document(&workspace, &source, &legacy, &rotating_provider)
-        .expect("rewrap legacy document")
-        .expect("stale key should migrate");
+    let migrated =
+        rewrap_credential_with_provider(&workspace, &source, &legacy, &rotating_provider)
+            .await
+            .expect("rewrap legacy document")
+            .expect("stale key should migrate");
     assert_eq!(migrated.key_id, new_key.key_id());
     assert_eq!(
         migrated.binding_version,
@@ -428,26 +462,27 @@ fn credential_document_rewrap_migrates_legacy_payload_aad() {
     assert_ne!(migrated.nonce, legacy.nonce);
     assert_eq!(
         decrypt_values_with_provider(&workspace, &source, &migrated, &rotating_provider)
+            .await
             .expect("decrypt migrated document"),
         values
     );
 }
 
-#[test]
-fn envelope_context_rejects_nul_in_domain() {
+#[tokio::test]
+async fn envelope_context_rejects_nul_in_domain() {
     let Err(error) = EnvelopeContext::new("test-envelope\0other", 1, &["workspace"]) else {
         panic!("NUL-containing envelope domain should fail");
     };
     assert!(error.to_string().contains("must not contain NUL"));
 }
 
-#[test]
-fn wrapped_dek_authenticates_full_envelope_context() {
+#[tokio::test]
+async fn wrapped_dek_authenticates_full_envelope_context() {
     const BINDING_VERSION: i64 = 7;
 
     let old_key_bytes = [37; 32];
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test(old_key_bytes),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test(old_key_bytes),
     };
     let context =
         EnvelopeContext::new("test-envelope", BINDING_VERSION, &["workspace", "document"])
@@ -458,11 +493,12 @@ fn wrapped_dek_authenticates_full_envelope_context() {
         &["other-workspace", "document"],
     )
     .expect("wrong envelope context");
-    let encrypted = seal_envelope_document(
+    let encrypted = seal_with_provider(
         &context,
         Zeroizing::new(b"envelope payload".to_vec()),
         &provider,
     )
+    .await
     .expect("seal envelope");
 
     assert_eq!(
@@ -487,12 +523,12 @@ fn wrapped_dek_authenticates_full_envelope_context() {
     );
 }
 
-#[test]
-fn shared_envelope_context_authenticates_open_and_rewrap() {
+#[tokio::test]
+async fn shared_envelope_context_authenticates_open_and_rewrap() {
     const BINDING_VERSION: i64 = 7;
 
-    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([37; 32]);
-    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([41; 32]);
+    let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([37; 32]);
+    let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([41; 32]);
     let old_provider = RotatingKeyProvider {
         active: old_key.clone(),
         keys: vec![old_key.clone()],
@@ -506,12 +542,13 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
             .expect("envelope context");
     let plaintext = b"envelope payload".to_vec();
 
-    let encrypted =
-        seal_envelope_document(&context, Zeroizing::new(plaintext.clone()), &old_provider)
-            .expect("seal envelope");
+    let encrypted = seal_with_provider(&context, Zeroizing::new(plaintext.clone()), &old_provider)
+        .await
+        .expect("seal envelope");
     assert_eq!(encrypted.binding_version, BINDING_VERSION);
     assert_eq!(
         open_with_provider(&context, &encrypted, &old_provider)
+            .await
             .expect("open envelope")
             .as_slice(),
         plaintext
@@ -524,12 +561,14 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
     .expect("wrong envelope context");
     assert_open_failed(
         &open_with_provider(&wrong_context, &encrypted, &old_provider)
+            .await
             .expect_err("wrong binding should fail authentication"),
     );
     let wrong_version =
         EnvelopeContext::new("test-envelope", 1, &["workspace", "document"]).expect("context");
     assert!(
         open_with_provider(&wrong_version, &encrypted, &old_provider)
+            .await
             .expect_err("wrong expected binding version should fail")
             .to_string()
             .contains("binding version 7 does not match context version 1")
@@ -542,6 +581,7 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
     unsupported.algorithm = "unsupported".to_string();
     assert!(
         open_with_provider(&context, &unsupported, &old_provider)
+            .await
             .expect_err("unsupported algorithm should fail")
             .to_string()
             .contains("unsupported envelope encryption algorithm")
@@ -556,10 +596,12 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
     .expect("rebound context");
     assert_open_failed(
         &open_with_provider(&rebound_context, &rebound, &old_provider)
+            .await
             .expect_err("stored version must also bind the wrapped DEK"),
     );
 
-    let rewrapped = rewrap_envelope_document(&context, &encrypted, &rotating_provider)
+    let rewrapped = rewrap_with_provider(&context, &encrypted, &rotating_provider)
+        .await
         .expect("rewrap envelope")
         .expect("stale key should rewrap");
     assert_eq!(rewrapped.key_id, new_key.key_id());
@@ -569,40 +611,43 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
     assert_ne!(rewrapped.wrapped_dek_nonce, encrypted.wrapped_dek_nonce);
     assert_eq!(
         open_with_provider(&context, &rewrapped, &rotating_provider)
+            .await
             .expect("open rewrapped envelope")
             .as_slice(),
         plaintext
     );
     assert!(
-        rewrap_envelope_document(&context, &rewrapped, &rotating_provider)
+        rewrap_with_provider(&context, &rewrapped, &rotating_provider)
+            .await
             .expect("rewrap current envelope")
             .is_none()
     );
     assert_open_failed(
-        &rewrap_envelope_document(&wrong_context, &rewrapped, &rotating_provider)
+        &rewrap_with_provider(&wrong_context, &rewrapped, &rotating_provider)
+            .await
             .expect_err("same-key rewrap must still authenticate binding"),
     );
 }
 
-#[test]
-fn local_file_key_provider_creates_and_reuses_private_key_file() {
+#[tokio::test]
+async fn local_file_key_provider_creates_and_reuses_private_key_file() {
     let temp = tempdir().expect("temp dir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
     layout.ensure().expect("ensure layout");
     let provider = local_file_key_provider(&layout);
 
-    let first = provider.active_key().expect("first key");
-    let second = provider.active_key().expect("second key");
+    let first = provider.active_key().await.expect("first key");
+    let second = provider.active_key().await.expect("second key");
 
     assert_eq!(first, second);
     assert!(
-        layout.credential_encryption_key_file().exists(),
+        layout.envelope_encryption_key_file().exists(),
         "provider should create durable key material outside the DB"
     );
 }
 
-#[test]
-fn local_file_key_provider_serializes_concurrent_first_use_creation() {
+#[tokio::test]
+async fn local_file_key_provider_serializes_concurrent_first_use_creation() {
     let temp = tempdir().expect("temp dir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
     layout.ensure().expect("ensure layout");
@@ -616,7 +661,12 @@ fn local_file_key_provider_serializes_concurrent_first_use_creation() {
             let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
                 barrier.wait();
-                provider.active_key().map(|key| key.key_id().to_string())
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("thread runtime")
+                    .block_on(provider.active_key())
+                    .map(|key| key.key_id().to_string())
             })
         })
         .collect();
@@ -639,46 +689,50 @@ fn local_file_key_provider_serializes_concurrent_first_use_creation() {
     assert_eq!(
         local_file_key_provider(&layout)
             .active_key()
+            .await
             .expect("persisted key")
             .key_id(),
         first_key_id
     );
 }
 
-#[test]
-fn decrypt_rejects_unknown_key_id() {
+#[tokio::test]
+async fn decrypt_rejects_unknown_key_id() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([13; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([13; 32]),
     };
-    let mut encrypted = encrypt_credential_values(
+    let mut encrypted = encrypt_values_with_provider(
         &workspace,
         &source,
         &BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
         &provider,
     )
+    .await
     .expect("encrypt");
     encrypted.key_id = "missing-key".to_string();
 
     let error = decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
+        .await
         .expect_err("missing KEK should fail");
 
     assert!(error.to_string().contains("missing test key"));
 }
 
-#[test]
-fn open_rejects_a_key_the_document_does_not_name() {
+#[tokio::test]
+async fn open_rejects_a_key_the_document_does_not_name() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
-    let stored_key = CredentialEncryptionKey::from_static_bytes_for_test([43; 32]);
-    let other_key = CredentialEncryptionKey::from_static_bytes_for_test([47; 32]);
+    let stored_key = EnvelopeEncryptionKey::from_static_bytes_for_test([43; 32]);
+    let other_key = EnvelopeEncryptionKey::from_static_bytes_for_test([47; 32]);
     let provider = StaticKeyProvider {
         key: stored_key.clone(),
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
-    let encrypted =
-        encrypt_credential_values(&workspace, &source, &values, &provider).expect("encrypt");
+    let encrypted = encrypt_values_with_provider(&workspace, &source, &values, &provider)
+        .await
+        .expect("encrypt");
 
     let error = decrypt_credential_values(&workspace, &source, &encrypted, &other_key)
         .expect_err("a key the document does not name must be rejected");
@@ -701,35 +755,79 @@ fn assert_open_failed(error: &CredentialsError) {
 }
 
 /// Resolve the KEK a document names, then decrypt with it.
-fn decrypt_values_with_provider(
+async fn decrypt_values_with_provider(
     workspace: &WorkspaceName,
     source: &SourceName,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
-    let kek = key_provider.key(&document.key_id)?;
+    let kek = key_provider.key(&document.key_id).await?;
     decrypt_credential_values(workspace, source, document, &kek)
 }
 
-/// Resolve the KEK a document names, then open it.
-fn open_with_provider(
+/// Resolve the active KEK, then seal with it.
+async fn seal_with_provider(
+    context: &EnvelopeContext,
+    document_bytes: Zeroizing<Vec<u8>>,
+    key_provider: &dyn EnvelopeKeyProvider,
+) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
+    let active_kek = key_provider.active_key().await?;
+    seal_envelope_document(context, document_bytes, &active_kek)
+}
+
+/// Resolve both the stored and active KEKs, then rewrap.
+async fn rewrap_with_provider(
     context: &EnvelopeContext,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
-) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
-    let kek = key_provider.key(&document.key_id)?;
-    open_envelope_document(context, document, &kek)
+    key_provider: &dyn EnvelopeKeyProvider,
+) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
+    let old_kek = key_provider.key(&document.key_id).await?;
+    let active_kek = key_provider.active_key().await?;
+    rewrap_envelope_document(context, document, &old_kek, &active_kek)
 }
 
-fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileCredentialKeyProvider {
-    LocalFileCredentialKeyProvider::new(layout, None)
-}
-
-fn encrypt_credential_v1_for_test(
+/// Resolve the active KEK, then encrypt credential values with it.
+async fn encrypt_values_with_provider(
     workspace: &WorkspaceName,
     source: &SourceName,
     values: &BTreeMap<String, String>,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
+) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
+    let active_kek = key_provider.active_key().await?;
+    encrypt_credential_values(workspace, source, values, &active_kek)
+}
+
+/// Resolve both KEKs, then rewrap a credential document.
+async fn rewrap_credential_with_provider(
+    workspace: &WorkspaceName,
+    source: &SourceName,
+    document: &EncryptedEnvelopeDocument,
+    key_provider: &dyn EnvelopeKeyProvider,
+) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
+    let old_kek = key_provider.key(&document.key_id).await?;
+    let active_kek = key_provider.active_key().await?;
+    rewrap_credential_document(workspace, source, document, &old_kek, &active_kek)
+}
+
+/// Resolve the KEK a document names, then open it.
+async fn open_with_provider(
+    context: &EnvelopeContext,
+    document: &EncryptedEnvelopeDocument,
+    key_provider: &dyn EnvelopeKeyProvider,
+) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
+    let kek = key_provider.key(&document.key_id).await?;
+    open_envelope_document(context, document, &kek)
+}
+
+fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileEnvelopeKeyProvider {
+    LocalFileEnvelopeKeyProvider::new(layout)
+}
+
+async fn encrypt_credential_v1_for_test(
+    workspace: &WorkspaceName,
+    source: &SourceName,
+    values: &BTreeMap<String, String>,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> super::encryption::EncryptedCredentialDocument {
     let context = EnvelopeContext::new(
         "coral-credential-document",
@@ -742,7 +840,8 @@ fn encrypt_credential_v1_for_test(
         "values": values,
     }))
     .expect("serialize v1 credential document");
-    seal_envelope_document(&context, Zeroizing::new(plaintext), key_provider)
+    seal_with_provider(&context, Zeroizing::new(plaintext), key_provider)
+        .await
         .expect("encrypt v1 credential document")
 }
 
