@@ -49,6 +49,28 @@ fn query_stream_projects_outer_operations() {
 }
 
 #[test]
+fn query_stream_projects_user_from_authenticated_ancestor() {
+    let grpc = span("user-trace", "grpc")
+        .named("grpc")
+        .attrs(json!({"coral.local.user.id": "user-123"}))
+        .times(1, 40)
+        .build();
+    let query = span("user-trace", "query")
+        .child_of(&grpc)
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 42"}))
+        .times(10, 30)
+        .build();
+
+    let summaries = project(&[grpc, query], None);
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(
+        summaries.first().expect("attributed query").user_id,
+        "user-123"
+    );
+}
+
+#[test]
 fn query_stream_projects_search_text_for_mcp_operation() {
     let tool = span("search-trace", "search-tool")
         .named("coral.mcp.call_tool")
@@ -123,6 +145,7 @@ fn query_stream_projects_bare_legacy_root_query() {
     assert_eq!(summary.query, "SELECT 42");
     assert_eq!(summary.row_count, 7);
     assert!(summary.row_count_recorded);
+    assert!(summary.user_id.is_empty());
 }
 
 #[test]

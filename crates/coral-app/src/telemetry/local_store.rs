@@ -463,6 +463,7 @@ pub(crate) struct TraceSummaryRecord {
     pub(crate) operation_kind: StoredTraceOperationKind,
     pub(crate) operation_name: String,
     pub(crate) invocation_kind: StoredTraceInvocationKind,
+    pub(crate) user_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -577,6 +578,7 @@ struct TraceListAggregate {
     error_count: u32,
     found_root_span: bool,
     matches_workspace: bool,
+    user_id: Option<String>,
     primary: Option<TracePrimaryCandidate>,
 }
 
@@ -1047,6 +1049,7 @@ impl TraceListAggregate {
             error_count: 0,
             found_root_span: false,
             matches_workspace: false,
+            user_id: None,
             primary: None,
         };
         aggregate.record_span(span, workspace_name);
@@ -1064,6 +1067,9 @@ impl TraceListAggregate {
         self.matches_workspace |= workspace_name.is_some_and(|workspace_name| {
             attributes_match_workspace(&span.attributes_json, workspace_name)
         });
+        if self.user_id.is_none() {
+            self.user_id = user_id_from_attributes(&span.attributes_json);
+        }
 
         let primary = TracePrimaryCandidate::from_span(span);
         if self
@@ -1083,7 +1089,9 @@ impl TraceListAggregate {
             span_count: self.span_count,
             error_count: self.error_count,
         };
-        summary_from_list_aggregate(&aggregate, self.primary.as_ref())
+        let mut summary = summary_from_list_aggregate(&aggregate, self.primary.as_ref());
+        summary.user_id = self.user_id.unwrap_or_default();
+        summary
     }
 }
 
@@ -1650,7 +1658,12 @@ fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummary
             span.span_id.as_str(),
         )
     });
-    summary_from_aggregate(&aggregate, primary)
+    let mut summary = summary_from_aggregate(&aggregate, primary);
+    summary.user_id = spans
+        .iter()
+        .find_map(|span| user_id_from_attributes(&span.attributes_json))
+        .unwrap_or_default();
+    summary
 }
 
 fn summary_from_list_aggregate(
@@ -1682,6 +1695,7 @@ fn summary_from_list_aggregate(
             operation_kind: StoredTraceOperationKind::Unspecified,
             operation_name: String::new(),
             invocation_kind: StoredTraceInvocationKind::Unspecified,
+            user_id: String::new(),
         },
         |primary| {
             let attributes = parse_attributes(&primary.attributes_json);
@@ -1708,6 +1722,7 @@ fn summary_from_list_aggregate(
                 operation_kind: StoredTraceOperationKind::Unspecified,
                 operation_name: String::new(),
                 invocation_kind: StoredTraceInvocationKind::Unspecified,
+                user_id: String::new(),
             }
         },
     )
@@ -1742,6 +1757,7 @@ fn summary_from_aggregate(
             operation_kind: StoredTraceOperationKind::Unspecified,
             operation_name: String::new(),
             invocation_kind: StoredTraceInvocationKind::Unspecified,
+            user_id: String::new(),
         },
         |primary| {
             let attributes = parse_attributes(&primary.attributes_json);
@@ -1768,6 +1784,7 @@ fn summary_from_aggregate(
                 operation_kind: StoredTraceOperationKind::Unspecified,
                 operation_name: String::new(),
                 invocation_kind: StoredTraceInvocationKind::Unspecified,
+                user_id: String::new(),
             }
         },
     )
@@ -1829,6 +1846,12 @@ fn parse_attributes(attributes_json: &str) -> Option<JsonValue> {
 
 fn attributes_match_workspace(attributes_json: &str, workspace_name: &str) -> bool {
     workspace_attribute(attributes_json).is_some_and(|workspace| workspace == workspace_name)
+}
+
+fn user_id_from_attributes(attributes_json: &str) -> Option<String> {
+    parse_attributes(attributes_json)
+        .as_ref()
+        .and_then(|attributes| attr_string(attributes, coral_telemetry::TRACE_USER_ID_ATTRIBUTE))
 }
 
 fn workspace_attribute(attributes_json: &str) -> Option<String> {
