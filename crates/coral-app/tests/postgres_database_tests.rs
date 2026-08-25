@@ -23,7 +23,7 @@ use coral_spec::{
 };
 use sqlx::postgres::PgPoolOptions;
 use tempfile::TempDir;
-use tonic::{Code, Request};
+use tonic::Request;
 
 #[tokio::test]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run configured Postgres startup coverage"]
@@ -65,7 +65,7 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
         "postgres_fixed_token"
     );
 
-    let error = app
+    let oauth = app
         .identity_spec_client()
         .add_identity_spec(Request::new(AddIdentitySpecRequest {
             manifest_yaml: oauth_manifest().to_string(),
@@ -76,14 +76,18 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
             scope: Some(global_scope()),
         }))
         .await
-        .expect_err("Postgres setup-input persistence requires a configured encryption key");
-    assert_eq!(error.code(), Code::FailedPrecondition);
+        .expect("install OAuth identity spec with setup inputs")
+        .into_inner();
+    assert_eq!(
+        oauth.identity_spec.expect("installed identity spec").name,
+        "postgres_oauth"
+    );
     assert!(
-        !config_dir
+        config_dir
             .join("credentials")
             .join("encryption.key")
             .exists(),
-        "Postgres must never create a node-local identity encryption key"
+        "identity setup-input persistence should create the local encryption key"
     );
 
     server.shutdown().await.expect("shutdown server");
