@@ -12,7 +12,6 @@ import { Typography } from '@/wax/components/typography'
 
 import type { SourceDescribeData } from '@/lib/source-describe'
 import type { CatalogEntry } from '@/lib/sources'
-import type { SourcesActionData } from '@/routes/sources-action'
 import type { SourceDiscoveryData } from '@/routes/source-discovery'
 
 import * as styles from './source-add.css'
@@ -53,7 +52,6 @@ export interface DiscardGuard {
  * decides the steps that follow.
  */
 export function SourceAddDialog({
-  actionData,
   describePath,
   discoveryPath,
   fetchOAuthImport = fetch,
@@ -63,7 +61,6 @@ export function SourceAddDialog({
   openAuthorization = (url) => window.open(url, '_blank', 'noopener,noreferrer'),
   onOpenChange,
 }: {
-  actionData: SourcesActionData
   describePath: string
   discoveryPath: string
   fetchOAuthImport?: typeof fetch
@@ -87,7 +84,6 @@ export function SourceAddDialog({
         <Dialog.Popup size="xl">
           {open ? (
             <SourceAddDialogContent
-              actionData={actionData}
               describePath={describePath}
               discoveryPath={discoveryPath}
               fetchOAuthImport={fetchOAuthImport}
@@ -105,7 +101,6 @@ export function SourceAddDialog({
 }
 
 function SourceAddDialogContent({
-  actionData,
   describePath,
   discoveryPath,
   fetchOAuthImport,
@@ -115,7 +110,6 @@ function SourceAddDialogContent({
   openAuthorization,
   requestCancelRef,
 }: {
-  actionData: SourcesActionData
   describePath: string
   discoveryPath: string
   fetchOAuthImport: typeof fetch
@@ -158,9 +152,9 @@ function SourceAddDialogContent({
   const entry: CatalogEntry | null =
     describe.data?.status === 'success' && !describing ? describe.data.entry : null
 
-  // The create branch holds a draft the user can lose, so while it is mounted it
-  // answers for what closing costs. Without it, a typed URL is all that is at
-  // stake.
+  // A branch holds answers the user can lose, so while one is mounted it says
+  // what closing costs and how to throw it away. Without a branch, a typed URL
+  // is all that is at stake.
   const discardRef = useRef<DiscardGuard | null>(null)
   const requestCancel = () => {
     if (discardRef.current?.isDirty() ?? trimmedUrl.length > 0) {
@@ -336,7 +330,6 @@ function SourceAddDialogContent({
 
       {branch === 'url' && discovered ? (
         <SourceCreateFlow
-          actionData={actionData}
           discardRef={discardRef}
           discovery={discovered}
           fetchOAuthImport={fetchOAuthImport}
@@ -361,15 +354,16 @@ function SourceAddDialogContent({
           <Dialog.Popup size="l">
             {entry ? (
               <SourceImportConfigureForm
+                discardRef={discardRef}
                 entry={entry}
                 fetchOAuthImport={fetchOAuthImport}
                 key={describeCount}
                 manifestYaml={manifestYaml}
                 oauthImportPath={oauthImportPath}
                 onBack={() => setBranch('none')}
-                onCancel={onCancel}
                 onOAuthImportComplete={onOAuthImportComplete}
                 openAuthorization={openAuthorization}
+                requestCancel={requestCancel}
               />
             ) : null}
           </Dialog.Popup>

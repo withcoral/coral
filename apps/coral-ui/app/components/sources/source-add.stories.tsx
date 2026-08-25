@@ -91,8 +91,7 @@ const DESCRIBED: SourceDescribeData = {
 }
 
 const REJECTED: SourceDescribeData = {
-  message:
-    "invalid input: OpenAPI descriptor './openapi.yaml' is relative, but imported DSL v4 manifests must use absolute file descriptors.",
+  message: UNBREAKABLE_IMPORT_ERROR,
   status: 'error',
 }
 
@@ -136,7 +135,6 @@ const meta = {
     dismissAllToasts()
   },
   args: {
-    actionData: undefined,
     describePath: DESCRIBE_PATH,
     discoveryPath: DISCOVERY_PATH,
     oauthImportPath: OAUTH_IMPORT_PATH,
@@ -252,62 +250,6 @@ export const UrlOAuthLoading: Story = {
   },
 }
 
-export const UrlImportError: Story = {
-  args: {
-    actionData: {
-      intent: 'import',
-      message: 'The OpenAPI descriptor could not be loaded.',
-      name: 'weather_api',
-      status: 'error',
-    },
-  },
-  name: 'URL: import error',
-  play: async (context) => {
-    const { canvasElement } = context
-    await stepToCredentials(context)
-
-    await waitFor(() => {
-      const dialogs = activeDialogs(canvasElement.ownerDocument)
-      const credentialsDialog = dialogs.item(dialogs.length - 1)
-      if (!(credentialsDialog instanceof HTMLElement))
-        throw new Error('Credentials dialog not found')
-      return expect(
-        within(credentialsDialog).getByText('The OpenAPI descriptor could not be loaded.'),
-      ).toBeVisible()
-    })
-  },
-}
-
-export const UrlImportErrorUnbreakableMessage: Story = {
-  args: {
-    actionData: {
-      intent: 'import',
-      message: UNBREAKABLE_IMPORT_ERROR,
-      name: 'weather_api',
-      status: 'error',
-    },
-  },
-  name: 'URL: import error with unbreakable message',
-  play: async (context) => {
-    const page = within(context.canvasElement.ownerDocument.body)
-
-    await stepToCredentials(context)
-
-    const banner = await waitFor(() => {
-      const match = page.getByText(/failed to materialize source 'axiom'/)
-      expect(match).toBeVisible()
-      return match
-    })
-    // The Rust type paths have to break inside the banner instead of spilling
-    // past the dialog edge.
-    const popup = banner.closest('[role="dialog"]')
-    if (!(popup instanceof HTMLElement)) throw new Error('Credentials dialog not found')
-    await expect(banner.getBoundingClientRect().right).toBeLessThanOrEqual(
-      popup.getBoundingClientRect().right,
-    )
-  },
-}
-
 // No play function: drop a file or pick one to walk the whole import yourself.
 export const Manifest: Story = {}
 
@@ -337,6 +279,25 @@ export const ManifestOAuthLoading: Story = {
   },
 }
 
+export const ManifestDiscardConfirmation: Story = {
+  name: 'Manifest: discard confirmation',
+  play: async ({ canvasElement, userEvent }) => {
+    const page = within(canvasElement.ownerDocument.body)
+
+    await userEvent.upload(manifestInput(page), manifestFile())
+    await waitFor(() => expect(page.getByText('Step 2/2')).toBeVisible())
+
+    // Nothing typed yet, so there is nothing to confirm.
+    const panel = within(page.getByRole('tabpanel'))
+    await userEvent.type(panel.getByLabelText('Weather client id'), 'storybook-client')
+    await userEvent.click(page.getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() =>
+      expect(page.getByRole('dialog', { name: 'Discard source draft?' })).toBeVisible(),
+    )
+  },
+}
+
 export const ManifestError: Story = {
   name: 'Manifest: error',
   render: (args) => <SourceAddDialogStory describe={REJECTED} {...args} />,
@@ -348,14 +309,22 @@ export const ManifestError: Story = {
     // The toast carries the parse error, and the dialog stays on the first step so
     // the next file replaces the rejected manifest.
     await waitFor(() => expect(page.getByText('Coral could not read that manifest')).toBeVisible())
-    await expect(page.getByText(/must use absolute file descriptors/)).toBeVisible()
     await expect(page.getByText('Drop a manifest file here')).toBeVisible()
+
+    // Server errors carry unbreakable Rust type paths, and the toast is a fixed
+    // width, so the message has to break inside it rather than spill past it.
+    const message = page.getByText(/failed to materialize source 'axiom'/)
+    const toast = message.closest('[class*="container"]')
+    if (!(toast instanceof HTMLElement)) throw new Error('Toast not found')
+    await expect(message.getBoundingClientRect().right).toBeLessThanOrEqual(
+      toast.getBoundingClientRect().right,
+    )
   },
 }
 
 type PlayContext = Parameters<NonNullable<Story['play']>>[0]
 
-/** Walk the URL branch to its last step, which four stories all start from. */
+/** Walk the URL branch to its last step, which both credential stories start from. */
 async function stepToCredentials({ canvasElement, userEvent }: PlayContext) {
   const page = within(canvasElement.ownerDocument.body)
 

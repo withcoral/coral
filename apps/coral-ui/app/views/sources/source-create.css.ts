@@ -56,7 +56,3 @@ export const authPanelHidden = style({
   pointerEvents: 'none',
   visibility: 'hidden',
 })
-
-export const importError = style({
-  marginBlockStart: 14,
-})

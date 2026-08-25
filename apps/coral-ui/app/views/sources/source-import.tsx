@@ -1,4 +1,4 @@
-import { type FormEvent, useRef } from 'react'
+import { type FormEvent, type RefObject, useEffect, useRef } from 'react'
 import { Form, useNavigation } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
@@ -12,6 +12,7 @@ import { OAuthProgressDialog } from '@/components/sources/install/oauth-progress
 import { oauthActionLabel, useOAuthInstallFlow } from '@/lib/source-oauth-install-flow'
 import type { CatalogEntry } from '@/lib/sources'
 
+import type { DiscardGuard } from './source-add'
 import * as styles from './source-import.css'
 import { SourceInputRows, useSourceInputCollection } from './source-input-collection'
 import {
@@ -29,23 +30,25 @@ const STEP_COUNT = 2
  * before the next manifest's form reuses the same input keys.
  */
 export function SourceImportConfigureForm({
+  discardRef,
   entry,
   fetchOAuthImport,
   manifestYaml,
   oauthImportPath,
   onBack,
-  onCancel,
   onOAuthImportComplete,
   openAuthorization,
+  requestCancel,
 }: {
+  discardRef: RefObject<DiscardGuard | null>
   entry: CatalogEntry
   fetchOAuthImport: typeof fetch
   manifestYaml: string
   oauthImportPath: string
   onBack: () => void
-  onCancel: () => void
   onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
   openAuthorization: (url: string) => unknown
+  requestCancel: () => void
 }) {
   const formRef = useRef<HTMLFormElement>(null)
   const navigation = useNavigation()
@@ -65,10 +68,17 @@ export function SourceImportConfigureForm({
   // rule that disables the button has to hold here too.
   const blocked = importing || !collection.canSubmit || entry.installed
 
-  function cancel() {
-    oauth.cancel()
-    onCancel()
-  }
+  // A manifest that asks for nothing costs nothing to close, so only typed
+  // credentials make this branch worth confirming.
+  useEffect(() => {
+    discardRef.current = {
+      discard: oauth.cancel,
+      isDirty: () => Object.values(collection.values).some((value) => value.trim().length > 0),
+    }
+    return () => {
+      discardRef.current = null
+    }
+  })
 
   async function submitOAuthImport() {
     if (!formRef.current || blocked) return
@@ -114,7 +124,7 @@ export function SourceImportConfigureForm({
       />
 
       <Dialog.Actions>
-        <ButtonContainer disabled={submitting} onClick={cancel} size="32" variant="bare">
+        <ButtonContainer disabled={submitting} onClick={requestCancel} size="32" variant="bare">
           <ButtonText>Cancel</ButtonText>
         </ButtonContainer>
         <ButtonContainer disabled={importing} onClick={onBack} size="32" variant="secondary">

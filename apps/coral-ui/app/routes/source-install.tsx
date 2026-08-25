@@ -46,14 +46,13 @@ export async function clientAction({
   return redirect(routePath('workspaceSources', { workspaceId: params.workspaceId }))
 }
 
-export default function SourceInstallRoute({ actionData, params }: Route.ComponentProps) {
+export default function SourceInstallRoute({ params }: Route.ComponentProps) {
   const navigate = useNavigate()
   const revalidator = useRevalidator()
   const sourcesPath = routePath('workspaceSources', { workspaceId: params.workspaceId })
 
   return (
     <SourceAddDialog
-      actionData={actionData}
       describePath={routePath('workspaceSourceDescribe', { workspaceId: params.workspaceId })}
       discoveryPath={routePath('workspaceSourceDiscovery', { workspaceId: params.workspaceId })}
       oauthImportPath={`${sourcesPath}/oauth-import`}

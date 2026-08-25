@@ -12,7 +12,6 @@ import { Typography } from '@/wax/components/typography'
 
 import { OAuthProgressDialog } from '@/components/sources/install/oauth-progress-dialog'
 import { oauthActionLabel, useOAuthInstallFlow } from '@/lib/source-oauth-install-flow'
-import type { SourcesActionData } from '@/routes/sources-action'
 import type {
   SourceDetectedAuth,
   SourceDiscoveryData,
@@ -21,7 +20,7 @@ import type {
 
 import type { DiscardGuard } from './source-add'
 import * as styles from './source-create.css'
-import { formatFieldName, SourceError, SourceField, SourceHeader } from './source-presentation'
+import { formatFieldName, SourceField, SourceHeader } from './source-presentation'
 
 const SECRET_KEY = 'API_TOKEN'
 const NAME_PATTERN = /^[a-z][a-z0-9_]*$/
@@ -70,7 +69,6 @@ type DiscoveredSource = Extract<SourceDiscoveryData, { status: 'success' }>
  * first one's answers.
  */
 export function SourceCreateFlow({
-  actionData,
   discardRef,
   discovery,
   fetchOAuthImport,
@@ -82,7 +80,6 @@ export function SourceCreateFlow({
   requestCancel,
   url,
 }: {
-  actionData: SourcesActionData
   discardRef: RefObject<DiscardGuard | null>
   discovery: DiscoveredSource
   fetchOAuthImport: typeof fetch
@@ -110,8 +107,6 @@ export function SourceCreateFlow({
   const navigationSubmitting =
     navigation.state !== 'idle' && navigation.formData?.get('_intent') === 'import'
   const submitting = navigationSubmitting || oauth.busy
-  const importError =
-    actionData?.status === 'error' && actionData.intent === 'import' ? actionData.message : null
 
   // Past discovery there is always a draft to lose, so this branch answers for
   // what closing the dialog costs for as long as it is mounted.
@@ -217,9 +212,6 @@ export function SourceCreateFlow({
                         disabled={submitting}
                       />
 
-                      {importError ? (
-                        <SourceError className={styles.importError}>{importError}</SourceError>
-                      ) : null}
                       <OAuthProgressDialog
                         error={oauth.error}
                         inputLabel={formatFieldName}
