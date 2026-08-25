@@ -127,6 +127,15 @@ impl IdentityOwner {
             )),
         }
     }
+
+    /// Reconstruct an owner from a child table whose exact key omits workspace metadata.
+    pub(crate) fn from_key_storage_parts(
+        owner_kind: &str,
+        owner_key: &str,
+    ) -> Result<Self, DbError> {
+        let workspace_id = (owner_kind == WORKSPACE_OWNER_KIND).then_some(owner_key);
+        Self::from_storage_parts(owner_kind, owner_key, workspace_id)
+    }
 }
 
 /// Exact identity-spec version selected when an identity is written.
@@ -260,6 +269,18 @@ mod tests {
         let owner = IdentityOwner::workspace(workspace.clone());
         assert_eq!((owner.kind(), owner.key()), ("workspace", "team-1"));
         assert_eq!(owner.workspace_name(), Some(&workspace));
+        assert_eq!(
+            IdentityOwner::from_key_storage_parts("workspace", "team-1")
+                .expect("stored workspace owner"),
+            owner
+        );
+        assert_eq!(
+            IdentityOwner::from_key_storage_parts("user", "coral:local")
+                .expect("stored local owner"),
+            local
+        );
+        IdentityOwner::from_key_storage_parts("unknown", "team-1")
+            .expect_err("unknown owner kind must fail");
     }
 
     #[test]
