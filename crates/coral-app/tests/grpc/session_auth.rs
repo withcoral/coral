@@ -16,7 +16,11 @@ use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 
 const ISSUER: &str = "https://auth.example.test";
-const AUDIENCE: &str = "https://mcp.example.test";
+/// The public base the per-workspace MCP resources hang under. Not an audience
+/// of its own: tokens are minted for [`MINTED_AUDIENCE`], one member of the
+/// family, which the private gRPC API accepts like every other member.
+const PUBLIC_BASE: &str = "https://mcp.example.test";
+const MINTED_AUDIENCE: &str = "https://mcp.example.test/workspace/transport-tests";
 const CLIENT_ID: &str = "https://client.example/client.json";
 const ACCESS_TOKEN_TTL: Duration = Duration::from_mins(5);
 
@@ -85,7 +89,7 @@ storage = \"file\"
 [server.mcp_http]
 enabled = true
 bind = '127.0.0.1:0'
-public_url = '{AUDIENCE}'
+public_url = '{PUBLIC_BASE}'
 
 [auth.authorization_server]
 issuer = '{ISSUER}'
@@ -127,7 +131,7 @@ redirect_uri = '{ISSUER}/auth/oidc/callback'
             ACCESS_TOKEN_TTL,
             user_id,
             CLIENT_ID,
-            AUDIENCE,
+            MINTED_AUDIENCE,
             principal_kind,
         )
         .expect("issue a session access token")

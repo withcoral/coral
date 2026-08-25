@@ -2031,7 +2031,10 @@ const BETA_WORKSPACE: &str = "beta-ledger";
 /// the end lands in the same log, so the RPCs an MCP credential must never
 /// reach are ones this fixture demonstrably notices.
 #[tokio::test]
-#[expect(clippy::too_many_lines, reason = "one scenario walks both workspaces end to end")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario walks both workspaces end to end"
+)]
 async fn authenticated_admission_binds_each_caller_to_the_urls_workspace() {
     let directory = serve_directory(vec![
         ("alpha", vec![ALPHA_WORKSPACE.to_string()]),
