@@ -357,6 +357,64 @@ async fn ledger_sweep_migrates_stale_schemas_and_is_idempotent_against_postgres(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run the boot prune against Postgres"]
+async fn boot_prune_removes_workspaces_missing_from_the_live_set_against_postgres() {
+    let Some(storage) = open_storage().await else {
+        return;
+    };
+    let orphaned = unique_workspace("orphaned");
+    let live = unique_workspace("live");
+    {
+        let storage = storage.clone();
+        let (orphaned, live) = (orphaned.clone(), live.clone());
+        blocking(move || {
+            storage.open_workspace(&orphaned).expect("open orphaned");
+            storage.open_workspace(&live).expect("open live");
+        })
+        .await;
+    }
+
+    // Every other registered Workspace stays live: the registry is shared with
+    // concurrent tests, so only this test's orphan may be missing.
+    let mut live_names: std::collections::BTreeSet<String> =
+        sqlx::query_scalar("SELECT workspace_name FROM search_registry.workspaces")
+            .fetch_all(&test_pool().await)
+            .await
+            .expect("registered workspaces")
+            .into_iter()
+            .collect();
+    assert!(live_names.remove(orphaned.as_str()));
+
+    let pruned = storage
+        .prune_workspaces_except(&live_names)
+        .await
+        .expect("prune");
+
+    assert_eq!(pruned, vec![orphaned.as_str().to_string()]);
+    let (orphan_exists, live_exists) = {
+        let storage = storage.clone();
+        let (orphaned, live) = (orphaned.clone(), live.clone());
+        blocking(move || {
+            (
+                storage
+                    .open_existing_workspace(&orphaned)
+                    .expect("probe orphan")
+                    .is_some(),
+                storage
+                    .open_existing_workspace(&live)
+                    .expect("probe live")
+                    .is_some(),
+            )
+        })
+        .await
+    };
+    assert!(!orphan_exists, "the orphaned workspace must be gone");
+    assert!(live_exists, "a live workspace must survive the prune");
+
+    delete_workspaces(&storage, &[live]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run match semantics against Postgres"]
 async fn match_semantics_follow_the_benchmark_strata_against_postgres() {
     let Some(storage) = open_storage().await else {

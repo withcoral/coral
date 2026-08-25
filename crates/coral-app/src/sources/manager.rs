@@ -215,28 +215,34 @@ impl SourceManager {
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
+        let search_storage = SearchStorage::sqlite(layout.clone());
         Self::with_diagnostic_reporter(
             config_store,
             credential_manager,
             layout,
             lifecycle_lock,
             SourceDiagnosticReporter::default(),
+            search_storage,
         )
         .with_database_sources_enabled(true)
     }
 
+    /// `search_storage` is required, not defaulted: a source lifecycle change
+    /// must clear the catalog projection on the backend that serves it, and a
+    /// default would clear the wrong one in silence.
     pub(crate) fn with_diagnostic_reporter(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
         diagnostic_reporter: SourceDiagnosticReporter,
+        search_storage: SearchStorage,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
-            search_storage: SearchStorage::sqlite(layout.clone()),
+            search_storage,
             layout,
             lifecycle_lock,
             diagnostic_reporter,
@@ -244,11 +250,6 @@ impl SourceManager {
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
             database_sources_enabled: false,
         }
-    }
-
-    pub(crate) fn with_search_storage(mut self, search_storage: SearchStorage) -> Self {
-        self.search_storage = search_storage;
-        self
     }
 
     pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
@@ -960,12 +961,8 @@ impl SourceManager {
     ) {
         match self
             .search_storage
-            .open_existing_workspace(workspace_name)
-            .and_then(|store| {
-                store
-                    .map(|store| store.catalog().clear_workspace())
-                    .transpose()
-            }) {
+            .clear_existing_workspace_catalog(workspace_name)
+        {
             Ok(None) => {}
             Ok(Some(result)) => {
                 tracing::debug!(
@@ -980,7 +977,8 @@ impl SourceManager {
                     workspace = %workspace_name,
                     source = %source_name,
                     search_backend = self.search_storage.backend_name(),
-                    "source lifecycle changed, but failed to clear catalog search projection: {error}"
+                    error = %error,
+                    "source lifecycle changed, but failed to clear catalog search projection"
                 );
             }
         }

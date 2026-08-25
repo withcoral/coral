@@ -24,8 +24,8 @@ use crate::search::maintenance::{
 };
 use crate::search::observed::provider::{ObservedValuesProvider, observed_clear_provider_result};
 use crate::search::observed::{
-    ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad, ObservedValuesLiveScopeLoader,
-    ObservedValuesRetrievalPolicy,
+    ObservedValuesClearResult, ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad,
+    ObservedValuesLiveScopeLoader, ObservedValuesRetrievalPolicy,
 };
 use crate::search::provider::{
     LocalSearchWriteCoordinator, SearchExecutionContext, SearchProviderRegistry,
@@ -458,10 +458,22 @@ impl SearchManager {
         Ok(ClearSearchDataResponse {
             results: vec![
                 catalog_clear_provider_result(cleared.catalog.deleted_document_count),
-                observed_clear_provider_result(cleared.observed),
+                self.observed_clear_all_result(cleared.observed),
             ],
             storage_cleanup: store.compact_after_clear(),
         })
+    }
+
+    /// The observed half of an all-data clear: the clear's own result, or the
+    /// explicit absence when the backend keeps no observed values.
+    fn observed_clear_all_result(
+        &self,
+        observed: Option<ObservedValuesClearResult>,
+    ) -> SearchMaintenanceResult {
+        observed.map_or_else(
+            || observed_values_search_unavailable_maintenance_result(self.storage.backend_name()),
+            observed_clear_provider_result,
+        )
     }
 
     fn clear_workspace_all(
@@ -478,7 +490,7 @@ impl SearchManager {
         Ok(ClearSearchDataResponse {
             results: vec![
                 catalog_clear_provider_result(cleared.catalog.deleted_document_count),
-                observed_clear_provider_result(cleared.observed),
+                self.observed_clear_all_result(cleared.observed),
             ],
             storage_cleanup: store.compact_after_clear(),
         })

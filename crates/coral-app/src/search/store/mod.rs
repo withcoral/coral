@@ -18,6 +18,7 @@ mod config;
 mod postgres;
 mod sqlite;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tokio::runtime::Handle;
@@ -205,13 +206,21 @@ impl SearchStorage {
         }
     }
 
+    /// Clears the Workspace's catalog projection when it has search state, and
+    /// creates none when it has not. Source lifecycle changes call this best
+    /// effort; `None` means there was nothing to clear.
+    pub(crate) fn clear_existing_workspace_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<CatalogClearResult>, SearchStoreError> {
+        self.open_existing_workspace(workspace_name)?
+            .map(|store| store.catalog().clear_workspace())
+            .transpose()
+    }
+
     /// Removes every trace of the Workspace's search state. Returns whether
     /// there was any. The `SQLite` sidecar lives inside the Workspace
     /// directory, which Workspace deletion removes as a whole.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into Workspace deletion next in this stack")
-    )]
     pub(crate) async fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -224,12 +233,32 @@ impl SearchStorage {
         }
     }
 
+    /// Whether this backend registers Workspaces in shared storage that
+    /// outlives the Workspace directory, and so needs boot-time pruning.
+    pub(crate) fn has_workspace_registry(&self) -> bool {
+        match &self.backend {
+            SearchStorageBackend::Sqlite(_) => false,
+            SearchStorageBackend::Postgres(_) => true,
+        }
+    }
+
+    /// Removes the search state of every registered Workspace that is not in
+    /// `live`, and returns their names. The safety net for a deletion whose
+    /// best-effort cleanup failed: the next boot finishes it.
+    pub(crate) async fn prune_workspaces_except(
+        &self,
+        live: &BTreeSet<String>,
+    ) -> Result<Vec<String>, SearchStoreError> {
+        match &self.backend {
+            SearchStorageBackend::Sqlite(_) => Ok(Vec::new()),
+            SearchStorageBackend::Postgres(storage) => {
+                Ok(storage.prune_workspaces_except(live).await?)
+            }
+        }
+    }
+
     /// Boot-time ledger sweep: migrates every Workspace schema the backend
     /// knows to be behind this binary. `SQLite` sidecars migrate on open.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into server startup next in this stack")
-    )]
     pub(crate) async fn migrate_all(
         &self,
     ) -> Result<Vec<MigratedWorkspaceSchema>, SearchStoreError> {
@@ -271,7 +300,9 @@ enum SearchStoreBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SearchClearAllResult {
     pub(crate) catalog: CatalogClearResult,
-    pub(crate) observed: ObservedValuesClearResult,
+    /// `None` when the backend keeps no observed values, so callers report
+    /// the absence instead of an empty clear.
+    pub(crate) observed: Option<ObservedValuesClearResult>,
 }
 
 impl SearchStore {
@@ -306,11 +337,14 @@ impl SearchStore {
         match &self.backend {
             SearchStoreBackend::Sqlite(store) => {
                 let (catalog, observed) = store.clear_source_all(source_name)?;
-                Ok(SearchClearAllResult { catalog, observed })
+                Ok(SearchClearAllResult {
+                    catalog,
+                    observed: Some(observed),
+                })
             }
             SearchStoreBackend::Postgres(store) => Ok(SearchClearAllResult {
                 catalog: store.clear_source(source_name)?,
-                observed: ObservedValuesClearResult::default(),
+                observed: None,
             }),
         }
     }
@@ -320,11 +354,14 @@ impl SearchStore {
         match &self.backend {
             SearchStoreBackend::Sqlite(store) => {
                 let (catalog, observed) = store.clear_workspace_all()?;
-                Ok(SearchClearAllResult { catalog, observed })
+                Ok(SearchClearAllResult {
+                    catalog,
+                    observed: Some(observed),
+                })
             }
             SearchStoreBackend::Postgres(store) => Ok(SearchClearAllResult {
                 catalog: store.clear_workspace()?,
-                observed: ObservedValuesClearResult::default(),
+                observed: None,
             }),
         }
     }

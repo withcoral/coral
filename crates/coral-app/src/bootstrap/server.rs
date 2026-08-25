@@ -1,5 +1,6 @@
 //! Builds and runs the Coral gRPC server.
 
+use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -346,8 +347,7 @@ impl ServerBuilder {
         let principal_provider = self.config.principal_provider.clone();
         let grpc_listener = self.config.grpc_listener.clone();
         layout.ensure()?;
-        let feature_store = FeatureStore::from_layout(layout.clone());
-        let features = feature_store.load_with_overrides(&self.config.feature_overrides)?;
+        let (feature_store, features) = self.load_features(&layout)?;
         let (database_config, coral_db) = init_database(&layout).await?;
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store, &layout).await?;
@@ -367,10 +367,10 @@ impl ServerBuilder {
             layout.clone(),
             workspace_lifecycle_lock.clone(),
             diagnostic_reporter.clone(),
+            search_storage.clone(),
         )
         .with_pool_registry(Arc::clone(&workspace_pool_registry))
-        .with_database_sources_enabled(database_sources_enabled)
-        .with_search_storage(search_storage.clone());
+        .with_database_sources_enabled(database_sources_enabled);
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
@@ -380,7 +380,9 @@ impl ServerBuilder {
             Arc::clone(&coral_db),
             diagnostic_reporter.clone(),
         )
-        .with_pool_registry(Arc::clone(&workspace_pool_registry));
+        .with_pool_registry(Arc::clone(&workspace_pool_registry))
+        .with_search_storage(search_storage.clone());
+        sweep_search_storage(&search_storage, &workspace_manager).await?;
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
@@ -406,9 +408,8 @@ impl ServerBuilder {
         .with_database_sources_enabled(database_sources_enabled)
         .with_task_activity_recorder(task_activity);
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
-        let search_observations = (observed_values_search_enabled
-            && search_storage.keeps_observed_values())
-        .then(|| SearchObservationHandle::new(layout.clone()));
+        let search_observations =
+            init_search_observations(observed_values_search_enabled, &search_storage, &layout);
         let search_manager = SearchManager::with_diagnostic_reporter(
             search_storage,
             layout,
@@ -481,6 +482,17 @@ fn trace_components_for_store(
     })
 }
 
+impl ServerBuilder {
+    fn load_features(
+        &self,
+        layout: &AppStateLayout,
+    ) -> Result<(FeatureStore, crate::features::Features), AppError> {
+        let feature_store = FeatureStore::from_layout(layout.clone());
+        let features = feature_store.load_with_overrides(&self.config.feature_overrides)?;
+        Ok((feature_store, features))
+    }
+}
+
 fn init_credential_manager(layout: &AppStateLayout) -> Result<CredentialManager, AppError> {
     let credential_config = CredentialStorageConfig::load(layout)?;
     let credential_store =
@@ -513,6 +525,56 @@ async fn init_search_storage(
                 .map_err(|error| search_storage_open_error(&error))
         }
     }
+}
+
+/// The boot sweep over shared search storage, before serving, like
+/// `coral_db.migrate()`: stale Workspace schemas are migrated, and Workspaces
+/// that no longer exist lose their search state.
+async fn sweep_search_storage(
+    search_storage: &SearchStorage,
+    workspace_manager: &WorkspaceManager,
+) -> Result<(), AppError> {
+    let migrated = search_storage
+        .migrate_all()
+        .await
+        .map_err(|error| search_storage_open_error(&error))?;
+    if !migrated.is_empty() {
+        tracing::info!(
+            migrated_workspace_schemas = migrated.len(),
+            "migrated stale search schemas at startup"
+        );
+    }
+    if !search_storage.has_workspace_registry() {
+        return Ok(());
+    }
+    let live = workspace_manager
+        .list_workspaces()
+        .await?
+        .into_iter()
+        .map(|workspace| workspace.name.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    let pruned = search_storage
+        .prune_workspaces_except(&live)
+        .await
+        .map_err(|error| search_storage_open_error(&error))?;
+    if !pruned.is_empty() {
+        tracing::warn!(
+            pruned_workspaces = pruned.len(),
+            "removed search state of workspaces that no longer exist"
+        );
+    }
+    Ok(())
+}
+
+/// The observed-values capture pipeline runs only when the feature is on and
+/// the search backend keeps observed values to write into.
+fn init_search_observations(
+    observed_values_search_enabled: bool,
+    search_storage: &SearchStorage,
+    layout: &AppStateLayout,
+) -> Option<SearchObservationHandle> {
+    (observed_values_search_enabled && search_storage.keeps_observed_values())
+        .then(|| SearchObservationHandle::new(layout.clone()))
 }
 
 fn search_storage_open_error(error: &SearchStoreError) -> AppError {

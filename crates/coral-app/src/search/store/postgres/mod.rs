@@ -14,6 +14,7 @@
 mod catalog;
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::future::Future;
 
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -72,13 +73,6 @@ struct WorkspaceRegistration {
 }
 
 /// What a registry sweep did for one Workspace schema.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the boot ledger sweep is wired into server startup next in this stack"
-    )
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MigratedWorkspaceSchema {
     pub(crate) workspace_name: String,
@@ -133,19 +127,47 @@ impl PostgresSearchStorage {
 
     /// Removes the Workspace's registry row and drops its schema. Complete
     /// and instant: no tenant rows survive offboarding.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into Workspace deletion next in this stack")
-    )]
     pub(crate) async fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
+    ) -> Result<bool, PostgresSearchError> {
+        self.delete_registered_workspace(workspace_name.as_str())
+            .await
+    }
+
+    /// Removes every registered Workspace that is not in `live` and returns
+    /// their names. Runs at boot, before serving, so nothing registers
+    /// concurrently.
+    pub(crate) async fn prune_workspaces_except(
+        &self,
+        live: &BTreeSet<String>,
+    ) -> Result<Vec<String>, PostgresSearchError> {
+        let registered: Vec<String> = sqlx::query_scalar(
+            "SELECT workspace_name FROM search_registry.workspaces ORDER BY surrogate_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut pruned = Vec::new();
+        for workspace_name in registered {
+            if live.contains(&workspace_name) {
+                continue;
+            }
+            if self.delete_registered_workspace(&workspace_name).await? {
+                pruned.push(workspace_name);
+            }
+        }
+        Ok(pruned)
+    }
+
+    async fn delete_registered_workspace(
+        &self,
+        workspace_name: &str,
     ) -> Result<bool, PostgresSearchError> {
         let mut tx = self.pool.begin().await?;
         let deleted: Option<i64> = sqlx::query_scalar(
             "DELETE FROM search_registry.workspaces WHERE workspace_name = $1 RETURNING surrogate_id",
         )
-        .bind(workspace_name.as_str())
+        .bind(workspace_name)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(surrogate_id) = deleted else {
@@ -165,10 +187,6 @@ impl PostgresSearchStorage {
 
     /// Boot-time ledger sweep: migrates every registered schema that is behind
     /// this binary. A steady-state boot costs one query and does no work.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into server startup next in this stack")
-    )]
     pub(crate) async fn migrate_all(
         &self,
     ) -> Result<Vec<MigratedWorkspaceSchema>, PostgresSearchError> {
