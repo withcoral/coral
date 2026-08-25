@@ -114,3 +114,25 @@ pub(in crate::state::db) enum Identities {
     CreatedAtUnixNanos,
     UpdatedAtUnixNanos,
 }
+
+#[expect(
+    dead_code,
+    reason = "Identity document repository consumers land in the next stack unit."
+)]
+#[derive(Iden)]
+pub(in crate::state::db) enum IdentityDocuments {
+    Table,
+    OwnerKind,
+    OwnerKey,
+    Name,
+    DocumentVersion,
+    Ciphertext,
+    Nonce,
+    WrappedDek,
+    WrappedDekNonce,
+    KeyId,
+    Algorithm,
+    BindingVersion,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
+}

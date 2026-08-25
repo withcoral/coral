@@ -269,6 +269,109 @@ async fn assert_postgres_identity_schema(pool: &sqlx::PgPool) {
         .await
         .expect("count cascaded Postgres identity rows");
     assert_eq!(remaining, 1);
+    assert_postgres_identity_document_schema(pool).await;
+}
+
+async fn assert_postgres_identity_document_schema(pool: &sqlx::PgPool) {
+    assert_postgres_identity_document_columns(pool).await;
+
+    sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES ('document-shared', 0)")
+        .execute(pool)
+        .await
+        .expect("seed Postgres document workspace");
+    for row in [
+        ("user", "document-shared", None, "document-alpha", None),
+        (
+            "workspace",
+            "document-shared",
+            Some("document-shared"),
+            "document-beta",
+            None,
+        ),
+        ("user", "document-other", None, "document-beta", None),
+    ] {
+        insert_postgres_identity(pool, row)
+            .await
+            .expect("seed Postgres identity document parent");
+    }
+    for key in [
+        ("user", "document-shared", "document-alpha"),
+        ("workspace", "document-shared", "document-beta"),
+        ("user", "document-other", "document-beta"),
+    ] {
+        insert_postgres_identity_document(pool, key.0, key.1, key.2)
+            .await
+            .expect("Postgres identity document with exact parent");
+    }
+    insert_postgres_identity_document(pool, "user", "document-shared", "document-alpha")
+        .await
+        .expect_err("a Postgres identity may have only one setup document");
+    insert_postgres_identity_document(pool, "user", "document-shared", "document-beta")
+        .await
+        .expect_err("recombined Postgres parent tuple must be rejected");
+    insert_postgres_identity_document(pool, "user", "missing", "missing")
+        .await
+        .expect_err("orphan Postgres identity document must be rejected");
+
+    sqlx::query(
+        "DELETE FROM identities
+         WHERE owner_kind = 'user'
+           AND owner_key = 'document-shared'
+           AND name = 'document-alpha'",
+    )
+    .execute(pool)
+    .await
+    .expect("delete direct Postgres identity parent");
+    sqlx::query("DELETE FROM workspaces WHERE id = 'document-shared'")
+        .execute(pool)
+        .await
+        .expect("delete Postgres workspace parent");
+    let surviving: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT owner_kind, owner_key, name
+         FROM identity_documents
+         ORDER BY owner_kind, owner_key, name",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("surviving Postgres identity documents");
+    assert_eq!(
+        surviving,
+        vec![(
+            "user".to_string(),
+            "document-other".to_string(),
+            "document-beta".to_string(),
+        )]
+    );
+}
+
+async fn assert_postgres_identity_document_columns(pool: &sqlx::PgPool) {
+    let columns: Vec<String> = sqlx::query_scalar(
+        "SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = current_schema() AND table_name = 'identity_documents'
+         ORDER BY ordinal_position",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("Postgres identity document columns");
+    assert_eq!(
+        columns.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "owner_kind",
+            "owner_key",
+            "name",
+            "document_version",
+            "ciphertext",
+            "nonce",
+            "wrapped_dek",
+            "wrapped_dek_nonce",
+            "key_id",
+            "algorithm",
+            "binding_version",
+            "created_at_unix_nanos",
+            "updated_at_unix_nanos",
+        ]
+    );
 }
 
 async fn assert_postgres_identity_rejects_invalid_rows(pool: &sqlx::PgPool) {
@@ -312,6 +415,32 @@ async fn insert_postgres_identity(
     .bind(workspace_id)
     .bind(name)
     .bind(identity_spec_workspace_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+async fn insert_postgres_identity_document(
+    pool: &sqlx::PgPool,
+    owner_kind: &str,
+    owner_key: &str,
+    name: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO identity_documents (
+            owner_kind, owner_key, name, document_version,
+            ciphertext, nonce, wrapped_dek, wrapped_dek_nonce,
+            key_id, algorithm, binding_version,
+            created_at_unix_nanos, updated_at_unix_nanos
+         ) VALUES ($1, $2, $3, 1, $4, $5, $6, $7, 'test-key', 'test-algorithm', 1, 1, 1)",
+    )
+    .bind(owner_kind)
+    .bind(owner_key)
+    .bind(name)
+    .bind([1_u8].as_slice())
+    .bind([2_u8].as_slice())
+    .bind([3_u8].as_slice())
+    .bind([4_u8].as_slice())
     .execute(pool)
     .await
     .map(|_| ())
