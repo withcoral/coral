@@ -23,8 +23,8 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, heade
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use coral_api::v1::ListWorkspacesRequest;
-use coral_app::{CanonicalOauthUrl, OauthUrlError};
-use coral_client::{AppClient, workspace as workspace_resource};
+use coral_app::{CanonicalOauthUrl, McpWorkspaceSegment, OauthUrlError, WorkspaceMcpUrls};
+use coral_client::{AppClient, workspace as workspace_proto};
 use futures::{Stream, StreamExt as _};
 use rmcp::model::{
     ClientJsonRpcMessage, ClientRequest, ErrorData, RequestId, ServerJsonRpcMessage,
@@ -54,7 +54,6 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request as GrpcRequest;
 use tower::ServiceExt;
-use url::{Position, Url};
 
 use crate::{CoralMcpServerFactory, McpOptions, server::WorkspaceRequired};
 
@@ -70,13 +69,25 @@ const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
 const SESSION_ID_HEADER: &str = "mcp-session-id";
 const METADATA_ROOT: &str = "/.well-known/oauth-protected-resource";
 const METADATA_ROUTE: &str = "/.well-known/oauth-protected-resource/{*resource_path}";
+/// The auth-disabled listener has no public URL to derive a mount from, so its
+/// workspace routes live under the fixed `/mcp` prefix.
+const AUTH_DISABLED_MCP_PREFIX: &str = "/mcp";
+const AUTH_DISABLED_MCP_WORKSPACE_ROUTE: &str = "/mcp/workspace/{workspace}";
+/// What an unmatched path is told, in place of a bare not-found.
+///
+/// The sentence is static on purpose: it names the URL shape — public
+/// information every startup summary and document states — and never a
+/// workspace, so it discloses nothing a concealed refusal hides. The legacy
+/// `/mcp` endpoint lands here too; this is its entire deprecation notice.
+const WORKSPACE_URL_HINT: &str = "Each workspace is served at its own MCP URL ending in /workspace/{workspace}. Check the URL with your workspace owner.";
 const MAX_MCP_REQUEST_BODY_SIZE: usize = 1_048_576;
 const MAX_AUTHENTICATED_SESSIONS: usize = 4096;
 const AUTHENTICATED_SESSION_IDLE_TIMEOUT: Duration = Duration::from_hours(1);
 
 type ProbeFuture = Pin<Box<dyn Future<Output = Result<(), tonic::Code>> + Send>>;
 type Fut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-type TokenValidator = Arc<dyn Fn(String) -> Fut<Result<(), ()>> + Send + Sync>;
+/// Validates one bearer token for one exact audience — the route's resource.
+type TokenValidator = Arc<dyn Fn(String, String) -> Fut<Result<(), ()>> + Send + Sync>;
 type SessionClientFactory = Arc<dyn Fn(String) -> Fut<Result<AppClient, ()>> + Send + Sync>;
 type AuthState = Arc<AuthenticatedHttpState>;
 
@@ -97,6 +108,12 @@ struct AuthenticatedSessions {
 }
 
 struct AuthenticatedSession {
+    /// The workspace whose URL opened this session.
+    ///
+    /// Checked before the bearer binding: a session presented at another
+    /// workspace's URL does not exist there, whatever credential arrives with
+    /// it, so the answer is the same not-found an unknown session gets.
+    workspace: McpWorkspaceSegment,
     fingerprint: BearerFingerprint,
     handle: LocalSessionHandle,
     _admission_permit: OwnedSemaphorePermit,
@@ -104,6 +121,7 @@ struct AuthenticatedSession {
 
 struct AuthenticatedSessionManager {
     sessions: Arc<AuthenticatedSessions>,
+    workspace: McpWorkspaceSegment,
     fingerprint: BearerFingerprint,
     admission_permit: Mutex<Option<OwnedSemaphorePermit>>,
 }
@@ -138,12 +156,19 @@ impl AuthenticatedSessions {
     async fn authorize(
         &self,
         session_id: &SessionId,
+        workspace: &McpWorkspaceSegment,
         fingerprint: &BearerFingerprint,
     ) -> SessionAuthorization {
         let records = self.records.read().await;
         let Some(session) = records.get(session_id) else {
             return SessionAuthorization::Missing;
         };
+        // Workspace first, deliberately: at the wrong workspace's URL the
+        // session does not exist, even for a bearer that is valid there, so a
+        // cross-workspace replay is indistinguishable from an unknown session.
+        if session.workspace != *workspace {
+            return SessionAuthorization::Missing;
+        }
         if session.fingerprint == *fingerprint {
             SessionAuthorization::Authorized
         } else {
@@ -194,6 +219,10 @@ async fn close_session_handle(handle: LocalSessionHandle) -> Result<(), LocalSes
 }
 
 impl AuthenticatedSessionManager {
+    fn owns(&self, session: &AuthenticatedSession) -> bool {
+        session.workspace == self.workspace && session.fingerprint == self.fingerprint
+    }
+
     async fn session_handle(
         &self,
         session_id: &SessionId,
@@ -203,7 +232,7 @@ impl AuthenticatedSessionManager {
             .read()
             .await
             .get(session_id)
-            .filter(|session| session.fingerprint == self.fingerprint)
+            .filter(|session| self.owns(session))
             .map(|session| session.handle.clone())
             .ok_or_else(|| LocalSessionManagerError::SessionNotFound(session_id.clone()).into())
     }
@@ -227,6 +256,7 @@ impl SessionManager for AuthenticatedSessionManager {
         records.insert(
             session_id.clone(),
             AuthenticatedSession {
+                workspace: self.workspace.clone(),
                 fingerprint: self.fingerprint,
                 handle,
                 _admission_permit: admission_permit,
@@ -252,7 +282,7 @@ impl SessionManager for AuthenticatedSessionManager {
             .read()
             .await
             .get(session_id)
-            .is_some_and(|session| session.fingerprint == self.fingerprint))
+            .is_some_and(|session| self.owns(session)))
     }
 
     async fn close_session(&self, session_id: &SessionId) -> Result<(), Self::Error> {
@@ -260,7 +290,7 @@ impl SessionManager for AuthenticatedSessionManager {
             let mut records = self.sessions.records.write().await;
             match records.get(session_id) {
                 None => None,
-                Some(session) if session.fingerprint != self.fingerprint => {
+                Some(session) if !self.owns(session) => {
                     return Err(
                         LocalSessionManagerError::SessionNotFound(session_id.clone()).into(),
                     );
@@ -404,13 +434,16 @@ impl McpHttpConfig {
 }
 
 /// Validated OAuth protected-resource configuration.
+///
+/// The public URL is the base of the per-workspace resource family: every
+/// workspace is served at `<public_url>/workspace/<name>`, each such URL its
+/// own protected resource with its own metadata document and token audience.
+/// The base itself is not an MCP endpoint.
 #[derive(Clone, Debug)]
 pub struct AuthenticatedMcpHttpConfig {
     bind_addr: SocketAddr,
-    public_url: String,
+    urls: WorkspaceMcpUrls,
     authorization_server: String,
-    metadata_path: String,
-    challenge: HeaderValue,
     allowed_hosts: Vec<String>,
 }
 
@@ -424,10 +457,6 @@ impl AuthenticatedMcpHttpConfig {
     ) -> Result<Self, McpHttpError> {
         let resource = validated_oauth_url(&public_url.into())?;
         let authorization_server = validated_oauth_url(&authorization_server.into())?;
-        let (metadata_url, metadata_path) = protected_resource_metadata_url(resource.url());
-        let challenge = format!("Bearer resource_metadata=\"{metadata_url}\"");
-        let challenge = HeaderValue::from_str(&challenge)
-            .map_err(|_error| McpHttpError::InvalidAuthConfig("invalid challenge header"))?;
         let mut allowed_hosts = vec![
             "localhost".to_string(),
             "127.0.0.1".to_string(),
@@ -445,12 +474,17 @@ impl AuthenticatedMcpHttpConfig {
         }
         Ok(Self {
             bind_addr,
-            public_url: resource.into_identifier(),
+            urls: WorkspaceMcpUrls::new(resource),
             authorization_server: authorization_server.into_identifier(),
-            metadata_path,
-            challenge,
             allowed_hosts,
         })
+    }
+
+    /// The axum route template the workspace family mounts at, derived from
+    /// the public URL's path so the served paths match the advertised URLs
+    /// without any ingress rewriting.
+    fn mcp_route(&self) -> String {
+        format!("{}/workspace/{{workspace}}", self.urls.base_path())
     }
 }
 
@@ -473,7 +507,7 @@ impl AuthenticatedMcpHttpRuntime {
         readiness: R,
     ) -> Self
     where
-        V: Fn(String) -> VF + Send + Sync + 'static,
+        V: Fn(String, String) -> VF + Send + Sync + 'static,
         VF: Future<Output = Result<(), ()>> + Send + 'static,
         F: Fn(String) -> FF + Send + Sync + 'static,
         FF: Future<Output = Result<AppClient, ()>> + Send + 'static,
@@ -481,7 +515,7 @@ impl AuthenticatedMcpHttpRuntime {
         RF: Future<Output = Result<(), tonic::Code>> + Send + 'static,
     {
         Self {
-            validator: Arc::new(move |token| Box::pin(validator(token))),
+            validator: Arc::new(move |token, audience| Box::pin(validator(token, audience))),
             session_client_factory: Arc::new(move |token| Box::pin(session_client_factory(token))),
             options,
             readiness: ReadinessProbe(Arc::new(move || Box::pin(readiness()))),
@@ -504,15 +538,6 @@ fn validated_oauth_url(value: &str) -> Result<CanonicalOauthUrl, McpHttpError> {
     })
 }
 
-fn protected_resource_metadata_url(resource: &Url) -> (String, String) {
-    let resource_path = match resource.path() {
-        "/" => "",
-        path => path,
-    };
-    let path = format!("{METADATA_ROOT}{resource_path}");
-    (format!("{}{path}", &resource[..Position::BeforePath]), path)
-}
-
 fn is_loopback(ip: IpAddr) -> bool {
     ip.is_loopback()
         || matches!(ip, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
@@ -531,19 +556,6 @@ pub enum McpHttpError {
     /// MCP HTTP serving configuration is invalid.
     #[error("invalid MCP HTTP configuration: {0}")]
     InvalidAuthConfig(&'static str),
-    /// Nothing names a workspace and the local user belongs to none.
-    #[error(
-        "no workspace is available for the local MCP server. Create one with `coral workspace create NAME`, then name it in `server.mcp_http.workspace`."
-    )]
-    NoLocalWorkspace,
-    /// Nothing names a workspace and the local user belongs to several.
-    #[error(
-        "several workspaces are available ({0}). Name the one the local MCP server serves in `server.mcp_http.workspace`."
-    )]
-    AmbiguousLocalWorkspace(String),
-    /// The membership listing that resolves the local workspace failed.
-    #[error("failed to list the local workspaces the MCP server could serve")]
-    LocalWorkspaceLookup(#[source] tonic::Status),
     /// The TCP listener could not bind.
     #[error("failed to bind MCP HTTP server to {address}")]
     Bind {
@@ -642,18 +654,22 @@ fn join_server(
 /// serving must use a distinct construction path that creates a bearer-bound
 /// client after validating each incoming session.
 ///
+/// Every existing workspace is served at `/mcp/workspace/<name>` — the URL
+/// names the workspace, so no workspace is resolved at startup and any value
+/// in `options.workspace` (stdio's carrier for its own resolved selection) is
+/// ignored here. Existence is checked per handshake against the local
+/// client's own workspace listing, so a workspace created after startup is
+/// reachable and a deleted one refuses new sessions immediately.
+///
 /// # Errors
 ///
-/// Returns [`McpHttpError`] if no workspace can be resolved for the surface or
-/// if the listener cannot bind. Resolution runs first so an unservable
-/// configuration is reported without ever holding the port.
+/// Returns [`McpHttpError`] if the listener cannot bind.
 pub async fn start_auth_disabled(
     config: McpHttpConfig,
     app: AppClient,
     options: McpOptions,
 ) -> Result<RunningMcpHttpServer, McpHttpError> {
     options.surface.validate(options.feedback_enabled)?;
-    let options = resolve_local_workspace(&app, options).await?;
     let listener = TcpListener::bind(config.bind_addr())
         .await
         .map_err(|source| McpHttpError::Bind {
@@ -664,52 +680,20 @@ pub async fn start_auth_disabled(
     let readiness = ReadinessProbe::from_app(app.clone());
     let (router, state) = auth_disabled_router(
         app,
-        options,
+        McpOptions {
+            workspace: None,
+            ..options
+        },
         readiness,
         local_addr.ip(),
         &config.extra_allowed_hosts,
-    )?;
+    );
     Ok(spawn_http_server(
         listener,
         local_addr,
         router,
         state.server.clone(),
     ))
-}
-
-/// Scopes the loopback surface to a workspace the local user actually holds.
-///
-/// A configured name is authoritative and is used byte for byte: composition
-/// already validated its shape, and whether a workspace by that name exists is
-/// answered by the request that needs it, under the ordinary not-found
-/// contract. That keeps a surface configured today servable for a workspace
-/// created tomorrow.
-///
-/// With nothing configured the local user must hold exactly one workspace.
-/// Zero and several are different problems — one person has nothing to serve,
-/// the other has not said which — so they are reported as different errors
-/// naming the action that resolves each, rather than settled by picking one.
-async fn resolve_local_workspace(
-    app: &AppClient,
-    options: McpOptions,
-) -> Result<McpOptions, McpHttpError> {
-    if options.workspace.is_some() {
-        return Ok(options);
-    }
-    let mut names = membership_workspace_names(app)
-        .await
-        .map_err(McpHttpError::LocalWorkspaceLookup)?;
-    if names.len() != 1 {
-        return Err(if names.is_empty() {
-            McpHttpError::NoLocalWorkspace
-        } else {
-            McpHttpError::AmbiguousLocalWorkspace(names.join(", "))
-        });
-    }
-    Ok(McpOptions {
-        workspace: Some(workspace_resource(names.remove(0))),
-        ..options
-    })
 }
 
 /// Names the workspaces the client's own caller belongs to, in listing order.
@@ -813,20 +797,20 @@ impl ReadinessProbe {
     }
 }
 
-/// Builds the loopback router around one workspace-scoped session factory.
+/// Builds the loopback router serving every workspace at its own URL.
 ///
-/// The workspace must already be resolved: `HttpState` holds the factory
-/// outright, so a router that could be built without one would serve sessions
-/// with no workspace to reach.
+/// Session factories are created per workspace, on first admitted handshake,
+/// and cached: sessions within one workspace share guide-block state while
+/// sessions in different workspaces share nothing, and each workspace's
+/// sessions live in their own manager so a session id minted at one
+/// workspace's URL structurally does not exist at another's.
 fn auth_disabled_router(
     app: AppClient,
     options: McpOptions,
     readiness: ReadinessProbe,
     advertised_ip: IpAddr,
     extra_allowed_hosts: &[String],
-) -> Result<(Router, Arc<HttpState>), McpHttpError> {
-    let factory = CoralMcpServerFactory::new(app, options)
-        .map_err(|WorkspaceRequired| McpHttpError::NoLocalWorkspace)?;
+) -> (Router, Arc<HttpState>) {
     // These are the same loopback names the authenticated listener accepts, so
     // a client dialing `localhost` is not rejected for the bind being
     // `127.0.0.1`. The allowlist stays exact beyond that baseline: it is the
@@ -840,45 +824,65 @@ fn auth_disabled_router(
     ];
     allowed_hosts.extend(extra_allowed_hosts.iter().cloned());
     let config = StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts);
-    let sessions = Arc::new(LocalSessionManager::default());
+    let workspaces = Arc::new(RwLock::new(HashMap::new()));
     let server = Arc::new(ServerState {
-        sessions: SessionOwner::Local(sessions.clone()),
+        sessions: SessionOwner::Local(workspaces.clone()),
         config,
         requests: RwLock::new(()),
     });
     let state = Arc::new(HttpState {
-        factory,
+        app,
+        options,
+        workspaces,
         readiness,
-        sessions,
         server: server.clone(),
     });
     let router = Router::new()
-        .route("/mcp", any(mcp))
+        .route(AUTH_DISABLED_MCP_WORKSPACE_ROUTE, any(mcp))
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
+        .fallback(not_an_mcp_endpoint)
         .with_state(state.clone());
-    Ok((router, state))
+    (router, state)
 }
 
-struct HttpState {
+/// One served workspace on the auth-disabled surface.
+struct WorkspaceSessions {
     factory: CoralMcpServerFactory,
-    readiness: ReadinessProbe,
     sessions: Arc<LocalSessionManager>,
+}
+
+type LocalWorkspaces = Arc<RwLock<HashMap<McpWorkspaceSegment, WorkspaceSessions>>>;
+
+struct HttpState {
+    app: AppClient,
+    options: McpOptions,
+    workspaces: LocalWorkspaces,
+    readiness: ReadinessProbe,
     server: Arc<ServerState>,
 }
 
 enum SessionOwner {
-    Local(Arc<LocalSessionManager>),
+    Local(LocalWorkspaces),
     Authenticated(Arc<AuthenticatedSessions>),
 }
 
 impl SessionOwner {
     async fn close_all(&self) {
         match self {
-            Self::Local(sessions) => {
-                let session_ids: Vec<_> = sessions.sessions.read().await.keys().cloned().collect();
-                for session_id in session_ids {
-                    let _close_result = sessions.close_session(&session_id).await;
+            Self::Local(workspaces) => {
+                let managers: Vec<_> = workspaces
+                    .read()
+                    .await
+                    .values()
+                    .map(|workspace| workspace.sessions.clone())
+                    .collect();
+                for sessions in managers {
+                    let session_ids: Vec<_> =
+                        sessions.sessions.read().await.keys().cloned().collect();
+                    for session_id in session_ids {
+                        let _close_result = sessions.close_session(&session_id).await;
+                    }
                 }
             }
             Self::Authenticated(sessions) => sessions.close_all().await,
@@ -897,7 +901,14 @@ async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Res
     if request.headers().contains_key(header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let (request, _initialize_id) = tokio::select! {
+    // The raw request path is parsed rather than the router's decoded capture:
+    // the charset admits no percent-encoding, so an encoded spelling of a
+    // valid name is refused instead of normalized into it.
+    let Some(workspace) = parse_workspace_route(request.uri().path(), AUTH_DISABLED_MCP_PREFIX)
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let (request, initialize_id) = tokio::select! {
         biased;
         () = state.server.config.cancellation_token.cancelled() => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -907,13 +918,92 @@ async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Res
             Err(response) => return response,
         },
     };
+    let entry = if initialize_id.is_some() {
+        // Existence is answered per handshake, and absence is never cached:
+        // the local caller's own listing is the whole inventory here, so a
+        // workspace created a moment ago is admitted and a deleted one is the
+        // same plain not-found a name that never existed gets.
+        match admit_local_workspace(&state, &workspace).await {
+            Ok(entry) => entry,
+            Err(response) => return response,
+        }
+    } else {
+        let workspaces = state.workspaces.read().await;
+        let Some(entry) = workspaces.get(&workspace) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        (entry.factory.clone(), entry.sessions.clone())
+    };
+    let (factory, sessions) = entry;
     serve_mcp_request(
         request,
-        Some(state.factory.clone()),
-        state.sessions.clone(),
+        Some(factory),
+        sessions,
         state.server.config.clone(),
     )
     .await
+}
+
+/// Admits one auth-disabled handshake for the workspace its URL names.
+///
+/// Lists the local caller's workspaces to answer existence, then returns the
+/// workspace's cached factory and session manager, creating them on first
+/// admission. The listing failing is a server problem, not an answer about
+/// any workspace, so it maps to service-unavailable rather than not-found.
+async fn admit_local_workspace(
+    state: &HttpState,
+    workspace: &McpWorkspaceSegment,
+) -> Result<(CoralMcpServerFactory, Arc<LocalSessionManager>), Response> {
+    let names = tokio::select! {
+        biased;
+        () = state.server.config.cancellation_token.cancelled() => {
+            return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
+        }
+        names = membership_workspace_names(&state.app) => names.map_err(|status| {
+            tracing::warn!(%status, "listing local workspaces for MCP admission failed");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        })?,
+    };
+    if !names.iter().any(|name| name == workspace.as_str()) {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    }
+    let mut workspaces = state.workspaces.write().await;
+    if let Some(entry) = workspaces.get(workspace) {
+        return Ok((entry.factory.clone(), entry.sessions.clone()));
+    }
+    let options = McpOptions {
+        workspace: Some(workspace_proto(workspace.as_str().to_string())),
+        ..state.options.clone()
+    };
+    let factory = CoralMcpServerFactory::new(state.app.clone(), options)
+        .map_err(|WorkspaceRequired| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+    let sessions = Arc::new(LocalSessionManager::default());
+    workspaces.insert(
+        workspace.clone(),
+        WorkspaceSessions {
+            factory: factory.clone(),
+            sessions: sessions.clone(),
+        },
+    );
+    Ok((factory, sessions))
+}
+
+/// Parses `<prefix>/workspace/<segment>` from a raw request path.
+fn parse_workspace_route(path: &str, prefix: &str) -> Option<McpWorkspaceSegment> {
+    McpWorkspaceSegment::parse(path.strip_prefix(prefix)?.strip_prefix("/workspace/")?)
+}
+
+/// Answers every path that is not an MCP endpoint on this listener.
+///
+/// The body is one static sentence naming the URL shape; see
+/// [`WORKSPACE_URL_HINT`] for why that discloses nothing.
+async fn not_an_mcp_endpoint() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "application/json")],
+        json!({ "error": "not_found", "hint": WORKSPACE_URL_HINT }).to_string(),
+    )
+        .into_response()
 }
 
 /// Validates one MCP request, reporting the id of the `initialize` it carries.
@@ -996,11 +1086,12 @@ fn authenticated_router_with_sessions(
         server: server.clone(),
     });
     let router = Router::new()
-        .route("/mcp", any(authenticated_mcp))
+        .route(&state.config.mcp_route(), any(authenticated_mcp))
         .route("/livez", get(livez))
         .route("/readyz", get(authenticated_readyz))
         .route(METADATA_ROOT, get(metadata))
         .route(METADATA_ROUTE, get(metadata))
+        .fallback(not_an_mcp_endpoint)
         .with_state(state.clone());
     (router, state)
 }
@@ -1017,19 +1108,32 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
     if request.headers().contains_key(header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // The raw request path is parsed rather than the router's decoded capture:
+    // the charset admits no percent-encoding, so an encoded spelling of a
+    // valid name is refused instead of normalized into it. A malformed segment
+    // is a plain not-found with no challenge and no metadata; every
+    // well-formed one gets the identical challenge whether or not a workspace
+    // by that name exists, so an anonymous probe learns nothing.
+    let Some(workspace) = state.config.urls.parse_route_path(request.uri().path()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     if request.method() == Method::OPTIONS {
         return StatusCode::NO_CONTENT.into_response();
     }
     let Some(token) = bearer_token(request.headers()) else {
-        return unauthorized_response(&state.config);
+        return unauthorized_response(&state.config, &workspace);
     };
+    // The route's resource is the exact audience this request must have been
+    // minted for: a bearer for one workspace is invalid at another's URL, with
+    // that URL's own challenge.
+    let resource = state.config.urls.resource(&workspace);
     let validation = tokio::select! {
         biased;
         () = state.server.config.cancellation_token.cancelled() => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-        validation = (state.runtime.validator)(token.clone()) => validation,
+        validation = (state.runtime.validator)(token.clone(), resource) => validation,
     };
     if validation.is_err() {
-        return unauthorized_response(&state.config);
+        return unauthorized_response(&state.config, &workspace);
     }
     let (request, initialize_id) = tokio::select! {
         biased;
@@ -1047,7 +1151,8 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
         Err(()) => return StatusCode::BAD_REQUEST.into_response(),
     };
     let (factory, admission_permit) = if let Some(session_id) = request_session.as_deref() {
-        if let Err(status) = authorize_bound_session(&state, session_id, &binding_fingerprint).await
+        if let Err(status) =
+            authorize_bound_session(&state, session_id, &workspace, &binding_fingerprint).await
         {
             return status.into_response();
         }
@@ -1056,7 +1161,7 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
         let Some(admission_permit) = state.sessions.try_admit() else {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         };
-        match create_session_factory(&state, token).await {
+        match create_session_factory(&state, token, &workspace).await {
             Ok(factory) => (Some(factory), Some(admission_permit)),
             Err(refusal) => return refusal.into_response(initialize_id),
         }
@@ -1065,6 +1170,7 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
     };
     let sessions = Arc::new(AuthenticatedSessionManager {
         sessions: state.sessions.clone(),
+        workspace,
         fingerprint: binding_fingerprint,
         admission_permit: Mutex::new(admission_permit),
     });
@@ -1079,61 +1185,53 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
 /// caller one deployment-wide answer and collapse the per-caller concealment
 /// this admission exists to provide.
 ///
-/// A session is refused rather than admitted unbound, because every later
-/// exchange is workspace-scoped — `tools/list` enumerates the workspace's table
-/// functions — so an unbound session could only fail opaquely, and the only way
-/// to make it answer would be to substitute a workspace nobody asked for.
+/// The workspace is the one the request's URL names — nothing else selects
+/// it, and no other workspace is ever substituted.
 async fn create_session_factory(
     state: &AuthenticatedHttpState,
     token: String,
+    workspace: &McpWorkspaceSegment,
 ) -> Result<CoralMcpServerFactory, SessionRefusal> {
-    let configured = state
-        .runtime
-        .options
-        .workspace
-        .as_ref()
-        .ok_or(SessionRefusal::NoWorkspaceConfigured)?;
     let client = tokio::select! {
         biased;
         () = state.server.config.cancellation_token.cancelled() => Err(SessionRefusal::Unavailable),
         client = (state.runtime.session_client_factory)(token) => client.map_err(|()| SessionRefusal::Unavailable),
     }?;
-    require_configured_membership(&client, &configured.name).await?;
-    CoralMcpServerFactory::new(client, state.runtime.options.clone())
+    require_membership(&client, workspace.as_str()).await?;
+    let options = McpOptions {
+        workspace: Some(workspace_proto(workspace.as_str().to_string())),
+        ..state.runtime.options.clone()
+    };
+    CoralMcpServerFactory::new(client, options)
         .map_err(|WorkspaceRequired| SessionRefusal::Unavailable)
 }
 
-/// Admits the session only when the caller already holds the configured name.
+/// Admits the session only when the caller already holds the named workspace.
 ///
 /// The single listing this makes is the entire authorization decision: an exact
 /// name match admits, and every other outcome is the one concealed refusal. No
 /// membership is picked on the caller's behalf and no other workspace is
 /// substituted, so nothing here needs to know who the caller is — a listing
 /// scoped to the caller answers the only question admission has.
-async fn require_configured_membership(
-    client: &AppClient,
-    configured: &str,
-) -> Result<(), SessionRefusal> {
+async fn require_membership(client: &AppClient, workspace: &str) -> Result<(), SessionRefusal> {
     let memberships = membership_workspace_names(client).await.map_err(|status| {
         tracing::warn!(%status, "listing memberships for MCP session admission failed");
         SessionRefusal::Unavailable
     })?;
-    if memberships.iter().any(|name| name == configured) {
+    if memberships.iter().any(|name| name == workspace) {
         return Ok(());
     }
-    Err(SessionRefusal::WorkspaceNotFound(configured.to_string()))
+    Err(SessionRefusal::WorkspaceNotFound(workspace.to_string()))
 }
 
 /// Why an authenticated MCP session was not admitted.
 ///
 /// [`Self::WorkspaceNotFound`] is deliberately the only membership answer.
 /// Admission reads the caller's own memberships and never asks whether the
-/// configured name exists, so a workspace the caller may not reach and one that
+/// URL's name exists, so a workspace the caller may not reach and one that
 /// was never created are indistinguishable from here — and from the caller.
 enum SessionRefusal {
-    /// Nothing names a workspace for this surface to serve.
-    NoWorkspaceConfigured,
-    /// The configured workspace is not one of the caller's memberships.
+    /// The URL's workspace is not one of the caller's memberships.
     WorkspaceNotFound(String),
     /// Admission could not be decided; not an answer about any workspace.
     Unavailable,
@@ -1149,7 +1247,6 @@ impl SessionRefusal {
     fn into_response(self, initialize_id: Option<RequestId>) -> Response {
         let guidance = match self {
             Self::Unavailable => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-            Self::NoWorkspaceConfigured => NO_WORKSPACE_CONFIGURED.to_string(),
             Self::WorkspaceNotFound(name) => workspace_not_found(&name),
         };
         let refusal =
@@ -1161,26 +1258,27 @@ impl SessionRefusal {
     }
 }
 
-/// Guidance for a surface that names no workspace at all.
-const NO_WORKSPACE_CONFIGURED: &str = "This MCP server has no workspace configured. Create a workspace in Reef, then name one you can access in `server.mcp_http.workspace`.";
-
-/// The one answer for a configured workspace the caller does not hold.
+/// The one answer for a workspace URL the caller does not hold.
 ///
 /// It must stay identical for a name that does not exist and a name the caller
 /// may not reach; the two are the same sentence on purpose.
 fn workspace_not_found(name: &str) -> String {
     format!(
-        "Workspace `{name}` was not found. Name a workspace you can access in `server.mcp_http.workspace`, or create one in Reef."
+        "Workspace `{name}` was not found. Check the workspace URL, or ask a workspace owner to add you."
     )
 }
 
 async fn authorize_bound_session(
     state: &AuthenticatedHttpState,
     session_id: &str,
+    workspace: &McpWorkspaceSegment,
     fingerprint: &BearerFingerprint,
 ) -> Result<(), StatusCode> {
     let session_id = Arc::from(session_id);
-    let status = state.sessions.authorize(&session_id, fingerprint).await;
+    let status = state
+        .sessions
+        .authorize(&session_id, workspace, fingerprint)
+        .await;
     match status {
         SessionAuthorization::Authorized => Ok(()),
         SessionAuthorization::Missing => Err(StatusCode::NOT_FOUND),
@@ -1196,14 +1294,22 @@ async fn authenticated_readyz(State(state): State<Arc<AuthenticatedHttpState>>) 
     }
 }
 
+/// Serves one workspace resource's RFC 9728 metadata document.
+///
+/// The document is a pure derivation of the URL — its `resource` value is
+/// exactly the identifier whose path-inserted well-known URL was fetched —
+/// and it is served for every well-formed workspace name, existent or not.
+/// Uniformity is the concealment: gating it on existence would let an
+/// anonymous probe enumerate workspaces. The base URL's own metadata path
+/// names no workspace and is a plain not-found, like every other path.
 async fn metadata(State(state): State<AuthState>, uri: Uri) -> Response {
-    if uri.path() != state.config.metadata_path {
+    let Some(workspace) = state.config.urls.parse_metadata_path(uri.path()) else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
     (
         [(header::CONTENT_TYPE, "application/json")],
         json!({
-            "resource": state.config.public_url,
+            "resource": state.config.urls.resource(&workspace),
             "authorization_servers": [state.config.authorization_server],
             "bearer_methods_supported": ["header"],
         })
@@ -1212,12 +1318,28 @@ async fn metadata(State(state): State<AuthState>, uri: Uri) -> Response {
         .into_response()
 }
 
-fn unauthorized_response(config: &AuthenticatedMcpHttpConfig) -> Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, config.challenge.clone())],
-    )
-        .into_response()
+/// Challenges with the route's own metadata URL.
+///
+/// Clients follow the challenged URL exclusively, so it must agree byte for
+/// byte with the path [`metadata`] serves. Built per request: the workspace
+/// segment's charset guarantees a valid header value, and the fallback arm
+/// exists only because `HeaderValue::from_str` returns a `Result`.
+fn unauthorized_response(
+    config: &AuthenticatedMcpHttpConfig,
+    workspace: &McpWorkspaceSegment,
+) -> Response {
+    let challenge = format!(
+        "Bearer resource_metadata=\"{}\"",
+        config.urls.metadata_url(workspace)
+    );
+    match HeaderValue::from_str(&challenge) {
+        Ok(challenge) => (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, challenge)],
+        )
+            .into_response(),
+        Err(_error) => StatusCode::UNAUTHORIZED.into_response(),
+    }
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {

@@ -114,14 +114,15 @@ async fn run_list_columns_benchmark() -> Result<()> {
         app,
         McpOptions {
             source_names: vec![SCHEMA.to_string()],
-            workspace: Some(benchmark_workspace()),
             ..McpOptions::default()
         },
     )
     .await
     .context("starting benchmark MCP HTTP server")?;
-    let transport =
-        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", mcp_server.local_addr()));
+    let transport = StreamableHttpClientTransport::from_uri(format!(
+        "http://{}/mcp/workspace/{WORKSPACE}",
+        mcp_server.local_addr()
+    ));
     let client = ().serve(transport).await.context("starting benchmark MCP client")?;
     // `list_columns` is task-attributed, so the measurement runs inside a real
     // task exactly as an agent's would: the attribution travels with the call

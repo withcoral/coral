@@ -15,7 +15,7 @@ use crate::auth::{AuthSettings, CoralAuthorizationServer, ResolvedAuthSettings};
 use crate::oauth_resource::CanonicalOauthUrl;
 use crate::request_auth::SessionPrincipalProvider;
 use crate::state::AppStateLayout;
-use crate::workspaces::WorkspaceName;
+use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 
 #[derive(Debug, Default, Deserialize)]
 struct GrpcConfigFile {
@@ -105,13 +105,28 @@ impl LoadedServerConfig {
             Some(auth_settings.authorization_server().issuer()),
         )?;
         let mcp_http = self.resolve_mcp_http(Some(&authorization_server))?;
-        let public_audiences = public_surface_audiences(mcp_http.as_ref(), &allowed_audiences)?;
+        let mcp_workspace_urls = match &mcp_http {
+            Some(McpHttpServeConfig::Authenticated { public_url, .. }) => {
+                // The variant carries the canonical identifier, and parsing is
+                // idempotent on canonical output, so this cannot fail — but a
+                // panic here would turn a config bug into a crash, so it maps
+                // to the same configuration error every other bad URL gets.
+                let base = CanonicalOauthUrl::parse(public_url).map_err(|error| {
+                    AppError::FailedPrecondition(format!("server.mcp_http.public_url {error}"))
+                })?;
+                Some(WorkspaceMcpUrls::new(base))
+            }
+            _ => None,
+        };
+        let public_audiences =
+            public_surface_audiences(mcp_workspace_urls.as_ref(), &allowed_audiences)?;
         Ok(ServeSettings {
             mcp_http,
             session_auth: Some(SessionAuthSettings {
                 settings: auth_settings,
                 session_tokens: session,
                 public_audiences,
+                mcp_workspace_urls,
             }),
         })
     }
@@ -185,7 +200,6 @@ struct RawMcpHttpSettings {
     public_url: Option<String>,
     allow_unauthenticated_non_loopback: bool,
     allowed_hosts: Vec<String>,
-    workspace: Option<String>,
 }
 
 impl Default for RawMcpHttpSettings {
@@ -196,7 +210,6 @@ impl Default for RawMcpHttpSettings {
             public_url: None,
             allow_unauthenticated_non_loopback: false,
             allowed_hosts: Vec::new(),
-            workspace: None,
         }
     }
 }
@@ -229,7 +242,6 @@ impl RawMcpHttpSettings {
                 bind_addr: self.bind,
                 expose_non_loopback,
                 allowed_hosts: validated_mcp_allowed_hosts(&self.allowed_hosts)?,
-                workspace: self.workspace()?,
             }));
         };
 
@@ -255,27 +267,7 @@ impl RawMcpHttpSettings {
             bind_addr: self.bind,
             public_url,
             authorization_server,
-            workspace: self.workspace()?,
         }))
-    }
-
-    /// Normalizes the configured workspace name without asking whether it
-    /// exists.
-    ///
-    /// Existence is a request-time question answered against the caller's
-    /// memberships, so checking it here would make startup depend on workspace
-    /// state that may legitimately be created later.
-    fn workspace(&self) -> Result<Option<String>, AppError> {
-        self.workspace
-            .as_deref()
-            .map(|name| {
-                WorkspaceName::parse(name)
-                    .map(|name| name.as_str().to_string())
-                    .map_err(|error| {
-                        AppError::FailedPrecondition(format!("server.mcp_http.workspace: {error}"))
-                    })
-            })
-            .transpose()
     }
 }
 
@@ -318,31 +310,20 @@ pub enum McpHttpServeConfig {
         /// Extra Host header values accepted beside the loopback defaults,
         /// e.g. a Docker Compose service name.
         allowed_hosts: Vec<String>,
-        /// Validated name of the workspace this local surface serves.
-        ///
-        /// `None` means the operator named none, which is distinct from any
-        /// name they could have written: no default is substituted here, and
-        /// the adapter resolves the sole local workspace instead. The name is
-        /// only checked for shape — whether a workspace by that name exists is
-        /// answered when a request needs it.
-        workspace: Option<String>,
     },
     /// Session-authenticated MCP HTTP backed by per-session clients.
     Authenticated {
         /// Address for the MCP HTTP listener.
         bind_addr: SocketAddr,
-        /// Canonical public MCP URL advertised to clients and used as JWT audience.
+        /// Canonical public base of the per-workspace MCP URLs.
+        ///
+        /// Each workspace is served at `<public_url>/workspace/<name>`, and
+        /// that full per-workspace URL — never this base — is the OAuth
+        /// resource and JWT audience of the sessions it admits. The URL names
+        /// the workspace, so no workspace is configured here.
         public_url: String,
         /// OAuth authorization server advertised to MCP clients.
         authorization_server: String,
-        /// Validated name of the shared workspace every session is bound to.
-        ///
-        /// `None` means the operator named none, which stays a valid server
-        /// configuration: whether a session may proceed is answered per session
-        /// against the caller's memberships, so refusing to start would deny an
-        /// instance that is otherwise serving its other surfaces. Only the name's
-        /// shape is checked here — existence is a request-time question.
-        workspace: Option<String>,
     },
 }
 
@@ -398,13 +379,24 @@ pub struct SessionAuthSettings {
     pub(super) settings: ResolvedAuthSettings,
     pub(super) session_tokens: SessionTokenIssuer,
     pub(super) public_audiences: Vec<String>,
+    pub(super) mcp_workspace_urls: Option<WorkspaceMcpUrls>,
 }
 
 impl SessionAuthSettings {
-    /// The instance's public surfaces, canonicalized.
+    /// The instance's explicitly registered public audiences, canonicalized.
+    ///
+    /// When MCP HTTP is served, its audiences are the per-workspace resource
+    /// family under [`Self::mcp_workspace_urls`] — a set that cannot be
+    /// enumerated here, so it is deliberately not in this list.
     #[must_use]
     pub fn public_audiences(&self) -> &[String] {
         &self.public_audiences
+    }
+
+    /// The per-workspace MCP resource family, when MCP HTTP is served.
+    #[must_use]
+    pub fn mcp_workspace_urls(&self) -> Option<&WorkspaceMcpUrls> {
+        self.mcp_workspace_urls.as_ref()
     }
 
     /// Builds a provider admitting session tokens for exactly `audiences`.
@@ -423,10 +415,45 @@ impl SessionAuthSettings {
         ))
     }
 
+    /// Builds the private gRPC API's provider.
+    ///
+    /// The private API is reached through the public surfaces that front it,
+    /// so it admits every explicitly registered audience plus, when MCP HTTP
+    /// is served, every per-workspace MCP resource — bearer-forwarded backend
+    /// calls arrive under exactly those audiences.
+    #[must_use]
+    pub fn private_api_provider(&self) -> Arc<SessionPrincipalProvider> {
+        match &self.mcp_workspace_urls {
+            Some(urls) => Arc::new(SessionPrincipalProvider::with_workspace_family(
+                self.session_tokens.verifier(),
+                self.public_audiences.clone(),
+                Arc::new(urls.clone()),
+            )),
+            None => self.principal_provider(self.public_audiences.clone()),
+        }
+    }
+
+    /// Builds the authenticator the MCP HTTP surface checks bearers with.
+    ///
+    /// The MCP surface's audience varies by route — each workspace URL is its
+    /// own resource — so this provider is used exclusively through
+    /// [`SessionPrincipalProvider::principal_for_bearer_with_audience`], with
+    /// the expected audience supplied per request. It carries no standing
+    /// allowlist of its own.
+    #[must_use]
+    pub fn mcp_route_authenticator(&self) -> Arc<SessionPrincipalProvider> {
+        Arc::new(SessionPrincipalProvider::new(
+            self.session_tokens.verifier(),
+            [],
+        ))
+    }
+
     /// Consumes these settings into the authorization server for the instance.
     ///
-    /// Every public surface is registered as an authorization resource clients
-    /// may request a token for.
+    /// Every explicitly registered public audience becomes an authorization
+    /// resource clients may request a token for, and the per-workspace MCP
+    /// family — when MCP HTTP is served — is registered as a template rather
+    /// than an enumeration.
     ///
     /// The server returned here has no database attached and so fails every
     /// login closed. `ServerBuilder::with_session_auth` is the path that
@@ -444,32 +471,35 @@ impl SessionAuthSettings {
                 .with_authorization_resource(audience)
                 .map_err(AppError::FailedPrecondition)?;
         }
+        if let Some(urls) = self.mcp_workspace_urls {
+            server = server.with_workspace_resource_family(urls);
+        }
         Ok(server)
     }
 }
 
-/// Collects the resource identifiers that front the instance's private API.
+/// Collects the explicitly registered resource identifiers that front the
+/// instance's private API, beside the per-workspace MCP family.
 ///
 /// Each identifier is both the audience of tokens minted for a public surface
-/// and the authorization resource clients name when requesting one. Some are
-/// derived from a surface Coral serves, while others are explicitly registered
-/// for external fronting surfaces such as a hosted UI BFF.
+/// and the authorization resource clients name when requesting one. The MCP
+/// surface's audiences are not here: they are the per-workspace resources
+/// under the configured public base, which cannot be enumerated and whose base
+/// is itself not an audience.
 ///
 /// The gRPC API has no resource identity of its own and instead accepts every
-/// identifier returned here. At least one is therefore required: with none, no
-/// token can be minted for anything and every login would fail at authorization.
+/// identifier returned here plus the MCP family. At least one public surface
+/// is therefore required: with none, no token can be minted for anything and
+/// every login would fail at authorization.
 ///
 /// An identifier names a surface, not an actor: either kind of caller can arrive
 /// through any of them, so nothing here says what kind a caller is. Actor kind
 /// comes from the authenticated principal instead.
 fn public_surface_audiences(
-    mcp_http: Option<&McpHttpServeConfig>,
+    mcp_workspace_urls: Option<&WorkspaceMcpUrls>,
     allowed_audiences: &[String],
 ) -> Result<Vec<String>, AppError> {
-    let mut audiences = match mcp_http {
-        Some(McpHttpServeConfig::Authenticated { public_url, .. }) => vec![public_url.clone()],
-        _ => Vec::new(),
-    };
+    let mut audiences = Vec::new();
     for (index, configured) in allowed_audiences.iter().enumerate() {
         let label = format!("auth.allowed_audiences[{index}]");
         let audience = required_oauth_url(&label, Some(configured))?;
@@ -478,9 +508,18 @@ fn public_surface_audiences(
                 "{label} duplicates another configured public surface audience"
             )));
         }
+        // The MCP base is deliberately not an audience of its own — it is not
+        // an MCP endpoint any more — so an explicit entry naming it would
+        // resurrect exactly the audience the per-workspace family replaced.
+        if mcp_workspace_urls.is_some_and(|urls| urls.base().identifier() == audience) {
+            return Err(AppError::FailedPrecondition(format!(
+                "{label} duplicates server.mcp_http.public_url, which is the base of the \
+                 per-workspace MCP resources and not an audience of its own"
+            )));
+        }
         audiences.push(audience);
     }
-    if audiences.is_empty() {
+    if audiences.is_empty() && mcp_workspace_urls.is_none() {
         return Err(AppError::FailedPrecondition(
             "configured [auth] requires at least one public surface: an enabled server.mcp_http with a public_url, or a non-empty auth.allowed_audiences"
                 .to_string(),
@@ -623,7 +662,6 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             bind_addr,
             expose_non_loopback,
             allowed_hosts,
-            workspace,
         }) = McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
         else {
             panic!("loopback MCP must be explicitly auth-disabled");
@@ -631,125 +669,38 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         assert_eq!(bind_addr, SocketAddr::from((Ipv6Addr::LOCALHOST, 14556)));
         assert!(!expose_non_loopback);
         assert!(allowed_hosts.is_empty());
-        assert_eq!(workspace, None);
     }
 
-    /// An explicitly named workspace is normalized and carried through, and an
-    /// absent one stays absent: no name is invented for the operator who wrote
-    /// none, so the adapter can still tell "unnamed" from every real name.
+    /// The workspace is named by each request's URL now, so the retired
+    /// `server.mcp_http.workspace` key fails loudly in both modes rather than
+    /// being read as a binding it no longer is.
     #[test]
-    fn auth_disabled_workspace_carries_an_explicit_name_and_nothing_otherwise() {
-        for (workspace_field, expected) in [
-            ("", None),
-            ("workspace = 'analytics'\n", Some("analytics")),
-            // Whitespace is trimmed by the same parser every other workspace
-            // name goes through, so configuration cannot name a workspace the
-            // rest of the app could never match.
-            ("workspace = '  analytics  '\n", Some("analytics")),
-            // `default` carries no reserved status; it is an ordinary name that
-            // resolves only if such a workspace actually exists.
-            ("workspace = 'default'\n", Some("default")),
-        ] {
+    fn the_retired_workspace_key_is_rejected_not_ignored() {
+        for authenticated in [false, true] {
             let temp = TempDir::new().expect("temp dir");
             let layout =
                 AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-            layout.ensure().expect("config dir");
-            fs::write(
-                layout.config_file(),
-                format!("[server.mcp_http]\nenabled = true\n{workspace_field}"),
-            )
-            .expect("config file");
-
-            let Some(McpHttpServeConfig::AuthDisabled { workspace, .. }) =
-                McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
-            else {
-                panic!("loopback MCP must be explicitly auth-disabled");
+            let mcp_http = if authenticated {
+                "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\nworkspace = 'analytics'\n"
+                    .to_string()
+            } else {
+                "[server.mcp_http]\nenabled = true\nworkspace = 'analytics'\n".to_string()
             };
-            assert_eq!(workspace.as_deref(), expected, "config: {workspace_field}");
-        }
-    }
-
-    #[test]
-    fn auth_disabled_workspace_rejects_an_unusable_name() {
-        for invalid in ["", "   ", "..", "team/analytics"] {
-            let temp = TempDir::new().expect("temp dir");
-            let layout =
-                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-            layout.ensure().expect("config dir");
-            fs::write(
-                layout.config_file(),
-                format!("[server.mcp_http]\nenabled = true\nworkspace = '{invalid}'\n"),
-            )
-            .expect("config file");
-
-            let error = McpHttpServeConfig::load(&layout)
-                .expect_err("an unusable workspace name must fail");
-            assert!(
-                error.to_string().contains("server.mcp_http.workspace"),
-                "error: {error}"
-            );
-        }
-    }
-
-    /// An authenticated surface serves the one workspace its configuration
-    /// names, so the name is carried through both modes by the same parser, and
-    /// naming none stays absent rather than becoming a substituted default.
-    #[test]
-    fn authenticated_workspace_carries_an_explicit_name_and_nothing_otherwise() {
-        for (workspace_field, expected) in [
-            ("", None),
-            ("workspace = 'analytics'\n", Some("analytics")),
-            ("workspace = '  analytics  '\n", Some("analytics")),
-            // `default` carries no reserved status on this surface either.
-            ("workspace = 'default'\n", Some("default")),
-        ] {
-            let temp = TempDir::new().expect("temp dir");
-            let layout =
-                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-            write_authenticated_config(
-                &layout,
-                &format!(
-                    "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\n{workspace_field}"
-                ),
-            );
-
-            let companions = LoadedServerConfig::load(&layout)
-                .expect("load")
-                .companion_settings()
-                .expect("a configured workspace is not a startup precondition");
-            let Some(McpHttpServeConfig::Authenticated { workspace, .. }) =
-                companions.mcp_http.as_ref()
-            else {
-                panic!("configured [auth] must produce an authenticated MCP surface");
-            };
-            assert_eq!(workspace.as_deref(), expected, "config: {workspace_field}");
-        }
-    }
-
-    /// A name nothing could ever match is the operator's mistake, so it fails at
-    /// startup in both modes — unlike a well-formed name for a workspace that
-    /// does not exist yet, which stays a per-session question.
-    #[test]
-    fn authenticated_workspace_rejects_an_unusable_name() {
-        for invalid in ["", "   ", "..", "team/analytics"] {
-            let temp = TempDir::new().expect("temp dir");
-            let layout =
-                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-            write_authenticated_config(
-                &layout,
-                &format!(
-                    "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\nworkspace = '{invalid}'\n"
-                ),
-            );
+            if authenticated {
+                write_authenticated_config(&layout, &mcp_http);
+            } else {
+                layout.ensure().expect("config dir");
+                fs::write(layout.config_file(), &mcp_http).expect("config file");
+            }
 
             let error = LoadedServerConfig::load(&layout)
                 .expect("load")
                 .companion_settings()
                 .err()
-                .expect("an unusable workspace name must fail");
+                .expect("the retired workspace key must fail");
             assert!(
-                error.to_string().contains("server.mcp_http.workspace"),
-                "error: {error}"
+                error.to_string().contains("workspace"),
+                "error must name the rejected key: {error}"
             );
         }
     }
@@ -932,21 +883,57 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
                 bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
                 public_url: "https://mcp.example.test".to_string(),
                 authorization_server: "https://auth.example.test".to_string(),
-                workspace: None,
             })
         );
         // Resolution reports that session auth is configured; constructing the
         // providers and the authorization server from it is the composition
         // root's job, covered in `bootstrap::server`.
         let session_auth = companions.session_auth.expect("session auth");
-        // Both surfaces front the private API, so both audiences are admitted;
-        // neither says anything about what kind of actor arrives through it.
+        // The MCP surface's audiences are the per-workspace family under its
+        // base, not an enumerable entry, so the explicit audience list carries
+        // only the configured extras.
         assert_eq!(
             session_auth.public_audiences,
-            [
-                "https://mcp.example.test".to_string(),
-                "https://coral-ui.example.test".to_string(),
-            ]
+            ["https://coral-ui.example.test".to_string()]
+        );
+        assert_eq!(
+            session_auth
+                .mcp_workspace_urls
+                .as_ref()
+                .expect("MCP workspace family")
+                .base()
+                .identifier(),
+            "https://mcp.example.test"
+        );
+    }
+
+    /// With MCP HTTP as the only public surface, the workspace family alone
+    /// satisfies the at-least-one-surface requirement, and the base URL is not
+    /// registered as an exact audience of its own.
+    #[test]
+    fn authenticated_mcp_only_config_serves_only_the_workspace_family() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        write_authenticated_config(
+            &layout,
+            "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\n",
+        );
+
+        let companions = LoadedServerConfig::load(&layout)
+            .expect("load")
+            .companion_settings()
+            .expect("MCP-only companions");
+        let session_auth = companions.session_auth.expect("session auth");
+        assert!(session_auth.public_audiences.is_empty());
+        assert!(session_auth.mcp_workspace_urls.is_some());
+
+        let authorization_server = session_auth
+            .into_authorization_server()
+            .expect("authorization server");
+        assert!(
+            authorization_server.authorization_resources().is_empty(),
+            "the family is a template, not an enumerated resource — and the \
+             base is not a resource at all"
         );
     }
 
@@ -991,7 +978,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             (
                 "[server.mcp_http]\nenabled = true\npublic_url = 'https://MCP.example.test/'\n",
                 "allowed_audiences = ['https://mcp.example.test']",
-                "auth.allowed_audiences[0] duplicates another configured public surface audience",
+                "auth.allowed_audiences[0] duplicates server.mcp_http.public_url",
             ),
             (
                 "",

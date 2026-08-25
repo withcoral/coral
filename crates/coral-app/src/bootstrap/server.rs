@@ -347,7 +347,7 @@ impl ServerBuilder {
     fn resolve_authentication(&self) -> (Arc<dyn PrincipalProvider>, LocalPrincipalPolicy) {
         match &self.session_auth {
             Some(session_auth) => (
-                session_auth.principal_provider(session_auth.public_audiences().to_vec()),
+                session_auth.private_api_provider(),
                 LocalPrincipalPolicy::NoLocalPrincipal,
             ),
             None => (
@@ -1437,9 +1437,11 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
     }
 
     /// The private API is reached through every public surface in front of it,
-    /// so a token minted for any of them authenticates. Which surface it came
-    /// through says nothing about the caller: the identity in the token is a
-    /// person's, so that is who authenticates.
+    /// so a token minted for any of them authenticates — and the MCP surface's
+    /// audiences are the per-workspace resources under its public base, an
+    /// unenumerable family the base itself is not a member of. Which surface a
+    /// token came through says nothing about the caller: the identity in the
+    /// token is a person's, so that is who authenticates.
     #[tokio::test]
     async fn session_auth_admits_a_token_minted_for_any_fronting_surface() {
         let temp = TempDir::new().expect("temp dir");
@@ -1447,31 +1449,39 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         configure_serve_session_auth(&config_dir);
         let (builder, session_auth) = serve_session_auth(&config_dir);
         let user_id = "1f0d2b8a-6d51-4f6e-9a0d-3c8f21b4e7a5";
-        let token = session_auth
-            .session_tokens
-            .issue_access_token(
-                user_id,
-                "https://client.example/client.json",
-                "https://mcp.example.test",
-            )
-            .expect("session token")
-            .access_token;
+        let mint = |audience: &str| {
+            session_auth
+                .session_tokens
+                .issue_access_token(user_id, "https://client.example/client.json", audience)
+                .expect("session token")
+                .access_token
+        };
+        let workspace_token = mint("https://mcp.example.test/workspace/analytics");
+        let base_token = mint("https://mcp.example.test");
         let (private_api, _) = builder
             .with_session_auth(session_auth)
             .resolve_authentication();
 
-        let mut metadata = tonic::metadata::MetadataMap::new();
-        metadata.insert(
-            "authorization",
-            tonic::metadata::MetadataValue::try_from(format!("Bearer {token}"))
-                .expect("authorization metadata"),
-        );
+        let bearer_metadata = |token: &str| {
+            let mut metadata = tonic::metadata::MetadataMap::new();
+            metadata.insert(
+                "authorization",
+                tonic::metadata::MetadataValue::try_from(format!("Bearer {token}"))
+                    .expect("authorization metadata"),
+            );
+            metadata
+        };
         let principal = private_api
-            .principal_for_metadata(&metadata)
+            .principal_for_metadata(&bearer_metadata(&workspace_token))
             .await
-            .expect("token minted for the MCP surface");
+            .expect("token minted for a workspace's MCP resource");
         assert_eq!(principal.id().as_str(), user_id);
         assert_eq!(principal.kind(), PrincipalKind::User);
+
+        private_api
+            .principal_for_metadata(&bearer_metadata(&base_token))
+            .await
+            .expect_err("the MCP base is the family's root, not an audience of its own");
     }
 
     /// The built-in `coral:local` principal is what the default provider hands

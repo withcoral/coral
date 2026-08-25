@@ -856,14 +856,16 @@ async fn run_server(
     }
     println!("Coral gRPC server listening on {endpoint}");
     if let Some(address) = server.mcp_http_addr() {
-        let mcp_endpoint = format!("http://{address}/mcp");
+        // Each workspace is served at its own URL under this listener; the
+        // template is the endpoint story, since no single URL is one.
+        let mcp_endpoint = format!("http://{address}/mcp/workspace/{{workspace}}");
         if server_requires_security_warning(address) {
             eprintln!(
                 "{}",
                 mcp_http_exposure_warning(&mcp_endpoint, server.mcp_http_authentication_enabled())
             );
         }
-        println!("Coral MCP HTTP server listening on {mcp_endpoint}");
+        println!("Coral MCP HTTP server serving each workspace at {mcp_endpoint}");
     }
     println!("Connect clients with CORAL_ENDPOINT={endpoint}");
     println!("Press Ctrl-C to stop the server.");

@@ -257,9 +257,7 @@ impl SessionTokenVerifier {
                 "accepted audiences must be non-empty and have no surrounding whitespace",
             ));
         }
-        self.validate_access_token_where(token, &|audience| {
-            accepted_audiences.contains(&audience)
-        })
+        self.validate_access_token_where(token, &|audience| accepted_audiences.contains(&audience))
     }
 
     /// Validates an access token whose audience is judged by `audience_ok`.

@@ -1115,7 +1115,12 @@ impl ServerHandler for CoralMcpServer {
                 .enable_tools()
                 .build(),
         )
-        .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")));
+        // The workspace joins the advertised name so a client connected to two
+        // workspaces shows them as two distinct connectors.
+        .with_server_info(Implementation::new(
+            format!("Coral / {}", self.core_tools.workspace().name),
+            env!("CARGO_PKG_VERSION"),
+        ));
         match &self.initialize_instructions {
             InitializeInstructions::CoralDefault => info.with_instructions(initial_instructions(
                 &self.core_tools.workspace().name,

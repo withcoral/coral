@@ -47,9 +47,10 @@ use super::{
     AUTHENTICATED_SESSION_IDLE_TIMEOUT, AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime,
     AuthenticatedSession, AuthenticatedSessionManager, AuthenticatedSessions,
     MAX_AUTHENTICATED_SESSIONS, MAX_MCP_REQUEST_BODY_SIZE, McpHttpConfig, McpHttpError,
-    ReadinessProbe, RunningMcpHttpServer, SESSION_ID_HEADER, SHUTDOWN_GRACE_PERIOD, SessionOwner,
-    auth_disabled_router, authenticated_router, authenticated_router_with_sessions,
-    binding_fingerprint, readiness_status, start_auth_disabled, start_authenticated,
+    McpWorkspaceSegment, ReadinessProbe, RunningMcpHttpServer, SESSION_ID_HEADER,
+    SHUTDOWN_GRACE_PERIOD, SessionOwner, WORKSPACE_URL_HINT, auth_disabled_router,
+    authenticated_router, authenticated_router_with_sessions, binding_fingerprint,
+    readiness_status, start_auth_disabled, start_authenticated,
 };
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
@@ -80,15 +81,37 @@ fn extension_options() -> McpOptions {
     }
 }
 
+/// The listener-relative MCP URL of one workspace, on either surface.
+fn ws_path(name: &str) -> String {
+    format!("/mcp/workspace/{name}")
+}
+
+fn segment(name: &str) -> McpWorkspaceSegment {
+    McpWorkspaceSegment::parse(name).expect("valid workspace segment")
+}
+
 fn raw_mcp_request(body: impl Into<Body>) -> Request<Body> {
+    raw_mcp_request_at(&ws_path(TEST_WORKSPACE), body)
+}
+
+fn raw_mcp_request_at(path: &str, body: impl Into<Body>) -> Request<Body> {
     Request::builder()
         .method(Method::POST)
-        .uri("/mcp")
+        .uri(path)
         .header(header::HOST, "127.0.0.1")
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header(header::CONTENT_TYPE, "application/json")
         .body(body.into())
         .expect("request")
+}
+
+/// Counts live auth-disabled sessions across every served workspace.
+async fn local_session_count(state: &Arc<super::HttpState>) -> usize {
+    let mut count = 0;
+    for entry in state.workspaces.read().await.values() {
+        count += entry.sessions.sessions.read().await.len();
+    }
+    count
 }
 
 async fn assert_bad_request_without_session(
@@ -98,7 +121,7 @@ async fn assert_bad_request_without_session(
 ) {
     let response = send(router, request).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(state.sessions.sessions.read().await.is_empty());
+    assert_eq!(local_session_count(state).await, 0);
 }
 
 fn authenticated_config() -> AuthenticatedMcpHttpConfig {
@@ -108,16 +131,26 @@ fn authenticated_config() -> AuthenticatedMcpHttpConfig {
 fn authenticated_config_at(bind_addr: SocketAddr) -> AuthenticatedMcpHttpConfig {
     AuthenticatedMcpHttpConfig::new(
         bind_addr,
-        "https://mcp.example.com/custom%20mcp",
+        "https://mcp.example.com/mcp",
         "https://login.example.com/",
     )
     .unwrap()
 }
 
 fn auth_request(authorization: &str, session: Option<&str>, body: &str) -> Request<Body> {
+    auth_request_at(TEST_WORKSPACE, authorization, session, body)
+}
+
+/// One authenticated request at the named workspace's URL.
+fn auth_request_at(
+    workspace: &str,
+    authorization: &str,
+    session: Option<&str>,
+    body: &str,
+) -> Request<Body> {
     let mut request = Request::builder()
         .method(Method::POST)
-        .uri("/mcp")
+        .uri(ws_path(workspace))
         .header(header::HOST, "mcp.example.com")
         .header(header::ACCEPT, "application/json, text/event-stream")
         .header(header::CONTENT_TYPE, "application/json")
@@ -173,15 +206,18 @@ async fn assert_invalid_initialize_protocols_rejected(router: &Router) {
 }
 
 /// The one ordinary workspace the HTTP fixtures work in. A fresh app owns no
-/// workspace, so only the tests that reach a workspace-scoped tool create it,
-/// and they name it in their [`McpOptions`] rather than leaving the choice to
-/// the server.
+/// workspace, so a fixture whose handshake must be admitted creates it first —
+/// the URL names it, and admission answers existence from a live listing.
 const TEST_WORKSPACE: &str = "analytics";
 
-/// Creates [`TEST_WORKSPACE`] and returns options scoped to it.
+/// Creates [`TEST_WORKSPACE`] and returns the surface's template options.
+///
+/// The options name no workspace: each request's URL does, so the only thing a
+/// fixture must do for a handshake at [`TEST_WORKSPACE`]'s URL to be admitted
+/// is make the workspace exist.
 async fn workspace_scoped_options(app: &AppClient) -> McpOptions {
     create_workspace(app, TEST_WORKSPACE).await;
-    workspace_named_options()
+    McpOptions::default()
 }
 
 /// Creates one workspace through the same public RPC any client would use.
@@ -192,27 +228,6 @@ async fn create_workspace(app: &AppClient, name: &str) {
         }))
         .await
         .expect("create test workspace");
-}
-
-/// Names [`TEST_WORKSPACE`] without creating it.
-///
-/// The auth-disabled session factory demands a *resolved* workspace, not an
-/// existing one: whether the name resolves is answered by the request that
-/// needs it. Loopback fixtures that never reach a workspace-scoped tool
-/// therefore only have to name one, and naming it is what keeps them from
-/// exercising a fallback. Authenticated fixtures need
-/// [`workspace_scoped_options`] instead, because admission there checks the
-/// name against the caller's memberships before opening a session.
-fn workspace_named_options() -> McpOptions {
-    options_naming(TEST_WORKSPACE)
-}
-
-/// Names one workspace for a surface, without creating it.
-fn options_naming(name: &str) -> McpOptions {
-    McpOptions {
-        workspace: Some(workspace(name)),
-        ..McpOptions::default()
-    }
 }
 
 async fn local_app() -> (TempDir, coral_client::local::RunningServer, AppClient) {
@@ -236,7 +251,8 @@ async fn open_stalled_request(server: &RunningMcpHttpServer) -> TcpStream {
     stalled
         .write_all(
             format!(
-                "POST /mcp HTTP/1.1\r\nHost: {}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{{\r\n",
+                "POST {} HTTP/1.1\r\nHost: {}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{{\r\n",
+                ws_path(TEST_WORKSPACE),
                 server.local_addr()
             )
             .as_bytes(),
@@ -254,13 +270,25 @@ async fn open_stalled_request(server: &RunningMcpHttpServer) -> TcpStream {
     stalled
 }
 
-fn local_sessions(
-    server: &RunningMcpHttpServer,
-) -> std::sync::Weak<rmcp::transport::streamable_http_server::session::local::LocalSessionManager> {
+type WeakLocalWorkspaces = std::sync::Weak<
+    tokio::sync::RwLock<std::collections::HashMap<McpWorkspaceSegment, super::WorkspaceSessions>>,
+>;
+
+fn local_workspaces(server: &RunningMcpHttpServer) -> WeakLocalWorkspaces {
     match &server.state.sessions {
-        SessionOwner::Local(sessions) => Arc::downgrade(sessions),
+        SessionOwner::Local(workspaces) => Arc::downgrade(workspaces),
         SessionOwner::Authenticated(_) => panic!("expected local sessions"),
     }
+}
+
+/// Counts live sessions across the map a running auth-disabled server owns.
+async fn running_local_session_count(workspaces: &WeakLocalWorkspaces) -> usize {
+    let workspaces = workspaces.upgrade().expect("workspaces");
+    let mut count = 0;
+    for entry in workspaces.read().await.values() {
+        count += entry.sessions.sessions.read().await.len();
+    }
+    count
 }
 
 fn authenticated_sessions(
@@ -309,8 +337,8 @@ fn allowed_hosts_must_be_valid_header_values() {
 #[tokio::test]
 async fn auth_disabled_router_accepts_loopback_names_and_configured_hosts() {
     let (_temp, app_server, app) = local_app().await;
-    // Host acceptance is what this asserts, but the router now resolves a
-    // workspace before it exists, so the fixture gives it one to resolve.
+    // Host acceptance is what this asserts, but a handshake is only admitted
+    // for a workspace that exists, so the fixture creates the one its URL names.
     let options = workspace_scoped_options(&app).await;
     let (router, state) = auth_disabled_router(
         app.clone(),
@@ -318,8 +346,7 @@ async fn auth_disabled_router_accepts_loopback_names_and_configured_hosts() {
         ReadinessProbe::from_app(app),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         &["coral".to_string()],
-    )
-    .expect("router scoped to a workspace");
+    );
 
     // The baseline loopback names and the operator-listed host all initialize;
     // anything else keeps hitting the DNS-rebinding 403.
@@ -334,7 +361,7 @@ async fn auth_disabled_router_accepts_loopback_names_and_configured_hosts() {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/mcp")
+                    .uri(ws_path(TEST_WORKSPACE))
                     .header(header::HOST, host)
                     .header(header::ACCEPT, "application/json, text/event-stream")
                     .header(header::CONTENT_TYPE, "application/json")
@@ -350,7 +377,7 @@ async fn auth_disabled_router_accepts_loopback_names_and_configured_hosts() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/mcp")
+                .uri(ws_path(TEST_WORKSPACE))
                 .header(header::HOST, "coral.example")
                 .header(header::ACCEPT, "application/json, text/event-stream")
                 .header(header::CONTENT_TYPE, "application/json")
@@ -370,14 +397,14 @@ async fn auth_disabled_router_accepts_loopback_names_and_configured_hosts() {
 async fn raw_routes_enforce_health_and_host_contracts() {
     let (_temp, app_server, app) = local_app().await;
     let advertised_ip = IpAddr::V4(Ipv4Addr::new(127, 42, 3, 9));
+    let options = workspace_scoped_options(&app).await;
     let (router, state) = auth_disabled_router(
         app.clone(),
-        workspace_named_options(),
+        options,
         ReadinessProbe::from_app(app),
         advertised_ip,
         &[],
-    )
-    .expect("router scoped to a workspace");
+    );
 
     for path in ["/livez", "/readyz"] {
         let response = router
@@ -398,7 +425,7 @@ async fn raw_routes_enforce_health_and_host_contracts() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/mcp")
+                .uri(ws_path(TEST_WORKSPACE))
                 .header(header::HOST, "attacker.example")
                 .header(header::ACCEPT, "application/json, text/event-stream")
                 .header(header::CONTENT_TYPE, "application/json")
@@ -414,7 +441,7 @@ async fn raw_routes_enforce_health_and_host_contracts() {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/mcp")
+                .uri(ws_path(TEST_WORKSPACE))
                 .header(header::HOST, "127.42.3.9:8080")
                 .header(header::ORIGIN, "https://attacker.example")
                 .header(header::ACCEPT, "application/json, text/event-stream")
@@ -425,13 +452,13 @@ async fn raw_routes_enforce_health_and_host_contracts() {
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(state.sessions.sessions.read().await.is_empty());
+    assert_eq!(local_session_count(&state).await, 0);
 
     let response = router
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/mcp")
+                .uri(ws_path(TEST_WORKSPACE))
                 .header(header::HOST, "127.42.3.9:8080")
                 .header(header::ACCEPT, "application/json, text/event-stream")
                 .header(header::CONTENT_TYPE, "application/json")
@@ -450,14 +477,14 @@ async fn raw_routes_enforce_health_and_host_contracts() {
 #[tokio::test]
 async fn mcp_rejects_uninitialized_and_oversized_requests_without_leaking_sessions() {
     let (_temp, app_server, app) = local_app().await;
+    let options = workspace_scoped_options(&app).await;
     let (router, state) = auth_disabled_router(
         app.clone(),
-        workspace_named_options(),
+        options,
         ReadinessProbe::from_app(app),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         &[],
-    )
-    .expect("router scoped to a workspace");
+    );
 
     for body in [
         PING,
@@ -525,7 +552,7 @@ async fn mcp_rejects_uninitialized_and_oversized_requests_without_leaking_sessio
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(state.sessions.sessions.read().await.len(), 1);
+    assert_eq!(local_session_count(&state).await, 1);
 
     let mut ping = raw_mcp_request(PING);
     ping.headers_mut().insert(SESSION_ID_HEADER, session_id);
@@ -564,10 +591,13 @@ async fn readyz_classifies_auth_transport_and_timeout_results() {
     );
 }
 
-/// Reads the workspace an initialized session was scoped to.
-async fn session_workspace_line(server: &RunningMcpHttpServer) -> String {
-    let transport =
-        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", server.local_addr()));
+/// Reads the workspace the session at one workspace URL was scoped to.
+async fn session_workspace_line(server: &RunningMcpHttpServer, workspace: &str) -> String {
+    let transport = StreamableHttpClientTransport::from_uri(format!(
+        "http://{}{}",
+        server.local_addr(),
+        ws_path(workspace)
+    ));
     let client = ().serve(transport).await.expect("initialize MCP client");
     let line = client
         .peer_info()
@@ -583,15 +613,11 @@ async fn session_workspace_line(server: &RunningMcpHttpServer) -> String {
     line
 }
 
-/// A configured name is used exactly, including one no workspace answers to.
-///
-/// Composition validated the name's shape already, so the adapter wraps it
-/// rather than re-deriving it, and it never consults memberships: a surface
-/// configured today has to start for a workspace created tomorrow. The unnamed
-/// second workspace here would make any membership-based choice ambiguous, so
-/// starting at all proves the configured name was taken as authoritative.
+/// Every existing workspace is served at its own URL, each session scoped to
+/// exactly the workspace its URL names — with several workspaces existing, so
+/// any single-workspace selection rule would have to pick wrong somewhere.
 #[tokio::test]
-async fn auth_disabled_workspace_selection_uses_the_configured_name() {
+async fn auth_disabled_routes_each_workspace_at_its_own_url() {
     let (_temp, app_server, app) = local_app().await;
     let options = workspace_scoped_options(&app).await;
     create_workspace(&app, "reporting").await;
@@ -602,27 +628,11 @@ async fn auth_disabled_workspace_selection_uses_the_configured_name() {
         .expect("start MCP HTTP server");
 
     assert_eq!(
-        session_workspace_line(&server).await,
+        session_workspace_line(&server, TEST_WORKSPACE).await,
         format!("Current Coral workspace: {TEST_WORKSPACE}.")
     );
-
-    server.shutdown().await.expect("shutdown MCP HTTP server");
-    app_server.shutdown().await.expect("shutdown app server");
-}
-
-/// Naming none is answered by the local user's one membership.
-#[tokio::test]
-async fn auth_disabled_workspace_selection_uses_the_sole_membership() {
-    let (_temp, app_server, app) = local_app().await;
-    create_workspace(&app, "reporting").await;
-    let config =
-        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
-    let server = start_auth_disabled(config, app, McpOptions::default())
-        .await
-        .expect("start MCP HTTP server");
-
     assert_eq!(
-        session_workspace_line(&server).await,
+        session_workspace_line(&server, "reporting").await,
         "Current Coral workspace: reporting."
     );
 
@@ -630,84 +640,134 @@ async fn auth_disabled_workspace_selection_uses_the_sole_membership() {
     app_server.shutdown().await.expect("shutdown app server");
 }
 
-/// Owning nothing and owning several are different problems for the operator,
-/// so they get different guidance instead of one workspace picked for them.
+/// The server starts with no workspaces at all, and existence is answered per
+/// handshake with negatives never cached: a URL that is not-found now becomes
+/// servable the moment its workspace is created, with nothing restarted.
 #[tokio::test]
-async fn auth_disabled_workspace_selection_reports_zero_and_several_distinctly() {
+async fn auth_disabled_serves_with_no_workspaces_and_admits_one_created_later() {
     let (_temp, app_server, app) = local_app().await;
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
+    let server = start_auth_disabled(config, app.clone(), McpOptions::default())
+        .await
+        .expect("a server with nothing to serve still starts");
 
-    let Err(McpHttpError::NoLocalWorkspace) =
-        start_auth_disabled(config.clone(), app.clone(), McpOptions::default()).await
-    else {
-        panic!("a local user with no workspace must be told to create one");
-    };
+    let response = initialize_raw(&server, TEST_WORKSPACE).await;
+    assert_eq!(
+        response.0,
+        StatusCode::NOT_FOUND,
+        "before the workspace exists its URL is a plain not-found"
+    );
+    assert!(
+        response.1.is_empty(),
+        "an unknown workspace says nothing at all: {:?}",
+        response.1
+    );
 
     create_workspace(&app, TEST_WORKSPACE).await;
-    create_workspace(&app, "reporting").await;
-    let Err(McpHttpError::AmbiguousLocalWorkspace(available)) =
-        start_auth_disabled(config, app, McpOptions::default()).await
-    else {
-        panic!("a local user with several workspaces must be told to name one");
-    };
-    for name in [TEST_WORKSPACE, "reporting"] {
-        assert!(
-            available.contains(name),
-            "the guidance must name the workspaces to choose between, got {available}"
-        );
-    }
+    assert_eq!(
+        session_workspace_line(&server, TEST_WORKSPACE).await,
+        format!("Current Coral workspace: {TEST_WORKSPACE}."),
+        "the probe that found nothing must not have been cached"
+    );
 
+    server.shutdown().await.expect("shutdown MCP HTTP server");
     app_server.shutdown().await.expect("shutdown app server");
 }
 
-/// A configured name nothing answers to is a request-time not-found, not a
-/// startup failure: the surface serves, and the tool that needs the workspace
-/// reports the ordinary contract rather than reaching another workspace.
+/// Deleting a workspace makes its URL refuse new handshakes immediately.
+///
+/// The already-open session is the stated boundary: admission is decided per
+/// handshake, so the session keeps answering transport-level exchanges while
+/// every workspace-scoped call fails against the backend that no longer has
+/// the workspace.
 #[tokio::test]
-async fn auth_disabled_workspace_selection_defers_a_missing_name_to_the_request() {
+async fn auth_disabled_delete_makes_the_url_not_found_for_new_handshakes() {
     let (_temp, app_server, app) = local_app().await;
-    create_workspace(&app, "reporting").await;
+    let options = workspace_scoped_options(&app).await;
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
-    let server = start_auth_disabled(
-        config,
-        app,
-        McpOptions {
-            workspace: Some(workspace("never-created")),
-            ..McpOptions::default()
-        },
-    )
-    .await
-    .expect("a configured name is not checked for existence at startup");
+    let server = start_auth_disabled(config, app.clone(), options)
+        .await
+        .expect("start MCP HTTP server");
 
-    let transport =
-        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", server.local_addr()));
+    let transport = StreamableHttpClientTransport::from_uri(format!(
+        "http://{}{}",
+        server.local_addr(),
+        ws_path(TEST_WORKSPACE)
+    ));
     let client = ().serve(transport).await.expect("initialize MCP client");
+
+    app.workspace_client()
+        .delete_workspace(GrpcRequest::new(DeleteWorkspaceRequest {
+            workspace: Some(workspace(TEST_WORKSPACE)),
+        }))
+        .await
+        .expect("delete the workspace");
+
+    let (status, body) = initialize_raw(&server, TEST_WORKSPACE).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a deleted workspace's URL refuses the next handshake like one that never existed"
+    );
+    assert!(body.is_empty(), "and says nothing at all: {body:?}");
+
     let refused = client
         .call_tool(CallToolRequestParams::new("start_task").with_arguments(
             serde_json::Map::from_iter([(
                 "intent".to_string(),
-                serde_json::json!("Reach the workspace that was configured"),
+                serde_json::json!("Reach the deleted workspace"),
             )]),
         ))
         .await
         .expect("a workspace rejection is an in-band tool result");
-
     assert_eq!(
         refused.is_error,
         Some(true),
-        "a configured workspace that does not exist must be reported, not replaced"
-    );
-    let reported = format!("{:?}", refused.content);
-    assert!(
-        reported.contains("never-created"),
-        "the refusal must name the workspace that was asked for, got {reported}"
+        "the surviving session's workspace-scoped calls fail against the backend"
     );
 
     let _cancel_result = client.cancel().await;
     server.shutdown().await.expect("shutdown MCP HTTP server");
     app_server.shutdown().await.expect("shutdown app server");
+}
+
+/// One raw initialize at a workspace URL, as (status, body bytes).
+async fn initialize_raw(server: &RunningMcpHttpServer, name: &str) -> (StatusCode, Vec<u8>) {
+    let mut stream = TcpStream::connect(server.local_addr())
+        .await
+        .expect("connect");
+    stream
+        .write_all(
+            format!(
+                "POST {} HTTP/1.1\r\nHost: {}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{INITIALIZE}",
+                ws_path(name),
+                server.local_addr(),
+                INITIALIZE.len(),
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write initialize");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+        .await
+        .expect("response ends")
+        .expect("read response");
+    let text = String::from_utf8_lossy(&response);
+    let status_line = text.lines().next().expect("status line");
+    let code = status_line
+        .split_whitespace()
+        .nth(1)
+        .expect("status code")
+        .parse::<u16>()
+        .expect("numeric status");
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_headers, body)| body.as_bytes().to_vec())
+        .unwrap_or_default();
+    (StatusCode::from_u16(code).expect("status"), body)
 }
 
 #[tokio::test]
@@ -725,8 +785,11 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
     )
     .await
     .expect("start MCP HTTP server");
-    let transport =
-        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", server.local_addr()));
+    let transport = StreamableHttpClientTransport::from_uri(format!(
+        "http://{}{}",
+        server.local_addr(),
+        ws_path(TEST_WORKSPACE)
+    ));
     let client = ().serve(transport).await.expect("initialize MCP client");
     let task = client
         .call_tool(CallToolRequestParams::new("start_task").with_arguments(
@@ -766,18 +829,9 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
         .expect("gRPC rejection is an in-band tool result");
     assert_eq!(rejected.is_error, Some(true));
 
-    let sessions = local_sessions(&server);
+    let sessions = local_workspaces(&server);
     let state = Arc::downgrade(&server.state);
-    assert_eq!(
-        sessions
-            .upgrade()
-            .expect("sessions")
-            .sessions
-            .read()
-            .await
-            .len(),
-        1
-    );
+    assert_eq!(running_local_session_count(&sessions).await, 1);
     drop(
         server
             .state
@@ -816,7 +870,7 @@ async fn shutdown_timeout_matches_one_second_contract() {
     let (_temp, app_server, app) = local_app().await;
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
-    let server = start_auth_disabled(config, app, workspace_named_options())
+    let server = start_auth_disabled(config, app, McpOptions::default())
         .await
         .expect("start MCP HTTP server");
     let state = server.state.clone();
@@ -838,27 +892,22 @@ async fn shutdown_timeout_matches_one_second_contract() {
 #[tokio::test]
 async fn dropping_server_cancels_requests_and_releases_state() {
     let (_temp, app_server, app) = local_app().await;
+    let options = workspace_scoped_options(&app).await;
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
-    let server = start_auth_disabled(config, app, workspace_named_options())
+    let server = start_auth_disabled(config, app, options)
         .await
         .expect("start MCP HTTP server");
-    let transport =
-        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", server.local_addr()));
+    let transport = StreamableHttpClientTransport::from_uri(format!(
+        "http://{}{}",
+        server.local_addr(),
+        ws_path(TEST_WORKSPACE)
+    ));
     let client = ().serve(transport).await.expect("initialize MCP client");
 
-    let sessions = local_sessions(&server);
+    let sessions = local_workspaces(&server);
     let state = Arc::downgrade(&server.state);
-    assert_eq!(
-        sessions
-            .upgrade()
-            .expect("sessions")
-            .sessions
-            .read()
-            .await
-            .len(),
-        1
-    );
+    assert_eq!(running_local_session_count(&sessions).await, 1);
     let mut stalled = open_stalled_request(&server).await;
 
     drop(server);
@@ -891,7 +940,7 @@ async fn authenticated_session_lifecycle_is_coherent() {
     let factory_calls = Arc::new(AtomicUsize::new(0));
     let counted_factory_calls = factory_calls.clone();
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |_| {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
@@ -978,7 +1027,7 @@ async fn authenticated_requests_are_bounded_before_and_after_initialization() {
     let factory_calls = Arc::new(AtomicUsize::new(0));
     let counted_factory_calls = factory_calls.clone();
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |_| {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
@@ -1037,7 +1086,7 @@ async fn authenticated_sessions_remain_isolated() {
     let (_temp, app_server, app) = local_app().await;
     let options = workspace_scoped_options(&app).await;
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
         options,
         || async { Ok::<_, tonic::Code>(()) },
@@ -1087,7 +1136,7 @@ async fn authenticated_session_admission_rejects_before_client_creation() {
     let factory_calls = Arc::new(AtomicUsize::new(0));
     let counted_factory_calls = factory_calls.clone();
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |_| {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
@@ -1527,13 +1576,9 @@ fn control_plane_by(token: &str) -> DirectoryCall {
 /// vouch for. Keeping it in the same runtime as the admitted ones is what lets
 /// a test compare an authentication answer against an admission answer without
 /// changing anything else about the surface.
-fn admission_runtime(
-    endpoint: String,
-    options: McpOptions,
-    disowned: &'static str,
-) -> AuthenticatedMcpHttpRuntime {
+fn admission_runtime(endpoint: String, disowned: &'static str) -> AuthenticatedMcpHttpRuntime {
     AuthenticatedMcpHttpRuntime::new(
-        move |token: String| {
+        move |token: String, _audience: String| {
             let vouched = token != disowned;
             async move { if vouched { Ok(()) } else { Err(()) } }
         },
@@ -1541,7 +1586,7 @@ fn admission_runtime(
             let endpoint = endpoint.clone();
             async move { bearer_client(&endpoint, &token).await }
         },
-        options,
+        McpOptions::default(),
         || async { Ok::<_, tonic::Code>(()) },
     )
 }
@@ -1554,44 +1599,31 @@ async fn bearer_client(endpoint: &str, token: &str) -> Result<AppClient, ()> {
         .map_err(|_error| ())
 }
 
-/// One authenticated surface, configured for one workspace of one directory.
+/// One authenticated surface over one directory of workspaces.
 ///
-/// Two of these over the same directory is what a deployment looks like from
-/// two people's desks: one world of workspaces, and a surface each, naming the
-/// workspace its own operator meant to serve.
-fn surface_naming(directory: &RunningDirectory, configured: &str) -> (Router, super::AuthState) {
+/// The surface serves every workspace at its own URL; which workspace a
+/// request is about is the URL's to say, so the fixture configures none.
+fn surface(directory: &RunningDirectory) -> (Router, super::AuthState) {
     authenticated_router(
         authenticated_config(),
-        admission_runtime(
-            directory.endpoint.clone(),
-            options_naming(configured),
-            "impostor",
-        ),
+        admission_runtime(directory.endpoint.clone(), "impostor"),
     )
 }
 
-/// A surface that names no workspace admits nobody, and says what to do.
+/// A surface that cannot build the caller's client answers 503, not not-found.
 ///
-/// The caller holds a workspace here, and it is still not substituted for the
-/// one nothing named: an unnamed workspace is a configuration answer, so no
-/// bearer-bound client is built and the directory is asked nothing at all —
-/// admission cannot pick what it never read. The unauthenticated readiness
-/// probe stays untouched too; it is not a way to find a workspace.
+/// Unavailability is a statement about the server, not about any workspace, so
+/// it must not wear the concealed refusal's shape — and it must not challenge,
+/// because the caller's credential was fine. The directory is asked nothing:
+/// admission never got far enough to have a question.
 #[tokio::test]
-async fn authenticated_admission_requires_a_configured_workspace() {
+async fn authenticated_admission_unavailability_is_not_an_answer_about_a_workspace() {
     let directory = serve_directory(vec![("member", vec![TEST_WORKSPACE.to_string()])]).await;
-    let endpoint = directory.endpoint.clone();
-    let client_calls = Arc::new(AtomicUsize::new(0));
-    let counted_client_calls = Arc::clone(&client_calls);
     let readiness_calls = Arc::new(AtomicUsize::new(0));
     let counted_readiness_calls = Arc::clone(&readiness_calls);
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
-        move |token: String| {
-            counted_client_calls.fetch_add(1, Ordering::Relaxed);
-            let endpoint = endpoint.clone();
-            async move { bearer_client(&endpoint, &token).await }
-        },
+        |_, _| async { Ok::<_, ()>(()) },
+        move |_token: String| std::future::ready(Err::<AppClient, ()>(())),
         McpOptions::default(),
         move || {
             counted_readiness_calls.fetch_add(1, Ordering::Relaxed);
@@ -1600,24 +1632,21 @@ async fn authenticated_admission_requires_a_configured_workspace() {
     );
     let (router, state) = authenticated_router(authenticated_config(), runtime);
 
-    let refused = send(&router, auth_request("Bearer member", None, INITIALIZE)).await;
-    let error = refusal_error(refused).await;
-
-    let guidance = refusal_guidance(&error);
+    let unavailable = send(&router, auth_request("Bearer member", None, INITIALIZE)).await;
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        guidance.contains("no workspace configured"),
-        "guidance: {guidance}"
+        !unavailable.headers().contains_key(header::WWW_AUTHENTICATE),
+        "an availability answer is not an authentication answer"
     );
     assert!(
-        guidance.contains("Reef") && guidance.contains("server.mcp_http.workspace"),
-        "guidance must name both ways out: {guidance}"
+        unavailable.headers().get(SESSION_ID_HEADER).is_none(),
+        "no session opens on an undecided admission"
     );
-    assert_eq!(client_calls.load(Ordering::Relaxed), 0);
     assert_eq!(readiness_calls.load(Ordering::Relaxed), 0);
     assert_eq!(
         directory.calls(),
         Vec::new(),
-        "with nothing configured there is no membership question to ask"
+        "admission that could not build a client had no question to ask"
     );
     assert_eq!(state.sessions.len().await, 0);
     assert_eq!(
@@ -1654,7 +1683,7 @@ async fn authenticated_admission_binds_only_an_exact_membership() {
     let readiness_calls = Arc::new(AtomicUsize::new(0));
     let counted_readiness_calls = Arc::clone(&readiness_calls);
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |token: String| {
             let endpoint = if token == "stranger" {
                 elsewhere_endpoint.clone()
@@ -1663,7 +1692,7 @@ async fn authenticated_admission_binds_only_an_exact_membership() {
             };
             async move { bearer_client(&endpoint, &token).await }
         },
-        workspace_named_options(),
+        McpOptions::default(),
         move || {
             counted_readiness_calls.fetch_add(1, Ordering::Relaxed);
             async { Ok::<_, tonic::Code>(()) }
@@ -1735,29 +1764,22 @@ async fn authenticated_admission_binds_only_an_exact_membership() {
 
 /// Three ways to be turned away stay three answers for whoever runs the server.
 ///
-/// A caller the authorization server will not vouch for, a surface that names
-/// no workspace, and a configured name the caller does not hold are three
-/// different things to fix — a token, a config file, a membership — and an
-/// operator reading one response has to know which. Concealment is owed to the
-/// *caller* about which workspaces exist, and this is the boundary of that
-/// debt: it never obliged the surface to answer "no" the same way to questions
-/// that are not about a workspace at all.
+/// A caller the authorization server will not vouch for, a workspace the
+/// caller does not hold, and a server that cannot decide are three different
+/// things to fix — a token, a membership, an outage — and an operator reading
+/// one response has to know which. Concealment is owed to the *caller* about
+/// which workspaces exist, and this is the boundary of that debt: it never
+/// obliged the surface to answer "no" the same way to questions that are not
+/// about a workspace at all.
 ///
-/// The rejected bearer never reaches the directory, and the unconfigured
-/// surface never asks it anything even though the caller holds a workspace
-/// there — the configuration answer is settled before the membership question
-/// is worth asking, so neither refusal can be the other in disguise.
+/// The rejected bearer never reaches the directory — authentication is settled
+/// before the membership question is worth asking — and the unavailable
+/// surface asks nothing either, so neither refusal can be the membership
+/// refusal in disguise.
 #[tokio::test]
 async fn authenticated_admission_keeps_its_three_refusals_apart() {
     let directory = serve_directory(vec![("member", vec![TEST_WORKSPACE.to_string()])]).await;
-    let (router, state) = authenticated_router(
-        authenticated_config(),
-        admission_runtime(
-            directory.endpoint.clone(),
-            workspace_named_options(),
-            "impostor",
-        ),
-    );
+    let (router, state) = surface(&directory);
 
     let unvouched = send(&router, auth_request("Bearer impostor", None, INITIALIZE)).await;
     assert_eq!(unvouched.status(), StatusCode::UNAUTHORIZED);
@@ -1777,58 +1799,50 @@ async fn authenticated_admission_keeps_its_three_refusals_apart() {
         "an admission answer must not read as an authentication failure"
     );
     let unreachable = refusal_error(unreachable).await;
-
-    let (bare_router, bare_state) = authenticated_router(
-        authenticated_config(),
-        admission_runtime(
-            directory.endpoint.clone(),
-            McpOptions::default(),
-            "impostor",
-        ),
-    );
-    let unconfigured = send(
-        &bare_router,
-        auth_request("Bearer member", None, INITIALIZE),
-    )
-    .await;
-    assert!(
-        !unconfigured
-            .headers()
-            .contains_key(header::WWW_AUTHENTICATE),
-        "an admission answer must not read as an authentication failure"
-    );
-    let unconfigured = refusal_error(unconfigured).await;
-
     assert!(
         refusal_guidance(&unreachable)
             .contains(&format!("Workspace `{TEST_WORKSPACE}` was not found")),
         "guidance: {}",
         refusal_guidance(&unreachable)
     );
-    assert!(
-        refusal_guidance(&unconfigured).contains("no workspace configured"),
-        "guidance: {}",
-        refusal_guidance(&unconfigured)
+
+    let (broken_router, broken_state) = authenticated_router(
+        authenticated_config(),
+        AuthenticatedMcpHttpRuntime::new(
+            |_, _| async { Ok::<_, ()>(()) },
+            |_token: String| std::future::ready(Err::<AppClient, ()>(())),
+            McpOptions::default(),
+            || async { Ok::<_, tonic::Code>(()) },
+        ),
     );
-    assert_ne!(
-        refusal_guidance(&unreachable),
-        refusal_guidance(&unconfigured),
-        "an unnamed workspace and an unheld one are different things to fix"
+    let unavailable = send(
+        &broken_router,
+        auth_request("Bearer member", None, INITIALIZE),
+    )
+    .await;
+    assert_eq!(
+        unavailable.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a server that cannot decide says so, in nobody's refusal shape"
+    );
+    assert!(
+        !unavailable.headers().contains_key(header::WWW_AUTHENTICATE),
+        "an availability answer must not read as an authentication failure"
     );
 
     assert_eq!(
         directory.calls(),
         vec![listing_by("stranger")],
-        "only the configured surface had a membership question to ask"
+        "only the membership refusal had a question to ask"
     );
     assert_eq!(state.sessions.len().await, 0);
     assert_eq!(
         state.sessions.available_permits(),
         MAX_AUTHENTICATED_SESSIONS
     );
-    assert_eq!(bare_state.sessions.len().await, 0);
+    assert_eq!(broken_state.sessions.len().await, 0);
     assert_eq!(
-        bare_state.sessions.available_permits(),
+        broken_state.sessions.available_permits(),
         MAX_AUTHENTICATED_SESSIONS
     );
 }
@@ -1853,14 +1867,7 @@ async fn authenticated_admission_asks_memberships_once_and_identity_never() {
         ("neighbor", vec!["reporting".to_string()]),
     ])
     .await;
-    let (router, state) = authenticated_router(
-        authenticated_config(),
-        admission_runtime(
-            directory.endpoint.clone(),
-            workspace_named_options(),
-            "impostor",
-        ),
-    );
+    let (router, state) = surface(&directory);
 
     let admitted = send(&router, auth_request("Bearer member", None, INITIALIZE)).await;
     assert_eq!(admitted.status(), StatusCode::OK);
@@ -1943,14 +1950,7 @@ async fn authenticated_admission_asks_memberships_once_and_identity_never() {
 #[tokio::test]
 async fn authenticated_admission_refuses_the_handshake_not_the_first_tool_call() {
     let directory = serve_directory(vec![("orphan", Vec::new())]).await;
-    let (router, state) = authenticated_router(
-        authenticated_config(),
-        admission_runtime(
-            directory.endpoint.clone(),
-            workspace_named_options(),
-            "impostor",
-        ),
-    );
+    let (router, state) = surface(&directory);
 
     let refusal =
         refusal_error(send(&router, auth_request("Bearer orphan", None, INITIALIZE)).await).await;
@@ -1960,7 +1960,7 @@ async fn authenticated_admission_refuses_the_handshake_not_the_first_tool_call()
         "guidance: {guidance}"
     );
     assert!(
-        guidance.contains("server.mcp_http.workspace"),
+        guidance.contains("Check the workspace URL"),
         "the handshake is where a way out still fits: {guidance}"
     );
     assert_eq!(state.sessions.len().await, 0);
@@ -2006,39 +2006,44 @@ async fn authenticated_admission_refuses_the_handshake_not_the_first_tool_call()
 const ALPHA_WORKSPACE: &str = "alpha-ledger";
 const BETA_WORKSPACE: &str = "beta-ledger";
 
-/// Two callers, two surfaces, and neither is ever served the other's workspace.
+/// Two callers, two workspace URLs on one surface, and neither is ever served
+/// the other's workspace.
 ///
-/// A configured workspace belongs to the surface, not to the caller, so two
-/// people sharing one deployment reach it through two surfaces — each naming the
-/// workspace that person holds. What has to hold is that the pairing is the only
-/// one that works: each caller is admitted on their own surface, scoped to the
-/// name that surface configured, and turned away on the other's.
+/// The URL names the workspace, so two people sharing one deployment reach
+/// their workspaces through one surface — each at the URL naming the workspace
+/// that person holds. What has to hold is that the pairing is the only one
+/// that works: each caller is admitted at their own workspace's URL, scoped to
+/// exactly that workspace, and turned away at the other's.
 ///
 /// The refusals are where a fallback would surface. Both of these callers hold a
 /// workspace, and it is an accessible one — exactly the material a "serve
 /// whatever they can reach" rule needs — so being refused the name they do not
-/// hold, and never being offered the name they do, is the claim. A rule that
-/// substituted an accessible workspace would pass every test that only checks a
-/// caller can reach their own.
+/// hold, and never being offered the name they do, is the claim.
+///
+/// The cross-workspace session replay is the sharp edge: beta's session id is
+/// presented at alpha's URL *by beta, whose bearer is valid where the session
+/// really lives* — and it is still a plain not-found, because at that URL the
+/// session does not exist. Only a wrong bearer for a session that does exist
+/// at the URL earns the 403.
 ///
 /// Nothing here asks the directory anything but a membership listing, and the
 /// log proves the absence rather than assuming it: one control-plane attempt at
 /// the end lands in the same log, so the RPCs an MCP credential must never
 /// reach are ones this fixture demonstrably notices.
 #[tokio::test]
-async fn authenticated_admission_binds_two_callers_to_their_own_surfaces() {
+#[expect(clippy::too_many_lines, reason = "one scenario walks both workspaces end to end")]
+async fn authenticated_admission_binds_each_caller_to_the_urls_workspace() {
     let directory = serve_directory(vec![
         ("alpha", vec![ALPHA_WORKSPACE.to_string()]),
         ("beta", vec![BETA_WORKSPACE.to_string()]),
     ])
     .await;
-    let (alpha_router, alpha_state) = surface_naming(&directory, ALPHA_WORKSPACE);
-    let (beta_router, beta_state) = surface_naming(&directory, BETA_WORKSPACE);
+    let (router, state) = surface(&directory);
 
     let alpha_session = admitted_session_scoped_to(
         send(
-            &alpha_router,
-            auth_request("Bearer alpha", None, INITIALIZE),
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer alpha", None, INITIALIZE),
         )
         .await,
         ALPHA_WORKSPACE,
@@ -2046,20 +2051,24 @@ async fn authenticated_admission_binds_two_callers_to_their_own_surfaces() {
     )
     .await;
     let beta_session = admitted_session_scoped_to(
-        send(&beta_router, auth_request("Bearer beta", None, INITIALIZE)).await,
+        send(
+            &router,
+            auth_request_at(BETA_WORKSPACE, "Bearer beta", None, INITIALIZE),
+        )
+        .await,
         BETA_WORKSPACE,
         ALPHA_WORKSPACE,
     )
     .await;
 
-    let mut ping = auth_request("Bearer alpha", Some(&alpha_session), PING);
+    let mut ping = auth_request_at(ALPHA_WORKSPACE, "Bearer alpha", Some(&alpha_session), PING);
     ping.headers_mut()
         .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
-    assert!(send(&alpha_router, ping).await.status().is_success());
+    assert!(send(&router, ping).await.status().is_success());
     assert_eq!(
         send(
-            &alpha_router,
-            auth_request("Bearer beta", Some(&alpha_session), PING)
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer beta", Some(&alpha_session), PING)
         )
         .await
         .status(),
@@ -2068,36 +2077,41 @@ async fn authenticated_admission_binds_two_callers_to_their_own_surfaces() {
     );
     assert_eq!(
         send(
-            &alpha_router,
-            auth_request("Bearer beta", Some(&beta_session), PING)
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer beta", Some(&beta_session), PING)
         )
         .await
         .status(),
         StatusCode::NOT_FOUND,
-        "a session opened on one surface does not exist on the other"
+        "a session opened at one workspace's URL does not exist at another's, \
+         even for the bearer that owns it where it lives"
     );
 
-    let beta_on_alpha =
-        refusal_error(send(&alpha_router, auth_request("Bearer beta", None, INITIALIZE)).await)
-            .await;
+    let beta_on_alpha = refusal_error(
+        send(
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer beta", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
     assert_refused_without_a_substitute(&beta_on_alpha, ALPHA_WORKSPACE, BETA_WORKSPACE);
 
-    let alpha_on_beta =
-        refusal_error(send(&beta_router, auth_request("Bearer alpha", None, INITIALIZE)).await)
-            .await;
+    let alpha_on_beta = refusal_error(
+        send(
+            &router,
+            auth_request_at(BETA_WORKSPACE, "Bearer alpha", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
     assert_refused_without_a_substitute(&alpha_on_beta, BETA_WORKSPACE, ALPHA_WORKSPACE);
 
-    assert_eq!(alpha_state.sessions.len().await, 1);
-    assert_eq!(beta_state.sessions.len().await, 1);
+    assert_eq!(state.sessions.len().await, 2);
     assert_eq!(
-        alpha_state.sessions.available_permits(),
-        MAX_AUTHENTICATED_SESSIONS - 1,
-        "the refused caller left no admission reserved behind"
-    );
-    assert_eq!(
-        beta_state.sessions.available_permits(),
-        MAX_AUTHENTICATED_SESSIONS - 1,
-        "the refused caller left no admission reserved behind"
+        state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS - 2,
+        "the refused callers left no admission reserved behind"
     );
 
     assert_eq!(
@@ -2130,8 +2144,7 @@ async fn authenticated_admission_binds_two_callers_to_their_own_surfaces() {
         "a control-plane RPC is one this log records, so its absence above was observed"
     );
 
-    alpha_state.sessions.close_all().await;
-    beta_state.sessions.close_all().await;
+    state.sessions.close_all().await;
 }
 
 /// One sentence covers every reason the configured workspace is out of reach.
@@ -2164,7 +2177,7 @@ async fn authenticated_admission_conceals_why_a_workspace_is_out_of_reach() {
     let deployment_endpoint = deployment.endpoint.clone();
     let elsewhere_endpoint = elsewhere.endpoint.clone();
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |token: String| {
             let endpoint = if token == "alpha" || token == "beta" {
                 deployment_endpoint.clone()
@@ -2173,17 +2186,35 @@ async fn authenticated_admission_conceals_why_a_workspace_is_out_of_reach() {
             };
             async move { bearer_client(&endpoint, &token).await }
         },
-        options_naming(BETA_WORKSPACE),
+        McpOptions::default(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(authenticated_config(), runtime);
 
-    let held_by_another =
-        refusal_error(send(&router, auth_request("Bearer alpha", None, INITIALIZE)).await).await;
-    let never_created =
-        refusal_error(send(&router, auth_request("Bearer nomad", None, INITIALIZE)).await).await;
-    let holds_nothing =
-        refusal_error(send(&router, auth_request("Bearer hermit", None, INITIALIZE)).await).await;
+    let held_by_another = refusal_error(
+        send(
+            &router,
+            auth_request_at(BETA_WORKSPACE, "Bearer alpha", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
+    let never_created = refusal_error(
+        send(
+            &router,
+            auth_request_at(BETA_WORKSPACE, "Bearer nomad", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
+    let holds_nothing = refusal_error(
+        send(
+            &router,
+            auth_request_at(BETA_WORKSPACE, "Bearer hermit", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
 
     assert_eq!(
         held_by_another, never_created,
@@ -2204,8 +2235,14 @@ async fn authenticated_admission_conceals_why_a_workspace_is_out_of_reach() {
         "the shared answer names only the workspace that was asked for: {guidance}"
     );
 
-    let (_session, admitted) =
-        admitted_result(send(&router, auth_request("Bearer beta", None, INITIALIZE)).await).await;
+    let (_session, admitted) = admitted_result(
+        send(
+            &router,
+            auth_request_at(BETA_WORKSPACE, "Bearer beta", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
     let instructions = admitted_instructions(&admitted);
     assert!(
         instructions.contains(&format!("Current Coral workspace: {BETA_WORKSPACE}.")),
@@ -2255,10 +2292,16 @@ async fn authenticated_admission_follows_a_revocation_without_a_restart() {
         ("beta", vec![BETA_WORKSPACE.to_string()]),
     ])
     .await;
-    let (router, state) = surface_naming(&directory, ALPHA_WORKSPACE);
+    let (router, state) = surface(&directory);
 
-    let (session, admitted) =
-        admitted_result(send(&router, auth_request("Bearer alpha", None, INITIALIZE)).await).await;
+    let (session, admitted) = admitted_result(
+        send(
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer alpha", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
     let instructions = admitted_instructions(&admitted);
     assert!(
         instructions.contains(&format!("Current Coral workspace: {ALPHA_WORKSPACE}.")),
@@ -2267,7 +2310,7 @@ async fn authenticated_admission_follows_a_revocation_without_a_restart() {
 
     directory.revoke("alpha", ALPHA_WORKSPACE);
 
-    let mut ping = auth_request("Bearer alpha", Some(&session), PING);
+    let mut ping = auth_request_at(ALPHA_WORKSPACE, "Bearer alpha", Some(&session), PING);
     ping.headers_mut()
         .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
     assert!(
@@ -2275,24 +2318,41 @@ async fn authenticated_admission_follows_a_revocation_without_a_restart() {
         "the session already admitted is not re-decided per request"
     );
 
-    let after_revocation =
-        refusal_error(send(&router, auth_request("Bearer alpha", None, INITIALIZE)).await).await;
+    let after_revocation = refusal_error(
+        send(
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer alpha", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
     let guidance = refusal_guidance(&after_revocation);
     assert!(
         guidance.contains(&format!("Workspace `{ALPHA_WORKSPACE}` was not found")),
         "the same server that admitted this caller a moment ago now refuses them: {guidance}"
     );
 
-    let never_held =
-        refusal_error(send(&router, auth_request("Bearer beta", None, INITIALIZE)).await).await;
+    let never_held = refusal_error(
+        send(
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer beta", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(
         after_revocation, never_held,
         "a membership taken away reads exactly like one never held"
     );
 
-    let (_colleague_session, colleague) =
-        admitted_result(send(&router, auth_request("Bearer colleague", None, INITIALIZE)).await)
-            .await;
+    let (_colleague_session, colleague) = admitted_result(
+        send(
+            &router,
+            auth_request_at(ALPHA_WORKSPACE, "Bearer colleague", None, INITIALIZE),
+        )
+        .await,
+    )
+    .await;
     let instructions = admitted_instructions(&colleague);
     assert!(
         instructions.contains(&format!("Current Coral workspace: {ALPHA_WORKSPACE}.")),
@@ -2323,7 +2383,7 @@ async fn authenticated_session_honors_the_declared_idle_timeout() {
     let (_temp, app_server, app) = local_app().await;
     let options = workspace_scoped_options(&app).await;
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
         options,
         || async { Ok::<_, tonic::Code>(()) },
@@ -2380,6 +2440,7 @@ async fn authenticated_session_creation_is_cancellation_atomic() {
     let admission_permit = sessions.try_admit().expect("reserve session");
     let manager = AuthenticatedSessionManager {
         sessions: sessions.clone(),
+        workspace: segment(TEST_WORKSPACE),
         fingerprint: binding_fingerprint("token-a"),
         admission_permit: tokio::sync::Mutex::new(Some(admission_permit)),
     };
@@ -2414,6 +2475,7 @@ async fn cancelled_authenticated_session_close_removes_the_record() {
     sessions.records.write().await.insert(
         session_id.clone(),
         AuthenticatedSession {
+            workspace: segment(TEST_WORKSPACE),
             fingerprint,
             handle,
             _admission_permit: admission_permit,
@@ -2421,6 +2483,7 @@ async fn cancelled_authenticated_session_close_removes_the_record() {
     );
     let manager = AuthenticatedSessionManager {
         sessions: sessions.clone(),
+        workspace: segment(TEST_WORKSPACE),
         fingerprint,
         admission_permit: tokio::sync::Mutex::new(None),
     };
@@ -2456,73 +2519,235 @@ fn authenticated_config_accepts_only_https_or_loopback_http_public_urls() {
 }
 
 #[test]
-fn authenticated_config_omits_scope_and_canonicalizes_root_oauth_identifiers() {
+fn authenticated_config_canonicalizes_oauth_identifiers_and_derives_the_route() {
     let config = AuthenticatedMcpHttpConfig::new(
         "127.0.0.1:0".parse().unwrap(),
         "https://mcp.example.com/",
         "https://login.example.com/",
     )
     .unwrap();
-
-    assert_eq!(config.public_url, "https://mcp.example.com");
+    assert_eq!(config.urls.base().identifier(), "https://mcp.example.com");
     assert_eq!(config.authorization_server, "https://login.example.com");
+    // A root public URL mounts the workspace family at the origin root; the
+    // usual `/mcp` base mounts it under `/mcp`.
+    assert_eq!(config.mcp_route(), "/workspace/{workspace}");
     assert_eq!(
-        config.challenge,
-        HeaderValue::from_static(
-            "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource\""
-        )
+        authenticated_config().mcp_route(),
+        "/mcp/workspace/{workspace}"
     );
 }
 
+/// Discovery is per workspace, uniform across existence, and scope-free.
+///
+/// The challenge names exactly the metadata URL the wildcard route serves for
+/// that workspace, the document's `resource` is exactly that workspace's URL,
+/// and none of it depends on whether the workspace exists — challenge and
+/// document for a name nobody created are byte-identical to a real one's after
+/// substituting the name, so an anonymous probe learns nothing. The base URL's
+/// own metadata path names no workspace and is a plain not-found.
 #[tokio::test]
-async fn authenticated_discovery_and_challenge_do_not_advertise_scopes() {
-    let config = authenticated_config();
-    let metadata_path = config.metadata_path.clone();
+async fn authenticated_discovery_is_per_workspace_and_existence_blind() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         |_| std::future::ready(Err::<AppClient, ()>(())),
-        workspace_named_options(),
+        McpOptions::default(),
         || async { Ok::<_, tonic::Code>(()) },
     );
-    let (router, _state) = authenticated_router(config, runtime);
+    let (router, _state) = authenticated_router(authenticated_config(), runtime);
 
-    let unauthorized = send(&router, raw_mcp_request(INITIALIZE)).await;
-    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-    let challenge = unauthorized
-        .headers()
-        .get(header::WWW_AUTHENTICATE)
-        .unwrap()
-        .to_str()
-        .unwrap();
-    assert!(challenge.contains("resource_metadata="));
-    assert!(!challenge.contains("scope="));
+    let mut challenges = Vec::new();
+    let mut documents = Vec::new();
+    for name in [TEST_WORKSPACE, "never-created"] {
+        let unauthorized = send(&router, raw_mcp_request_at(&ws_path(name), INITIALIZE)).await;
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED, "{name}");
+        let challenge = unauthorized
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            challenge,
+            format!(
+                "Bearer resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/mcp/workspace/{name}\""
+            ),
+            "the challenge names the route's own metadata URL"
+        );
+        assert!(!challenge.contains("scope="));
 
-    let metadata = send(
+        let metadata = send(
+            &router,
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "/.well-known/oauth-protected-resource/mcp/workspace/{name}"
+                ))
+                .header(header::HOST, "mcp.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(metadata.status(), StatusCode::OK, "{name}");
+        let body = to_bytes(metadata.into_body(), usize::MAX).await.unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            document.get("resource").expect("resource"),
+            &serde_json::json!(format!("https://mcp.example.com/mcp/workspace/{name}"))
+        );
+        assert_eq!(
+            document.get("authorization_servers").expect("servers"),
+            &serde_json::json!(["https://login.example.com"])
+        );
+        assert!(document.get("scopes_supported").is_none());
+
+        challenges.push(challenge.replace(name, "{ws}"));
+        documents.push(
+            String::from_utf8(body.to_vec())
+                .expect("metadata is text")
+                .replace(name, "{ws}"),
+        );
+    }
+    assert_eq!(
+        challenges.first(),
+        challenges.last(),
+        "existence must not shape the challenge"
+    );
+    assert_eq!(
+        documents.first(),
+        documents.last(),
+        "existence must not shape the metadata document"
+    );
+
+    // The base metadata path names no workspace: not-found, no document.
+    let base = send(
         &router,
         Request::builder()
             .method(Method::GET)
-            .uri(metadata_path)
+            .uri("/.well-known/oauth-protected-resource/mcp")
             .header(header::HOST, "mcp.example.com")
             .body(Body::empty())
             .unwrap(),
     )
     .await;
-    assert_eq!(metadata.status(), StatusCode::OK);
-    let body = to_bytes(metadata.into_body(), usize::MAX).await.unwrap();
-    let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(base.status(), StatusCode::NOT_FOUND);
+}
+
+/// Malformed segments and retired paths are plain not-founds with no challenge
+/// and no metadata; the fallback's static hint names only the URL shape.
+#[tokio::test]
+async fn authenticated_routes_refuse_malformed_and_legacy_paths_plainly() {
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_, _| async { Ok::<_, ()>(()) },
+        |_| std::future::ready(Err::<AppClient, ()>(())),
+        McpOptions::default(),
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let (router, _state) = authenticated_router(authenticated_config(), runtime);
+
+    // A well-formed route with a malformed segment: matched, then refused with
+    // nothing at all — no challenge that would make it look protected.
+    for path in ["/mcp/workspace/te%61m", "/mcp/workspace/te%2Fam"] {
+        let response = send(&router, raw_mcp_request_at(path, INITIALIZE)).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        assert!(
+            !response.headers().contains_key(header::WWW_AUTHENTICATE),
+            "a non-canonical spelling earns no challenge: {path}"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(body.is_empty(), "{path}: {body:?}");
+    }
+
+    // The retired base endpoint and other unmatched paths fall back to the
+    // static hint, which names the URL shape and never a workspace.
+    for path in ["/mcp", "/mcp/workspace", &format!("{}/", ws_path("team"))] {
+        let response = send(&router, raw_mcp_request_at(path, INITIALIZE)).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        assert!(
+            !response.headers().contains_key(header::WWW_AUTHENTICATE),
+            "{path}"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).expect("hint is text");
+        assert!(
+            text.contains(WORKSPACE_URL_HINT),
+            "the fallback carries the shape hint: {path} -> {text}"
+        );
+    }
+}
+
+/// A bearer minted for one workspace's resource dies at another's URL.
+///
+/// The runtime's validator here admits a token only for the exact audience it
+/// was minted for, the way the real composition does — so what this pins is
+/// that the surface hands the validator the route's own resource, making the
+/// route the audience boundary. The refusal is an authentication answer with
+/// the refusing route's own challenge, never a workspace answer.
+#[tokio::test]
+async fn a_bearer_for_one_workspace_is_rejected_at_anothers_url() {
+    let directory = serve_directory(vec![
+        ("alpha", vec![ALPHA_WORKSPACE.to_string()]),
+        ("beta", vec![BETA_WORKSPACE.to_string()]),
+    ])
+    .await;
+    let endpoint = directory.endpoint.clone();
+    let minted_for = |token: &str| match token {
+        "alpha" => format!("https://mcp.example.com/mcp/workspace/{ALPHA_WORKSPACE}"),
+        "beta" => format!("https://mcp.example.com/mcp/workspace/{BETA_WORKSPACE}"),
+        _ => String::new(),
+    };
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        move |token: String, audience: String| {
+            let matches = minted_for(&token) == audience;
+            async move { if matches { Ok(()) } else { Err(()) } }
+        },
+        move |token: String| {
+            let endpoint = endpoint.clone();
+            async move { bearer_client(&endpoint, &token).await }
+        },
+        McpOptions::default(),
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let (router, state) = authenticated_router(authenticated_config(), runtime);
+
+    let admitted = send(
+        &router,
+        auth_request_at(ALPHA_WORKSPACE, "Bearer alpha", None, INITIALIZE),
+    )
+    .await;
     assert_eq!(
-        document
-            .get("resource")
-            .expect("protected-resource metadata must contain resource"),
-        &serde_json::json!("https://mcp.example.com/custom%20mcp")
+        admitted.status(),
+        StatusCode::OK,
+        "the bearer works at exactly the URL it was minted for"
+    );
+
+    let rejected = send(
+        &router,
+        auth_request_at(BETA_WORKSPACE, "Bearer alpha", None, INITIALIZE),
+    )
+    .await;
+    assert_eq!(
+        rejected.status(),
+        StatusCode::UNAUTHORIZED,
+        "at any other workspace's URL the same bearer is an invalid token"
+    );
+    let challenge = rejected
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .expect("an authentication refusal challenges")
+        .to_str()
+        .unwrap();
+    assert!(
+        challenge.contains(&format!("/mcp/workspace/{BETA_WORKSPACE}")),
+        "the challenge belongs to the refusing route: {challenge}"
     );
     assert_eq!(
-        document
-            .get("authorization_servers")
-            .expect("protected-resource metadata must contain authorization_servers"),
-        &serde_json::json!(["https://login.example.com"])
+        directory.calls(),
+        vec![listing_by("alpha")],
+        "a wrong-audience bearer never reaches the membership question"
     );
-    assert!(document.get("scopes_supported").is_none());
+
+    state.sessions.close_all().await;
 }
 
 #[tokio::test]
@@ -2532,7 +2757,7 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
     // its session serves and scopes the options to it.
     let options = workspace_scoped_options(&app).await;
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
         McpOptions {
             surface: extension_options().surface,
@@ -2548,8 +2773,9 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
     let server = server.expect("start authenticated MCP HTTP server");
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(format!(
-            "http://{}/mcp",
-            server.local_addr()
+            "http://{}{}",
+            server.local_addr(),
+            ws_path(TEST_WORKSPACE)
         ))
         .auth_header("token-a"),
     );
@@ -2596,7 +2822,7 @@ async fn authenticated_extension_uses_its_session_app_client() {
         .expect("stop second app server");
 
     let runtime = AuthenticatedMcpHttpRuntime::new(
-        |_| async { Ok::<_, ()>(()) },
+        |_, _| async { Ok::<_, ()>(()) },
         move |token| {
             let app = if token == "token-a" {
                 live_app.clone()

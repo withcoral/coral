@@ -3,8 +3,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use coral_app::{
-    AuthServerError, BearerAuthenticator, CoralAuthorizationServer, McpHttpServeConfig,
-    RunningCoralAuthorizationServer, SessionAuthSettings,
+    AuthServerError, CoralAuthorizationServer, McpHttpServeConfig, RunningCoralAuthorizationServer,
+    SessionAuthSettings, SessionPrincipalProvider,
 };
 use coral_client::{
     AppClient, BearerToken, ClientError,
@@ -248,22 +248,23 @@ pub(crate) async fn start(
 ///
 /// The two policies differ by design. The gRPC API is private — reached through
 /// the public surfaces in front of it — so it admits a token minted for any of
-/// them; handing the settings back to the builder is what installs that policy,
-/// alongside the authorization server app startup builds from them. MCP HTTP is
-/// a public surface and admits only its own audience, which is what stops a
-/// token minted for a sibling surface being replayed at it.
+/// them (including every per-workspace MCP resource); handing the settings back
+/// to the builder is what installs that policy, alongside the authorization
+/// server app startup builds from them. MCP HTTP admits only the exact audience
+/// of the workspace URL a request arrives at, so its authenticator takes the
+/// expected audience per call — which is what stops a bearer minted for one
+/// workspace being replayed at another's URL.
 fn compose_session_policies(
     builder: ServerBuilder,
     session_auth: Option<SessionAuthSettings>,
     mcp_config: Option<&McpHttpServeConfig>,
-) -> (ServerBuilder, Option<Arc<dyn BearerAuthenticator>>) {
+) -> (ServerBuilder, Option<Arc<SessionPrincipalProvider>>) {
     let Some(session_auth) = session_auth else {
         return (builder, None);
     };
     let mcp_authenticator = match mcp_config {
-        Some(McpHttpServeConfig::Authenticated { public_url, .. }) => {
-            Some(session_auth.principal_provider([public_url.clone()])
-                as Arc<dyn BearerAuthenticator>)
+        Some(McpHttpServeConfig::Authenticated { .. }) => {
+            Some(session_auth.mcp_route_authenticator())
         }
         _ => None,
     };
@@ -298,7 +299,7 @@ async fn shutdown_components(
 
 async fn start_mcp_http(
     settings: Option<McpHttpServeConfig>,
-    mcp_principal_provider: Option<Arc<dyn BearerAuthenticator>>,
+    mcp_principal_provider: Option<Arc<SessionPrincipalProvider>>,
     grpc_addr: SocketAddr,
     mcp_options: McpOptions,
 ) -> Result<Option<RunningMcpHttpServer>, McpStartError> {
@@ -311,7 +312,6 @@ async fn start_mcp_http(
             bind_addr,
             expose_non_loopback,
             allowed_hosts,
-            workspace,
         } => {
             // Configuration resolution only sets `expose_non_loopback` for a
             // non-loopback bind the operator opted into, so a loopback bind
@@ -323,13 +323,12 @@ async fn start_mcp_http(
             };
             let config = config.with_allowed_hosts(allowed_hosts)?;
             let app = AppClient::connect(&grpc_endpoint_uri).await?;
-            start_auth_disabled(config, app, auth_disabled_options(mcp_options, workspace)).await?
+            start_auth_disabled(config, app, mcp_options).await?
         }
         McpHttpServeConfig::Authenticated {
             bind_addr,
             public_url,
             authorization_server,
-            workspace,
         } => {
             let authenticator =
                 mcp_principal_provider.ok_or(McpStartError::MissingSessionProvider)?;
@@ -342,25 +341,15 @@ async fn start_mcp_http(
             // per-caller concealment admission exists to provide would be gone;
             // the runtime's per-token client below is what admission reads.
             let readiness_client = AppClient::connect(&grpc_endpoint_uri).await?;
-            // The operator's selection scopes this surface the same way
-            // `auth_disabled_options` scopes the loopback one: it replaces
-            // whatever the caller carried, a written name is forwarded byte for
-            // byte, and naming none stays `None`. What the surfaces do with it
-            // differs downstream — here the MCP adapter admits a session only
-            // when the name is one of that caller's own memberships, so an
-            // unnamed surface refuses every session rather than resolving a
-            // workspace on somebody's behalf.
-            let options = McpOptions {
-                workspace: workspace.map(coral_client::workspace),
-                ..mcp_options
-            };
+            // The workspace comes from each request's URL, so no workspace is
+            // composed into the surface's options — and the bearer check takes
+            // the route's exact resource as the expected audience per call.
             let runtime = AuthenticatedMcpHttpRuntime::new(
-                move |token| {
+                move |token, audience| {
                     let authenticator = Arc::clone(&authenticator);
                     async move {
                         authenticator
-                            .principal_for_bearer(&token)
-                            .await
+                            .principal_for_bearer_with_audience(&token, &audience)
                             .map(|_principal| ())
                             .map_err(|_error| ())
                     }
@@ -374,7 +363,7 @@ async fn start_mcp_http(
                             .map_err(|_error| ())
                     }
                 },
-                options,
+                mcp_options,
                 move || {
                     let client = readiness_client.clone();
                     async move { probe_serving_health(&client).await }
@@ -384,21 +373,6 @@ async fn start_mcp_http(
         }
     };
     Ok(Some(server))
-}
-
-/// Scopes the auth-disabled MCP surface to the workspace its configuration names.
-///
-/// The configuration is the operator's selection for this surface, so it
-/// replaces whatever the caller carried rather than merging with it: a name they
-/// wrote is forwarded byte for byte, and naming none stays `None`. Substituting
-/// a name for the absent case would be this adapter guessing at local
-/// membership state it does not read; the MCP adapter resolves it against the
-/// memberships behind the loopback connection instead.
-fn auth_disabled_options(options: McpOptions, workspace: Option<String>) -> McpOptions {
-    McpOptions {
-        workspace: workspace.map(coral_client::workspace),
-        ..options
-    }
 }
 
 /// Probes server readiness over the unauthenticated gRPC health service.

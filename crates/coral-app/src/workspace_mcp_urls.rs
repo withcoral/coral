@@ -36,9 +36,9 @@ impl McpWorkspaceSegment {
     #[must_use]
     pub fn parse(segment: &str) -> Option<Self> {
         let charset_ok = !segment.is_empty()
-            && segment
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'));
+            && segment.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+            });
         if !charset_ok || segment == "." || segment == ".." {
             return None;
         }
@@ -102,10 +102,7 @@ impl WorkspaceMcpUrls {
     /// The listener-relative MCP route path for a workspace.
     #[must_use]
     pub fn route_path(&self, segment: &McpWorkspaceSegment) -> String {
-        format!(
-            "{}/{WORKSPACE_ROUTE_SEGMENT}/{segment}",
-            self.base_path()
-        )
+        format!("{}/{WORKSPACE_ROUTE_SEGMENT}/{segment}", self.base_path())
     }
 
     /// The RFC 9728 metadata URL for a workspace's resource: the well-known
@@ -181,8 +178,19 @@ mod tests {
             assert!(McpWorkspaceSegment::parse(valid).is_some(), "{valid}");
         }
         for invalid in [
-            "", ".", "..", "team/other", "te am", "te%61m", "tëam", "team?", "team#", "team\\",
-            "team\n", "té", "🪸",
+            "",
+            ".",
+            "..",
+            "team/other",
+            "te am",
+            "te%61m",
+            "tëam",
+            "team?",
+            "team#",
+            "team\\",
+            "team\n",
+            "té",
+            "🪸",
         ] {
             assert!(McpWorkspaceSegment::parse(invalid).is_none(), "{invalid:?}");
         }
@@ -228,7 +236,10 @@ mod tests {
     fn the_documented_template_shapes_hold_exactly() {
         let urls = urls("https://coral.example/mcp");
         let team = segment("team");
-        assert_eq!(urls.resource(&team), "https://coral.example/mcp/workspace/team");
+        assert_eq!(
+            urls.resource(&team),
+            "https://coral.example/mcp/workspace/team"
+        );
         assert_eq!(urls.route_path(&team), "/mcp/workspace/team");
         assert_eq!(
             urls.metadata_url(&team),

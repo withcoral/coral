@@ -89,6 +89,21 @@ impl SessionPrincipalProvider {
     }
 
     fn principal_for_token(&self, token: &str) -> Result<Principal, PrincipalProviderError> {
+        // An enumerated allowlist keeps going through the list-validating
+        // entry point, whose empty-and-whitespace guard has no analogue for a
+        // predicate; only the family policy needs one.
+        if let AudiencePolicy::Exact(exact) = &self.audiences {
+            if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+                return Err(unauthenticated());
+            }
+            let accepted = exact.iter().map(String::as_str).collect::<Vec<_>>();
+            let session = self
+                .verifier
+                .validate_access_token(token, &accepted)
+                .map_err(|_error| unauthenticated())?;
+            return Principal::parse(&session.user_id, session.principal_kind)
+                .map_err(|_error| unauthenticated());
+        }
         self.principal_where(token, &|audience| self.audiences.accepts(audience))
     }
 
