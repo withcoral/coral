@@ -342,9 +342,8 @@ The `default` workspace cannot be removed.
 
 ## `coral identity`
 
-Manage fixed-token identities owned by the current Coral user. Identity commands
-are not workspace-scoped and reject an explicit `--workspace`; each identity
-uses an exact revision of a globally installed identity spec.
+Manage fixed-token identities. Commands target the current Coral user by default, ignore `CORAL_WORKSPACE`, and reject an explicit `--workspace` unless you also pass `identity --workspace-owned`.
+Workspace-owned commands require an explicit `--workspace NAME`; their identity spec resolves from that workspace with global fallback, and the stored identity pins the exact resolved revision.
 
 ### `coral identity add <NAME> --identity-spec <SPEC>`
 
@@ -353,6 +352,12 @@ spec. In a terminal, Coral prompts for the token without echoing it.
 
 ```shellscript
 coral identity add github_local --identity-spec github_token
+```
+
+To create or replace a workspace-owned identity, select both the owner kind and workspace explicitly:
+
+```shellscript
+coral --workspace work identity --workspace-owned add github_shared --identity-spec github_token
 ```
 
 For automation, pass `--token-stdin` and pipe the token on standard input:
@@ -366,28 +371,30 @@ returns it from identity management APIs or renders it in command output.
 
 ### `coral identity list`
 
-List identities owned by the current user, including each identity's global
-spec name, scope, and provider audience. Use `identity info` to inspect the
-exact pinned fingerprint.
+List identities owned by the current user, including each identity's spec name, scope, and provider audience.
+Use `identity info` to inspect the exact pinned fingerprint; add the explicit workspace selectors to list workspace-owned identities.
 
 ```shellscript
 coral identity list
+coral --workspace work identity --workspace-owned list
 ```
 
 ### `coral identity info <NAME>`
 
-Show one current-user identity's safe metadata and pinned spec fingerprint.
+Show one identity's safe metadata, exact owner, and pinned spec fingerprint.
 
 ```shellscript
 coral identity info github_local
+coral --workspace work identity --workspace-owned info github_shared
 ```
 
 ### `coral identity remove <NAME>`
 
-Remove one current-user identity and its encrypted token material.
+Remove one identity owned by the selected owner and its encrypted token material.
 
 ```shellscript
 coral identity remove github_local
+coral --workspace work identity --workspace-owned remove github_shared
 ```
 
 ## `coral identity-spec`
