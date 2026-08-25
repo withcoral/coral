@@ -163,9 +163,20 @@ fn coral_command(coral_bin: &Path, config_dir: &Path) -> Command {
     command
 }
 
+/// Builds the invocation that provisions the workspace the check measures.
+///
+/// Separate from running it so a test can read back the workspace this check
+/// creates and the environment it carries, which is the pairing a fresh state
+/// directory depends on and the one that broke when provisioning became
+/// explicit.
+fn workspace_create_command(coral_bin: &Path, config_dir: &Path) -> Command {
+    let mut command = coral_command(coral_bin, config_dir);
+    command.args(["workspace", "create", WORKSPACE]);
+    command
+}
+
 fn create_workspace(coral_bin: &Path, config_dir: &Path) -> Result<()> {
-    let output = coral_command(coral_bin, config_dir)
-        .args(["workspace", "create", WORKSPACE])
+    let output = workspace_create_command(coral_bin, config_dir)
         .output()
         .with_context(|| format!("running {} workspace create", coral_bin.display()))?;
 
@@ -344,7 +355,60 @@ impl Drop for TempDir {
 
 #[cfg(test)]
 mod tests {
-    use super::{HyperfineResult, is_regression, report_measurement, shell_quote};
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    use super::{
+        HyperfineResult, WORKSPACE, coral_command, is_regression, report_measurement, shell_quote,
+        workspace_create_command,
+    };
+
+    fn env_of(command: &std::process::Command, key: &str) -> Option<String> {
+        command.get_envs().find_map(|(name, value)| {
+            (name == OsStr::new(key)).then(|| {
+                value
+                    .expect("the check sets this variable rather than clearing it")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+    }
+
+    /// Every command the check runs has to name the workspace it provisions.
+    /// A fresh state directory has none, so an invocation that carries no
+    /// selection reaches the server as the legacy `default` and is refused.
+    #[test]
+    fn every_invocation_carries_the_provisioned_workspace() {
+        let command = coral_command(Path::new("/tmp/coral"), Path::new("/tmp/coral-config"));
+
+        assert_eq!(
+            env_of(&command, "CORAL_WORKSPACE").as_deref(),
+            Some(WORKSPACE)
+        );
+        assert_eq!(
+            env_of(&command, "CORAL_CONFIG_DIR").as_deref(),
+            Some("/tmp/coral-config")
+        );
+    }
+
+    /// The workspace the check measures is the one it creates, so the create
+    /// argv and the selection every later command carries must name the same
+    /// workspace.
+    #[test]
+    fn the_check_creates_the_workspace_it_selects() {
+        let command = workspace_create_command(Path::new("/tmp/coral"), Path::new("/tmp/cfg"));
+
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["workspace", "create", WORKSPACE]);
+        assert_eq!(
+            env_of(&command, "CORAL_WORKSPACE").as_deref(),
+            Some(WORKSPACE),
+            "the workspace created and the workspace selected must be the same one"
+        );
+    }
 
     #[test]
     fn a_mean_under_the_threshold_is_not_a_regression() {
