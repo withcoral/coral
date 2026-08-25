@@ -513,18 +513,56 @@ pub(crate) mod tests {
     };
     use crate::workspaces::WorkspaceName;
 
-    struct WriteKeyProvider(CredentialEncryptionKey);
+    struct TestKeyProvider {
+        active_key: CredentialEncryptionKey,
+        decryption_keys: Vec<CredentialEncryptionKey>,
+        blocking_thread_check: Option<ThreadId>,
+    }
 
-    impl CredentialKeyProvider for WriteKeyProvider {
+    impl TestKeyProvider {
+        fn new(active_key: CredentialEncryptionKey) -> Self {
+            Self {
+                active_key,
+                decryption_keys: Vec::new(),
+                blocking_thread_check: None,
+            }
+        }
+
+        fn requiring_blocking_access(
+            active_key: CredentialEncryptionKey,
+            decryption_keys: impl IntoIterator<Item = CredentialEncryptionKey>,
+        ) -> Self {
+            Self {
+                active_key,
+                decryption_keys: decryption_keys.into_iter().collect(),
+                blocking_thread_check: Some(thread::current().id()),
+            }
+        }
+
+        fn require_blocking_thread(&self) {
+            if let Some(runtime_thread) = self.blocking_thread_check {
+                assert_ne!(
+                    thread::current().id(),
+                    runtime_thread,
+                    "identity spec key access ran on the async runtime"
+                );
+            }
+        }
+    }
+
+    impl CredentialKeyProvider for TestKeyProvider {
         fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-            Ok(self.0.clone())
+            self.require_blocking_thread();
+            Ok(self.active_key.clone())
         }
 
         fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-            if key_id != self.0.key_id() {
-                return Err(CredentialsError::Crypto("unexpected test key".into()));
-            }
-            Ok(self.0.clone())
+            self.require_blocking_thread();
+            std::iter::once(&self.active_key)
+                .chain(&self.decryption_keys)
+                .find(|key| key.key_id() == key_id)
+                .cloned()
+                .ok_or_else(|| CredentialsError::Crypto("missing test key".to_string()))
         }
     }
 
@@ -565,41 +603,6 @@ pub(crate) mod tests {
         }
     }
 
-    struct MutationKeyProvider(Vec<CredentialEncryptionKey>, ThreadId);
-
-    impl MutationKeyProvider {
-        fn new(keys: Vec<CredentialEncryptionKey>) -> Self {
-            Self(keys, thread::current().id())
-        }
-
-        fn require_blocking_thread(&self) {
-            assert_ne!(
-                thread::current().id(),
-                self.1,
-                "identity spec key access ran on the async runtime"
-            );
-        }
-    }
-
-    impl CredentialKeyProvider for MutationKeyProvider {
-        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-            self.require_blocking_thread();
-            self.0
-                .last()
-                .cloned()
-                .ok_or_else(|| CredentialsError::Crypto("missing mutation key".to_string()))
-        }
-
-        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-            self.require_blocking_thread();
-            self.0
-                .iter()
-                .find(|key| key.key_id() == key_id)
-                .cloned()
-                .ok_or_else(|| CredentialsError::Crypto("missing mutation key".to_string()))
-        }
-    }
-
     #[expect(clippy::too_many_lines, reason = "shared backend mutation contract")]
     pub(crate) async fn assert_identity_spec_mutation_contract(db: &Arc<CoralDb>) {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
@@ -612,7 +615,10 @@ pub(crate) mod tests {
         tx.commit().await.unwrap();
 
         let old_key = CredentialEncryptionKey::from_static_bytes_for_test([51; 32]);
-        let old_provider = Arc::new(MutationKeyProvider::new(vec![old_key.clone()]));
+        let old_provider = Arc::new(TestKeyProvider::requiring_blocking_access(
+            old_key.clone(),
+            [],
+        ));
         let manager = IdentitySpecManager::new(Arc::clone(db), old_provider);
         let (_, replaced) = mutate(
             &manager,
@@ -642,7 +648,10 @@ pub(crate) mod tests {
 
         let new_key = CredentialEncryptionKey::from_static_bytes_for_test([52; 32]);
         let new_key_id = new_key.key_id().to_string();
-        let rotating_provider = Arc::new(MutationKeyProvider::new(vec![old_key, new_key]));
+        let rotating_provider = Arc::new(TestKeyProvider::requiring_blocking_access(
+            new_key,
+            [old_key],
+        ));
         let manager = IdentitySpecManager::new(Arc::clone(db), rotating_provider.clone());
         assert!(
             mutate(
@@ -1028,7 +1037,7 @@ pub(crate) mod tests {
         db.migrate().await.unwrap();
         let workspace = WorkspaceName::parse("work").unwrap();
         let stored_key = test_key();
-        let writer = WriteKeyProvider(stored_key.clone());
+        let writer = TestKeyProvider::new(stored_key.clone());
         let reader = Arc::new(ReadKeyProvider {
             key: stored_key,
             key_calls: AtomicUsize::new(0),
@@ -1063,7 +1072,7 @@ pub(crate) mod tests {
     async fn seed_encrypted_specs(
         tx: &mut CoralTx<'_>,
         keys: &EncryptedSpecKeys,
-        writer: &WriteKeyProvider,
+        writer: &TestKeyProvider,
     ) {
         for (key, label, values) in [
             (
@@ -1116,7 +1125,7 @@ pub(crate) mod tests {
     async fn seed_invalid_documents(
         tx: &mut CoralTx<'_>,
         keys: &EncryptedSpecKeys,
-        writer: &WriteKeyProvider,
+        writer: &TestKeyProvider,
     ) {
         for (key, plaintext) in [
             (
