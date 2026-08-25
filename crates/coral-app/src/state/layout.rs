@@ -17,6 +17,9 @@ pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_FUNCTION_FILE_NAME: &str = "function.sql";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
 
+/// Names the per-workspace directory holding installed source state.
+const SOURCES_DIR_NAME: &str = "sources";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum V4ProjectionCatalogOrigin {
     Materialized,
@@ -136,7 +139,25 @@ impl AppStateLayout {
     }
 
     pub(crate) fn sources_root(&self, workspace_name: &WorkspaceName) -> PathBuf {
-        self.workspace_dir(workspace_name).join("sources")
+        self.workspace_dir(workspace_name).join(SOURCES_DIR_NAME)
+    }
+
+    /// The secret file for `source_name` inside a workspace directory that has
+    /// already been staged for deletion.
+    ///
+    /// Deletion moves the directory out of the workspaces root before it
+    /// commits, so the live layout no longer reaches the material and asking it
+    /// to erase one would find nothing and report success. Cleanup addresses
+    /// the staged copy through here instead, and composes it from the same
+    /// pieces [`Self::secret_file`] does so the two cannot drift.
+    pub(crate) fn staged_secret_file(
+        staged_workspace_dir: &Path,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        staged_workspace_dir
+            .join(SOURCES_DIR_NAME)
+            .join(source_name.as_str())
+            .join(INSTALLED_SECRETS_FILE_NAME)
     }
 
     pub(crate) fn feedback_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
@@ -486,6 +507,31 @@ mod tests {
         assert_eq!(
             overridden_metadata.origin,
             super::V4OperationMetadataOrigin::Override
+        );
+    }
+    /// The staged path must stay the live path's tail, or deletion cleanup
+    /// would erase nothing while reporting success.
+    #[test]
+    fn the_staged_secret_path_mirrors_the_live_one() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::parse("work").expect("workspace name");
+        let source = SourceName::parse("secured_messages").expect("source name");
+
+        let live = layout.secret_file(&workspace, &source);
+        let staged_root = temp.path().join("deleted-workspaces").join("work.staged");
+        let staged = AppStateLayout::staged_secret_file(&staged_root, &source);
+
+        let live_tail = live
+            .strip_prefix(layout.workspace_dir(&workspace))
+            .expect("live secret sits under the workspace dir");
+        let staged_tail = staged
+            .strip_prefix(&staged_root)
+            .expect("staged secret sits under the staged dir");
+        assert_eq!(
+            live_tail, staged_tail,
+            "the staged secret must sit at the same place inside the directory as the live one"
         );
     }
 }

@@ -4,14 +4,15 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crate::bootstrap::AppError;
+use crate::credentials::CredentialStorageKind;
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::identity::Principal;
 use crate::sources::materialization::SourceDiagnosticReporter;
-use crate::state::ConfigStore;
 use crate::state::db::{
     AddMemberOutcome, CoralDb, CreateWorkspaceOutcome, DbRepos, RemoveMemberOutcome,
     WorkspaceDeletion, WorkspaceMemberRecord, now_unix_nanos_i64,
 };
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
     DeletedWorkspace, MemberRole, WorkspaceLifecycleLock, WorkspaceLifecycleRevision,
@@ -186,7 +187,7 @@ impl WorkspaceManager {
                 return Err(error.into());
             }
             self.pool_registry.remove(workspace_name);
-            self.remove_deleted_workspace_credentials(&deleted);
+            self.remove_deleted_workspace_credentials(&deleted, workspace_dir_backup.backup_path());
             (deleted, workspace_dir_backup)
         };
         drop(deletion_marker);
@@ -200,12 +201,37 @@ impl WorkspaceManager {
         Ok(deleted.workspace)
     }
 
-    fn remove_deleted_workspace_credentials(&self, deleted: &DeletedWorkspace) {
+    /// Erases the credential material of a workspace that has just been deleted.
+    ///
+    /// The workspace directory is already staged aside by this point, so
+    /// file-backed material is addressed at its staged path: the live layout
+    /// no longer reaches it, and asking the store to erase it there would find
+    /// nothing and report success while the secret sat in the staged copy.
+    /// Keychain material lives outside the directory and is erased through the
+    /// store as before.
+    fn remove_deleted_workspace_credentials(
+        &self,
+        deleted: &DeletedWorkspace,
+        staged_workspace_dir: &std::path::Path,
+    ) {
         let workspace_name = &deleted.workspace.name;
         for source in &deleted.sources {
             let Some(storage) = source.credential_storage_for_material() else {
                 continue;
             };
+            if storage == CredentialStorageKind::File {
+                let staged_secret =
+                    AppStateLayout::staged_secret_file(staged_workspace_dir, &source.name);
+                if let Err(error) = crate::storage::fs::remove_file_if_exists(&staged_secret) {
+                    warn!(
+                        workspace = %workspace_name,
+                        source = %source.name,
+                        staged_secret = %staged_secret.display(),
+                        "workspace deleted, but failed to remove staged credential material: {error}"
+                    );
+                }
+                continue;
+            }
             let credential_set_id = CredentialSetId::for_source(&source.name);
             let guard = match self
                 .credential_manager
