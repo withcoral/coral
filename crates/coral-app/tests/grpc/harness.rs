@@ -11,8 +11,8 @@ use coral_app::EngineExtensionsProvider;
 use coral_app::features::{Feature, FeatureOverrides};
 use coral_client::{
     AppClient, CatalogClient, FunctionClient, IdentityClient, IdentitySpecClient, QueryClient,
-    SearchClient, SourceClient, WorkspaceClient, batches_to_json_rows, decode_execute_sql_response,
-    default_workspace,
+    SearchClient, SourceClient, WorkspaceClient, WorkspaceIdentityClient, batches_to_json_rows,
+    decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
@@ -158,6 +158,10 @@ impl GrpcHarness {
 
     pub(crate) fn identity_client(&self) -> IdentityClient {
         self.app.identity_client()
+    }
+
+    pub(crate) fn workspace_identity_client(&self) -> WorkspaceIdentityClient {
+        self.app.workspace_identity_client()
     }
 
     pub(crate) fn search_client(&self) -> SearchClient {

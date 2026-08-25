@@ -17,6 +17,7 @@ use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::task_service_server::TaskServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
+use coral_api::v1::workspace_identity_service_server::WorkspaceIdentityServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE,
@@ -53,6 +54,7 @@ use crate::gui_onboarding::manager::GuiOnboardingManager;
 use crate::gui_onboarding::service::GuiOnboardingService;
 use crate::identities::manager::IdentityManager;
 use crate::identities::service::IdentityService;
+use crate::identities::workspace_service::WorkspaceIdentityService;
 use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
 use crate::identity_specs::manager::IdentitySpecManager;
 use crate::identity_specs::service::IdentitySpecService;
@@ -709,7 +711,8 @@ fn application_routes(
     let task_service = TaskService::new(task);
     let gui_onboarding_service = GuiOnboardingService::new(gui_onboarding);
     let identity_spec_service = IdentitySpecService::new(identity_specs);
-    let identity_service = IdentityService::new(identities);
+    let identity_service = IdentityService::new(identities.clone());
+    let workspace_identity_service = WorkspaceIdentityService::new(identities);
     let mut routes = Routes::default()
         .add_service(GuiOnboardingServiceServer::new(gui_onboarding_service))
         .add_service(
@@ -729,6 +732,10 @@ fn application_routes(
         )
         .add_service(
             IdentityServiceServer::new(identity_service)
+                .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
+        )
+        .add_service(
+            WorkspaceIdentityServiceServer::new(workspace_identity_service)
                 .max_encoding_message_size(IDENTITY_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(FunctionServiceServer::new(function_service))

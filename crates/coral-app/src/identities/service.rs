@@ -136,7 +136,7 @@ fn request_principal<T>(request: &Request<T>) -> Result<crate::identity::Princip
         .ok_or_else(|| Status::internal("request principal context is unavailable"))
 }
 
-fn identity_to_proto(record: &IdentityRecord) -> Result<IdentityProto, AppError> {
+pub(super) fn identity_to_proto(record: &IdentityRecord) -> Result<IdentityProto, AppError> {
     Ok(IdentityProto {
         name: record.name.as_str().to_string(),
         owner: Some(identity_owner_to_proto(&record.owner)),

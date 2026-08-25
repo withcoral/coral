@@ -1,13 +1,5 @@
 //! Database-backed identity instance management.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "identity service consumers land in a later stack layer"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 #[cfg(test)]
