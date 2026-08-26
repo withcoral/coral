@@ -12,7 +12,7 @@ Coral ships as a desktop app on macOS, Linux, and Windows. For servers, or for a
 
 The macOS desktop app is a universal build that runs on both Apple silicon and Intel Macs.
 
-1. [Download the Coral desktop app](https://withcoral.com/download/mac). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
+1. [Download the universal DMG](https://withcoral.com/download/mac/universal). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
 2. Open the DMG and drag **Coral** into your Applications folder.
 3. Launch Coral and add your first [sources](/reference/bundled-sources) from the app.
 
@@ -22,9 +22,9 @@ The macOS app updates itself.
 
 <Tab title="Linux">
 
-The Linux desktop app is x64 only. Take the AppImage to run it without installing, or the deb on Debian and Ubuntu.
+The Linux desktop app is x86_64 only. Take the AppImage to run it without installing, or the deb on Debian and Ubuntu.
 
-1. Download the [AppImage](https://withcoral.com/download/linux/appimage) or the [deb](https://withcoral.com/download/linux/deb). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
+1. Download the [x86_64 AppImage](https://withcoral.com/download/linux/appimage/x86_64) or the [amd64 deb](https://withcoral.com/download/linux/deb/amd64). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
 2. For the AppImage, make it executable and run it:
 
    ```shellscript
@@ -41,8 +41,8 @@ The Linux desktop app is x64 only. Take the AppImage to run it without installin
 3. Launch Coral and add your first [sources](/reference/bundled-sources) from the app.
 
 <Note>
-The AppImage updates itself. The deb does not, because dpkg owns the installed
-package: install a new release to upgrade it.
+  The AppImage updates itself. The deb does not, because dpkg owns the installed
+  package: install a new release to upgrade it.
 </Note>
 
 </Tab>
@@ -51,20 +51,20 @@ package: install a new release to upgrade it.
 
 The Windows desktop app is x64 only. It is an unsigned preview.
 
-1. [Download the Coral desktop app](https://withcoral.com/download/windows). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
+1. [Download the x64 installer](https://withcoral.com/download/windows/x64). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
 2. Run the installer. Windows SmartScreen shows a warning for an unrecognized app, because the installer is unsigned. Select **More info**, then **Run anyway**.
 3. The installer writes Coral under `%LOCALAPPDATA%` for your user only, and asks for no administrator rights. You can select a different directory on the install page.
 4. Launch **Coral** from the Start menu and add your first [sources](/reference/bundled-sources) from the app.
 
 <Note>
-The Windows app does not update itself. Download and run the new installer to
-upgrade.
+  The Windows app does not update itself. Download and run the new installer to
+  upgrade.
 </Note>
 
 <Note>
-A release can ship without a Windows installer. The download link fails if the
-latest release has no `.exe` asset. Take the installer from the release before
-it.
+  A release can ship without a Windows installer. The download link fails if the
+  latest release has no `.exe` asset. Take the installer from the release before
+  it.
 </Note>
 
 </Tab>
@@ -88,7 +88,7 @@ version is available, and you can use the menu bar to check for an update
 manually. Coral replaces your image file and restarts.
 
 The deb has no updater, and it shows no update notification. Download the
-[latest deb](https://withcoral.com/download/linux/deb) and install it over the
+[latest amd64 deb](https://withcoral.com/download/linux/deb/amd64) and install it over the
 old package:
 
 ```shellscript
@@ -100,7 +100,7 @@ sudo dpkg -i coral-desktop-linux-amd64.deb
 <Tab title="Windows">
 
 The Windows app does not update itself, and it has no update notification or
-menu item. Download the [latest installer](https://withcoral.com/download/windows)
+menu item. Download the [latest x64 installer](https://withcoral.com/download/windows/x64)
 and run it. The installer replaces your installed copy.
 
 </Tab>
