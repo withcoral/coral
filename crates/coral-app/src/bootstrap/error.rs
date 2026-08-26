@@ -114,6 +114,9 @@ pub enum AppError {
     /// A required remote dependency was unavailable.
     #[error("unavailable: {0}")]
     Unavailable(String),
+    /// A database mutation conflicted with another transaction and may be retried.
+    #[error("unavailable: database transaction conflict; retry the request")]
+    RetryableTransactionConflict,
     /// The server exhausted a resource required to complete the request.
     #[error("resource exhausted: {0}")]
     ResourceExhausted(String),
@@ -168,6 +171,7 @@ impl From<DbError> for AppError {
             )),
             DbError::Io(error) => Self::Io(error),
             DbError::TomlDecode(error) => Self::TomlDecode(error),
+            DbError::RetryableTransactionConflict(_) => Self::RetryableTransactionConflict,
             DbError::Sqlx(error) => Self::Database(error.to_string()),
             DbError::Migration(error) => Self::Database(error.to_string()),
         }
@@ -325,7 +329,7 @@ fn app_code(error: &AppError) -> Code {
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
             Code::FailedPrecondition
         }
-        AppError::Unavailable(_) => Code::Unavailable,
+        AppError::Unavailable(_) | AppError::RetryableTransactionConflict => Code::Unavailable,
         AppError::ResourceExhausted(_) => Code::ResourceExhausted,
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
         AppError::Internal(_)
@@ -497,6 +501,14 @@ mod tests {
             "remote descriptor timed out".to_string(),
         ));
         assert_eq!(status.code(), Code::Unavailable);
+    }
+
+    #[test]
+    fn app_status_maps_retryable_database_conflicts_to_unavailable() {
+        let status = app_status(AppError::RetryableTransactionConflict);
+
+        assert_eq!(status.code(), Code::Unavailable);
+        assert!(status.message().contains("retry the request"));
     }
 
     #[test]
