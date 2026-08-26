@@ -721,15 +721,21 @@ pub async fn start_auth_disabled(
 /// The listing is scoped to whoever the client authenticates as, so which
 /// client this is asked with is the whole of the answer's meaning.
 async fn membership_workspace_names(app: &AppClient) -> Result<Vec<String>, tonic::Status> {
-    Ok(app
-        .workspace_client()
+    app.workspace_client()
         .list_workspaces(GrpcRequest::new(ListWorkspacesRequest {}))
         .await?
         .into_inner()
         .memberships
         .into_iter()
-        .map(|membership| membership.workspace.unwrap_or_default().name)
-        .collect())
+        .map(|membership| {
+            membership
+                .workspace
+                .ok_or_else(|| {
+                    tonic::Status::internal("list workspaces response missing workspace")
+                })
+                .map(|workspace| workspace.name)
+        })
+        .collect()
 }
 
 /// Starts authenticated serving; fails when the listener cannot bind.
