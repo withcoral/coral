@@ -106,8 +106,8 @@ impl WorkspaceMcpUrls {
     /// Whether `candidate` names the family base in either spelling.
     ///
     /// The base has two canonical forms: [`Self::base`]'s identifier keeps a
-    /// non-root trailing slash, while [`Self::base_identifier`] — the prefix
-    /// every per-workspace resource extends — trims it. The base is an audience
+    /// non-root trailing slash, while the prefix every per-workspace resource
+    /// extends — see [`Self::resource`] — trims it. The base is an audience
     /// of no surface, so an `auth.allowed_audiences` entry matching *either*
     /// spelling would resurrect the audience the per-workspace family replaced;
     /// configuration rejects both.

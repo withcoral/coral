@@ -24,7 +24,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use coral_api::v1::ListWorkspacesRequest;
 use coral_app::{
-    CanonicalOauthUrl, McpWorkspaceSegment, OauthUrlError, WORKSPACE_ROUTE_SEGMENT, WorkspaceMcpUrls,
+    CanonicalOauthUrl, McpWorkspaceSegment, OauthUrlError, WORKSPACE_ROUTE_SEGMENT,
+    WorkspaceMcpUrls,
 };
 use coral_client::{AppClient, workspace as workspace_proto};
 use futures::{Stream, StreamExt as _};
