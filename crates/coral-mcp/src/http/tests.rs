@@ -1134,10 +1134,16 @@ async fn authenticated_discovery_and_challenge_do_not_advertise_scopes() {
 #[tokio::test]
 async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
     let (_temp, app_server, app) = local_app().await;
+    // Nothing provisions a workspace any more, so the fixture creates the one
+    // its session serves and scopes the options to it.
+    let options = workspace_scoped_options(&app).await;
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        extension_options(),
+        McpOptions {
+            surface: extension_options().surface,
+            ..options
+        },
         || async { Ok::<_, tonic::Code>(()) },
     );
     let server = start_authenticated(
@@ -1162,7 +1168,8 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
         .expect("extension structured content");
     assert_eq!(
         extension.get("workspace"),
-        Some(&serde_json::json!("default"))
+        Some(&serde_json::json!(TEST_WORKSPACE)),
+        "the session serves the workspace its options name"
     );
     let sessions = authenticated_sessions(&server);
     let state = Arc::downgrade(&server.state);
@@ -1186,6 +1193,9 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
 async fn authenticated_extension_uses_its_session_app_client() {
     let (_live_temp, live_server, live_app) = local_app().await;
     let (_stopped_temp, stopped_server, stopped_app) = local_app().await;
+    // Nothing provisions a workspace any more, so the fixture creates the one
+    // the sessions serve and scopes the options to it.
+    let options = workspace_scoped_options(&live_app).await;
     stopped_server
         .shutdown()
         .await
@@ -1201,7 +1211,10 @@ async fn authenticated_extension_uses_its_session_app_client() {
             };
             std::future::ready(Ok::<_, ()>(app))
         },
-        extension_options(),
+        McpOptions {
+            surface: extension_options().surface,
+            ..options
+        },
         || async { Ok::<_, tonic::Code>(()) },
     );
     let server = start_authenticated(

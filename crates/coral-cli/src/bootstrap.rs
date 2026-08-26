@@ -115,9 +115,10 @@ fn bootstrap_endpoint() -> Option<String> {
 mod tests {
     use std::sync::Mutex;
 
+    use coral_api::v1::CreateWorkspaceRequest;
     use coral_api::v1::ExecuteSqlRequest;
     use coral_app::{EngineExtensions, QuerySource};
-    use coral_client::default_workspace;
+    use coral_client::workspace;
     use tempfile::TempDir;
     use tonic::Request;
 
@@ -159,9 +160,17 @@ mod tests {
             .await
             .expect("connect client");
 
+        // Nothing provisions a workspace any more, so the probe creates the
+        // one it queries.
+        app.workspace_client()
+            .create_workspace(Request::new(CreateWorkspaceRequest {
+                workspace: Some(workspace("engine-probe")),
+            }))
+            .await
+            .expect("create workspace");
         app.query_client()
             .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace("engine-probe")),
                 sql: "SELECT 1".to_string(),
                 guide_read_context: None,
                 task_attribution: None,
