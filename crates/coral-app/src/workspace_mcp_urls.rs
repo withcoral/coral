@@ -103,6 +103,19 @@ impl WorkspaceMcpUrls {
         format!("{}{}", self.origin(), self.base_path())
     }
 
+    /// Whether `candidate` names the family base in either spelling.
+    ///
+    /// The base has two canonical forms: [`Self::base`]'s identifier keeps a
+    /// non-root trailing slash, while [`Self::base_identifier`] — the prefix
+    /// every per-workspace resource extends — trims it. The base is an audience
+    /// of no surface, so an `auth.allowed_audiences` entry matching *either*
+    /// spelling would resurrect the audience the per-workspace family replaced;
+    /// configuration rejects both.
+    #[must_use]
+    pub fn is_base_audience(&self, candidate: &str) -> bool {
+        self.base().identifier() == candidate || self.base_identifier() == candidate
+    }
+
     /// The one MCP resource URL for a workspace: routing key, OAuth resource,
     /// and token audience, byte-identical in all three roles.
     #[must_use]

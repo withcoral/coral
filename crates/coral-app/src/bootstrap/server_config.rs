@@ -511,7 +511,10 @@ fn public_surface_audiences(
         // The MCP base is deliberately not an audience of its own — it is not
         // an MCP endpoint any more — so an explicit entry naming it would
         // resurrect exactly the audience the per-workspace family replaced.
-        if mcp_workspace_urls.is_some_and(|urls| urls.base().identifier() == audience) {
+        // Both spellings are rejected: a trailing-slash `public_url` leaves the
+        // canonical base and the normalized base identifier differing by one
+        // slash, and either would otherwise slip through as a gRPC audience.
+        if mcp_workspace_urls.is_some_and(|urls| urls.is_base_audience(&audience)) {
             return Err(AppError::FailedPrecondition(format!(
                 "{label} duplicates server.mcp_http.public_url, which is the base of the \
                  per-workspace MCP resources and not an audience of its own"
@@ -983,6 +986,16 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             (
                 "[server.mcp_http]\nenabled = true\npublic_url = 'https://MCP.example.test/'\n",
                 "allowed_audiences = ['https://mcp.example.test']",
+                "auth.allowed_audiences[0] duplicates server.mcp_http.public_url",
+            ),
+            // A non-root base with a trailing slash keeps that slash through
+            // canonicalization, so the normalized base identifier every
+            // per-workspace resource extends differs from the canonical base by
+            // one slash. Naming that normalized form must be rejected too, or it
+            // resurrects the base as a private-gRPC audience.
+            (
+                "[server.mcp_http]\nenabled = true\npublic_url = 'https://coral.example/mcp/'\n",
+                "allowed_audiences = ['https://coral.example/mcp']",
                 "auth.allowed_audiences[0] duplicates server.mcp_http.public_url",
             ),
             (
