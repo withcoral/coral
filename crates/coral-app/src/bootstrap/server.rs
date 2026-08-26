@@ -54,7 +54,7 @@ use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
 use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
-use crate::search::store::{SearchStorage, SearchStoreError};
+use crate::search::store::{ResolvedSearchConfig, SearchConfig, SearchStorage, SearchStoreError};
 use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
@@ -353,7 +353,7 @@ impl ServerBuilder {
         layout.ensure()?;
         let feature_store = FeatureStore::from_layout(layout.clone());
         let features = feature_store.load_with_overrides(&self.config.feature_overrides)?;
-        let coral_db = init_database(&layout).await?;
+        let (database_config, coral_db) = init_database(&layout).await?;
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store, &layout).await?;
         let coral_db = Arc::new(coral_db);
@@ -365,7 +365,7 @@ impl ServerBuilder {
         let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
         let database_sources_enabled = features.enabled(Feature::DatabaseSources);
-        let search_storage = SearchStorage::sqlite(layout.clone());
+        let search_storage = init_search_storage(&layout, &database_config).await?;
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
             credential_manager.clone(),
@@ -414,7 +414,7 @@ impl ServerBuilder {
         .with_task_activity_recorder(task_activity);
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =
-            observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
+            init_search_observations(observed_values_search_enabled, &search_storage, &layout);
         let search_manager = SearchManager::with_diagnostic_reporter(
             search_storage,
             layout,
@@ -541,11 +541,42 @@ fn init_credential_manager(layout: &AppStateLayout) -> Result<CredentialManager,
     Ok(CredentialManager::new(credential_store))
 }
 
-async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
+async fn init_database(
+    layout: &AppStateLayout,
+) -> Result<(ResolvedDatabaseConfig, CoralDb), AppError> {
     let database_config = resolve_database_config(layout)?;
-    let coral_db = CoralDb::open(database_config).await?;
+    let coral_db = CoralDb::open(database_config.clone()).await?;
     coral_db.migrate().await?;
-    Ok(coral_db)
+    Ok((database_config, coral_db))
+}
+
+/// Resolves `[search]` against the database config and opens the backend.
+///
+/// A backend that cannot serve search fails startup here, naming the missing
+/// capability, rather than serving degraded results later.
+async fn init_search_storage(
+    layout: &AppStateLayout,
+    database_config: &ResolvedDatabaseConfig,
+) -> Result<SearchStorage, AppError> {
+    match SearchConfig::load(layout)?.resolve(database_config)? {
+        ResolvedSearchConfig::Sqlite => Ok(SearchStorage::sqlite(layout.clone())),
+        ResolvedSearchConfig::Postgres { url } => {
+            SearchStorage::postgres(&url, tokio::runtime::Handle::current())
+                .await
+                .map_err(|error| search_storage_open_error(&error))
+        }
+    }
+}
+
+/// The observed-values capture pipeline runs only when the feature is on and
+/// the search backend keeps observed values to write into.
+fn init_search_observations(
+    observed_values_search_enabled: bool,
+    search_storage: &SearchStorage,
+    layout: &AppStateLayout,
+) -> Option<SearchObservationHandle> {
+    (observed_values_search_enabled && search_storage.keeps_observed_values())
+        .then(|| SearchObservationHandle::new(layout.clone()))
 }
 
 fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseConfig, AppError> {

@@ -87,6 +87,38 @@ async fn server_lifecycle_rejects_postgres_config_without_url_env_value() {
     }
 }
 
+#[tokio::test]
+async fn server_lifecycle_rejects_postgres_search_over_a_sqlite_database() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        "[search]\nbackend = \"postgres\"\n",
+    )
+    .expect("write config");
+
+    let result = ServerBuilder::new()
+        .with_config_dir(&config_dir)
+        .start()
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(server) => {
+            server.shutdown().await.expect("shutdown unexpected server");
+            panic!("server start should fail when search is on Postgres but the database is not");
+        }
+    };
+
+    match error {
+        LocalServerError::FailedPrecondition(detail) => assert!(
+            detail.contains("requires [database].backend = \"postgres\""),
+            "unexpected detail: {detail}"
+        ),
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
 async fn assert_default_sqlite_db_is_migrated(config_dir: &std::path::Path) {
     let database_file = config_dir.join("coral.db");
     assert!(

@@ -43,6 +43,19 @@ export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?ssl
   Remote Postgres URLs must set `sslmode=verify-full` so Coral verifies the server identity. Loopback and local-socket Postgres URLs may omit TLS for local development.
 </Note>
 
+### Search storage
+
+Universal Search keeps its catalog index in a store of its own. By default the store follows `[database].backend`: SQLite app state uses one SQLite search file per workspace under the local state directory, and Postgres app state keeps catalog search in the same Postgres database, as one schema per workspace.
+
+Use `[search]` to choose the search backend on its own. The section has no `path` or `url_env` key: the `postgres` backend reuses the `[database]` connection URL with a small connection pool of its own, so it requires `[database].backend = "postgres"`.
+
+```toml
+[search]
+backend = "sqlite"
+```
+
+The Postgres search backend needs the `pg_trgm` extension. Coral creates it when the database role may, and refuses to start when it is missing. Observed-values search is not available on the Postgres search backend.
+
 ## Workspaces
 
 Workspace metadata is stored under `[workspaces]`. The `default` workspace
