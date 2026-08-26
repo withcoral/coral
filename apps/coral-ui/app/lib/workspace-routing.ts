@@ -26,7 +26,10 @@ export function workspacePathForCurrentSection(workspaceId: string, pathname: st
   if (isSchemaSection) return routePath('workspaceSchema', { workspaceId })
 
   const isTracesSection = matchPath({ end: false, path: routePattern('workspaceTraces') }, pathname)
-  return isTracesSection
-    ? routePath('workspaceTraces', { workspaceId })
+  if (isTracesSection) return routePath('workspaceTraces', { workspaceId })
+
+  const isUsersSection = matchPath({ end: false, path: routePattern('workspaceUsers') }, pathname)
+  return isUsersSection
+    ? routePath('workspaceUsers', { workspaceId })
     : routePath('workspaceSources', { workspaceId })
 }

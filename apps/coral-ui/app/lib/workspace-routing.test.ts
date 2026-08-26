@@ -23,6 +23,7 @@ describe('workspace routing', () => {
     ['/workspaces/default/schema/github/issues', '/workspaces/team%20alpha/schema'],
     ['/workspaces/default/functions', '/workspaces/team%20alpha/functions'],
     ['/workspaces/default/traces/trace-1', '/workspaces/team%20alpha/traces'],
+    ['/workspaces/default/users', '/workspaces/team%20alpha/users'],
     ['/settings', '/workspaces/team%20alpha/sources'],
   ])('targets the corresponding section for %s', (pathname, expectedPath) => {
     expect(workspacePathForCurrentSection('team alpha', pathname)).toBe(expectedPath)

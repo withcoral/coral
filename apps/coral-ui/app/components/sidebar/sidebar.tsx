@@ -70,11 +70,15 @@ export function Sidebar({
   const tracesPath = workspaceNavTarget
     ? routePath('workspaceTraces', { workspaceId: workspaceNavTarget.name })
     : routePath('home')
+  const usersPath = workspaceNavTarget
+    ? routePath('workspaceUsers', { workspaceId: workspaceNavTarget.name })
+    : routePath('home')
   const workspaceNavItems = [
     { icon: 'Plug', label: 'Sources', paths: [routePath('home'), sourcesPath], to: sourcesPath },
     { icon: 'Database', label: 'Schema', paths: [schemaPath], to: schemaPath },
     { icon: 'Braces', label: 'Functions', paths: [functionsPath], to: functionsPath },
     { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
+    { icon: 'Users', label: 'Users', paths: [usersPath], to: usersPath },
   ] satisfies NavItem[]
   const settingsPath = routePath('settings')
   const mcpClientsPath = routePath('settingsMcpClients')

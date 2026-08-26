@@ -43,8 +43,9 @@ export interface WorkspaceUsersActionData {
    * user per call, so a batch add can land in part and the route reports the rest.
    */
   readonly failures?: ReadonlyArray<WorkspaceUserFailure>
-  readonly intent: 'add' | 'remove' | 'role'
+  readonly intent: 'add' | 'remove' | 'role' | 'unsupported'
   readonly message: string
+  readonly removedCurrentUser?: boolean
   readonly status: 'error' | 'success'
   /** The users the action was about. One add can carry several. */
   readonly userIds: ReadonlyArray<string>
@@ -506,7 +507,7 @@ function WorkspaceUserRow({
             </Dialog.Title>
             <Dialog.Description>
               {member.userId === currentUserId
-                ? `You will lose access to ${workspaceName}.`
+                ? `You will lose access to ${workspaceName} and be redirected.`
                 : `${member.displayName || member.userId} will lose access to ${workspaceName}.`}
             </Dialog.Description>
             {removalError ? <Banner variant="error">{removalError}</Banner> : null}

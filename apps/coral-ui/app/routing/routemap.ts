@@ -18,6 +18,7 @@ const WORKSPACE_SOURCES_PATH = '/workspaces/:workspaceId/sources'
 const WORKSPACE_SOURCE_PATH = '/workspaces/:workspaceId/sources/:sourceName'
 const WORKSPACE_TRACES_PATH = '/workspaces/:workspaceId/traces'
 const WORKSPACE_TRACE_PATH = '/workspaces/:workspaceId/traces/:traceId'
+const WORKSPACE_USERS_PATH = '/workspaces/:workspaceId/users'
 const SETTINGS_PATH = '/settings'
 const SETTINGS_MCP_CLIENTS_PATH = '/settings/mcp-clients'
 const SETTINGS_RUNTIME_FEATURES_PATH = '/settings/runtime-features'
@@ -141,6 +142,13 @@ export const routeDefinitions = {
     path: WORKSPACE_TRACES_PATH,
     toPath: (params: { workspaceId: string }) =>
       generatePath(WORKSPACE_TRACES_PATH, {
+        workspaceId: params.workspaceId,
+      }),
+  },
+  workspaceUsers: {
+    path: WORKSPACE_USERS_PATH,
+    toPath: (params: { workspaceId: string }) =>
+      generatePath(WORKSPACE_USERS_PATH, {
         workspaceId: params.workspaceId,
       }),
   },

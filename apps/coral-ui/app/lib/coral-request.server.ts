@@ -15,6 +15,7 @@ import { GuiOnboardingService } from '@/generated/coral/v1/gui_onboarding_pb'
 import { QueryService } from '@/generated/coral/v1/query_pb'
 import { SourceService } from '@/generated/coral/v1/sources_pb'
 import { TraceService } from '@/generated/coral/v1/traces_pb'
+import { UserService } from '@/generated/coral/v1/users_pb'
 import { WorkspaceService } from '@/generated/coral/v1/workspaces_pb'
 import { Health } from '@/generated/grpc/health/v1/health_pb'
 import { expiredSessionRedirect } from '@/auth/response.server'
@@ -27,6 +28,10 @@ export function sourceClientForRequest(request: Request, accessToken: string | n
 
 export function workspaceClientForRequest(request: Request, accessToken: string | null) {
   return createClient(WorkspaceService, coralTransportForRequest(request, accessToken))
+}
+
+export function userClientForRequest(request: Request, accessToken: string | null) {
+  return createClient(UserService, coralTransportForRequest(request, accessToken))
 }
 
 export function catalogClientForRequest(request: Request, accessToken: string | null) {
