@@ -253,8 +253,9 @@ must forward the issuer origin to it at the root.
 ### `[auth.provider]`
 
 The single upstream OIDC provider Coral delegates login to. Who can sign in is
-decided entirely by this provider and `required_claims`; Coral has no user
-management of its own.
+decided entirely by this provider and `required_claims`; Coral keeps its own
+record of every user who has signed in, and its own per-workspace memberships,
+but delegates the sign-in decision itself.
 
 | Key                           | Type    | Default                          | Description                                                                                       |
 | ----------------------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -271,7 +272,11 @@ management of its own.
 | `discovery_cache_ttl_seconds` | integer | `300`                            | How long provider discovery metadata is cached. Maximum one hour.                                  |
 
 <Note>
-  Every authenticated user has the same full access to the instance and all of its sources — there are no per-user roles. Restrict who can log in through the upstream provider and `required_claims`.
+  Signing in grants no workspace access by itself. Access is granted per
+  workspace, at Owner or Member level, through workspace memberships — see
+  [Shared server access control](/guides/shared-server-access-control) for what
+  each role may do. The provider and `required_claims` decide who can sign in
+  at all; membership decides what a signed-in user reaches.
 </Note>
 
 ### MCP HTTP workspace URLs

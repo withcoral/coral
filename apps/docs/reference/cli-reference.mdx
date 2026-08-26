@@ -362,7 +362,9 @@ credential references are separate concepts and are not represented by
 These commands manage the workspaces on the Coral install running on this
 machine. They are not an administration tool for a shared deployment: a
 deployment that has `[auth]` configured has its own accounts, memberships, and
-roles, which are administered in Reef rather than from this CLI.
+roles, which are not managed from this CLI — see
+[Shared server access control](/guides/shared-server-access-control) for how
+membership is administered.
 
 ### `coral workspace list`
 
@@ -541,8 +543,10 @@ container, see [Self-host Coral with Docker](/guides/self-host-with-docker).
 `coral server` selects no workspace at all, and ignores `--workspace` and
 `CORAL_WORKSPACE`: every gRPC request names the workspace it targets, and the
 MCP Streamable HTTP listener it can start alongside gRPC serves every
-workspace at its own URL, `/mcp/workspace/{workspace}`. Which workspace an MCP
-session reaches is decided by the URL the client connects to — never by
+workspace at its own URL — `/mcp/workspace/{workspace}` on the listener, and
+`<public_url>/workspace/{workspace}` when `[auth]` is configured (the prefix
+comes from `server.mcp_http.public_url`). Which workspace an MCP session
+reaches is decided by the URL the client connects to — never by
 configuration, and never on the caller's behalf.
 
 Whether a URL serves is answered per handshake, not at startup: a workspace
@@ -552,7 +556,9 @@ workspaces starts fine and serves its first workspace the moment
 `coral workspace create` makes one. Creating more workspaces never changes how
 the server starts — it just adds URLs.
 
-Without `[auth]` the listener is loopback-only and unauthenticated: requests
+Without `[auth]` the listener is unauthenticated and refuses non-loopback
+binds unless `server.mcp_http.allow_unauthenticated_non_loopback` explicitly
+opts in (see [Configuration](/reference/configuration#server)): requests
 act as the built-in local user, with full access to every workspace's URL.
 With `[auth]` the listener is authenticated and a session is admitted only
 when the URL's workspace is among the calling token's own memberships. See

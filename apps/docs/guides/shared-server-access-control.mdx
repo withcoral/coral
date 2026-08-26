@@ -74,24 +74,30 @@ A few of these are worth stating outright:
   because the directory is deployment-wide and denying it hides no particular
   person.
 - **Runtime feature flags are host-global**, not workspace-scoped, so there is
-  no workspace whose owner could be entitled to them. A server with login
-  enabled exposes them to nobody.
+  no workspace whose owner could be entitled to manage them. Any signed-in
+  caller can read their status, but a server with login enabled lets nobody
+  change them: flag changes are reserved to the built-in local principal, which
+  a login-enabled server does not admit.
 
-### Agent credentials never manage
+### Your MCP token is your full authority
 
-The token your MCP client holds authenticates an *agent*, even though it is your
-login behind it. Owner-level operations are refused to agent credentials before
-any role is consulted, so a workspace role can never promote one.
+The token your MCP client holds is minted by the shared-server login and
+authenticates *you* — the signed-in user, at whatever role your memberships
+carry. It is **not a reduced-privilege credential**: an owner's MCP token
+carries that owner's full authority, `add_function` included. Hand it only to
+an agent you would trust with the workspace itself, and treat a leaked MCP
+token exactly like a leaked login.
 
-The practical consequence: the same person's browser session manages the
-workspace and their MCP token does not. Through shared MCP an owner can run SQL,
-search, browse the catalog, and call existing table functions — but
-`add_function` is refused, as are source configuration, trace reads, and every
-membership change. Configure sources and read traces in Reef; membership is a
-gRPC call, as described at the end of this page.
+What limits an MCP session in this release is its tool surface, not a weaker
+identity. Shared MCP speaks SQL, search, catalog browsing, and table function
+calls; source configuration, trace reads, and membership changes are simply
+not among its tools. Configure sources and read traces in Reef; membership is
+a gRPC call, as described at the end of this page.
 
-An agent credential also cannot create a workspace, because creation grants its
-caller ownership: that is authority being minted rather than exercised.
+Coral does distinguish *agent* credentials from user credentials, and refuses
+owner-level operations to agent credentials before any role is consulted. That
+refusal is enforcement-in-waiting: this release's login flow only mints user
+tokens, so no credential an MCP client can obtain today is bound by it.
 
 ## A workspace you cannot reach reads as one that does not exist
 
@@ -128,8 +134,10 @@ terminator can reach. The server prints this same warning at startup when the
 bind is not loopback.
 </Warning>
 
-`public_url` is required whenever login is enabled; it is the base the
-per-workspace URLs hang under, not an endpoint of its own. Nothing selects a
+With login enabled, this listener requires `public_url`; it is the base the
+per-workspace URLs hang under, not an endpoint of its own. (A deployment that
+runs login without the MCP listener declares its public surface through
+`auth.allowed_audiences` instead.) Nothing selects a
 workspace in configuration: the URL a client connects to —
 `https://mcp.example.com/mcp/workspace/analytics` for a workspace named
 `analytics` — names the workspace its sessions reach, a workspace is
@@ -147,7 +155,7 @@ is picked on the caller's behalf. The decision is made once per session, at the
 A refused session gets a JSON-RPC error on the `initialize` response rather than
 a bare connection failure, so the guidance actually reaches the client:
 
-```
+```text
 Workspace `analytics` was not found. Check the workspace URL, or ask a
 workspace owner to add you.
 ```
@@ -183,11 +191,14 @@ handshake. That has a boundary worth stating plainly:
 - A caller whose membership was removed **cannot open a new session**. Their next
   `initialize` is refused with the message above.
 - The session they **already hold is not torn down**. Coral matches an
-  established session to the bearer token that opened it and re-reads nothing
-  else about it.
-- There is **no maximum session lifetime**. The one-hour session timeout is an
-  *idle* timer, so a client that keeps its session busy keeps it open
-  indefinitely.
+  established session to the exact bearer token that opened it — and validates
+  that token again on every request, expiry included. A token obtained through
+  refresh does not resume the old session; it must initialize a new one, which
+  is where the membership check runs again.
+- The session record itself has **no maximum lifetime** — the one-hour session
+  timeout is an *idle* timer — but the token bounds it: when the access token
+  expires (`access_token_ttl_seconds`, 30 days by default), the session stops
+  being usable even if it never idled out.
 
 What still protects the data in that window is the layer underneath: every
 workspace-scoped operation the session performs is authorized again, per
@@ -215,7 +226,7 @@ A server with login enabled reports these at startup, at `WARN`, and then keeps
 serving everything else. A workspace nobody can reach is an operator's job to
 fix, not a reason to deny every other workspace its server.
 
-```
+```text
 no authenticated caller can manage these workspaces until an operator grants
 ownership - with no owner at all: legacy_metrics; owned only by the built-in
 local user: sandbox
@@ -226,9 +237,11 @@ The two categories need different repairs:
 - **No owner at all.** Appoint one.
 - **Owned only by the built-in local user.** `coral:local` identifies the
   single-user local process, not a person who can authenticate. A workspace it
-  owns is validly owned in storage and equally unreachable to every signed-in
-  user. Appoint a human owner alongside it — recovery adds owners and removes
-  none, so the local row stays and stops mattering.
+  owns is validly owned in storage, so — unlike the ownerless case — its
+  existing members keep their member-level access; what no signed-in user can
+  do is manage it, because managing takes an owner who can log in. Appoint a
+  human owner alongside it — recovery adds owners and removes none, so the
+  local row stays and stops mattering.
 
 ## Recovering a locked-out workspace
 
@@ -261,13 +274,23 @@ reads `config.toml` by the server's own rules, and for Postgres reads the
 connection URL from the environment variable that configuration names, so a
 mistyped path fails identically for both.
 
+**The tool must be able to reach the state database.** For Postgres that is any
+machine holding the connection URL, so containerized deployments are covered as
+they stand. For SQLite the database file itself must be on a filesystem this
+tool can touch — true for a host-run server, not for the SQLite-on-a-volume
+default the container guides use. There, stop the server first (which
+checkpoints the WAL), copy `coral.db` out of the volume, repair the copy, and
+copy it back before restarting. Never copy the file out from under a running
+server: a live WAL-mode database keeps recent commits in its `-wal` sidecar,
+and a copy of `coral.db` alone silently drops them.
+
 <Steps>
   <Step title="Find the workspace">
     ```shellscript
     cargo run -p xtask --features admin -- workspace-admin list-workspaces
     ```
 
-    ```
+    ```text
     WORKSPACE       OWNERS  MEMBERS  REACHABILITY
     analytics       2       9        human-owned
     legacy_metrics  0       3        zero-owners
@@ -276,7 +299,10 @@ mistyped path fails identically for both.
 
     This opens the database read-only, so it is safe against a running server.
     `zero-owners` and `local-owner-only` are the two unreachable states named in
-    the startup warning above.
+    the startup warning above. One caveat: after an unclean server exit (a
+    crash, an OOM-kill, a reboot), a leftover `-wal` sidecar can refuse the
+    read-only open — the error says so and names the fix: start the server once
+    so it recovers its own WAL, then retry.
   </Step>
 
   <Step title="Find the person">
@@ -366,7 +392,9 @@ The handoff is gRPC. Membership lives on `coral.v1.WorkspaceService`, as
 `ListWorkspaceMembers`, `AddWorkspaceMember`, and `RemoveWorkspaceMember`, and
 those calls are how members are named, listed, and removed.
 
-There is no member-management screen in Reef in this release. You can create a
-workspace there and work in the ones you belong to, but the membership itself is
-a gRPC call. The CLI has no membership commands either: `coral workspace` covers
-listing, creating, and removing workspaces only.
+As of this release those calls are the only membership surface: Reef does not
+manage members yet (you can create a workspace there and work in the ones you
+belong to), and the CLI has no membership commands — `coral workspace` covers
+listing, creating, and removing workspaces only. When a Reef screen for
+workspace members lands, it will drive these same RPCs, and the raw calls stay
+available.
