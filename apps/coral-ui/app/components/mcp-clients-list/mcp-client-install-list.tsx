@@ -121,7 +121,7 @@ export function McpClientInstallList({
               ) : null}
               {/* Manual remote-client setup carries the endpoint and every
                       step, so it wraps instead of truncating. */}
-              <Table.Cell className={styles.installCommandCell} wrap={!installCommand}>
+              <Table.Cell wrap>
                 {installCommand ? (
                   <div className={styles.installCommandContainer}>
                     {'installCommandLabel' in client && client.installCommandLabel ? (
