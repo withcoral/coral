@@ -2815,19 +2815,26 @@ async fn mcp_sql_returns_large_int64_as_string() {
 /// The refusal a shared deployment returns for owner-only source configuration.
 const SOURCE_REFUSAL: &str = "workspace source configuration is owner-only";
 
-fn source_refusal<T>() -> Result<T, Status> {
-    Err(Status::permission_denied(SOURCE_REFUSAL))
-}
-
-/// A source service that refuses every call.
+/// A source service that fails every call with one configured status code.
 ///
-/// Source configuration is owner-only and `WorkspaceAuthorizer` denies `Manage`
+/// With [`tonic::Code::PermissionDenied`] it models the owner-only refusal:
+/// source configuration is owner-only and `WorkspaceAuthorizer` denies `Manage`
 /// to an agent principal before any role is read, so an MCP agent credential is
 /// refused even while acting for a person who owns the workspace. A local
 /// unauthenticated fixture always speaks as an owner, so the refusal has to be
-/// served rather than provoked.
+/// served rather than provoked. With a transient code such as
+/// [`tonic::Code::Unavailable`] it models a real backend fault that discovery
+/// surfaces must propagate rather than mistake for "no sources".
 #[derive(Clone, Copy)]
-struct RefusingSourceService;
+struct RefusingSourceService {
+    code: tonic::Code,
+}
+
+impl RefusingSourceService {
+    fn refuse<T>(self) -> Result<T, Status> {
+        Err(Status::new(self.code, SOURCE_REFUSAL))
+    }
+}
 
 #[tonic::async_trait]
 impl SourceService for RefusingSourceService {
@@ -2839,75 +2846,78 @@ impl SourceService for RefusingSourceService {
         &self,
         _request: Request<DiscoverSourcesRequest>,
     ) -> Result<Response<DiscoverSourcesResponse>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn describe_source_manifest(
         &self,
         _request: Request<DescribeSourceManifestRequest>,
     ) -> Result<Response<DescribeSourceManifestResponse>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn list_sources(
         &self,
         _request: Request<ListSourcesRequest>,
     ) -> Result<Response<ListSourcesResponse>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn get_source(
         &self,
         _request: Request<GetSourceRequest>,
     ) -> Result<Response<GetSourceResponse>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn get_source_info(
         &self,
         _request: Request<GetSourceInfoRequest>,
     ) -> Result<Response<GetSourceInfoResponse>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn create_bundled_source(
         &self,
         _request: Request<CreateBundledSourceRequest>,
     ) -> Result<Response<CreateBundledSourceResponse>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn create_bundled_source_with_o_auth(
         &self,
         _request: Request<CreateBundledSourceWithOAuthRequest>,
     ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn import_source(
         &self,
         _request: Request<ImportSourceRequest>,
     ) -> Result<Response<Self::ImportSourceStream>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn delete_source(
         &self,
         _request: Request<DeleteSourceRequest>,
     ) -> Result<Response<DeleteSourceResponse>, Status> {
-        source_refusal()
+        self.refuse()
     }
 
     async fn validate_source(
         &self,
         _request: Request<ValidateSourceRequest>,
     ) -> Result<Response<ValidateSourceResponse>, Status> {
-        source_refusal()
+        self.refuse()
     }
 }
 
-/// Serves [`RefusingSourceService`] on loopback and returns a client for it.
-async fn start_refusing_source_client() -> (SourceClient, tokio::task::JoinHandle<()>) {
+/// Serves a [`RefusingSourceService`] failing with `code` on loopback and
+/// returns a client for it.
+async fn start_refusing_source_client(
+    code: tonic::Code,
+) -> (SourceClient, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("bind refusing source server");
@@ -2916,7 +2926,7 @@ async fn start_refusing_source_client() -> (SourceClient, tokio::task::JoinHandl
         .expect("refusing source server address");
     let task = tokio::spawn(async move {
         let _served = Server::builder()
-            .add_service(SourceServiceServer::new(RefusingSourceService))
+            .add_service(SourceServiceServer::new(RefusingSourceService { code }))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await;
     });
@@ -2953,7 +2963,8 @@ async fn discovery_surfaces_degrade_when_source_listing_is_refused() {
     )
     .await;
 
-    let (refusing_source, refusing_task) = start_refusing_source_client().await;
+    let (refusing_source, refusing_task) =
+        start_refusing_source_client(tonic::Code::PermissionDenied).await;
     let factory = CoralMcpServerFactory::new(
         app,
         McpOptions {
@@ -2998,6 +3009,66 @@ async fn discovery_surfaces_degrade_when_source_listing_is_refused() {
 
     shutdown_mcp_session(client, mcp_task).await;
     refusing_task.abort();
+    app_server.shutdown().await.expect("shutdown app server");
+}
+
+/// A transient source-listing fault must surface as an error, not empty sources.
+///
+/// Only the owner-only `PermissionDenied` refusal degrades a discovery surface
+/// to "no sources"; a transient `Unavailable`/`Internal` scoped to the source
+/// listing is a real fault that `list_tools`, `list_resources`, and the
+/// `coral://guide` resource must each propagate rather than render as an empty
+/// source list.
+#[tokio::test]
+async fn discovery_surfaces_fail_when_source_listing_hits_a_transient_fault() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let app_server = ServerBuilder::new()
+        .with_config_dir(temp.path().join("coral-config"))
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .expect("start server");
+    let app = AppClient::connect(app_server.endpoint_uri())
+        .await
+        .expect("connect client");
+    create_test_workspace(&app).await;
+    add_demo_source_to(
+        &mut app.source_client(),
+        test_workspace(),
+        manifest_yaml.clone(),
+    )
+    .await;
+
+    let (unavailable_source, unavailable_task) =
+        start_refusing_source_client(tonic::Code::Unavailable).await;
+    let factory = CoralMcpServerFactory::new(
+        app,
+        McpOptions {
+            workspace: Some(test_workspace()),
+            ..McpOptions::default()
+        },
+    )
+    .expect("session scoped to a workspace");
+    let (client, mcp_task) =
+        start_mcp_session(factory.create_with_source_client(unavailable_source)).await;
+
+    client
+        .list_all_tools()
+        .await
+        .expect_err("a transient source fault must fail list_tools");
+    client
+        .list_all_resources()
+        .await
+        .expect_err("a transient source fault must fail list_resources");
+    client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await
+        .expect_err("a transient source fault must fail the guide resource");
+
+    shutdown_mcp_session(client, mcp_task).await;
+    unavailable_task.abort();
     app_server.shutdown().await.expect("shutdown app server");
 }
 

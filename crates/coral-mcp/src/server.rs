@@ -448,24 +448,27 @@ impl CoralToolset {
             .sources)
     }
 
-    /// Lists installed sources for a discovery surface, degrading to none when
-    /// the caller may not read source configuration.
+    /// Lists installed sources for a discovery surface, degrading to none only
+    /// when the caller may not read source configuration.
     ///
     /// Source configuration is owner-only because it carries credential setup
     /// metadata, so an MCP agent credential is refused even while acting for a
-    /// person who owns the workspace. Sources are advisory context on
-    /// discovery surfaces, so a refusal must shrink the answer rather than fail
-    /// the request.
-    async fn load_sources_for_discovery(&self) -> Vec<Source> {
+    /// person who owns the workspace. Sources are advisory context on discovery
+    /// surfaces, so that owner-only `PermissionDenied` refusal must shrink the
+    /// answer rather than fail the request. Every other status — a transient
+    /// `Unavailable`/`Internal` and the like — is a real fault the surface must
+    /// still surface, so it propagates rather than masquerading as "no sources".
+    async fn load_sources_for_discovery(&self) -> Result<Vec<Source>, tonic::Status> {
         match self.load_sources().await {
-            Ok(sources) => sources,
-            Err(status) => {
+            Ok(sources) => Ok(sources),
+            Err(status) if status.code() == tonic::Code::PermissionDenied => {
                 tracing::warn!(
                     error = %status,
-                    "failed to load sources for an MCP discovery surface"
+                    "source configuration is owner-only; omitting sources from an MCP discovery surface"
                 );
-                Vec::new()
+                Ok(Vec::new())
             }
+            Err(status) => Err(status),
         }
     }
 
@@ -576,7 +579,7 @@ impl CoralToolset {
             self.load_catalog_counts()
         );
         let (table_count, table_function_count) = counts?;
-        Ok((sources, table_count, table_function_count))
+        Ok((sources?, table_count, table_function_count))
     }
 
     async fn load_sources_and_guide_catalog(
@@ -585,7 +588,7 @@ impl CoralToolset {
         let (sources, catalog) =
             tokio::join!(self.load_sources_for_discovery(), self.load_guide_catalog());
         let (tables, table_function_schema_names) = catalog?;
-        Ok((sources, tables, table_function_schema_names))
+        Ok((sources?, tables, table_function_schema_names))
     }
 
     async fn query_rows(
@@ -1000,6 +1003,7 @@ impl CoralToolset {
         let source_names = self
             .load_sources_for_discovery()
             .await
+            .map_err(|status| status_to_error_data(&status))?
             .into_iter()
             .map(|source| source.name)
             .collect();
