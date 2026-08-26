@@ -14,7 +14,7 @@ use crate::search::catalog::snapshot::{
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult, SearchClearTarget,
     SearchDataScope, SearchMaintenanceDetail, SearchMaintenanceResult, SearchMaintenanceState,
-    SearchProviderClearOutcome, SearchProviderClearRequest, SearchStorageCleanupResult,
+    SearchProviderClearOutcome, SearchProviderClearRequest,
 };
 use crate::search::provider::{
     LocalSearchWriteCoordinator, PreparedRetrievers, ProviderFailure, Retriever, RetrieverError,
@@ -25,10 +25,9 @@ use crate::search::result::{
     SearchManagerError, SearchProviderKind, SearchProviderState, SearchRequest, SearchResult,
     SearchSurfaceId, SearchSurfaceKind, SurfaceMatch, SurfaceShape,
 };
-use crate::search::sqlite_store::{
-    SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
+use crate::search::store::{
+    CatalogStore, SearchStorage, SearchStore, SearchStoreError, search_maintenance_app_error,
 };
-use crate::state::AppStateLayout;
 
 const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
@@ -48,7 +47,7 @@ impl SearchProvider for CatalogMetadataProvider {
 }
 
 struct CatalogProjection {
-    store: SqliteSearchStore,
+    store: SearchStore,
     refresh: CatalogRefreshResult,
     stale_index: bool,
     refresh_lock_error: Option<String>,
@@ -64,17 +63,17 @@ struct CatalogProjectionState {
 
 #[derive(Clone)]
 pub(crate) struct CatalogMetadataProvider {
-    layout: AppStateLayout,
+    storage: SearchStorage,
     write_coordinator: LocalSearchWriteCoordinator,
 }
 
 impl CatalogMetadataProvider {
     pub(crate) fn with_write_coordinator(
-        layout: AppStateLayout,
+        storage: SearchStorage,
         write_coordinator: LocalSearchWriteCoordinator,
     ) -> Self {
         Self {
-            layout,
+            storage,
             write_coordinator,
         }
     }
@@ -139,25 +138,26 @@ impl CatalogMetadataProvider {
         &self,
         request: &SearchRequest,
         resolution: &CatalogResolution,
-    ) -> Result<CatalogProjection, SqliteSearchError> {
+    ) -> Result<CatalogProjection, SearchStoreError> {
         let catalog_fingerprint = CatalogSearchSnapshot::fingerprint_catalog(&resolution.catalog);
-        let store = SqliteSearchStore::open_workspace(&self.layout, &request.workspace_name)?;
-        let capabilities = store.capabilities();
+        let store = self.storage.open_workspace(&request.workspace_name)?;
         tracing::debug!(
             workspace = %request.workspace_name,
-            sqlite_version = %capabilities.sqlite_version,
-            fts5 = capabilities.fts5,
-            trigram = capabilities.trigram,
-            "using SQLite catalog search store"
+            backend = store.backend_name(),
+            "using catalog search store"
         );
-        let state =
-            Self::prepare_projection_state(request, resolution, &store, &catalog_fingerprint)?;
+        let state = Self::prepare_projection_state(
+            request,
+            resolution,
+            store.catalog(),
+            &catalog_fingerprint,
+        )?;
         tracing::debug!(
             workspace = %request.workspace_name,
             refreshed = state.refresh.refreshed,
             document_count = state.refresh.document_count,
             stale_index = state.stale_index,
-            "prepared SQLite catalog search projection"
+            "prepared catalog search projection"
         );
         Ok(CatalogProjection {
             store,
@@ -171,11 +171,11 @@ impl CatalogMetadataProvider {
     fn prepare_projection_state(
         request: &SearchRequest,
         resolution: &CatalogResolution,
-        store: &SqliteSearchStore,
+        store: &dyn CatalogStore,
         catalog_fingerprint: &str,
-    ) -> Result<CatalogProjectionState, SqliteSearchError> {
-        if store.catalog_projection_is_current(catalog_fingerprint)? {
-            let document_count = store.catalog_document_count()?;
+    ) -> Result<CatalogProjectionState, SearchStoreError> {
+        if store.projection_is_current(catalog_fingerprint)? {
+            let document_count = store.document_count()?;
             return Ok(CatalogProjectionState {
                 refresh: CatalogRefreshResult {
                     refreshed: false,
@@ -190,7 +190,7 @@ impl CatalogMetadataProvider {
         let snapshot = CatalogSearchSnapshot::from_catalog(&resolution.catalog);
         let expected_document_count = u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
         let index_snapshot = snapshot.index_snapshot();
-        match store.refresh_catalog_projection(&index_snapshot) {
+        match store.refresh_projection(&index_snapshot) {
             Ok(refresh) => Ok(CatalogProjectionState {
                 refresh,
                 stale_index: false,
@@ -201,9 +201,9 @@ impl CatalogMetadataProvider {
                 tracing::debug!(
                     workspace = %request.workspace_name,
                     error = %error,
-                    "using cached SQLite catalog search projection after refresh lock contention"
+                    "using cached catalog search projection after refresh lock contention"
                 );
-                let document_count = store.catalog_document_count()?;
+                let document_count = store.document_count()?;
                 Ok(CatalogProjectionState {
                     refresh: CatalogRefreshResult {
                         refreshed: false,
@@ -227,11 +227,14 @@ impl CatalogMetadataProvider {
         force: bool,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
         let snapshot = CatalogSearchSnapshot::from_catalog(&resolution.catalog).index_snapshot();
-        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
-            .map_err(|error| search_sqlite_app_error(&error))?;
+        let store = self
+            .storage
+            .open_workspace(workspace_name)
+            .map_err(|error| search_maintenance_app_error(&error))?;
         let result = store
-            .rebuild_catalog_projection(&snapshot, force)
-            .map_err(|error| search_sqlite_app_error(&error))?;
+            .catalog()
+            .rebuild_projection(&snapshot, force)
+            .map_err(|error| search_maintenance_app_error(&error))?;
         Ok(catalog_rebuild_provider_result(
             result.old_document_count,
             result.new_document_count,
@@ -251,36 +254,23 @@ impl CatalogMetadataProvider {
             )
             .into());
         }
-        match request.target {
-            SearchClearTarget::Workspace => {
-                let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
-                    .map_err(|error| search_sqlite_app_error(&error))?;
-                let result = store
-                    .clear_catalog_workspace()
-                    .map_err(|error| search_sqlite_app_error(&error))?;
-                Ok(SearchProviderClearOutcome {
-                    result: catalog_clear_provider_result(result.deleted_document_count),
-                    storage_cleanup: request.compact_after_clear.then(|| {
-                        let compaction = store.compact_after_clear();
-                        search_storage_cleanup_result(&compaction)
-                    }),
-                })
-            }
+        let store = self
+            .storage
+            .open_workspace(request.workspace_name)
+            .map_err(|error| search_maintenance_app_error(&error))?;
+        let result = match request.target {
+            SearchClearTarget::Workspace => store.catalog().clear_workspace(),
             SearchClearTarget::Source(source_name) => {
-                let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
-                    .map_err(|error| search_sqlite_app_error(&error))?;
-                let result = store
-                    .clear_catalog_source(source_name.as_str())
-                    .map_err(|error| search_sqlite_app_error(&error))?;
-                Ok(SearchProviderClearOutcome {
-                    result: catalog_clear_provider_result(result.deleted_document_count),
-                    storage_cleanup: request.compact_after_clear.then(|| {
-                        let compaction = store.compact_after_clear();
-                        search_storage_cleanup_result(&compaction)
-                    }),
-                })
+                store.catalog().clear_source(source_name.as_str())
             }
         }
+        .map_err(|error| search_maintenance_app_error(&error))?;
+        Ok(SearchProviderClearOutcome {
+            result: catalog_clear_provider_result(result.deleted_document_count),
+            storage_cleanup: request
+                .compact_after_clear
+                .then(|| store.compact_after_clear()),
+        })
     }
 }
 
@@ -337,56 +327,6 @@ pub(crate) fn catalog_clear_provider_result(
     }
 }
 
-fn search_storage_cleanup_result(
-    result: &SqliteSearchCompactionResult,
-) -> SearchStorageCleanupResult {
-    let (state, note) = match (
-        result.wal_checkpoint_truncate_completed,
-        result.vacuum_completed,
-    ) {
-        (true, true) => (
-            SearchMaintenanceState::Completed,
-            "local search storage cleanup completed",
-        ),
-        (true, false) | (false, true) => (
-            SearchMaintenanceState::Partial,
-            "local search storage cleanup partially completed",
-        ),
-        (false, false) => (
-            SearchMaintenanceState::Failed,
-            "local search storage cleanup did not complete",
-        ),
-    };
-    if state != SearchMaintenanceState::Completed {
-        tracing::warn!(
-            wal_checkpoint_truncate_completed = result.wal_checkpoint_truncate_completed,
-            vacuum_completed = result.vacuum_completed,
-            detail = %result.note,
-            "local search storage cleanup did not fully complete"
-        );
-    }
-    SearchStorageCleanupResult {
-        state,
-        note: note.to_string(),
-    }
-}
-
-fn search_sqlite_app_error(error: &SqliteSearchError) -> AppError {
-    if error.is_lock_contention() {
-        AppError::Unavailable(format!("search maintenance storage is busy: {error}"))
-    } else if error.is_storage_exhaustion() {
-        AppError::ResourceExhausted(format!("search maintenance storage is exhausted: {error}"))
-    } else if matches!(
-        error,
-        SqliteSearchError::UnsupportedCapability { .. }
-            | SqliteSearchError::UnsupportedSchemaVersion { .. }
-    ) {
-        AppError::FailedPrecondition(format!("search maintenance is not supported: {error}"))
-    } else {
-        AppError::Internal(format!("search maintenance storage failed: {error}"))
-    }
-}
-
 fn missing_cached_projection_failure(projection: &CatalogProjection) -> Option<ProviderFailure> {
     if !(projection.stale_index
         && projection.refresh.document_count == 0
@@ -397,7 +337,7 @@ fn missing_cached_projection_failure(projection: &CatalogProjection) -> Option<P
     Some(ProviderFailure {
         state: SearchProviderState::Error,
         note: format!(
-            "Catalog metadata search index is unavailable: refresh could not acquire the SQLite writer lock and no cached projection exists{}",
+            "Catalog metadata search index is unavailable: refresh could not acquire the search store writer lock and no cached projection exists{}",
             projection
                 .refresh_lock_error
                 .as_deref()
@@ -445,7 +385,7 @@ fn failed_sources_note(failed_source_names: &BTreeSet<String>) -> String {
 /// documents starves them: measured, a 50-document shared window holds 45 field
 /// documents and yields 7 distinct entries.
 struct EntryRetriever {
-    store: SqliteSearchStore,
+    store: SearchStore,
     limit: usize,
 }
 
@@ -457,7 +397,8 @@ impl Retriever for EntryRetriever {
     fn retrieve(&self, request: &SearchRequest) -> Result<RetrieverOutcome, RetrieverError> {
         let hits = self
             .store
-            .search_catalog(&request.terms, self.limit, CatalogDocumentClass::Entries)
+            .catalog()
+            .search(&request.terms, self.limit, CatalogDocumentClass::Entries)
             .map_err(|error| retriever_error(&error))?;
         let matches = hits
             .hits
@@ -478,7 +419,7 @@ impl Retriever for EntryRetriever {
 /// Ranks entries by their best-matching field, and carries the matching field
 /// names up as evidence for the entry that owns them.
 struct FieldRetriever {
-    store: SqliteSearchStore,
+    store: SearchStore,
     limit: usize,
 }
 
@@ -490,7 +431,8 @@ impl Retriever for FieldRetriever {
     fn retrieve(&self, request: &SearchRequest) -> Result<RetrieverOutcome, RetrieverError> {
         let hits = self
             .store
-            .search_catalog(&request.terms, self.limit, CatalogDocumentClass::Fields)
+            .catalog()
+            .search(&request.terms, self.limit, CatalogDocumentClass::Fields)
             .map_err(|error| retriever_error(&error))?;
         // Scoring reorders the lane, so an entry takes the position of its
         // best-scoring field rather than its first-retrieved one.
@@ -560,7 +502,7 @@ fn surface_id(hit: &CatalogSearchHit) -> Option<SearchSurfaceId> {
     })
 }
 
-fn retriever_error(error: &SqliteSearchError) -> RetrieverError {
+fn retriever_error(error: &SearchStoreError) -> RetrieverError {
     RetrieverError {
         note: error.to_string(),
     }
@@ -788,7 +730,7 @@ fn catalog_query_failure(error: &QueryManagerError) -> ProviderFailure {
     }
 }
 
-fn catalog_index_failure(error: &SqliteSearchError) -> ProviderFailure {
+fn catalog_index_failure(error: &SearchStoreError) -> ProviderFailure {
     ProviderFailure {
         state: SearchProviderState::Error,
         note: format!("catalog metadata search index is unavailable: {error}"),

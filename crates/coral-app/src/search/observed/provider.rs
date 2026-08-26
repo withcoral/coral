@@ -1,5 +1,6 @@
 //! Observed-values Universal Search provider.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bootstrap::AppError;
@@ -8,7 +9,7 @@ use crate::search::maintenance::{
     ObservedClearMaintenanceResult, ObservedDrainMaintenanceResult,
     ObservedRebuildMaintenanceResult, SearchClearTarget, SearchDataScope, SearchMaintenanceDetail,
     SearchMaintenanceResult, SearchMaintenanceState, SearchProviderClearOutcome,
-    SearchProviderClearRequest, SearchProviderRebuildRequest, SearchStorageCleanupResult,
+    SearchProviderClearRequest, SearchProviderRebuildRequest,
 };
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::ranking;
@@ -17,7 +18,7 @@ use crate::search::observed::sqlite_projection::{
     ObservedValuesSearchHits,
 };
 use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
-use crate::search::observed::sqlite_store::{ObservedValuesClearResult, SqliteObservedValuesStore};
+use crate::search::observed::sqlite_store::ObservedValuesClearResult;
 use crate::search::provider::{
     LocalSearchWriteCoordinator, PreparedRetrievers, ProviderFailure, ProviderSearchOutcome,
     Retriever, RetrieverError, RetrieverOutcome, SearchExecutionContext, SearchProvider,
@@ -27,9 +28,7 @@ use crate::search::result::{
     SearchProviderKind, SearchProviderState, SearchRequest, SearchSurfaceId, SearchSurfaceKind,
     SurfaceMatch,
 };
-use crate::search::sqlite_store::SqliteSearchCompactionResult;
-use crate::search::sqlite_store::SqliteSearchError;
-use crate::state::AppStateLayout;
+use crate::search::store::{ObservedValuesStore, SearchStoreError, search_maintenance_app_error};
 use crate::workspaces::WorkspaceName;
 
 const OBSERVED_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
@@ -41,17 +40,17 @@ const OBSERVED_REBUILD_DRAIN_MS: u64 = 1_000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValuesProvider {
-    store: SqliteObservedValuesStore,
+    store: Arc<dyn ObservedValuesStore>,
     write_coordinator: LocalSearchWriteCoordinator,
 }
 
 impl ObservedValuesProvider {
-    pub(crate) fn with_write_coordinator(
-        layout: AppStateLayout,
+    pub(crate) fn from_store(
+        store: Arc<dyn ObservedValuesStore>,
         write_coordinator: LocalSearchWriteCoordinator,
     ) -> Self {
         Self {
-            store: SqliteObservedValuesStore::new(layout),
+            store,
             write_coordinator,
         }
     }
@@ -108,7 +107,7 @@ impl ObservedValuesProvider {
         let result = self
             .store
             .drain_queue(workspace_name, budget)
-            .map_err(|error| observed_sqlite_app_error(&error))?;
+            .map_err(|error| search_maintenance_app_error(&error))?;
         log_storage_drops(workspace_name, &result);
         log_drain_maintenance(workspace_name, &result);
         Ok(observed_drain_provider_result(&result))
@@ -176,13 +175,13 @@ impl ObservedValuesProvider {
                     Duration::from_millis(OBSERVED_REBUILD_DRAIN_MS),
                 ),
             )
-            .map_err(|error| observed_sqlite_app_error(&error))?;
+            .map_err(|error| search_maintenance_app_error(&error))?;
         log_storage_drops(request.workspace_name, &drain);
         log_drain_maintenance(request.workspace_name, &drain);
         let result = self
             .store
             .rebuild_fts(request.workspace_name, policy)
-            .map_err(|error| observed_sqlite_app_error(&error))?;
+            .map_err(|error| search_maintenance_app_error(&error))?;
         Ok(observed_rebuild_provider_result(
             &drain,
             policy,
@@ -209,20 +208,20 @@ impl ObservedValuesProvider {
             SearchClearTarget::Workspace => self
                 .store
                 .clear_workspace_and_advance_epoch(request.workspace_name)
-                .map_err(|error| observed_sqlite_app_error(&error))?,
+                .map_err(|error| search_maintenance_app_error(&error))?,
             SearchClearTarget::Source(source_name) => self
                 .store
                 .clear_source_and_advance_epoch(request.workspace_name, source_name.as_str())
-                .map_err(|error| observed_sqlite_app_error(&error))?,
+                .map_err(|error| search_maintenance_app_error(&error))?,
         };
         Ok(SearchProviderClearOutcome {
             result: observed_clear_provider_result(result),
             storage_cleanup: if request.compact_after_clear {
-                let compaction = self
-                    .store
-                    .compact_after_clear(request.workspace_name)
-                    .map_err(|error| observed_sqlite_app_error(&error))?;
-                Some(observed_storage_cleanup_result(&compaction))
+                Some(
+                    self.store
+                        .compact_after_clear(request.workspace_name)
+                        .map_err(|error| search_maintenance_app_error(&error))?,
+                )
             } else {
                 None
             },
@@ -514,7 +513,7 @@ fn observed_policy_load_failure_note(policy: &ObservedValuesRetrievalPolicy) -> 
     ))
 }
 
-fn observed_error_outcome(error: &SqliteSearchError) -> ProviderSearchOutcome {
+fn observed_error_outcome(error: &SearchStoreError) -> ProviderSearchOutcome {
     ProviderSearchOutcome {
         rankings: Vec::new(),
         status: ProviderStatus {
@@ -765,56 +764,6 @@ fn log_drain_maintenance(workspace_name: &WorkspaceName, result: &ObservedValues
             budget_exhausted = result.budget_exhausted,
             "observed-value queue drain ran storage maintenance"
         );
-    }
-}
-
-fn observed_storage_cleanup_result(
-    result: &SqliteSearchCompactionResult,
-) -> SearchStorageCleanupResult {
-    let (state, note) = match (
-        result.wal_checkpoint_truncate_completed,
-        result.vacuum_completed,
-    ) {
-        (true, true) => (
-            SearchMaintenanceState::Completed,
-            "local search storage cleanup completed",
-        ),
-        (true, false) | (false, true) => (
-            SearchMaintenanceState::Partial,
-            "local search storage cleanup partially completed",
-        ),
-        (false, false) => (
-            SearchMaintenanceState::Failed,
-            "local search storage cleanup did not complete",
-        ),
-    };
-    if state != SearchMaintenanceState::Completed {
-        tracing::warn!(
-            wal_checkpoint_truncate_completed = result.wal_checkpoint_truncate_completed,
-            vacuum_completed = result.vacuum_completed,
-            detail = %result.note,
-            "local search storage cleanup did not fully complete"
-        );
-    }
-    SearchStorageCleanupResult {
-        state,
-        note: note.to_string(),
-    }
-}
-
-fn observed_sqlite_app_error(error: &SqliteSearchError) -> AppError {
-    if error.is_lock_contention() {
-        AppError::Unavailable(format!("search maintenance storage is busy: {error}"))
-    } else if error.is_storage_exhaustion() {
-        AppError::ResourceExhausted(format!("search maintenance storage is exhausted: {error}"))
-    } else if matches!(
-        error,
-        SqliteSearchError::UnsupportedCapability { .. }
-            | SqliteSearchError::UnsupportedSchemaVersion { .. }
-    ) {
-        AppError::FailedPrecondition(format!("search maintenance is not supported: {error}"))
-    } else {
-        AppError::Internal(format!("search maintenance storage failed: {error}"))
     }
 }
 

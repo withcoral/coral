@@ -20,7 +20,6 @@ use crate::search::maintenance::{
     DrainSearchQueueResponse, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
     SearchClearTarget, SearchDataScope, SearchIndexProvider, SearchMaintenanceResult,
     SearchMaintenanceState, SearchProviderClearRequest, SearchProviderRebuildRequest,
-    SearchStorageCleanupResult,
 };
 use crate::search::observed::provider::{ObservedValuesProvider, observed_clear_provider_result};
 use crate::search::observed::{
@@ -33,9 +32,7 @@ use crate::search::provider::{
 use crate::search::result::{
     SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse,
 };
-use crate::search::sqlite_store::{
-    SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
-};
+use crate::search::store::{SearchStorage, search_maintenance_app_error};
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
@@ -54,7 +51,7 @@ pub(crate) struct SearchManager {
     engine: UniversalSearchEngine,
     workspaces: WorkspaceManager,
     lifecycle_lock: WorkspaceLifecycleLock,
-    layout: AppStateLayout,
+    storage: SearchStorage,
 }
 
 const DEFAULT_MANUAL_DRAIN_BUDGET_MS: u32 = 1_000;
@@ -88,6 +85,7 @@ impl SearchManager {
         lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
         Self::with_diagnostic_reporter(
+            SearchStorage::sqlite(layout.clone()),
             layout,
             config_store,
             workspace_manager,
@@ -98,7 +96,12 @@ impl SearchManager {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "server bootstrap wires every collaborator once; a builder would only move the same list"
+    )]
     pub(crate) fn with_diagnostic_reporter(
+        storage: SearchStorage,
         layout: AppStateLayout,
         config_store: &ConfigStore,
         workspace_manager: WorkspaceManager,
@@ -109,16 +112,13 @@ impl SearchManager {
     ) -> Self {
         let write_coordinator = LocalSearchWriteCoordinator::default();
         let catalog = CatalogMetadataProvider::with_write_coordinator(
-            layout.clone(),
+            storage.clone(),
             write_coordinator.clone(),
         );
         let observed =
-            ObservedValuesProvider::with_write_coordinator(layout.clone(), write_coordinator);
-        let observed_scope_loader = ObservedValuesLiveScopeLoader::new(
-            layout.clone(),
-            config_store.clone(),
-            diagnostic_reporter,
-        );
+            ObservedValuesProvider::from_store(storage.observed_values(), write_coordinator);
+        let observed_scope_loader =
+            ObservedValuesLiveScopeLoader::new(layout, config_store.clone(), diagnostic_reporter);
         Self {
             catalog_discovery,
             catalog: catalog.clone(),
@@ -131,7 +131,7 @@ impl SearchManager {
             )),
             workspaces: workspace_manager,
             lifecycle_lock,
-            layout,
+            storage,
         }
     }
 
@@ -414,18 +414,19 @@ impl SearchManager {
         workspace_name: &WorkspaceName,
         source_name: &crate::sources::SourceName,
     ) -> Result<ClearSearchDataResponse, SearchManagerError> {
-        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
-            .map_err(|error| search_clear_sqlite_app_error(&error))?;
-        let (catalog, observed) = store
+        let store = self
+            .storage
+            .open_workspace(workspace_name)
+            .map_err(|error| search_maintenance_app_error(&error))?;
+        let cleared = store
             .clear_source_all(source_name.as_str())
-            .map_err(|error| search_clear_sqlite_app_error(&error))?;
-        let compaction = store.compact_after_clear();
+            .map_err(|error| search_maintenance_app_error(&error))?;
         Ok(ClearSearchDataResponse {
             results: vec![
-                catalog_clear_provider_result(catalog.deleted_document_count),
-                observed_clear_provider_result(observed),
+                catalog_clear_provider_result(cleared.catalog.deleted_document_count),
+                observed_clear_provider_result(cleared.observed),
             ],
-            storage_cleanup: search_storage_cleanup_result(&compaction),
+            storage_cleanup: store.compact_after_clear(),
         })
     }
 
@@ -433,18 +434,19 @@ impl SearchManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<ClearSearchDataResponse, SearchManagerError> {
-        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
-            .map_err(|error| search_clear_sqlite_app_error(&error))?;
-        let (catalog, observed) = store
+        let store = self
+            .storage
+            .open_workspace(workspace_name)
+            .map_err(|error| search_maintenance_app_error(&error))?;
+        let cleared = store
             .clear_workspace_all()
-            .map_err(|error| search_clear_sqlite_app_error(&error))?;
-        let compaction = store.compact_after_clear();
+            .map_err(|error| search_maintenance_app_error(&error))?;
         Ok(ClearSearchDataResponse {
             results: vec![
-                catalog_clear_provider_result(catalog.deleted_document_count),
-                observed_clear_provider_result(observed),
+                catalog_clear_provider_result(cleared.catalog.deleted_document_count),
+                observed_clear_provider_result(cleared.observed),
             ],
-            storage_cleanup: search_storage_cleanup_result(&compaction),
+            storage_cleanup: store.compact_after_clear(),
         })
     }
 
@@ -765,56 +767,6 @@ fn observed_values_search_disabled_maintenance_result() -> SearchMaintenanceResu
 fn search_manager_error_message(error: &SearchManagerError) -> String {
     match error {
         SearchManagerError::App(error) => error.to_string(),
-    }
-}
-
-fn search_clear_sqlite_app_error(error: &SqliteSearchError) -> AppError {
-    if error.is_lock_contention() {
-        AppError::Unavailable(format!("search maintenance storage is busy: {error}"))
-    } else if error.is_storage_exhaustion() {
-        AppError::ResourceExhausted(format!("search maintenance storage is exhausted: {error}"))
-    } else if matches!(
-        error,
-        SqliteSearchError::UnsupportedCapability { .. }
-            | SqliteSearchError::UnsupportedSchemaVersion { .. }
-    ) {
-        AppError::FailedPrecondition(format!("search maintenance is not supported: {error}"))
-    } else {
-        AppError::Internal(format!("search maintenance storage failed: {error}"))
-    }
-}
-
-fn search_storage_cleanup_result(
-    result: &SqliteSearchCompactionResult,
-) -> SearchStorageCleanupResult {
-    let (state, note) = match (
-        result.wal_checkpoint_truncate_completed,
-        result.vacuum_completed,
-    ) {
-        (true, true) => (
-            SearchMaintenanceState::Completed,
-            "local search storage cleanup completed",
-        ),
-        (true, false) | (false, true) => (
-            SearchMaintenanceState::Partial,
-            "local search storage cleanup partially completed",
-        ),
-        (false, false) => (
-            SearchMaintenanceState::Failed,
-            "local search storage cleanup did not complete",
-        ),
-    };
-    if state != SearchMaintenanceState::Completed {
-        tracing::warn!(
-            wal_checkpoint_truncate_completed = result.wal_checkpoint_truncate_completed,
-            vacuum_completed = result.vacuum_completed,
-            detail = %result.note,
-            "local search storage cleanup did not fully complete"
-        );
-    }
-    SearchStorageCleanupResult {
-        state,
-        note: note.to_string(),
     }
 }
 
