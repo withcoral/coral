@@ -262,7 +262,6 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	  -- --ignored; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p xtask \
 	  --features admin --bin xtask \
-	  postgres_contract \
 	  -- --ignored
 
 # ----------------------------------------------------------------------------

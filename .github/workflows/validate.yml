@@ -85,9 +85,13 @@ jobs:
               - 'crates/coral-app/src/state/db/**'
               - 'crates/coral-app/tests/postgres_database_tests.rs'
               # The xtask recovery contracts run in this job too, against the
-              # same service database, so changes to the recovery write path
-              # have to trigger it.
-              - 'xtask/**'
+              # same service database, so changes to the recovery code and the
+              # files it links have to trigger it — but not every xtask edit:
+              # the docs generator or perf checks cannot affect the contracts.
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/env.rs'
+              - 'xtask/src/admin.rs'
             release_workflow:
               - '.github/workflows/release.yml'
             install-script:

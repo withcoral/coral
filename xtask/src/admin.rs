@@ -18,6 +18,7 @@
 //! the dependency edges it needs. No shipped Coral binary depends on `xtask` at
 //! all, so none of this reaches a released artifact.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -95,25 +96,39 @@ const WRITE_CONTENTION_HINT: &str = "the state database is held by another proce
      the running server; nothing was written, so retry, or stop the server for the moment the \
      repair takes";
 
+/// Explains a read-only open refused by the WAL an unclean server exit left.
+const WAL_READONLY_HINT: &str = "the state database has a `-wal` sidecar that a read-only \
+     connection cannot initialise without its `-shm`, which is the state an uncleanly stopped \
+     server leaves behind; start the server once so it recovers its own WAL, then retry";
+
 /// Whether the driver is reporting that another process holds the lock.
 ///
 /// `SQLite` reports contention as `SQLITE_BUSY` (5) or `SQLITE_LOCKED` (6),
 /// either of which may arrive with an extended code in its high bits; Postgres
-/// reports it as `lock_not_available` or as the `query_canceled` that
-/// `lock_timeout` raises. Anything else — a read-only mount, a full disk, a
-/// failing volume — is a different problem with different advice.
+/// reports it as the `lock_not_available` that the connection's `lock_timeout`
+/// raises, or as `deadlock_detected`. Anything else — a permissions fault, a
+/// read-only mount, a full disk, a failing volume — is a different problem
+/// with different advice. The numeric low-byte rule applies only to `SQLite`
+/// errors: Postgres SQLSTATEs are often all digits too, and `42501`
+/// (`insufficient_privilege`) has low byte 5, so masking them here would hand
+/// a permissions fault the stop-the-server advice this function exists to
+/// withhold.
 fn is_write_contention(error: &sqlx::Error) -> bool {
-    let Some(code) = error
-        .as_database_error()
-        .and_then(sqlx::error::DatabaseError::code)
-    else {
+    let Some(database_error) = error.as_database_error() else {
         return false;
     };
-    if matches!(code.as_ref(), "55P03" | "57014") {
+    let Some(code) = database_error.code() else {
+        return false;
+    };
+    if matches!(code.as_ref(), "55P03" | "40P01") {
         return true;
     }
-    code.parse::<i32>()
-        .is_ok_and(|code| matches!(code & 0xFF, 5 | 6))
+    database_error
+        .try_downcast_ref::<sqlx::sqlite::SqliteError>()
+        .is_some()
+        && code
+            .parse::<i32>()
+            .is_ok_and(|code| matches!(code & 0xFF, 5 | 6))
 }
 
 /// Adds [`WRITE_CONTENTION_HINT`], but only when the failure really is contention.
@@ -279,7 +294,34 @@ pub(crate) fn rebind_issuer(
     from: &str,
     to: &str,
 ) -> Result<String> {
-    rebind_issuer_on(&resolve_database(config_dir_override)?, from, to)
+    let config_dir = resolve_config_dir(config_dir_override)?;
+    let report = rebind_issuer_on(&resolve_database_in(&config_dir)?, from, to)?;
+    Ok(warn_on_issuer_mismatch(
+        report,
+        configured_issuer(&config_dir)?.as_deref(),
+        to,
+    ))
+}
+
+/// Appends a lockout warning when `--to` differs from the configured issuer.
+///
+/// A login is accepted only when the directory row's issuer equals
+/// `[auth.provider].issuer` byte for byte, so a rebind whose target differs —
+/// a trailing slash copied from a provider console is the classic case — reads
+/// as a success while locking out every user it touched. The rebind itself is
+/// still performed: rebinding before the config is updated is a legitimate
+/// order of operations, so this warns rather than refuses.
+fn warn_on_issuer_mismatch(report: String, configured_issuer: Option<&str>, to: &str) -> String {
+    match configured_issuer {
+        Some(configured) if configured != to => format!(
+            "{report}warning: this deployment's config.toml sets [auth.provider].issuer = \
+             `{configured}`, and a login succeeds only when a user's issuer matches it byte for \
+             byte; users on `{to}` cannot sign in until the two agree. If the provider now \
+             publishes `{to}`, update config.toml to match; if `{configured}` is correct, re-run \
+             the rebind with `--to {configured}`\n"
+        ),
+        _ => report,
+    }
 }
 
 // The `*_on` forms below take an already-resolved database so the Postgres
@@ -349,6 +391,22 @@ fn rebind_issuer_on(database: &RecoveryDatabase, from: &str, to: &str) -> Result
     if from == to {
         bail!("--from and --to name the same issuer `{from}`, so there is nothing to rebind");
     }
+    // Mirrors the server's `[auth.provider].issuer` rule: an issuer must be
+    // the canonical URL the provider publishes (the parser appends a slash
+    // only to a root-path URL, so both spellings of a root issuer pass). A
+    // `--to` no configuration could ever carry would lock out every rebound
+    // user, so it is refused before anything is written. `--from` is not
+    // checked — it names whatever the database already holds.
+    let canonical = url::Url::parse(to)
+        .ok()
+        .filter(|parsed| to == parsed.as_str() || format!("{to}/") == parsed.as_str());
+    if canonical.is_none() {
+        bail!(
+            "--to must be the issuer URL exactly as the provider publishes it; `{to}` is not a \
+             canonical URL, so `[auth.provider].issuer` can never match it and every rebound user \
+             would be locked out"
+        );
+    }
     let rebind = block_on(async {
         let connection = open(database, Access::Writable).await?;
         rebind(&connection, from, to).await
@@ -361,7 +419,9 @@ fn rebind_issuer_on(database: &RecoveryDatabase, from: &str, to: &str) -> Result
         ),
         Rebind::AlreadyRebound(bound) => format!(
             "no user is bound to issuer `{from}`, and {bound} user(s) are already bound to \
-             `{to}`; nothing was written\n"
+             `{to}`; nothing was written. A completed rebind looks exactly like this — but so \
+             does a mistyped `--from`, so if users are still locked out, run `list-users` to see \
+             the issuers this state database actually holds\n"
         ),
     })
 }
@@ -389,11 +449,31 @@ enum ConfiguredDatabase {
     Postgres { url_env: String },
 }
 
-/// Top-level `config.toml` shape, narrowed to the section recovery needs.
+/// Top-level `config.toml` shape, narrowed to the sections recovery needs.
 #[derive(Debug, Deserialize)]
 struct PersistedConfig {
     #[serde(default)]
     database: Option<RawDatabaseSection>,
+    #[serde(default)]
+    auth: Option<RawAuthSection>,
+}
+
+/// The `[auth]` slice recovery reads to cross-check a rebind target.
+///
+/// Recovery never validates this section — that is the server's job — it only
+/// wants the configured issuer, because a login is accepted solely when the
+/// directory row's issuer equals it byte for byte.
+#[derive(Debug, Deserialize)]
+struct RawAuthSection {
+    #[serde(default)]
+    provider: Option<RawProviderSection>,
+}
+
+/// The `[auth.provider]` slice recovery reads.
+#[derive(Debug, Deserialize)]
+struct RawProviderSection {
+    #[serde(default)]
+    issuer: Option<String>,
 }
 
 /// The `[database]` section exactly as written, before validation.
@@ -419,8 +499,12 @@ enum PersistedBackend {
 
 /// Resolves the state database the server would open on this host.
 fn resolve_database(config_dir_override: Option<PathBuf>) -> Result<RecoveryDatabase> {
-    let config_dir = resolve_config_dir(config_dir_override)?;
-    match configured_database(&config_dir)? {
+    resolve_database_in(&resolve_config_dir(config_dir_override)?)
+}
+
+/// Resolves the state database configured in one already-picked state directory.
+fn resolve_database_in(config_dir: &Path) -> Result<RecoveryDatabase> {
+    match configured_database(config_dir)? {
         ConfiguredDatabase::Sqlite { path } => Ok(RecoveryDatabase::Sqlite { path }),
         ConfiguredDatabase::Postgres { url_env } => {
             let url = crate::env::required_var(&url_env).with_context(|| {
@@ -454,12 +538,8 @@ fn resolve_config_dir(config_dir_override: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 /// Reads `CORAL_CONFIG_DIR` as an OS string, exactly as the server does.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "recovery must accept a non-UTF-8 CORAL_CONFIG_DIR exactly as the server does, and xtask's env module exposes no optional OS-string accessor"
-)]
 fn config_dir_override_from_env() -> Option<PathBuf> {
-    std::env::var_os(CORAL_CONFIG_DIR).map(PathBuf::from)
+    crate::env::optional_var_os(CORAL_CONFIG_DIR).map(PathBuf::from)
 }
 
 /// Applies the server's `[database]` rules to a state directory's `config.toml`.
@@ -518,6 +598,28 @@ fn configured_database(config_dir: &Path) -> Result<ConfiguredDatabase> {
     }
 }
 
+/// Reads the `[auth.provider].issuer` a state directory's `config.toml` holds.
+///
+/// Absent means the deployment carries no issuer to cross-check against — no
+/// config file, no `[auth]`, or no issuer key — never that the check failed.
+fn configured_issuer(config_dir: &Path) -> Result<Option<String>> {
+    let config_file = config_dir.join("config.toml");
+    if !config_file
+        .try_exists()
+        .with_context(|| format!("read {}", config_file.display()))?
+    {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&config_file)
+        .with_context(|| format!("read {}", config_file.display()))?;
+    let persisted: PersistedConfig =
+        toml::from_str(&raw).with_context(|| format!("parse {}", config_file.display()))?;
+    Ok(persisted
+        .auth
+        .and_then(|auth| auth.provider)
+        .and_then(|provider| provider.issuer))
+}
+
 // -- opening the existing database -------------------------------------------
 
 /// A handle on state the server owns.
@@ -574,6 +676,19 @@ async fn open(database: &RecoveryDatabase, access: Access) -> Result<RecoveryCon
                 .max_connections(1)
                 .connect_with(options)
                 .await
+                .map_err(|error| {
+                    // An uncleanly stopped server — a crash, an OOM-kill, a
+                    // host reboot — leaves the `-wal` file this doc comment
+                    // names, and that is precisely the state an operator
+                    // reaching for recovery is likely to find; name the way
+                    // out instead of surfacing a bare driver error.
+                    let error = anyhow::Error::new(error);
+                    if access == Access::ReadOnly && wal_sidecar(path).exists() {
+                        error.context(WAL_READONLY_HINT)
+                    } else {
+                        error
+                    }
+                })
                 .with_context(|| format!("open the state database at {}", path.display()))?;
             Ok(RecoveryConnection::Sqlite(pool))
         }
@@ -594,6 +709,13 @@ async fn open(database: &RecoveryDatabase, access: Access) -> Result<RecoveryCon
             Ok(RecoveryConnection::Postgres(pool))
         }
     }
+}
+
+/// The `-wal` sidecar `SQLite` writes next to a WAL-mode database file.
+fn wal_sidecar(path: &Path) -> PathBuf {
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push("-wal");
+    PathBuf::from(sidecar)
 }
 
 /// Builds Postgres connect options under the server's transport rules.
@@ -754,8 +876,11 @@ const MEMBERSHIP_ROLE_SQL: &str =
     "SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?";
 
 /// Promotes an existing membership, leaving its creation stamp alone.
-const PROMOTE_MEMBER_SQL: &str =
-    "UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?";
+///
+/// `RETURNING` names the row it moved for the same reason the rebind counts
+/// its rows: a report of a write that matched nothing would be a lie.
+const PROMOTE_MEMBER_SQL: &str = "UPDATE workspace_members SET role = ? WHERE workspace_id = ? \
+     AND user_id = ? RETURNING user_id";
 
 /// Adds an owner membership the workspace does not have.
 const ADD_OWNER_SQL: &str = "INSERT INTO workspace_members (workspace_id, user_id, role, \
@@ -910,14 +1035,26 @@ where
     let appointment = match existing {
         Some((role,)) if role == OWNER_ROLE => Appointment::AlreadyOwner,
         Some((role,)) => {
-            sqlx::query(statement(PROMOTE_MEMBER_SQL, dialect))
+            let promoted: Vec<(String,)> = sqlx::query_as(statement(PROMOTE_MEMBER_SQL, dialect))
                 .bind(OWNER_ROLE)
                 .bind(workspace_id)
                 .bind(user_id)
-                .execute(&mut *transaction)
+                .fetch_all(&mut *transaction)
                 .await
                 .hint_write_contention()
                 .context("promote the existing membership")?;
+            // On Postgres the SELECT above takes no row lock, so a concurrent
+            // removal can commit between it and this UPDATE; reporting a
+            // promotion that moved no row would tell the operator a repair
+            // landed that did not. `SQLite`'s `BEGIN IMMEDIATE` serialises the
+            // whole transaction, so this fires only on Postgres.
+            if promoted.is_empty() {
+                bail!(
+                    "the membership of {user_id} in workspace `{workspace_id}` was removed by \
+                     another writer while this repair ran; nothing was written, so re-run the \
+                     repair"
+                );
+            }
             Appointment::Promoted { from: role }
         }
         None => {
@@ -1168,13 +1305,40 @@ fn timestamp(unix_nanos: i64) -> String {
     DateTime::<Utc>::from_timestamp_nanos(unix_nanos).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+/// Escapes control characters so a stored value cannot forge or clear a line.
+///
+/// Workspace names and provider subjects are caller-chosen strings the server
+/// does not screen for control characters, so a value with an embedded newline
+/// would print a second, forged row — concealing the genuinely broken row this
+/// listing exists to surface — and an ESC sequence could rewrite the line on
+/// the operator's terminal. Escaping in the renderer keeps one stored row one
+/// printed line whatever the database holds.
+fn sanitize_cell(cell: &str) -> Cow<'_, str> {
+    if !cell.chars().any(char::is_control) {
+        return Cow::Borrowed(cell);
+    }
+    let mut escaped = String::with_capacity(cell.len());
+    for character in cell.chars() {
+        if character.is_control() {
+            escaped.extend(character.escape_debug());
+        } else {
+            escaped.push(character);
+        }
+    }
+    Cow::Owned(escaped)
+}
+
 /// Renders headers and rows as a column-aligned table.
 fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let rows: Vec<Vec<Cow<'_, str>>> = rows
+        .iter()
+        .map(|row| row.iter().map(|cell| sanitize_cell(cell)).collect())
+        .collect();
     let mut widths: Vec<usize> = headers
         .iter()
         .map(|header| header.chars().count())
         .collect();
-    for row in rows {
+    for row in &rows {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
         }
@@ -1182,8 +1346,8 @@ fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
 
     let mut rendered = String::new();
     push_row(&mut rendered, &widths, headers.iter().copied());
-    for row in rows {
-        push_row(&mut rendered, &widths, row.iter().map(String::as_str));
+    for row in &rows {
+        push_row(&mut rendered, &widths, row.iter().map(Cow::as_ref));
     }
     rendered
 }
@@ -1266,12 +1430,74 @@ mod tests {
     ///
     /// It is hand-copied from `coral-app`'s crate-private
     /// `identity::LOCAL_PRINCIPAL_ID`, and has already been renamed once
-    /// (`local` to `coral:local`). Pinning it here turns the next rename into a
-    /// failing test rather than a listing that silently reports every
-    /// local-owned workspace as human-owned.
+    /// (`local` to `coral:local`). Reading `coral-app`'s source the way the
+    /// fixtures read its migrations turns the next rename there into a failing
+    /// test here, rather than a listing that silently reports every
+    /// local-owned workspace as human-owned. Asserting the constant against a
+    /// re-typed literal would not do that: both copies live in this file, so
+    /// only the real source can witness a rename.
     #[test]
     fn local_principal_id_matches_the_app_identity_literal() {
-        assert_eq!(LOCAL_PRINCIPAL_ID, "coral:local");
+        let identity_source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../crates/coral-app/src/identity/mod.rs"
+        ));
+        let pinned = format!("const LOCAL_PRINCIPAL_ID: &str = \"{LOCAL_PRINCIPAL_ID}\";");
+        assert!(
+            identity_source.contains(&pinned),
+            "coral-app's identity::LOCAL_PRINCIPAL_ID no longer reads `{pinned}`; update \
+             xtask's hand-copy and its fixtures to match"
+        );
+    }
+
+    /// The server rules `configured_database`, `resolve_config_dir`, and
+    /// `postgres_connect_options` hand-copy, pinned against the sources they
+    /// copy from.
+    ///
+    /// xtask cannot depend on `coral-app`, so the `[database]` parsing, the
+    /// default state filename, and the remote-TLS refusal are reimplementations
+    /// with no dependency edge. This pin makes the copy loud: when a rule or
+    /// its error string moves server-side, this fails instead of recovery
+    /// resolving a different database — or rejecting a config the server
+    /// accepts — mid-incident.
+    #[test]
+    fn database_resolution_rules_match_the_app_sources() {
+        let config_source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../crates/coral-app/src/state/db/config.rs"
+        ));
+        let layout_source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../crates/coral-app/src/state/layout.rs"
+        ));
+        let coral_db_source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../crates/coral-app/src/state/db/coral_db.rs"
+        ));
+
+        for pinned in [
+            "unsupported [database].{field} configuration key",
+            "[database].backend is required when [database] is present",
+            "database backend 'sqlite' does not support [database].url_env",
+            "database backend 'postgres' does not support [database].path",
+            "database backend 'postgres' requires [database].url_env",
+        ] {
+            assert!(
+                config_source.contains(pinned),
+                "coral-app's state/db/config.rs no longer carries `{pinned}`; update \
+                 configured_database's copy of the rule to match the server"
+            );
+        }
+        assert!(
+            layout_source.contains("self.config_dir.join(\"coral.db\")"),
+            "coral-app's state/layout.rs no longer derives the default database file as \
+             `coral.db` under the config dir; update configured_database's default to match"
+        );
+        assert!(
+            coral_db_source.contains("remote Postgres database URLs must set sslmode=verify-full"),
+            "coral-app's state/db/coral_db.rs no longer refuses remote URLs without \
+             sslmode=verify-full; update postgres_connect_options to match the server"
+        );
     }
 
     #[test]
@@ -1803,6 +2029,89 @@ mod tests {
         );
     }
 
+    /// A `--to` no `[auth.provider].issuer` could ever carry is refused before
+    /// the database is even opened: every rebound user would be locked out.
+    #[test]
+    fn rebind_issuer_refuses_a_target_no_configuration_can_carry() {
+        let database = RecoveryDatabase::Sqlite {
+            path: PathBuf::from("never-opened.db"),
+        };
+
+        for target in ["new-idp.example.com", "", "https://Mixed.Case.Example"] {
+            let error = super::rebind_issuer_on(&database, ISSUER, target)
+                .expect_err("a non-canonical --to must be refused");
+            assert!(
+                format!("{error:#}").contains("not a canonical URL"),
+                "unexpected error for `{target}`: {error:#}"
+            );
+        }
+    }
+
+    /// A stored value with control characters cannot forge or clear a listing
+    /// line.
+    ///
+    /// Workspace names and provider subjects reach the renderer unscreened, so
+    /// a name carrying a newline could print a second, forged row and hide the
+    /// genuinely broken one. This asserts on the raw rendering: the collapsed
+    /// `row_for` helper the other rendering tests use cannot see the
+    /// difference.
+    #[test]
+    fn render_table_escapes_control_characters_instead_of_printing_them() {
+        let rendered = super::render_table(
+            &["WORKSPACE", "OWNERS"],
+            &[vec![
+                "decoy\nforged  9  9  human-owned".to_string(),
+                "1".to_string(),
+            ]],
+        );
+        assert_eq!(
+            rendered.lines().count(),
+            2,
+            "one stored row must stay one printed line: {rendered}"
+        );
+        assert!(
+            rendered.contains("decoy\\nforged"),
+            "the newline must render escaped: {rendered}"
+        );
+
+        let rendered = super::render_table(&["A"], &[vec!["\u{1b}[2Kwiped".to_string()]]);
+        assert!(
+            rendered.contains("\\u{1b}[2Kwiped"),
+            "the ESC must render escaped: {rendered}"
+        );
+    }
+
+    /// A rebind whose target differs from the configured issuer still rebinds,
+    /// but warns: logins compare the two byte for byte, so silence would
+    /// report a lockout as a success.
+    #[test]
+    fn mutation_sqlite_rebind_issuer_warns_when_the_configured_issuer_differs() {
+        let (_temp, config_dir) = state_dir(Migrations::Current);
+        seed(&config_dir);
+        write_config(
+            &config_dir,
+            &format!("[auth.provider]\nissuer = \"{ISSUER}\"\n"),
+        );
+
+        let report = rebind_issuer(Some(config_dir.clone()), ISSUER, RENAMED_ISSUER)
+            .expect("rebind the issuer");
+        assert!(
+            report.contains("rebound 2 user(s)"),
+            "the mismatch must warn, not refuse: {report}"
+        );
+        assert!(
+            report.contains("warning: this deployment's config.toml sets [auth.provider].issuer"),
+            "expected a lockout warning alongside the report: {report}"
+        );
+
+        let report = rebind_issuer(Some(config_dir), RENAMED_ISSUER, ISSUER)
+            .expect("rebind back to the configured issuer");
+        assert!(
+            !report.contains("warning:"),
+            "no warning is owed when --to matches the configured issuer: {report}"
+        );
+    }
+
     /// The local principal is refused from either direction, and a database
     /// that binds it to a human issuer does not smuggle it through the rebind.
     /// A rerun of a completed rebind reports itself as one rather than failing.
@@ -2067,20 +2376,19 @@ mod tests {
     // These run in CI. `make postgres-tests` carries a third leg beside its two
     // `-p coral-app` ones:
     //   CORAL_TEST_POSTGRES_URL=... cargo test --locked -p xtask \
-    //     --features admin --bin xtask postgres_contract -- --ignored
+    //     --features admin --bin xtask -- --ignored
     // and the `postgres-database-tests` job, which invokes that target against
-    // its Postgres service, now lists `xtask/**` among the paths that trigger
-    // it, so editing this file schedules the job that runs these contracts.
+    // its Postgres service, lists this module's files among the paths that
+    // trigger it, so editing this file schedules the job that runs these
+    // contracts.
     //
-    // Every name below MUST carry the literal `postgres_contract`: that is the
-    // filter the xtask leg selects on, and it is the only selector that reaches
-    // these tests. The `contract_on_postgres` half of each name is a naming
-    // convention shared with the coral-app suite, NOT a second selector — the
-    // coral-app leg is `-p coral-app` and can never select a test in this
-    // binary. So a sixth contract named `..._contract_on_postgres_...` without
-    // the `postgres_contract` prefix would compile, exist, and be silently
-    // filtered out of the only leg that runs it; this repository has already
-    // shipped a Postgres test that way once.
+    // The leg selects `-- --ignored` with no name filter, so every `#[ignore]`
+    // test in this binary runs there mechanically — a name filter would let a
+    // contract named off-pattern compile, pass locally, and be silently
+    // skipped in CI, which this repository has already shipped once. The
+    // `postgres_contract` prefix below is therefore a naming convention, not a
+    // selector; the price is that any future ignored test in this binary must
+    // either be a Postgres contract or tolerate running in that leg.
     //
     // They address the gate's database directly rather than through a config
     // file, because resolution reads process environment and no test may mutate

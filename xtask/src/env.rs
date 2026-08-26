@@ -21,3 +21,12 @@ pub(crate) fn home_dir() -> Result<PathBuf> {
         .map(PathBuf::from)
         .context("HOME is required")
 }
+
+#[cfg(feature = "admin")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "xtask owns process environment access for repository automation."
+)]
+pub(crate) fn optional_var_os(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name)
+}
