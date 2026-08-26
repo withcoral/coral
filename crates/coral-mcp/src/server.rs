@@ -381,7 +381,6 @@ impl CoralToolset {
         options: McpOptions,
         guide_block: Arc<GuideBlockState>,
     ) -> Self {
-
         let startup_context = McpStartupContext::from_options(&options);
         Self::new_with_startup_context(app, workspace, options, startup_context, guide_block)
     }
