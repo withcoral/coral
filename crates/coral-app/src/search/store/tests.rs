@@ -369,6 +369,12 @@ fn open_existing_workspace_never_creates_search_state() {
 }
 
 #[test]
+fn sqlite_storage_keeps_observed_values() {
+    let (_temp, storage) = sqlite_storage();
+    assert!(storage.observed_values().is_some());
+}
+
+#[test]
 fn clear_all_spans_both_data_classes_and_reports_cleanup() {
     let (_temp, storage) = sqlite_storage();
     let store = storage
@@ -381,7 +387,13 @@ fn clear_all_spans_both_data_classes_and_reports_cleanup() {
 
     let cleared = store.clear_source_all("github").expect("clear source all");
     assert_eq!(cleared.catalog.deleted_document_count, 3);
-    assert_eq!(cleared.observed.values, 0);
+    assert_eq!(
+        cleared
+            .observed
+            .expect("sqlite keeps observed values")
+            .values,
+        0
+    );
     let cleared = store.clear_workspace_all().expect("clear workspace all");
     assert_eq!(cleared.catalog.deleted_document_count, 1);
     assert_eq!(

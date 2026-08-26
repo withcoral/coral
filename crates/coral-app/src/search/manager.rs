@@ -20,11 +20,12 @@ use crate::search::maintenance::{
     DrainSearchQueueResponse, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
     SearchClearTarget, SearchDataScope, SearchIndexProvider, SearchMaintenanceResult,
     SearchMaintenanceState, SearchProviderClearRequest, SearchProviderRebuildRequest,
+    SearchStorageCleanupResult,
 };
 use crate::search::observed::provider::{ObservedValuesProvider, observed_clear_provider_result};
 use crate::search::observed::{
-    ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad, ObservedValuesLiveScopeLoader,
-    ObservedValuesRetrievalPolicy,
+    ObservedValuesClearResult, ObservedValuesDrainBudget, ObservedValuesLiveScopeLoad,
+    ObservedValuesLiveScopeLoader, ObservedValuesRetrievalPolicy,
 };
 use crate::search::provider::{
     LocalSearchWriteCoordinator, SearchExecutionContext, SearchProviderRegistry,
@@ -45,7 +46,9 @@ use crate::workspaces::{
 pub(crate) struct SearchManager {
     catalog_discovery: CatalogDiscovery,
     catalog: CatalogMetadataProvider,
-    observed: ObservedValuesProvider,
+    /// `None` when the search backend keeps no observed values; the feature
+    /// flag then has nothing to enable.
+    observed: Option<ObservedValuesProvider>,
     observed_scope_loader: ObservedValuesLiveScopeLoader,
     observed_values_search_enabled: bool,
     engine: UniversalSearchEngine,
@@ -115,23 +118,42 @@ impl SearchManager {
             storage.clone(),
             write_coordinator.clone(),
         );
-        let observed =
-            ObservedValuesProvider::from_store(storage.observed_values(), write_coordinator);
+        let observed = storage
+            .observed_values()
+            .map(|store| ObservedValuesProvider::from_store(store, write_coordinator));
         let observed_scope_loader =
             ObservedValuesLiveScopeLoader::new(layout, config_store.clone(), diagnostic_reporter);
+        let registry = match &observed {
+            Some(observed) => SearchProviderRegistry::local(
+                catalog.clone(),
+                observed_values_search_enabled.then(|| observed.clone()),
+            ),
+            None => SearchProviderRegistry::local_without_observed_values(
+                catalog.clone(),
+                storage.backend_name(),
+            ),
+        };
         Self {
             catalog_discovery,
-            catalog: catalog.clone(),
-            observed: observed.clone(),
+            catalog,
+            observed,
             observed_scope_loader,
             observed_values_search_enabled,
-            engine: UniversalSearchEngine::new(SearchProviderRegistry::local(
-                catalog,
-                observed_values_search_enabled.then(|| observed.clone()),
-            )),
+            engine: UniversalSearchEngine::new(registry),
             workspaces: workspace_manager,
             lifecycle_lock,
             storage,
+        }
+    }
+
+    /// The observed provider, or the maintenance result explaining why the
+    /// requested observed-values work cannot run.
+    fn observed_provider(&self) -> Result<&ObservedValuesProvider, SearchMaintenanceResult> {
+        match &self.observed {
+            Some(observed) => Ok(observed),
+            None => Err(observed_values_search_unavailable_maintenance_result(
+                self.storage.backend_name(),
+            )),
         }
     }
 
@@ -165,7 +187,7 @@ impl SearchManager {
                         continue;
                     };
                     let (observed_values_policy, lifecycle_lease) =
-                        if self.observed_values_search_enabled {
+                        if self.observed_values_search_enabled && self.observed.is_some() {
                             let search = self.clone();
                             let workspace_name = request.workspace_name.clone();
                             run_blocking_search_operation(move || {
@@ -361,9 +383,21 @@ impl SearchManager {
                 }
             };
         }
+        let observed = match self.observed_provider() {
+            Ok(observed) => observed,
+            Err(unavailable) => {
+                return Ok(ClearSearchDataResponse {
+                    results: vec![unavailable],
+                    storage_cleanup: SearchStorageCleanupResult {
+                        state: SearchMaintenanceState::Noop,
+                        note: "no search storage cleanup was needed".to_string(),
+                    },
+                });
+            }
+        };
         let provider_outcomes = match request.scope {
             SearchDataScope::ObservedValues => {
-                vec![self.observed.clear_data(SearchProviderClearRequest {
+                vec![observed.clear_data(SearchProviderClearRequest {
                     workspace_name: &request.workspace_name,
                     scope: request.scope,
                     target: &request.target,
@@ -378,7 +412,7 @@ impl SearchManager {
                         target: &request.target,
                         compact_after_clear: false,
                     })?,
-                    self.observed.clear_data(SearchProviderClearRequest {
+                    observed.clear_data(SearchProviderClearRequest {
                         workspace_name: &request.workspace_name,
                         scope: request.scope,
                         target: &request.target,
@@ -424,10 +458,22 @@ impl SearchManager {
         Ok(ClearSearchDataResponse {
             results: vec![
                 catalog_clear_provider_result(cleared.catalog.deleted_document_count),
-                observed_clear_provider_result(cleared.observed),
+                self.observed_clear_all_result(cleared.observed),
             ],
             storage_cleanup: store.compact_after_clear(),
         })
+    }
+
+    /// The observed half of an all-data clear: the clear's own result, or the
+    /// explicit absence when the backend keeps no observed values.
+    fn observed_clear_all_result(
+        &self,
+        observed: Option<ObservedValuesClearResult>,
+    ) -> SearchMaintenanceResult {
+        observed.map_or_else(
+            || observed_values_search_unavailable_maintenance_result(self.storage.backend_name()),
+            observed_clear_provider_result,
+        )
     }
 
     fn clear_workspace_all(
@@ -444,18 +490,18 @@ impl SearchManager {
         Ok(ClearSearchDataResponse {
             results: vec![
                 catalog_clear_provider_result(cleared.catalog.deleted_document_count),
-                observed_clear_provider_result(cleared.observed),
+                self.observed_clear_all_result(cleared.observed),
             ],
             storage_cleanup: store.compact_after_clear(),
         })
     }
 
     pub(crate) async fn drain_before_shutdown(&self) -> Result<(), SearchManagerError> {
-        if !self.observed_values_search_enabled {
+        let (true, Some(observed)) = (self.observed_values_search_enabled, self.observed.clone())
+        else {
             return Ok(());
-        }
+        };
         let workspaces = self.workspaces.list_workspaces().await?;
-        let observed = self.observed.clone();
         run_blocking_search_operation(move || {
             let deadline = Instant::now() + SHUTDOWN_DRAIN_SOFT_BUDGET;
             for workspace in workspaces {
@@ -525,7 +571,11 @@ impl SearchManager {
         if !self.observed_values_search_enabled {
             return observed_values_search_disabled_maintenance_result();
         }
-        match self.try_rebuild_observed_index(request) {
+        let observed = match self.observed_provider() {
+            Ok(observed) => observed,
+            Err(unavailable) => return unavailable,
+        };
+        match self.try_rebuild_observed_index(observed, request) {
             Ok(result) => result,
             Err(error) => observed_rebuild_error_provider_result(&error),
         }
@@ -533,10 +583,11 @@ impl SearchManager {
 
     fn try_rebuild_observed_index(
         &self,
+        observed: &ObservedValuesProvider,
         request: &RebuildSearchIndexRequest,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
         let policy = self.observed_retrieval_policy(&request.workspace_name)?;
-        self.observed.rebuild_index(
+        observed.rebuild_index(
             SearchProviderRebuildRequest {
                 workspace_name: &request.workspace_name,
             },
@@ -553,7 +604,11 @@ impl SearchManager {
         if !self.observed_values_search_enabled {
             return Ok(observed_values_search_disabled_maintenance_result());
         }
-        self.observed.drain_queue(
+        let observed = match self.observed_provider() {
+            Ok(observed) => observed,
+            Err(unavailable) => return Ok(unavailable),
+        };
+        observed.drain_queue(
             workspace_name,
             ObservedValuesDrainBudget::new(
                 MANUAL_DRAIN_MAX_JOBS,
@@ -760,6 +815,19 @@ fn observed_values_search_disabled_maintenance_result() -> SearchMaintenanceResu
         provider: SearchProviderKind::ObservedValues,
         state: SearchMaintenanceState::Skipped,
         note: OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE.to_string(),
+        detail: None,
+    }
+}
+
+fn observed_values_search_unavailable_maintenance_result(
+    backend_name: &str,
+) -> SearchMaintenanceResult {
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::ObservedValues,
+        state: SearchMaintenanceState::Skipped,
+        note: format!(
+            "observed value search is not available on the {backend_name} search backend"
+        ),
         detail: None,
     }
 }

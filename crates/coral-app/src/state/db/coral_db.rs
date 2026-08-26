@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::str::FromStr;
 
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::backend::{CoralDbBackend, PostgresCoralDb, SqliteCoralDb};
@@ -65,11 +65,26 @@ async fn open_sqlite(path: &Path) -> Result<CoralDb, DbError> {
 }
 
 async fn open_postgres(url: &str) -> Result<CoralDb, DbError> {
-    let options = postgres_connect_options(url)?;
-    let pool = PgPoolOptions::new().connect_with(options).await?;
+    let pool = connect_postgres_pool(url, None).await?;
     Ok(CoralDb {
         backend: CoralDbBackend::Postgres(PostgresCoralDb { pool }),
     })
+}
+
+/// Opens a Postgres pool on the app-state URL with the TLS posture every
+/// consumer of that URL must share. Other stores in the same database open
+/// their own pool through this, bounded by `max_connections`, so their long
+/// transactions cannot starve app-state connections.
+pub(crate) async fn connect_postgres_pool(
+    url: &str,
+    max_connections: Option<u32>,
+) -> Result<PgPool, DbError> {
+    let options = postgres_connect_options(url)?;
+    let mut pool_options = PgPoolOptions::new();
+    if let Some(max_connections) = max_connections {
+        pool_options = pool_options.max_connections(max_connections);
+    }
+    Ok(pool_options.connect_with(options).await?)
 }
 
 fn postgres_connect_options(url: &str) -> Result<PgConnectOptions, DbError> {
