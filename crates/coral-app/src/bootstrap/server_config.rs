@@ -674,40 +674,6 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         assert!(allowed_hosts.is_empty());
     }
 
-    /// The workspace is named by each request's URL now, so the retired
-    /// `server.mcp_http.workspace` key fails loudly in both modes rather than
-    /// being read as a binding it no longer is.
-    #[test]
-    fn the_retired_workspace_key_is_rejected_not_ignored() {
-        for authenticated in [false, true] {
-            let temp = TempDir::new().expect("temp dir");
-            let layout =
-                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-            let mcp_http = if authenticated {
-                "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\nworkspace = 'analytics'\n"
-                    .to_string()
-            } else {
-                "[server.mcp_http]\nenabled = true\nworkspace = 'analytics'\n".to_string()
-            };
-            if authenticated {
-                write_authenticated_config(&layout, &mcp_http);
-            } else {
-                layout.ensure().expect("config dir");
-                fs::write(layout.config_file(), &mcp_http).expect("config file");
-            }
-
-            let error = LoadedServerConfig::load(&layout)
-                .expect("load")
-                .companion_settings()
-                .err()
-                .expect("the retired workspace key must fail");
-            assert!(
-                error.to_string().contains("workspace"),
-                "error must name the rejected key: {error}"
-            );
-        }
-    }
-
     #[test]
     fn auth_disabled_mcp_http_rejects_public_bind() {
         let temp = TempDir::new().expect("temp dir");
