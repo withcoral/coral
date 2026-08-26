@@ -191,6 +191,17 @@ impl RunningServer {
 /// enforces, happens here — where the transports' lifecycles are already owned.
 pub(crate) async fn start(
     builder: ServerBuilder,
+    mcp_options: McpOptions,
+    mcp_surface_provider: Option<Arc<dyn McpSurfaceProvider>>,
+) -> Result<RunningServer, ServeError> {
+    // Boxed so every caller stays under clippy's large-future threshold: the
+    // composed startup is by far the largest state this future would hold, so
+    // one box here spares a Box::pin at every call site.
+    Box::pin(start_inner(builder, mcp_options, mcp_surface_provider)).await
+}
+
+async fn start_inner(
+    builder: ServerBuilder,
     mut mcp_options: McpOptions,
     mcp_surface_provider: Option<Arc<dyn McpSurfaceProvider>>,
 ) -> Result<RunningServer, ServeError> {
