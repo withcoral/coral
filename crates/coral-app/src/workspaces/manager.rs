@@ -5,6 +5,7 @@ use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::search::store::SearchStorage;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::ConfigStore;
 use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
@@ -25,6 +26,7 @@ pub(crate) struct WorkspaceManager {
     db: Arc<CoralDb>,
     diagnostic_reporter: SourceDiagnosticReporter,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    search_storage: Option<SearchStorage>,
 }
 
 impl WorkspaceManager {
@@ -65,11 +67,23 @@ impl WorkspaceManager {
             db,
             diagnostic_reporter,
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
+            search_storage: None,
         }
     }
 
     pub(crate) fn with_pool_registry(mut self, pool_registry: Arc<WorkspacePoolRegistry>) -> Self {
         self.pool_registry = pool_registry;
+        self
+    }
+
+    /// Search storage whose per-Workspace state is removed on deletion.
+    ///
+    /// Optional because only shared backends keep state outside the Workspace
+    /// directory: the `SQLite` sidecar goes with the directory. The server
+    /// bootstrap always sets it; a constructor parameter would need an
+    /// `AppStateLayout` that the generic `WorkspacePaths` tests use cannot give.
+    pub(crate) fn with_search_storage(mut self, search_storage: SearchStorage) -> Self {
+        self.search_storage = Some(search_storage);
         self
     }
 
@@ -209,6 +223,9 @@ impl WorkspaceManager {
             let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)
         };
+        // While the marker still holds off a same-name create: a new Workspace
+        // must never adopt the old one's search schema.
+        self.delete_workspace_search_state(workspace_name).await;
         drop(deletion_marker);
 
         let deleted_workspace_name = deleted.workspace.name.clone();
@@ -218,6 +235,35 @@ impl WorkspaceManager {
         self.prune_deleted_workspace_traces(&deleted_workspace_name)
             .await;
         Ok(deleted.workspace)
+    }
+
+    /// Best effort, after the deletion committed and before the deletion
+    /// marker is released: a Workspace that no longer exists must not keep
+    /// catalog rows in shared search storage. A failure here is finished by
+    /// the next boot's sweep, which prunes registered Workspaces that the
+    /// database no longer lists.
+    async fn delete_workspace_search_state(&self, workspace_name: &WorkspaceName) {
+        let Some(search_storage) = &self.search_storage else {
+            return;
+        };
+        match search_storage.delete_workspace(workspace_name).await {
+            Ok(deleted) => {
+                tracing::debug!(
+                    workspace = %workspace_name,
+                    search_backend = search_storage.backend_name(),
+                    deleted,
+                    "removed deleted workspace's search state"
+                );
+            }
+            Err(error) => {
+                warn!(
+                    workspace = %workspace_name,
+                    search_backend = search_storage.backend_name(),
+                    error = %error,
+                    "workspace deleted, but failed to remove its search state; the next boot sweep removes it"
+                );
+            }
+        }
     }
 
     fn remove_deleted_workspace_credentials(&self, deleted: &DeletedWorkspace) {
@@ -315,7 +361,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::WorkspaceManager;
+    use crate::bootstrap;
     use crate::credentials::{CredentialManager, CredentialSetId, CredentialStore};
+    use crate::search::store::SearchStorage;
     use crate::sources::SourceName;
     use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
     use crate::sources::model::{InstalledSource, SourceOrigin};
@@ -349,6 +397,71 @@ mod tests {
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         Arc::new(db)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run Workspace deletion against Postgres search storage"]
+    async fn delete_workspace_removes_search_state_contract_on_postgres() {
+        let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+            .expect("read CORAL_TEST_POSTGRES_URL")
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url: url.clone() })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        let search_storage = SearchStorage::postgres(&url, tokio::runtime::Handle::current())
+            .await
+            .expect("open postgres search storage");
+        let manager = WorkspaceManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+            None,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+            Arc::new(db),
+            SourceDiagnosticReporter::default(),
+        )
+        .with_search_storage(search_storage.clone());
+        let workspace_name =
+            WorkspaceName::parse(&format!("usp-delete-{}", uuid::Uuid::new_v4().simple()))
+                .expect("workspace");
+        manager
+            .create_workspace(&workspace_name)
+            .await
+            .expect("create workspace");
+        let open_storage = search_storage.clone();
+        let open_workspace = workspace_name.clone();
+        tokio::task::spawn_blocking(move || {
+            open_storage
+                .open_workspace(&open_workspace)
+                .expect("first search registers the workspace's search schema");
+        })
+        .await
+        .expect("open search state");
+
+        manager
+            .delete_workspace(&workspace_name)
+            .await
+            .expect("delete workspace");
+
+        let probe_workspace = workspace_name.clone();
+        let remaining = tokio::task::spawn_blocking(move || {
+            search_storage
+                .open_existing_workspace(&probe_workspace)
+                .expect("probe search state")
+                .is_some()
+        })
+        .await
+        .expect("probe search state");
+        assert!(
+            !remaining,
+            "deleting the workspace must remove its search state"
+        );
     }
 
     #[tokio::test]
