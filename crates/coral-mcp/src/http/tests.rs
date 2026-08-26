@@ -2881,7 +2881,7 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
     assert_eq!(
         extension.get("workspace"),
         Some(&serde_json::json!(TEST_WORKSPACE)),
-        "the session serves the workspace its options name"
+        "the session's workspace is the URL's, not a configured default"
     );
     let sessions = authenticated_sessions(&server);
     let state = Arc::downgrade(&server.state);
@@ -2905,9 +2905,7 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
 async fn authenticated_extension_uses_its_session_app_client() {
     let (_live_temp, live_server, live_app) = local_app().await;
     let (_stopped_temp, stopped_server, stopped_app) = local_app().await;
-    // Nothing provisions a workspace any more, so the fixture creates the one
-    // the sessions serve and scopes the options to it.
-    let options = workspace_scoped_options(&live_app).await;
+    create_workspace(&live_app, TEST_WORKSPACE).await;
     stopped_server
         .shutdown()
         .await
@@ -2923,10 +2921,7 @@ async fn authenticated_extension_uses_its_session_app_client() {
             };
             std::future::ready(Ok::<_, ()>(app))
         },
-        McpOptions {
-            surface: extension_options().surface,
-            ..options
-        },
+        extension_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let server = start_authenticated(
@@ -2935,7 +2930,7 @@ async fn authenticated_extension_uses_its_session_app_client() {
     )
     .await
     .expect("start authenticated MCP HTTP server");
-    let endpoint = format!("http://{}/mcp", server.local_addr());
+    let endpoint = format!("http://{}{}", server.local_addr(), ws_path(TEST_WORKSPACE));
 
     let live_client = ()
         .serve(StreamableHttpClientTransport::from_config(
@@ -2943,12 +2938,14 @@ async fn authenticated_extension_uses_its_session_app_client() {
         ))
         .await
         .expect("initialize live MCP session");
-    let stopped_client = ()
+    // Admission lists the caller's workspaces on the session's own client, so
+    // the stopped app refuses this session at the handshake — which is itself
+    // the claim: the session reaches its own client and nobody else's.
+    let stopped_session = ()
         .serve(StreamableHttpClientTransport::from_config(
             StreamableHttpClientTransportConfig::with_uri(endpoint).auth_header("token-b"),
         ))
-        .await
-        .expect("initialize stopped MCP session");
+        .await;
 
     let live_result = live_client
         .call_tool(CallToolRequestParams::new("extension_workspace"))
@@ -2962,16 +2959,12 @@ async fn authenticated_extension_uses_its_session_app_client() {
             .and_then(serde_json::Value::as_u64)
             .is_some_and(|count| count > 0)
     );
-    stopped_client
-        .call_tool(CallToolRequestParams::new("extension_workspace"))
-        .await
-        .expect_err("stopped session must use its unavailable app client");
+    assert!(
+        stopped_session.is_err(),
+        "the stopped session must be refused through its own unavailable client"
+    );
 
     live_client.cancel().await.expect("cancel live MCP client");
-    stopped_client
-        .cancel()
-        .await
-        .expect("cancel stopped MCP client");
     server.shutdown().await.expect("shutdown MCP HTTP server");
     live_server
         .shutdown()
