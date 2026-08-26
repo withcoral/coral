@@ -8,7 +8,11 @@ vi.mock('@/lib/coral-request.server', () => ({
   workspaceClientForRequest: coralRequestMocks.workspaceClientForRequest,
 }))
 
-import { firstWorkspaceForRequest, listWorkspacesForRequest } from './workspaces.server'
+import {
+  DEFAULT_WORKSPACE_ID,
+  impliedWorkspaceForRequest,
+  listWorkspacesForRequest,
+} from './workspaces.server'
 
 const request = new Request('http://localhost:5173/')
 
@@ -46,20 +50,35 @@ describe('listWorkspacesForRequest', () => {
   })
 })
 
-describe('firstWorkspaceForRequest', () => {
-  it('takes the first workspace the caller belongs to', async () => {
+describe('impliedWorkspaceForRequest', () => {
+  it('prefers the default workspace over the memberships listed before it', async () => {
+    answering([
+      { workspace: { name: 'analytics' }, role: 1 },
+      { workspace: { name: DEFAULT_WORKSPACE_ID }, role: 2 },
+    ])
+
+    await expect(impliedWorkspaceForRequest(request, null)).resolves.toEqual({
+      name: DEFAULT_WORKSPACE_ID,
+    })
+  })
+
+  it('falls back to the first workspace when no membership names the default', async () => {
     answering([
       { workspace: { name: 'analytics' }, role: 1 },
       { workspace: { name: 'reporting' }, role: 2 },
     ])
 
-    await expect(firstWorkspaceForRequest(request, null)).resolves.toEqual({ name: 'analytics' })
+    await expect(impliedWorkspaceForRequest(request, null)).resolves.toEqual({
+      name: 'analytics',
+    })
   })
 
   it('answers 404 only when the caller genuinely belongs to nothing', async () => {
     answering([])
 
-    const refusal = await firstWorkspaceForRequest(request, null).catch((thrown: unknown) => thrown)
+    const refusal = await impliedWorkspaceForRequest(request, null).catch(
+      (thrown: unknown) => thrown,
+    )
     expect(refusal).toBeInstanceOf(Response)
     expect((refusal as Response).status).toBe(404)
   })
@@ -70,7 +89,7 @@ describe('firstWorkspaceForRequest', () => {
   it('does not answer a malformed response with the not-configured 404', async () => {
     answering([{ role: 2 }])
 
-    const thrown = await firstWorkspaceForRequest(request, null).catch((error: unknown) => error)
+    const thrown = await impliedWorkspaceForRequest(request, null).catch((error: unknown) => error)
     expect(thrown).not.toBeInstanceOf(Response)
     expect(thrown).toBeInstanceOf(Error)
     expect((thrown as Error).message).toBe(
