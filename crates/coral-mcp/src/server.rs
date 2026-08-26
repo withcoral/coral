@@ -35,6 +35,7 @@ use tracing::Instrument as _;
 
 use crate::{
     McpOptions, McpQueryExample, McpToolContext, McpToolRouter,
+    extensions::InitializeInstructions,
     guide_block::GuideBlockState,
     surface::{
         AddFunctionArguments, CatalogToolKind, EndTaskArguments, FeedbackStoredValue,
@@ -922,6 +923,13 @@ impl CoralToolset {
     /// Returns an MCP error when the current catalog description cannot be
     /// loaded.
     pub async fn definitions(&self) -> Result<Vec<Tool>, ErrorData> {
+        if self
+            .retained_tool_names
+            .as_ref()
+            .is_some_and(|names| names.is_empty())
+        {
+            return Ok(Vec::new());
+        }
         let (visible_table_count, visible_function_count) = self
             .load_catalog_counts()
             .await
@@ -1014,40 +1022,48 @@ pub(crate) struct CoralMcpServer {
     core_tools: CoralToolset,
     extension_tools: McpToolRouter,
     tool_context: McpToolContext,
+    initialize_instructions: InitializeInstructions,
 }
 
 impl CoralMcpServer {
-    fn new(app: &AppClient, mut options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
-        let extensions = std::mem::take(&mut options.extensions);
+    fn new(app: &AppClient, options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
+        let surface = options.surface.clone();
         let core_tools = CoralToolset::new(app, options, guide_block);
         let tool_context = McpToolContext::new(core_tools.clone(), core_tools.workspace());
-        let public_core_tools = extensions.retained_tool_names().map_or_else(
+        let public_core_tools = surface.public_core_tool_names().map_or_else(
             || core_tools.clone(),
             |names| core_tools.retain(names.clone()),
         );
         Self {
             core_tools: public_core_tools,
-            extension_tools: extensions.added_tools().clone(),
+            extension_tools: surface.extension_tools().clone(),
             tool_context,
+            initialize_instructions: surface.initialize_instructions().clone(),
         }
     }
 }
 
 impl ServerHandler for CoralMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+        let info = ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_resources()
                 .enable_tools()
                 .build(),
         )
-        .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
-        .with_instructions(initial_instructions(
-            &self.core_tools.workspace().name,
-            self.core_tools.startup_context.source_names(),
-            self.core_tools.startup_context.query_examples(),
-            self.core_tools.options.observed_values_search_enabled,
-        ))
+        .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")));
+        match &self.initialize_instructions {
+            InitializeInstructions::CoralDefault => info.with_instructions(initial_instructions(
+                &self.core_tools.workspace().name,
+                self.core_tools.startup_context.source_names(),
+                self.core_tools.startup_context.query_examples(),
+                self.core_tools.options.observed_values_search_enabled,
+            )),
+            InitializeInstructions::Replace(Some(instructions)) => {
+                info.with_instructions(instructions.clone())
+            }
+            InitializeInstructions::Replace(None) => info,
+        }
     }
 
     async fn list_tools(
@@ -1092,7 +1108,7 @@ impl ServerHandler for CoralMcpServer {
             let tool_context = ToolCallContext::new(&self.tool_context, request, context);
             let result =
                 telemetry::instrument(span.clone(), self.extension_tools.call(tool_context)).await;
-            telemetry::record_protocol_result(&span, &result);
+            telemetry::record_tool_result(&span, &result);
             return result;
         }
         let error = ErrorData::invalid_params(format!("tool '{}' not found", request.name), None);

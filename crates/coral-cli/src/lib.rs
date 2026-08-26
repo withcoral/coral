@@ -42,7 +42,7 @@ use coral_client::{
     format_batches_table, format_search_response_json, format_search_response_text,
     manifest_input_from_proto, workspace as workspace_resource,
 };
-use coral_mcp::McpExtensionsProvider;
+use coral_mcp::{McpSurface, McpSurfaceProvider};
 use dialoguer::console::measure_text_width;
 use tonic::Request;
 
@@ -615,7 +615,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
 #[derive(Default)]
 pub struct CoralExtensions {
     engine_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    mcp_providers: Vec<Arc<dyn McpExtensionsProvider>>,
+    mcp_surface_provider: Option<Arc<dyn McpSurfaceProvider>>,
 }
 
 impl CoralExtensions {
@@ -629,10 +629,10 @@ impl CoralExtensions {
         self
     }
 
-    /// Adds a static MCP extension provider.
+    /// Sets the host-owned MCP surface provider.
     #[must_use]
-    pub fn add_mcp_extensions_provider(mut self, provider: Arc<dyn McpExtensionsProvider>) -> Self {
-        self.mcp_providers.push(provider);
+    pub fn with_mcp_surface_provider(mut self, provider: Arc<dyn McpSurfaceProvider>) -> Self {
+        self.mcp_surface_provider = Some(provider);
         self
     }
 }
@@ -658,7 +658,7 @@ pub async fn run_from_env_with_extensions(extensions: CoralExtensions) -> Result
     };
     let CoralExtensions {
         engine_providers,
-        mcp_providers,
+        mcp_surface_provider,
     } = extensions;
 
     match command.required_runtime() {
@@ -686,7 +686,7 @@ pub async fn run_from_env_with_extensions(extensions: CoralExtensions) -> Result
                     Some(&ctx),
                     &feature_overrides,
                     &workspace,
-                    &mcp_providers,
+                    mcp_surface_provider.as_deref(),
                 )
                 .await
             } else {
@@ -698,7 +698,7 @@ pub async fn run_from_env_with_extensions(extensions: CoralExtensions) -> Result
                         None,
                         &feature_overrides,
                         &workspace,
-                        &mcp_providers,
+                        mcp_surface_provider.as_deref(),
                     )),
                 )
                 .await
@@ -714,7 +714,7 @@ pub async fn run_from_env_with_extensions(extensions: CoralExtensions) -> Result
                     &feature_overrides,
                     CoralExtensions {
                         engine_providers,
-                        mcp_providers,
+                        mcp_surface_provider,
                     },
                 )),
             )
@@ -740,7 +740,7 @@ async fn run_server(
     let server = bootstrap::start_standalone_server(
         feature_overrides,
         extensions.engine_providers,
-        extensions.mcp_providers,
+        extensions.mcp_surface_provider,
     )
     .await?;
     let endpoint = server.endpoint_uri().to_string();
@@ -919,7 +919,7 @@ async fn run_app_command(
     ctx: Option<&coral_app::RunContext>,
     feature_overrides: &coral_app::features::FeatureOverrides,
     workspace: &Workspace,
-    mcp_extensions_providers: &[Arc<dyn McpExtensionsProvider>],
+    mcp_surface_provider: Option<&dyn McpSurfaceProvider>,
 ) -> Result<(), CliError> {
     match command {
         Command::Sql(args) => {
@@ -1001,8 +1001,10 @@ async fn run_app_command(
                     source_names,
                     query_examples,
                     workspace: Some(workspace.clone()),
-                    extensions: coral_mcp::McpExtensions::from_providers(mcp_extensions_providers)
-                        .map_err(anyhow::Error::from)?,
+                    surface: match mcp_surface_provider {
+                        Some(provider) => provider.surface().map_err(anyhow::Error::from_boxed)?,
+                        None => McpSurface::default(),
+                    },
                 },
             ))
             .await

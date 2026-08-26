@@ -8,7 +8,7 @@ use coral_client::{
     AppClient, ClientError,
     local::{LocalServerError, RunningServer as AppRunningServer, ServerBuilder},
 };
-use coral_mcp::{McpExtensionsProvider, McpOptions};
+use coral_mcp::{McpOptions, McpSurfaceProvider};
 
 pub(crate) struct Bootstrap {
     pub(crate) app: AppClient,
@@ -64,7 +64,7 @@ pub(crate) async fn bootstrap(
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    mcp_extensions_providers: Vec<Arc<dyn McpExtensionsProvider>>,
+    mcp_surface_provider: Option<Arc<dyn McpSurfaceProvider>>,
 ) -> Result<crate::serve::RunningServer, BootstrapError> {
     let features = FeatureStore::discover(None)?.load_with_overrides(&feature_overrides)?;
     let mcp_options = McpOptions {
@@ -80,7 +80,7 @@ pub(crate) async fn start_standalone_server(
         },
         engine_extensions_providers,
     );
-    crate::serve::start(builder, mcp_options, mcp_extensions_providers)
+    crate::serve::start(builder, mcp_options, mcp_surface_provider)
         .await
         .map_err(Into::into)
 }

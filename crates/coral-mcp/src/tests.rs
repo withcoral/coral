@@ -4,10 +4,8 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use coral_api::v1::{ImportSourceRequest, Workspace, import_source_response};
 use coral_client::{
@@ -20,7 +18,7 @@ use opentelemetry::trace::{SpanId, SpanKind, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
 use rmcp::{
     ErrorData, Json, RoleClient, ServerHandler, ServiceExt,
-    handler::server::router::tool::ToolRouter,
+    handler::server::router::tool::IntoToolRoute,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
@@ -32,8 +30,7 @@ use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 use crate::{
-    CoralMcpServerFactory, McpExtensions, McpExtensionsError, McpExtensionsProvider, McpOptions,
-    McpToolContext,
+    CoralMcpServerFactory, McpOptions, McpSurface, McpSurfaceError, McpToolContext, McpToolRoute,
     telemetry::{MCP_PROTOCOL_ERROR_MESSAGE, UNKNOWN_TOOL_NAME},
 };
 
@@ -82,58 +79,38 @@ fn core_probe(context: &McpToolContext) -> BoxFuture<'_, Result<Json<Value>, Err
     })
 }
 
-#[derive(Clone)]
-struct StaticMcpExtensionsProvider(McpExtensions);
-
-impl McpExtensionsProvider for StaticMcpExtensionsProvider {
-    fn extensions(&self) -> McpExtensions {
-        self.0.clone()
-    }
+fn core_probe_surface() -> McpSurface {
+    McpSurface::replace(
+        [core_probe_route("core_probe")],
+        std::iter::empty::<String>(),
+        Some("Use `core_probe` for Coral work.".to_string()),
+    )
+    .expect("build MCP surface")
 }
 
-fn core_probe_extensions() -> McpExtensions {
-    let router = core_probe_router("core_probe");
-    McpExtensions::default()
-        .add_tools(router)
-        .retain_tools(["core_probe"])
-}
-
-fn core_probe_router(name: &'static str) -> ToolRouter<McpToolContext> {
+fn core_probe_route(name: &'static str) -> McpToolRoute {
     let mut tool = core_probe_tool_attr();
     tool.name = name.into();
-    ToolRouter::new().with_route((tool, core_probe))
-}
-
-fn extension_provider(extensions: McpExtensions) -> Arc<dyn McpExtensionsProvider> {
-    Arc::new(StaticMcpExtensionsProvider(extensions))
+    (tool, core_probe).into_tool_route()
 }
 
 #[test]
-fn extension_registry_rejects_collisions_and_intersects_retain_sets() {
-    let first = extension_provider(McpExtensions::default().retain_tools(["a", "b"]));
-    let second = extension_provider(McpExtensions::default().retain_tools(["b", "c"]));
-    for providers in [
-        vec![Arc::clone(&first), Arc::clone(&second)],
-        vec![Arc::clone(&second), Arc::clone(&first)],
-    ] {
-        let merged = McpExtensions::from_providers(&providers).expect("merge extensions");
-        assert_eq!(
-            merged.retained_tool_names(),
-            Some(&BTreeSet::from(["b".to_string()]))
-        );
-    }
-
-    let reserved = extension_provider(McpExtensions::default().add_tools(core_probe_router("sql")));
+fn mcp_surface_rejects_invalid_names_and_duplicates() {
     assert!(matches!(
-        McpExtensions::from_providers(&[reserved]),
-        Err(McpExtensionsError::ReservedToolName(name)) if name == "sql"
+        McpSurface::extend([core_probe_route("sql")]),
+        Err(McpSurfaceError::ReservedToolName(name)) if name == "sql"
     ));
-
-    let duplicate =
-        || extension_provider(McpExtensions::default().add_tools(core_probe_router("extra")));
     assert!(matches!(
-        McpExtensions::from_providers(&[duplicate(), duplicate()]),
-        Err(McpExtensionsError::DuplicateToolName(name)) if name == "extra"
+        McpSurface::extend([core_probe_route("extra"), core_probe_route("extra")]),
+        Err(McpSurfaceError::DuplicateToolName(name)) if name == "extra"
+    ));
+    assert!(matches!(
+        McpSurface::replace(
+            std::iter::empty::<McpToolRoute>(),
+            ["not_a_core_tool"],
+            None,
+        ),
+        Err(McpSurfaceError::UnknownCoreToolName(name)) if name == "not_a_core_tool"
     ));
 }
 
@@ -455,11 +432,10 @@ async fn start_mcp_session(
 #[tokio::test]
 async fn extension_surface_filters_public_tools_but_keeps_session_core_tools() {
     let temp = TempDir::new().expect("temp dir");
-    let provider = extension_provider(core_probe_extensions());
     let session = start_session_with_options(
         &temp,
         McpOptions {
-            extensions: McpExtensions::from_providers(&[provider]).expect("merge extensions"),
+            surface: core_probe_surface(),
             ..McpOptions::default()
         },
     )
@@ -479,6 +455,16 @@ async fn extension_surface_filters_public_tools_but_keeps_session_core_tools() {
         .await
         .expect_err("hidden core tool should not be callable");
     assert!(hidden.to_string().contains("tool 'sql' not found"));
+
+    assert_eq!(
+        session
+            .client
+            .peer_info()
+            .expect("initialize result")
+            .instructions
+            .as_deref(),
+        Some("Use `core_probe` for Coral work.")
+    );
 
     let result = session
         .client

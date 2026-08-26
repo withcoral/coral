@@ -31,11 +31,12 @@ and Streamable HTTP transport adapters.
   per protocol session. Keep standalone process launch outside this crate.
 - Configure tool availability through `McpOptions` consistently across stdio
   and alternate transports; transport choice is not a capability boundary.
-- Compose host tools once at MCP runtime startup through
-  `McpExtensionsProvider`. Reject core-name and duplicate extension collisions,
-  intersect retained-name sets, and keep the selected public tool surface
-  fixed for that runtime. A hidden tool must be absent from discovery and
-  dispatch.
+- Build one host-owned `McpSurface` at MCP runtime startup through
+  `McpSurfaceProvider`. Use `extend` for the complete OSS surface plus host
+  tools, or `replace` for exact host tools, named core tools, and initialize
+  instructions. Reject reserved, duplicate, unknown, and unavailable tool
+  names before the MCP listener starts. Keep the selected surface fixed for
+  that runtime; a hidden tool must be absent from discovery and dispatch.
 - Give each extension route an `McpToolContext` built from that session's
   authorized `AppClient`. Its `CoralToolset` is the core-only projection before
   public additions and filtering. Do not expose bearer tokens or let extension

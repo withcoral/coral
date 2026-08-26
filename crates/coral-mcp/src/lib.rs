@@ -12,7 +12,7 @@
 //!   Streamable HTTP, loopback-only unless configuration routed operator
 //!   consent through [`http::McpHttpConfig::allow_unauthenticated_non_loopback`].
 //!
-//! The exposed MCP surface is intentionally small:
+//! The default MCP surface is intentionally small:
 //!
 //! - tools: `start_task`, `sql`, `search`, paginated `list_catalog`,
 //!   `describe`, `list_columns`, `end_task`, and optionally `feedback`
@@ -41,8 +41,10 @@ use coral_client::AppClient;
 use rmcp::ServiceExt;
 
 pub use error::McpError;
+pub(crate) use extensions::McpToolRouter;
 pub use extensions::{
-    McpExtensions, McpExtensionsError, McpExtensionsProvider, McpToolContext, McpToolRouter,
+    McpSurface, McpSurfaceError, McpSurfaceProvider, McpSurfaceProviderError, McpToolContext,
+    McpToolRoute,
 };
 pub(crate) use server::CoralMcpServerFactory;
 pub use server::CoralToolset;
@@ -120,8 +122,8 @@ pub struct McpOptions {
     pub query_examples: Vec<McpQueryExample>,
     /// Workspace scoped to this MCP server instance.
     pub workspace: Option<coral_api::v1::Workspace>,
-    /// Static MCP tool additions and public tool-name projection.
-    pub extensions: McpExtensions,
+    /// Static public MCP tool surface and initialize instructions.
+    pub surface: McpSurface,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.
@@ -130,11 +132,8 @@ pub struct McpOptions {
 ///
 /// Returns [`McpError`] if the stdio server cannot complete its `MCP`
 /// lifecycle.
-pub async fn run_stdio_with_client(
-    app: AppClient,
-    mut options: McpOptions,
-) -> Result<(), McpError> {
-    options.extensions.finalize()?;
+pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
+    options.surface.validate(options.feedback_enabled)?;
     let handler = CoralMcpServerFactory::new(app, options).create();
     let server = Box::pin(handler.serve((tokio::io::stdin(), tokio::io::stdout()))).await?;
     let _ = server.waiting().await?;

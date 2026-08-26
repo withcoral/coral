@@ -13,7 +13,7 @@ use coral_client::{
     },
 };
 use coral_mcp::{
-    McpExtensions, McpExtensionsProvider, McpOptions,
+    McpOptions, McpSurfaceProvider, McpSurfaceProviderError,
     http::{
         AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime, McpHttpConfig, McpHttpError,
         RunningMcpHttpServer, start_auth_disabled, start_authenticated,
@@ -112,8 +112,8 @@ enum McpStartError {
     UnsafeGrpcAddress(SocketAddr),
     #[error("authenticated MCP HTTP requires a session authenticator")]
     MissingSessionProvider,
-    #[error(transparent)]
-    Extensions(#[from] coral_mcp::McpExtensionsError),
+    #[error("failed to build MCP surface: {0}")]
+    SurfaceProvider(#[source] McpSurfaceProviderError),
     #[error(transparent)]
     Client(#[from] ClientError),
     #[error(transparent)]
@@ -177,8 +177,8 @@ impl RunningServer {
 /// enforces, happens here — where the transports' lifecycles are already owned.
 pub(crate) async fn start(
     builder: ServerBuilder,
-    mcp_options: McpOptions,
-    mcp_extensions_providers: Vec<Arc<dyn McpExtensionsProvider>>,
+    mut mcp_options: McpOptions,
+    mcp_surface_provider: Option<Arc<dyn McpSurfaceProvider>>,
 ) -> Result<RunningServer, ServeError> {
     let mut settings = builder
         .serve_settings()
@@ -188,6 +188,15 @@ pub(crate) async fn start(
     let grpc_authentication_enabled = session_auth.is_some();
     let mcp_http_authentication_enabled =
         matches!(mcp_config, Some(McpHttpServeConfig::Authenticated { .. }));
+    if mcp_config.is_some()
+        && let Some(provider) = mcp_surface_provider
+    {
+        mcp_options.surface = provider.surface().map_err(|error| {
+            ServeError(ServeErrorKind::McpStart(McpStartError::SurfaceProvider(
+                error,
+            )))
+        })?;
+    }
     let (builder, mcp_principal_provider) =
         compose_session_policies(builder, session_auth.as_ref(), mcp_config.as_ref());
     // Built after the providers, which only borrow the settings; this consumes them.
@@ -219,7 +228,6 @@ pub(crate) async fn start(
         mcp_principal_provider,
         grpc_addr,
         mcp_options,
-        &mcp_extensions_providers,
     ))
     .await
     {
@@ -299,13 +307,11 @@ async fn start_mcp_http(
     settings: Option<McpHttpServeConfig>,
     mcp_principal_provider: Option<Arc<dyn BearerAuthenticator>>,
     grpc_addr: SocketAddr,
-    mut mcp_options: McpOptions,
-    mcp_extensions_providers: &[Arc<dyn McpExtensionsProvider>],
+    mcp_options: McpOptions,
 ) -> Result<Option<RunningMcpHttpServer>, McpStartError> {
     let Some(settings) = settings else {
         return Ok(None);
     };
-    mcp_options.extensions = McpExtensions::from_providers(mcp_extensions_providers)?;
     let grpc_endpoint_uri = loopback_grpc_endpoint_uri(grpc_addr)?;
     let server = match settings {
         McpHttpServeConfig::AuthDisabled {

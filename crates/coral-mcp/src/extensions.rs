@@ -1,14 +1,19 @@
-//! Static MCP extension composition and per-session tool context.
+//! Static MCP surface composition and per-session tool context.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, error::Error, sync::Arc};
 
 use coral_api::v1::Workspace;
-use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::router::tool::{ToolRoute, ToolRouter};
 
 use crate::{server::CoralToolset, surface::ToolName};
 
-/// RMCP router used for tools supplied by an MCP extension provider.
-pub type McpToolRouter = ToolRouter<McpToolContext>;
+/// RMCP route used for one host-supplied tool.
+pub type McpToolRoute = ToolRoute<McpToolContext>;
+
+pub(crate) type McpToolRouter = ToolRouter<McpToolContext>;
+
+/// Error returned by a host while it builds its MCP surface.
+pub type McpSurfaceProviderError = Box<dyn Error + Send + Sync + 'static>;
 
 /// Session-bound context supplied to extension tool handlers.
 #[derive(Clone)]
@@ -38,119 +43,149 @@ impl McpToolContext {
     }
 }
 
-/// Supplies static MCP contributions when an MCP runtime starts.
-pub trait McpExtensionsProvider: Send + Sync {
-    /// Returns this provider's static MCP contributions.
-    fn extensions(&self) -> McpExtensions;
-}
-
-/// Static tools and public tool-name projection supplied by one or more hosts.
-#[derive(Clone, Debug, Default)]
-pub struct McpExtensions(Arc<McpExtensionsInner>);
-
-#[derive(Clone, Debug, Default)]
-struct McpExtensionsInner {
-    added_tools: McpToolRouter,
-    retained_tool_names: Option<BTreeSet<String>>,
-    duplicate_tool_names: BTreeSet<String>,
-}
-
-impl McpExtensions {
-    /// Adds extension tool routes.
-    #[must_use]
-    pub fn add_tools(mut self, tools: McpToolRouter) -> Self {
-        let extensions = Arc::make_mut(&mut self.0);
-        for route in tools {
-            let name = route.name().to_string();
-            if extensions.added_tools.has_route(&name) {
-                extensions.duplicate_tool_names.insert(name);
-            } else {
-                extensions.added_tools.add_route(route);
-            }
-        }
-        self
-    }
-
-    /// Retains only the named tools in the public MCP surface.
-    ///
-    /// Repeated calls intersect their name sets. Core tool projections obtained
-    /// through [`McpToolContext::core_tools`] are not affected.
-    #[must_use]
-    pub fn retain_tools(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        let names = names.into_iter().map(Into::into).collect::<BTreeSet<_>>();
-        let retained_tool_names = &mut Arc::make_mut(&mut self.0).retained_tool_names;
-        match retained_tool_names {
-            Some(retained) => retained.retain(|name| names.contains(name)),
-            None => *retained_tool_names = Some(names),
-        }
-        self
-    }
-
-    /// Evaluates and deterministically merges static provider contributions.
+/// Builds one static MCP surface when an MCP runtime starts.
+pub trait McpSurfaceProvider: Send + Sync {
+    /// Returns the complete host-owned MCP surface contribution.
     ///
     /// # Errors
     ///
-    /// Returns an error when an extension uses a reserved core name or when
-    /// more than one extension route has the same name.
-    pub fn from_providers(
-        providers: &[Arc<dyn McpExtensionsProvider>],
-    ) -> Result<Self, McpExtensionsError> {
-        let mut merged = Self::default();
-        for provider in providers {
-            let extensions = provider.extensions();
-            Arc::make_mut(&mut merged.0)
-                .duplicate_tool_names
-                .extend(extensions.0.duplicate_tool_names.iter().cloned());
-            merged = merged.add_tools(extensions.0.added_tools.clone());
-            if let Some(names) = &extensions.0.retained_tool_names {
-                merged = merged.retain_tools(names.clone());
-            }
-        }
-        merged.finalize()?;
-        Ok(merged)
+    /// Returns an error when host configuration cannot produce a surface.
+    fn surface(&self) -> Result<McpSurface, McpSurfaceProviderError>;
+}
+
+/// Static public MCP tool surface and initialize instructions.
+#[derive(Clone, Debug)]
+pub struct McpSurface(Arc<McpSurfaceInner>);
+
+#[derive(Clone, Debug)]
+struct McpSurfaceInner {
+    extension_tools: McpToolRouter,
+    public_core_tool_names: Option<BTreeSet<String>>,
+    initialize_instructions: InitializeInstructions,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum InitializeInstructions {
+    CoralDefault,
+    Replace(Option<String>),
+}
+
+impl Default for McpSurface {
+    fn default() -> Self {
+        Self(Arc::new(McpSurfaceInner {
+            extension_tools: McpToolRouter::new(),
+            public_core_tool_names: None,
+            initialize_instructions: InitializeInstructions::CoralDefault,
+        }))
+    }
+}
+
+impl McpSurface {
+    /// Keeps the complete OSS Coral surface and adds host tool routes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate routes or a route that uses a reserved
+    /// Coral tool name.
+    pub fn extend(routes: impl IntoIterator<Item = McpToolRoute>) -> Result<Self, McpSurfaceError> {
+        Self::build(routes, None, InitializeInstructions::CoralDefault)
     }
 
-    pub(crate) fn added_tools(&self) -> &McpToolRouter {
-        &self.0.added_tools
-    }
-
-    pub(crate) fn retained_tool_names(&self) -> Option<&BTreeSet<String>> {
-        self.0.retained_tool_names.as_ref()
-    }
-
-    pub(crate) fn finalize(&mut self) -> Result<(), McpExtensionsError> {
-        if let Some(name) = self.0.duplicate_tool_names.iter().next() {
-            return Err(McpExtensionsError::DuplicateToolName(name.clone()));
-        }
-        if let Some(name) = self
-            .0
-            .added_tools
-            .list_all()
+    /// Replaces the public surface with exact host routes and named core tools.
+    ///
+    /// `initialize_instructions` replaces Coral's default instructions. `None`
+    /// omits initialize instructions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate routes, a route that uses a reserved
+    /// Coral tool name, or an unknown core tool name.
+    pub fn replace(
+        routes: impl IntoIterator<Item = McpToolRoute>,
+        public_core_tool_names: impl IntoIterator<Item = impl Into<String>>,
+        initialize_instructions: Option<String>,
+    ) -> Result<Self, McpSurfaceError> {
+        let public_core_tool_names = public_core_tool_names
             .into_iter()
-            .map(|tool| tool.name.to_string())
-            .find(|name| name.parse::<ToolName>().is_ok())
+            .map(Into::into)
+            .collect::<BTreeSet<_>>();
+        if let Some(name) = public_core_tool_names
+            .iter()
+            .find(|name| name.parse::<ToolName>().is_err())
         {
-            return Err(McpExtensionsError::ReservedToolName(name));
+            return Err(McpSurfaceError::UnknownCoreToolName(name.clone()));
         }
-        let extensions = Arc::make_mut(&mut self.0);
-        if let Some(retained) = &extensions.retained_tool_names {
-            for tool in extensions.added_tools.list_all() {
-                if !retained.contains(tool.name.as_ref()) {
-                    extensions.added_tools.disable_route(tool.name);
-                }
+        Self::build(
+            routes,
+            Some(public_core_tool_names),
+            InitializeInstructions::Replace(initialize_instructions),
+        )
+    }
+
+    fn build(
+        routes: impl IntoIterator<Item = McpToolRoute>,
+        public_core_tool_names: Option<BTreeSet<String>>,
+        initialize_instructions: InitializeInstructions,
+    ) -> Result<Self, McpSurfaceError> {
+        let mut extension_tools = McpToolRouter::new();
+        for route in routes {
+            let name = route.name().to_string();
+            if name.parse::<ToolName>().is_ok() {
+                return Err(McpSurfaceError::ReservedToolName(name));
             }
+            if extension_tools.has_route(&name) {
+                return Err(McpSurfaceError::DuplicateToolName(name));
+            }
+            extension_tools.add_route(route);
+        }
+        Ok(Self(Arc::new(McpSurfaceInner {
+            extension_tools,
+            public_core_tool_names,
+            initialize_instructions,
+        })))
+    }
+
+    pub(crate) fn extension_tools(&self) -> &McpToolRouter {
+        &self.0.extension_tools
+    }
+
+    pub(crate) fn public_core_tool_names(&self) -> Option<&BTreeSet<String>> {
+        self.0.public_core_tool_names.as_ref()
+    }
+
+    pub(crate) fn initialize_instructions(&self) -> &InitializeInstructions {
+        &self.0.initialize_instructions
+    }
+
+    pub(crate) fn validate(&self, feedback_enabled: bool) -> Result<(), McpSurfaceError> {
+        if !feedback_enabled
+            && self
+                .0
+                .public_core_tool_names
+                .as_ref()
+                .is_some_and(|names| names.contains(ToolName::Feedback.as_str()))
+        {
+            return Err(McpSurfaceError::UnavailableCoreToolName(
+                ToolName::Feedback.as_str().to_string(),
+            ));
         }
         Ok(())
     }
 }
 
-/// Invalid static MCP extension composition.
+/// Invalid static MCP surface composition.
 #[derive(Debug, thiserror::Error)]
-pub enum McpExtensionsError {
-    /// An extension tried to register a reserved core Coral tool name.
+pub enum McpSurfaceError {
+    /// A host route tried to use a reserved core Coral tool name.
     #[error("MCP extension tool name '{0}' is reserved by Coral")]
     ReservedToolName(String),
-    /// More than one extension tool used the same name.
+    /// More than one host route used the same name.
     #[error("duplicate MCP extension tool name '{0}'")]
     DuplicateToolName(String),
+    /// A replacement surface named a core tool that Coral does not define.
+    #[error("unknown core MCP tool name '{0}'")]
+    UnknownCoreToolName(String),
+    /// A replacement surface selected a core tool that is not enabled.
+    #[error("core MCP tool '{0}' is not available")]
+    UnavailableCoreToolName(String),
 }

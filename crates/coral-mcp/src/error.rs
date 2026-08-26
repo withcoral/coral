@@ -5,7 +5,7 @@
 pub enum McpError {
     /// Static MCP extension composition was invalid.
     #[error(transparent)]
-    Extensions(#[from] crate::McpExtensionsError),
+    Surface(#[from] crate::McpSurfaceError),
     /// Building or using the Coral client failed.
     #[error(transparent)]
     Client(#[from] coral_client::ClientError),

@@ -6,7 +6,10 @@ use coral_api::grpc_response_status_code;
 use coral_client::{DecodedStatusError, decode_status_error};
 use coral_telemetry::record_failure;
 use opentelemetry::trace::Status as OtelStatus;
-use rmcp::{ErrorData, model::ErrorCode};
+use rmcp::{
+    ErrorData,
+    model::{CallToolResult, ErrorCode},
+};
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -142,6 +145,16 @@ pub(crate) fn record_protocol_result<T>(span: &tracing::Span, result: &Result<T,
     }
 }
 
+pub(crate) fn record_tool_result(span: &tracing::Span, result: &Result<CallToolResult, ErrorData>) {
+    match result {
+        Ok(result) if result.is_error == Some(true) => {
+            record_failure(span, "MCP_TOOL_ERROR", MCP_TOOL_ERROR_MESSAGE);
+        }
+        Ok(_) => record_success(span),
+        Err(error) => record_protocol_error(span, error),
+    }
+}
+
 pub(crate) fn record_protocol_error(span: &tracing::Span, error: &ErrorData) {
     record_failure(span, mcp_error_type(error.code), MCP_PROTOCOL_ERROR_MESSAGE);
 }
@@ -198,7 +211,7 @@ mod tests {
 
     use super::{
         MCP_TOOL_ERROR_MESSAGE, UNKNOWN_TOOL_NAME, call_tool_span, list_resources_span,
-        list_tools_span, read_resource_span, record_tonic_status,
+        list_tools_span, read_resource_span, record_tonic_status, record_tool_result,
     };
     use crate::surface::ToolName;
 
@@ -333,6 +346,35 @@ mod tests {
         );
         assert_eq!(tool_call.status, OtelStatus::error(MCP_TOOL_ERROR_MESSAGE));
         assert!(!format!("{tool_call:?}").contains(sentinel));
+
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn structured_extension_error_marks_the_tool_span_as_failed() {
+        let (exporter, provider, subscriber) = telemetry_fixture();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let span = call_tool_span("extension_tool", None, "default", None);
+        record_tool_result(
+            &span,
+            &Ok(rmcp::model::CallToolResult::structured_error(
+                serde_json::json!({"message": "failed"}),
+            )),
+        );
+        drop(span);
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let tool_call = spans
+            .iter()
+            .find(|span| span.name == "coral.mcp.call_tool")
+            .expect("tool call span");
+        assert_eq!(
+            string_attribute(tool_call, "error.type"),
+            Some("MCP_TOOL_ERROR".to_string())
+        );
+        assert_eq!(tool_call.status, OtelStatus::error(MCP_TOOL_ERROR_MESSAGE));
 
         provider.shutdown().expect("provider shutdown");
     }

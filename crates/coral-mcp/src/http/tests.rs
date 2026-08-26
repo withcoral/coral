@@ -9,6 +9,7 @@ use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
 use coral_client::{AppClient, local::ServerBuilder};
 use futures::{future::BoxFuture, poll};
+use rmcp::handler::server::router::tool::IntoToolRoute;
 use rmcp::model::{CallToolRequestParams, ClientJsonRpcMessage};
 use rmcp::transport::{
     StreamableHttpClientTransport,
@@ -24,7 +25,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tower::ServiceExt as _;
 
-use crate::{McpExtensions, McpOptions, McpToolContext, McpToolRouter};
+use crate::{McpOptions, McpSurface, McpToolContext};
 
 use super::{
     AUTHENTICATED_SESSION_IDLE_TIMEOUT, AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime,
@@ -45,15 +46,17 @@ fn extension_workspace(
     Box::pin(async move {
         Ok(Json(serde_json::json!({
             "workspace": context.workspace().name,
+            "core_tool_count": context.core_tools().definitions().await?.len(),
         })))
     })
 }
 
 fn extension_options() -> McpOptions {
     McpOptions {
-        extensions: McpExtensions::default().add_tools(
-            McpToolRouter::new().with_route((extension_workspace_tool_attr(), extension_workspace)),
-        ),
+        surface: McpSurface::extend([
+            (extension_workspace_tool_attr(), extension_workspace).into_tool_route()
+        ])
+        .expect("build MCP surface"),
         ..McpOptions::default()
     }
 }
@@ -1155,4 +1158,76 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
 
     let _cancel_result = client.cancel().await;
     app_server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn authenticated_extension_uses_its_session_app_client() {
+    let (_live_temp, live_server, live_app) = local_app().await;
+    let (_stopped_temp, stopped_server, stopped_app) = local_app().await;
+    stopped_server
+        .shutdown()
+        .await
+        .expect("stop second app server");
+
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |token| {
+            let app = if token == "token-a" {
+                live_app.clone()
+            } else {
+                stopped_app.clone()
+            };
+            std::future::ready(Ok::<_, ()>(app))
+        },
+        extension_options(),
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let server = start_authenticated(
+        authenticated_config_at("127.0.0.1:0".parse().unwrap()),
+        runtime,
+    )
+    .await
+    .expect("start authenticated MCP HTTP server");
+    let endpoint = format!("http://{}/mcp", server.local_addr());
+
+    let live_client = ()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(endpoint.clone()).auth_header("token-a"),
+        ))
+        .await
+        .expect("initialize live MCP session");
+    let stopped_client = ()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(endpoint).auth_header("token-b"),
+        ))
+        .await
+        .expect("initialize stopped MCP session");
+
+    let live_result = live_client
+        .call_tool(CallToolRequestParams::new("extension_workspace"))
+        .await
+        .expect("live session extension call")
+        .structured_content
+        .expect("live session structured result");
+    assert!(
+        live_result
+            .get("core_tool_count")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count > 0)
+    );
+    stopped_client
+        .call_tool(CallToolRequestParams::new("extension_workspace"))
+        .await
+        .expect_err("stopped session must use its unavailable app client");
+
+    live_client.cancel().await.expect("cancel live MCP client");
+    stopped_client
+        .cancel()
+        .await
+        .expect("cancel stopped MCP client");
+    server.shutdown().await.expect("shutdown MCP HTTP server");
+    live_server
+        .shutdown()
+        .await
+        .expect("shutdown live app server");
 }

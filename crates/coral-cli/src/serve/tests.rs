@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_client::default_workspace;
-use coral_mcp::McpExtensions;
+use coral_mcp::{McpSurface, McpSurfaceProvider, McpSurfaceProviderError, McpToolRoute};
 use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use reqwest::header::WWW_AUTHENTICATE;
@@ -28,9 +28,21 @@ const CORAL_UI_RESOURCE: &str = "https://coral-ui.example";
 
 struct TestMcpProvider;
 
-impl McpExtensionsProvider for TestMcpProvider {
-    fn extensions(&self) -> McpExtensions {
-        McpExtensions::default().retain_tools(["start_task", "list_catalog", "end_task"])
+impl McpSurfaceProvider for TestMcpProvider {
+    fn surface(&self) -> Result<McpSurface, McpSurfaceProviderError> {
+        Ok(McpSurface::replace(
+            std::iter::empty::<McpToolRoute>(),
+            ["start_task", "list_catalog", "end_task"],
+            Some("Use the available Coral catalog tools.".to_string()),
+        )?)
+    }
+}
+
+struct UnexpectedMcpProvider;
+
+impl McpSurfaceProvider for UnexpectedMcpProvider {
+    fn surface(&self) -> Result<McpSurface, McpSurfaceProviderError> {
+        Err(std::io::Error::other("MCP provider ran while MCP HTTP was disabled").into())
     }
 }
 
@@ -417,7 +429,7 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
-        vec![Arc::new(TestMcpProvider)],
+        Some(Arc::new(TestMcpProvider)),
     )
     .await
     .expect("start composite server");
@@ -450,7 +462,6 @@ async fn unconsented_non_loopback_settings_fail_closed_in_serve() {
         None,
         SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         McpOptions::default(),
-        &[],
     )
     .await;
     match result {
@@ -473,7 +484,7 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
-        Vec::new(),
+        None,
     )
     .await
     .expect("start composite server with the exposure opt-in");
@@ -502,7 +513,7 @@ async fn companion_uses_supplied_mcp_options() {
             feedback_enabled: true,
             ..McpOptions::default()
         },
-        Vec::new(),
+        None,
     )
     .await
     .expect("start composite server");
@@ -528,7 +539,7 @@ async fn oauth_and_mcp_companions_serve_and_release_all_listeners() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
-        Vec::new(),
+        None,
     )
     .await
     .expect("start composite server");
@@ -571,7 +582,7 @@ async fn oauth_start_failure_releases_the_started_grpc_listener() {
             .with_noop_feedback_uploads()
             .with_prebound_grpc_listener(grpc_listener),
         McpOptions::default(),
-        Vec::new(),
+        None,
     )
     .await;
     let Err(error) = result else {
@@ -598,7 +609,7 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
-        Vec::new(),
+        None,
     )
     .await
     .expect("start authenticated composite server");
@@ -680,7 +691,7 @@ async fn coral_ui_only_audience_authenticates_private_grpc_without_mcp_http() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
-        Vec::new(),
+        Some(Arc::new(UnexpectedMcpProvider)),
     )
     .await
     .expect("start Coral UI-only authenticated server");
@@ -742,7 +753,7 @@ async fn session_failures_and_restart_are_fail_closed() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
-        Vec::new(),
+        None,
     )
     .await
     .expect("start authenticated composite server");
@@ -768,7 +779,7 @@ async fn session_failures_and_restart_are_fail_closed() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
-        Vec::new(),
+        None,
     )
     .await
     .expect("restart authenticated composite server");
@@ -797,7 +808,7 @@ async fn mcp_start_failure_releases_started_oauth_and_grpc_listeners() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
-        Vec::new(),
+        None,
     )
     .await;
     let Err(error) = result else {

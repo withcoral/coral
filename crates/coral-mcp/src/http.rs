@@ -521,7 +521,7 @@ fn is_loopback(ip: IpAddr) -> bool {
 pub enum McpHttpError {
     /// Static MCP extension composition was invalid.
     #[error(transparent)]
-    Extensions(#[from] crate::McpExtensionsError),
+    Surface(#[from] crate::McpSurfaceError),
     /// Auth-disabled serving is restricted to the local machine unless the
     /// operator consented via [`McpHttpConfig::allow_unauthenticated_non_loopback`].
     #[error("auth-disabled MCP HTTP bind must be loopback, got {0}")]
@@ -633,9 +633,9 @@ fn join_server(
 pub async fn start_auth_disabled(
     config: McpHttpConfig,
     app: AppClient,
-    mut options: McpOptions,
+    options: McpOptions,
 ) -> Result<RunningMcpHttpServer, McpHttpError> {
-    options.extensions.finalize()?;
+    options.surface.validate(options.feedback_enabled)?;
     let listener = TcpListener::bind(config.bind_addr())
         .await
         .map_err(|source| McpHttpError::Bind {
@@ -664,9 +664,12 @@ pub async fn start_auth_disabled(
 /// Returns an error when the listener cannot bind.
 pub async fn start_authenticated(
     config: AuthenticatedMcpHttpConfig,
-    mut runtime: AuthenticatedMcpHttpRuntime,
+    runtime: AuthenticatedMcpHttpRuntime,
 ) -> Result<RunningMcpHttpServer, McpHttpError> {
-    runtime.options.extensions.finalize()?;
+    runtime
+        .options
+        .surface
+        .validate(runtime.options.feedback_enabled)?;
     let listener = TcpListener::bind(config.bind_addr)
         .await
         .map_err(|source| McpHttpError::Bind {
