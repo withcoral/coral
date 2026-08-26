@@ -23,7 +23,9 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, heade
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use coral_api::v1::ListWorkspacesRequest;
-use coral_app::{CanonicalOauthUrl, McpWorkspaceSegment, OauthUrlError, WorkspaceMcpUrls};
+use coral_app::{
+    CanonicalOauthUrl, McpWorkspaceSegment, OauthUrlError, WORKSPACE_ROUTE_SEGMENT, WorkspaceMcpUrls,
+};
 use coral_client::{AppClient, workspace as workspace_proto};
 use futures::{Stream, StreamExt as _};
 use rmcp::model::{
@@ -72,7 +74,13 @@ const METADATA_ROUTE: &str = "/.well-known/oauth-protected-resource/{*resource_p
 /// The auth-disabled listener has no public URL to derive a mount from, so its
 /// workspace routes live under the fixed `/mcp` prefix.
 const AUTH_DISABLED_MCP_PREFIX: &str = "/mcp";
-const AUTH_DISABLED_MCP_WORKSPACE_ROUTE: &str = "/mcp/workspace/{workspace}";
+
+/// The axum route template the auth-disabled listener mounts its workspaces at,
+/// `/mcp/workspace/{workspace}`, with the segment derived from
+/// [`WORKSPACE_ROUTE_SEGMENT`] so it cannot drift from the authenticated surface.
+fn auth_disabled_mcp_workspace_route() -> String {
+    format!("{AUTH_DISABLED_MCP_PREFIX}/{WORKSPACE_ROUTE_SEGMENT}/{{workspace}}")
+}
 /// What an unmatched path is told, in place of a bare not-found.
 ///
 /// The sentence is static on purpose: it names the URL shape — public
@@ -493,7 +501,10 @@ impl AuthenticatedMcpHttpConfig {
     /// the public URL's path so the served paths match the advertised URLs
     /// without any ingress rewriting.
     fn mcp_route(&self) -> String {
-        format!("{}/workspace/{{workspace}}", self.urls.base_path())
+        format!(
+            "{}/{WORKSPACE_ROUTE_SEGMENT}/{{workspace}}",
+            self.urls.base_path()
+        )
     }
 }
 
@@ -847,7 +858,7 @@ fn auth_disabled_router(
         server: server.clone(),
     });
     let router = Router::new()
-        .route(AUTH_DISABLED_MCP_WORKSPACE_ROUTE, any(mcp))
+        .route(&auth_disabled_mcp_workspace_route(), any(mcp))
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
         .fallback(not_an_mcp_endpoint)
@@ -1028,7 +1039,12 @@ async fn evict_deleted_workspaces(
 
 /// Parses `<prefix>/workspace/<segment>` from a raw request path.
 fn parse_workspace_route(path: &str, prefix: &str) -> Option<McpWorkspaceSegment> {
-    McpWorkspaceSegment::parse(path.strip_prefix(prefix)?.strip_prefix("/workspace/")?)
+    McpWorkspaceSegment::parse(
+        path.strip_prefix(prefix)?
+            .strip_prefix('/')?
+            .strip_prefix(WORKSPACE_ROUTE_SEGMENT)?
+            .strip_prefix('/')?,
+    )
 }
 
 /// Answers every path that is not an MCP endpoint on this listener.
