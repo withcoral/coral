@@ -130,9 +130,12 @@ impl WorkspaceAuthorizer {
         }
 
         // The control-plane restriction is evaluated before any role, so a
-        // workspace role can never promote an agent credential: the same
-        // person's browser token manages the workspace and their MCP token
-        // does not.
+        // workspace role can never promote an agent credential. No issuance
+        // path a running server exposes mints one yet — the login token
+        // endpoint hard-codes the user kind, so an MCP client's token carries
+        // the signed-in person's full authority and never trips this gate.
+        // It is the enforcement agent-issued credentials land on once the
+        // server can mint them.
         if principal.kind() == PrincipalKind::Agent && action == WorkspaceAction::Manage {
             return Err(AppError::PermissionDenied(format!(
                 "agent credentials cannot manage workspace '{workspace}'"
