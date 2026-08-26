@@ -42,6 +42,10 @@ export const installCommand = style({
   minWidth: 0,
 })
 
+export const installCommandCell = style({
+  paddingBlock: '14px',
+})
+
 export const installCommandContainer = style({
   display: 'grid',
   gap: '4px',
