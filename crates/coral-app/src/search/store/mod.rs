@@ -14,6 +14,7 @@
 //! Retrieval order is the ranking and must be a deterministic total order,
 //! whichever backend serves it.
 
+mod config;
 mod postgres;
 mod sqlite;
 
@@ -36,6 +37,7 @@ use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
+pub(crate) use config::{ResolvedSearchConfig, SearchConfig, SearchConfigError};
 pub(crate) use postgres::MigratedWorkspaceSchema;
 use postgres::{PostgresSearchError, PostgresSearchStorage, PostgresSearchStore};
 use sqlite::SqliteSearchStorage;
@@ -150,13 +152,6 @@ impl SearchStorage {
     /// One Postgres schema per Workspace in the `[database]` Postgres database, reached
     /// through a small dedicated pool on the same URL. Bootstraps the
     /// registry and verifies `pg_trgm`, failing loud when it is missing.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "selected by the [search] config next in this stack"
-        )
-    )]
     pub(crate) async fn postgres(url: &str, handle: Handle) -> Result<Self, SearchStoreError> {
         Ok(Self {
             backend: SearchStorageBackend::Postgres(
@@ -271,6 +266,12 @@ impl SearchStorage {
             SearchStorageBackend::Sqlite(_) => Ok(Vec::new()),
             SearchStorageBackend::Postgres(storage) => Ok(storage.migrate_all().await?),
         }
+    }
+
+    /// Whether this backend keeps observed values at all; when it does not,
+    /// the capture pipeline has nowhere to write and must not start.
+    pub(crate) fn keeps_observed_values(&self) -> bool {
+        self.observed_values().is_some()
     }
 
     /// The observed-values store, when this backend keeps observed values.
