@@ -59,10 +59,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         TaskQueriesRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "next stack layer wires capture")
-    )]
     fn trace_search_responses(&mut self) -> TraceSearchResponsesRepo<'_, Self> {
         TraceSearchResponsesRepo::new(self)
     }

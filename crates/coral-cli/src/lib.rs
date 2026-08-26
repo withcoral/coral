@@ -674,7 +674,8 @@ fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<
 async fn run_server(
     feature_overrides: coral_app::features::FeatureOverrides,
 ) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_standalone_server(feature_overrides).await?;
+    // Keep the assembled server future out of this command's inline async state.
+    let server = Box::pin(bootstrap::start_standalone_server(feature_overrides)).await?;
     let endpoint = server.endpoint_uri().to_string();
 
     // An endpoint that does not parse back to an address is treated as exposed:

@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use opentelemetry::trace::Status as OtelStatus;
+use opentelemetry::trace::{Status as OtelStatus, TraceContextExt as _};
 use tokio::task;
 use tracing::{Instrument as _, field};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -31,7 +31,8 @@ use crate::search::provider::{
     LocalSearchWriteCoordinator, SearchExecutionContext, SearchProviderRegistry,
 };
 use crate::search::result::{
-    SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse,
+    SearchExecution, SearchExecutionIdentity, SearchManagerError, SearchProviderKind,
+    SearchRequest, SearchResponse,
 };
 use crate::search::sqlite_store::{
     SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
@@ -75,6 +76,11 @@ enum CatalogPreload {
         resolution: Result<CatalogResolution, QueryManagerError>,
     },
     WorkspaceChanged,
+}
+
+struct CompletedSearch {
+    response: SearchResponse,
+    workspace_lifecycle_revision: WorkspaceLifecycleRevision,
 }
 
 impl SearchManager {
@@ -139,7 +145,7 @@ impl SearchManager {
         &self,
         request: &SearchRequest,
         attribution: &QueryAttribution,
-    ) -> Result<SearchResponse, SearchManagerError> {
+    ) -> Result<SearchExecution, SearchManagerError> {
         // The retry/preload path makes this future large enough to trigger
         // Clippy's `large_futures` lint when it is awaited inline.
         Box::pin(run_search_operation(
@@ -164,6 +170,7 @@ impl SearchManager {
                     else {
                         continue;
                     };
+                    let workspace_lifecycle_revision = lifecycle_lease.revision();
                     let (observed_values_policy, lifecycle_lease) =
                         if self.observed_values_search_enabled {
                             let search = self.clone();
@@ -185,7 +192,10 @@ impl SearchManager {
                         resolution,
                         observed_values_policy,
                     );
-                    return Ok(self.engine.search(context).await);
+                    return Ok(CompletedSearch {
+                        response: self.engine.search(context).await,
+                        workspace_lifecycle_revision,
+                    });
                 }
                 Err(workspace_changed_error("searching"))
             },
@@ -646,17 +656,17 @@ async fn run_search_operation<F>(
     request: &SearchRequest,
     task_id: Option<&TaskId>,
     operation: F,
-) -> Result<SearchResponse, SearchManagerError>
+) -> Result<SearchExecution, SearchManagerError>
 where
-    F: Future<Output = Result<SearchResponse, SearchManagerError>>,
+    F: Future<Output = Result<CompletedSearch, SearchManagerError>>,
 {
     let span = create_search_span(request, task_id);
     let result = operation.instrument(span.clone()).await;
     match &result {
-        Ok(response) => {
+        Ok(completed) => {
             span.record(
                 "result_count",
-                u64::try_from(response.results.len()).unwrap_or(u64::MAX),
+                u64::try_from(completed.response.results.len()).unwrap_or(u64::MAX),
             );
             span.record("status", "ok");
             span.set_status(OtelStatus::Ok);
@@ -669,7 +679,21 @@ where
             );
         }
     }
-    result
+    let identity = search_execution_identity(&span);
+    result.map(|completed| SearchExecution {
+        response: completed.response,
+        identity,
+        workspace_lifecycle_revision: completed.workspace_lifecycle_revision,
+    })
+}
+
+fn search_execution_identity(span: &tracing::Span) -> Option<SearchExecutionIdentity> {
+    let context = span.context();
+    let span_context = context.span().span_context().clone();
+    span_context.is_valid().then(|| SearchExecutionIdentity {
+        trace_id: span_context.trace_id().to_string(),
+        span_id: span_context.span_id().to_string(),
+    })
 }
 
 fn create_search_span(request: &SearchRequest, task_id: Option<&TaskId>) -> tracing::Span {
@@ -826,19 +850,22 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        REBUILD_SEARCH_INDEX_OPERATION, SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE,
-        SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE, SEARCH_TELEMETRY_ERROR_MESSAGE,
-        run_search_maintenance_operation, run_search_operation, search_manager_error_message,
+        CompletedSearch, REBUILD_SEARCH_INDEX_OPERATION,
+        SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE, SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE,
+        SEARCH_TELEMETRY_ERROR_MESSAGE, run_search_maintenance_operation, run_search_operation,
+        search_manager_error_message,
     };
     use crate::bootstrap::AppError;
     use crate::search::maintenance::{
         RebuildSearchIndexResponse, SearchMaintenanceResult, SearchMaintenanceState,
     };
     use crate::search::result::{
-        SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse, SearchTruncation,
+        CatalogSurface, FieldValues, SearchManagerError, SearchProviderKind, SearchRequest,
+        SearchResponse, SearchResult, SearchSurfaceId, SearchSurfaceKind, SearchTruncation,
+        SurfaceShape,
     };
     use crate::task::id::TaskId;
-    use crate::workspaces::WorkspaceName;
+    use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName};
 
     #[tokio::test(flavor = "current_thread")]
     async fn search_maintenance_operation_marks_the_outer_query_stream_entry() {
@@ -988,6 +1015,63 @@ mod tests {
         assert!(!format!("{maintenance_span:?}").contains(failure_detail));
     }
 
+    fn response_with_sentinel(request: &SearchRequest, sentinel: &str) -> SearchResponse {
+        SearchResponse {
+            results: vec![SearchResult {
+                surface: CatalogSurface {
+                    id: SearchSurfaceId {
+                        catalog_name: None,
+                        schema_name: "private".to_string(),
+                        name: "surface".to_string(),
+                        kind: SearchSurfaceKind::Table,
+                    },
+                    description: sentinel.to_string(),
+                    guide: sentinel.to_string(),
+                    shape: SurfaceShape::Table { fields: Vec::new() },
+                },
+                providers: vec![SearchProviderKind::CatalogMetadata],
+                matching_values: vec![FieldValues {
+                    field: "secret".to_string(),
+                    values: vec![sentinel.to_string()],
+                }],
+                omitted_matching_field_count: 0,
+            }],
+            provider_statuses: Vec::new(),
+            truncation: SearchTruncation {
+                truncated: false,
+                returned_count: 1,
+                max_results: request.limit,
+                note: "all results returned".to_string(),
+            },
+        }
+    }
+
+    fn active_lifecycle_revision(workspace: &WorkspaceName) -> WorkspaceLifecycleRevision {
+        WorkspaceLifecycleLock::default()
+            .revision_if_active(workspace)
+            .expect("workspace starts active")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_operation_preserves_workspace_lifecycle_revision() {
+        let request =
+            SearchRequest::new(WorkspaceName::default(), "query", 7).expect("valid search request");
+        let workspace_lifecycle_revision = active_lifecycle_revision(&request.workspace_name);
+        let completed = CompletedSearch {
+            response: response_with_sentinel(&request, "sentinel"),
+            workspace_lifecycle_revision,
+        };
+
+        let execution = run_search_operation(&request, None, async { Ok(completed) })
+            .await
+            .expect("search operation");
+
+        assert_eq!(
+            execution.workspace_lifecycle_revision,
+            workspace_lifecycle_revision
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn search_operation_records_safe_summary_metadata() {
         let exporter = InMemorySpanExporter::default();
@@ -1003,18 +1087,15 @@ mod tests {
         let request = SearchRequest::new(WorkspaceName::default(), raw_query, 7)
             .expect("valid search request");
         let task_id = TaskId::parse("550e8400-e29b-41d4-a716-446655440000").expect("valid task id");
-        let response = SearchResponse {
-            results: Vec::new(),
-            provider_statuses: Vec::new(),
-            truncation: SearchTruncation {
-                truncated: false,
-                returned_count: 0,
-                max_results: request.limit,
-                note: "all results returned".to_string(),
-            },
-        };
+        let response_sentinel = "SENSITIVE_SEARCH_RESPONSE_MARKER";
+        let response = response_with_sentinel(&request, response_sentinel);
+        let workspace_lifecycle_revision = active_lifecycle_revision(&request.workspace_name);
 
-        run_search_operation(&request, Some(&task_id), async { Ok(response) })
+        let completed = CompletedSearch {
+            response,
+            workspace_lifecycle_revision,
+        };
+        let execution = run_search_operation(&request, Some(&task_id), async { Ok(completed) })
             .await
             .expect("search operation");
 
@@ -1024,6 +1105,15 @@ mod tests {
             .iter()
             .find(|span| span.name == "coral.search")
             .expect("coral.search span recorded");
+        let execution_identity = execution.identity.expect("valid Search span identity");
+        assert_eq!(
+            execution_identity.trace_id,
+            search_span.span_context.trace_id().to_string()
+        );
+        assert_eq!(
+            execution_identity.span_id,
+            search_span.span_context.span_id().to_string()
+        );
         let attribute = |name: &str| {
             search_span
                 .attributes
@@ -1082,6 +1172,10 @@ mod tests {
             }),
             "a subscriber not installed by Coral must not receive local-only attributes"
         );
+        assert!(
+            !format!("{search_span:?}").contains(response_sentinel),
+            "Search response contents must not be attached to the operation span"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1100,7 +1194,7 @@ mod tests {
         let request =
             SearchRequest::new(WorkspaceName::default(), query, 7).expect("valid search request");
         let error = run_search_operation(&request, None, async {
-            Err::<SearchResponse, SearchManagerError>(
+            Err::<CompletedSearch, SearchManagerError>(
                 AppError::Internal(format!("failed while handling {error_sentinel}")).into(),
             )
         })

@@ -22,8 +22,10 @@ const SENSITIVE_COLUMN_NAMES: &[&str] = &[
     "token",
 ];
 
+pub(in crate::search) const DEFAULT_OBSERVED_VALUE_BYTES_LIMIT: usize = 4 * 1024;
+
 /// Returns whether a field name resembles a credential-bearing field.
-pub(super) fn is_sensitive_column(column_name: &str) -> bool {
+pub(in crate::search) fn is_sensitive_column(column_name: &str) -> bool {
     let normalized = column_name
         .chars()
         .filter(char::is_ascii_alphanumeric)
@@ -50,7 +52,10 @@ pub(super) fn is_sensitive_value(value: &str) -> bool {
 /// Removes recognized secret-bearing fields while preserving safe structured content.
 ///
 /// This is a best-effort heuristic and does not classify arbitrary sensitive data.
-pub(super) fn sanitize_observed_value(value: String, max_value_bytes: usize) -> Option<String> {
+pub(in crate::search) fn sanitize_observed_value(
+    value: String,
+    max_value_bytes: usize,
+) -> Option<String> {
     let sanitized = match sanitize_json(&value)
         .or_else(|| sanitize_url(&value))
         .or_else(|| sanitize_form(&value))

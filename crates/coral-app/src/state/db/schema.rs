@@ -48,10 +48,6 @@ pub(in crate::state::db) enum TaskQueryRelations {
 }
 
 #[derive(Iden)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "next stack layer wires capture")
-)]
 pub(in crate::state::db) enum TraceSearchResponses {
     Table,
     WorkspaceId,

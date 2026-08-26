@@ -43,9 +43,11 @@ use crate::search::maintenance::{
     SearchMaintenanceState, SearchStorageCleanupResult,
 };
 use crate::search::manager::SearchManager;
+use crate::search::response_history::SearchResponseHistory;
+use crate::search::response_safety::sanitize_search_response;
 use crate::search::result::{
-    Field, FieldValues, ProviderCoverage, ProviderStatus, SearchManagerError, SearchProviderKind,
-    SearchProviderState as DomainProviderState, SearchRequest, SearchResponse,
+    Field, FieldValues, ProviderCoverage, ProviderStatus, SearchExecution, SearchManagerError,
+    SearchProviderKind, SearchProviderState as DomainProviderState, SearchRequest, SearchResponse,
     SearchResult as DomainSearchResult, SearchSurfaceId, SurfaceShape,
 };
 use crate::sources::SourceName;
@@ -55,6 +57,7 @@ use crate::transport::{grpc_span, instrument_grpc, request_context, workspace_na
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
+    response_history: Option<SearchResponseHistory>,
     search: SearchManager,
     tasks: TaskManager,
 }
@@ -62,9 +65,15 @@ pub(crate) struct SearchService {
 impl SearchService {
     pub(crate) fn new(search_manager: SearchManager, task_manager: TaskManager) -> Self {
         Self {
+            response_history: None,
             search: search_manager,
             tasks: task_manager,
         }
+    }
+
+    pub(crate) fn with_response_history(mut self, response_history: SearchResponseHistory) -> Self {
+        self.response_history = Some(response_history);
+        self
     }
 }
 
@@ -76,6 +85,7 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoSearchResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let response_history = self.response_history.clone();
         let tasks = self.tasks.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
@@ -89,11 +99,26 @@ impl SearchServiceApi for SearchService {
             );
             let request = SearchRequest::new(workspace_name, &request.query, request.limit)
                 .map_err(search_status)?;
-            let response = search
+            let execution = search
                 .search(&request, &attribution)
                 .await
                 .map_err(search_status)?;
-            Ok(Response::new(search_response_to_proto(response)))
+            let SearchExecution {
+                mut response,
+                identity,
+                workspace_lifecycle_revision,
+            } = execution;
+            sanitize_search_response(&mut response);
+            let response = search_response_to_proto(response);
+            if let Some(response_history) = response_history {
+                response_history.capture(
+                    &request.workspace_name,
+                    workspace_lifecycle_revision,
+                    identity.as_ref(),
+                    &response,
+                );
+            }
+            Ok(Response::new(response))
         }))
         .await
     }

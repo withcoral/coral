@@ -12,7 +12,9 @@ use arrow::util::display::array_value_to_string;
 use coral_spec::DO_NOT_INDEX_COLUMN_METADATA_KEY;
 
 use crate::hash::sha256_hex;
-use crate::search::observed::sensitive::{is_sensitive_column, sanitize_observed_value};
+use crate::search::observed::sensitive::{
+    DEFAULT_OBSERVED_VALUE_BYTES_LIMIT, is_sensitive_column, sanitize_observed_value,
+};
 use crate::search::observed::sqlite_queue::{ObservedValueCandidate, ObservedValuesQueuePayload};
 
 #[derive(Debug, Clone, Default)]
@@ -108,7 +110,6 @@ pub(crate) struct ObservedValuesCollectionBudget {
 const DEFAULT_CANDIDATE_LIMIT: usize = 10_000;
 const DEFAULT_INSPECTED_CELL_LIMIT: usize = 10_000;
 const DEFAULT_CANDIDATE_BYTES_LIMIT: usize = 8 * 1024 * 1024;
-const DEFAULT_VALUE_BYTES_LIMIT: usize = 4 * 1024;
 const DEFAULT_JOB_BYTES_LIMIT: usize = 1024 * 1024;
 
 impl Default for ObservedValuesCollectionBudget {
@@ -117,7 +118,7 @@ impl Default for ObservedValuesCollectionBudget {
             candidate_limit: DEFAULT_CANDIDATE_LIMIT,
             inspected_cell_limit: DEFAULT_INSPECTED_CELL_LIMIT,
             candidate_bytes_limit: DEFAULT_CANDIDATE_BYTES_LIMIT,
-            value_bytes_limit: DEFAULT_VALUE_BYTES_LIMIT,
+            value_bytes_limit: DEFAULT_OBSERVED_VALUE_BYTES_LIMIT,
             job_bytes_limit: DEFAULT_JOB_BYTES_LIMIT,
         }
     }

@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "next stack layer computes Search response retention bounds"
-    )
-)]
-
 use std::time::Duration;
 
 use crate::bootstrap::AppError;

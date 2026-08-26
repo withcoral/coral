@@ -1,10 +1,5 @@
 //! Transactional persistence for workspace-scoped Search response history.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "next stack layer wires capture")
-)]
-
 use std::collections::VecDeque;
 use std::fmt;
 
@@ -185,6 +180,10 @@ impl CoralDb {
             .await
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "next stack layer wires trace reads")
+    )]
     pub(crate) async fn get_trace_search_response(
         &self,
         workspace_id: &str,

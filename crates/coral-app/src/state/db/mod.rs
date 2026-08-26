@@ -16,7 +16,9 @@ mod trace_search_response_state;
 mod transaction;
 mod workspace_state;
 
-pub(crate) use clock::now_unix_nanos_i64;
+#[cfg(test)]
+pub(crate) use clock::TraceSearchResponseRetentionBounds;
+pub(crate) use clock::{now_unix_nanos_i64, trace_search_response_retention_bounds};
 pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
@@ -33,4 +35,7 @@ pub(crate) use task_query_state::{TaskQueryRelationWrite, TaskQueryWrite, TaskQu
 #[cfg(test)]
 pub(crate) use task_state::TaskMutationBarrier;
 pub(crate) use task_state::{TaskCreation, TaskCreationResult};
+pub(crate) use trace_search_response_state::{
+    TraceSearchResponseCapture, TraceSearchResponseInsertResult, TraceSearchResponseOutcome,
+};
 pub(crate) use transaction::CoralTx;

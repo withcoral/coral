@@ -64,7 +64,7 @@ status column.
 Coral builds this memory from values produced by HTTP- and MCP-backed sources while executing SQL queries. It does not crawl your sources in the background or query them when you search.
 
 <Callout icon="lock" color="#30A46C">
-The observed-values index and its stored values stay in the workspace's local search database. Coral does not upload them to a remote search service. Search matches are still returned to the CLI or MCP client that requested them.
+The observed-values index stays in the workspace's local search database; Coral does not upload it to a remote search service. Search matches are returned to the requesting client. When trace history is enabled, the same credential-scrubbed Search response is also retained in the configured Coral database, including PostgreSQL, for Query Stream debugging.
 </Callout>
 
 <Note>
@@ -89,7 +89,7 @@ Ask for the result you want; you do not need to name the `search` tool:
 
 ## Manage observed-value storage
 
-Observed values stay in the workspace's local search database. Coral skips columns with common credential-like names and values that match common secret formats. Source authors can also set `do_not_index: true` on a column to exclude that field before Coral inspects or persists its values. This suppression is best effort, so treat the search database like other local query data.
+The observed-values index stays in the workspace's local search database. Coral skips columns with common credential-like names and values that match common secret formats. Source authors can also set `do_not_index: true` on a column to exclude that field before Coral inspects or persists its values. Coral reapplies the credential scrubber to matching-value evidence before returning and retaining a Search response. This suppression is best effort and is not general PII redaction, so treat both the search database and configured Coral database like other query data.
 
 Collection is automatic when the feature is enabled and a supported source scan runs. Disabling `observed_values_search` stops collection, retrieval, and maintenance, but does not delete observations already stored locally. `do_not_index` remains the field-level source policy for excluding particular columns.
 

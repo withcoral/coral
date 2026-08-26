@@ -7,6 +7,8 @@ pub(crate) mod maintenance;
 pub(crate) mod manager;
 pub(crate) mod observed;
 pub(crate) mod provider;
+pub(crate) mod response_history;
+pub(crate) mod response_safety;
 pub(crate) mod result;
 pub(crate) mod service;
 pub(crate) mod sqlite_store;

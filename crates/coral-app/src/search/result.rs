@@ -1,7 +1,7 @@
 //! Transport-neutral Universal Search request and result models.
 
 use crate::bootstrap::AppError;
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceName};
 
 pub(crate) const DEFAULT_UNIVERSAL_SEARCH_LIMIT: u32 = 10;
 pub(crate) const MAX_UNIVERSAL_SEARCH_LIMIT: u32 = 50;
@@ -79,6 +79,22 @@ pub(crate) struct SearchResponse {
     pub(crate) results: Vec<SearchResult>,
     pub(crate) provider_statuses: Vec<ProviderStatus>,
     pub(crate) truncation: SearchTruncation,
+}
+
+/// One successful Search execution plus the identity of its exact operation
+/// span. The identity stays transport-neutral so the service can map the
+/// response once and decide whether to retain that public representation.
+#[derive(Debug, Clone)]
+pub(crate) struct SearchExecution {
+    pub(crate) response: SearchResponse,
+    pub(crate) identity: Option<SearchExecutionIdentity>,
+    pub(crate) workspace_lifecycle_revision: WorkspaceLifecycleRevision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SearchExecutionIdentity {
+    pub(crate) trace_id: String,
+    pub(crate) span_id: String,
 }
 
 #[derive(Debug, Clone)]

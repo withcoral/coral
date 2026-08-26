@@ -29,6 +29,7 @@ opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
+prost.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
@@ -73,7 +74,6 @@ zbus-secret-service-keyring-store.workspace = true
 
 [dev-dependencies]
 coral-client.workspace = true
-prost.workspace = true
 opentelemetry-proto.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
