@@ -243,6 +243,13 @@ impl SessionTokenVerifier {
         &self.verification_jwks
     }
 
+    /// Validates an access token against an enumerated audience allowlist.
+    ///
+    /// The request path no longer enumerates allowlists — every provider routes
+    /// through [`Self::validate_access_token_where`] with the allowlist config
+    /// guard lifted to `AudiencePolicy` — so this list-form entry point remains
+    /// only as the direct test of that guard's admission and rejection rules.
+    #[cfg(test)]
     pub(crate) fn validate_access_token(
         &self,
         token: &str,
