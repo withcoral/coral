@@ -4,26 +4,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
   completeGuiOnboarding,
-  firstWorkspaceForRequest,
   getGuiOnboardingCompleted,
+  impliedWorkspaceForRequest,
   listWorkspacesForRequest,
   loadOnboardingSampleQuery,
   loadSourcesRouteData,
   runSourcesAction,
 } = vi.hoisted(() => ({
   completeGuiOnboarding: vi.fn(),
-  firstWorkspaceForRequest: vi.fn(),
   getGuiOnboardingCompleted: vi.fn(),
+  impliedWorkspaceForRequest: vi.fn(),
   listWorkspacesForRequest: vi.fn(),
   loadOnboardingSampleQuery: vi.fn(),
   loadSourcesRouteData: vi.fn(),
   runSourcesAction: vi.fn(),
 }))
 
-// The loader lists workspaces (it renders a switcher and 404s when there are
-// none); the action still resolves just the first one.
-vi.mock('@/lib/workspaces.server', () => ({
-  firstWorkspaceForRequest,
+// `pickImpliedWorkspace` stays real, so these cases exercise the actual choice.
+vi.mock('@/lib/workspaces.server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/workspaces.server')>()),
+  impliedWorkspaceForRequest,
   listWorkspacesForRequest,
 }))
 vi.mock('@/lib/gui-onboarding.server', () => ({
@@ -40,17 +40,18 @@ import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
 import { action, loader } from './onboarding'
 
 const workspace = create(WorkspaceSchema, { name: 'analytics' })
+const defaultWorkspace = create(WorkspaceSchema, { name: 'default' })
 
 beforeEach(() => {
   completeGuiOnboarding.mockReset()
-  firstWorkspaceForRequest.mockReset()
+  impliedWorkspaceForRequest.mockReset()
   listWorkspacesForRequest.mockReset()
   getGuiOnboardingCompleted.mockReset()
   loadOnboardingSampleQuery.mockReset()
   loadSourcesRouteData.mockReset()
   runSourcesAction.mockReset()
   getGuiOnboardingCompleted.mockResolvedValue(false)
-  firstWorkspaceForRequest.mockResolvedValue(workspace)
+  impliedWorkspaceForRequest.mockResolvedValue(workspace)
   listWorkspacesForRequest.mockResolvedValue([workspace])
   loadSourcesRouteData.mockResolvedValue({
     entries: [{ installed: true, name: 'github' }],
@@ -101,7 +102,7 @@ describe('onboarding route authentication', () => {
 
     await action(authRouteTestArgs(request, {}, 'coral-access-token'))
 
-    expect(firstWorkspaceForRequest).toHaveBeenCalledWith(request, 'coral-access-token')
+    expect(impliedWorkspaceForRequest).toHaveBeenCalledWith(request, 'coral-access-token')
     expect(runSourcesAction).toHaveBeenCalledWith(request, workspace, 'coral-access-token')
   })
 
@@ -123,6 +124,21 @@ describe('onboarding route authentication', () => {
 })
 
 describe('onboarding server route', () => {
+  it('loads the default workspace even when another workspace is listed first', async () => {
+    listWorkspacesForRequest.mockResolvedValue([workspace, defaultWorkspace])
+    const request = new Request('http://coral-ui.test/onboarding?step=query')
+
+    const result = await loader(authRouteTestArgs(request, {}, null))
+
+    expect(loadSourcesRouteData).toHaveBeenCalledWith(request, defaultWorkspace, null)
+    expect(loadOnboardingSampleQuery).toHaveBeenCalledWith(request, null, 'default')
+    expect(result).toMatchObject({
+      workspaceId: 'default',
+      // The switcher still needs the rest, so the choice must not filter them out.
+      workspaces: [{ name: 'analytics' }, { name: 'default' }],
+    })
+  })
+
   it('replaces completed users directly into the normal app before loading onboarding data', async () => {
     getGuiOnboardingCompleted.mockResolvedValue(true)
     const request = new Request('http://coral-ui.test/onboarding')
@@ -133,7 +149,7 @@ describe('onboarding server route', () => {
     expect((response as Response).status).toBe(302)
     expect((response as Response).headers.get('Location')).toBe('/workspaces/analytics/traces')
     expect((response as Response).headers.get('X-Remix-Replace')).toBe('true')
-    expect(firstWorkspaceForRequest).toHaveBeenCalledWith(request, null)
+    expect(impliedWorkspaceForRequest).toHaveBeenCalledWith(request, null)
     expect(listWorkspacesForRequest).not.toHaveBeenCalled()
     expect(loadSourcesRouteData).not.toHaveBeenCalled()
   })
@@ -190,7 +206,7 @@ describe('onboarding server route', () => {
       status: 404,
       statusText: 'Workspace Not Found',
     })
-    firstWorkspaceForRequest.mockRejectedValueOnce(missingWorkspace)
+    impliedWorkspaceForRequest.mockRejectedValueOnce(missingWorkspace)
 
     await expect(action(authRouteTestArgs(completionRequest(), {}, null))).rejects.toBe(
       missingWorkspace,

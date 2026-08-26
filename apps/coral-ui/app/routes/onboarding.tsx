@@ -8,7 +8,11 @@ import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { COMPLETE_ONBOARDING_INTENT } from '@/lib/gui-onboarding'
 import { getGuiOnboardingCompleted } from '@/lib/gui-onboarding.server'
 import { loadOnboardingSampleQuery } from '@/lib/onboarding-query.server'
-import { firstWorkspaceForRequest, listWorkspacesForRequest } from '@/lib/workspaces.server'
+import {
+  impliedWorkspaceForRequest,
+  listWorkspacesForRequest,
+  pickImpliedWorkspace,
+} from '@/lib/workspaces.server'
 import { routePath } from '@/routing/routemap'
 import { OnboardingView } from '@/views/onboarding/onboarding'
 import { addToast } from '@/wax/components/toast'
@@ -25,12 +29,12 @@ import {
 export async function loader({ context, request }: Route.LoaderArgs) {
   const accessToken = context.get(requestAuthContext).accessToken
   if (await getGuiOnboardingCompleted(request, accessToken)) {
-    const workspace = await firstWorkspaceForRequest(request, accessToken)
+    const workspace = await impliedWorkspaceForRequest(request, accessToken)
     return replace(routePath('workspaceTraces', { workspaceId: workspace.name }))
   }
 
   const workspaces = await listWorkspacesForRequest(request, accessToken)
-  const [workspace] = workspaces
+  const workspace = pickImpliedWorkspace(workspaces)
   if (!workspace) {
     throw new Response('No Coral workspace is configured.', {
       status: 404,
@@ -67,7 +71,7 @@ export async function action({ context, request }: Route.ActionArgs) {
 
   return runSourcesAction(
     request,
-    await firstWorkspaceForRequest(request, accessToken),
+    await impliedWorkspaceForRequest(request, accessToken),
     accessToken,
   )
 }

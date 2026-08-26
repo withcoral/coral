@@ -13,11 +13,21 @@ export async function listWorkspacesForRequest(
   return response.workspaces
 }
 
-export async function firstWorkspaceForRequest(
+export const DEFAULT_WORKSPACE_ID = 'default'
+
+/**
+ * `ListWorkspaces` makes no promise about order: the server sorts by name, so a
+ * workspace named before `default` would otherwise take its place.
+ */
+export function pickImpliedWorkspace(workspaces: readonly Workspace[]): Workspace | undefined {
+  return workspaces.find(({ name }) => name === DEFAULT_WORKSPACE_ID) ?? workspaces[0]
+}
+
+export async function impliedWorkspaceForRequest(
   request: Request,
   accessToken: string | null,
 ): Promise<Workspace> {
-  const [workspace] = await listWorkspacesForRequest(request, accessToken)
+  const workspace = pickImpliedWorkspace(await listWorkspacesForRequest(request, accessToken))
   if (workspace) return workspace
 
   throw new Response('No Coral workspace is configured.', {
