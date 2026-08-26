@@ -139,6 +139,20 @@ describe('onboarding server route', () => {
     })
   })
 
+  it('offers workspace creation instead of a dead-end when the caller has no workspace', async () => {
+    // On a shared server a fresh sign-in carries no memberships, and locally a
+    // fresh install has no workspaces; either way the only creation dialog
+    // lives behind the app shell this route gates, so a 404 here would strand
+    // the caller with no path forward.
+    listWorkspacesForRequest.mockResolvedValue([])
+    const request = new Request('http://coral-ui.test/onboarding')
+
+    const result = await loader(authRouteTestArgs(request, {}, null))
+
+    expect(result).toEqual({ mode: 'create-workspace', runtime: 'web' })
+    expect(loadSourcesRouteData).not.toHaveBeenCalled()
+  })
+
   it('replaces completed users directly into the normal app before loading onboarding data', async () => {
     getGuiOnboardingCompleted.mockResolvedValue(true)
     const request = new Request('http://coral-ui.test/onboarding')
