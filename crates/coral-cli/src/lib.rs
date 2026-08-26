@@ -804,8 +804,13 @@ async fn resolve_workspace(
     sole_membership_workspace(
         memberships
             .into_iter()
-            .map(|membership| membership.workspace.unwrap_or_default().name)
-            .collect(),
+            .map(|membership| {
+                membership
+                    .workspace
+                    .ok_or_else(|| anyhow::anyhow!("list workspaces response missing workspace"))
+                    .map(|workspace| workspace.name)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
     )
 }
 
@@ -828,7 +833,11 @@ fn sole_membership_workspace(mut names: Vec<String>) -> Result<Workspace, CliErr
     } else {
         format!(
             "multiple workspaces are available ({}). Select one with `--workspace NAME` or `CORAL_WORKSPACE`.",
-            names.join(", ")
+            names
+                .iter()
+                .map(|name| name.escape_default().collect::<String>())
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     };
     Err(CliError::WorkspaceSelection { message })
