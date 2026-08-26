@@ -1,5 +1,6 @@
 //! Builds and runs the Coral gRPC server.
 
+use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,7 +54,7 @@ use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
 use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
-use crate::search::store::SearchStorage;
+use crate::search::store::{SearchStorage, SearchStoreError};
 use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
@@ -339,6 +340,10 @@ impl ServerBuilder {
     /// Returns [`AppError`] if the config directory cannot be determined,
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "server bootstrap wires every collaborator once, in dependency order"
+    )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
@@ -380,7 +385,9 @@ impl ServerBuilder {
             Arc::clone(&coral_db),
             diagnostic_reporter.clone(),
         )
-        .with_pool_registry(Arc::clone(&workspace_pool_registry));
+        .with_pool_registry(Arc::clone(&workspace_pool_registry))
+        .with_search_storage(search_storage.clone());
+        sweep_search_storage(&search_storage, &workspace_manager).await?;
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
@@ -478,6 +485,53 @@ fn trace_components_for_store(
             ))),
         }
     })
+}
+
+/// The boot sweep over shared search storage, before serving, like
+/// `coral_db.migrate()`. Workspaces that no longer exist lose their search
+/// state first, so a dead schema at an unknown version cannot block the
+/// migration of the live ones that follows.
+async fn sweep_search_storage(
+    search_storage: &SearchStorage,
+    workspace_manager: &WorkspaceManager,
+) -> Result<(), AppError> {
+    if search_storage.has_workspace_registry() {
+        let live = workspace_manager
+            .list_workspaces()
+            .await?
+            .into_iter()
+            .map(|workspace| workspace.name.as_str().to_string())
+            .collect::<BTreeSet<_>>();
+        let pruned = search_storage
+            .prune_workspaces_except(&live)
+            .await
+            .map_err(|error| search_storage_open_error(&error))?;
+        if !pruned.is_empty() {
+            tracing::warn!(
+                pruned_workspaces = pruned.len(),
+                "removed search state of workspaces that no longer exist"
+            );
+        }
+    }
+    let migrated = search_storage
+        .migrate_all()
+        .await
+        .map_err(|error| search_storage_open_error(&error))?;
+    if !migrated.is_empty() {
+        tracing::info!(
+            migrated_workspace_schemas = migrated.len(),
+            "migrated stale search schemas at startup"
+        );
+    }
+    Ok(())
+}
+
+fn search_storage_open_error(error: &SearchStoreError) -> AppError {
+    if error.is_unsupported() {
+        AppError::FailedPrecondition(format!("search storage is not supported: {error}"))
+    } else {
+        AppError::Internal(format!("search storage failed to open: {error}"))
+    }
 }
 
 fn init_credential_manager(layout: &AppStateLayout) -> Result<CredentialManager, AppError> {
