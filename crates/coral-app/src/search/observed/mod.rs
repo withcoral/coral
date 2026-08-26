@@ -19,13 +19,14 @@ pub(crate) use policy::{
     ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
 };
 pub(crate) use publisher::{SearchObservationHandle, SearchObservationSource};
-pub(crate) use sqlite_projection::ObservedValuesDrainBudget;
+pub(crate) use sqlite_projection::{
+    ObservedValuesDrainBudget, ObservedValuesDrainResult, ObservedValuesRebuildResult,
+    ObservedValuesSearchHits,
+};
 pub(crate) use sqlite_store::{
-    ObservedValuesClearResult, clear_observed_source_in_transaction,
+    ObservedValuesClearResult, SqliteObservedValuesStore, clear_observed_source_in_transaction,
     clear_observed_workspace_in_transaction,
 };
 
 #[cfg(test)]
 pub(crate) use sqlite_queue::{ObservedValuesQueueJob, ObservedValuesSurfaceKind};
-#[cfg(test)]
-pub(crate) use sqlite_store::SqliteObservedValuesStore;
