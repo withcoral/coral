@@ -125,10 +125,6 @@ impl PostgresSearchStorage {
 
     /// Removes the Workspace's registry row and drops its schema. Complete
     /// and instant: no tenant rows survive offboarding.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into Workspace deletion next in this stack")
-    )]
     pub(crate) async fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -140,10 +136,6 @@ impl PostgresSearchStorage {
     /// Removes every registered Workspace that is not in `live` and returns
     /// their names. Runs at boot, before serving, so nothing registers
     /// concurrently.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into the boot sweep next in this stack")
-    )]
     pub(crate) async fn prune_workspaces_except(
         &self,
         live: &BTreeSet<String>,
@@ -200,10 +192,6 @@ impl PostgresSearchStorage {
 
     /// Boot-time ledger sweep: migrates every registered schema that is behind
     /// this binary. A steady-state boot costs one query and does no work.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into the boot sweep next in this stack")
-    )]
     pub(crate) async fn migrate_all(
         &self,
     ) -> Result<Vec<MigratedWorkspaceSchema>, PostgresSearchError> {

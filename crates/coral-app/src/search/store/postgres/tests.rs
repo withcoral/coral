@@ -4,7 +4,10 @@
 //! (`make postgres-tests` provisions one). They share one registry, so every
 //! test works in Workspaces of its own and removes them when done.
 
+use std::sync::LazyLock;
+
 use tokio::runtime::Handle;
+use tokio::sync::Mutex;
 
 use super::{
     PG_TRGM_FEATURE, PostgresSearchError, classify_extension_probe, quote_identifier, schema_name,
@@ -56,6 +59,11 @@ fn newer_schema_versions_are_refused() {
     ));
     assert!(error.is_unsupported());
 }
+
+/// `migrate_all` sweeps every registry row, so a test that plants a
+/// future-version row must not overlap another sweep. Held by the tests that
+/// plant one or sweep.
+static LEDGER_SWEEP_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn postgres_test_url() -> Option<String> {
     bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
@@ -275,6 +283,7 @@ async fn ledger_sweep_migrates_stale_schemas_and_is_idempotent_against_postgres(
     let Some(storage) = open_storage().await else {
         return;
     };
+    let _sweep = LEDGER_SWEEP_LOCK.lock().await;
     // Registered but never migrated: the shape a crash between registration
     // and the first schema transaction leaves behind.
     let stale = unique_workspace("stale");
@@ -348,6 +357,45 @@ async fn ledger_sweep_migrates_stale_schemas_and_is_idempotent_against_postgres(
     assert!(open_error.is_unsupported(), "{open_error}");
 
     delete_workspaces(&storage, &[stale, current]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run the boot order against Postgres"]
+async fn boot_prunes_a_dead_future_version_schema_before_migrating_against_postgres() {
+    let Some(storage) = open_storage().await else {
+        return;
+    };
+    let _sweep = LEDGER_SWEEP_LOCK.lock().await;
+    let dead = unique_workspace("dead-future");
+    {
+        let storage = storage.clone();
+        let dead = dead.clone();
+        blocking(move || {
+            storage.open_workspace(&dead).expect("open");
+        })
+        .await;
+    }
+    set_registry_schema_version(&dead, super::SEARCH_POSTGRES_SCHEMA_VERSION + 1).await;
+    let mut live_names: std::collections::BTreeSet<String> =
+        sqlx::query_scalar("SELECT workspace_name FROM search_registry.workspaces")
+            .fetch_all(&test_pool().await)
+            .await
+            .expect("registered workspaces")
+            .into_iter()
+            .collect();
+    assert!(live_names.remove(dead.as_str()));
+
+    // Boot order: prune first, then migrate. The dead schema's unknown version
+    // must not block the sweep of the live ones.
+    let pruned = storage
+        .prune_workspaces_except(&live_names)
+        .await
+        .expect("prune");
+    assert_eq!(pruned, vec![dead.as_str().to_string()]);
+    storage
+        .migrate_all()
+        .await
+        .expect("sweep succeeds once the dead schema is gone");
 }
 
 #[tokio::test(flavor = "multi_thread")]
