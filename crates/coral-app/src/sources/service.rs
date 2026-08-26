@@ -389,9 +389,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let candidate = sources
                 .describe_source_manifest(&workspace_name, &request.manifest_yaml)
@@ -992,8 +995,8 @@ mod tests {
         statuses
     }
 
-    /// Discovery and configuration reads: the four that answer with what a
-    /// source is configured with.
+    /// Discovery and configuration reads: the five that answer with what a
+    /// source is or would be configured with.
     async fn source_lookup_rpcs(service: &SourceService, principal: &Principal) -> Vec<Status> {
         vec![
             status(
@@ -1006,6 +1009,18 @@ mod tests {
                     ))
                     .await,
                 "DiscoverSources",
+            ),
+            status(
+                service
+                    .describe_source_manifest(request(
+                        DescribeSourceManifestRequest {
+                            workspace: Some(workspace()),
+                            manifest_yaml: String::new(),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "DescribeSourceManifest",
             ),
             status(
                 service
@@ -1134,11 +1149,12 @@ mod tests {
     /// The refusals are proved to be absences rather than error codes. The
     /// config file on disk is unparseable, so any read of installed state
     /// chokes on it, and the owner does choke on it: the four discovery and
-    /// lookup calls, the delete, and the validate all answer `Internal` from
-    /// that read, while the three install paths answer `InvalidArgument` from
-    /// the bundled catalog and the OAuth conversion they reach first. Every
-    /// refused caller answers `PermissionDenied` or `NotFound` instead, and
-    /// leaves the file with the bytes it started with.
+    /// lookup calls that read installed state, the delete, and the validate
+    /// all answer `Internal` from that read, while the manifest description
+    /// and the three install paths answer `InvalidArgument` from the empty
+    /// manifest, the bundled catalog, and the OAuth conversion they reach
+    /// first. Every refused caller answers `PermissionDenied` or `NotFound`
+    /// instead, and leaves the file with the bytes it started with.
     #[tokio::test]
     async fn source_configuration_reaches_only_workspace_owners() {
         let fixture = fixture().await;
@@ -1187,6 +1203,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 Code::Internal,
+                Code::InvalidArgument,
                 Code::Internal,
                 Code::Internal,
                 Code::Internal,
