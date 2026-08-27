@@ -304,6 +304,12 @@ async fn an_owner_reads_the_traces_of_the_workspaces_they_own() {
             ("tf-own-host-trace", None),
         ],
     );
+    deployment
+        .seed_trace_summary("tf-own-mine", "tf-own-mine-trace")
+        .await;
+    deployment
+        .seed_trace_summary("tf-own-theirs", "tf-own-theirs-trace")
+        .await;
     let owner = person(&deployment, &ada).await;
 
     let named = owner
