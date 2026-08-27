@@ -18,6 +18,11 @@ mod transaction;
 mod user_state;
 mod workspace_state;
 
+#[expect(
+    unused_imports,
+    reason = "trace summary repository lands before runtime wiring in the stacked PR sequence"
+)]
+pub(crate) use crate::telemetry::TraceSummaryRecord;
 pub(crate) use clock::now_unix_nanos_i64;
 pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;

@@ -37,7 +37,8 @@ use crate::workspaces::WorkspaceName;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
 pub(crate) use local_store::{
-    TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage, TraceStoreError,
+    StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceQueryHistoryEntry,
+    TraceQueryTableFunctionUsage, TraceQueryTableUsage, TraceStoreError, TraceSummaryRecord,
 };
 pub(crate) use manager::TraceManager;
 
