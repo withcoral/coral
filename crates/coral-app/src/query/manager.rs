@@ -1780,6 +1780,12 @@ mod tests {
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let db = test_db(&layout, &config_store).await;
+        let mut tx = db.begin().await.expect("begin workspace setup");
+        tx.workspaces()
+            .ensure(WorkspaceName::default().as_str(), 1)
+            .await
+            .expect("seed default workspace");
+        tx.commit().await.expect("commit workspace setup");
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
