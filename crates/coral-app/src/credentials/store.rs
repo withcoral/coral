@@ -10,8 +10,11 @@ use std::sync::{Arc, OnceLock};
 use sha2::{Digest as _, Sha256};
 
 use crate::bootstrap::AppError;
+use crate::sources::model::InstalledSource;
 use crate::state::AppStateLayout;
-use crate::state::db::{CoralDb, CredentialDocumentRecord, CredentialDocumentWrite, DbRepos};
+use crate::state::db::{
+    CoralDb, CredentialDocumentRecord, CredentialDocumentWrite, DbRepos, MaterializationRecord,
+};
 use crate::storage::fs as storage_fs;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
@@ -59,6 +62,12 @@ struct CredentialSetRef<'a> {
 pub(super) struct DatabaseCredentialMaterial {
     pub(super) values: BTreeMap<String, String>,
     pub(super) document_version: Option<i64>,
+}
+
+pub(super) struct DatabaseSourceState {
+    pub(super) source: InstalledSource,
+    pub(super) manifest_yaml: Option<String>,
+    pub(super) materialization: Option<MaterializationRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -682,6 +691,40 @@ impl CredentialStore {
         expected_document_version: Option<i64>,
         values: &BTreeMap<String, String>,
     ) -> Result<bool, AppError> {
+        self.replace_database_material_and_source_if_current(
+            workspace_name,
+            credential_set_id,
+            expected_document_version,
+            values,
+            None,
+        )
+    }
+
+    pub(super) fn replace_database_source_material_if_current(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        expected_document_version: Option<i64>,
+        values: &BTreeMap<String, String>,
+        source_state: DatabaseSourceState,
+    ) -> Result<bool, AppError> {
+        self.replace_database_material_and_source_if_current(
+            workspace_name,
+            credential_set_id,
+            expected_document_version,
+            values,
+            Some(source_state),
+        )
+    }
+
+    fn replace_database_material_and_source_if_current(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        expected_document_version: Option<i64>,
+        values: &BTreeMap<String, String>,
+        source_state: Option<DatabaseSourceState>,
+    ) -> Result<bool, AppError> {
         let (database, key_provider) = self.database_parts()?;
         let workspace_name = workspace_name.clone();
         let source_name = credential_set_id.source_name()?;
@@ -689,6 +732,20 @@ impl CredentialStore {
         run_credential_db_operation(async move {
             let now_unix_nanos = now_unix_nanos_i64()?;
             let mut tx = database.begin().await?;
+            if let Some(source_state) = source_state.as_ref() {
+                if tx
+                    .workspaces()
+                    .get(workspace_name.as_str())
+                    .await?
+                    .is_none()
+                {
+                    tx.rollback().await?;
+                    return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+                }
+                tx.sources()
+                    .upsert_source(&workspace_name, &source_state.source, now_unix_nanos)
+                    .await?;
+            }
             let applied = if values.is_empty() {
                 match expected_document_version {
                     Some(version) => {
@@ -709,9 +766,11 @@ impl CredentialStore {
                     &values,
                     key_provider.as_ref(),
                 )?;
-                tx.workspaces()
-                    .ensure(workspace_name.as_str(), now_unix_nanos)
-                    .await?;
+                if source_state.is_none() {
+                    tx.workspaces()
+                        .ensure(workspace_name.as_str(), now_unix_nanos)
+                        .await?;
+                }
                 let write = credential_document_write_from_encrypted(encrypted);
                 match expected_document_version {
                     Some(version) => {
@@ -732,6 +791,26 @@ impl CredentialStore {
                     }
                 }
             };
+            if !applied {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            if let Some(source_state) = source_state {
+                if let Some(manifest_yaml) = source_state.manifest_yaml.as_deref() {
+                    tx.source_manifests()
+                        .upsert(&workspace_name, &source_name, manifest_yaml, now_unix_nanos)
+                        .await?;
+                }
+                if let Some(materialization) = source_state.materialization.as_ref() {
+                    tx.materializations()
+                        .upsert(&workspace_name, &source_name, materialization)
+                        .await?;
+                } else {
+                    tx.materializations()
+                        .remove(&workspace_name, &source_name)
+                        .await?;
+                }
+            }
             tx.commit().await?;
             Ok(applied)
         })

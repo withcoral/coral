@@ -14,6 +14,8 @@ use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
+use crate::sources::model::InstalledSource;
+use crate::state::db::MaterializationRecord;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
 
@@ -426,6 +428,44 @@ impl CredentialMaterialGuard<'_> {
             }
             other => Err(other),
         })
+    }
+
+    pub(crate) fn update_database_source_material_with_state_lock<F, S>(
+        &self,
+        update: F,
+        source: S,
+        manifest_yaml: Option<&str>,
+        materialization: Option<&MaterializationRecord>,
+    ) -> Result<InstalledSource, AppError>
+    where
+        F: Fn(BTreeMap<String, String>) -> Result<BTreeMap<String, String>, AppError>,
+        S: Fn(&[String]) -> InstalledSource,
+    {
+        loop {
+            let current = self
+                .manager
+                .store
+                .read_database_material_for_update(self.workspace_name, self.credential_set_id)?;
+            let updated = update(current.values)?;
+            let stored = source(&visible_material_keys(&updated));
+            if self
+                .manager
+                .store
+                .replace_database_source_material_if_current(
+                    self.workspace_name,
+                    self.credential_set_id,
+                    current.document_version,
+                    &updated,
+                    store::DatabaseSourceState {
+                        source: stored.clone(),
+                        manifest_yaml: manifest_yaml.map(str::to_owned),
+                        materialization: materialization.cloned(),
+                    },
+                )?
+            {
+                return Ok(stored);
+            }
+        }
     }
 
     pub(crate) fn snapshot_material_with_state_lock_held(
