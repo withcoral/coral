@@ -6,6 +6,7 @@ use sqlx::{FromRow, Postgres, Sqlite};
 
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
+use crate::state::db::repositories::credential_documents::CredentialDocumentsRepo;
 use crate::state::db::repositories::feedback_reports::FeedbackReportsRepo;
 use crate::state::db::repositories::gui_onboarding::GuiOnboardingRepo;
 use crate::state::db::repositories::identity_specs::{
@@ -105,6 +106,14 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn materializations(&mut self) -> MaterializationsRepo<'_, Self> {
         MaterializationsRepo::new(self)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the credential runtime is the next stack layer")
+    )]
+    fn credential_documents(&mut self) -> CredentialDocumentsRepo<'_, Self> {
+        CredentialDocumentsRepo::new(self)
     }
 
     fn feedback_reports(&mut self) -> FeedbackReportsRepo<'_, Self> {
