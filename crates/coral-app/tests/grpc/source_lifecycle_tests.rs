@@ -451,7 +451,7 @@ async fn import_duplicate_source_overwrites_existing_source() {
 
 #[tokio::test]
 async fn import_duplicate_source_preserves_database_credentials() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_with_inputs_yaml();
     let variables = || {
         vec![SourceVariable {
