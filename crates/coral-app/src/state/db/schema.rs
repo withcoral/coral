@@ -193,6 +193,7 @@ pub(in crate::state::db) enum FeedbackReports {
     TryingToDo,
     Tried,
     Stuck,
+    TaskId,
     PublishStatus,
     PublishError,
     PublishedAtUnixNanos,

@@ -19,6 +19,7 @@ pub(crate) struct FeedbackReportRecord {
     pub(crate) trying_to_do: String,
     pub(crate) tried: String,
     pub(crate) stuck: String,
+    pub(crate) task_id: Option<String>,
     pub(crate) publish_status: Option<String>,
     pub(crate) publish_error: Option<String>,
     pub(crate) published_at_unix_nanos: Option<i64>,
@@ -31,6 +32,7 @@ struct FeedbackReportRow {
     trying_to_do: String,
     tried: String,
     stuck: String,
+    task_id: Option<String>,
     publish_status: Option<String>,
     publish_error: Option<String>,
     published_at_unix_nanos: Option<i64>,
@@ -44,6 +46,7 @@ impl From<FeedbackReportRow> for FeedbackReportRecord {
             trying_to_do: value.trying_to_do,
             tried: value.tried,
             stuck: value.stuck,
+            task_id: value.task_id,
             publish_status: value.publish_status,
             publish_error: value.publish_error,
             published_at_unix_nanos: value.published_at_unix_nanos,
@@ -112,6 +115,7 @@ where
                 FeedbackReports::TryingToDo,
                 FeedbackReports::Tried,
                 FeedbackReports::Stuck,
+                FeedbackReports::TaskId,
                 FeedbackReports::PublishStatus,
                 FeedbackReports::PublishError,
                 FeedbackReports::PublishedAtUnixNanos,
@@ -123,6 +127,7 @@ where
                 Expr::val(report.trying_to_do.clone()),
                 Expr::val(report.tried.clone()),
                 Expr::val(report.stuck.clone()),
+                Expr::val(report.task_id.clone()),
                 Expr::val(report.publish_status.clone()),
                 Expr::val(report.publish_error.clone()),
                 Expr::val(report.published_at_unix_nanos),
@@ -132,13 +137,14 @@ where
     }
 }
 
-fn record_columns() -> [FeedbackReports; 8] {
+fn record_columns() -> [FeedbackReports; 9] {
     [
         FeedbackReports::Id,
         FeedbackReports::CreatedAtUnixNanos,
         FeedbackReports::TryingToDo,
         FeedbackReports::Tried,
         FeedbackReports::Stuck,
+        FeedbackReports::TaskId,
         FeedbackReports::PublishStatus,
         FeedbackReports::PublishError,
         FeedbackReports::PublishedAtUnixNanos,
@@ -202,6 +208,7 @@ mod tests {
             trying_to_do: "find stale state".to_string(),
             tried: "checked logs".to_string(),
             stuck: "no durable feedback row".to_string(),
+            task_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             publish_status: Some("accepted".to_string()),
             publish_error: None,
             published_at_unix_nanos: Some(99),
@@ -328,6 +335,7 @@ mod tests {
             trying_to_do: "find stale state".to_string(),
             tried: "checked logs".to_string(),
             stuck: "no durable feedback row".to_string(),
+            task_id: None,
             publish_status: Some("accepted".to_string()),
             publish_error: None,
             published_at_unix_nanos: Some(99),

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS feedback_reports (
     trying_to_do TEXT NOT NULL,
     tried TEXT NOT NULL,
     stuck TEXT NOT NULL,
+    task_id TEXT,
     publish_status TEXT,
     publish_error TEXT,
     published_at_unix_nanos BIGINT,
