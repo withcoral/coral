@@ -22,7 +22,7 @@
 
 use std::fs::OpenOptions;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -34,6 +34,14 @@ use coral_client::{AppClient, workspace};
 
 const KUBELET_BUDGET: Duration = Duration::from_secs(1);
 const HOLD: Duration = Duration::from_secs(2);
+
+/// Waits for an OS-thread signal without parking a runtime worker.
+async fn recv_signal(rx: mpsc::Receiver<()>, what: &str) {
+    tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(30)))
+        .await
+        .expect("join recv task")
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+}
 
 async fn probe_once(client: &AppClient) -> Duration {
     let start = Instant::now();
@@ -47,6 +55,7 @@ fn spawn_kubelet_prober(
     endpoint: String,
     stop: Arc<AtomicBool>,
     latencies: Arc<Mutex<Vec<Duration>>>,
+    warmed: mpsc::Sender<()>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -56,6 +65,7 @@ fn spawn_kubelet_prober(
         rt.block_on(async move {
             let client = AppClient::connect(&endpoint).await.expect("prober connect");
             probe_once(&client).await; // warm the readiness cache
+            warmed.send(()).expect("signal prober warmed");
             while !stop.load(Ordering::Relaxed) {
                 let elapsed = probe_once(&client).await;
                 latencies.lock().expect("latencies mutex").push(elapsed);
@@ -66,8 +76,13 @@ fn spawn_kubelet_prober(
 }
 
 /// The slow exclusive holder: models a source install writing through the
-/// state lock on slow storage. Same flock, held from an OS thread.
-fn hold_lock_exclusively(lock_path: std::path::PathBuf) -> std::thread::JoinHandle<()> {
+/// state lock on slow storage. Same flock, held from an OS thread. Sends on
+/// `held` once the lock is actually acquired, so the test can sequence on the
+/// lock itself rather than on wall-clock sleeps a loaded CI runner can miss.
+fn hold_lock_exclusively(
+    lock_path: std::path::PathBuf,
+    held: mpsc::Sender<()>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let file = OpenOptions::new()
             .create(true)
@@ -76,6 +91,7 @@ fn hold_lock_exclusively(lock_path: std::path::PathBuf) -> std::thread::JoinHand
             .open(&lock_path)
             .expect("open lock file");
         file.lock().expect("exclusive flock");
+        held.send(()).expect("signal lock held");
         std::thread::sleep(HOLD);
         drop(file);
     })
@@ -107,15 +123,18 @@ async fn held_state_lock_must_not_starve_liveness() {
 
     let stop = Arc::new(AtomicBool::new(false));
     let latencies: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
+    let (warmed_tx, warmed_rx) = mpsc::channel();
     let poller = spawn_kubelet_prober(
         server.endpoint_uri().to_string(),
         Arc::clone(&stop),
         Arc::clone(&latencies),
+        warmed_tx,
     );
-    std::thread::sleep(Duration::from_millis(500));
+    recv_signal(warmed_rx, "prober warm-up").await;
 
-    let holder = hold_lock_exclusively(config_dir.join(".lock"));
-    std::thread::sleep(Duration::from_millis(200));
+    let (held_tx, held_rx) = mpsc::channel();
+    let holder = hold_lock_exclusively(config_dir.join(".lock"), held_tx);
+    recv_signal(held_rx, "exclusive lock acquisition").await;
 
     // Two trivial queries. Each takes state_lock_shared on a runtime worker.
     let q = |sql: &str| {
