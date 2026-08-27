@@ -256,7 +256,7 @@ jobs:
       - name: Run Postgres database tests
         env:
           CORAL_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-        run: make postgres-tests
+        run: make postgres-test-suite
 
   windows-rust-smoke:
     name: Windows Rust smoke
@@ -711,6 +711,7 @@ jobs:
       [
         changes,
         rust-checks,
+        postgres-database-tests,
         windows-rust-smoke,
         install-script,
         coral-ui-checks,
@@ -734,6 +735,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
+          POSTGRES_DATABASE_TESTS_RESULT: ${{ needs.postgres-database-tests.result }}
           WINDOWS_RUST_SMOKE_RESULT: ${{ needs.windows-rust-smoke.result }}
           INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
           CORAL_UI_CHECKS_RESULT: ${{ needs.coral-ui-checks.result }}
@@ -752,6 +754,7 @@ jobs:
           jobs=(
             "changes:$CHANGES_RESULT"
             "rust-checks:$RUST_CHECKS_RESULT"
+            "postgres-database-tests:$POSTGRES_DATABASE_TESTS_RESULT"
             "windows-rust-smoke:$WINDOWS_RUST_SMOKE_RESULT"
             "install-script:$INSTALL_SCRIPT_RESULT"
             "coral-ui-checks:$CORAL_UI_CHECKS_RESULT"

@@ -303,7 +303,7 @@ mod tests {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let workspace_id = format!("workspace_{suffix}");
         let source_name = format!("source_{suffix}");
-        let mut session = db;
+        let mut session = db.begin().await.expect("begin migration contract tx");
 
         insert_source_catalog_rows(&mut session, &workspace_id, &source_name)
             .await
@@ -326,7 +326,17 @@ mod tests {
                 .expect("read credential revision"),
             uuid::Uuid::nil().to_string()
         );
-        assert_source_catalog_uniqueness_contract(&mut session, &workspace_id, &source_name).await;
+        session
+            .commit()
+            .await
+            .expect("commit seed source catalog rows");
+
+        assert_source_catalog_uniqueness_contract(db, &workspace_id, &source_name).await;
+
+        let mut session = db
+            .begin()
+            .await
+            .expect("begin cascade migration contract tx");
 
         let alternate_workspace_id = format!("alternate_workspace_{suffix}");
         insert_source_catalog_rows(&mut session, &alternate_workspace_id, &source_name)
@@ -382,6 +392,10 @@ mod tests {
                 .expect("count secret keys after workspace delete"),
             0
         );
+        session
+            .commit()
+            .await
+            .expect("commit cascade migration contract tx");
     }
 
     async fn insert_source_catalog_rows<S>(
@@ -399,37 +413,45 @@ mod tests {
         insert_source_secret_key_row(session, workspace_id, source_name, "API_TOKEN").await
     }
 
-    async fn assert_source_catalog_uniqueness_contract<S>(
-        session: &mut S,
+    async fn assert_source_catalog_uniqueness_contract(
+        db: &CoralDb,
         workspace_id: &str,
         source_name: &str,
-    ) where
-        S: DbSession,
-    {
+    ) {
+        let mut tx = db.begin().await.expect("begin duplicate source tx");
         assert!(
-            insert_source_row(session, workspace_id, source_name)
+            insert_source_row(&mut tx, workspace_id, source_name)
                 .await
                 .is_err(),
             "duplicate source identity should fail"
         );
+        tx.rollback().await.expect("rollback duplicate source tx");
+
+        let mut tx = db.begin().await.expect("begin duplicate variable tx");
         assert!(
-            insert_source_variable_row(session, workspace_id, source_name, "REGION", "eu-west-1")
+            insert_source_variable_row(&mut tx, workspace_id, source_name, "REGION", "eu-west-1")
                 .await
                 .is_err(),
             "duplicate source variable key should fail"
         );
+        tx.rollback().await.expect("rollback duplicate variable tx");
+
+        let mut tx = db.begin().await.expect("begin duplicate secret key tx");
         assert!(
-            insert_source_secret_key_row(session, workspace_id, source_name, "OTHER_TOKEN")
+            insert_source_secret_key_row(&mut tx, workspace_id, source_name, "OTHER_TOKEN")
                 .await
                 .is_ok(),
             "distinct source secret keys should be allowed"
         );
         assert!(
-            insert_source_secret_key_row(session, workspace_id, source_name, "API_TOKEN")
+            insert_source_secret_key_row(&mut tx, workspace_id, source_name, "API_TOKEN")
                 .await
                 .is_err(),
             "duplicate source secret key should fail"
         );
+        tx.rollback()
+            .await
+            .expect("rollback duplicate secret key tx");
     }
 
     async fn insert_workspace_row<S>(session: &mut S, workspace_id: &str) -> Result<(), DbError>
@@ -659,11 +681,10 @@ mod tests {
         S: DbSession,
     {
         Ok(session
-            .fetch_all::<(i64,)>(statement)
+            .fetch_all_scalars::<i64>(statement)
             .await?
             .into_iter()
             .next()
-            .expect("count row")
-            .0)
+            .expect("count row"))
     }
 }

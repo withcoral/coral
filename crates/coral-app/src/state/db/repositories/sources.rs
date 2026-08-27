@@ -69,10 +69,10 @@ where
             .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
             .order_by(Sources::Name, Order::Asc)
             .to_owned();
-        let names: Vec<(String,)> = self.session.fetch_all(statement).await?;
+        let names: Vec<String> = self.session.fetch_all_scalars(statement).await?;
         names
             .into_iter()
-            .map(|(name,)| parse_source_name(&name).map(|name| name.as_str().to_string()))
+            .map(|name| parse_source_name(&name).map(|name| name.as_str().to_string()))
             .collect()
     }
 
@@ -567,9 +567,10 @@ mod tests {
     use sqlx::FromRow;
     use sqlx::postgres::PgRow;
     use sqlx::sqlite::SqliteRow;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
     use tokio::sync::Barrier;
 
+    use crate::bootstrap;
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
@@ -672,15 +673,31 @@ mod tests {
             self.after_read().await;
             result
         }
+
+        async fn fetch_all_scalars<T>(
+            &mut self,
+            statement: SelectStatement,
+        ) -> Result<Vec<T>, DbError>
+        where
+            T: Send + Unpin,
+            for<'r> (T,): FromRow<'r, SqliteRow>,
+            for<'r> (T,): FromRow<'r, PgRow>,
+        {
+            let result = {
+                let mut session = self.db;
+                session.fetch_all_scalars(statement).await
+            };
+            self.after_read().await;
+            result
+        }
     }
 
     #[tokio::test]
-    async fn source_repository_round_trips_against_sqlite() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let db = open_sqlite(&layout).await;
-
-        assert_source_repository_round_trip(&db).await;
+    async fn source_repository_round_trips_across_configured_backends() {
+        let (_temp, databases) = configured_databases().await;
+        for db in databases {
+            assert_source_repository_round_trip(&db).await;
+        }
     }
 
     #[tokio::test]
@@ -790,17 +807,29 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn source_repository_round_trips_against_postgres() {
-        let Some(url) = postgres_test_url() else {
-            return;
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
-        db.migrate().await.expect("migrate postgres");
+    async fn source_repository_rejects_source_without_workspace_across_configured_backends() {
+        let (_temp, databases) = configured_databases().await;
+        for db in databases {
+            assert_source_repository_rejects_source_without_workspace(&db).await;
+        }
+    }
 
-        assert_source_repository_round_trip(&db).await;
+    #[tokio::test]
+    async fn source_repository_rejects_invalid_persisted_source_name_across_configured_backends() {
+        let (_temp, databases) = configured_databases().await;
+        for db in databases {
+            assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
+        }
+    }
+
+    async fn configured_databases() -> (TempDir, Vec<CoralDb>) {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let mut databases = vec![open_sqlite(&layout).await];
+        if let Some(db) = open_configured_postgres().await {
+            databases.push(db);
+        }
+        (temp, databases)
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
@@ -813,6 +842,15 @@ mod tests {
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         db
+    }
+
+    async fn open_configured_postgres() -> Option<CoralDb> {
+        let url = postgres_test_url()?;
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        Some(db)
     }
 
     async fn assert_source_repository_round_trip(db: &CoralDb) {
@@ -889,15 +927,7 @@ mod tests {
         assert_eq!(get_source(db, &workspace, &rolled_back.name).await, None);
 
         let zeta_name = zeta.name.clone();
-        let mut tx = db.begin().await.expect("begin remove tx");
-        assert_eq!(
-            tx.sources()
-                .remove_source(&workspace, &zeta_name)
-                .await
-                .expect("remove source"),
-            Some(zeta)
-        );
-        tx.commit().await.expect("commit remove");
+        assert_eq!(remove_source(db, &workspace, &zeta_name).await, Some(zeta));
         assert_eq!(get_source(db, &workspace, &zeta_name).await, None);
 
         assert_source_get_is_coherent_during_replacement(db).await;
@@ -1040,6 +1070,75 @@ mod tests {
         tx.commit().await.expect("commit source write");
     }
 
+    async fn assert_source_repository_rejects_source_without_workspace(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let source = source("orphan", None, [], [], None, SourceOrigin::Bundled);
+        let mut tx = db.begin().await.expect("begin tx");
+
+        let error = tx
+            .sources()
+            .upsert_source(&workspace, &source, 10)
+            .await
+            .expect_err("source rows must require an existing workspace");
+
+        assert!(
+            error.to_string().to_lowercase().contains("foreign key"),
+            "unexpected error: {error}"
+        );
+        tx.rollback().await.expect("rollback failed tx");
+    }
+
+    async fn assert_source_repository_rejects_invalid_persisted_source_name(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let invalid_source_name = "bad/name";
+        let mut tx = db.begin().await.expect("begin invalid source-name tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 10)
+            .await
+            .expect("ensure workspace");
+        tx.execute(
+            Query::insert()
+                .into_table(Sources::Table)
+                .columns([
+                    Sources::WorkspaceId,
+                    Sources::Name,
+                    Sources::Version,
+                    Sources::OriginKind,
+                    Sources::CredentialStorage,
+                    Sources::CreatedAtUnixNanos,
+                    Sources::UpdatedAtUnixNanos,
+                ])
+                .values_panic([
+                    Expr::val(workspace.as_str().to_string()),
+                    Expr::val(invalid_source_name),
+                    Expr::val(Option::<String>::None),
+                    Expr::val(SourceOrigin::Bundled.as_config_value()),
+                    Expr::val(Option::<String>::None),
+                    Expr::val(10),
+                    Expr::val(10),
+                ])
+                .to_owned(),
+        )
+        .await
+        .expect("insert invalid source-name row");
+
+        let error = tx
+            .sources()
+            .list_workspace_source_names(&workspace)
+            .await
+            .expect_err("invalid persisted source name should fail");
+        let DbError::CorruptData(message) = error else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(
+            message.contains("invalid source name 'bad/name'"),
+            "unexpected error: {message}"
+        );
+        tx.rollback()
+            .await
+            .expect("rollback invalid source-name tx");
+    }
+
     async fn source_names(db: &CoralDb, workspace: &WorkspaceName) -> Vec<String> {
         let mut session = db;
         session
@@ -1069,6 +1168,21 @@ mod tests {
             .get_source(workspace, source_name)
             .await
             .expect("get source")
+    }
+
+    async fn remove_source(
+        db: &CoralDb,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Option<InstalledSource> {
+        let mut tx = db.begin().await.expect("begin remove tx");
+        let removed = tx
+            .sources()
+            .remove_source(workspace, source_name)
+            .await
+            .expect("remove source");
+        tx.commit().await.expect("commit remove tx");
+        removed
     }
 
     fn source<const VARIABLES: usize, const SECRETS: usize>(
@@ -1101,13 +1215,9 @@ mod tests {
         WorkspaceName::parse(&format!("source-repository-{nanos}")).expect("workspace name")
     }
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "The ignored Postgres repository harness is explicitly gated by this CI/test-only variable."
-    )]
     fn postgres_test_url() -> Option<String> {
-        std::env::var("CORAL_TEST_POSTGRES_URL")
-            .ok()
+        bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+            .expect("read CORAL_TEST_POSTGRES_URL")
             .filter(|value| !value.is_empty())
     }
 }

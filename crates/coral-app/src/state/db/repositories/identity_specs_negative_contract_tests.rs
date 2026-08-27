@@ -21,7 +21,6 @@ async fn identity_spec_corruption_contract_holds_against_sqlite() {
 }
 
 #[tokio::test]
-#[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared corruption contract against Postgres"]
 async fn identity_spec_corruption_contract_on_postgres() {
     let Some(url) = postgres_test_url() else {
         return;
