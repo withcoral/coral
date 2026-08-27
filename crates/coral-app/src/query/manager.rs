@@ -1076,22 +1076,20 @@ impl QueryManager {
             .installed_sources(workspace_name)
             .await
             .map_err(QueryManagerError::App)?;
-        let (loaded_sources, config) = {
+        let config = {
             let _state_lock = self
                 .config_store
                 .state_lock_shared()
                 .map_err(QueryManagerError::App)?;
-            let config = self
-                .config_store
+            self.config_store
                 .load_config_unlocked()
-                .map_err(QueryManagerError::App)?;
-            let source_load = self
-                .load_query_sources_from_installed(workspace_name, installed_sources)
-                .await
-                .map_err(QueryManagerError::App)?;
-            (source_load.loaded, config)
+                .map_err(QueryManagerError::App)?
         };
-        Ok((loaded_sources, config))
+        let source_load = self
+            .load_query_sources_from_installed(workspace_name, installed_sources)
+            .await
+            .map_err(QueryManagerError::App)?;
+        Ok((source_load.loaded, config))
     }
 
     async fn validate_udf_sql_against_snapshot(

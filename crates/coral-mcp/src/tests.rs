@@ -35,6 +35,7 @@ use rmcp::{
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
+use sqlx::{Row, sqlite::SqliteConnectOptions};
 use tempfile::TempDir;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, Response, Status, transport::Server};
@@ -2438,10 +2439,6 @@ async fn add_function_is_create_only() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "End-to-end feedback coverage verifies the advertised surface, persistence, result contract, and validation together."
-)]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session_with_options(
@@ -2512,22 +2509,12 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     assert_eq!(structured["message"], "Feedback report stored.");
     assert!(structured.get("upload").is_none());
 
-    let raw =
-        fs::read_to_string(feedback_reports_path(temp.path())).expect("feedback file should exist");
-    let records = raw.lines().collect::<Vec<_>>();
-    assert_eq!(records.len(), 1);
-    let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
-    assert_eq!(record["id"], structured["feedback_id"]);
-    assert_eq!(record["workspace"], TEST_WORKSPACE);
-    assert_eq!(record["trying_to_do"], "Fix failing tests");
-    assert_eq!(
-        record["tried"],
-        "Ran cargo test and inspected the failing assertion"
-    );
-    assert_eq!(
-        record["stuck"],
-        "The fixture shape does not match the documented contract"
-    );
+    let db = open_feedback_database(&temp).await;
+    assert_feedback_row_matches(
+        &db,
+        structured["feedback_id"].as_str().expect("feedback id"),
+    )
+    .await;
 
     let blank_feedback = client
         .call_tool(
@@ -2548,11 +2535,43 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .contains("missing string argument 'tried'")
     );
 
-    let raw_after_error = fs::read_to_string(feedback_reports_path(temp.path()))
-        .expect("feedback file should still exist");
-    assert_eq!(raw_after_error.lines().count(), 1);
+    let count = sqlx::query("select count(*) as count from feedback_reports")
+        .fetch_one(&db)
+        .await
+        .expect("count feedback rows")
+        .get::<i64, _>("count");
+    assert_eq!(count, 1);
 
     session.shutdown().await;
+}
+
+async fn open_feedback_database(temp: &TempDir) -> sqlx::SqlitePool {
+    sqlx::SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(temp.path().join("coral-config/coral.db"))
+            .create_if_missing(false),
+    )
+    .await
+    .expect("open feedback database")
+}
+
+async fn assert_feedback_row_matches(db: &sqlx::SqlitePool, feedback_id: &str) {
+    let record =
+        sqlx::query("select id, workspace_id, trying_to_do, tried, stuck from feedback_reports")
+            .fetch_one(db)
+            .await
+            .expect("feedback row should exist");
+    assert_eq!(record.get::<String, _>("id"), feedback_id);
+    assert_eq!(record.get::<String, _>("workspace_id"), TEST_WORKSPACE);
+    assert_eq!(record.get::<String, _>("trying_to_do"), "Fix failing tests");
+    assert_eq!(
+        record.get::<String, _>("tried"),
+        "Ran cargo test and inspected the failing assertion"
+    );
+    assert_eq!(
+        record.get::<String, _>("stuck"),
+        "The fixture shape does not match the documented contract"
+    );
 }
 
 #[tokio::test]
@@ -2587,17 +2606,18 @@ async fn mcp_feedback_tool_always_accepts_task_context() {
         .await
         .expect("task-tagged feedback");
     assert_eq!(feedback.is_error, Some(false));
-    assert_eq!(
-        feedback.structured_content.expect("structured content")["message"],
-        "Feedback report stored."
-    );
+    let structured = feedback.structured_content.expect("structured content");
+    assert_eq!(structured["message"], "Feedback report stored.");
 
-    let raw =
-        fs::read_to_string(feedback_reports_path(temp.path())).expect("feedback file should exist");
-    let records = raw.lines().collect::<Vec<_>>();
-    assert_eq!(records.len(), 1);
-    let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
-    assert_eq!(record["task_id"], task_id);
+    let db = open_feedback_database(&temp).await;
+    let record = sqlx::query("select task_id from feedback_reports")
+        .fetch_one(&db)
+        .await
+        .expect("feedback row should exist");
+    assert_eq!(
+        record.get::<Option<String>, _>("task_id").as_deref(),
+        Some(task_id.as_str())
+    );
 
     let invalid_task_id = client
         .call_tool(
