@@ -135,7 +135,7 @@ impl CredentialManager {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-credentials"))]
     pub(crate) fn replace_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -365,7 +365,7 @@ pub(crate) struct CredentialMaterialGuard<'a> {
 }
 
 impl CredentialMaterialGuard<'_> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-credentials"))]
     pub(crate) fn replace_material(
         &self,
         storage: CredentialStorageKind,

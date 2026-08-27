@@ -686,6 +686,51 @@ fn init_credential_store(
     ))
 }
 
+/// Replaces one source's encrypted database credential document for integration tests.
+#[cfg(feature = "test-credentials")]
+#[doc(hidden)]
+pub async fn replace_database_source_credentials_for_test(
+    config_dir: &std::path::Path,
+    workspace_name: &str,
+    source_name: &str,
+    material: &std::collections::BTreeMap<String, String>,
+) -> Result<(), AppError> {
+    let layout = AppStateLayout::discover(Some(config_dir.to_path_buf()))?;
+    let database = Arc::new(init_database(&layout).await?);
+    let manager = CredentialManager::new(init_credential_store(&layout, &database)?);
+    let workspace_name = crate::workspaces::WorkspaceName::parse(workspace_name)?;
+    let source_name = crate::sources::SourceName::parse(source_name)?;
+    manager.replace_material(
+        &workspace_name,
+        &crate::credentials::CredentialSetId::for_source(&source_name),
+        crate::credentials::CredentialStorageKind::Database,
+        material,
+    )?;
+    Ok(())
+}
+
+/// Reads one source's encrypted database credential document for integration tests.
+#[cfg(feature = "test-credentials")]
+#[doc(hidden)]
+pub async fn read_database_source_credentials_for_test(
+    config_dir: &std::path::Path,
+    workspace_name: &str,
+    source_name: &str,
+) -> Result<std::collections::BTreeMap<String, String>, AppError> {
+    let layout = AppStateLayout::discover(Some(config_dir.to_path_buf()))?;
+    let database = Arc::new(init_database(&layout).await?);
+    let manager = CredentialManager::new(init_credential_store(&layout, &database)?);
+    let workspace_name = crate::workspaces::WorkspaceName::parse(workspace_name)?;
+    let source_name = crate::sources::SourceName::parse(source_name)?;
+    manager
+        .read_material_async(
+            &workspace_name,
+            &crate::credentials::CredentialSetId::for_source(&source_name),
+            crate::credentials::CredentialStorageKind::Database,
+        )
+        .await
+}
+
 fn resolve_configured_credential_encryption_key(
     env_name: Option<&str>,
 ) -> Result<Option<CredentialEncryptionKey>, AppError> {
