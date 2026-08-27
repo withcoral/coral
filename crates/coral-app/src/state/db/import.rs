@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use sha2::{Digest as _, Sha256};
+
 use super::session::DbRepos;
 use super::{CoralDb, CoralTx, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
@@ -28,7 +30,7 @@ pub(crate) async fn run_state_migrations(
     layout: &AppStateLayout,
 ) -> Result<(), AppError> {
     cutover_legacy_workspace_catalog(db, config_store, layout).await?;
-    import_config_source_catalog(db, config_store, now_unix_nanos_i64()?).await?;
+    import_config_source_catalog(db, config_store, layout, now_unix_nanos_i64()?).await?;
     remove_legacy_task_jsonl(config_store, layout)?;
     Ok(())
 }
@@ -160,13 +162,15 @@ fn implicitly_provisioned_workspaces(
 async fn import_config_source_catalog(
     db: &CoralDb,
     config_store: &ConfigStore,
+    layout: &AppStateLayout,
     now_unix_nanos: i64,
 ) -> Result<SourceCatalogImportReport, AppError> {
     let _state_lock = config_store.state_lock_exclusive()?;
     let mut tx = db.begin().await?;
+    let migration_id = source_catalog_import_id(layout);
     if !tx
         .state_migrations()
-        .try_claim(SOURCE_CATALOG_IMPORT_ID, now_unix_nanos)
+        .try_claim(&migration_id, now_unix_nanos)
         .await?
     {
         tx.rollback().await?;
@@ -194,6 +198,11 @@ async fn import_config_source_catalog(
         source_count,
         import_performed: true,
     })
+}
+
+fn source_catalog_import_id(layout: &AppStateLayout) -> String {
+    let digest = Sha256::digest(layout.config_dir().as_os_str().as_encoded_bytes());
+    format!("{SOURCE_CATALOG_IMPORT_ID}:{digest:x}")
 }
 
 async fn import_legacy_workspaces<S>(
@@ -288,9 +297,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        SOURCE_CATALOG_IMPORT_ID, SourceCatalogImportReport, WORKSPACE_CATALOG_CUTOVER_ID,
-        WorkspaceCatalogCutoverReport, cutover_legacy_workspace_catalog,
-        cutover_legacy_workspace_catalog_at, import_config_source_catalog, run_state_migrations,
+        SourceCatalogImportReport, WORKSPACE_CATALOG_CUTOVER_ID, WorkspaceCatalogCutoverReport,
+        cutover_legacy_workspace_catalog, cutover_legacy_workspace_catalog_at,
+        import_config_source_catalog, run_state_migrations, source_catalog_import_id,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -366,7 +375,7 @@ mod tests {
         assert!(
             session
                 .state_migrations()
-                .has_completed(SOURCE_CATALOG_IMPORT_ID)
+                .has_completed(&source_catalog_import_id(&layout))
                 .await
                 .expect("read source import marker")
         );
@@ -454,7 +463,7 @@ mod tests {
             tx.commit().await.expect("commit seed tx");
         }
 
-        let report = import_config_source_catalog(&db, &config_store, 11)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 11)
             .await
             .expect("import config source catalog");
 
@@ -514,7 +523,7 @@ mod tests {
             tx.commit().await.expect("commit seed tx");
         }
 
-        let report = import_config_source_catalog(&db, &config_store, 11)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 11)
             .await
             .expect("import config source catalog");
 
@@ -553,6 +562,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_database_imports_each_local_source_catalog_once() {
+        let temp = tempdir().expect("temp dir");
+        let first_layout =
+            AppStateLayout::discover(Some(temp.path().join("first"))).expect("first layout");
+        let second_layout =
+            AppStateLayout::discover(Some(temp.path().join("second"))).expect("second layout");
+        first_layout.ensure().expect("ensure first layout");
+        second_layout.ensure().expect("ensure second layout");
+        let first_store = ConfigStore::new(first_layout.clone());
+        let second_store = ConfigStore::new(second_layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let first_source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        let second_source = source("slack", None, [], [], None, SourceOrigin::Bundled);
+        for (store, source) in [
+            (&first_store, first_source.clone()),
+            (&second_store, second_source.clone()),
+        ] {
+            store
+                .create_legacy_workspace_entry_for_tests(&workspace)
+                .expect("create legacy workspace entry");
+            store
+                .upsert_source(&workspace, source)
+                .expect("write config source");
+        }
+        let db = open_sqlite(&first_layout).await;
+        cutover_legacy_workspace_catalog_at(&db, &first_store, &first_layout, 10)
+            .await
+            .expect("cut over shared workspace catalog");
+
+        let first_report = import_config_source_catalog(&db, &first_store, &first_layout, 11)
+            .await
+            .expect("import first local source catalog");
+        let second_report = import_config_source_catalog(&db, &second_store, &second_layout, 12)
+            .await
+            .expect("import second local source catalog");
+
+        assert_eq!(first_report.source_count, 1);
+        assert_eq!(second_report.source_count, 1);
+        assert_ne!(
+            source_catalog_import_id(&first_layout),
+            source_catalog_import_id(&second_layout)
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &first_source.name)
+                .await
+                .expect("get first source"),
+            Some(first_source)
+        );
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &second_source.name)
+                .await
+                .expect("get second source"),
+            Some(second_source)
+        );
+        assert!(
+            session
+                .state_migrations()
+                .has_completed(&source_catalog_import_id(&first_layout))
+                .await
+                .expect("read first import marker")
+        );
+        assert!(
+            session
+                .state_migrations()
+                .has_completed(&source_catalog_import_id(&second_layout))
+                .await
+                .expect("read second import marker")
+        );
+    }
+
+    #[tokio::test]
     async fn source_import_rejects_missing_workspace_without_marking_complete() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
@@ -574,7 +659,7 @@ mod tests {
             .await
             .expect("delete imported workspace");
 
-        let error = import_config_source_catalog(&db, &config_store, 11)
+        let error = import_config_source_catalog(&db, &config_store, &layout, 11)
             .await
             .expect_err("missing workspace should reject source import");
 
@@ -595,7 +680,7 @@ mod tests {
         assert!(
             !session
                 .state_migrations()
-                .has_completed(SOURCE_CATALOG_IMPORT_ID)
+                .has_completed(&source_catalog_import_id(&layout))
                 .await
                 .expect("read source import marker")
         );
@@ -895,12 +980,12 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let db = open_sqlite(&layout).await;
 
-        import_config_source_catalog(&db, &config_store, 11)
+        import_config_source_catalog(&db, &config_store, &layout, 11)
             .await
             .expect("initial source import");
         std::fs::write(layout.config_file(), "[[workspaces]\n").expect("corrupt config");
 
-        let report = import_config_source_catalog(&db, &config_store, 12)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 12)
             .await
             .expect("source marker should skip config reload");
 
