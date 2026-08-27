@@ -203,6 +203,7 @@ async fn startup_import_backfills_legacy_v4_materialization() {
 
     {
         let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+        harness.seed_workspace().await;
         harness
             .import_source(
                 manifest_yaml,
