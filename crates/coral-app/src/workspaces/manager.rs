@@ -622,7 +622,8 @@ mod tests {
     use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
+        CoralDb, CreateWorkspaceOutcome, DatabaseConfig, DbRepos, LoginIdentity, LoginProvisioning,
+        ResolvedDatabaseConfig,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{
@@ -1290,15 +1291,18 @@ mod tests {
         // Give the deletion time to reach the state lock it cannot take yet.
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
-        // The blocked deletion must not be holding a database write open, so an
-        // unrelated workspace write still completes.
-        tokio::time::timeout(
+        // Bypass the lifecycle gate held by the deletion and probe the database
+        // directly. The blocked deletion must not have opened a write
+        // transaction before reaching the state lock.
+        let created = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            manager.create_workspace_for_user(&other_name, &owner),
+            db.workspace_state()
+                .create_owned_by(other_name.as_str(), &owner, 1),
         )
         .await
         .expect("blocked deletion should not hold a database transaction")
         .expect("create unrelated workspace");
+        assert_eq!(created, CreateWorkspaceOutcome::Created);
 
         drop(state_lock);
         delete
