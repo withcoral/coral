@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use coral_spec::backends::file::{FileObjectStoreSpec, S3AuthSpec};
 use coral_spec::{
-    AuthSpec, BodySpec, HeaderSpec, ManifestCredentialMethodKind, ManifestInputKind,
-    ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace, TemplatePart,
-    ValidatedSourceManifest, ValueSourceSpec, parse_source_manifest_yaml,
+    AuthSpec, BodySpec, DatabaseConnectionSpec, HeaderSpec, ManifestCredentialMethodKind,
+    ManifestInputKind, ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace,
+    TemplatePart, ValidatedSourceManifest, ValueSourceSpec, parse_source_manifest_yaml,
 };
 use serde_json::Value as JsonValue;
 
@@ -268,11 +268,17 @@ fn validate_v4_source_for_database_persistence(
                 )?;
             }
         }
-        coral_spec::v4::SurfaceRuntimeConfig::Database(_) => {
-            // Database surfaces carry their credentials in the connection
-            // spec, which the database connection layer validates on its
-            // own. There is no surface auth/header/base_url transport to
-            // guard for imported-manifest persistence here.
+        coral_spec::v4::SurfaceRuntimeConfig::Database(runtime) => {
+            let password = match &runtime.connection {
+                DatabaseConnectionSpec::Postgres(connection) => &connection.password,
+                DatabaseConnectionSpec::MySql(connection) => &connection.password,
+                DatabaseConnectionSpec::Sqlite(_) => return Ok(()),
+            };
+            validate_secret_template_for_database_persistence(
+                input_kinds,
+                "surface connection.password",
+                password,
+            )?;
         }
         coral_spec::v4::SurfaceRuntimeConfig::Mcp(runtime) => {
             validate_mcp_server_for_database_persistence(
@@ -878,6 +884,12 @@ mod tests {
         )
     }
 
+    fn minimal_v4_postgres_manifest(inputs: &str, password: &str) -> String {
+        format!(
+            "name: demo\ndsl_version: 4\n{inputs}surface:\n  type: database\n  provider: postgres\n  connection:\n    host: localhost\n    port: \"5432\"\n    database: demo\n    user: demo\n    password: \"{password}\"\n"
+        )
+    }
+
     fn minimal_http_manifest_with_route(route_extra: &str) -> String {
         format!(
             "name: demo\nversion: 1.0.0\ndsl_version: 3\nbackend: http\nbase_url: https://example.com\ntables:\n  - name: messages\n    description: Demo messages\n    filters:\n      - name: id\n    request:\n      method: GET\n      path: /messages\n    requests:\n      - when_filters:\n          - id\n        method: GET\n        path: /messages/{{{{filter.id}}}}\n{route_extra}    response: {{}}\n    columns:\n      - name: id\n        type: Utf8\n"
@@ -1038,6 +1050,10 @@ tables:
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the table keeps every sensitive manifest surface in one persistence contract"
+    )]
     fn database_persistence_rejects_literal_sensitive_values() {
         let cases = [
             (
@@ -1108,6 +1124,17 @@ tables:
                     "  request_headers:\n    - name: Cookie\n      from: literal\n      value: session=hardcoded-token\n",
                 ),
                 "surface request_headers header 'Cookie' must reference a secret input",
+            ),
+            (
+                minimal_v4_postgres_manifest("", "hardcoded-password"),
+                "surface connection.password must reference a secret input",
+            ),
+            (
+                minimal_v4_postgres_manifest(
+                    "inputs:\n  CONNECTION_VALUE:\n    kind: variable\n",
+                    "{{input.CONNECTION_VALUE}}",
+                ),
+                "surface connection.password must reference a secret input",
             ),
             (
                 minimal_http_manifest(
@@ -1298,5 +1325,14 @@ tables:
 
         validate_imported_manifest_database_persistence(&minimal_http_manifest("inputs:\n  API_PASSWORD:\n    kind: secret\nauth:\n  type: BasicAuth\n  username: public-user\n  password: \"{{input.API_PASSWORD}}\"\n"), &BTreeMap::new())
         .expect("public BasicAuth username should be allowed with a secret-backed password");
+
+        validate_imported_manifest_database_persistence(
+            &minimal_v4_postgres_manifest(
+                "inputs:\n  DB_PASSWORD:\n    kind: secret\n",
+                "{{input.DB_PASSWORD}}",
+            ),
+            &BTreeMap::new(),
+        )
+        .expect("database password backed by a secret input should be allowed");
     }
 }
