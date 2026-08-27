@@ -386,6 +386,82 @@ async fn delete_workspace_removes_config_entry_and_workspace_artifacts() {
         !raw.contains("[workspaces.work"),
         "deleted workspace should be removed from config: {raw}"
     );
+
+    harness
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("recreate workspace");
+    let sources = harness
+        .source_client()
+        .list_sources(Request::new(ListSourcesRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("list recreated workspace sources")
+        .into_inner()
+        .sources;
+    assert!(sources.is_empty(), "deleted DB sources should not reappear");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn delete_workspace_restores_db_sources_when_config_delete_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let db_path = temp.path().join("db").join("coral.db");
+    fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[database]\nbackend = \"sqlite\"\npath = \"{}\"\n",
+            db_path.display()
+        ),
+    )
+    .expect("write database config");
+    let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    harness
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("create workspace");
+    import_source_in_workspace(
+        &harness,
+        "work",
+        fixture_manifest_yaml(harness.temp_path()),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await;
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o500))
+        .expect("make config dir read-only");
+    let result = harness
+        .workspace_client()
+        .delete_workspace(Request::new(DeleteWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await;
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700))
+        .expect("restore config dir permissions");
+
+    result.expect_err("config delete should fail");
+    let sources = harness
+        .source_client()
+        .list_sources(Request::new(ListSourcesRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("list restored workspace sources")
+        .into_inner()
+        .sources;
+    assert!(sources.iter().any(|source| source.name == "local_messages"));
 }
 
 #[tokio::test]
@@ -634,6 +710,8 @@ async fn delete_workspace_removes_state_when_trace_cleanup_fails() {
 #[tokio::test]
 async fn delete_workspace_ignores_stale_trace_files_when_trace_history_disabled() {
     let _trace_store_guard = TRACE_STORE_DELETE_TEST_LOCK.lock().await;
+    GrpcHarness::new().await.shutdown().await;
+
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(config_dir.join("telemetry").join("traces")).expect("create trace dir");
