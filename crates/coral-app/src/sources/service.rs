@@ -1160,16 +1160,13 @@ mod tests {
     /// act — the reads included. A member is refused outright rather than
     /// handed a redacted view, and a non-member is told nothing.
     ///
-    /// The refusals are proved to be absences rather than error codes. The
-    /// config file on disk is unparseable, so any remaining read of installed
-    /// state chokes on it, and the owner does choke on it: the three lookup
-    /// calls that still read the file, the delete, and the validate all answer
-    /// `Internal` from that read, while database-backed discovery succeeds.
-    /// The manifest description and the three install paths answer
-    /// `InvalidArgument` from the empty manifest, the bundled catalog, and the
-    /// OAuth conversion they reach first. Every refused caller answers
-    /// `PermissionDenied` or `NotFound` instead, and leaves the file with the
-    /// bytes it started with.
+    /// The owner proves the gate let each request through by reaching its
+    /// underlying outcome: database-backed discovery and listing succeed;
+    /// absent get, info, and delete requests answer `NotFound`; validation
+    /// reaches the unparseable config and answers `Internal`; and manifest
+    /// description plus the three install paths answer `InvalidArgument`.
+    /// Every refused caller answers `PermissionDenied` or `NotFound` instead,
+    /// and leaves the file with the bytes it started with.
     #[tokio::test]
     async fn source_configuration_reaches_only_workspace_owners() {
         let fixture = fixture().await;
@@ -1214,7 +1211,7 @@ mod tests {
                 Some(Code::InvalidArgument),
                 Some(Code::InvalidArgument),
                 Some(Code::InvalidArgument),
-                Some(Code::Internal),
+                Some(Code::NotFound),
                 Some(Code::Internal),
             ],
             "the owner must be stopped by the state or the request, never by the gate"
