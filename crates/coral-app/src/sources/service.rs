@@ -47,8 +47,8 @@ use crate::sources::manager::{
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
-    grpc_span, instrument_grpc, query_status, request_context, validate_source_response_to_proto,
-    workspace_name_from_proto, workspace_to_proto,
+    grpc_span, instrument_grpc, query_status, request_context, spawn_state_locked_operation,
+    validate_source_response_to_proto, workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
 use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName};
@@ -470,9 +470,14 @@ where
     Fut: Future<Output = Result<InstalledSource, Status>> + Send + 'static,
 {
     let (event_tx, event_rx) = mpsc::channel(8);
+    let import = spawn_state_locked_operation(import(ImportSourceEventSender::new(event_tx)));
     Box::pin(ImportSourceResponseStream::new(
         event_rx,
-        Box::pin(import(ImportSourceEventSender::new(event_tx))),
+        Box::pin(async move {
+            import
+                .await
+                .map_err(|error| Status::internal(format!("source import task failed: {error}")))?
+        }),
         response_workspace_name,
     ))
 }
