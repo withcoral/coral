@@ -545,6 +545,13 @@ impl ConfigStore {
         FileLock::shared(self.layout.state_lock()).map_err(Into::into)
     }
 
+    /// Acquires the shared app-state lock without parking a Tokio runtime worker
+    /// while an exclusive mutation is in progress.
+    pub(crate) async fn state_lock_shared_async(&self) -> Result<FileLock, AppError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.state_lock_shared()).await?
+    }
+
     pub(crate) fn state_lock_exclusive(&self) -> Result<FileLock, AppError> {
         FileLock::exclusive(self.layout.state_lock()).map_err(Into::into)
     }

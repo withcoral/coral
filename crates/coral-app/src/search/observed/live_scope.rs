@@ -54,7 +54,7 @@ impl ObservedValuesLiveScopeLoader {
         // contract includes materialized artifacts and per-surface overrides;
         // a separate cache key would duplicate that dependency graph and risk
         // admitting observations under a stale scope.
-        let _state_lock = self.config_store.state_lock_shared()?;
+        let _state_lock = self.config_store.state_lock_shared_async().await?;
         let sources = {
             let mut session = self.db.as_ref();
             session

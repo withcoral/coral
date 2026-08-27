@@ -316,13 +316,12 @@ pub(crate) fn request_context<T>(request: &Request<T>) -> Result<&RequestContext
 /// pool, carrying the caller's tracing span with it.
 ///
 /// Every mutation that holds the exclusive app state file lock across a
-/// database await must be routed through this seam. `flock(2)` blocks the
-/// calling thread, and read paths take the shared state lock directly from
-/// async tasks, so enough concurrent readers park every runtime worker inside
-/// the syscall. A lock holder that needs a free worker to be repolled would
-/// then never reach the point where it releases the lock, and the process
-/// wedges permanently. Running the holder on the blocking pool keeps it
-/// schedulable no matter how many workers are parked.
+/// database await must be routed through this seam. `flock(2)` and the
+/// synchronous persistence tail can block the calling thread, so the holder
+/// belongs on the blocking pool. Async read paths acquire the corresponding
+/// shared lock through `ConfigStore::state_lock_shared_async`; preserving that
+/// pairing leaves runtime workers available to drive the database I/O awaited
+/// here.
 ///
 /// Detaching also decouples the operation from caller cancellation, so
 /// filesystem and credential state that a mutation already staged still

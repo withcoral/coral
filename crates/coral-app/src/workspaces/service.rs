@@ -1066,17 +1066,14 @@ mod tests {
     }
 
     /// `WorkspaceManager::delete_workspace` holds the exclusive app state lock across its database
-    /// awaits, while every read path takes the same blocking shared lock straight from a runtime
-    /// worker. Running the manager call inline on the handler's worker therefore wedges: the worker
-    /// parked in `flock(2)` is the only one that could repoll the lock holder. Routing the call
-    /// through `run_state_locked_mutation` keeps it schedulable.
+    /// awaits. The mutation runs on the blocking pool and a contending async reader acquires its
+    /// shared lock there too, leaving the single runtime worker available to drive database I/O.
     ///
     /// The scenario runs on its own runtime from a helper thread so that a regression fails the
-    /// test on a wall-clock deadline instead of hanging: once the sole worker is parked in
-    /// `flock(2)` nothing is left to advance the runtime's timer, so `tokio::time::timeout` cannot
-    /// be the backstop here.
+    /// test on a wall-clock deadline instead of hanging if either side regresses to a blocking
+    /// runtime-worker acquisition.
     #[test]
-    fn delete_workspace_completes_while_runtime_workers_block_on_the_state_lock() {
+    fn delete_workspace_and_waiting_reader_progress_on_one_runtime_worker() {
         let (done_tx, done_rx) = mpsc::channel();
         thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1084,18 +1081,18 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("single-worker runtime");
-            let name = runtime.block_on(delete_workspace_under_blocked_workers());
+            let name = runtime.block_on(delete_workspace_with_waiting_reader());
             // The receiver is gone only when the deadline below already failed the test.
             drop(done_tx.send(name));
         });
 
         let name = done_rx
             .recv_timeout(Duration::from_secs(20))
-            .expect("workspace deletion must complete while the runtime worker is parked in flock");
+            .expect("workspace deletion and its waiting reader must both complete");
         assert_eq!(name, "work");
     }
 
-    async fn delete_workspace_under_blocked_workers() -> String {
+    async fn delete_workspace_with_waiting_reader() -> String {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1125,7 +1122,7 @@ mod tests {
         );
 
         let deletion_finished = Arc::new(AtomicBool::new(false));
-        let reader = task::spawn(park_worker_on_the_state_lock(
+        let reader = task::spawn(wait_for_the_state_lock(
             config_store,
             layout,
             Arc::clone(&deletion_finished),
@@ -1158,17 +1155,21 @@ mod tests {
             .name
     }
 
-    /// Mimics a catalog or query read: take the blocking shared state lock directly inside an async
-    /// task, so the runtime worker running it parks inside `flock(2)` for as long as the deletion
-    /// holds the lock exclusively.
-    async fn park_worker_on_the_state_lock(
+    /// Mimics a catalog or query read contending with the deletion without parking its runtime
+    /// worker in `flock(2)`.
+    async fn wait_for_the_state_lock(
         config_store: ConfigStore,
         layout: AppStateLayout,
         deletion_finished: Arc<AtomicBool>,
     ) {
         while !deletion_finished.load(Ordering::Acquire) {
             if state_lock_is_held_exclusively(layout.state_lock()) {
-                drop(config_store.state_lock_shared().expect("shared state lock"));
+                drop(
+                    config_store
+                        .state_lock_shared_async()
+                        .await
+                        .expect("shared state lock"),
+                );
                 return;
             }
             task::yield_now().await;
