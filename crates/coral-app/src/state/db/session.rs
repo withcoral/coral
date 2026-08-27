@@ -97,13 +97,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         SourcesRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "imported manifest repository lands before manager wiring in the stacked PR sequence"
-        )
-    )]
     fn source_manifests(&mut self) -> SourceManifestsRepo<'_, Self> {
         SourceManifestsRepo::new(self)
     }
