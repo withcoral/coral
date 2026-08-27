@@ -516,6 +516,27 @@ async fn boot_prune_removes_workspaces_missing_from_the_live_set_against_postgre
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run IDF ranking against Postgres"]
+async fn common_word_noise_is_discounted_against_postgres() {
+    let Some(storage) = open_storage().await else {
+        return;
+    };
+    let workspace = unique_workspace("idf");
+
+    let storage_for_test = storage.clone();
+    let workspace_for_test = workspace.clone();
+    blocking(move || {
+        let store = storage_for_test
+            .open_workspace(&workspace_for_test)
+            .expect("open");
+        contract::assert_rare_terms_outrank_common_noise(&store);
+    })
+    .await;
+
+    delete_workspaces(&storage, &[workspace]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run match semantics against Postgres"]
 async fn match_semantics_follow_the_benchmark_strata_against_postgres() {
     let Some(storage) = open_storage().await else {

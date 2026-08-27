@@ -179,6 +179,74 @@ pub(super) mod contract {
         assert_eq!(entries(&["issue"]), entries(&["issue"]));
     }
 
+    /// The duel regression (research memo 11): a query word present in nearly
+    /// every document must not outrank the query's rare words. Both engines
+    /// discount it through corpus statistics — FTS5's negative-IDF clamp,
+    /// Postgres' document-frequency cap — so the document the rare words name
+    /// comes first. Only the top position is asserted: how far a
+    /// common-word-only match ranks (or whether it is retrieved at all)
+    /// legitimately differs by engine.
+    pub(crate) fn assert_rare_terms_outrank_common_noise(store: &SearchStore) {
+        let catalog = store.catalog();
+        catalog
+            .refresh_projection(&noise_snapshot())
+            .expect("refresh");
+
+        let terms = ["github", "slack", "messages"]
+            .iter()
+            .map(|term| (*term).to_string())
+            .collect::<Vec<_>>();
+        let hits = catalog
+            .search(&terms, 10, CatalogDocumentClass::Entries)
+            .expect("search")
+            .hits;
+
+        assert_eq!(
+            hits.first().map(|hit| hit.doc_id.as_str()),
+            Some("table:slack_messages"),
+            "the rare words must beat twelve documents dense in the common word"
+        );
+    }
+
+    fn noise_snapshot() -> CatalogIndexSnapshot {
+        let table = |doc_id: &str, surface_name: &str, title: &str, description: &str| {
+            CatalogIndexDocument {
+                doc_id: doc_id.to_string(),
+                doc_kind: CatalogIndexDocumentKind::CatalogTable,
+                source_name: "github".to_string(),
+                catalog_name: None,
+                surface_kind: "table".to_string(),
+                surface_name: surface_name.to_string(),
+                field_name: String::new(),
+                field_role: String::new(),
+                qualified_name: format!("github.{surface_name}"),
+                title: title.to_string(),
+                description: description.to_string(),
+                searchable_text: format!("github {surface_name}"),
+            }
+        };
+        let mut documents = (0..12)
+            .map(|index| {
+                table(
+                    &format!("table:github_noise_{index:02}"),
+                    &format!("github_events_{index:02}"),
+                    "github events",
+                    "github events from the github firehose about github activity",
+                )
+            })
+            .collect::<Vec<_>>();
+        documents.push(table(
+            "table:slack_messages",
+            "slack_messages",
+            "slack messages",
+            "Messages posted to Slack channels",
+        ));
+        CatalogIndexSnapshot {
+            fingerprint: "noise-v1".to_string(),
+            documents,
+        }
+    }
+
     fn semantics_snapshot() -> CatalogIndexSnapshot {
         let table = |doc_id: &str, surface_name: &str, title: &str, description: &str| {
             CatalogIndexDocument {
@@ -346,6 +414,16 @@ fn sqlite_store_follows_the_benchmark_match_strata() {
         .expect("open workspace store");
 
     contract::assert_match_semantics(&store);
+}
+
+#[test]
+fn sqlite_store_discounts_common_word_noise() {
+    let (_temp, storage) = sqlite_storage();
+    let store = storage
+        .open_workspace(&WorkspaceName::default())
+        .expect("open workspace store");
+
+    contract::assert_rare_terms_outrank_common_noise(&store);
 }
 
 #[test]
