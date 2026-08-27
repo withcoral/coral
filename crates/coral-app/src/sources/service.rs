@@ -100,7 +100,8 @@ impl SourceServiceApi for SourceService {
             authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources = sources
-                .discover_sources(&workspace_name)
+                .discover_sources_async(workspace_name)
+                .await
                 .map_err(app_status)?
                 .into_iter()
                 .map(candidate_source_to_proto)
@@ -124,11 +125,13 @@ impl SourceServiceApi for SourceService {
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
+            let response_workspace_name = workspace_name.clone();
             let sources: Vec<_> = sources
-                .list_workspace_sources(&workspace_name)
+                .list_workspace_sources_async(workspace_name)
+                .await
                 .map_err(app_status)?
                 .into_iter()
-                .map(|source| installed_source_to_proto(&workspace_name, source))
+                .map(|source| installed_source_to_proto(&response_workspace_name, source))
                 .collect();
             Ok(Response::new(ListSourcesResponse { sources }))
         })
@@ -151,7 +154,8 @@ impl SourceServiceApi for SourceService {
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
-                .get_source(&workspace_name, &source_name)
+                .get_source_async(workspace_name.clone(), source_name)
+                .await
                 .map_err(app_status)?;
             Ok(Response::new(GetSourceResponse {
                 source: Some(installed_source_to_proto(&workspace_name, source)),
@@ -176,7 +180,8 @@ impl SourceServiceApi for SourceService {
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
-                .get_source_info(&workspace_name, &source_name)
+                .get_source_info_async(workspace_name, source_name)
+                .await
                 .map_err(app_status)?;
             Ok(Response::new(GetSourceInfoResponse {
                 source_info: Some(candidate_source_to_proto(source)),
@@ -1252,25 +1257,25 @@ mod tests {
     /// `flock(2)` nothing is left to advance the runtime's timer, so `tokio::time::timeout` cannot
     /// be the backstop here.
     #[test]
-    fn streaming_import_completes_while_runtime_workers_block_on_the_state_lock() {
+    fn streaming_import_and_waiting_reader_progress_on_one_runtime_worker() {
         let (done_tx, done_rx) = std_mpsc::channel();
         thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
                 .build()
                 .expect("single-worker runtime");
-            let name = runtime.block_on(streaming_import_under_blocked_workers());
+            let name = runtime.block_on(streaming_import_with_waiting_reader());
             // The receiver is gone only when the deadline below already failed the test.
             drop(done_tx.send(name));
         });
 
         let name = done_rx
             .recv_timeout(Duration::from_secs(20))
-            .expect("streaming import must complete while the runtime worker is parked in flock");
+            .expect("streaming import and its waiting reader must both complete");
         assert_eq!(name, "imported_messages");
     }
 
-    async fn streaming_import_under_blocked_workers() -> String {
+    async fn streaming_import_with_waiting_reader() -> String {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1296,18 +1301,23 @@ mod tests {
             .await
             .expect("import should take the exclusive state lock");
 
-        // Occupy the runtime's only worker the way every read path does: a blocking shared state
-        // lock acquired directly inside an async task.
+        // Contend for the lock through the async acquisition seam, leaving the runtime's only
+        // worker available to drive the import future.
         let (reader_started_tx, reader_started_rx) = std_mpsc::channel();
         let reader_store = config_store.clone();
         let reader = task::spawn(async move {
             reader_started_tx.send(()).expect("report reader start");
-            drop(reader_store.state_lock_shared().expect("shared state lock"));
+            drop(
+                reader_store
+                    .state_lock_shared_async()
+                    .await
+                    .expect("shared state lock"),
+            );
         });
         reader_started_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("reader task should start");
-        // Give the reader time to reach the blocking `flock(2)` call itself.
+        // Give the reader time to enqueue the blocking-pool acquisition.
         thread::sleep(Duration::from_millis(250));
 
         release_tx

@@ -587,7 +587,8 @@ impl QueryManager {
                 .map_err(QueryManagerError::App)?;
             let _state_lock = self
                 .config_store
-                .state_lock_shared()
+                .state_lock_shared_async()
+                .await
                 .map_err(QueryManagerError::App)?;
             let config = self
                 .config_store
@@ -630,7 +631,7 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
     ) -> Result<(QuerySourceLoad, AppConfig), AppError> {
         self.require_workspace(workspace_name).await?;
-        let _state_lock = self.config_store.state_lock_shared()?;
+        let _state_lock = self.config_store.state_lock_shared_async().await?;
         let config = self.config_store.load_config_unlocked()?;
         let installed_sources = self.installed_sources(workspace_name).await?;
         let sources = self
@@ -1077,7 +1078,8 @@ impl QueryManager {
         let config = {
             let _state_lock = self
                 .config_store
-                .state_lock_shared()
+                .state_lock_shared_async()
+                .await
                 .map_err(QueryManagerError::App)?;
             self.config_store
                 .load_config_unlocked()

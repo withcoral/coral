@@ -90,6 +90,17 @@ impl GrpcHarness {
         .await
     }
 
+    #[expect(
+        dead_code,
+        reason = "resilience coverage lands with the hardening docs PR in the stacked sequence"
+    )]
+    pub(crate) async fn start_with_owned_config_dir(
+        temp_dir: TempDir,
+        config_dir: PathBuf,
+    ) -> Self {
+        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
+    }
+
     pub(crate) async fn shutdown(self) {
         let Self {
             temp_dir,

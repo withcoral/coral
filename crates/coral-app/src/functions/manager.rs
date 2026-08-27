@@ -232,7 +232,8 @@ impl FunctionManager {
             workspace_name,
             &function_name,
             &mut sql_publish_targets,
-        )?;
+        )
+        .await?;
         let runtime_function =
             infer_runtime_function(selected_sources, &mut runtime_config, &function).await?;
         record_sql_publish_target(&runtime_function, &mut sql_publish_targets)?;
@@ -287,7 +288,7 @@ impl FunctionManager {
         InferFuture:
             Future<Output = Result<Vec<Result<CoralSqlFunctionDefinition, AppError>>, AppError>>,
     {
-        let artifacts = self.load_function_artifacts(workspace_name)?;
+        let artifacts = self.load_function_artifacts(workspace_name).await?;
         if artifacts.is_empty() {
             return Ok(Vec::new());
         }
@@ -418,11 +419,11 @@ impl FunctionManager {
         Ok(())
     }
 
-    fn load_function_artifacts(
+    async fn load_function_artifacts(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<FunctionArtifact>, AppError> {
-        let _state_lock = self.config_store.state_lock_shared()?;
+        let _state_lock = self.config_store.state_lock_shared_async().await?;
         let mut artifacts = Vec::new();
         for installed in self
             .config_store
@@ -452,13 +453,13 @@ impl FunctionManager {
         Ok(artifacts)
     }
 
-    fn record_installed_function_sql_publish_targets(
+    async fn record_installed_function_sql_publish_targets(
         &self,
         workspace_name: &WorkspaceName,
         replacing_function: &FunctionName,
         publish_targets: &mut SqlPublishTargets,
     ) -> Result<(), AppError> {
-        for artifact in self.load_function_artifacts(workspace_name)? {
+        for artifact in self.load_function_artifacts(workspace_name).await? {
             if artifact.name == *replacing_function {
                 continue;
             }
