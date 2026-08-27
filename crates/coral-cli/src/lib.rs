@@ -712,7 +712,7 @@ pub async fn run_from_env_with_extensions(extensions: CoralExtensions) -> Result
                 )
                 .await
             };
-            bootstrap.shutdown().await;
+            Box::pin(bootstrap.shutdown()).await;
             result
         }
         RequiredRuntime::None => {
@@ -894,7 +894,7 @@ async fn run_server(
         wait_for_server_shutdown_signal(),
     )
     .await;
-    let shutdown = server.shutdown().await;
+    let shutdown = Box::pin(server.shutdown()).await;
     wait?;
     shutdown?;
     Ok(())

@@ -606,7 +606,9 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     create_test_workspace(server.endpoint_uri()).await;
     assert_catalog_tool(format!("http://{mcp_addr}{}", ws_path(TEST_WORKSPACE_NAME))).await;
     assert_cli_extension_filter(format!("http://{mcp_addr}{}", ws_path(TEST_WORKSPACE_NAME))).await;
-    server.shutdown().await.expect("shutdown composite server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
     drop((grpc_rebound, mcp_rebound));
@@ -664,7 +666,9 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
     // workspace any more, so the fixture creates the one it scopes MCP to.
     create_test_workspace(server.endpoint_uri()).await;
     assert_catalog_tool(format!("http://{dial}{}", ws_path(TEST_WORKSPACE_NAME))).await;
-    server.shutdown().await.expect("shutdown composite server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
 }
 
 #[tokio::test]
@@ -688,7 +692,9 @@ async fn companion_uses_supplied_mcp_options() {
     // workspace MCP is scoped to actually exist.
     create_test_workspace(server.endpoint_uri()).await;
     assert_feedback_tool(format!("http://{mcp_addr}{}", ws_path(TEST_WORKSPACE_NAME))).await;
-    server.shutdown().await.expect("shutdown composite server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
 }
 
 /// The advertised protected-resource identifier and the minted token audience
@@ -725,7 +731,9 @@ async fn oauth_and_mcp_companions_serve_and_release_all_listeners() {
     let metadata = response.text().await.expect("OAuth metadata body");
     assert!(metadata.contains(&format!(r#""issuer":"{OAUTH_ISSUER}""#)));
 
-    server.shutdown().await.expect("shutdown composite server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let oauth_rebound = TcpListener::bind(oauth_addr).expect("OAuth port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
@@ -937,7 +945,9 @@ async fn session_authenticated_companion_scopes_mcp_to_the_urls_workspace() {
          must be refused with the same sentence"
     );
 
-    server.shutdown().await.expect("shutdown composite server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
     drop(mcp_rebound);
 }
@@ -1026,8 +1036,7 @@ async fn coral_ui_only_audience_authenticates_private_grpc_without_mcp_http() {
     let coral_ui_token = session_token(signing_key.as_ref(), CORAL_UI_RESOURCE);
     assert_grpc_authenticated(&server, &coral_ui_token).await;
 
-    server
-        .shutdown()
+    Box::pin(server.shutdown())
         .await
         .expect("shutdown Coral UI-only server");
 }
@@ -1095,7 +1104,7 @@ async fn session_failures_and_restart_are_fail_closed() {
     assert_eq!(expired_rejection, malformed_rejection);
     assert_eq!(expired_rejection, forged_rejection);
     assert_authenticated_surfaces(&server, &mcp_endpoint, &valid).await;
-    server.shutdown().await.expect("first shutdown");
+    Box::pin(server.shutdown()).await.expect("first shutdown");
 
     let restarted = start(
         ServerBuilder::configured_standalone_grpc()
@@ -1112,7 +1121,9 @@ async fn session_failures_and_restart_are_fail_closed() {
         ws_path(TEST_WORKSPACE_NAME)
     );
     assert_authenticated_surfaces(&restarted, &restarted_mcp, &valid).await;
-    restarted.shutdown().await.expect("restarted shutdown");
+    Box::pin(restarted.shutdown())
+        .await
+        .expect("restarted shutdown");
 }
 
 #[tokio::test]
