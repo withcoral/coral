@@ -274,7 +274,7 @@ async fn import_invalid_manifest_returns_invalid_argument() {
 
 #[tokio::test]
 async fn import_rejects_literal_sensitive_auth_header() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -294,7 +294,7 @@ async fn import_rejects_literal_sensitive_auth_header() {
 
 #[tokio::test]
 async fn import_rejects_sensitive_auth_template_backed_by_variable() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
