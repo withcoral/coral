@@ -5,6 +5,35 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 {/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
 
+## [0.15.0](https://github.com/withcoral/coral/compare/v0.14.2...v0.15.0) (2026-08-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** serve each workspace at its own MCP URL ([#2210](https://github.com/withcoral/coral/issues/2210))
+* **app:** make workspace provisioning explicit and bootstrap ownership ([#2209](https://github.com/withcoral/coral/issues/2209))
+* **app:** enforce the authorization matrix across every service ([#2208](https://github.com/withcoral/coral/issues/2208))
+* **app:** persist login identity and workspace membership ([#2207](https://github.com/withcoral/coral/issues/2207))
+
+### Features
+
+* **app:** enforce the authorization matrix across every service ([#2208](https://github.com/withcoral/coral/issues/2208)) ([3d258d4](https://github.com/withcoral/coral/commit/3d258d456bfada7fc08024a2762a3f0f9c0d4131))
+* **app:** make workspace provisioning explicit and bootstrap ownership ([#2209](https://github.com/withcoral/coral/issues/2209)) ([664e12f](https://github.com/withcoral/coral/commit/664e12f0addf33dd92468056e8534acffb8c21b6))
+* **app:** persist login identity and workspace membership ([#2207](https://github.com/withcoral/coral/issues/2207)) ([23d933e](https://github.com/withcoral/coral/commit/23d933e4dfdd9c774b548bd1a90f229d98a4ee77))
+* **desktop:** ship auto-updates to the Windows NSIS installer ([#2246](https://github.com/withcoral/coral/issues/2246)) ([121d07d](https://github.com/withcoral/coral/commit/121d07d097d6c46785bbfc696495bcfc0deb9ccf))
+* **mcp:** add host-owned MCP surfaces ([#2245](https://github.com/withcoral/coral/issues/2245)) ([0941aec](https://github.com/withcoral/coral/commit/0941aecb67d73dfb9bb007af2d4a67ff448e5a57))
+* **mcp:** serve each workspace at its own MCP URL ([#2210](https://github.com/withcoral/coral/issues/2210)) ([b734133](https://github.com/withcoral/coral/commit/b734133102142264a472d6ee223ea85a895bf52b))
+* **reef:** add Windows MCP setup commands ([#2111](https://github.com/withcoral/coral/issues/2111)) ([f4c827a](https://github.com/withcoral/coral/commit/f4c827a563ee063b71cc6631c42a91b4c1ec3080))
+* **xtask:** add gated workspace recovery tooling and access-control docs ([#2211](https://github.com/withcoral/coral/issues/2211)) ([b0deb05](https://github.com/withcoral/coral/commit/b0deb0514795ff888203f76edfbd2281fa1ec99c))
+
+
+### Bug Fixes
+
+* **app:** stop state-lock waits from starving the runtime ([#2265](https://github.com/withcoral/coral/issues/2265)) ([a1b5f53](https://github.com/withcoral/coral/commit/a1b5f5396cf7bd3f11231a37f0c151aa3985dc3d))
+* **coral-ui:** anchor wax Combobox InputGroup to Base UI ([#2262](https://github.com/withcoral/coral/issues/2262)) ([4f67e1c](https://github.com/withcoral/coral/commit/4f67e1cac9aeb63687c12cd5029716f54e0bd842))
+* **coral-ui:** drop the desktop-only notice from onboarding ([#2251](https://github.com/withcoral/coral/issues/2251)) ([09d4651](https://github.com/withcoral/coral/commit/09d465100019c5a5cbfbe9ef282aa475ecbddd12))
+* **coral-ui:** resolve the implied workspace as default ([#2254](https://github.com/withcoral/coral/issues/2254)) ([2eef922](https://github.com/withcoral/coral/commit/2eef9222ad14bea9c8a4925eca0eb3f128bab554))
+
 ## [0.14.2](https://github.com/withcoral/coral/compare/v0.14.1...v0.14.2) (2026-08-25)
 
 
