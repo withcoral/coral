@@ -184,7 +184,14 @@ export function createConfig(
       // script elevates a silent upgrade of one explicitly, since the mode page
       // that would normally ask never runs — but that costs a prompt, and
       // declining it quits the installer with the app already closed and not
-      // relaunched.
+      // relaunched. NsisUpdater.doInstall() spawns detached and returns true on
+      // a pid, so that abort reaches electron-updater as neither an error nor a
+      // completion, and auto-update.ts's hand-off marker then blocks a manual
+      // relaunch of the old build until its TTL expires.
+      //
+      // `allowElevation: false` does not make this unreachable: it only disables
+      // the all-users radio for non-admin users, so a local admin can still pick
+      // per-machine at install time (as can `/allusers`).
       perMachine: false,
     },
   }

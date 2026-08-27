@@ -51,6 +51,53 @@ export function installArgs(platform: NodeJS.Platform): [] | [boolean, boolean] 
   return platform === 'win32' ? [true, true] : []
 }
 
+// What NsisUpdater.doInstall() passes for the installArgs('win32') call above: a
+// silent update that relaunches the app itself. Spelled out because auto-update.ts
+// spawns the installer directly; see watchNsisInstaller.
+export const NSIS_INSTALL_ARGS = ['--updated', '/S', '--force-run']
+
+export interface InstallerProcessLike {
+  on(event: 'error', listener: (error: Error) => void): unknown
+  on(event: 'exit', listener: (code: number | null, signal: string | null) => void): unknown
+}
+
+export interface NsisInstallerHandlers {
+  // The installer could not be started at all. Nothing has happened yet, so the
+  // caller can still fall back to electron-updater's own hand-off.
+  onUnstarted: () => void
+  // The installer ran and exited while this process was still alive, which means
+  // it never installed: an installer that commits kills this process before it
+  // extracts. The caller reports this as an update failure.
+  onExitedWithoutInstalling: (detail: string) => void
+}
+
+// Turns a spawned NSIS installer into a pass/fail signal. NsisUpdater.doInstall()
+// spawns detached and unreferenced and returns true on a pid, so an installer
+// that runs but never installs is invisible to electron-updater — it emits no
+// error and reports no completion, while BaseUpdater.quitAndInstall() quits the
+// app regardless. The installer is its own discriminator: the NSIS app-running
+// check force-kills this process before extracting, and UAC.nsh's RunElevated
+// makes the outer process wait on the elevated fork and adopt its exit code, so
+// an exit seen from here is an install that did not happen.
+export function watchNsisInstaller(
+  child: InstallerProcessLike,
+  handlers: NsisInstallerHandlers,
+): void {
+  let settled = false
+
+  child.on('error', () => {
+    if (settled) return
+    settled = true
+    handlers.onUnstarted()
+  })
+
+  child.on('exit', (code, signal) => {
+    if (settled) return
+    settled = true
+    handlers.onExitedWithoutInstalling(signal ?? `code ${code}`)
+  })
+}
+
 export const STARTUP_UPDATE_CHECK_DELAY_MS = 5000
 // Long-running desktop sessions would otherwise only see new releases after a
 // restart; re-check periodically so a release ships to open apps too. The
