@@ -269,6 +269,23 @@ where
         self.session.execute(statement).await?;
         Ok(removed)
     }
+
+    pub(crate) async fn remove_if_current(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        expected_document_version: i64,
+    ) -> Result<bool, DbError> {
+        let statement = Query::delete()
+            .from_table(CredentialDocuments::Table)
+            .and_where(Expr::col(CredentialDocuments::WorkspaceId).eq(workspace_name.as_str()))
+            .and_where(Expr::col(CredentialDocuments::SourceName).eq(source_name.as_str()))
+            .and_where(
+                Expr::col(CredentialDocuments::DocumentVersion).eq(expected_document_version),
+            )
+            .to_owned();
+        Ok(self.session.execute_rows_affected(statement).await? == 1)
+    }
 }
 
 fn record_columns() -> [CredentialDocuments; 10] {
@@ -454,15 +471,28 @@ mod tests {
             .expect("credential document");
         assert_document(&current, 3, "key-3", b"rewrapped", 10, 30);
 
+        let mut tx = db.begin().await.expect("begin stale remove tx");
+        assert!(
+            !tx.credential_documents()
+                .remove_if_current(&workspace, &source_name, 2)
+                .await
+                .expect("reject stale remove")
+        );
+        tx.commit().await.expect("commit stale remove tx");
+        assert_eq!(
+            get_document(db, &workspace, &source_name).await,
+            Some(current.clone())
+        );
+
         let mut tx = db.begin().await.expect("begin remove tx");
-        let removed = tx
-            .credential_documents()
-            .remove(&workspace, &source_name)
-            .await
-            .expect("remove credential document");
+        assert!(
+            tx.credential_documents()
+                .remove_if_current(&workspace, &source_name, current.document_version)
+                .await
+                .expect("remove current credential document")
+        );
         tx.commit().await.expect("commit remove document");
 
-        assert_eq!(removed, Some(current));
         assert_eq!(get_document(db, &workspace, &source_name).await, None);
     }
 
