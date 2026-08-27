@@ -22,7 +22,6 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 base64.workspace = true
 chrono.workspace = true
 etcetera.workspace = true
-fs2.workspace = true
 keyring-core.workspace = true
 jsonwebtoken.workspace = true
 opentelemetry.workspace = true

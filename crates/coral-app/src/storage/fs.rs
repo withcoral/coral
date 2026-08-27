@@ -5,7 +5,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
 use uuid::Uuid;
 
 pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
@@ -204,15 +203,60 @@ pub(crate) struct FileLock {
 
 impl FileLock {
     pub(crate) fn shared(path: &Path) -> io::Result<Self> {
-        let file = open_lock_file(path)?;
-        file.lock_shared()?;
-        Ok(Self { _file: file })
+        Self::acquire(path, File::try_lock_shared, File::lock_shared)
     }
 
     pub(crate) fn exclusive(path: &Path) -> io::Result<Self> {
+        Self::acquire(path, File::try_lock, File::lock)
+    }
+
+    /// Acquires the lock without parking a Tokio runtime worker for the wait.
+    ///
+    /// `flock(2)` blocks the OS thread and cannot be preempted, and these
+    /// acquisitions run on runtime workers: every query takes the state lock
+    /// shared, while source installs and config writes hold it exclusive
+    /// across filesystem I/O — seconds at a time when the state directory is
+    /// on network storage. Once as many shared waiters as the runtime has
+    /// workers pile up behind one slow exclusive holder, every worker is
+    /// parked in the syscall and the process is gone whole: no health
+    /// endpoints, no accept loop, nothing. On a two-CPU host two concurrent
+    /// queries suffice, and a liveness probe then kills a server that was
+    /// never stuck — only locked. `tests/state_lock_liveness.rs` pins this.
+    ///
+    /// The uncontended path stays a plain try-lock. A contended wait enters
+    /// [`tokio::task::block_in_place`] when — and only when — this thread is a
+    /// multi-thread-runtime worker: the runtime hands its queue to a
+    /// replacement thread, so lock waiters no longer consume the worker pool.
+    /// The flavor guard matters because `block_in_place` panics on a
+    /// current-thread runtime; there, and off-runtime (CLI paths, tests), the
+    /// wait blocks the thread exactly as before, which is the correct
+    /// behavior for a thread no runtime depends on. `spawn_blocking` would be
+    /// the conventional shape, but it forces `async` signatures through the
+    /// synchronous `ConfigStore` surface this lock guards, whose callers are
+    /// sync on purpose — see `state/config.rs`.
+    fn acquire(
+        path: &Path,
+        try_lock: fn(&File) -> Result<(), std::fs::TryLockError>,
+        lock: fn(&File) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let file = open_lock_file(path)?;
-        file.lock_exclusive()?;
+        match try_lock(&file) {
+            Ok(()) => return Ok(Self { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        }
+        in_runtime_blocking_section(|| lock(&file))?;
         Ok(Self { _file: file })
+    }
+}
+
+/// Runs a blocking wait without starving a multi-thread Tokio runtime.
+fn in_runtime_blocking_section<T>(wait: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(wait)
+        }
+        _ => wait(),
     }
 }
 
