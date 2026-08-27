@@ -552,6 +552,56 @@ async fn successful_refresh_is_persisted_before_later_oauth_input_failure() {
         )
         .await;
 
+    let primary_prefix = seed_expired_two_oauth_inputs(&harness, &fixture).await;
+
+    let status = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SELECT id FROM multi_oauth_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
+        }))
+        .await
+        .expect_err("second OAuth refresh should fail query");
+
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert!(
+        status.message().contains("OAuth token refresh failed"),
+        "{status:?}"
+    );
+
+    let forms = fixture.token_forms();
+    assert!(
+        forms.iter().any(|form| {
+            form.get("refresh_token").map(String::as_str) == Some("stored-secondary-refresh-token")
+        }),
+        "second failing refresh should be attempted: {forms:?}"
+    );
+
+    let material = harness
+        .read_database_source_credentials("multi_oauth_messages")
+        .await;
+    assert_eq!(
+        material.get("API_TOKEN").map(String::as_str),
+        Some("refreshed-token")
+    );
+    assert_eq!(
+        material
+            .get(&format!("{primary_prefix}refresh_token"))
+            .map(String::as_str),
+        Some("rotated-refresh-token")
+    );
+    assert_eq!(
+        material.get("SECOND_TOKEN").map(String::as_str),
+        Some("expired-secondary-token")
+    );
+}
+
+async fn seed_expired_two_oauth_inputs(
+    harness: &GrpcHarness,
+    fixture: &RefreshingHttpFixture,
+) -> String {
     let primary_prefix = oauth_metadata_prefix("API_TOKEN");
     let secondary_prefix = oauth_metadata_prefix("SECOND_TOKEN");
     let expired_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
@@ -599,49 +649,7 @@ async fn successful_refresh_is_persisted_before_later_oauth_input_failure() {
     harness
         .replace_database_source_credentials("multi_oauth_messages", &material)
         .await;
-
-    let status = harness
-        .query_client()
-        .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
-            sql: "SELECT id FROM multi_oauth_messages.messages".to_string(),
-            guide_read_context: None,
-            task_attribution: None,
-        }))
-        .await
-        .expect_err("second OAuth refresh should fail query");
-
-    assert_eq!(status.code(), Code::FailedPrecondition);
-    assert!(
-        status.message().contains("OAuth token refresh failed"),
-        "{status:?}"
-    );
-
-    let forms = fixture.token_forms();
-    assert!(
-        forms.iter().any(|form| {
-            form.get("refresh_token").map(String::as_str) == Some("stored-secondary-refresh-token")
-        }),
-        "second failing refresh should be attempted: {forms:?}"
-    );
-
-    let material = harness
-        .read_database_source_credentials("multi_oauth_messages")
-        .await;
-    assert_eq!(
-        material.get("API_TOKEN").map(String::as_str),
-        Some("refreshed-token")
-    );
-    assert_eq!(
-        material
-            .get(&format!("{primary_prefix}refresh_token"))
-            .map(String::as_str),
-        Some("rotated-refresh-token")
-    );
-    assert_eq!(
-        material.get("SECOND_TOKEN").map(String::as_str),
-        Some("expired-secondary-token")
-    );
+    primary_prefix
 }
 
 async fn seed_expired_api_token_material(
