@@ -44,6 +44,7 @@ pub(crate) struct TraceService {
     workspaces: WorkspaceManager,
     authorizer: WorkspaceAuthorizer,
     db: Option<Arc<CoralDb>>,
+    local_store_id: Option<String>,
 }
 
 impl TraceService {
@@ -58,6 +59,7 @@ impl TraceService {
             workspaces,
             authorizer,
             db: None,
+            local_store_id: None,
         }
     }
 
@@ -116,6 +118,7 @@ impl TraceService {
     pub(crate) fn with_db(
         trace_store_file: PathBuf,
         retention: Duration,
+        local_store_id: String,
         db: Arc<CoralDb>,
         workspaces: WorkspaceManager,
         authorizer: WorkspaceAuthorizer,
@@ -125,16 +128,18 @@ impl TraceService {
             workspaces,
             authorizer,
             db: Some(db),
+            local_store_id: Some(local_store_id),
         }
     }
 
     pub(crate) async fn backfill_summaries(
         trace_store_file: PathBuf,
         retention: Duration,
+        store_id: &str,
         db: &CoralDb,
     ) -> Result<usize, DbError> {
         let traces = TraceStore::with_retention(trace_store_file, retention);
-        backfill_trace_summaries(db, &traces).await
+        backfill_trace_summaries(db, &traces, store_id).await
     }
 }
 
@@ -162,10 +167,17 @@ impl TraceServiceApi for TraceService {
             let view = trace_list_view_from_proto(request.view)?;
             let page = match (view, service.db.as_ref(), workspace_name.as_deref()) {
                 (TraceListView::All, Some(db), Some(workspace_name)) => {
+                    let local_store_id = service.local_store_id.as_deref().ok_or_else(|| {
+                        Status::new(
+                            Code::Internal,
+                            "database trace service has no local store id",
+                        )
+                    })?;
                     let mut summaries = list_database_traces(
                         &service.traces,
                         db.as_ref(),
                         workspace_name,
+                        local_store_id,
                         page_size.saturating_add(1),
                         offset,
                     )
@@ -241,7 +253,11 @@ impl TraceServiceApi for TraceService {
     }
 }
 
-async fn backfill_trace_summaries(db: &CoralDb, traces: &TraceStore) -> Result<usize, DbError> {
+async fn backfill_trace_summaries(
+    db: &CoralDb,
+    traces: &TraceStore,
+    store_id: &str,
+) -> Result<usize, DbError> {
     let mut session = db;
     let workspaces = session.workspaces().list().await?;
     let mut imported = 0;
@@ -266,7 +282,7 @@ async fn backfill_trace_summaries(db: &CoralDb, traces: &TraceStore) -> Result<u
                 );
                 continue;
             }
-            upsert_trace_summary(db, &summary).await?;
+            upsert_trace_summary(db, &summary, store_id).await?;
             imported += 1;
         }
     }
@@ -277,6 +293,7 @@ async fn list_database_traces(
     traces: &TraceManager,
     db: &CoralDb,
     workspace_name: &str,
+    local_store_id: &str,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<TraceSummaryRecord>, Status> {
@@ -328,10 +345,21 @@ async fn list_database_traces(
                     valid_seen = valid_seen.saturating_add(1);
                     retained_rows += 1;
                 }
-                // Raw spans are host-local even when the database is shared.
-                // A local miss therefore cannot prove that the summary is
-                // stale: another server may still own the trace detail.
-                Err(TraceManagerError::NotFound { .. }) => retained_rows += 1,
+                Err(TraceManagerError::NotFound { .. }) => {
+                    let mut tx = db.begin().await.map_err(trace_database_status)?;
+                    let deleted = tx
+                        .trace_summaries()
+                        .delete_if_owned(workspace.as_str(), &summary.trace_id, local_store_id)
+                        .await
+                        .map_err(trace_database_status)?;
+                    tx.commit().await.map_err(trace_database_status)?;
+                    if !deleted {
+                        // Raw spans are host-local even when the database is
+                        // shared. A miss only proves staleness for a summary
+                        // this exact local store wrote.
+                        retained_rows += 1;
+                    }
+                }
                 Err(error) => return Err(trace_manager_status(error)),
             }
             if summaries.len() == limit {
@@ -517,7 +545,7 @@ mod tests {
     use crate::telemetry::local_store::TraceScope;
     use crate::telemetry::{
         StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceManager,
-        TraceSummaryRecord,
+        TraceSummaryRecord, local_trace_store_id,
     };
     use crate::workspaces::authorization::{LocalPrincipalPolicy, WorkspaceAuthorizer};
     use crate::workspaces::{MemberRole, WorkspaceManager, WorkspaceName};
@@ -1148,8 +1176,9 @@ mod tests {
         insert_summary(&db, &remote).await;
 
         let traces = TraceStore::with_retention(trace_dir.clone(), Duration::from_mins(1));
+        let local_store_id = local_trace_store_id(&trace_dir).expect("local store id");
         assert_eq!(
-            backfill_trace_summaries(&db, &traces)
+            backfill_trace_summaries(&db, &traces, &local_store_id)
                 .await
                 .expect("backfill trace summaries"),
             1
@@ -1170,7 +1199,7 @@ mod tests {
 
         fs::remove_dir_all(&trace_dir).expect("remove raw trace store");
         assert_eq!(
-            backfill_trace_summaries(&db, &traces)
+            backfill_trace_summaries(&db, &traces, &local_store_id)
                 .await
                 .expect("backfill empty trace store"),
             0
@@ -1187,7 +1216,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exported_summary_is_hidden_but_retained_without_local_details() {
+    async fn exported_summary_is_pruned_without_local_details() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = Arc::new(open_sqlite(&layout).await);
@@ -1199,7 +1228,8 @@ mod tests {
             .get_trace("trace-1".to_string(), TraceScope::workspaces(["work"]))
             .await
             .expect("trace detail");
-        super::super::upsert_trace_summary(db.as_ref(), &trace.summary)
+        let local_store_id = local_trace_store_id(&trace_dir).expect("local store id");
+        super::super::upsert_trace_summary(db.as_ref(), &trace.summary, &local_store_id)
             .await
             .expect("upsert exported summary");
 
@@ -1213,6 +1243,7 @@ mod tests {
         let service = TraceService::with_db(
             trace_dir.clone(),
             Duration::from_mins(1),
+            local_store_id,
             Arc::clone(&db),
             workspaces,
             WorkspaceAuthorizer::with_local_principal_policy(
@@ -1262,7 +1293,60 @@ mod tests {
                 .into_iter()
                 .map(|summary| summary.trace_id)
                 .collect::<Vec<_>>(),
-            vec!["trace-1"]
+            Vec::<String>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_summary_is_hidden_but_retained_without_local_details() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = Arc::new(open_sqlite(&layout).await);
+        let trace_dir = temp.path().join("traces");
+        let local_store_id = local_trace_store_id(&trace_dir).expect("local store id");
+        let remote = summary("remote-trace", "work", 10);
+        insert_summary(db.as_ref(), &remote).await;
+
+        let workspaces = WorkspaceManager::new_for_tests(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+            None,
+            Arc::clone(&db),
+        );
+        let service = TraceService::with_db(
+            trace_dir,
+            Duration::from_mins(1),
+            local_store_id,
+            Arc::clone(&db),
+            workspaces,
+            WorkspaceAuthorizer::with_local_principal_policy(
+                Arc::clone(&db),
+                LocalPrincipalPolicy::ImplicitOwner,
+            ),
+        );
+        let response = TraceServiceApi::list_traces(
+            &service,
+            local(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+                workspace: Some(workspace_proto("work")),
+                view: TraceView::Unspecified as i32,
+            }),
+        )
+        .await
+        .expect("list traces")
+        .into_inner();
+
+        assert!(response.traces.is_empty());
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .trace_summaries()
+                .get("remote-trace")
+                .await
+                .expect("get remote summary")
+                .is_some()
         );
     }
 
@@ -1287,9 +1371,10 @@ mod tests {
         ensure_workspace(&db, &local_workspace).await;
         insert_summary(&db, &summary(&remote_trace, &remote_workspace, 10)).await;
 
+        let local_store_id = local_trace_store_id(&trace_dir).expect("local store id");
         let traces = TraceStore::with_retention(trace_dir, Duration::from_mins(1));
         assert_eq!(
-            backfill_trace_summaries(&db, &traces)
+            backfill_trace_summaries(&db, &traces, &local_store_id)
                 .await
                 .expect("backfill trace summaries"),
             1
@@ -1334,7 +1419,7 @@ mod tests {
         ensure_workspace_in_session(&mut tx, summary.workspace_id.as_deref().expect("workspace"))
             .await;
         tx.trace_summaries()
-            .upsert(summary)
+            .upsert(summary, "remote-test-store")
             .await
             .expect("upsert trace summary");
         tx.commit().await.expect("commit trace summary");

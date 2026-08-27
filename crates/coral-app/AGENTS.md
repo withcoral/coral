@@ -88,7 +88,8 @@ root.
   database write and readback are verified.
 - Keep raw trace spans and optional HTTP/MCP body captures out of the database.
   The database may index trace summaries derived from the local trace span
-  store.
+  store. Stamp each summary with opaque local-store provenance and prune a
+  missing local trace only when that provenance belongs to the current store.
 - Persist DSL v4 imported manifests as authored intent plus durability
   normalization only. Descriptor hashes, generated OpenAPI metadata, semantic
   IR, projections, and package fingerprints belong in materialized artifacts

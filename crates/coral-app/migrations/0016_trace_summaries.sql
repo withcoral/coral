@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS trace_summaries (
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     trace_id TEXT NOT NULL,
+    store_id TEXT NOT NULL,
     root_span_id TEXT NOT NULL,
     name TEXT NOT NULL,
     query TEXT NOT NULL,

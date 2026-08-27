@@ -2,7 +2,8 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ pub(crate) mod service;
 
 use crate::bootstrap::AppError;
 use crate::state::db::{CoralDb, DbError, DbRepos};
+use crate::storage::fs as storage_fs;
 use crate::workspaces::WorkspaceName;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
@@ -53,6 +55,8 @@ static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
 const LOCAL_TRACE_BATCH_DELAY: Duration = Duration::from_millis(50);
 const LOCAL_TRACE_MAX_EXPORT_BATCH_SIZE: usize = 64;
+const LOCAL_TRACE_STORE_ID_FILE: &str = ".store-id";
+const LOCAL_TRACE_STORE_ID_LOCK_FILE: &str = ".store-id.lock";
 const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 const OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES: &[&str] =
     &[coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX];
@@ -134,11 +138,17 @@ pub(crate) fn record_local_only_span_attribute(
 pub(crate) struct InstalledLocalTraceStore {
     pub(crate) dir: PathBuf,
     pub(crate) retention: Duration,
+    pub(crate) store_id: String,
 }
 
 impl InstalledLocalTraceStore {
-    fn new(dir: PathBuf, retention: Duration) -> Self {
-        Self { dir, retention }
+    fn new(dir: PathBuf, retention: Duration) -> Result<Self, AppError> {
+        let store_id = local_trace_store_id(&dir)?;
+        Ok(Self {
+            dir,
+            retention,
+            store_id,
+        })
     }
 }
 
@@ -169,6 +179,7 @@ struct TargetFilteringSpanExporter<E> {
 struct LocalTraceSpanExporter {
     inner: local_store::JsonlSpanExporter,
     trace_store: local_store::TraceStore,
+    store_id: String,
     db: Option<Arc<CoralDb>>,
 }
 
@@ -265,6 +276,7 @@ impl LocalTraceSpanExporter {
                 store.dir.clone(),
                 store.retention,
             ),
+            store_id: store.store_id.clone(),
             db,
         })
     }
@@ -284,7 +296,9 @@ impl SpanExporter for LocalTraceSpanExporter {
                 match self.trace_store.workspace_trace_summaries_sync(&trace_id) {
                     Ok(summaries) => {
                         for summary in summaries {
-                            if let Err(error) = upsert_trace_summary_blocking(db, &summary) {
+                            if let Err(error) =
+                                upsert_trace_summary_blocking(db, &summary, &self.store_id)
+                            {
                                 tracing::warn!(
                                     %trace_id,
                                     detail = %error,
@@ -322,9 +336,10 @@ impl SpanExporter for LocalTraceSpanExporter {
 async fn upsert_trace_summary(
     db: &CoralDb,
     summary: &local_store::TraceSummaryRecord,
+    store_id: &str,
 ) -> Result<(), DbError> {
     let mut tx = db.begin().await?;
-    tx.trace_summaries().upsert(summary).await?;
+    tx.trace_summaries().upsert(summary, store_id).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -332,14 +347,38 @@ async fn upsert_trace_summary(
 fn upsert_trace_summary_blocking(
     db: &CoralDb,
     summary: &local_store::TraceSummaryRecord,
+    store_id: &str,
 ) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("failed to create trace summary export runtime: {error}"))?;
     runtime
-        .block_on(upsert_trace_summary(db, summary))
+        .block_on(upsert_trace_summary(db, summary, store_id))
         .map_err(|error| error.to_string())
+}
+
+fn local_trace_store_id(trace_store_dir: &Path) -> Result<String, AppError> {
+    storage_fs::ensure_private_dir(trace_store_dir)?;
+    let _lock =
+        storage_fs::FileLock::exclusive(&trace_store_dir.join(LOCAL_TRACE_STORE_ID_LOCK_FILE))?;
+    let id_path = trace_store_dir.join(LOCAL_TRACE_STORE_ID_FILE);
+    let raw = match std::fs::read_to_string(&id_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let id = uuid::Uuid::new_v4().to_string();
+            storage_fs::write_atomic(&id_path, format!("{id}\n").as_bytes())?;
+            id
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let id = uuid::Uuid::parse_str(raw.trim()).map_err(|error| {
+        AppError::InvalidInput(format!(
+            "invalid local trace store id in '{}': {error}",
+            id_path.display()
+        ))
+    })?;
+    Ok(format!("local-v1:{id}"))
 }
 
 fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
@@ -478,9 +517,10 @@ fn configured_otlp_endpoint(config: &TelemetryConfig) -> Option<&str> {
 fn configured_local_trace_store(
     config: &TelemetryConfig,
     dir: Option<PathBuf>,
-) -> Option<InstalledLocalTraceStore> {
+) -> Result<Option<InstalledLocalTraceStore>, AppError> {
     dir.filter(|_| config.trace_history.enabled)
         .map(|dir| InstalledLocalTraceStore::new(dir, config.trace_history.retention()))
+        .transpose()
 }
 
 pub(crate) async fn delete_workspace_traces(
@@ -721,7 +761,7 @@ fn try_init_tracing(
             .with_filter(log_filter.clone())
     });
 
-    let local_trace_store = configured_local_trace_store(config, internal_trace_store_dir);
+    let local_trace_store = configured_local_trace_store(config, internal_trace_store_dir)?;
     let internal_trace_store_enabled = local_trace_store.is_some();
     let local_trace_attribute_marker_layer =
         internal_trace_store_enabled.then_some(LocalTraceAttributeMarkerLayer);
@@ -878,10 +918,26 @@ mod tests {
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
         LOCAL_TRACE_EXCLUDED_RPC_SERVICES, LocalTraceAttributeMarkerLayer,
         OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES, OTLP_TRACE_DENIED_TARGETS,
-        TargetFilteringSpanExporter, build_log_filter, build_trace_targets,
+        TargetFilteringSpanExporter, build_log_filter, build_trace_targets, local_trace_store_id,
         normalize_otlp_endpoint, parse_headers, record_local_only_span_attribute,
         trace_layer_filter,
     };
+
+    #[test]
+    fn local_trace_store_identity_is_stable_and_unique_per_store() {
+        let first = tempfile::tempdir().expect("first trace store");
+        let second = tempfile::tempdir().expect("second trace store");
+
+        let first_id = local_trace_store_id(first.path()).expect("first id");
+        assert_eq!(
+            local_trace_store_id(first.path()).expect("reloaded first id"),
+            first_id
+        );
+        assert_ne!(
+            local_trace_store_id(second.path()).expect("second id"),
+            first_id
+        );
+    }
 
     #[test]
     fn normalize_otlp_endpoint_handles_signal_paths() {

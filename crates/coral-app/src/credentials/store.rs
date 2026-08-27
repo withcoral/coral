@@ -539,7 +539,22 @@ impl CredentialStore {
 
     pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, CredentialsError> {
         if self.database.is_some() {
-            return Ok(CredentialStorageKind::Database);
+            return match self.preference {
+                CredentialStoragePreference::Auto | CredentialStoragePreference::Database => {
+                    Ok(CredentialStorageKind::Database)
+                }
+                preference @ (CredentialStoragePreference::File
+                | CredentialStoragePreference::Keychain) => {
+                    let preference = match preference {
+                        CredentialStoragePreference::File => "file",
+                        CredentialStoragePreference::Keychain => "keychain",
+                        _ => unreachable!("database branch admits only legacy preferences"),
+                    };
+                    Err(CredentialsError::Unavailable(format!(
+                        "credential material is stored in the database, so legacy storage = \"{preference}\" is no longer supported; set storage = \"database\" (or remove it); encryption_key_source selects a local SQLite KEK, while Postgres requires encryption_key_env"
+                    )))
+                }
+            };
         }
         match self.preference {
             CredentialStoragePreference::Database => Err(CredentialsError::Unavailable(
@@ -2027,6 +2042,30 @@ mod tests {
                 .get("TOKEN")
                 .map(String::as_str),
             Some("winner")
+        );
+    }
+
+    #[tokio::test]
+    async fn database_rejects_legacy_keychain_write_preference() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("layout");
+        let db = Arc::new(open_sqlite(&layout).await);
+        let store = CredentialStore::with_database(
+            layout,
+            CredentialStoragePreference::Keychain,
+            db,
+            static_key_provider(19),
+        );
+
+        let error = store
+            .default_write_storage()
+            .expect_err("legacy keychain preference should be rejected");
+        assert!(error.to_string().contains("storage = \"database\""));
+        assert!(
+            error
+                .to_string()
+                .contains("Postgres requires encryption_key_env")
         );
     }
 

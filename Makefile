@@ -240,7 +240,8 @@ POSTGRES_SUITE_CARGO = cargo test --locked -p coral-app --lib 'state::db::' -- -
 postgres-test-suite:
 	@test -n "$${CORAL_TEST_POSTGRES_URL:-}" || \
 	  { echo "CORAL_TEST_POSTGRES_URL is required" >&2; exit 1; }
-	$(POSTGRES_SUITE_CARGO)
+	@export CORAL_TEST_CREDENTIAL_KEK="v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; \
+	  $(POSTGRES_SUITE_CARGO)
 
 # Provision the local container through a prerequisite rather than a recursive
 # $(MAKE) call inside the recipe, for the reason described above.
@@ -277,6 +278,7 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	echo "Running Postgres tests against $$url"; \
 	export CORAL_TEST_POSTGRES_URL="$$url"; \
 	export CORAL_TEST_POSTGRES_SERVER_LIFECYCLE_URL="$${lifecycle_url:-$$url}"; \
+	export CORAL_TEST_CREDENTIAL_KEK="v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; \
 	$(POSTGRES_SUITE_CARGO)
 
 # ----------------------------------------------------------------------------

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use coral_api::v1::{
     AddWorkspaceMemberRequest, AddWorkspaceMemberResponse, CreateWorkspaceRequest,
@@ -130,7 +131,7 @@ impl GrpcHarness {
         feature_overrides: FeatureOverrides,
         server_builder: ServerBuilder,
     ) -> Self {
-        ensure_file_credentials_config(&config_dir);
+        ensure_database_credentials_config(&config_dir);
         let server = server_builder
             .with_config_dir(&config_dir)
             .with_feature_overrides(feature_overrides)
@@ -323,7 +324,8 @@ impl GrpcHarness {
 
 /// The configuration an unauthenticated deployment reads: no `[auth]` at all,
 /// which is what leaves the local principal owning everything.
-const LOCAL_PRINCIPAL_CONFIG: &str = "[credentials]\nstorage = \"file\"\n";
+const LOCAL_PRINCIPAL_CONFIG: &str =
+    "[credentials]\nstorage = \"database\"\nencryption_key_source = \"file\"\n";
 
 /// Rewrites `config.toml` so the install runs under `mode`, keeping the rest of
 /// the file.
@@ -471,7 +473,7 @@ mod write_config_tests {
     }
 }
 
-fn ensure_file_credentials_config(config_dir: &Path) {
+fn ensure_database_credentials_config(config_dir: &Path) {
     std::fs::create_dir_all(config_dir).expect("create config dir");
     let config_file = config_dir.join("config.toml");
     let raw = std::fs::read_to_string(&config_file).unwrap_or_default();
@@ -483,7 +485,9 @@ fn ensure_file_credentials_config(config_dir: &Path) {
     } else {
         "\n"
     };
-    let updated = format!("{raw}{separator}\n[credentials]\nstorage = \"file\"\n");
+    let updated = format!(
+        "{raw}{separator}\n[credentials]\nstorage = \"database\"\nencryption_key_source = \"file\"\n"
+    );
     std::fs::write(config_file, updated).expect("write test credential config");
 }
 
@@ -704,7 +708,7 @@ impl SharedDeployment {
 
     pub(crate) async fn seed_trace_summary(&self, workspace_id: &str, trace_id: &str) {
         let pool = self.app_database().await;
-        sqlx::query("INSERT INTO trace_summaries (trace_id, workspace_id, root_span_id, name, query, status, start_time_unix_nanos, end_time_unix_nanos, duration_nanos, span_count, row_count, operation_kind, operation_name, invocation_kind) VALUES (?, ?, 'root', 'coral.query', 'SELECT 1', 'ok', 1, 2, 1, 1, 1, 'unspecified', '', 'unspecified')")
+        sqlx::query("INSERT INTO trace_summaries (trace_id, workspace_id, store_id, root_span_id, name, query, status, start_time_unix_nanos, end_time_unix_nanos, duration_nanos, span_count, row_count, operation_kind, operation_name, invocation_kind) VALUES (?, ?, 'grpc-test-store', 'root', 'coral.query', 'SELECT 1', 'ok', 1, 2, 1, 1, 1, 'unspecified', '', 'unspecified')")
             .bind(trace_id)
             .bind(workspace_id)
             .execute(&pool)
@@ -840,6 +844,34 @@ impl SharedDeployment {
             queries,
             attributed_spans: self.attributed_spans(workspace_name),
         }
+    }
+
+    /// Waits until both the database counters and the batched local trace
+    /// exporter have stopped changing. An immediate snapshot can otherwise
+    /// attribute earlier work to whichever request follows its delayed export.
+    pub(crate) async fn settled_workspace_work(&self, workspace_name: &str) -> WorkspaceWork {
+        const SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
+        const QUIET_PERIOD: Duration = Duration::from_millis(250);
+        const SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+        tokio::time::timeout(SETTLE_TIMEOUT, async {
+            let mut last = self.workspace_work(workspace_name).await;
+            let mut unchanged_since = Instant::now();
+            loop {
+                tokio::time::sleep(SAMPLE_INTERVAL).await;
+                let current = self.workspace_work(workspace_name).await;
+                if current == last {
+                    if unchanged_since.elapsed() >= QUIET_PERIOD {
+                        return current;
+                    }
+                } else {
+                    last = current;
+                    unchanged_since = Instant::now();
+                }
+            }
+        })
+        .await
+        .expect("workspace work and its batched trace export should settle")
     }
 
     /// Counts exported spans carrying this workspace's attribution. Every
