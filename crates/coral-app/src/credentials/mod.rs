@@ -135,7 +135,7 @@ impl CredentialManager {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-credentials"))]
     pub(crate) fn replace_material(
         &self,
         workspace_name: &WorkspaceName,
@@ -155,6 +155,21 @@ impl CredentialManager {
     ) -> Result<BTreeMap<String, String>, AppError> {
         self.store
             .read_material(workspace_name, credential_set_id, storage)
+    }
+
+    pub(crate) async fn read_material_async(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        storage: CredentialStorageKind,
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        let store = self.store.clone();
+        let workspace_name = workspace_name.clone();
+        let credential_set_id = credential_set_id.clone();
+        tokio::task::spawn_blocking(move || {
+            store.read_material(&workspace_name, &credential_set_id, storage)
+        })
+        .await?
     }
 
     /// Refresh provider-managed credentials already captured for a runtime.
@@ -350,7 +365,7 @@ pub(crate) struct CredentialMaterialGuard<'a> {
 }
 
 impl CredentialMaterialGuard<'_> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-credentials"))]
     pub(crate) fn replace_material(
         &self,
         storage: CredentialStorageKind,

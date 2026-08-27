@@ -823,6 +823,7 @@ pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
         Ok(SourceCredentialStorage::Unspecified) => "none",
         Ok(SourceCredentialStorage::File) => "file (plaintext)",
         Ok(SourceCredentialStorage::Keychain) => "keychain",
+        Ok(SourceCredentialStorage::Database) => "database (encrypted)",
         Err(_) => "unknown",
     }
 }
@@ -1776,7 +1777,7 @@ mod tests {
         reason = "collected input order assertions intentionally fail loudly in tests"
     )]
 
-    use coral_api::v1::ValidateSourceResponse;
+    use coral_api::v1::{SourceCredentialStorage, ValidateSourceResponse};
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec,
@@ -1799,8 +1800,8 @@ mod tests {
         finalize_input_value, oauth_client_id_allows_empty,
         oauth_client_secret_required_after_client_id_prompt, render_redirect_prompt_key_echo,
         resolve_oauth_client_id_prompt_value, resolve_prompt_hint, shell_quote_arg,
-        source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
-        validation_follow_up,
+        source_credential_storage_label, source_name_arg, submit_oauth_redirect_url,
+        validate_oauth_redirect_url, validation_follow_up,
     };
 
     fn test_oauth_spec(client: ManifestOAuthClientSpec) -> ManifestOAuthCredentialSpec {
@@ -1818,6 +1819,14 @@ mod tests {
             client,
             scopes: None,
         }
+    }
+
+    #[test]
+    fn source_credential_storage_label_includes_database_storage() {
+        assert_eq!(
+            source_credential_storage_label(SourceCredentialStorage::Database as i32),
+            "database (encrypted)"
+        );
     }
 
     #[test]

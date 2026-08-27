@@ -17,6 +17,7 @@ use coral_api::v1::{
     source_input_spec::Input as ProtoSourceInput,
 };
 use sqlx::Row as _;
+use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::Request;
@@ -266,6 +267,13 @@ origin = "imported"
 "#,
     )
     .expect("write legacy source config");
+    let legacy_source_dir = source_dir(&config_dir, "github_v4_query");
+    fs::create_dir_all(&legacy_source_dir).expect("recreate legacy source dir");
+    fs::write(
+        legacy_source_dir.join("secrets.env"),
+        "API_TOKEN=secret-token\n",
+    )
+    .expect("write legacy source secrets");
 
     let harness = GrpcHarness::start_with_config_dir(legacy_config_dir.clone()).await;
     assert_github_v4_query_works(&harness).await;
@@ -318,6 +326,10 @@ async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     assert_eq!(imported.secrets.len(), 1);
     assert_eq!(imported.secrets[0].key, "API_TOKEN");
     assert!(imported.secrets[0].value.is_empty());
+    assert_eq!(
+        imported.credential_storage,
+        SourceCredentialStorage::Database as i32
+    );
 
     let fetched = harness
         .source_client()
@@ -335,10 +347,61 @@ async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     assert_eq!(fetched.origin, SourceOrigin::Imported as i32);
     assert_eq!(
         fetched.credential_storage,
-        SourceCredentialStorage::File as i32
+        SourceCredentialStorage::Database as i32
     );
     assert_eq!(fetched.variables, imported.variables);
     assert_eq!(fetched.secrets, imported.secrets);
+}
+
+#[tokio::test]
+async fn postgres_database_credentials_survive_restart_and_query() {
+    let Some(database_url) = postgres_test_url() else {
+        return;
+    };
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        "[database]\nbackend = \"postgres\"\nurl_env = \"CORAL_TEST_POSTGRES_URL\"\n\n[credentials]\nstorage = \"database\"\nencryption_key_source = \"file\"\n",
+    )
+    .expect("write postgres credential config");
+    let source_name = format!("secured_messages_{}", uuid::Uuid::new_v4().simple());
+    let server = issues_http_fixture(&["Bearer secret-token"]).await;
+
+    {
+        let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+        harness.seed_workspace().await;
+        let imported = harness
+            .import_source(
+                fixture_manifest_with_inputs_yaml().replace("secured_messages", &source_name),
+                vec![SourceVariable {
+                    key: "API_BASE".to_string(),
+                    value: server.uri(),
+                }],
+                vec![SourceSecret {
+                    key: "API_TOKEN".to_string(),
+                    value: "secret-token".to_string(),
+                }],
+            )
+            .await;
+        assert_eq!(
+            imported.credential_storage,
+            SourceCredentialStorage::Database as i32
+        );
+        assert_encrypted_postgres_credential_document(&database_url, &source_name).await;
+        harness.shutdown().await;
+    }
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    let validated = harness.validate_source(&source_name).await;
+    assert_eq!(validated.tables[0].schema_name, source_name);
+    let rows = harness
+        .execute_sql_rows(&format!("SELECT id FROM {source_name}.messages"))
+        .await;
+    assert_eq!(rows[0]["id"], "1");
+    harness.shutdown().await;
+    cleanup_postgres_source(&database_url, &source_name).await;
 }
 
 #[tokio::test]
@@ -1439,7 +1502,7 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
     assert!(info.installed);
     assert_eq!(
         info.credential_storage,
-        SourceCredentialStorage::File as i32
+        SourceCredentialStorage::Database as i32
     );
     assert_eq!(info.inputs.len(), 2);
     assert_eq!(info.inputs[0].key, "API_BASE");
@@ -1982,15 +2045,16 @@ async fn overwrite_restores_previous_source_on_config_write_failure() {
         .into_inner();
     assert_eq!(validated.tables.len(), 1);
     let secret_path = source_dir(harness.config_dir(), "secured_messages").join("secrets.env");
-    let secret_material = fs::read_to_string(&secret_path).expect("read restored secrets");
     assert!(
-        secret_material.contains("API_TOKEN=old-token"),
-        "{secret_material}"
+        !secret_path.exists(),
+        "DB-backed rollback should not recreate legacy secret files"
     );
-    assert!(
-        !secret_material.contains("API_TOKEN=new-token"),
-        "{secret_material}"
+    assert_eq!(
+        fetched.credential_storage,
+        SourceCredentialStorage::Database as i32
     );
+    assert_eq!(fetched.secrets.len(), 1);
+    assert_eq!(fetched.secrets[0].key, "API_TOKEN");
 }
 
 #[cfg(unix)]
@@ -2000,27 +2064,32 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
 
     let harness = GrpcHarness::new().await;
     harness.seed_workspace().await;
+    let issues_http = issues_http_fixture(&["Basic Ym90OnNlY3JldC10b2tlbg=="]).await;
+    let (manifest_yaml, openapi_file) =
+        fixture_v4_openapi_manifest_yaml(harness.temp_path(), &issues_http.uri());
     harness
         .import_source(
-            fixture_manifest_with_inputs_yaml(),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
+            v4_secret_auth_manifest(&manifest_yaml),
+            Vec::new(),
             vec![SourceSecret {
                 key: "API_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
         )
         .await;
+    fs::remove_file(openapi_file).expect("remove authored descriptor");
 
     let sources_root = harness
         .config_dir()
         .join("workspaces")
         .join("default")
         .join("sources");
-    let manifest_path = source_dir(harness.config_dir(), "secured_messages").join("manifest.yaml");
-    let secret_path = source_dir(harness.config_dir(), "secured_messages").join("secrets.env");
+    let source_dir = source_dir(harness.config_dir(), "github_v4_query");
+    fs::create_dir_all(&source_dir).expect("create legacy source dir");
+    let legacy_artifact = source_dir.join("legacy-artifact");
+    fs::write(&legacy_artifact, "legacy").expect("write legacy artifact");
+    let manifest_path = source_dir.join("manifest.yaml");
+    let secret_path = source_dir.join("secrets.env");
     fs::set_permissions(&sources_root, fs::Permissions::from_mode(0o500))
         .expect("make sources dir read-only");
 
@@ -2028,7 +2097,7 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
         .source_client()
         .delete_source(Request::new(DeleteSourceRequest {
             workspace: Some(default_workspace()),
-            name: "secured_messages".to_string(),
+            name: "github_v4_query".to_string(),
         }))
         .await
         .expect_err("source directory cleanup should fail");
@@ -2041,21 +2110,40 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
         manifest_path.exists(),
         "DB-backed rollback should restore legacy manifest files"
     );
-    assert!(secret_path.exists(), "secret file should be restored");
+    assert!(
+        !secret_path.exists(),
+        "DB-backed rollback should not recreate legacy secret files"
+    );
+    assert!(
+        legacy_artifact.exists(),
+        "legacy source dir artifact should be restored after failed cleanup"
+    );
 
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].name, "secured_messages");
+    assert_eq!(listed[0].name, "github_v4_query");
+    assert_eq!(
+        listed[0].credential_storage,
+        SourceCredentialStorage::Database as i32
+    );
+    assert_eq!(listed[0].secrets.len(), 1);
+    assert_eq!(listed[0].secrets[0].key, "API_TOKEN");
     let validated = harness
         .source_client()
         .validate_source(Request::new(ValidateSourceRequest {
             workspace: Some(default_workspace()),
-            name: "secured_messages".to_string(),
+            name: "github_v4_query".to_string(),
         }))
         .await
         .expect("source should still validate from DB manifest")
         .into_inner();
     assert_eq!(validated.tables.len(), 1);
+    assert_eq!(
+        harness
+            .execute_sql_rows("SELECT id, title FROM github_v4_query.issues")
+            .await,
+        vec![serde_json::json!({"id": 1, "title": "Stored materialization"})]
+    );
 }
 
 #[tokio::test]
@@ -2166,4 +2254,48 @@ origin = "imported"
         !config_raw.contains("[workspaces.default.sources.local_messages]"),
         "newly added source should not be mirrored to config"
     );
+}
+
+async fn assert_encrypted_postgres_credential_document(database_url: &str, source_name: &str) {
+    let pool = PgPoolOptions::new()
+        .connect(database_url)
+        .await
+        .expect("open postgres");
+    let ciphertext: Vec<u8> = sqlx::query_scalar(
+        "SELECT ciphertext FROM credential_documents WHERE workspace_id = $1 AND source_name = $2",
+    )
+    .bind("default")
+    .bind(source_name)
+    .fetch_one(&pool)
+    .await
+    .expect("load credential document");
+    assert!(
+        !String::from_utf8_lossy(&ciphertext).contains("secret-token"),
+        "credential document must not store plaintext secret material"
+    );
+    pool.close().await;
+}
+
+async fn cleanup_postgres_source(database_url: &str, source_name: &str) {
+    let pool = PgPoolOptions::new()
+        .connect(database_url)
+        .await
+        .expect("open postgres");
+    sqlx::query("DELETE FROM sources WHERE workspace_id = $1 AND name = $2")
+        .bind("default")
+        .bind(source_name)
+        .execute(&pool)
+        .await
+        .expect("cleanup postgres source");
+    pool.close().await;
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "The Postgres integration test is explicitly gated by this CI/test-only variable."
+)]
+fn postgres_test_url() -> Option<String> {
+    std::env::var("CORAL_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
 }

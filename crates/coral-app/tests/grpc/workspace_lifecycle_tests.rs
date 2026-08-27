@@ -657,8 +657,8 @@ async fn delete_workspace_ignores_malformed_trace_history() {
     let secret_path = source_dir.join("secrets.env");
     assert!(source_dir.exists(), "import should create source artifacts");
     assert!(
-        secret_path.exists(),
-        "import should create file-backed secret material"
+        !secret_path.exists(),
+        "database-backed import should not create legacy secrets.env"
     );
 
     let trace_dir = local_trace_store_dir(&harness);
@@ -739,8 +739,8 @@ async fn delete_workspace_removes_state_when_trace_cleanup_fails() {
     let secret_path = source_dir.join("secrets.env");
     assert!(source_dir.exists(), "import should create source artifacts");
     assert!(
-        secret_path.exists(),
-        "import should create file-backed secret material"
+        !secret_path.exists(),
+        "database-backed import should not create legacy secrets.env"
     );
 
     let trace_dir = local_trace_store_dir(&harness);

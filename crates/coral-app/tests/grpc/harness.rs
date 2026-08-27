@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -159,6 +160,34 @@ impl GrpcHarness {
 
     pub(crate) fn config_dir(&self) -> &Path {
         &self.config_dir
+    }
+
+    pub(crate) async fn replace_database_source_credentials(
+        &self,
+        source_name: &str,
+        material: &BTreeMap<String, String>,
+    ) {
+        coral_app::bootstrap::replace_database_source_credentials_for_test(
+            &self.config_dir,
+            &default_workspace().name,
+            source_name,
+            material,
+        )
+        .await
+        .expect("replace encrypted database source credentials");
+    }
+
+    pub(crate) async fn read_database_source_credentials(
+        &self,
+        source_name: &str,
+    ) -> BTreeMap<String, String> {
+        coral_app::bootstrap::read_database_source_credentials_for_test(
+            &self.config_dir,
+            &default_workspace().name,
+            source_name,
+        )
+        .await
+        .expect("read encrypted database source credentials")
     }
 
     pub(crate) fn local_trace_store_dir(&self) -> Option<&Path> {

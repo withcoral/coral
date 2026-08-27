@@ -189,10 +189,6 @@ impl CredentialStore {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "database credential store construction is wired by the next stacked branch"
-    )]
     pub(crate) fn with_database(
         layout: AppStateLayout,
         preference: CredentialStoragePreference,
@@ -665,9 +661,6 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         values: &BTreeMap<String, String>,
     ) -> Result<(), AppError> {
-        if values.is_empty() {
-            return self.remove_database_material(workspace_name, credential_set_id);
-        }
         loop {
             let current =
                 self.read_database_material_for_update(workspace_name, credential_set_id)?;
@@ -689,43 +682,54 @@ impl CredentialStore {
         expected_document_version: Option<i64>,
         values: &BTreeMap<String, String>,
     ) -> Result<bool, AppError> {
-        if values.is_empty() {
-            self.remove_database_material(workspace_name, credential_set_id)?;
-            return Ok(true);
-        }
         let (database, key_provider) = self.database_parts()?;
         let workspace_name = workspace_name.clone();
         let source_name = credential_set_id.source_name()?;
         let values = values.clone();
         run_credential_db_operation(async move {
             let now_unix_nanos = now_unix_nanos_i64()?;
-            let encrypted = encrypt_credential_values(
-                &workspace_name,
-                &source_name,
-                &values,
-                key_provider.as_ref(),
-            )?;
             let mut tx = database.begin().await?;
-            tx.workspaces()
-                .ensure(workspace_name.as_str(), now_unix_nanos)
-                .await?;
-            let write = credential_document_write_from_encrypted(encrypted);
-            let applied = match expected_document_version {
-                Some(version) => {
-                    tx.credential_documents()
-                        .replace_if_current(
-                            &workspace_name,
-                            &source_name,
-                            version,
-                            &write,
-                            now_unix_nanos,
-                        )
+            let applied = if values.is_empty() {
+                match expected_document_version {
+                    Some(version) => {
+                        tx.credential_documents()
+                            .remove_if_current(&workspace_name, &source_name, version)
+                            .await?
+                    }
+                    None => tx
+                        .credential_documents()
+                        .get(&workspace_name, &source_name)
                         .await?
+                        .is_none(),
                 }
-                None => {
-                    tx.credential_documents()
-                        .insert_if_absent(&workspace_name, &source_name, &write, now_unix_nanos)
-                        .await?
+            } else {
+                let encrypted = encrypt_credential_values(
+                    &workspace_name,
+                    &source_name,
+                    &values,
+                    key_provider.as_ref(),
+                )?;
+                tx.workspaces()
+                    .ensure(workspace_name.as_str(), now_unix_nanos)
+                    .await?;
+                let write = credential_document_write_from_encrypted(encrypted);
+                match expected_document_version {
+                    Some(version) => {
+                        tx.credential_documents()
+                            .replace_if_current(
+                                &workspace_name,
+                                &source_name,
+                                version,
+                                &write,
+                                now_unix_nanos,
+                            )
+                            .await?
+                    }
+                    None => {
+                        tx.credential_documents()
+                            .insert_if_absent(&workspace_name, &source_name, &write, now_unix_nanos)
+                            .await?
+                    }
                 }
             };
             tx.commit().await?;
@@ -746,10 +750,6 @@ impl CredentialStore {
             let current =
                 self.read_database_material_for_update(workspace_name, credential_set_id)?;
             let (next, result) = update(current.values)?;
-            if next.is_empty() {
-                self.remove_database_material(workspace_name, credential_set_id)?;
-                return Ok(result);
-            }
             if self.replace_database_material_if_current(
                 workspace_name,
                 credential_set_id,
@@ -1640,12 +1640,15 @@ mod tests {
 
     use super::{CredentialMaterialBackend, CredentialSetRef, EncodedCredentialMaterial};
     use super::{CredentialStore, decode_env_value, encode_env_value, load_file, save_file};
+    use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
     use crate::credentials::{
         CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind,
         CredentialStoragePreference,
     };
     use crate::sources::SourceName;
+    use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
+    use crate::state::db::{CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
     use tempfile::TempDir;
 
@@ -1735,6 +1738,26 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct RotatingKeyProvider {
+        active: CredentialEncryptionKey,
+        keys: Vec<CredentialEncryptionKey>,
+    }
+
+    impl CredentialKeyProvider for RotatingKeyProvider {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, super::CredentialsError> {
+            Ok(self.active.clone())
+        }
+
+        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, super::CredentialsError> {
+            self.keys
+                .iter()
+                .find(|key| key.key_id() == key_id)
+                .cloned()
+                .ok_or_else(|| super::CredentialsError::Crypto("missing test key".to_string()))
+        }
+    }
+
     #[test]
     fn keychain_address_namespaces_by_config_workspace_and_credential_set() {
         let config_namespace = super::CredentialConfigNamespace("test".to_string());
@@ -1810,6 +1833,167 @@ mod tests {
             super::CredentialConfigNamespace::from_config_dir(&first_dir),
             super::CredentialConfigNamespace::from_config_dir(&second_dir)
         );
+    }
+
+    #[tokio::test]
+    async fn database_update_retries_cas_loser_from_winner_material() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("layout");
+        let db = Arc::new(open_sqlite(&layout).await);
+        let store = CredentialStore::with_database(
+            layout,
+            CredentialStoragePreference::Auto,
+            Arc::clone(&db),
+            static_key_provider(13),
+        );
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = SourceName::parse("github").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source);
+        ensure_source(&db, &workspace, &source).await;
+        store
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::Database,
+                &BTreeMap::from([("TOKEN".to_string(), "initial".to_string())]),
+            )
+            .expect("seed material");
+
+        let mut raced = false;
+        let result = store
+            .update_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::Database,
+                |mut current| {
+                    if !raced {
+                        raced = true;
+                        store
+                            .replace_material(
+                                &workspace,
+                                &credential_set_id,
+                                CredentialStorageKind::Database,
+                                &BTreeMap::from([("TOKEN".to_string(), "winner".to_string())]),
+                            )
+                            .expect("competing winner");
+                    }
+                    current.insert("EXTRA".to_string(), "loser".to_string());
+                    Ok((current.clone(), current))
+                },
+            )
+            .expect("cas retry update");
+
+        assert_eq!(result.get("TOKEN").map(String::as_str), Some("winner"));
+        assert_eq!(result.get("EXTRA").map(String::as_str), Some("loser"));
+    }
+
+    #[tokio::test]
+    async fn database_empty_update_does_not_delete_cas_winner() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("layout");
+        let db = Arc::new(open_sqlite(&layout).await);
+        let store = CredentialStore::with_database(
+            layout,
+            CredentialStoragePreference::Auto,
+            Arc::clone(&db),
+            static_key_provider(14),
+        );
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = SourceName::parse("github").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source);
+        ensure_source(&db, &workspace, &source).await;
+        store
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::Database,
+                &BTreeMap::from([("TOKEN".to_string(), "initial".to_string())]),
+            )
+            .expect("seed material");
+
+        let mut raced = false;
+        store
+            .update_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::Database,
+                |current| {
+                    if !raced {
+                        raced = true;
+                        store
+                            .replace_material(
+                                &workspace,
+                                &credential_set_id,
+                                CredentialStorageKind::Database,
+                                &BTreeMap::from([("TOKEN".to_string(), "winner".to_string())]),
+                            )
+                            .expect("competing winner");
+                        return Ok((BTreeMap::new(), ()));
+                    }
+                    Ok((current, ()))
+                },
+            )
+            .expect("cas retry update");
+
+        assert_eq!(
+            store
+                .read_material(
+                    &workspace,
+                    &credential_set_id,
+                    CredentialStorageKind::Database,
+                )
+                .expect("read winner material")
+                .get("TOKEN")
+                .map(String::as_str),
+            Some("winner")
+        );
+    }
+
+    fn static_key_provider(byte: u8) -> Arc<dyn CredentialKeyProvider> {
+        let key = CredentialEncryptionKey::from_static_bytes_for_test([byte; 32]);
+        Arc::new(RotatingKeyProvider {
+            active: key.clone(),
+            keys: vec![key],
+        })
+    }
+
+    async fn ensure_source(db: &CoralDb, workspace: &WorkspaceName, source: &SourceName) {
+        let mut tx = db.begin().await.expect("begin source tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 1)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(
+                workspace,
+                &InstalledSource {
+                    name: source.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["GITHUB_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Database),
+                    credential_revision: uuid::Uuid::default(),
+                    origin: SourceOrigin::Bundled,
+                },
+                1,
+            )
+            .await
+            .expect("ensure source");
+        tx.commit().await.expect("commit source tx");
+    }
+
+    async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
+        let config = DatabaseConfig::load(layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        db
     }
 
     #[test]

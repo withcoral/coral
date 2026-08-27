@@ -165,7 +165,8 @@ impl CredentialRefreshingInputResolver {
 
         let mut current_material = self
             .credential_manager
-            .read_material(&self.workspace_name, &credential_set_id, storage)
+            .read_material_async(&self.workspace_name, &credential_set_id, storage)
+            .await
             .map_err(source_input_error)?;
         self.credential_manager
             .refresh_and_persist_material_for_inputs_with_refresh_lock_held(

@@ -77,8 +77,8 @@ root.
 - DB repository tests should always assert SQLite behavior and repeat the same
   assertions against Postgres when `CORAL_TEST_POSTGRES_URL` is set. Do not mark
   Postgres branches ignored or enumerate individual test functions in the
-  repository harness; the Postgres suite selects the existing `state::db`
-  ownership namespace.
+  repository harness; the Postgres suite selects existing module and target
+  boundaries instead.
 - Until the RDBMS migration phases replace the relevant stores, persist
   imported manifests as files under app-owned state; do not inline them into
   `config.toml`.

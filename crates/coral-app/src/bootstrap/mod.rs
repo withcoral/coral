@@ -22,6 +22,11 @@ pub(crate) use error::{app_status, core_status, status_with_bounded_detail};
 pub use error::AppError;
 pub use health::READINESS_SERVICE_NAME;
 pub use server::{RunningServer, ServerBuilder, ServerMode};
+#[cfg(feature = "test-credentials")]
+#[doc(hidden)]
+pub use server::{
+    read_database_source_credentials_for_test, replace_database_source_credentials_for_test,
+};
 pub use server_config::{McpHttpServeConfig, ServeSettings, SessionAuthSettings};
 
 pub(crate) fn discover_app_state_layout(

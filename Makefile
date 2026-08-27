@@ -235,7 +235,7 @@ postgres-clean:
 # containing $(MAKE) even under -n/-t/-q, and the postgres-tests recipe is a
 # single continued line, so an inline sub-make would make
 # `make -n postgres-tests` execute the real suite.
-POSTGRES_SUITE_CARGO = cargo test --locked -p coral-app --lib 'state::db::' -- --test-threads=1 && cargo test --locked -p coral-app --test postgres_database_tests && cargo test --locked -p xtask --features admin --bin xtask -- --ignored
+POSTGRES_SUITE_CARGO = cargo test --locked -p coral-app --lib 'state::db::' -- --test-threads=1 && cargo test --locked -p coral-app --test grpc 'source_lifecycle_tests::' && cargo test --locked -p coral-app --test postgres_database_tests && cargo test --locked -p xtask --features admin --bin xtask -- --ignored
 
 postgres-test-suite:
 	@test -n "$${CORAL_TEST_POSTGRES_URL:-}" || \
