@@ -39,6 +39,7 @@ use crate::sources::runtime_package::{
     RuntimeContractFingerprint, query_source_from_installed_manifest,
 };
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
+use crate::state::db::{CoralDb, DbRepos};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::activity::{
     PendingTaskQuery, TaskActivityRecorder, TaskQueryRelation, TaskQueryStatus,
@@ -154,6 +155,7 @@ impl SourceDecorator for CatalogFailureRecorder {
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
     workspace_manager: Arc<WorkspaceManager>,
+    db: Arc<CoralDb>,
     credential_manager: CredentialManager,
     function_manager: FunctionManager,
     lifecycle_lock: WorkspaceLifecycleLock,
@@ -176,6 +178,7 @@ impl QueryManager {
         runtime_context: QueryRuntimeContext,
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        db: Arc<CoralDb>,
     ) -> Self {
         Self::new(
             config_store,
@@ -185,10 +188,15 @@ impl QueryManager {
             layout,
             WorkspaceLifecycleLock::default(),
             engine_extensions_providers,
+            db,
         )
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "database handle joins the existing collaborator set the query manager owns"
+    )]
     pub(crate) fn new(
         config_store: ConfigStore,
         workspace_manager: WorkspaceManager,
@@ -197,6 +205,7 @@ impl QueryManager {
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        db: Arc<CoralDb>,
     ) -> Self {
         Self::with_diagnostic_reporter(
             config_store,
@@ -206,6 +215,7 @@ impl QueryManager {
             layout,
             lifecycle_lock,
             engine_extensions_providers,
+            db,
             SourceDiagnosticReporter::default(),
             Arc::new(WorkspacePoolRegistry::default()),
         )
@@ -224,6 +234,7 @@ impl QueryManager {
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        db: Arc<CoralDb>,
         diagnostic_reporter: SourceDiagnosticReporter,
         pool_registry: Arc<WorkspacePoolRegistry>,
     ) -> Self {
@@ -232,6 +243,7 @@ impl QueryManager {
         Self {
             config_store,
             workspace_manager: Arc::new(workspace_manager),
+            db,
             credential_manager,
             function_manager,
             lifecycle_lock,
@@ -575,8 +587,10 @@ impl QueryManager {
                 .config_store
                 .load_config_unlocked()
                 .map_err(QueryManagerError::App)?;
-            let source = config
-                .get_source(workspace_name, source_name)
+            let source = self
+                .get_installed_source(workspace_name, source_name)
+                .await
+                .map_err(QueryManagerError::App)?
                 .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
                 .map_err(QueryManagerError::App)?;
             let (loaded_source, version) = self
@@ -611,7 +625,8 @@ impl QueryManager {
         self.require_workspace(workspace_name).await?;
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        let sources = self.load_query_sources_from_config(workspace_name, &config);
+        let installed_sources = self.installed_sources(workspace_name).await?;
+        let sources = self.load_query_sources_from_installed(workspace_name, installed_sources);
         Ok((sources, config))
     }
 
@@ -621,10 +636,35 @@ impl QueryManager {
             .await
     }
 
-    fn load_query_sources_from_config(
+    async fn installed_sources(
         &self,
         workspace_name: &WorkspaceName,
-        config: &AppConfig,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        let mut session = self.db.as_ref();
+        session
+            .sources()
+            .list_workspace_sources(workspace_name)
+            .await
+            .map_err(AppError::from)
+    }
+
+    async fn get_installed_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        let mut session = self.db.as_ref();
+        session
+            .sources()
+            .get_source(workspace_name, source_name)
+            .await
+            .map_err(AppError::from)
+    }
+
+    fn load_query_sources_from_installed(
+        &self,
+        workspace_name: &WorkspaceName,
+        installed_sources: Vec<InstalledSource>,
     ) -> QuerySourceLoad {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
@@ -638,7 +678,7 @@ impl QueryManager {
         let _guard = span.enter();
         let mut loaded_sources = Vec::new();
         let mut failed_source_names = BTreeSet::new();
-        for source in config.workspace_sources(workspace_name) {
+        for source in installed_sources {
             match self.load_query_source(workspace_name, &source) {
                 Ok((loaded_source, _version)) => {
                     self.diagnostic_reporter.clear_source_load_failure(
@@ -805,7 +845,7 @@ impl QueryManager {
             CredentialResolutionMode::Refreshing => {
                 Arc::new(CredentialRefreshingInputResolver::new(
                     workspace_name.clone(),
-                    self.config_store.clone(),
+                    Arc::clone(&self.db),
                     self.credential_manager.clone(),
                     source_credentials,
                     provider_input_resolver,
@@ -865,7 +905,9 @@ impl QueryManager {
             .await
             .map_err(QueryManagerError::App)?;
         let _lifecycle_snapshot = self.lifecycle_lock.snapshot_async().await;
-        let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
+        let (loaded_sources, config) = self
+            .load_function_validation_sources(workspace_name)
+            .await?;
         self.validate_udf_sql_against_snapshot(workspace_name, artifact, &loaded_sources, &config)
             .await
     }
@@ -934,14 +976,20 @@ impl QueryManager {
         if lifecycle_snapshot.revision() != revision {
             return Ok(None);
         }
-        let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
+        let (loaded_sources, config) = self
+            .load_function_validation_sources(workspace_name)
+            .await?;
         Ok(Some((loaded_sources, config)))
     }
 
-    fn load_function_validation_sources(
+    async fn load_function_validation_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<(Vec<LoadedQuerySource>, AppConfig), QueryManagerError> {
+        let installed_sources = self
+            .installed_sources(workspace_name)
+            .await
+            .map_err(QueryManagerError::App)?;
         let (loaded_sources, config) = {
             let _state_lock = self
                 .config_store
@@ -951,7 +999,8 @@ impl QueryManager {
                 .config_store
                 .load_config_unlocked()
                 .map_err(QueryManagerError::App)?;
-            let source_load = self.load_query_sources_from_config(workspace_name, &config);
+            let source_load =
+                self.load_query_sources_from_installed(workspace_name, installed_sources);
             (source_load.loaded, config)
         };
         Ok((loaded_sources, config))
@@ -1514,6 +1563,7 @@ mod tests {
             runtime_context,
             layout,
             providers,
+            Arc::clone(&db),
         )
         .with_task_activity_recorder(TaskActivityRecorder::new(Arc::clone(&db)));
         QueryManagerFixture {
@@ -1550,6 +1600,7 @@ mod tests {
             QueryRuntimeContext::default(),
             layout,
             Vec::new(),
+            Arc::clone(&db),
         );
         QueryManagerFixture {
             _temp: temp,
@@ -1558,21 +1609,24 @@ mod tests {
         }
     }
 
-    fn install_keychain_github_source(config_store: &ConfigStore, workspace_name: &WorkspaceName) {
+    async fn install_keychain_github_source(
+        config_store: &ConfigStore,
+        db: &Arc<CoralDb>,
+        workspace_name: &WorkspaceName,
+    ) {
+        let source = InstalledSource {
+            name: SourceName::parse("github").expect("source name"),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: vec!["GITHUB_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::Keychain),
+            credential_revision: uuid::Uuid::default(),
+            origin: SourceOrigin::Bundled,
+        };
         config_store
-            .upsert_source(
-                workspace_name,
-                InstalledSource {
-                    name: SourceName::parse("github").expect("source name"),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: vec!["GITHUB_TOKEN".to_string()],
-                    credential_storage: Some(CredentialStorageKind::Keychain),
-                    credential_revision: uuid::Uuid::default(),
-                    origin: SourceOrigin::Bundled,
-                },
-            )
+            .upsert_source(workspace_name, source.clone())
             .expect("persist source");
+        upsert_test_source(db, workspace_name, &source).await;
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
@@ -1679,6 +1733,23 @@ mod tests {
     /// two identical messages into different ones.
     fn normalize(message: &str, name: &str) -> String {
         message.replace(&format!("'{name}'"), "'<workspace>'")
+    }
+
+    async fn upsert_test_source(
+        db: &Arc<CoralDb>,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) {
+        let mut tx = db.begin().await.expect("begin test source tx");
+        tx.workspaces()
+            .ensure(workspace_name.as_str(), 11)
+            .await
+            .expect("ensure test workspace");
+        tx.sources()
+            .upsert_source(workspace_name, source, 11)
+            .await
+            .expect("upsert test source");
+        tx.commit().await.expect("commit test source");
     }
 
     fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
@@ -3205,6 +3276,7 @@ paths:
         );
         let calls = Arc::new(AtomicUsize::new(0));
         let config_store = fixture.manager.config_store.clone();
+        let db = Arc::clone(&fixture.manager.db);
         let lifecycle_lock = fixture.manager.lifecycle_lock.clone();
         let workspace = workspace_name.clone();
         let source_name = SourceName::parse("function_demo").expect("source name");
@@ -3216,6 +3288,30 @@ paths:
                     config_store
                         .remove_source(&workspace, &source_name)
                         .expect("remove source during function validation");
+                    let db = Arc::clone(&db);
+                    let workspace = workspace.clone();
+                    let source_name = source_name.clone();
+                    std::thread::spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("build source removal runtime");
+                        runtime.block_on(async move {
+                            let mut tx = db.begin().await.expect("begin source removal");
+                            let removed = tx
+                                .sources()
+                                .remove_source(&workspace, &source_name)
+                                .await
+                                .expect("remove database source during function validation");
+                            assert!(
+                                removed.is_some(),
+                                "database source should exist before removal"
+                            );
+                            tx.commit().await.expect("commit source removal");
+                        });
+                    })
+                    .join()
+                    .expect("join source removal thread");
                 })),
             },
         ));
@@ -3424,7 +3520,7 @@ tables:
             .expect("import source");
     }
 
-    fn install_missing_v4_materialization_source(
+    async fn install_missing_v4_materialization_source(
         manager: &QueryManager,
         workspace_name: &WorkspaceName,
     ) -> SourceName {
@@ -3443,25 +3539,20 @@ surface:
 ",
         )
         .expect("write manifest");
-        manager
-            .config_store
-            .upsert_source(
-                workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    credential_revision: uuid::Uuid::default(),
-                    origin: SourceOrigin::Imported,
-                },
-            )
-            .expect("persist source");
+        let source = InstalledSource {
+            name: source_name.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: uuid::Uuid::default(),
+            origin: SourceOrigin::Imported,
+        };
+        upsert_test_source(&manager.db, workspace_name, &source).await;
         source_name
     }
 
-    fn install_corrupt_parquet_source(
+    async fn install_corrupt_parquet_source(
         manager: &QueryManager,
         workspace_name: &WorkspaceName,
         fake_home: &std::path::Path,
@@ -3493,21 +3584,20 @@ tables:
 "#,
         )
         .expect("write manifest");
-        manager
-            .config_store
-            .upsert_source(
-                workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: Some("0.1.0".to_string()),
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    credential_revision: uuid::Uuid::default(),
-                    origin: SourceOrigin::Imported,
-                },
-            )
-            .expect("persist source");
+        upsert_test_source(
+            &manager.db,
+            workspace_name,
+            &InstalledSource {
+                name: source_name.clone(),
+                version: Some("0.1.0".to_string()),
+                variables: BTreeMap::new(),
+                secrets: Vec::new(),
+                credential_storage: None,
+                credential_revision: uuid::Uuid::default(),
+                origin: SourceOrigin::Imported,
+            },
+        )
+        .await;
         source_name
     }
 
@@ -3517,7 +3607,7 @@ tables:
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = test_workspace();
         let source_name =
-            install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
+            install_missing_v4_materialization_source(&fixture.manager, &workspace_name).await;
 
         let (source_load, _) = fixture
             .manager
@@ -3551,7 +3641,7 @@ tables:
             fake_home.path(),
         );
         let failed_source =
-            install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
+            install_missing_v4_materialization_source(&fixture.manager, &workspace_name).await;
 
         let resolution = fixture
             .manager
@@ -3648,7 +3738,8 @@ tables:
             fake_home.path(),
         );
         let failed_source =
-            install_corrupt_parquet_source(&fixture.manager, &workspace_name, fake_home.path());
+            install_corrupt_parquet_source(&fixture.manager, &workspace_name, fake_home.path())
+                .await;
 
         let resolution = fixture
             .manager
@@ -3676,7 +3767,8 @@ tables:
     async fn load_query_sources_skips_unavailable_keychain_source() {
         let fixture = query_manager_with_unavailable_keychain().await;
         let workspace_name = test_workspace();
-        install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
+        install_keychain_github_source(&fixture.manager.config_store, &fixture.db, &workspace_name)
+            .await;
 
         let (source_load, _) = fixture
             .manager
@@ -3712,7 +3804,12 @@ select 1 as value
             .function_manager
             .install_validated_user_function(&workspace_name, function_sql, &validated)
             .expect("install constant function");
-        install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
+        install_keychain_github_source(
+            &fixture.manager.config_store,
+            &fixture.manager.db,
+            &workspace_name,
+        )
+        .await;
 
         let functions = fixture
             .manager
@@ -3881,6 +3978,7 @@ select 1 as value
             .config_store
             .upsert_source(&workspace_name, installed_source.clone())
             .expect("persist live source");
+        upsert_test_source(&fixture.manager.db, &workspace_name, &installed_source).await;
         fixture
             .manager
             .credential_manager
@@ -4007,6 +4105,7 @@ tables:
             .config_store
             .upsert_source(&workspace, installed_source.clone())
             .expect("persist source");
+        upsert_test_source(&fixture.manager.db, &workspace, &installed_source).await;
         fixture
             .manager
             .credential_manager

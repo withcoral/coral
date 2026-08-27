@@ -2699,10 +2699,8 @@ surface:
             "credential material should be preserved when directory staging fails"
         );
         assert!(
-            config_store
-                .get_source(&workspace_name, &source_name)
-                .is_ok(),
-            "source config should be preserved when directory staging fails"
+            manager.get_source(&workspace_name, &source_name).is_ok(),
+            "source metadata should be preserved when directory staging fails"
         );
         assert!(
             source_dir.exists(),
