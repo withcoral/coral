@@ -270,9 +270,15 @@ export CORAL_CONFIG_DIR=/path/to/coral-config
 
 Important files include:
 
-- `config.toml` for installed-source metadata and non-secret variables
-- imported source specs under `workspaces/<workspace>/sources/<source>/manifest.yaml`
-- source secrets stored separately within the same local trust boundary
+- `config.toml` for runtime settings such as feature flags, tracing, and
+  database bootstrap configuration
+- `coral.db`, the default local Coral database for installed-source metadata,
+  imported source specs, DSL v4 materialization metadata, feedback reports,
+  trace summaries, encrypted credential documents, and non-secret variables
+- `credentials/encryption.key`, the local key material used to protect
+  encrypted credential documents
+- `telemetry/traces`, the local raw trace span store when trace history is
+  enabled
 
 Bundled source specs are not copied into the config directory. Coral resolves
 them from the current binary when you validate or query a bundled source, so

@@ -595,6 +595,41 @@ async fn source_list_renders_configured_sources() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn source_list_renders_database_credential_storage() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
+        ListSourcesResponse {
+            sources: vec![Source {
+                workspace: Some(coral_api::v1::Workspace {
+                    name: TEST_WORKSPACE.to_string(),
+                }),
+                name: "database_source".to_string(),
+                version: "3.0.0".to_string(),
+                secrets: Vec::new(),
+                variables: Vec::new(),
+                origin: SourceOrigin::Imported as i32,
+                credential_storage: SourceCredentialStorage::Database as i32,
+            }],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["source", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        nonempty_lines(&stdout),
+        vec![
+            "Source           Version  Origin    Secrets",
+            "---------------  -------  --------  --------------------",
+            "database_source  3.0.0    imported  database (encrypted)",
+        ],
+        "expected database-backed source list"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_list_renders_dash_for_missing_authored_version() {
     let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
         ListSourcesResponse {
@@ -736,6 +771,34 @@ async fn source_info_renders_metadata_for_installed_source() {
     let requests = server.get_source_info_requests();
     assert_eq!(requests.len(), 1, "expected one get_source_info call");
     assert_eq!(requests[0].name, "github");
+    assert_test_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_info_renders_database_credential_storage() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "info", "database_source"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("database_source"),
+        "expected source name: {stdout}"
+    );
+    assert!(
+        stdout.contains("Secrets:     database (encrypted)"),
+        "expected database credential storage label: {stdout}"
+    );
+
+    let requests = server.get_source_info_requests();
+    assert_eq!(requests.len(), 1, "expected one get_source_info call");
+    assert_eq!(requests[0].name, "database_source");
     assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;

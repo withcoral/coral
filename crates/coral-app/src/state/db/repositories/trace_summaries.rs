@@ -391,7 +391,8 @@ mod tests {
 
     #[tokio::test]
     async fn trace_summary_repository_round_trips_against_postgres() {
-        let Some(url) = postgres_test_url() else {
+        let Ok(Some(url)) = crate::bootstrap::AppEnvironment::env_var("CORAL_TEST_POSTGRES_URL")
+        else {
             return;
         };
         let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
@@ -598,15 +599,5 @@ mod tests {
             .await
             .expect("delete test workspace");
         tx.commit().await.expect("commit cleanup tx");
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "The Postgres repository harness is explicitly gated by this CI/test-only variable."
-    )]
-    fn postgres_test_url() -> Option<String> {
-        std::env::var("CORAL_TEST_POSTGRES_URL")
-            .ok()
-            .filter(|value| !value.is_empty())
     }
 }

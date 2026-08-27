@@ -255,10 +255,25 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Install Postgres client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+
       - name: Run Postgres database tests
         env:
           CORAL_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
-        run: make postgres-test-suite
+          CORAL_TEST_POSTGRES_SERVER_LIFECYCLE_URL: postgres://postgres:postgres@localhost:5432/coral_server_lifecycle
+          PGPASSWORD: postgres
+        run: |
+          cleanup_lifecycle_db() {
+            psql --host localhost --username postgres --dbname postgres \
+              --command 'DROP DATABASE IF EXISTS coral_server_lifecycle WITH (FORCE);'
+          }
+          trap cleanup_lifecycle_db EXIT
+          cleanup_lifecycle_db
+          psql --host localhost --username postgres --dbname postgres \
+            --command 'CREATE DATABASE coral_server_lifecycle;'
+
+          make postgres-test-suite
 
   windows-rust-smoke:
     name: Windows Rust smoke
