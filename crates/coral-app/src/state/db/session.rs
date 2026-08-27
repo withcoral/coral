@@ -92,13 +92,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         IdentitySpecDocumentsRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "source catalog repository lands before manager wiring in the stacked PR sequence"
-        )
-    )]
     fn sources(&mut self) -> SourcesRepo<'_, Self> {
         SourcesRepo::new(self)
     }

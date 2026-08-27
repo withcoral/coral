@@ -20,6 +20,7 @@ use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
 use coral_telemetry::{GRPC_REQUEST_ERROR_MESSAGE, record_failure};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
+use tokio::task;
 use tonic::codegen::{Service, http};
 use tonic::metadata::MetadataMap;
 use tonic::{Code, Request, Status};
@@ -309,6 +310,44 @@ pub(crate) fn request_context<T>(request: &Request<T>) -> Result<&RequestContext
         .extensions()
         .get::<RequestContext>()
         .ok_or_else(|| Status::internal("request context is unavailable"))
+}
+
+/// Drives an operation to completion off the runtime workers, on the blocking
+/// pool, carrying the caller's tracing span with it.
+///
+/// Every mutation that holds the exclusive app state file lock across a
+/// database await must be routed through this seam. `flock(2)` blocks the
+/// calling thread, and read paths take the shared state lock directly from
+/// async tasks, so enough concurrent readers park every runtime worker inside
+/// the syscall. A lock holder that needs a free worker to be repolled would
+/// then never reach the point where it releases the lock, and the process
+/// wedges permanently. Running the holder on the blocking pool keeps it
+/// schedulable no matter how many workers are parked.
+///
+/// Detaching also decouples the operation from caller cancellation, so
+/// filesystem and credential state that a mutation already staged still
+/// reaches its commit or rollback when the client disconnects.
+pub(crate) fn spawn_state_locked_operation<T, F>(operation: F) -> task::JoinHandle<T>
+where
+    T: Send + 'static,
+    F: Future<Output = T> + Send + 'static,
+{
+    let span = tracing::Span::current();
+    let runtime = tokio::runtime::Handle::current();
+    task::spawn_blocking(move || span.in_scope(|| runtime.block_on(operation)))
+}
+
+/// Awaits a state-lock-holding mutation spawned by
+/// [`spawn_state_locked_operation`] and maps its outcome onto a gRPC status.
+pub(crate) async fn run_state_locked_mutation<T, F>(operation: F) -> Result<T, Status>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    spawn_state_locked_operation(operation)
+        .await
+        .map_err(|error| Status::internal(format!("state operation task failed: {error}")))?
+        .map_err(app_status)
 }
 
 pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>

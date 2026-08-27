@@ -605,6 +605,7 @@ impl ConfigStore {
         Ok(result)
     }
 
+    #[cfg(test)]
     fn update_config<T>(
         &self,
         update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
@@ -636,17 +637,19 @@ impl ConfigStore {
         })
     }
 
-    /// Removes one workspace's entry, sources and functions from `config.toml`.
+    /// Removes one workspace's entry, sources and functions from `config.toml`
+    /// without taking the app state lock.
     ///
-    /// What comes back carries everything the removal took away, so a caller
-    /// whose next step fails can hand it to
-    /// [`Self::restore_workspace_config_entries`] rather than leave the file
-    /// disagreeing with the catalog it accompanies.
-    pub(crate) fn remove_workspace_config_entries(
+    /// Callers must already hold the state lock in exclusive mode. What comes
+    /// back carries everything the removal took away, so a caller whose next
+    /// step fails can hand it to
+    /// [`Self::restore_workspace_config_entries_unlocked`] rather than leave
+    /// the file disagreeing with the catalog it accompanies.
+    pub(crate) fn remove_workspace_config_entries_unlocked(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Option<RemovedWorkspaceConfig>, AppError> {
-        self.update_config(|config| {
+        self.update_config_unlocked(|config| {
             let removed = config.workspaces.remove(workspace_name);
             if removed {
                 let sources = config
@@ -675,17 +678,20 @@ impl ConfigStore {
         })
     }
 
-    /// Puts back everything [`Self::remove_workspace_config_entries`] removed.
+    /// Puts back everything
+    /// [`Self::remove_workspace_config_entries_unlocked`] removed without
+    /// taking the app state lock.
     ///
-    /// The removal is durable the moment it returns while the database
-    /// transaction it accompanies is not, so a deletion that fails to commit
-    /// needs a genuine inverse here — without one the workspace stays in the
-    /// catalog with its sources and functions gone from the file.
-    pub(crate) fn restore_workspace_config_entries(
+    /// Callers must already hold the state lock in exclusive mode. The removal
+    /// is durable the moment it returns while the database transaction it
+    /// accompanies is not, so a deletion that fails to commit needs a genuine
+    /// inverse here — without one the workspace stays in the catalog with its
+    /// sources and functions gone from the file.
+    pub(crate) fn restore_workspace_config_entries_unlocked(
         &self,
         removed: RemovedWorkspaceConfig,
     ) -> Result<(), AppError> {
-        self.update_config(|config| {
+        self.update_config_unlocked(|config| {
             let workspace_name = &removed.deleted.workspace.name;
             config.workspaces.insert(workspace_name.clone());
             for source in removed.deleted.sources {
@@ -696,6 +702,24 @@ impl ConfigStore {
             }
             Ok(())
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_workspace_config_entries(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<RemovedWorkspaceConfig>, AppError> {
+        let _lock = self.state_lock_exclusive()?;
+        self.remove_workspace_config_entries_unlocked(workspace_name)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restore_workspace_config_entries(
+        &self,
+        removed: RemovedWorkspaceConfig,
+    ) -> Result<(), AppError> {
+        let _lock = self.state_lock_exclusive()?;
+        self.restore_workspace_config_entries_unlocked(removed)
     }
 
     pub(crate) fn list_workspace_sources(
@@ -1766,6 +1790,49 @@ origin = "bundled"
                 "'{name}' must report nothing left to remove the second time"
             );
         }
+    }
+
+    #[test]
+    fn remove_workspace_config_entries_unlocked_runs_under_a_held_state_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+        let workspace_name = WorkspaceName::parse("work").expect("workspace");
+
+        store
+            .create_legacy_workspace_entry_for_tests(&workspace_name)
+            .expect("create legacy workspace entry");
+
+        // `FileLock::exclusive` opens a fresh file descriptor, so re-taking the
+        // state lock here would block the caller against itself. Run the call in
+        // a worker thread with a deadline so a regression fails instead of
+        // hanging the suite.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_store = store.clone();
+        let worker_workspace_name = workspace_name.clone();
+        std::thread::spawn(move || {
+            let _lock = worker_store
+                .state_lock_exclusive()
+                .expect("hold state lock exclusively");
+            let removed =
+                worker_store.remove_workspace_config_entries_unlocked(&worker_workspace_name);
+            sender
+                .send(removed.is_ok_and(|removed| removed.is_some()))
+                .expect("report unlocked config removal");
+        });
+
+        let removed = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("unlocked config removal should not take the state lock again");
+        assert!(removed);
+        assert!(
+            store
+                .load_config()
+                .expect("load config")
+                .workspaces
+                .list()
+                .iter()
+                .all(|workspace| workspace.name != workspace_name)
+        );
     }
 
     #[test]

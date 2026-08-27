@@ -1471,7 +1471,7 @@ mod tests {
     use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::state::db::{CoralDb, open_test_database, run_state_migrations};
     use crate::task::activity::TaskActivityRecorder;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
@@ -1576,18 +1576,13 @@ mod tests {
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
-        let config = DatabaseConfig::load(layout).expect("db config");
-        let DatabaseConfig::Sqlite { path } = config else {
-            panic!("default test config should be sqlite");
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+        let db = open_test_database(layout)
             .await
-            .expect("open sqlite");
-        db.migrate().await.expect("migrate sqlite");
+            .expect("open test database");
         run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
-        Arc::new(db)
+        db
     }
 
     async fn active_task_context(db: &Arc<CoralDb>) -> (TaskManager, RequestContext, String) {
@@ -2501,7 +2496,12 @@ mod tests {
         )
         .await;
         let workspace_name = test_workspace();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(
+            &fixture.manager,
+            &fixture.db,
+            &workspace_name,
+            fake_home.path(),
+        );
         let function_sql = r"/*
 name: demo_items
 schema: functions
@@ -2673,6 +2673,7 @@ tables:
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
+            Arc::clone(&fixture.db),
         );
         let workspace_name = test_workspace();
         let (tasks, request_context, _) = active_task_context(&fixture.db).await;
@@ -2803,6 +2804,7 @@ tables:
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
+            Arc::clone(&fixture.db),
         );
         let workspace_name = test_workspace();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
@@ -2937,6 +2939,7 @@ surface:
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
+            Arc::clone(&fixture.db),
         );
         let workspace_name = test_workspace();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
@@ -3032,6 +3035,7 @@ surface:
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
+            Arc::clone(&fixture.db),
         );
         let workspace_name = test_workspace();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
@@ -3193,7 +3197,12 @@ paths:
         )
         .await;
         let workspace_name = test_workspace();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(
+            &fixture.manager,
+            &fixture.db,
+            &workspace_name,
+            fake_home.path(),
+        );
         let calls = Arc::new(AtomicUsize::new(0));
         let config_store = fixture.manager.config_store.clone();
         let lifecycle_lock = fixture.manager.lifecycle_lock.clone();
@@ -3262,7 +3271,12 @@ select text from function_demo.messages
         )
         .await;
         let workspace_name = test_workspace();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(
+            &fixture.manager,
+            &fixture.db,
+            &workspace_name,
+            fake_home.path(),
+        );
         let function_sql = r"/*
 name: messages_by_type
 schema: functions
@@ -3362,6 +3376,7 @@ where type = $kind
 
     fn install_function_demo_source(
         manager: &QueryManager,
+        db: &Arc<CoralDb>,
         workspace_name: &WorkspaceName,
         fake_home: &std::path::Path,
     ) {
@@ -3378,6 +3393,7 @@ where type = $kind
             manager.config_store.clone(),
             manager.credential_manager.clone(),
             manager.layout.clone(),
+            Arc::clone(db),
         );
         source_manager
             .import_source(
@@ -3528,7 +3544,12 @@ tables:
         )
         .await;
         let workspace_name = test_workspace();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(
+            &fixture.manager,
+            &fixture.db,
+            &workspace_name,
+            fake_home.path(),
+        );
         let failed_source =
             install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
 
@@ -3559,7 +3580,12 @@ tables:
         )
         .await;
         let workspace_name = test_workspace();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(
+            &fixture.manager,
+            &fixture.db,
+            &workspace_name,
+            fake_home.path(),
+        );
 
         let summary = fixture
             .manager
@@ -3615,7 +3641,12 @@ tables:
         )
         .await;
         let workspace_name = test_workspace();
-        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        install_function_demo_source(
+            &fixture.manager,
+            &fixture.db,
+            &workspace_name,
+            fake_home.path(),
+        );
         let failed_source =
             install_corrupt_parquet_source(&fixture.manager, &workspace_name, fake_home.path());
 

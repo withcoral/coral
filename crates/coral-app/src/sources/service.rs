@@ -47,8 +47,8 @@ use crate::sources::manager::{
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
-    grpc_span, instrument_grpc, query_status, request_context, validate_source_response_to_proto,
-    workspace_name_from_proto, workspace_to_proto,
+    grpc_span, instrument_grpc, query_status, request_context, spawn_state_locked_operation,
+    validate_source_response_to_proto, workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
 use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName};
@@ -470,9 +470,14 @@ where
     Fut: Future<Output = Result<InstalledSource, Status>> + Send + 'static,
 {
     let (event_tx, event_rx) = mpsc::channel(8);
+    let import = spawn_state_locked_operation(import(ImportSourceEventSender::new(event_tx)));
     Box::pin(ImportSourceResponseStream::new(
         event_rx,
-        Box::pin(import(ImportSourceEventSender::new(event_tx))),
+        Box::pin(async move {
+            import
+                .await
+                .map_err(|error| Status::internal(format!("source import task failed: {error}")))?
+        }),
         response_workspace_name,
     ))
 }
@@ -864,8 +869,12 @@ mod tests {
         reason = "credential method order assertions intentionally fail loudly in tests"
     )]
 
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::mpsc as std_mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use super::*;
     use crate::identity::Principal;
@@ -923,6 +932,7 @@ mod tests {
             credentials.clone(),
             layout.clone(),
             workspaces.lifecycle_lock(),
+            Arc::clone(&db),
         );
         let queries = QueryManager::new_for_tests(
             deployment.config_store,
@@ -1220,6 +1230,108 @@ mod tests {
             UNPARSEABLE_CONFIG,
             "a refused caller must not have rewritten installed source state"
         );
+    }
+
+    use tokio::sync::oneshot;
+    use tokio::task;
+    use uuid::Uuid;
+
+    use crate::state::{AppStateLayout, ConfigStore};
+
+    fn installed_source_for_tests() -> InstalledSource {
+        InstalledSource {
+            name: SourceName::parse("imported_messages").expect("source name"),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: Uuid::nil(),
+            origin: SourceOrigin::Imported,
+        }
+    }
+
+    /// The streaming import holds the exclusive app state lock across database awaits, while every
+    /// read path takes the same blocking shared lock straight from a runtime worker. Detaching the
+    /// import with `task::spawn` therefore wedges: the worker parked in `flock(2)` is the only one
+    /// that could repoll the lock holder. Driving it on the blocking pool keeps it schedulable.
+    ///
+    /// The scenario is driven on its own runtime from a helper thread so that a regression fails
+    /// the test on a wall-clock deadline instead of hanging: once the sole worker is parked in
+    /// `flock(2)` nothing is left to advance the runtime's timer, so `tokio::time::timeout` cannot
+    /// be the backstop here.
+    #[test]
+    fn streaming_import_completes_while_runtime_workers_block_on_the_state_lock() {
+        let (done_tx, done_rx) = std_mpsc::channel();
+        thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .build()
+                .expect("single-worker runtime");
+            let name = runtime.block_on(streaming_import_under_blocked_workers());
+            // The receiver is gone only when the deadline below already failed the test.
+            drop(done_tx.send(name));
+        });
+
+        let name = done_rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("streaming import must complete while the runtime worker is parked in flock");
+        assert_eq!(name, "imported_messages");
+    }
+
+    async fn streaming_import_under_blocked_workers() -> String {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout);
+
+        let (locked_tx, locked_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let import_store = config_store.clone();
+        let mut stream =
+            import_source_response_stream(WorkspaceName::default(), move |_events| async move {
+                // Mirrors `SourceManager::persist_source`: the exclusive state lock is taken up
+                // front and held across the awaited database work.
+                let state_lock = import_store
+                    .state_lock_exclusive()
+                    .expect("exclusive state lock");
+                locked_tx.send(()).expect("report exclusive state lock");
+                release_rx.await.expect("await state lock release");
+                drop(state_lock);
+                Ok(installed_source_for_tests())
+            });
+        locked_rx
+            .await
+            .expect("import should take the exclusive state lock");
+
+        // Occupy the runtime's only worker the way every read path does: a blocking shared state
+        // lock acquired directly inside an async task.
+        let (reader_started_tx, reader_started_rx) = std_mpsc::channel();
+        let reader_store = config_store.clone();
+        let reader = task::spawn(async move {
+            reader_started_tx.send(()).expect("report reader start");
+            drop(reader_store.state_lock_shared().expect("shared state lock"));
+        });
+        reader_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reader task should start");
+        // Give the reader time to reach the blocking `flock(2)` call itself.
+        thread::sleep(Duration::from_millis(250));
+
+        release_tx
+            .send(())
+            .expect("release the exclusive state lock");
+
+        let response = stream
+            .next()
+            .await
+            .expect("import stream item")
+            .expect("import response");
+        reader.await.expect("reader task");
+        match response.event.expect("import event") {
+            import_source_response::Event::Source(source) => source.name,
+            other => panic!("expected a terminal source event, got {other:?}"),
+        }
     }
 
     #[test]
