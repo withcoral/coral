@@ -1466,7 +1466,7 @@ async fn source_scoped_clear_leaves_the_other_installed_source_intact() {
 
 #[tokio::test]
 async fn search_reads_v4_catalog_from_database_after_legacy_artifacts_are_removed() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let (manifest_yaml, _) =
         fixture_v4_openapi_manifest_yaml(harness.temp_path(), "https://example.com");
     harness
