@@ -16,6 +16,7 @@ export type McpClientInstallListItem =
       readonly installCommandLabel?: string
       readonly workspaceInstallCommand?: string
       readonly workspaceInstallShell?: 'posix' | 'powershell'
+      readonly workspaceInstallUrl?: string
     })
   | (McpClientInstallListItemBase & { readonly setupInstructions: string })
 
@@ -68,13 +69,19 @@ export function McpClientInstallList({
         {visibleClients.map((client) => {
           const workspace = selectedWorkspaces[client.id]
           const canSelectWorkspace =
-            'workspaceInstallCommand' in client && client.workspaceInstallCommand
+            ('workspaceInstallCommand' in client && client.workspaceInstallCommand) ||
+            ('workspaceInstallUrl' in client && client.workspaceInstallUrl)
           const installCommand =
-            'workspaceInstallCommand' in client && client.workspaceInstallCommand && workspace
-              ? `${client.workspaceInstallCommand} --args ${quoteShell(`--workspace=${workspace}`, client.workspaceInstallShell)}`
-              : 'installCommand' in client
-                ? client.installCommand
-                : undefined
+            'workspaceInstallUrl' in client && client.workspaceInstallUrl && workspace
+              ? client.installCommand.replace(
+                  client.workspaceInstallUrl,
+                  workspaceMcpUrl(client.workspaceInstallUrl, workspace),
+                )
+              : 'workspaceInstallCommand' in client && client.workspaceInstallCommand && workspace
+                ? `${client.workspaceInstallCommand} --args ${quoteShell(`--workspace=${workspace}`, client.workspaceInstallShell)}`
+                : 'installCommand' in client
+                  ? client.installCommand
+                  : undefined
 
           return (
             <Table.Row key={client.id}>
@@ -151,6 +158,12 @@ export function McpClientInstallList({
       </Table.Body>
     </Table.Container>
   )
+}
+
+function workspaceMcpUrl(remoteMcpUrl: string, workspace: string): string {
+  const url = new URL(remoteMcpUrl)
+  url.pathname = `${url.pathname.replace(/\/$/, '')}/workspace/${encodeURIComponent(workspace)}`
+  return url.toString()
 }
 
 function quoteShell(value: string, shell: 'posix' | 'powershell' = 'posix'): string {

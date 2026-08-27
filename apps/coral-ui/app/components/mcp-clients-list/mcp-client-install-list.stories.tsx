@@ -15,6 +15,7 @@ const meta = {
         installCommand:
           'npx -y add-mcp@1.11.0 https://coral.example/mcp --global --agent codex --name coral --transport http --yes',
         name: 'Codex',
+        workspaceInstallUrl: 'https://coral.example/mcp',
       },
       {
         id: 'claude-desktop',
@@ -23,6 +24,7 @@ const meta = {
           'Claude Desktop supports remote MCP servers through Settings → Connectors. Add the Coral endpoint there.',
       },
     ],
+    workspaces: [{ name: 'team-analytics-insights' }],
   },
   component: McpClientInstallList,
   parameters: { layout: 'padded' },

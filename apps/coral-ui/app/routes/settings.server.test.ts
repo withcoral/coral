@@ -9,7 +9,6 @@ describe('settings loader', () => {
   it('loads local install commands with workspace support', () => {
     expect(loader(request())).toEqual({
       runtime: 'web',
-      usesRemoteMcp: false,
       mcpClients: expect.arrayContaining([
         expect.objectContaining({
           id: 'codex',
@@ -27,7 +26,6 @@ describe('settings loader', () => {
     vi.stubEnv('CORAL_MCP_URL', 'https://coral.example.com/mcp')
 
     const result = loader(request())
-    expect(result.usesRemoteMcp).toBe(true)
     expect(result.mcpClients).toContainEqual({
       id: 'claude-desktop',
       name: 'Claude Desktop',
@@ -45,6 +43,7 @@ describe('settings loader', () => {
       installCommand:
         'npx -y add-mcp@1.11.0 https://coral.example.com/mcp --global --agent codex --name coral --transport http --yes',
       name: 'Codex',
+      workspaceInstallUrl: 'https://coral.example.com/mcp',
     })
   })
 
@@ -57,7 +56,6 @@ describe('settings loader', () => {
       } as Parameters<typeof loader>[0]),
     ).toEqual({
       runtime: 'web',
-      usesRemoteMcp: false,
       mcpClients: expect.arrayContaining([
         expect.objectContaining({
           id: 'codex',

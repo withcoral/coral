@@ -15,7 +15,6 @@ import { addToast } from '@/wax/components/toast'
 interface WebSettingsLoaderData {
   readonly runtime: 'web'
   readonly mcpClients: readonly McpClientInstallListItem[]
-  readonly usesRemoteMcp: boolean
 }
 
 export interface DesktopSettingsLoaderData {
@@ -35,7 +34,6 @@ export function loader({ request }: Route.LoaderArgs): WebSettingsLoaderData {
   const windows = isWindowsRequest(request)
   return {
     runtime: 'web',
-    usesRemoteMcp: connection.mode === 'remote',
     mcpClients: webMcpClients.map((client) => {
       const setupInstructions =
         connection.mode === 'remote' && remoteMcpClientInstructions[client.id]
@@ -61,7 +59,7 @@ export function loader({ request }: Route.LoaderArgs): WebSettingsLoaderData {
                     : `npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent ${client.id} --name coral --args mcp-stdio --yes`,
                   workspaceInstallShell: windows ? 'powershell' : 'posix',
                 }
-              : {}),
+              : { workspaceInstallUrl: connection.url }),
           }
     }),
   }
