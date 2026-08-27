@@ -936,6 +936,7 @@ mod tests {
             QueryRuntimeContext::default(),
             layout.clone(),
             Vec::new(),
+            Arc::clone(&db),
         );
         let config_file = layout.config_file().to_path_buf();
         Fixture {
