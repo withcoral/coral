@@ -330,7 +330,7 @@ async fn import_rejects_sensitive_auth_template_backed_by_variable() {
 
 #[tokio::test]
 async fn import_rejects_cleartext_secret_endpoint_without_database_state() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let error = harness
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
@@ -352,7 +352,7 @@ async fn import_rejects_cleartext_secret_endpoint_without_database_state() {
 
 #[tokio::test]
 async fn import_rejects_variable_rendered_cleartext_secret_endpoint() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let error = harness
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
@@ -386,7 +386,7 @@ async fn import_rejects_variable_rendered_cleartext_secret_endpoint() {
 
 #[tokio::test]
 async fn import_allows_loopback_secret_endpoint() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             secret_auth_manifest_yaml_at("http://127.0.0.1:9"),
@@ -403,7 +403,7 @@ async fn import_allows_loopback_secret_endpoint() {
 
 #[tokio::test]
 async fn import_with_oauth_rejects_cleartext_endpoint_before_authorization() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let mut stream = harness
         .source_client()
