@@ -1680,6 +1680,7 @@ async fn overwrite_restores_previous_source_on_config_write_failure() {
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(&config_dir).expect("create config dir");
     let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    harness.seed_workspace().await;
     let original_manifest = fixture_manifest_with_inputs_yaml();
     harness
         .import_source(
