@@ -896,31 +896,48 @@ impl SourceManager {
             SourceOrigin::Bundled => None,
             SourceOrigin::Imported => request.candidate.version.clone(),
         };
-        let (visible_secret_keys, credential_storage) =
-            if let Some(requested_storage) = credential_storage {
-                let expected_secret_keys = request
-                    .candidate
-                    .inputs
-                    .iter()
-                    .filter(|input| input.kind == ManifestInputKind::Secret)
-                    .map(|input| input.key.clone())
-                    .collect::<BTreeSet<_>>();
-                if requested_storage == CredentialStorageKind::Database {
-                    let provisional = InstalledSource {
-                        name: source_name.clone(),
-                        version: persisted_version.clone(),
-                        variables: variables.clone(),
-                        secrets: Vec::new(),
-                        credential_storage: Some(requested_storage),
-                        credential_revision: previous_credential_revision,
-                        origin: request.origin,
-                    };
-                    if let Err(error) = self.upsert_source_with_state_lock_held(
-                        workspace_name,
-                        provisional,
-                        request.manifest_yaml,
-                        request.materialization_tmp.as_deref(),
-                    ) {
+        let stored_source = |secrets: Vec<String>, credential_storage| InstalledSource {
+            name: source_name.clone(),
+            version: persisted_version.clone(),
+            variables: variables.clone(),
+            secrets,
+            credential_storage,
+            credential_revision: match credential_storage {
+                None => Uuid::nil(),
+                Some(_) if is_new_install || !replaced_oauth_inputs.is_empty() => Uuid::new_v4(),
+                Some(_) => previous_credential_revision,
+            },
+            origin: request.origin,
+        };
+        let (stored, database_persisted) = if let Some(requested_storage) = credential_storage {
+            let expected_secret_keys = request
+                .candidate
+                .inputs
+                .iter()
+                .filter(|input| input.kind == ManifestInputKind::Secret)
+                .map(|input| input.key.clone())
+                .collect::<BTreeSet<_>>();
+            let update_material = |mut credential_material: BTreeMap<String, String>| {
+                credential_material.retain(|key, _| {
+                    material_key_belongs_to_source_secret(key, &expected_secret_keys)
+                });
+                for input_key in &replaced_oauth_inputs {
+                    credential_material
+                        .retain(|key, _| !material_key_belongs_to_input(key, input_key));
+                }
+                credential_material.extend(secrets.clone());
+                Ok(credential_material)
+            };
+            let result = if requested_storage == CredentialStorageKind::Database {
+                let (manifest_yaml, materialization) = match Self::prepare_source_database_artifacts(
+                    &source_name,
+                    request.origin,
+                    &variables,
+                    request.manifest_yaml,
+                    request.materialization_tmp.as_deref(),
+                ) {
+                    Ok(artifacts) => artifacts,
+                    Err(error) => {
                         self.restore_source_rollback_state_with_state_lock_held(
                             workspace_name,
                             &source_name,
@@ -930,69 +947,56 @@ impl SourceManager {
                         );
                         return Err(error);
                     }
-                }
-                let credential_write = match credential_guard.update_material_with_state_lock(
-                    requested_storage,
-                    |mut credential_material| {
-                        credential_material.retain(|key, _| {
-                            material_key_belongs_to_source_secret(key, &expected_secret_keys)
-                        });
-                        for input_key in &replaced_oauth_inputs {
-                            credential_material
-                                .retain(|key, _| !material_key_belongs_to_input(key, input_key));
-                        }
-                        credential_material.extend(secrets.clone());
-                        Ok(credential_material)
+                };
+                credential_guard.update_database_source_material_with_state_lock(
+                    update_material,
+                    |visible_keys| {
+                        stored_source(
+                            visible_keys.to_vec(),
+                            (!visible_keys.is_empty()).then_some(requested_storage),
+                        )
                     },
-                ) {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        self.restore_source_rollback_state_with_state_lock_held(
-                            workspace_name,
-                            &source_name,
-                            previous,
-                            Some(requested_storage),
-                            &credential_guard,
-                        );
-                        return Err(error);
-                    }
-                };
-                let credential_storage = if credential_write.visible_keys.is_empty() {
-                    None
-                } else {
-                    Some(credential_write.storage)
-                };
-                (credential_write.visible_keys, credential_storage)
+                    manifest_yaml.as_deref(),
+                    materialization.as_ref(),
+                )
             } else {
-                (Vec::new(), None)
+                credential_guard
+                    .update_material_with_state_lock(requested_storage, update_material)
+                    .map(|outcome| {
+                        let credential_storage =
+                            (!outcome.visible_keys.is_empty()).then_some(outcome.storage);
+                        stored_source(outcome.visible_keys, credential_storage)
+                    })
             };
-
-        let stored = InstalledSource {
-            name: source_name.clone(),
-            version: persisted_version,
-            variables,
-            secrets: visible_secret_keys,
-            credential_storage,
-            credential_revision: if credential_storage.is_none() {
-                Uuid::nil()
-            } else if is_new_install || !replaced_oauth_inputs.is_empty() {
-                Uuid::new_v4()
-            } else {
-                previous_credential_revision
-            },
-            origin: request.origin,
+            match result {
+                Ok(stored) => (stored, requested_storage == CredentialStorageKind::Database),
+                Err(error) => {
+                    self.restore_source_rollback_state_with_state_lock_held(
+                        workspace_name,
+                        &source_name,
+                        previous,
+                        Some(requested_storage),
+                        &credential_guard,
+                    );
+                    return Err(error);
+                }
+            }
+        } else {
+            (stored_source(Vec::new(), None), false)
         };
-        if let Err(error) = self.upsert_source_with_state_lock_held(
-            workspace_name,
-            stored.clone(),
-            request.manifest_yaml,
-            request.materialization_tmp.as_deref(),
-        ) {
+        if !database_persisted
+            && let Err(error) = self.upsert_source_with_state_lock_held(
+                workspace_name,
+                stored.clone(),
+                request.manifest_yaml,
+                request.materialization_tmp.as_deref(),
+            )
+        {
             self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 &source_name,
                 previous,
-                credential_storage,
+                stored.credential_storage,
                 &credential_guard,
             );
             return Err(error);
@@ -1309,23 +1313,14 @@ impl SourceManager {
         manifest_yaml: Option<&str>,
         materialization_tmp: Option<&Path>,
     ) -> Result<(), AppError> {
-        let manifest_yaml = match source.origin {
-            SourceOrigin::Bundled => None,
-            SourceOrigin::Imported => {
-                let manifest_yaml = manifest_yaml.ok_or_else(|| {
-                    AppError::FailedPrecondition(format!(
-                        "imported source '{}' is missing manifest YAML for database persistence",
-                        source.name
-                    ))
-                })?;
-                validate_imported_manifest_database_persistence(manifest_yaml, &source.variables)?;
-                Some(manifest_yaml.to_string())
-            }
-        };
+        let (manifest_yaml, materialization) = Self::prepare_source_database_artifacts(
+            &source.name,
+            source.origin,
+            &source.variables,
+            manifest_yaml,
+            materialization_tmp,
+        )?;
         let now_unix_nanos = now_unix_nanos_i64()?;
-        let materialization = materialization_tmp
-            .map(|dir| materialization_record_from_dir(&source.name, dir, now_unix_nanos))
-            .transpose()?;
         let db = Arc::clone(&self.db);
         let db_workspace_name = workspace_name.clone();
         let db_source = source;
@@ -1365,6 +1360,32 @@ impl SourceManager {
             Ok(())
         })?;
         Ok(())
+    }
+
+    fn prepare_source_database_artifacts(
+        source_name: &SourceName,
+        origin: SourceOrigin,
+        variables: &BTreeMap<String, String>,
+        manifest_yaml: Option<&str>,
+        materialization_tmp: Option<&Path>,
+    ) -> Result<(Option<String>, Option<MaterializationRecord>), AppError> {
+        let manifest_yaml = match origin {
+            SourceOrigin::Bundled => None,
+            SourceOrigin::Imported => {
+                let manifest_yaml = manifest_yaml.ok_or_else(|| {
+                    AppError::FailedPrecondition(format!(
+                        "imported source '{source_name}' is missing manifest YAML for database persistence"
+                    ))
+                })?;
+                validate_imported_manifest_database_persistence(manifest_yaml, variables)?;
+                Some(manifest_yaml.to_string())
+            }
+        };
+        let now_unix_nanos = now_unix_nanos_i64()?;
+        let materialization = materialization_tmp
+            .map(|dir| materialization_record_from_dir(source_name, dir, now_unix_nanos))
+            .transpose()?;
+        Ok((manifest_yaml, materialization))
     }
 
     fn remove_db_source_with_state_lock_held(
@@ -2173,6 +2194,7 @@ mod tests {
         source_needs_stored_material_for_validation,
     };
     use crate::bootstrap::AppError;
+    use crate::credentials::encryption::test_support::StaticKeyProvider;
     use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
@@ -2242,6 +2264,40 @@ mod tests {
                 "injected credential decryption failure".to_string(),
             ))
         }
+    }
+
+    fn database_source_manager_for_tests(
+        layout: &AppStateLayout,
+        key_provider: Arc<dyn CredentialKeyProvider>,
+    ) -> (SourceManager, Arc<crate::state::db::CoralDb>) {
+        let db = run_source_db_operation({
+            let layout = layout.clone();
+            async move {
+                let db = crate::state::db::open_test_database(&layout).await?;
+                let mut tx = db.begin().await?;
+                tx.workspaces()
+                    .ensure(WorkspaceName::default().as_str(), 1)
+                    .await?;
+                tx.commit().await?;
+                Ok(db)
+            }
+        })
+        .expect("open database and seed default workspace");
+        let credential_store = CredentialStore::with_database(
+            layout.clone(),
+            CredentialStoragePreference::Database,
+            Arc::clone(&db),
+            key_provider,
+        );
+        (
+            SourceManager::new_for_tests(
+                ConfigStore::new(layout.clone()),
+                CredentialManager::new(credential_store),
+                layout.clone(),
+                Arc::clone(&db),
+            ),
+            db,
+        )
     }
 
     fn manifest_with_secret() -> String {
@@ -3599,41 +3655,13 @@ surface:
     }
 
     #[test]
-    fn import_removes_provisional_database_source_when_credential_persistence_fails() {
+    fn import_does_not_persist_database_source_when_credential_persistence_fails() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let db = run_source_db_operation({
-            let layout = layout.clone();
-            async move { crate::state::db::open_test_database(&layout).await }
-        })
-        .expect("open test database");
-        run_source_db_operation({
-            let db = Arc::clone(&db);
-            async move {
-                let mut tx = db.begin().await?;
-                tx.workspaces()
-                    .ensure(WorkspaceName::default().as_str(), 1)
-                    .await?;
-                tx.commit().await?;
-                Ok(())
-            }
-        })
-        .expect("seed default workspace");
-        let credential_store = CredentialStore::with_database(
-            layout.clone(),
-            CredentialStoragePreference::Database,
-            Arc::clone(&db),
-            Arc::new(FailingCredentialKeyProvider),
-        );
-        let manager = SourceManager::new_for_tests(
-            config_store,
-            CredentialManager::new(credential_store),
-            layout.clone(),
-            db,
-        );
+        let (manager, _db) =
+            database_source_manager_for_tests(&layout, Arc::new(FailingCredentialKeyProvider));
         let source_name = SourceName::parse("secured_messages").expect("source");
 
         let error = manager
@@ -3661,7 +3689,7 @@ surface:
                 .list_workspace_sources(&default_workspace())
                 .expect("list database sources")
                 .is_empty(),
-            "failed credential persistence must remove its provisional database source"
+            "failed credential persistence must not commit database source state"
         );
         assert!(
             !layout
@@ -3669,6 +3697,56 @@ surface:
                 .exists(),
             "failed credential persistence must remove staged source artifacts"
         );
+    }
+
+    #[test]
+    fn import_commits_database_source_manifest_and_credentials_together() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let key = CredentialEncryptionKey::from_static_bytes_for_test([29; 32]);
+        let (manager, db) =
+            database_source_manager_for_tests(&layout, Arc::new(StaticKeyProvider { key }));
+        let installed = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("database source import");
+
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let (source, manifest, credentials) = run_source_db_operation(async move {
+            let mut session = db.as_ref();
+            Ok((
+                session
+                    .sources()
+                    .get_source(&default_workspace(), &source_name)
+                    .await?,
+                session
+                    .source_manifests()
+                    .get(&default_workspace(), &source_name)
+                    .await?,
+                session
+                    .credential_documents()
+                    .get(&default_workspace(), &source_name)
+                    .await?,
+            ))
+        })
+        .expect("read atomic source state");
+
+        assert_eq!(source, Some(installed));
+        assert!(manifest.is_some());
+        assert!(credentials.is_some());
     }
 
     #[test]
