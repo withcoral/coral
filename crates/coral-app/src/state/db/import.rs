@@ -569,6 +569,7 @@ struct PersistedFeedbackReport {
     trying_to_do: String,
     tried: String,
     stuck: String,
+    task_id: Option<String>,
 }
 
 pub(crate) async fn import_filesystem_feedback_reports(
@@ -722,6 +723,7 @@ fn parse_legacy_feedback_report_line(
         trying_to_do: record.trying_to_do,
         tried: record.tried,
         stuck: record.stuck,
+        task_id: record.task_id,
         publish_status: None,
         publish_error: None,
         published_at_unix_nanos: None,
@@ -2235,6 +2237,17 @@ mod tests {
         assert!(invalid_workspace_file.exists());
         assert!(rollback_file.exists());
         let mut session = &db;
+        assert_eq!(
+            session
+                .feedback_reports()
+                .get(&healthy, "feedback-1")
+                .await
+                .expect("get imported feedback report")
+                .expect("imported feedback report")
+                .task_id
+                .as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
         assert!(
             session
                 .workspaces()
@@ -2306,7 +2319,7 @@ mod tests {
 
     fn feedback_jsonl(workspace: &str, id: &str) -> String {
         format!(
-            r#"{{"id":"{id}","workspace":"{workspace}","created_at":"2026-06-30T12:00:00Z","trying_to_do":"trying","tried":"tried","stuck":"stuck"}}
+            r#"{{"id":"{id}","workspace":"{workspace}","created_at":"2026-06-30T12:00:00Z","trying_to_do":"trying","tried":"tried","stuck":"stuck","task_id":"550e8400-e29b-41d4-a716-446655440000"}}
 "#
         )
     }
@@ -2323,6 +2336,7 @@ mod tests {
             trying_to_do: trying_to_do.to_string(),
             tried: "tried".to_string(),
             stuck: "stuck".to_string(),
+            task_id: None,
             publish_status: None,
             publish_error: None,
             published_at_unix_nanos: None,
