@@ -428,13 +428,16 @@ async fn import_filesystem_v4_materializations(
             .filter(|source| source.origin == SourceOrigin::Imported)
         {
             let materialized_dir = layout.v4_materialized_dir(&workspace_name, &source.name);
-            if !materialized_dir.exists()
-                || session
-                    .materializations()
-                    .get(&workspace_name, &source.name)
-                    .await?
-                    .is_some()
+            if !materialized_dir.exists() {
+                continue;
+            }
+            if session
+                .materializations()
+                .get(&workspace_name, &source.name)
+                .await?
+                .is_some()
             {
+                remove_v4_materialization_dir(&materialized_dir);
                 continue;
             }
             let Some(manifest_yaml) = session
@@ -480,6 +483,7 @@ async fn import_filesystem_v4_materializations(
                 continue;
             }
             upsert_imported_v4_materialization(db, &workspace_name, &source.name, &record).await?;
+            remove_v4_materialization_dir(&materialized_dir);
         }
     }
     Ok(())
@@ -537,6 +541,20 @@ async fn upsert_imported_v4_materialization(
 
 fn is_unique_constraint_error(error: &DbError) -> bool {
     matches!(error, DbError::Sqlx(sqlx::Error::Database(database_error)) if database_error.is_unique_violation())
+}
+
+fn remove_v4_materialization_dir(materialized_dir: &std::path::Path) {
+    match fs::remove_dir_all(materialized_dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %materialized_dir.display(),
+                detail = %error,
+                "DSL v4 materialization imported into database but legacy artifact cleanup failed"
+            );
+        }
+    }
 }
 
 fn read_imported_manifest_file(
@@ -604,7 +622,10 @@ mod tests {
     };
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::session::DbRepos;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, MaterializationRecord, MaterializationSurfaceRecord,
+        ResolvedDatabaseConfig,
+    };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::storage::fs::DELETION_BACKUP_INFIX;
     use crate::workspaces::WorkspaceName;
@@ -1637,7 +1658,7 @@ mod tests {
         let healthy_descriptor = temp.path().join("healthy-openapi.json");
         fs::write(&healthy_descriptor, OPENAPI_FIXTURE).expect("write OpenAPI fixture");
         let healthy_manifest = format!(
-            "name: {}\ndsl_version: 4\nsurfaces:\n- id: rest\n  type: openapi\n  file: {}\n",
+            "name: {}\ndsl_version: 4\nsurface:\n  type: openapi\n  file: {}\n",
             healthy.name,
             healthy_descriptor.display()
         );
@@ -1734,6 +1755,214 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn backfills_v4_materialization_for_already_imported_database_source() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = source(
+            "github_v4_import",
+            Some("0.1.0"),
+            [],
+            [],
+            None,
+            SourceOrigin::Imported,
+        );
+        let (manifest_yaml, materialized_dir) = install_legacy_v4_materialization(
+            &layout,
+            &workspace,
+            &source.name,
+            &temp.path().join("openapi.yaml"),
+        );
+
+        let db = open_sqlite(&layout).await;
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 7)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &source, 7)
+            .await
+            .expect("upsert source");
+        tx.source_manifests()
+            .upsert(&workspace, &source.name, &manifest_yaml, 7)
+            .await
+            .expect("upsert source manifest");
+        assert!(
+            tx.state_migrations()
+                .try_claim(WORKSPACE_CATALOG_CUTOVER_ID, 7)
+                .await
+                .expect("mark workspace cutover complete")
+        );
+        assert!(
+            tx.state_migrations()
+                .try_claim(SOURCE_CATALOG_IMPORT_ID, 7)
+                .await
+                .expect("mark source import complete")
+        );
+        tx.commit().await.expect("commit source");
+
+        run_state_migrations(&db, &config_store, &layout)
+            .await
+            .expect("backfill materialization");
+
+        let mut session = &db;
+        let materialization = session
+            .materializations()
+            .get(&workspace, &source.name)
+            .await
+            .expect("get materialization")
+            .expect("materialization");
+        assert_eq!(materialization.surfaces.len(), 1);
+        assert!(
+            !materialized_dir.exists(),
+            "legacy materialized directory should be cleaned after DB backfill"
+        );
+    }
+
+    #[tokio::test]
+    async fn imports_config_v4_source_and_legacy_materialization_in_one_pass() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = source(
+            "github_v4_config",
+            Some("0.1.0"),
+            [],
+            [],
+            None,
+            SourceOrigin::Imported,
+        );
+        config_store
+            .upsert_source(&workspace, source.clone())
+            .expect("write config source");
+        let (manifest_yaml, materialized_dir) = install_legacy_v4_materialization(
+            &layout,
+            &workspace,
+            &source.name,
+            &temp.path().join("openapi.yaml"),
+        );
+        write_manifest_file(&layout, &workspace, &source.name, &manifest_yaml);
+        let db = open_sqlite(&layout).await;
+
+        run_state_migrations(&db, &config_store, &layout)
+            .await
+            .expect("import source and materialization");
+
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get imported source"),
+            Some(source.clone())
+        );
+        assert_eq!(
+            session
+                .source_manifests()
+                .get(&workspace, &source.name)
+                .await
+                .expect("get source manifest")
+                .expect("source manifest")
+                .manifest_yaml,
+            manifest_yaml
+        );
+        assert_eq!(
+            session
+                .materializations()
+                .get(&workspace, &source.name)
+                .await
+                .expect("get materialization")
+                .expect("materialization")
+                .surfaces
+                .len(),
+            1
+        );
+        assert!(!materialized_dir.exists());
+        assert!(
+            config_store
+                .load_config_unlocked()
+                .expect("legacy config should be cleaned")
+                .workspace_sources(&workspace)
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_v4_materialization_backfill_race_is_benign_postgres() {
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        let workspace = WorkspaceName::parse(&format!("race{}", uuid::Uuid::new_v4().simple()))
+            .expect("workspace");
+        let source = source("race_v4", None, [], [], None, SourceOrigin::Imported);
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 7)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &source, 7)
+            .await
+            .expect("upsert source");
+        tx.commit().await.expect("commit source");
+        let winner_record = MaterializationRecord {
+            materialization_version: "v4".into(),
+            fingerprint_yaml: "winner-fingerprint".into(),
+            projections_yaml: "projections".into(),
+            diagnostics_yaml: "diagnostics".into(),
+            created_at_unix_nanos: 11,
+            surfaces: vec![MaterializationSurfaceRecord {
+                surface_id: "rest".into(),
+                source_document_raw: b"{}".to_vec(),
+                source_document_yaml: "{}".into(),
+                semantic_ir_yaml: "{}".into(),
+                operation_metadata_yaml: "{}".into(),
+            }],
+        };
+        let mut loser_record = winner_record.clone();
+        loser_record.fingerprint_yaml = "loser-fingerprint".into();
+        let mut tx = db.begin().await.expect("begin winner tx");
+        tx.materializations()
+            .upsert(&workspace, &source.name, &winner_record)
+            .await
+            .expect("insert uncommitted winner materialization");
+        let loser =
+            super::upsert_imported_v4_materialization(&db, &workspace, &source.name, &loser_record);
+        tokio::pin!(loser);
+
+        if tokio::time::timeout(std::time::Duration::from_millis(250), &mut loser)
+            .await
+            .is_ok()
+        {
+            panic!("loser backfill completed before the winner transaction committed");
+        }
+        tx.commit().await.expect("commit winner materialization");
+        loser
+            .await
+            .expect("loser backfill recovers after unique violation");
+        let mut session = &db;
+        assert_eq!(
+            session
+                .materializations()
+                .get(&workspace, &source.name)
+                .await
+                .expect("get materialization")
+                .expect("materialization"),
+            winner_record
+        );
+    }
+
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
         let config = DatabaseConfig::load(layout).expect("db config");
         let DatabaseConfig::Sqlite { path } = config else {
@@ -1821,5 +2050,83 @@ inputs: { API_BASE: { kind: variable }, API_TOKEN: { kind: secret } }
 auth: { type: HeaderAuth, headers: [{ name: Authorization, from: template, template: "Bearer {{input.API_TOKEN}}" }] }"#,
             1,
         )
+    }
+
+    fn install_legacy_v4_materialization(
+        layout: &AppStateLayout,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+        descriptor_file: &std::path::Path,
+    ) -> (String, std::path::PathBuf) {
+        fs::write(descriptor_file, openapi_fixture()).expect("write OpenAPI fixture");
+        let manifest_yaml = v4_manifest_yaml(source_name.as_str(), descriptor_file);
+        let parsed_manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse manifest")
+            .as_v4()
+            .expect("v4 manifest")
+            .clone();
+        let build = build_v4_materialization_tmp(
+            layout,
+            workspace,
+            source_name,
+            &manifest_yaml,
+            &parsed_manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("build materialization");
+        replace_or_retire_v4_materialization(layout, workspace, source_name, Some(&build.temp_dir))
+            .expect("install legacy materialization");
+        let materialized_dir = layout.v4_materialized_dir(workspace, source_name);
+        assert!(materialized_dir.exists());
+        (manifest_yaml, materialized_dir)
+    }
+
+    fn v4_manifest_yaml(name: &str, descriptor_file: &std::path::Path) -> String {
+        format!(
+            r"
+name: {name}
+dsl_version: 4
+surface:
+  type: openapi
+  file: {}
+",
+            descriptor_file.display()
+        )
+    }
+
+    fn openapi_fixture() -> &'static str {
+        r"
+openapi: 3.0.3
+info:
+  title: GitHub
+servers:
+  - url: https://api.example.com
+paths:
+  /issues:
+    get:
+      operationId: issues/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: integer}
+                    title: {type: string}
+"
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "The Postgres import harness is explicitly gated by this CI/test-only variable."
+    )]
+    fn postgres_test_url() -> Option<String> {
+        std::env::var("CORAL_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
     }
 }

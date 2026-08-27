@@ -26,8 +26,13 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
+use crate::credential_transport::validate_credential_endpoint_transport;
 use crate::hash::sha256_hex;
 use crate::sources::SourceName;
+use crate::sources::catalog::{
+    template_references_secret_input, validate_auth_spec_for_database_persistence,
+    validate_headers_for_database_persistence,
+};
 use crate::state::db::{MaterializationRecord, MaterializationSurfaceRecord};
 use crate::state::{
     AppStateLayout, V4OperationMetadataFile, V4OperationMetadataOrigin, V4ProjectionCatalogFile,
@@ -1418,7 +1423,7 @@ fn app_error_from_core(error: coral_engine::CoreError) -> AppError {
     }
 }
 
-fn validate_materialized_surface_base_url(
+pub(crate) fn validate_materialized_surface_base_url(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     bytes: &[u8],
@@ -1448,7 +1453,30 @@ fn validate_materialized_surface_base_url(
         &base_url,
         "derived OpenAPI server",
     )
-    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let input_kinds = manifest
+        .declared_inputs
+        .iter()
+        .map(|input| (input.key.clone(), input.kind))
+        .collect::<BTreeMap<_, _>>();
+    let mut needs_transport_guard = validate_auth_spec_for_database_persistence(
+        &input_kinds,
+        "surface auth",
+        &openapi_runtime.auth,
+    )?;
+    needs_transport_guard |= validate_headers_for_database_persistence(
+        &input_kinds,
+        "surface request_headers",
+        &openapi_runtime.request_headers,
+    )?;
+    needs_transport_guard |= template_references_secret_input(&input_kinds, &base_url);
+    if needs_transport_guard {
+        validate_credential_endpoint_transport(
+            "surface derived OpenAPI server base_url",
+            base_url.raw(),
+        )?;
+    }
+    Ok(())
 }
 
 fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {

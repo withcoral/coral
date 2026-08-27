@@ -1022,6 +1022,21 @@ impl Drop for FailingHttpFixture {
     }
 }
 
+pub(crate) async fn issues_http_fixture(auth_header: &[&str]) -> wiremock::MockServer {
+    let server = wiremock::MockServer::start().await;
+    let auth_header = auth_header.to_vec();
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::headers("Authorization", auth_header))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .append_header("Content-Type", "application/json")
+                .set_body_string(r#"[{"id":1,"title":"Stored materialization"}]"#),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
 pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
     fixture_manifest_with_test_queries_yaml(root, &[])
 }
