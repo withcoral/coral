@@ -759,10 +759,16 @@ async fn search_reports_partial_catalog_coverage_and_recovers_after_source_repai
     harness
         .import_source(repair_manifest.clone(), Vec::new(), Vec::new())
         .await;
-    let broken_manifest = harness
-        .config_dir()
-        .join("workspaces/default/sources/searchable/manifest.yaml");
-    fs::write(&broken_manifest, "name: [invalid").expect("break installed manifest");
+    let app_db = rusqlite::Connection::open(harness.config_dir().join("coral.db"))
+        .expect("open app database");
+    app_db
+        .execute(
+            "UPDATE source_manifests SET manifest_yaml = ?1 \
+             WHERE workspace_id = ?2 AND source_name = ?3",
+            rusqlite::params!["name: [invalid", "default", "searchable"],
+        )
+        .expect("break installed database manifest");
+    drop(app_db);
 
     let degraded = harness
         .search_client()
@@ -791,7 +797,9 @@ async fn search_reports_partial_catalog_coverage_and_recovers_after_source_repai
     assert!(!coverage.has_more);
     assert!(status.note.contains("searchable"));
 
-    fs::write(&broken_manifest, repair_manifest).expect("repair installed manifest");
+    harness
+        .import_source(repair_manifest, Vec::new(), Vec::new())
+        .await;
     let recovered = harness
         .search_client()
         .search(Request::new(SearchRequest {
