@@ -1044,37 +1044,38 @@ async fn write_legacy_github_v4_materialization_from_db(
     )
     .expect("write legacy diagnostics");
 
-    let surfaces = sqlx::query(
-        "SELECT surface_id, source_document_raw, source_document_yaml, semantic_ir_yaml \
+    let surface = sqlx::query(
+        "SELECT surface_id, source_document_raw, source_document_yaml, semantic_ir_yaml, \
+         operation_metadata_yaml \
          FROM materialization_surfaces WHERE workspace_id = ? AND source_name = ? \
          ORDER BY surface_id",
     )
     .bind("default")
     .bind("github_v4_query")
-    .fetch_all(&pool)
+    .fetch_one(&pool)
     .await
-    .expect("load materialization surfaces");
-    for surface in surfaces {
-        let surface_dir = materialized_dir
-            .join("surfaces")
-            .join(surface.get::<String, _>("surface_id"));
-        fs::create_dir_all(&surface_dir).expect("create legacy surface dir");
-        fs::write(
-            surface_dir.join("source-document.raw"),
-            surface.get::<Vec<u8>, _>("source_document_raw"),
-        )
-        .expect("write legacy raw source document");
-        fs::write(
-            surface_dir.join("source-document.yaml"),
-            surface.get::<String, _>("source_document_yaml"),
-        )
-        .expect("write legacy source document");
-        fs::write(
-            surface_dir.join("semantic-ir.yaml"),
-            surface.get::<String, _>("semantic_ir_yaml"),
-        )
-        .expect("write legacy semantic IR");
-    }
+    .expect("load materialization surface");
+    assert_eq!(surface.get::<String, _>("surface_id"), "surface");
+    fs::write(
+        materialized_dir.join("source-document.raw"),
+        surface.get::<Vec<u8>, _>("source_document_raw"),
+    )
+    .expect("write legacy raw source document");
+    fs::write(
+        materialized_dir.join("source-document.yaml"),
+        surface.get::<String, _>("source_document_yaml"),
+    )
+    .expect("write legacy source document");
+    fs::write(
+        materialized_dir.join("semantic-ir.yaml"),
+        surface.get::<String, _>("semantic_ir_yaml"),
+    )
+    .expect("write legacy semantic IR");
+    fs::write(
+        materialized_dir.join("operation-metadata.yaml"),
+        surface.get::<String, _>("operation_metadata_yaml"),
+    )
+    .expect("write legacy operation metadata");
     pool.close().await;
 }
 
