@@ -599,8 +599,8 @@ async fn source_list_renders_database_credential_storage() {
     let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
         ListSourcesResponse {
             sources: vec![Source {
-                workspace: Some(Workspace {
-                    name: "default".to_string(),
+                workspace: Some(coral_api::v1::Workspace {
+                    name: TEST_WORKSPACE.to_string(),
                 }),
                 name: "database_source".to_string(),
                 version: "3.0.0".to_string(),
@@ -799,7 +799,7 @@ async fn source_info_renders_database_credential_storage() {
     let requests = server.get_source_info_requests();
     assert_eq!(requests.len(), 1, "expected one get_source_info call");
     assert_eq!(requests[0].name, "database_source");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
