@@ -553,7 +553,7 @@ origin = "imported"
         .workspace
         .expect("delete workspace response");
     assert_eq!(deleted.name, "work");
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(workspace_names(&harness).await.is_empty());
 }
 
 #[tokio::test]
