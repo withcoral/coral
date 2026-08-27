@@ -32,9 +32,11 @@ use crate::query::input_resolver::{
     CredentialRefreshingInputResolver, SourceCredentialSnapshot, StoredCredentialInputResolver,
 };
 use crate::search::observed::{SearchObservationHandle, SearchObservationSource};
-use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::catalog::{
+    resolve_installed_manifest, validate_imported_manifest_database_persistence,
+};
 use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
-use crate::sources::model::InstalledSource;
+use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::sources::runtime_package::{
     RuntimeContractFingerprint, query_source_from_installed_manifest,
 };
@@ -714,6 +716,12 @@ impl QueryManager {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = &installed.source_spec;
         ensure_database_source_feature_enabled(source_spec, self.database_sources_enabled)?;
+        if source.origin == SourceOrigin::Imported {
+            validate_imported_manifest_database_persistence(
+                &installed.manifest_yaml,
+                &source.variables,
+            )?;
+        }
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
@@ -2908,6 +2916,69 @@ tables:
             recorded.first().expect("recorded task query").status,
             "success"
         );
+    }
+
+    #[tokio::test]
+    async fn load_query_source_revalidates_persisted_imported_credential_transport() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("transport_guard").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r#"
+name: transport_guard
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: "{{input.API_BASE}}"
+inputs:
+  API_BASE:
+    kind: variable
+  API_TOKEN:
+    kind: secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: API_TOKEN
+tables:
+  - name: items
+    description: Items
+    request:
+      path: /items
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        )
+        .expect("write manifest");
+        let source = InstalledSource {
+            name: source_name.clone(),
+            version: Some("0.1.0".to_string()),
+            variables: BTreeMap::from([(
+                "API_BASE".to_string(),
+                "http://api.example.com".to_string(),
+            )]),
+            secrets: vec!["API_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::File),
+            credential_revision: uuid::Uuid::default(),
+            origin: SourceOrigin::Imported,
+        };
+
+        let error = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect_err("persisted imported cleartext credential endpoint should fail");
+
+        assert!(error.to_string().contains("base_url must use https"));
     }
 
     #[tokio::test]

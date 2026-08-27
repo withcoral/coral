@@ -46,6 +46,7 @@ mod authorization_matrix;
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
+mod credential_transport;
 mod credentials;
 mod encrypted_document;
 pub mod features;

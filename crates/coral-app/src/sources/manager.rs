@@ -22,6 +22,7 @@ use crate::search::sqlite_store::SqliteSearchStore;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
     validate_imported_manifest_database_persistence,
+    validate_imported_manifest_database_persistence_shape,
 };
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, SourceDiagnosticReporter,
@@ -493,6 +494,11 @@ impl SourceManager {
             &BTreeSet::new(),
         )?;
         let bindings = validate_bindings(candidate, bindings, &stored_material)?;
+        if origin == SourceOrigin::Imported
+            && let Some(manifest_yaml) = manifest_yaml
+        {
+            validate_imported_manifest_database_persistence(manifest_yaml, &bindings.variables)?;
+        }
         let materialization_inputs =
             materialization_inputs_from_bindings(&bindings, &stored_material);
         self.persist_source(
@@ -558,6 +564,14 @@ impl SourceManager {
             &stored_material,
             &oauth_credential_retrievals,
         )?;
+        if origin == SourceOrigin::Imported
+            && let Some(manifest_yaml) = manifest_yaml.as_deref()
+        {
+            validate_imported_manifest_database_persistence(
+                manifest_yaml,
+                &preflight_bindings.variables,
+            )?;
+        }
         let oauth_material = self
             .retrieve_oauth_material(
                 &candidate,
@@ -756,7 +770,7 @@ impl SourceManager {
         let manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = durable_import_manifest_yaml(manifest_yaml, &manifest)?;
-        validate_imported_manifest_database_persistence(&manifest_yaml)?;
+        validate_imported_manifest_database_persistence_shape(&manifest_yaml)?;
         let mut candidate =
             describe_manifest(manifest_yaml.as_str(), SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;

@@ -26,6 +26,7 @@ use url::{Url, form_urlencoded};
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
+use crate::credential_transport::validate_credential_endpoint_transport;
 use crate::credentials::OAUTH_INTERNAL_KEY_PREFIX;
 
 const SESSION_TTL: Duration = Duration::from_mins(10);
@@ -283,6 +284,7 @@ impl OAuthCredentialService {
     {
         let oauth = request.oauth.clone();
         let endpoints = oauth_endpoint_urls(&oauth, request.source_inputs)?;
+        validate_oauth_setup_endpoint_transports(&endpoints)?;
         let resource = oauth_resource(&oauth, request.source_inputs)?;
         let credential_inputs = normalize_credential_inputs(request.credential_inputs)?;
         reject_unknown_credential_inputs(&oauth, &credential_inputs)?;
@@ -394,6 +396,7 @@ impl OAuthCredentialService {
         credential_inputs: Vec<(String, String)>,
     ) -> Result<(), AppError> {
         let endpoints = oauth_endpoint_urls(oauth, source_inputs)?;
+        validate_oauth_setup_endpoint_transports(&endpoints)?;
         let _resource = oauth_resource(oauth, source_inputs)?;
         let credential_inputs = normalize_credential_inputs(credential_inputs)?;
         reject_unknown_credential_inputs(oauth, &credential_inputs)?;
@@ -546,9 +549,22 @@ impl OAuthCredentialService {
     }
 }
 
+fn validate_oauth_setup_endpoint_transports(
+    endpoints: &ManifestOAuthEndpointUrls,
+) -> Result<(), AppError> {
+    if let Some(url) = endpoints.authorization_url.as_deref() {
+        validate_credential_endpoint_transport("OAuth authorization_url", url)?;
+    }
+    if let Some(url) = endpoints.device_authorization_url.as_deref() {
+        validate_credential_endpoint_transport("OAuth device_authorization_url", url)?;
+    }
+    validate_credential_endpoint_transport("OAuth token_url", &endpoints.token_url)
+}
+
 fn token_http_client(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("OAuth token HTTP client configuration should be valid")
 }
@@ -1454,6 +1470,8 @@ async fn refresh_access_token(
     http: &reqwest::Client,
     refresh: &OAuthRefreshConfig,
 ) -> Result<TokenResponse, AppError> {
+    validate_credential_endpoint_transport("OAuth token refresh token_url", &refresh.token_url)
+        .map_err(|error| AppError::FailedPrecondition(format!("{error}; reconnect the source")))?;
     let mut form = vec![
         ("grant_type", "refresh_token".to_string()),
         ("refresh_token", refresh.refresh_token.clone()),
@@ -2337,6 +2355,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_oauth_material_rejects_cleartext_refresh_token_url() {
+        let oauth = oauth_spec(
+            "https://api.example.com/token",
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            public_client(),
+        );
+        let mut material = expired_oauth_material("http://api.example.com/token");
+        let service = OAuthCredentialService::new();
+
+        let error = service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
+                &mut material,
+            )
+            .await
+            .expect_err("cleartext refresh token URL should fail closed");
+
+        let message = error.to_string();
+        assert!(message.contains("OAuth token refresh token_url must use https"));
+        assert!(message.contains("reconnect the source"));
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_does_not_follow_token_redirects() {
+        let redirect_url = format!("http://127.0.0.1:{}/capture", free_loopback_port());
+        let raw = Box::leak(
+            format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nlocation: {redirect_url}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            )
+            .into_boxed_str(),
+        );
+        let fixture = OAuthFixture::new(Some(raw));
+        let oauth = oauth_spec(
+            &fixture.token_url,
+            free_loopback_port(),
+            ManifestOAuthPkceMode::Disabled,
+            public_client(),
+        );
+        let mut material = expired_oauth_material(&fixture.token_url);
+        let error = OAuthCredentialService::with_token_request_timeout(Duration::from_millis(100))
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
+                &mut material,
+            )
+            .await
+            .expect_err("redirect token response should fail");
+
+        fixture.token_server.await.expect("token server");
+        assert!(error.to_string().contains("HTTP 307"));
+    }
+
+    #[tokio::test]
     async fn unexpired_oauth_material_does_not_refresh_access_token() {
         let oauth = oauth_spec(
             "http://127.0.0.1:9/token",
@@ -2728,6 +2799,37 @@ mod tests {
         assert_eq!(completed.access_token, "access-token");
         assert_public_dcr_metadata(&completed.internal_metadata, "MCP_ACCESS_TOKEN");
         assert_no_dcr_client_management_metadata(&completed.internal_metadata, "MCP_ACCESS_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn oauth_setup_rejects_cleartext_endpoints_before_events_or_requests() {
+        let mut oauth = oauth_spec(
+            "https://api.example.com/token",
+            53682,
+            ManifestOAuthPkceMode::Required,
+            public_client(),
+        );
+        oauth.authorization_url = Some("http://api.example.com/authorize".to_string());
+
+        let service = OAuthCredentialService::new();
+        let error = service
+            .authorize(
+                StartOAuthCredentialRequest {
+                    input_key: "API_TOKEN",
+                    oauth: &oauth,
+                    source_inputs: &EMPTY_SOURCE_INPUTS,
+                    credential_inputs: Vec::new(),
+                },
+                |_authorization| async {
+                    panic!("authorization callback should not run");
+                },
+            )
+            .await
+            .err()
+            .expect("cleartext OAuth endpoint should fail");
+
+        let message = error.to_string();
+        assert!(message.contains("OAuth authorization_url must use https"));
     }
 
     #[tokio::test]
@@ -3529,6 +3631,35 @@ mod tests {
             .port()
     }
 
+    fn public_client() -> ManifestOAuthClientSpec {
+        ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: Some("default-client".to_string()),
+                input: None,
+            },
+            secret: None,
+            dynamic_registration: None,
+        }
+    }
+
+    fn expired_oauth_material(token_url: &str) -> BTreeMap<String, String> {
+        let prefix = oauth_metadata_prefix("API_TOKEN");
+        BTreeMap::from([
+            ("API_TOKEN".to_string(), "expired-token".to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            ),
+            (
+                format!("{prefix}refresh_token"),
+                "stored-refresh-token".to_string(),
+            ),
+            (format!("{prefix}client_id"), "stored-client".to_string()),
+            (format!("{prefix}token_url"), token_url.to_string()),
+        ])
+    }
+
     struct OAuthFixture {
         token_url: String,
         token_server: JoinHandle<CapturedTokenRequest>,
@@ -3548,10 +3679,14 @@ mod tests {
                 let response_body = response_body.unwrap_or(
                     r#"{"access_token":"access-token","refresh_token":"refresh-token","token_type":"Bearer","scope":"repo read:org","expires_in":3600}"#,
                 );
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response_body}",
-                    response_body.len()
-                );
+                let response = if response_body.starts_with("HTTP/1.1 ") {
+                    response_body.to_string()
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response_body}",
+                        response_body.len()
+                    )
+                };
                 stream
                     .write_all(response.as_bytes())
                     .await
