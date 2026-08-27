@@ -72,7 +72,7 @@ async fn import_source_persists_and_lists() {
 
 #[tokio::test]
 async fn list_and_get_sources_read_database_after_config_becomes_invalid() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
     harness
         .import_source(manifest_yaml, Vec::new(), Vec::new())
