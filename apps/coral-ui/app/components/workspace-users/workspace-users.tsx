@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { useFetcher, useFetchers, useRevalidator } from 'react-router'
+import { useFetcher, useRevalidator } from 'react-router'
 
 import { Banner, Button, Combobox, Dialog, Menu, Table, Typography } from '@/wax/components'
 import { Avatar } from '@/wax/components/avatar'
 import { TextInput } from '@/wax/components/inputs/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+import { addToast } from '@/wax/components/toast'
 
 import { filterWorkspaceUsers } from './filter-workspace-users'
 import * as styles from './workspace-users.css'
@@ -31,11 +32,22 @@ export interface WorkspaceUsersData {
   readonly workspaceName: string
 }
 
+export interface WorkspaceUserFailure {
+  readonly message: string
+  readonly userId: string
+}
+
 export interface WorkspaceUsersActionData {
+  /**
+   * The users the action refused, and why each one. `AddWorkspaceMember` takes one
+   * user per call, so a batch add can land in part and the route reports the rest.
+   */
+  readonly failures?: ReadonlyArray<WorkspaceUserFailure>
   readonly intent: 'add' | 'remove' | 'role'
   readonly message: string
   readonly status: 'error' | 'success'
-  readonly userId: string
+  /** The users the action was about. One add can carry several. */
+  readonly userIds: ReadonlyArray<string>
 }
 
 const USER_COLUMNS: Table.Column[] = [
@@ -46,42 +58,31 @@ const USER_COLUMNS: Table.Column[] = [
 
 export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) {
   const addFetcher = useFetcher<WorkspaceUsersActionData>()
-  const fetchers = useFetchers()
   const revalidator = useRevalidator()
   const fetcherNamespace = `workspace-users:${useId()}:`
   const pageHeadingId = useId()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [addRole, setAddRole] = useState<WorkspaceUserRole>('member')
-  const [showAddResult, setShowAddResult] = useState(false)
-  const [addUserId, setAddUserId] = useState<string>()
+  const [addUserIds, setAddUserIds] = useState<ReadonlyArray<string>>([])
   const [search, setSearch] = useState('')
-  const submittedAddUserId = useRef<string | undefined>(undefined)
+  const submittedAddUserIds = useRef<ReadonlyArray<string>>([])
   const previousCurrentUserRole = useRef(data.currentUserRole)
   const previousMemberIds = useRef(new Set(data.members.map((member) => member.userId)))
   const searchInputRef = useRef<HTMLInputElement>(null)
   const isOwner = data.currentUserRole === 'owner'
-  const ownerCount = data.members.filter((member) => member.role === 'owner').length
   const visibleMembers = filterWorkspaceUsers(data.members, search)
   const memberIds = new Set(data.members.map((member) => member.userId))
   const availableUsers = data.availableUsers.filter((user) => !memberIds.has(user.userId))
   const availableUserLabels = availableUsers.map(userCandidateLabel)
-  const selectedAddUser = availableUsers.find((user) => user.userId === addUserId)
+  const candidateByLabel = new Map(availableUsers.map((user) => [userCandidateLabel(user), user]))
+  const labelByUserId = new Map(
+    availableUsers.map((user) => [user.userId, userCandidateLabel(user)]),
+  )
+  const addUserLabels = addUserIds
+    .map((userId) => labelByUserId.get(userId))
+    .filter((label): label is string => label !== undefined)
   const addPending = addFetcher.state !== 'idle'
   const retryPending = revalidator.state !== 'idle'
-  const ownershipReductionPending = fetchers.some((fetcher) => {
-    if (fetcher.state === 'idle' || !fetcher.key.startsWith(fetcherNamespace)) return false
-
-    const intent = fetcher.formData?.get('intent')
-    const userId = fetcher.formData?.get('userId')
-    const member = data.members.find((candidate) => candidate.userId === userId)
-    if (member?.role !== 'owner') return false
-
-    return intent === 'remove' || (intent === 'role' && fetcher.formData?.get('role') === 'member')
-  })
-  const addError =
-    !addPending && showAddResult && addFetcher.data?.status === 'error'
-      ? addFetcher.data.message
-      : undefined
 
   const onSearchShortcut = useCallback((event: KeyboardEvent) => {
     if (document.querySelector('[role="dialog"]')) return
@@ -95,17 +96,23 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
   }, [])
 
   useEffect(() => {
-    if (
-      addFetcher.state === 'idle' &&
-      addFetcher.data?.status === 'success' &&
-      addFetcher.data.intent === 'add' &&
-      addFetcher.data.userId === submittedAddUserId.current
-    ) {
-      submittedAddUserId.current = undefined
+    const result = answeredAddResult(addFetcher.state, addFetcher.data, submittedAddUserIds.current)
+    const refused = (result?.failures ?? []).map((failure) => failure.userId)
+    const added = result?.status === 'success' && refused.length === 0
+
+    if (added) {
+      submittedAddUserIds.current = []
       setAddDialogOpen(false)
       setAddRole('member')
-      setShowAddResult(false)
-      setAddUserId(undefined)
+      setAddUserIds([])
+    }
+
+    // A refused add keeps the dialog open. The toast carries the reason, and the
+    // selection narrows to the refused users so the retry carries only them.
+    if (result && !added) {
+      submittedAddUserIds.current = refused.length > 0 ? refused : submittedAddUserIds.current
+      setAddUserIds((current) => (refused.length > 0 ? refused : current))
+      addToast('error', { description: failureDescription(result), title: result.message })
     }
   }, [addFetcher.data, addFetcher.state])
 
@@ -146,57 +153,78 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
           onOpenChange={(open) => {
             if (addPending) return
             setAddDialogOpen(open)
-            setShowAddResult(false)
             if (!open) {
               setAddRole('member')
-              setAddUserId(undefined)
+              setAddUserIds([])
             }
           }}
           open={addDialogOpen}
         >
-          <Dialog.Trigger render={<Button.Container disabled={Boolean(data.error)} />}>
+          <Dialog.Trigger render={<Button.Container disabled={Boolean(data.error)} size="36" />}>
             <Button.Icon name="Plus" />
-            <Button.Text>Add user</Button.Text>
+            <Button.Text>Add users</Button.Text>
           </Dialog.Trigger>
           <Dialog.Portal>
             <Dialog.Backdrop />
             <Dialog.Popup size="l">
-              <Dialog.Title>Add workspace user</Dialog.Title>
-              <Dialog.Description>
-                Choose a user and the role they should have in {data.workspaceName}.
-              </Dialog.Description>
+              <Dialog.Title>Add workspace users</Dialog.Title>
+              <Dialog.Description>Choose the users to add to this workspace.</Dialog.Description>
               <addFetcher.Form
                 className={styles.addForm}
                 method="post"
                 onSubmit={() => {
-                  submittedAddUserId.current = addUserId
-                  setShowAddResult(true)
+                  submittedAddUserIds.current = addUserIds
                 }}
               >
                 <input name="intent" type="hidden" value="add" />
-                <input name="userId" type="hidden" value={addUserId ?? ''} />
+                {addUserIds.map((userId) => (
+                  <input key={userId} name="userId" type="hidden" value={userId} />
+                ))}
                 <input name="role" type="hidden" value={addRole} />
                 <div className={styles.addFields}>
                   <div className={styles.addField}>
-                    <Typography.BodyStrong as="span">User</Typography.BodyStrong>
+                    <Typography.BodyStrong as="span">Users</Typography.BodyStrong>
                     {availableUsers.length === 0 ? (
                       <Typography.Body variant="secondary">
-                        All users already have access.
+                        Every user already has access.
                       </Typography.Body>
                     ) : (
                       <Combobox.Root
                         disabled={addPending}
                         items={availableUserLabels}
+                        multiple
                         onValueChange={(value) => {
-                          const user = availableUsers.find(
-                            (candidate) => userCandidateLabel(candidate) === value,
+                          const labels = Array.isArray(value) ? value : []
+                          setAddUserIds(
+                            labels
+                              .map((label) => candidateByLabel.get(label)?.userId)
+                              .filter((userId): userId is string => userId !== undefined),
                           )
-                          setShowAddResult(false)
-                          setAddUserId(user?.userId)
                         }}
-                        value={selectedAddUser ? userCandidateLabel(selectedAddUser) : undefined}
+                        value={addUserLabels}
                       >
-                        <Combobox.Input placeholder="Search users..." />
+                        <Combobox.InputGroup>
+                          <Combobox.Chips>
+                            <Combobox.Value>
+                              {(selected) =>
+                                Array.isArray(selected)
+                                  ? selected.map((label) => (
+                                      <Combobox.Chip key={label}>
+                                        <Combobox.ChipLabel>
+                                          {candidateByLabel.get(label)?.displayName || label}
+                                        </Combobox.ChipLabel>
+                                        <Combobox.ChipRemove aria-label={`Remove ${label}`} />
+                                      </Combobox.Chip>
+                                    ))
+                                  : null
+                              }
+                            </Combobox.Value>
+                            <Combobox.Input
+                              bare
+                              placeholder={addUserIds.length > 0 ? '' : 'Select users'}
+                            />
+                          </Combobox.Chips>
+                        </Combobox.InputGroup>
                         <Combobox.Content>
                           <Combobox.Empty>No users found.</Combobox.Empty>
                           <Combobox.List>
@@ -214,6 +242,7 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                     <Typography.BodyStrong as="span">Role</Typography.BodyStrong>
                     <Menu.Container>
                       <Menu.Trigger
+                        className={styles.roleTrigger}
                         render={
                           <Button.Container
                             ariaLabel={`Role: ${roleLabel(addRole)}`}
@@ -239,26 +268,24 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
                     </Menu.Container>
                   </div>
                 </div>
-                {addError ? <Banner variant="error">{addError}</Banner> : null}
                 <Dialog.Actions>
                   <Button.TextButton
                     disabled={addPending}
                     onClick={() => {
                       setAddDialogOpen(false)
                       setAddRole('member')
-                      setShowAddResult(false)
-                      setAddUserId(undefined)
+                      setAddUserIds([])
                     }}
                     variant="secondary"
                   >
                     Cancel
                   </Button.TextButton>
                   <Button.TextButton
-                    disabled={!addUserId || addPending}
+                    disabled={addUserIds.length === 0 || addPending}
                     type="submit"
                     variant="primary"
                   >
-                    {addPending ? 'Adding…' : 'Add user'}
+                    {addPending ? 'Adding…' : addSubmitLabel(addUserIds.length, addRole)}
                   </Button.TextButton>
                 </Dialog.Actions>
               </addFetcher.Form>
@@ -317,11 +344,9 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
               <WorkspaceUserRow
                 currentUserId={data.currentUserId}
                 fetcherNamespace={fetcherNamespace}
-                isLastOwner={member.role === 'owner' && ownerCount === 1}
                 key={member.userId}
                 member={member}
                 mutationsDisabled={addPending}
-                ownershipReductionPending={ownershipReductionPending}
                 workspaceName={data.workspaceName}
               />
             ))
@@ -335,18 +360,14 @@ export function WorkspaceUsers({ data }: { readonly data: WorkspaceUsersData }) 
 function WorkspaceUserRow({
   currentUserId,
   fetcherNamespace,
-  isLastOwner,
   member,
   mutationsDisabled,
-  ownershipReductionPending,
   workspaceName,
 }: {
   readonly currentUserId: string
   readonly fetcherNamespace: string
-  readonly isLastOwner: boolean
   readonly member: WorkspaceUser
   readonly mutationsDisabled: boolean
-  readonly ownershipReductionPending: boolean
   readonly workspaceName: string
 }) {
   const roleFetcher = useFetcher<WorkspaceUsersActionData>({
@@ -368,16 +389,13 @@ function WorkspaceUserRow({
       ? removalFetcher.data.message
       : undefined
   const rowError = roleError ?? (removalDialogOpen ? undefined : removalError)
-  const ownerControlsDisabled = member.role === 'owner' && ownershipReductionPending
-  const ownerMutationDisabled = isLastOwner || ownerControlsDisabled
-  const controlsDisabled =
-    ownerMutationDisabled || rolePending || removalPending || mutationsDisabled
+  const controlsDisabled = rolePending || removalPending || mutationsDisabled
 
   useEffect(() => {
     if (
       removalFetcher.data?.status === 'success' &&
       removalFetcher.data.intent === 'remove' &&
-      removalFetcher.data.userId === member.userId
+      removalFetcher.data.userIds.includes(member.userId)
     ) {
       setRemovalDialogOpen(false)
       setShowRemovalResult(false)
@@ -409,11 +427,6 @@ function WorkspaceUserRow({
                 </Typography.CodeSmallInline>
               ) : null}
             </div>
-            {isLastOwner ? (
-              <Typography.BodySmall variant="tertiary">
-                Last owner — role and removal are locked.
-              </Typography.BodySmall>
-            ) : null}
             {rowError ? (
               <Typography.BodySmall role="alert" variant="error">
                 {rowError}
@@ -508,11 +521,7 @@ function WorkspaceUserRow({
               <removalFetcher.Form method="post" onSubmit={() => setShowRemovalResult(true)}>
                 <input name="intent" type="hidden" value="remove" />
                 <input name="userId" type="hidden" value={member.userId} />
-                <Button.TextButton
-                  disabled={removalPending || ownerMutationDisabled}
-                  type="submit"
-                  variant="destructive"
-                >
+                <Button.TextButton disabled={removalPending} type="submit" variant="destructive">
                   <span role="status">
                     {member.userId === currentUserId
                       ? removalPending
@@ -547,7 +556,6 @@ function WorkspaceUserRow({
                 Cancel
               </Button.TextButton>
               <Button.TextButton
-                disabled={ownerMutationDisabled}
                 onClick={() => {
                   setConfirmingDemotion(false)
                   submitRole('member')
@@ -562,6 +570,55 @@ function WorkspaceUserRow({
       </Dialog.Root>
     </Table.Row>
   )
+}
+
+/**
+ * Whether an outcome answers the users this dialog last sent, and not an earlier set.
+ * An outcome covers the users it applied to and the users it refused.
+ */
+function answersSubmission(
+  result: WorkspaceUsersActionData,
+  submitted: ReadonlyArray<string>,
+): boolean {
+  if (submitted.length === 0) return false
+
+  const covered = new Set([
+    ...result.userIds,
+    ...(result.failures ?? []).map((failure) => failure.userId),
+  ])
+
+  return covered.size === submitted.length && submitted.every((userId) => covered.has(userId))
+}
+
+/**
+ * The add outcome this dialog is waiting for, or nothing while the fetcher is busy,
+ * the outcome belongs to another intent, or it answers an earlier set of users.
+ */
+function answeredAddResult(
+  state: 'idle' | 'loading' | 'submitting',
+  result: WorkspaceUsersActionData | undefined,
+  submitted: ReadonlyArray<string>,
+): WorkspaceUsersActionData | undefined {
+  if (state !== 'idle' || result?.intent !== 'add') return undefined
+
+  return answersSubmission(result, submitted) ? result : undefined
+}
+
+/** One line per refused user, so the toast names who was refused and why. */
+function failureDescription(result: WorkspaceUsersActionData): React.ReactNode {
+  if (!result.failures?.length) return undefined
+
+  return result.failures.map((failure) => (
+    <div key={failure.userId}>
+      {failure.userId}: {failure.message}
+    </div>
+  ))
+}
+
+function addSubmitLabel(count: number, role: WorkspaceUserRole): string {
+  const noun = roleLabel(role).toLowerCase()
+  if (count <= 1) return `Add ${noun}`
+  return `Add ${count} ${noun}s`
 }
 
 function roleLabel(role: WorkspaceUserRole): string {

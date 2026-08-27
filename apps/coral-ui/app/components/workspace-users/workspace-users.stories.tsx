@@ -45,16 +45,16 @@ const meta: Meta<StoryArgs> = {
       const submittedIntent = formData.get('intent')
       const intent =
         submittedIntent === 'add' || submittedIntent === 'remove' ? submittedIntent : 'role'
-      const result = {
+      const result: WorkspaceUsersActionData = {
         intent,
         message:
           intent === 'add'
-            ? 'Workspace user added.'
+            ? 'Workspace users added.'
             : intent === 'remove'
               ? 'Workspace user removed.'
               : 'Workspace user updated.',
-        status: 'success' as const,
-        userId: String(formData.get('userId')),
+        status: 'success',
+        userIds: formData.getAll('userId').map(String),
       }
       addToast('success', { title: result.message })
       return result
@@ -72,6 +72,50 @@ export default meta
 type Story = StoryObj<StoryArgs>
 
 export const Default: Story = {}
+
+/**
+ * Adds that the server refuses. `usr_katherine` is accepted; Margaret Hamilton and
+ * `usr_01K0AVAILABLE` are always refused, so one dialog covers every path:
+ * pick all three for a partial add, the two refused for a whole-batch failure, and
+ * Katherine alone for a clean one. A refused add keeps the dialog open, toasts the
+ * reason per user, and leaves only the refused users selected for the retry.
+ */
+export const AddRefused: Story = {
+  args: {
+    action: fn(async ({ request }: { request: Request }) => {
+      const formData = await request.formData()
+      const userIds = formData.getAll('userId').map(String)
+      const refused = userIds.filter((userId) => userId !== 'usr_katherine')
+      const added = userIds.filter((userId) => userId === 'usr_katherine')
+
+      if (formData.get('intent') !== 'add' || refused.length === 0) {
+        const result: WorkspaceUsersActionData = {
+          intent: 'add',
+          message: 'Workspace users added.',
+          status: 'success',
+          userIds,
+        }
+        addToast('success', { title: result.message })
+        return result
+      }
+
+      return {
+        failures: refused.map((userId) => ({
+          message: 'This user has no seat on the current plan.',
+          userId,
+        })),
+        intent: 'add',
+        message:
+          added.length > 0
+            ? `Added ${added.length} of ${userIds.length} users.`
+            : 'Coral could not add these users.',
+        status: added.length > 0 ? 'success' : 'error',
+        userIds: added,
+      } satisfies WorkspaceUsersActionData
+    }),
+    data: DEFAULT_DATA,
+  },
+}
 
 export const NonOwner: Story = {
   args: {
@@ -136,18 +180,19 @@ function applySuccessfulAction(
   formData: FormData,
   result: WorkspaceUsersActionData,
 ): WorkspaceUsersData {
-  const userId = result.userId
-
   if (result.intent === 'add') {
-    const candidate = data.availableUsers.find((user) => user.userId === userId)
-    if (!candidate) return data
+    const added = new Set(result.userIds)
+    const candidates = data.availableUsers.filter((user) => added.has(user.userId))
+    const role = formData.get('role') as WorkspaceUserRole
 
     return {
       ...data,
-      availableUsers: data.availableUsers.filter((user) => user.userId !== userId),
-      members: [...data.members, { ...candidate, role: formData.get('role') as WorkspaceUserRole }],
+      availableUsers: data.availableUsers.filter((user) => !added.has(user.userId)),
+      members: [...data.members, ...candidates.map((candidate) => ({ ...candidate, role }))],
     }
   }
+
+  const userId = result.userIds[0] ?? ''
 
   if (result.intent === 'remove') {
     const member = data.members.find((user) => user.userId === userId)
