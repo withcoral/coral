@@ -70,9 +70,9 @@ impl CredentialDocumentRecord {
                 "credential document has negative version or timestamp".to_string(),
             ));
         }
-        if self.aad_version != 1 {
+        if self.aad_version < 1 {
             return Err(DbError::CorruptData(format!(
-                "credential document has unsupported aad_version {}",
+                "credential document has invalid aad_version {}",
                 self.aad_version
             )));
         }
@@ -290,6 +290,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{CredentialDocumentRecord, CredentialDocumentWrite};
+    use crate::credentials::encryption::CREDENTIAL_DOCUMENT_BINDING_VERSION;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::DbError;
@@ -305,6 +306,7 @@ mod tests {
         nonce: &'static [u8],
         wrapped_dek: &'static [u8],
         wrapped_dek_nonce: &'static [u8],
+        aad_version: i64,
         created_at_unix_nanos: i64,
         updated_at_unix_nanos: i64,
         expected_error: &'static str,
@@ -420,6 +422,7 @@ mod tests {
                 nonce: b"nonce",
                 wrapped_dek: b"wrapped",
                 wrapped_dek_nonce: b"wrapped-nonce",
+                aad_version: 1,
                 created_at_unix_nanos: -1,
                 updated_at_unix_nanos: -1,
                 expected_error: "negative version or timestamp",
@@ -431,9 +434,22 @@ mod tests {
                 nonce: b"",
                 wrapped_dek: b"",
                 wrapped_dek_nonce: b"",
+                aad_version: 1,
                 created_at_unix_nanos: 10,
                 updated_at_unix_nanos: 10,
                 expected_error: "empty encrypted byte field",
+            },
+            CorruptDocumentRow {
+                label: "invalid-aad-version",
+                document_version: 1,
+                ciphertext: b"ciphertext",
+                nonce: b"nonce",
+                wrapped_dek: b"wrapped",
+                wrapped_dek_nonce: b"wrapped-nonce",
+                aad_version: 0,
+                created_at_unix_nanos: 10,
+                updated_at_unix_nanos: 10,
+                expected_error: "invalid aad_version 0",
             },
         ] {
             let workspace = unique_workspace(row.label);
@@ -577,7 +593,7 @@ mod tests {
                     Expr::val(row.wrapped_dek_nonce.to_vec()),
                     Expr::val("key"),
                     Expr::val("AES-256-GCM"),
-                    Expr::val(1),
+                    Expr::val(row.aad_version),
                     Expr::val(row.created_at_unix_nanos),
                     Expr::val(row.updated_at_unix_nanos),
                 ])
@@ -613,7 +629,7 @@ mod tests {
             wrapped_dek_nonce: format!("wrapped-nonce-{key_id}").into_bytes(),
             key_id: key_id.to_string(),
             algorithm: "AES-256-GCM".to_string(),
-            aad_version: 1,
+            aad_version: CREDENTIAL_DOCUMENT_BINDING_VERSION,
         }
     }
 
