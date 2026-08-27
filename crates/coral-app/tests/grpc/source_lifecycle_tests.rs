@@ -371,6 +371,7 @@ async fn postgres_database_credentials_survive_restart_and_query() {
 
     {
         let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+        harness.seed_workspace().await;
         let imported = harness
             .import_source(
                 fixture_manifest_with_inputs_yaml().replace("secured_messages", &source_name),
