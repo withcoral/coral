@@ -80,9 +80,15 @@ pub(crate) async fn start_standalone_server(
         },
         engine_extensions_providers,
     );
-    crate::serve::start(builder, mcp_options, mcp_surface_provider)
-        .await
-        .map_err(Into::into)
+    // The database-backed state store makes this startup future large enough
+    // to trigger Clippy's `large_futures` lint when it is awaited inline.
+    Box::pin(crate::serve::start(
+        builder,
+        mcp_options,
+        mcp_surface_provider,
+    ))
+    .await
+    .map_err(Into::into)
 }
 
 fn configure_server_builder(
