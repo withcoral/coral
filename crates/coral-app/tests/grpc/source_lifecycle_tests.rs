@@ -9,10 +9,11 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
-    QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
-    SourceVariable, ValidateSourceRequest, Workspace, catalog_item, import_source_response,
-    query_test_result, source_credential_method::Method as ProtoCredentialMethod,
+    ListCatalogRequest, OAuthCredentialRetrieval, OauthCredentialFlowType,
+    OauthCredentialScopeDelimiter, PaginationRequest, QueryTestFailure, QueryTestSuccess,
+    SourceCredentialStorage, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
+    Workspace, catalog_item, import_source_response, query_test_result,
+    source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
 use tempfile::TempDir;
@@ -24,6 +25,26 @@ use crate::harness::{
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
     fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
 };
+
+fn auth_manifest_yaml(inputs: &str, auth: &str) -> String {
+    format!(
+        "name: hardcoded_auth\nversion: 1.0.0\ndsl_version: 3\nbackend: http\nbase_url: https://example.com\n{inputs}{auth}tables:\n  - name: messages\n    description: Demo messages\n    request:\n      method: GET\n      path: /messages\n    response: {{}}\n    columns:\n      - name: id\n        type: Utf8\n"
+    )
+}
+
+fn literal_sensitive_auth_manifest_yaml() -> String {
+    auth_manifest_yaml(
+        "",
+        "auth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: literal\n      value: Bearer hardcoded-token\n",
+    )
+}
+
+fn variable_backed_sensitive_auth_manifest_yaml() -> String {
+    auth_manifest_yaml(
+        "inputs:\n  HEADER_VALUE:\n    kind: variable\n",
+        "auth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.HEADER_VALUE}}\n",
+    )
+}
 
 #[tokio::test]
 async fn import_source_persists_and_lists() {
@@ -249,6 +270,79 @@ async fn import_invalid_manifest_returns_invalid_argument() {
         .await
         .expect_err("invalid manifest should fail");
     assert_eq!(error.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn import_rejects_literal_sensitive_auth_header() {
+    let harness = GrpcHarness::with_workspace().await;
+
+    let error = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: literal_sensitive_auth_manifest_yaml(),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect_err("literal sensitive auth should fail");
+
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(error.message().contains("Authorization"));
+}
+
+#[tokio::test]
+async fn import_rejects_sensitive_auth_template_backed_by_variable() {
+    let harness = GrpcHarness::with_workspace().await;
+
+    let error = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: variable_backed_sensitive_auth_manifest_yaml(),
+            variables: vec![SourceVariable {
+                key: "HEADER_VALUE".to_string(),
+                value: "hardcoded-token".to_string(),
+            }],
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect_err("variable-backed sensitive auth should fail");
+
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(error.message().contains("HEADER_VALUE"));
+    assert!(harness.list_sources().await.is_empty());
+}
+
+#[tokio::test]
+async fn import_with_oauth_rejects_literal_sensitive_auth_header_before_authorization() {
+    let harness = GrpcHarness::new().await;
+
+    let mut stream = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: literal_sensitive_auth_manifest_yaml(),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: vec![OAuthCredentialRetrieval {
+                input_key: "API_TOKEN".to_string(),
+                method_index: Some(0),
+                credential_inputs: Vec::new(),
+            }],
+        }))
+        .await
+        .expect("OAuth import request should create a response stream")
+        .into_inner();
+
+    let error = stream
+        .message()
+        .await
+        .expect_err("literal sensitive auth should fail before OAuth authorization");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(error.message().contains("Authorization"));
 }
 
 #[tokio::test]
