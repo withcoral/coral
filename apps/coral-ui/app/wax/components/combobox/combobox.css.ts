@@ -168,6 +168,7 @@ export const inputBare = style({
 export const inputGroup = style({
   alignItems: 'center',
   backgroundColor: 'transparent',
+  cursor: 'text',
   border: `1px solid ${theme.input.stroke.default}`,
   borderRadius: '8px',
   boxShadow: 'none',

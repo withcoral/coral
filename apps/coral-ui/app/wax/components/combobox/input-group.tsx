@@ -1,3 +1,4 @@
+import { Combobox as BaseCombobox } from '@base-ui/react/combobox'
 import classNames from 'classnames'
 import { useCallback } from 'react'
 
@@ -19,8 +20,11 @@ export function InputGroup({ children, className }: InputGroupProps) {
   )
 
   return (
-    <div className={classNames(styles.inputGroup, className)} ref={setInputGroupAnchor}>
+    <BaseCombobox.InputGroup
+      className={classNames(styles.inputGroup, className)}
+      ref={setInputGroupAnchor}
+    >
       {children}
-    </div>
+    </BaseCombobox.InputGroup>
   )
 }
