@@ -30,9 +30,9 @@
   `postgres-test-suite` as the single home for the suite's Cargo invocations;
   do not duplicate them in workflows or contributor instructions. The suite runs
   the `state::db` unit-test namespace, repeating shared repository assertions
-  against Postgres, then runs the source-lifecycle integration namespace, the
-  dedicated Postgres integration target for migration and server startup
-  coverage, plus the xtask recovery contracts.
+  against Postgres, then runs the DB-backed telemetry service and source-lifecycle
+  namespaces, the dedicated Postgres integration target for migration and server
+  startup coverage, plus the xtask recovery contracts.
   The recovery checks use xtask's `admin` feature. `postgres-tests` uses
   `CORAL_TEST_POSTGRES_URL` when supplied. Otherwise it starts a local Docker
   Postgres and creates a fresh database inside the reusable container. Docker

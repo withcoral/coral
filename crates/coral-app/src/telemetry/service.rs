@@ -1,5 +1,9 @@
 //! Implements the gRPC `TraceService` for local trace inspection.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
     GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceInvocationKind,
@@ -7,14 +11,16 @@ use coral_api::v1::{
 };
 use tonic::{Code, Request, Response, Status};
 
+use super::upsert_trace_summary;
 use crate::bootstrap::{AppError, app_status};
 use crate::identity::{Principal, PrincipalKind};
+use crate::state::db::{CoralDb, DbError, DbRepos, TraceSummaryRecord};
 use crate::telemetry::local_store::{
     StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceDetailRecord,
-    TraceScope, TraceSpanRecord, TraceSummaryRecord,
+    TraceScope, TraceSpanRecord, TraceStore,
 };
 use crate::telemetry::manager::{
-    GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError,
+    GetTraceQuery, ListTracesQuery, TraceListPage, TraceListView, TraceManager, TraceManagerError,
 };
 use crate::transport::{grpc_span, instrument_grpc, request_context};
 use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
@@ -30,15 +36,18 @@ const MAX_TRACE_PAGE_SIZE: usize = 200;
 /// this is 200 pages of scrolling — and pagination stops advertising a token
 /// before it, so an honest client never meets the refusal.
 const MAX_TRACE_PAGE_OFFSET: usize = 10_000;
+const TRACE_SUMMARY_INDEX_PAGE_SIZE: usize = 200;
 
 #[derive(Clone)]
 pub(crate) struct TraceService {
     traces: TraceManager,
     workspaces: WorkspaceManager,
     authorizer: WorkspaceAuthorizer,
+    db: Option<Arc<CoralDb>>,
 }
 
 impl TraceService {
+    #[cfg(test)]
     pub(crate) const fn new(
         trace_manager: TraceManager,
         workspaces: WorkspaceManager,
@@ -48,6 +57,7 @@ impl TraceService {
             traces: trace_manager,
             workspaces,
             authorizer,
+            db: None,
         }
     }
 
@@ -102,6 +112,30 @@ impl TraceService {
             owned.iter().map(WorkspaceName::as_str),
         ))
     }
+
+    pub(crate) fn with_db(
+        trace_store_file: PathBuf,
+        retention: Duration,
+        db: Arc<CoralDb>,
+        workspaces: WorkspaceManager,
+        authorizer: WorkspaceAuthorizer,
+    ) -> Self {
+        Self {
+            traces: TraceManager::new(trace_store_file, retention),
+            workspaces,
+            authorizer,
+            db: Some(db),
+        }
+    }
+
+    pub(crate) async fn backfill_summaries(
+        trace_store_file: PathBuf,
+        retention: Duration,
+        db: &CoralDb,
+    ) -> Result<usize, DbError> {
+        let traces = TraceStore::with_retention(trace_store_file, retention);
+        backfill_trace_summaries(db, &traces).await
+    }
 }
 
 #[tonic::async_trait]
@@ -116,6 +150,9 @@ impl TraceServiceApi for TraceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let workspace_name = workspace
+                .as_ref()
+                .map(|workspace| workspace.as_str().to_string());
             // Settled before the rest of the request is parsed, so a caller who
             // may not read these traces cannot learn anything from the
             // request's own validation.
@@ -123,16 +160,37 @@ impl TraceServiceApi for TraceService {
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
             let view = trace_list_view_from_proto(request.view)?;
-            let page = service
-                .traces
-                .list_traces(ListTracesQuery {
-                    view,
-                    scope,
-                    page_size,
-                    offset,
-                })
-                .await
-                .map_err(trace_manager_status)?;
+            let page = match (view, service.db.as_ref(), workspace_name.as_deref()) {
+                (TraceListView::All, Some(db), Some(workspace_name)) => {
+                    let mut summaries = list_database_traces(
+                        &service.traces,
+                        db.as_ref(),
+                        workspace_name,
+                        page_size.saturating_add(1),
+                        offset,
+                    )
+                    .await?;
+                    let next_offset =
+                        (summaries.len() > page_size).then(|| offset.saturating_add(page_size));
+                    if next_offset.is_some() {
+                        summaries.truncate(page_size);
+                    }
+                    TraceListPage {
+                        traces: summaries,
+                        next_offset,
+                    }
+                }
+                (view, _, _) => service
+                    .traces
+                    .list_traces(ListTracesQuery {
+                        view,
+                        scope,
+                        page_size,
+                        offset,
+                    })
+                    .await
+                    .map_err(trace_manager_status)?,
+            };
             Ok(Response::new(ListTracesResponse {
                 traces: page
                     .traces
@@ -183,6 +241,108 @@ impl TraceServiceApi for TraceService {
     }
 }
 
+async fn backfill_trace_summaries(db: &CoralDb, traces: &TraceStore) -> Result<usize, DbError> {
+    let mut session = db;
+    let workspaces = session.workspaces().list().await?;
+    let mut imported = 0;
+    for workspace in workspaces {
+        let scope = TraceScope::workspaces([workspace.id.as_str()]);
+        let summaries = match traces.list_all_traces_tolerant(scope).await {
+            Ok(summaries) => summaries,
+            Err(error) => {
+                tracing::warn!(
+                    workspace_id = %workspace.id,
+                    "skipping local trace summary backfill: {error}"
+                );
+                continue;
+            }
+        };
+        for summary in summaries {
+            if summary.workspace_id.is_none() {
+                tracing::warn!(
+                    trace_id = %summary.trace_id,
+                    workspace_id = %workspace.id,
+                    "skipping local trace summary backfill without workspace"
+                );
+                continue;
+            }
+            upsert_trace_summary(db, &summary).await?;
+            imported += 1;
+        }
+    }
+    Ok(imported)
+}
+
+async fn list_database_traces(
+    traces: &TraceManager,
+    db: &CoralDb,
+    workspace_name: &str,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<TraceSummaryRecord>, Status> {
+    let mut summaries = Vec::new();
+    let mut db_offset = 0;
+    let mut valid_seen = 0;
+    while summaries.len() < limit {
+        let mut session = db;
+        let page = session
+            .trace_summaries()
+            .list_for_workspace(workspace_name, TRACE_SUMMARY_INDEX_PAGE_SIZE, db_offset)
+            .await
+            .map_err(trace_database_status)?;
+        if page.is_empty() {
+            break;
+        }
+        let mut retained_rows = 0;
+        for summary in page {
+            let workspace_id = summary.workspace_id.as_deref().ok_or_else(|| {
+                Status::new(
+                    Code::Internal,
+                    format!(
+                        "database trace summary '{}' is missing workspace_id",
+                        summary.trace_id
+                    ),
+                )
+            })?;
+            let workspace = WorkspaceName::parse(workspace_id).map_err(|error| {
+                Status::new(
+                    Code::Internal,
+                    format!(
+                        "database trace summary '{}' has invalid workspace_id: {error}",
+                        summary.trace_id
+                    ),
+                )
+            })?;
+            match traces
+                .get_trace(GetTraceQuery {
+                    trace_id: summary.trace_id.clone(),
+                    scope: TraceScope::workspaces([workspace.as_str()]),
+                    view: TraceListView::All,
+                })
+                .await
+            {
+                Ok(_trace) => {
+                    if valid_seen >= offset {
+                        summaries.push(summary);
+                    }
+                    valid_seen = valid_seen.saturating_add(1);
+                    retained_rows += 1;
+                }
+                // Raw spans are host-local even when the database is shared.
+                // A local miss therefore cannot prove that the summary is
+                // stale: another server may still own the trace detail.
+                Err(TraceManagerError::NotFound { .. }) => retained_rows += 1,
+                Err(error) => return Err(trace_manager_status(error)),
+            }
+            if summaries.len() == limit {
+                break;
+            }
+        }
+        db_offset = db_offset.saturating_add(retained_rows);
+    }
+    Ok(summaries)
+}
+
 fn normalize_page_size(page_size: i32) -> usize {
     if page_size <= 0 {
         DEFAULT_TRACE_PAGE_SIZE
@@ -229,6 +389,14 @@ fn workspace_filter_from_proto(
     workspace
         .map(|workspace| WorkspaceName::parse(&workspace.name).map_err(app_status))
         .transpose()
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used directly as a map_err adapter across tonic service handlers"
+)]
+fn trace_database_status(error: DbError) -> Status {
+    Status::new(Code::Internal, error.to_string())
 }
 
 fn trace_manager_status(error: TraceManagerError) -> Status {
@@ -321,6 +489,7 @@ fn trace_invocation_kind_to_proto(kind: StoredTraceInvocationKind) -> TraceInvoc
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -331,20 +500,25 @@ mod tests {
         TraceOperationKind, TraceView, Workspace,
     };
     use serde_json::json;
-    use tempfile::TempDir;
+    use tempfile::{TempDir, tempdir};
     use tonic::{Code, Request};
 
     use super::{
-        TraceService, normalize_page_size, parse_page_token, trace_invocation_kind_to_proto,
+        TraceService, TraceStore, backfill_trace_summaries, normalize_page_size, parse_page_token,
+        trace_invocation_kind_to_proto,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::identity::{Principal, PrincipalKind};
     use crate::request_context::RequestContext;
     use crate::state::db::{
-        CoralDb, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
+        CoralDb, DatabaseConfig, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
     };
     use crate::state::{AppStateLayout, ConfigStore};
-    use crate::telemetry::{TraceManager, local_store::StoredTraceInvocationKind};
+    use crate::telemetry::local_store::TraceScope;
+    use crate::telemetry::{
+        StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceManager,
+        TraceSummaryRecord,
+    };
     use crate::workspaces::authorization::{LocalPrincipalPolicy, WorkspaceAuthorizer};
     use crate::workspaces::{MemberRole, WorkspaceManager, WorkspaceName};
 
@@ -960,5 +1134,292 @@ mod tests {
             "trace_state": "",
             "is_remote": false
         })
+    }
+
+    #[tokio::test]
+    async fn backfill_summaries_adds_local_rows_without_replacing_database_rows() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        let trace_dir = temp.path().join("traces");
+        write_trace(&trace_dir, "trace-1", "work", 1, 2);
+        ensure_workspace(&db, "work").await;
+        let remote = summary("remote-trace", "remote", 10);
+        insert_summary(&db, &remote).await;
+
+        let traces = TraceStore::with_retention(trace_dir.clone(), Duration::from_mins(1));
+        assert_eq!(
+            backfill_trace_summaries(&db, &traces)
+                .await
+                .expect("backfill trace summaries"),
+            1
+        );
+        let mut session = &db;
+        let summaries = session
+            .trace_summaries()
+            .list(10, 0)
+            .await
+            .expect("list trace summaries");
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.trace_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["remote-trace", "trace-1"]
+        );
+
+        fs::remove_dir_all(&trace_dir).expect("remove raw trace store");
+        assert_eq!(
+            backfill_trace_summaries(&db, &traces)
+                .await
+                .expect("backfill empty trace store"),
+            0
+        );
+        assert_eq!(
+            session
+                .trace_summaries()
+                .list(10, 0)
+                .await
+                .expect("list preserved trace summaries")
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn exported_summary_is_hidden_but_retained_without_local_details() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = Arc::new(open_sqlite(&layout).await);
+        let trace_dir = temp.path().join("traces");
+        write_trace(&trace_dir, "trace-1", "work", 1, 2);
+        ensure_workspace(db.as_ref(), "work").await;
+        let traces = TraceStore::with_retention(trace_dir.clone(), Duration::from_mins(1));
+        let trace = traces
+            .get_trace("trace-1".to_string(), TraceScope::workspaces(["work"]))
+            .await
+            .expect("trace detail");
+        super::super::upsert_trace_summary(db.as_ref(), &trace.summary)
+            .await
+            .expect("upsert exported summary");
+
+        let workspaces = WorkspaceManager::new_for_tests(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+            None,
+            Arc::clone(&db),
+        );
+        let service = TraceService::with_db(
+            trace_dir.clone(),
+            Duration::from_mins(1),
+            Arc::clone(&db),
+            workspaces,
+            WorkspaceAuthorizer::with_local_principal_policy(
+                Arc::clone(&db),
+                LocalPrincipalPolicy::ImplicitOwner,
+            ),
+        );
+        let response = TraceServiceApi::list_traces(
+            &service,
+            local(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+                workspace: Some(workspace_proto("work")),
+                view: TraceView::Unspecified as i32,
+            }),
+        )
+        .await
+        .expect("list traces")
+        .into_inner();
+
+        assert_eq!(response.traces.len(), 1);
+        let trace = response.traces.into_iter().next().expect("trace summary");
+        assert_eq!(trace.trace_id, "trace-1");
+
+        fs::remove_dir_all(&trace_dir).expect("remove raw trace store");
+        let response = TraceServiceApi::list_traces(
+            &service,
+            local(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+                workspace: Some(workspace_proto("work")),
+                view: TraceView::Unspecified as i32,
+            }),
+        )
+        .await
+        .expect("list traces")
+        .into_inner();
+
+        assert!(response.traces.is_empty());
+        let mut session = db.as_ref();
+        assert_eq!(
+            session
+                .trace_summaries()
+                .list(10, 0)
+                .await
+                .expect("list trace summaries")
+                .into_iter()
+                .map(|summary| summary.trace_id)
+                .collect::<Vec<_>>(),
+            vec!["trace-1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn backfill_summaries_preserves_existing_postgres_rows() {
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let local_workspace = format!("trace_local_{suffix}");
+        let remote_workspace = format!("trace_remote_{suffix}");
+        let local_trace = format!("local_trace_{suffix}");
+        let remote_trace = format!("remote_trace_{suffix}");
+        let temp = tempdir().expect("temp dir");
+        let trace_dir = temp.path().join("traces");
+        write_trace(&trace_dir, &local_trace, &local_workspace, 1, 2);
+        ensure_workspace(&db, &local_workspace).await;
+        insert_summary(&db, &summary(&remote_trace, &remote_workspace, 10)).await;
+
+        let traces = TraceStore::with_retention(trace_dir, Duration::from_mins(1));
+        assert_eq!(
+            backfill_trace_summaries(&db, &traces)
+                .await
+                .expect("backfill trace summaries"),
+            1
+        );
+
+        let mut session = &db;
+        assert!(
+            session
+                .trace_summaries()
+                .get(&local_trace)
+                .await
+                .expect("get local trace")
+                .is_some()
+        );
+        assert!(
+            session
+                .trace_summaries()
+                .get(&remote_trace)
+                .await
+                .expect("get remote trace")
+                .is_some()
+        );
+
+        cleanup_workspace(&db, &local_workspace).await;
+        cleanup_workspace(&db, &remote_workspace).await;
+    }
+
+    async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
+        let config = DatabaseConfig::load(layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        db
+    }
+
+    async fn insert_summary(db: &CoralDb, summary: &TraceSummaryRecord) {
+        let mut tx = db.begin().await.expect("begin tx");
+        ensure_workspace_in_session(&mut tx, summary.workspace_id.as_deref().expect("workspace"))
+            .await;
+        tx.trace_summaries()
+            .upsert(summary)
+            .await
+            .expect("upsert trace summary");
+        tx.commit().await.expect("commit trace summary");
+    }
+
+    async fn ensure_workspace(db: &CoralDb, workspace_id: &str) {
+        let mut tx = db.begin().await.expect("begin tx");
+        ensure_workspace_in_session(&mut tx, workspace_id).await;
+        tx.commit().await.expect("commit workspace");
+    }
+
+    async fn cleanup_workspace(db: &CoralDb, workspace_id: &str) {
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .delete(workspace_id)
+            .await
+            .expect("remove workspace");
+        tx.commit().await.expect("commit cleanup");
+    }
+
+    async fn ensure_workspace_in_session<S>(session: &mut S, workspace_id: &str)
+    where
+        S: crate::state::db::DbSession,
+    {
+        session
+            .workspaces()
+            .ensure(workspace_id, 1)
+            .await
+            .expect("ensure workspace");
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "The Postgres trace harness is explicitly gated by this CI/test-only variable."
+    )]
+    fn postgres_test_url() -> Option<String> {
+        std::env::var("CORAL_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
+    }
+
+    fn summary(trace_id: &str, workspace_id: &str, end_time_unix_nanos: i64) -> TraceSummaryRecord {
+        TraceSummaryRecord {
+            trace_id: trace_id.to_string(),
+            workspace_id: Some(workspace_id.to_string()),
+            root_span_id: "span-1".to_string(),
+            name: "coral.query".to_string(),
+            query: "SELECT 1".to_string(),
+            status: StoredTraceStatus::Ok,
+            start_time_unix_nanos: end_time_unix_nanos - 1,
+            end_time_unix_nanos,
+            duration_nanos: 1,
+            span_count: 1,
+            row_count: 1,
+            row_count_recorded: true,
+            operation_kind: StoredTraceOperationKind::Unspecified,
+            operation_name: String::new(),
+            invocation_kind: StoredTraceInvocationKind::Unspecified,
+        }
+    }
+
+    fn write_trace(
+        dir: &std::path::Path,
+        trace_id: &str,
+        workspace_id: &str,
+        start: i64,
+        end: i64,
+    ) {
+        fs::create_dir_all(dir).expect("create trace dir");
+        let attributes_json = serde_json::to_string(
+            &json!({
+                "sql": "SELECT 1",
+                "row_count": 1,
+                "workspace": workspace_id,
+            })
+            .to_string(),
+        )
+        .expect("encode attributes");
+        let duration = end - start;
+        let record = format!(
+            r#"{{"trace_id":"{trace_id}","span_id":"span-1","parent_span_id":null,"parent_span_is_remote":false,"name":"coral.query","kind":"internal","status":"ok","status_message":null,"start_time_unix_nanos":{start},"end_time_unix_nanos":{end},"duration_nanos":{duration},"attributes_json":{attributes_json},"events_json":"[]","links_json":"[]","resource_json":"{{}}","scope_name":"test","scope_version":null,"scope_schema_url":null,"scope_attributes_json":"{{}}","trace_flags":0,"trace_state":"","is_remote":false}}"#
+        );
+        fs::write(
+            dir.join(format!("spans-{start:020}-test-{trace_id}.jsonl")),
+            format!("{record}\n"),
+        )
+        .expect("write trace");
     }
 }

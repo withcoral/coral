@@ -93,7 +93,7 @@ fn write_trace(dir: &Path, trace_id: &str) {
         "start_time_unix_nanos": 1,
         "end_time_unix_nanos": 2,
         "duration_nanos": 1,
-        "attributes_json": "{}",
+        "attributes_json": json!({ "workspace": "default" }).to_string(),
         "events_json": "[]",
         "links_json": "[]",
         "resource_json": "{}",

@@ -646,7 +646,7 @@ mod tests {
             variables: std::collections::BTreeMap::default(),
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
-            credential_revision: uuid::Uuid::default(),
+            credential_revision: uuid::Uuid::from_u128(1),
             origin: SourceOrigin::Imported,
         };
         tx.workspaces()

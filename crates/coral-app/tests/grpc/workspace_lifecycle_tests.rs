@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use coral_api::CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND;
 use coral_api::v1::{
@@ -10,6 +10,7 @@ use coral_api::v1::{
 use coral_client::AppClient;
 use prost::Message as _;
 use serde_json::json;
+use sqlx::Row as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::{Code, Request, Response, Status};
@@ -593,6 +594,7 @@ async fn delete_workspace_removes_workspace_trace_history() {
             + "\n",
     )
     .expect("write local trace history");
+    insert_trace_summary(harness.config_dir(), "work", "work-trace").await;
 
     let deleted = harness
         .workspace_client()
@@ -618,6 +620,10 @@ async fn delete_workspace_removes_workspace_trace_history() {
     assert!(
         raw.contains("unscoped-trace"),
         "unscoped trace should remain in local trace history: {raw}"
+    );
+    assert_eq!(
+        trace_summary_count(harness.config_dir(), "work", "work-trace").await,
+        0
     );
 }
 
@@ -1308,4 +1314,40 @@ fn local_trace_line(
         "attributes_json": attributes.to_string(),
     })
     .to_string()
+}
+
+async fn insert_trace_summary(config_dir: &Path, workspace_id: &str, trace_id: &str) {
+    let pool = sqlite_pool(config_dir).await;
+    sqlx::query("INSERT OR IGNORE INTO workspaces (id, created_at_unix_nanos) VALUES (?1, 1)")
+        .bind(workspace_id)
+        .execute(&pool)
+        .await
+        .expect("insert workspace");
+    sqlx::query("INSERT INTO trace_summaries (trace_id, workspace_id, root_span_id, name, query, status, start_time_unix_nanos, end_time_unix_nanos, duration_nanos, span_count, row_count, operation_kind, operation_name, invocation_kind) VALUES (?1, ?2, 'root', 'coral.query', 'SELECT 1', 'ok', 1, 2, 1, 1, 1, 'unspecified', '', 'unspecified')")
+        .bind(trace_id)
+        .bind(workspace_id)
+    .execute(&pool)
+    .await
+    .expect("insert trace summary");
+}
+
+async fn trace_summary_count(config_dir: &Path, workspace_id: &str, trace_id: &str) -> i64 {
+    let pool = sqlite_pool(config_dir).await;
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS count FROM trace_summaries WHERE workspace_id = ?1 AND trace_id = ?2",
+    )
+    .bind(workspace_id)
+    .bind(trace_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count trace summaries");
+    row.get("count")
+}
+
+async fn sqlite_pool(config_dir: &Path) -> sqlx::SqlitePool {
+    let options = SqliteConnectOptions::new().filename(config_dir.join("coral.db"));
+    SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("open sqlite db")
 }

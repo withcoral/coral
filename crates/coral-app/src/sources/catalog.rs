@@ -272,6 +272,7 @@ fn validate_v4_source_for_database_persistence(
     }
     Ok(())
 }
+
 fn candidate_from_manifest(
     manifest: &ValidatedSourceManifest,
     origin: SourceOrigin,

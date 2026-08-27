@@ -695,6 +695,17 @@ impl SharedDeployment {
         pool.close().await;
     }
 
+    pub(crate) async fn seed_trace_summary(&self, workspace_id: &str, trace_id: &str) {
+        let pool = self.app_database().await;
+        sqlx::query("INSERT INTO trace_summaries (trace_id, workspace_id, root_span_id, name, query, status, start_time_unix_nanos, end_time_unix_nanos, duration_nanos, span_count, row_count, operation_kind, operation_name, invocation_kind) VALUES (?, ?, 'root', 'coral.query', 'SELECT 1', 'ok', 1, 2, 1, 1, 1, 'unspecified', '', 'unspecified')")
+            .bind(trace_id)
+            .bind(workspace_id)
+            .execute(&pool)
+            .await
+            .expect("seed a trace summary");
+        pool.close().await;
+    }
+
     /// Every membership on record as `(workspace, user, role)`, read from the
     /// deployment's own state rather than through a listing that answers only
     /// for the caller who asked — and which the local principal is answered

@@ -6,7 +6,7 @@
     )
 )]
 
-use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
+use sea_query::{Alias, Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::state::db::schema::TraceSummaries;
 use crate::state::db::{DbError, DbSession};
@@ -126,6 +126,30 @@ where
             .from(TraceSummaries::Table)
             .order_by(TraceSummaries::EndTimeUnixNanos, Order::Desc)
             .order_by(TraceSummaries::TraceId, Order::Asc)
+            .order_by(TraceSummaries::WorkspaceId, Order::Asc)
+            .limit(limit_to_u64(limit)?)
+            .offset(limit_to_u64(offset)?)
+            .to_owned();
+        let rows: Vec<TraceSummaryRow> = self.session.fetch_all(statement).await?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
+
+    pub(crate) async fn list_for_workspace(
+        &mut self,
+        workspace_id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<TraceSummaryRecord>, DbError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let statement = Query::select()
+            .columns(record_columns())
+            .from(TraceSummaries::Table)
+            .and_where(Expr::col(TraceSummaries::WorkspaceId).eq(workspace_id))
+            .order_by(TraceSummaries::EndTimeUnixNanos, Order::Desc)
+            .order_by(TraceSummaries::TraceId, Order::Asc)
             .limit(limit_to_u64(limit)?)
             .offset(limit_to_u64(offset)?)
             .to_owned();
@@ -192,6 +216,11 @@ where
                         TraceSummaries::OperationName,
                         TraceSummaries::InvocationKind,
                     ])
+                    .action_and_where(
+                        Expr::col((TraceSummaries::Table, TraceSummaries::EndTimeUnixNanos)).lte(
+                            Expr::col((Alias::new("excluded"), TraceSummaries::EndTimeUnixNanos)),
+                        ),
+                    )
                     .to_owned(),
             )
             .to_owned();
