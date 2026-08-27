@@ -41,6 +41,46 @@ async fn probe_once(client: &AppClient) -> Duration {
     start.elapsed()
 }
 
+/// The kubelet's view: an OS thread with its own runtime and connection,
+/// probing the health service every 100ms and recording each round trip.
+fn spawn_kubelet_prober(
+    endpoint: String,
+    stop: Arc<AtomicBool>,
+    latencies: Arc<Mutex<Vec<Duration>>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("prober runtime");
+        rt.block_on(async move {
+            let client = AppClient::connect(&endpoint).await.expect("prober connect");
+            probe_once(&client).await; // warm the readiness cache
+            while !stop.load(Ordering::Relaxed) {
+                let elapsed = probe_once(&client).await;
+                latencies.lock().expect("latencies mutex").push(elapsed);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+    })
+}
+
+/// The slow exclusive holder: models a source install writing through the
+/// state lock on slow storage. Same flock, held from an OS thread.
+fn hold_lock_exclusively(lock_path: std::path::PathBuf) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .expect("open lock file");
+        file.lock().expect("exclusive flock");
+        std::thread::sleep(HOLD);
+        drop(file);
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn held_state_lock_must_not_starve_liveness() {
     let temp = TempDir::new().expect("temp dir");
@@ -65,45 +105,16 @@ async fn held_state_lock_must_not_starve_liveness() {
         .await
         .expect("create workspace");
 
-    // External prober on its own runtime + connection (the kubelet).
-    let endpoint = server.endpoint_uri().to_string();
     let stop = Arc::new(AtomicBool::new(false));
     let latencies: Arc<Mutex<Vec<Duration>>> = Arc::new(Mutex::new(Vec::new()));
-    let poller = {
-        let stop = Arc::clone(&stop);
-        let latencies = Arc::clone(&latencies);
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("prober runtime");
-            rt.block_on(async move {
-                let client = AppClient::connect(&endpoint).await.expect("prober connect");
-                probe_once(&client).await; // warm the readiness cache
-                while !stop.load(Ordering::Relaxed) {
-                    let elapsed = probe_once(&client).await;
-                    latencies.lock().unwrap().push(elapsed);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-            });
-        })
-    };
+    let poller = spawn_kubelet_prober(
+        server.endpoint_uri().to_string(),
+        Arc::clone(&stop),
+        Arc::clone(&latencies),
+    );
     std::thread::sleep(Duration::from_millis(500));
 
-    // The slow exclusive holder: models a source install writing to EFS while
-    // holding state_lock_exclusive. Same flock, held from an OS thread.
-    let lock_path = config_dir.join(".lock");
-    let holder = std::thread::spawn(move || {
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-            .expect("open lock file");
-        file.lock().expect("exclusive flock");
-        std::thread::sleep(HOLD);
-        drop(file);
-    });
+    let holder = hold_lock_exclusively(config_dir.join(".lock"));
     std::thread::sleep(Duration::from_millis(200));
 
     // Two trivial queries. Each takes state_lock_shared on a runtime worker.
@@ -130,22 +141,33 @@ async fn held_state_lock_must_not_starve_liveness() {
     stop.store(true, Ordering::Relaxed);
     poller.join().expect("join poller");
 
-    let latencies = latencies.lock().unwrap();
-    let max = latencies.iter().max().copied().unwrap_or_default();
-    let over_budget = latencies.iter().filter(|l| **l > KUBELET_BUDGET).count();
-    eprintln!(
-        "queries: {:?}/{:?} in {query_elapsed:?}; probes={} max={max:?} over_1s={over_budget}",
-        r1.as_ref().map(|_| "ok").map_err(|e| e.code()),
-        r2.as_ref().map(|_| "ok").map_err(|e| e.code()),
-        latencies.len(),
-    );
+    // Read the shared vec before the awaits below: a MutexGuard must not be
+    // held across an await point (clippy::await_holding_lock).
+    let (polls, max, over_budget) = {
+        let latencies = latencies.lock().expect("latencies mutex");
+        (
+            latencies.len(),
+            latencies.iter().max().copied().unwrap_or_default(),
+            latencies.iter().filter(|l| **l > KUBELET_BUDGET).count(),
+        )
+    };
+    r1.expect("query behind the contended lock should still succeed");
+    r2.expect("query behind the contended lock should still succeed");
 
     shutdown_tracing();
     server.shutdown().await.expect("shutdown");
 
+    assert!(
+        query_elapsed >= Duration::from_millis(500),
+        "queries finished in {query_elapsed:?} without waiting for the lock; the hold never contended"
+    );
+    assert!(
+        polls > 3,
+        "prober produced only {polls} samples; harness broken"
+    );
     assert_eq!(
         over_budget, 0,
-        "{over_budget} health probes exceeded the kubelet budget (max {max:?}) while the state lock \
-         was contended — lock waiters starved the runtime"
+        "{over_budget} of {polls} health probes exceeded the kubelet budget (max {max:?}) while the \
+         state lock was contended — lock waiters starved the runtime"
     );
 }
