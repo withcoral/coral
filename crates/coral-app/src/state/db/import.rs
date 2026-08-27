@@ -582,6 +582,10 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The cleanup contract keeps its committed database and retained filesystem assertions in one fixture."
+    )]
     async fn cleanup_failure_does_not_fail_committed_source_import() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
@@ -615,11 +619,18 @@ mod tests {
             .await
             .expect("cut over legacy workspace catalog");
 
+        let original_mode = fs::metadata(layout.config_dir())
+            .expect("config dir metadata")
+            .permissions()
+            .mode();
         fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o500))
             .expect("make config dir read-only");
         let report = import_config_source_catalog(&db, &config_store, 11).await;
-        fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o700))
-            .expect("restore config dir permissions");
+        fs::set_permissions(
+            layout.config_dir(),
+            fs::Permissions::from_mode(original_mode),
+        )
+        .expect("restore config dir permissions");
 
         assert_eq!(
             report.expect("cleanup failure should not fail committed source import"),
@@ -648,7 +659,44 @@ mod tests {
             config_store
                 .get_source(&workspace, &source.name)
                 .expect("legacy config source should remain after cleanup failure"),
-            source
+            source.clone()
+        );
+
+        let mut stale_config_source = source.clone();
+        stale_config_source
+            .variables
+            .insert("OWNER".to_string(), "coral".to_string());
+        config_store
+            .upsert_source(&workspace, stale_config_source)
+            .expect("update stale config source");
+        {
+            let mut tx = db.begin().await.expect("begin delete tx");
+            tx.sources()
+                .remove_source(&workspace, &source.name)
+                .await
+                .expect("delete db source");
+            tx.commit().await.expect("commit delete tx");
+        }
+
+        let report = import_config_source_catalog(&db, &config_store, 99)
+            .await
+            .expect("completed source import should not reimport stale config");
+
+        assert_eq!(
+            report,
+            SourceCatalogImportReport {
+                source_count: 0,
+                import_performed: false,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("source should remain deleted"),
+            None
         );
     }
 

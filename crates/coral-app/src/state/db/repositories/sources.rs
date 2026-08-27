@@ -15,7 +15,7 @@ use sea_query::{
 use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
-use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources};
+use crate::state::db::schema::{SourceManifests, SourceSecretKeys, SourceVariables, Sources};
 use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
 
@@ -317,20 +317,23 @@ impl SourcesRepo<'_, CoralTx<'_>> {
         source: &InstalledSource,
         now_unix_nanos: i64,
     ) -> Result<(), DbError> {
-        let created_at_unix_nanos = self
-            .source_created_at(workspace_name, &source.name)
-            .await?
-            .unwrap_or(now_unix_nanos);
-        self.delete_source_catalog(workspace_name, &source.name)
+        let existing_created_at = self.source_created_at(workspace_name, &source.name).await?;
+        if existing_created_at.is_some() {
+            update_source(self.session, workspace_name, source, now_unix_nanos).await?;
+        } else {
+            insert_source(
+                self.session,
+                workspace_name,
+                source,
+                now_unix_nanos,
+                now_unix_nanos,
+            )
             .await?;
-        insert_source(
-            self.session,
-            workspace_name,
-            source,
-            created_at_unix_nanos,
-            now_unix_nanos,
-        )
-        .await?;
+        }
+        self.delete_source_detail_rows(workspace_name, &source.name)
+            .await?;
+        self.delete_imported_manifest_for_non_imported_source(workspace_name, source)
+            .await?;
         self.insert_source_variables(workspace_name, source).await?;
         self.insert_source_secret_keys(workspace_name, source).await
     }
@@ -368,14 +371,39 @@ impl SourcesRepo<'_, CoralTx<'_>> {
         Ok(())
     }
 
+    async fn delete_imported_manifest_for_non_imported_source(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<(), DbError> {
+        if source.origin == SourceOrigin::Imported {
+            return Ok(());
+        }
+        let statement = Query::delete()
+            .from_table(SourceManifests::Table)
+            .and_where(Expr::col(SourceManifests::WorkspaceId).eq(workspace_name.as_str()))
+            .and_where(Expr::col(SourceManifests::SourceName).eq(source.name.as_str()))
+            .to_owned();
+        self.session.execute(statement).await
+    }
+
     async fn delete_source_catalog(
         &mut self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<(), DbError> {
-        delete_source_secret_keys(self.session, workspace_name, source_name).await?;
-        delete_source_variables(self.session, workspace_name, source_name).await?;
+        self.delete_source_detail_rows(workspace_name, source_name)
+            .await?;
         delete_source(self.session, workspace_name, source_name).await
+    }
+
+    async fn delete_source_detail_rows(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), DbError> {
+        delete_source_secret_keys(self.session, workspace_name, source_name).await?;
+        delete_source_variables(self.session, workspace_name, source_name).await
     }
 }
 
@@ -415,6 +443,44 @@ where
             Expr::val(created_at_unix_nanos),
             Expr::val(updated_at_unix_nanos),
         ])
+        .to_owned();
+    session.execute(statement).await
+}
+
+async fn update_source<S>(
+    session: &mut S,
+    workspace_name: &WorkspaceName,
+    source: &InstalledSource,
+    updated_at_unix_nanos: i64,
+) -> Result<(), DbError>
+where
+    S: DbSession,
+{
+    let statement = Query::update()
+        .table(Sources::Table)
+        .value(Sources::Version, Expr::val(source.version.clone()))
+        .value(
+            Sources::OriginKind,
+            Expr::val(source.origin.as_config_value()),
+        )
+        .value(
+            Sources::CredentialStorage,
+            Expr::val(
+                source
+                    .credential_storage
+                    .map(CredentialStorageKind::as_config_value),
+            ),
+        )
+        .value(
+            Sources::CredentialRevision,
+            Expr::val(source.credential_revision.to_string()),
+        )
+        .value(
+            Sources::UpdatedAtUnixNanos,
+            Expr::val(updated_at_unix_nanos),
+        )
+        .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+        .and_where(Expr::col(Sources::Name).eq(source.name.as_str()))
         .to_owned();
     session.execute(statement).await
 }
@@ -853,9 +919,10 @@ mod tests {
         Some(db)
     }
 
+    #[expect(clippy::too_many_lines, reason = "repository contract fixture")]
     async fn assert_source_repository_round_trip(db: &CoralDb) {
         let workspace = unique_workspace();
-        let alpha = source("alpha", None, [], [], None, SourceOrigin::Bundled);
+        let alpha = source("alpha", None, [], [], None, SourceOrigin::Imported);
         let mut zeta = source(
             "zeta",
             Some("1.2.3"),
@@ -890,6 +957,14 @@ mod tests {
             vec![alpha.clone(), zeta.clone()]
         );
 
+        let alpha_manifest = "name: alpha\nversion: 0.1.0\n";
+        let mut tx = db.begin().await.expect("begin manifest tx");
+        tx.source_manifests()
+            .upsert(&workspace, &alpha.name, alpha_manifest, 35)
+            .await
+            .expect("upsert alpha manifest");
+        tx.commit().await.expect("commit manifest tx");
+
         let mut alpha_replacement = source(
             "alpha",
             Some("9.9.9"),
@@ -908,6 +983,26 @@ mod tests {
         assert_eq!(
             get_source(db, &workspace, &alpha_replacement.name).await,
             Some(alpha_replacement.clone())
+        );
+        assert_eq!(
+            source_manifest_yaml(db, &workspace, &alpha_replacement.name).await,
+            Some(alpha_manifest.to_string())
+        );
+
+        let alpha_bundled = source("alpha", None, [], [], None, SourceOrigin::Bundled);
+        let mut tx = db.begin().await.expect("begin bundled replacement tx");
+        tx.sources()
+            .upsert_source(&workspace, &alpha_bundled, 45)
+            .await
+            .expect("replace alpha with bundled source");
+        tx.commit().await.expect("commit bundled replacement");
+        assert_eq!(
+            get_source(db, &workspace, &alpha_bundled.name).await,
+            Some(alpha_bundled.clone())
+        );
+        assert_eq!(
+            source_manifest_yaml(db, &workspace, &alpha_bundled.name).await,
+            None
         );
 
         let mut tx = db.begin().await.expect("begin rollback tx");
@@ -1168,6 +1263,20 @@ mod tests {
             .get_source(workspace, source_name)
             .await
             .expect("get source")
+    }
+
+    async fn source_manifest_yaml(
+        db: &CoralDb,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Option<String> {
+        let mut session = db;
+        session
+            .source_manifests()
+            .get(workspace, source_name)
+            .await
+            .expect("get source manifest")
+            .map(|record| record.manifest_yaml)
     }
 
     async fn remove_source(
