@@ -625,7 +625,7 @@ mod tests {
             .mode();
         fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o500))
             .expect("make config dir read-only");
-        let report = import_config_source_catalog(&db, &config_store, 11).await;
+        let report = import_config_source_catalog(&db, &config_store, &layout, 11).await;
         fs::set_permissions(
             layout.config_dir(),
             fs::Permissions::from_mode(original_mode),
@@ -651,7 +651,7 @@ mod tests {
         assert!(
             session
                 .state_migrations()
-                .has_completed(SOURCE_CATALOG_IMPORT_ID)
+                .has_completed(&source_catalog_import_id(&layout))
                 .await
                 .expect("read source import marker")
         );
@@ -678,7 +678,7 @@ mod tests {
             tx.commit().await.expect("commit delete tx");
         }
 
-        let report = import_config_source_catalog(&db, &config_store, 99)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 99)
             .await
             .expect("completed source import should not reimport stale config");
 
