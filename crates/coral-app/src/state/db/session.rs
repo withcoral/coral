@@ -102,13 +102,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         SourceManifestsRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "v4 materialization repository lands before manager wiring in the stacked PR sequence"
-        )
-    )]
     fn materializations(&mut self) -> MaterializationsRepo<'_, Self> {
         MaterializationsRepo::new(self)
     }

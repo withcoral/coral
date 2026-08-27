@@ -28,6 +28,9 @@ pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecId, IdentitySpecKey, IdentitySpecRecord,
     IdentitySpecScope,
 };
+pub(crate) use repositories::materializations::{
+    MaterializationRecord, MaterializationSurfaceRecord,
+};
 #[cfg(test)]
 pub(crate) use repositories::state_migrations::LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID;
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};

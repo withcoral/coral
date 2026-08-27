@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use coral_spec::v4::{SurfaceDescriptor, SurfaceType};
@@ -26,9 +26,8 @@ use crate::sources::catalog::{
 };
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, SourceDiagnosticReporter,
-    build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
-    cleanup_materialization_tmp, new_materialization_suffix, replace_or_retire_v4_materialization,
-    restore_materialization_backup,
+    build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_tmp,
+    materialization_record_from_dir, new_materialization_suffix,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
@@ -894,26 +893,6 @@ impl SourceManager {
                 (Vec::new(), None)
             };
 
-        let materialization_backup = match replace_or_retire_v4_materialization(
-            &self.layout,
-            workspace_name,
-            &source_name,
-            request.materialization_tmp.as_deref(),
-        ) {
-            Ok(backup) => backup,
-            Err(error) => {
-                cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-                self.restore_source_rollback_state_with_state_lock_held(
-                    workspace_name,
-                    &source_name,
-                    previous,
-                    credential_storage,
-                    &credential_guard,
-                );
-                return Err(error);
-            }
-        };
-
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
             SourceOrigin::Imported => request.candidate.version.clone(),
@@ -937,13 +916,9 @@ impl SourceManager {
             workspace_name,
             stored.clone(),
             request.manifest_yaml,
+            request.materialization_tmp.as_deref(),
         ) {
-            let restore_result = restore_materialization_backup(
-                &self.layout,
-                workspace_name,
-                &source_name,
-                materialization_backup,
-            );
+            cleanup_materialization_tmp(request.materialization_tmp.as_deref());
             self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 &source_name,
@@ -951,14 +926,9 @@ impl SourceManager {
                 credential_storage,
                 &credential_guard,
             );
-            if let Err(restore_error) = restore_result {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to persist source '{source_name}': {error}; failed to restore previous DSL v4 materialization: {restore_error}"
-                )));
-            }
             return Err(error);
         }
-        cleanup_materialization_backup(materialization_backup);
+        cleanup_materialization_tmp(request.materialization_tmp.as_deref());
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
         self.pool_registry
@@ -1269,6 +1239,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
         manifest_yaml: Option<&str>,
+        materialization_tmp: Option<&Path>,
     ) -> Result<(), AppError> {
         let manifest_yaml = match source.origin {
             SourceOrigin::Bundled => None,
@@ -1283,12 +1254,15 @@ impl SourceManager {
                 Some(manifest_yaml.to_string())
             }
         };
+        let now_unix_nanos = now_unix_nanos_i64()?;
+        let materialization = materialization_tmp
+            .map(|dir| materialization_record_from_dir(&source.name, dir, now_unix_nanos))
+            .transpose()?;
         let db = Arc::clone(&self.db);
         let db_workspace_name = workspace_name.clone();
         let db_source = source;
         run_source_db_operation(async move {
             let mut tx = db.begin().await?;
-            let now_unix_nanos = now_unix_nanos_i64()?;
             if tx
                 .workspaces()
                 .get(db_workspace_name.as_str())
@@ -1308,6 +1282,15 @@ impl SourceManager {
                         manifest_yaml,
                         now_unix_nanos,
                     )
+                    .await?;
+            }
+            if let Some(materialization) = materialization {
+                tx.materializations()
+                    .upsert(&db_workspace_name, &db_source.name, &materialization)
+                    .await?;
+            } else {
+                tx.materializations()
+                    .remove(&db_workspace_name, &db_source.name)
                     .await?;
             }
             tx.commit().await?;
@@ -2047,9 +2030,7 @@ mod tests {
     use crate::search::observed::{SearchObservationHandle, SqliteObservedValuesStore};
     use crate::sources::SourceName;
     use crate::sources::catalog::describe_manifest;
-    use crate::sources::materialization::{
-        FINGERPRINT_FILENAME, MaterializationInputs, PROJECTIONS_FILENAME,
-    };
+    use crate::sources::materialization::MaterializationInputs;
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::db::DbRepos;
     use crate::state::{AppStateLayout, ConfigStore};
@@ -3163,8 +3144,8 @@ surface:
         assert_eq!(database_source, None);
     }
 
-    #[test]
-    fn import_v4_source_writes_materialized_artifacts() {
+    #[tokio::test]
+    async fn import_v4_source_persists_materialization_in_database() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
@@ -3189,10 +3170,30 @@ surface:
 
         assert_eq!(installed.name.as_str(), "github_v4_test");
         let source_name = SourceName::parse("github_v4_test").expect("source");
-        let materialized = layout.v4_materialized_dir(&default_workspace(), &source_name);
-        assert!(materialized.join(FINGERPRINT_FILENAME).exists());
-        assert!(materialized.join(PROJECTIONS_FILENAME).exists());
-        assert!(materialized.join("semantic-ir.yaml").exists());
+        let mut session = manager.db.as_ref();
+        let materialization = session
+            .materializations()
+            .get(&default_workspace(), &source_name)
+            .await
+            .expect("read database materialization")
+            .expect("database materialization");
+        assert_eq!(materialization.materialization_version, "v4");
+        assert!(!materialization.fingerprint_yaml.is_empty());
+        assert!(!materialization.projections_yaml.is_empty());
+        assert!(!materialization.diagnostics_yaml.is_empty());
+        let surface = materialization
+            .surfaces
+            .first()
+            .expect("materialization surface");
+        assert!(!surface.source_document_raw.is_empty());
+        assert!(!surface.source_document_yaml.is_empty());
+        assert!(!surface.semantic_ir_yaml.is_empty());
+        assert!(
+            !layout
+                .v4_materialized_dir(&default_workspace(), &source_name)
+                .exists(),
+            "database materialization should not leave legacy final artifacts"
+        );
 
         let info = manager
             .get_source_info(&default_workspace(), &source_name)

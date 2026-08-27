@@ -181,4 +181,5 @@ pub(in crate::state::db) enum MaterializationSurfaces {
     SourceDocumentRaw,
     SourceDocumentYaml,
     SemanticIrYaml,
+    OperationMetadataYaml,
 }

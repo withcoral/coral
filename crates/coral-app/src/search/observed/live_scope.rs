@@ -7,7 +7,10 @@ use crate::bootstrap::AppError;
 use crate::search::observed::source_scope::{SourceScopeSeed, source_surface_scopes};
 use crate::search::observed::{ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure};
 use crate::sources::catalog::{load_bundled_source, resolve_installed_manifest_from_yaml};
-use crate::sources::materialization::SourceDiagnosticReporter;
+use crate::sources::materialization::{
+    LoadedV4Materialization, SourceDiagnosticReporter, incompatible_materialization_error,
+    load_v4_materialization_from_record,
+};
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::sources::runtime_package::query_source_from_installed_manifest;
 use crate::state::db::{CoralDb, DbRepos};
@@ -59,20 +62,21 @@ impl ObservedValuesLiveScopeLoader {
                 .list_workspace_sources(workspace_name)
                 .await?
         };
-        Ok(self.load_sources(workspace_name, sources).await)
+        self.load_sources(workspace_name, sources).await
     }
 
     async fn load_sources(
         &self,
         workspace_name: &WorkspaceName,
         sources: Vec<InstalledSource>,
-    ) -> ObservedValuesLiveScopeLoad {
+    ) -> Result<ObservedValuesLiveScopeLoad, AppError> {
         let mut live_scopes = Vec::new();
         let mut failed_sources = Vec::new();
         for source in sources {
             let source_name = source.name.as_str().to_string();
             match self.load_source_scopes(workspace_name, &source).await {
                 Ok(source_scopes) => live_scopes.extend(source_scopes),
+                Err(error @ AppError::Database(_)) => return Err(error),
                 Err(error) => {
                     tracing::debug!(
                         workspace = %workspace_name,
@@ -87,10 +91,10 @@ impl ObservedValuesLiveScopeLoader {
                 }
             }
         }
-        ObservedValuesLiveScopeLoad {
+        Ok(ObservedValuesLiveScopeLoad {
             live_scopes,
             failed_sources,
-        }
+        })
     }
 
     async fn load_source_scopes(
@@ -116,11 +120,37 @@ impl ObservedValuesLiveScopeLoader {
             }
         };
         let installed = resolve_installed_manifest_from_yaml(source, &manifest_yaml)?;
+        let loaded_v4_materialization = if let Some(v4) = installed.source_spec.as_v4() {
+            let record = {
+                let mut session = self.db.as_ref();
+                session
+                    .materializations()
+                    .get(workspace_name, &source.name)
+                    .await?
+                    .ok_or_else(|| {
+                        incompatible_materialization_error(
+                            &source.name,
+                            "required artifact is missing",
+                        )
+                    })?
+            };
+            Some(load_v4_materialization_from_record(
+                &self.layout,
+                workspace_name,
+                &source.name,
+                &installed.manifest_yaml,
+                v4,
+                &record,
+                &self.diagnostic_reporter,
+            )?)
+        } else {
+            None::<LoadedV4Materialization>
+        };
         let loaded_runtime = query_source_from_installed_manifest(
-            &self.layout,
             workspace_name,
             source,
             &installed,
+            loaded_v4_materialization.as_ref(),
             &self.diagnostic_reporter,
             BTreeMap::new(),
         )?;
@@ -148,7 +178,7 @@ mod tests {
     use crate::search::observed::source_scope::{SourceScopeSeed, source_surface_scopes};
     use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
     use crate::sources::SourceName;
-    use crate::sources::catalog::resolve_installed_manifest;
+    use crate::sources::catalog::resolve_installed_manifest_from_yaml;
     use crate::sources::materialization::SourceDiagnosticReporter;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::sources::runtime_package::query_source_from_installed_manifest;
@@ -292,13 +322,25 @@ mod tests {
             &source_name,
             credential_revision,
         );
-        let installed_manifest = resolve_installed_manifest(&workspace, &installed_source, &layout)
-            .expect("resolve installed manifest");
+        let db = test_db(&layout, &config_store).await;
+        let manifest_yaml = {
+            let mut session = db.as_ref();
+            session
+                .source_manifests()
+                .get(&workspace, &source_name)
+                .await
+                .expect("load canonical manifest")
+                .expect("canonical manifest")
+                .manifest_yaml
+        };
+        let installed_manifest =
+            resolve_installed_manifest_from_yaml(&installed_source, &manifest_yaml)
+                .expect("resolve installed manifest");
         let writer_runtime = query_source_from_installed_manifest(
-            &layout,
             &workspace,
             &installed_source,
             &installed_manifest,
+            None,
             &SourceDiagnosticReporter::default(),
             BTreeMap::from([(
                 "API_TOKEN".to_string(),
@@ -327,7 +369,6 @@ mod tests {
         .expect("publisher scope")
         .live_scope();
 
-        let db = test_db(&layout, &config_store).await;
         config_store
             .remove_source(&workspace, &source_name)
             .expect("remove legacy config source");

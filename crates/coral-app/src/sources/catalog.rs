@@ -14,8 +14,6 @@ use crate::bootstrap::AppError;
 use crate::credential_transport::validate_credential_endpoint_transport;
 use crate::sources::SourceName;
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-use crate::state::AppStateLayout;
-use crate::workspaces::WorkspaceName;
 
 include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 
@@ -63,24 +61,6 @@ pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceMani
     Ok(BundledSourceManifest {
         manifest_yaml: (*manifest_yaml).to_string(),
     })
-}
-
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "removed by the v4 runtime follow-up")
-)]
-pub(crate) fn resolve_installed_manifest(
-    workspace_name: &WorkspaceName,
-    source: &InstalledSource,
-    layout: &AppStateLayout,
-) -> Result<InstalledSourceManifest, AppError> {
-    let manifest_yaml = match source.origin {
-        SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
-        SourceOrigin::Imported => {
-            std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
-        }
-    };
-    resolve_installed_manifest_from_yaml(source, &manifest_yaml)
 }
 
 pub(crate) fn resolve_installed_manifest_from_yaml(
@@ -198,7 +178,7 @@ fn validate_http_source_for_database_persistence(
     http: &coral_spec::backends::http::HttpSourceManifest,
 ) -> Result<(), AppError> {
     let mut needs_transport_guard =
-        validate_http_auth_spec_for_database_persistence(input_kinds, "auth", &http.auth)?;
+        validate_auth_spec_for_database_persistence(input_kinds, "auth", &http.auth)?;
     needs_transport_guard |= validate_headers_for_database_persistence(
         input_kinds,
         "request_headers",
@@ -246,7 +226,7 @@ fn validate_v4_source_for_database_persistence(
 ) -> Result<(), AppError> {
     match &v4.surface.runtime {
         coral_spec::v4::SurfaceRuntimeConfig::OpenApi(runtime) => {
-            let mut needs_transport_guard = validate_http_auth_spec_for_database_persistence(
+            let mut needs_transport_guard = validate_auth_spec_for_database_persistence(
                 input_kinds,
                 "surface auth",
                 &runtime.auth,
@@ -292,7 +272,6 @@ fn validate_v4_source_for_database_persistence(
     }
     Ok(())
 }
-
 fn candidate_from_manifest(
     manifest: &ValidatedSourceManifest,
     origin: SourceOrigin,
@@ -309,7 +288,7 @@ fn candidate_from_manifest(
     })
 }
 
-fn validate_http_auth_spec_for_database_persistence(
+pub(crate) fn validate_auth_spec_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     auth: &AuthSpec,
@@ -413,7 +392,7 @@ fn validate_mcp_server_for_database_persistence(
     Ok(())
 }
 
-fn validate_request_headers_for_database_persistence(
+pub(crate) fn validate_request_headers_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     request: &coral_spec::RequestSpec,
@@ -461,7 +440,7 @@ fn validate_request_headers_for_database_persistence(
     Ok(needs_transport_guard)
 }
 
-fn validate_headers_for_database_persistence(
+pub(crate) fn validate_headers_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     headers: &[HeaderSpec],
@@ -564,7 +543,7 @@ fn value_source_references_secret_input(
     }
 }
 
-fn template_references_secret_input(
+pub(crate) fn template_references_secret_input(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     template: &ParsedTemplate,
 ) -> bool {

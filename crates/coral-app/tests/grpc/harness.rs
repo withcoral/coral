@@ -1026,6 +1026,28 @@ pub(crate) fn fixture_manifest_yaml(root: &Path) -> String {
     fixture_manifest_with_test_queries_yaml(root, &[])
 }
 
+pub(crate) fn fixture_v4_openapi_manifest_yaml(root: &Path, base_url: &str) -> (String, PathBuf) {
+    let openapi_file = root.join("github-openapi.yaml");
+    std::fs::write(
+        &openapi_file,
+        format!(
+            r#"{{"openapi":"3.0.3","servers":[{{"url":"{base_url}"}}],"paths":{{"/issues":{{"get":{{"operationId":"issues/list","responses":{{"200":{{"content":{{"application/json":{{"schema":{{"type":"array","items":{{"type":"object","properties":{{"id":{{"type":"integer"}},"title":{{"type":"string"}}}}}}}}}}}}}}}}}}}}}}}}"#
+        ),
+    )
+    .expect("write v4 OpenAPI fixture");
+    (
+        manifest_yaml(&json!({
+            "name": "github_v4_query",
+            "dsl_version": 4,
+            "surface": {
+                "type": "openapi",
+                "file": openapi_file,
+            },
+        })),
+        openapi_file,
+    )
+}
+
 pub(crate) fn fixture_manifest_with_multiple_tables_yaml(root: &Path) -> String {
     let data_dir = root.join("fixture-data");
     fs::create_dir_all(&data_dir).expect("create data dir");

@@ -1777,7 +1777,6 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
     use std::os::unix::fs::PermissionsExt;
 
     let harness = GrpcHarness::new().await;
-
     harness.seed_workspace().await;
     harness
         .import_source(
