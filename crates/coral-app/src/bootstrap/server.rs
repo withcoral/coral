@@ -28,7 +28,6 @@ use tokio::task::{self, JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::service::Routes;
 use tonic::transport::Server;
-use tracing::warn;
 use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
@@ -40,9 +39,7 @@ use crate::auth::CoralAuthorizationServer;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
-use crate::credentials::encryption::{
-    CredentialEncryptionKey, CredentialEncryptionKeyOrigin, LocalFileCredentialKeyProvider,
-};
+use crate::credentials::encryption::{CredentialEncryptionKey, LocalFileCredentialKeyProvider};
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::features::service::FeatureService;
 use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
@@ -657,6 +654,7 @@ fn trace_components_for_store(
             service: Some(TraceService::with_db(
                 store.dir,
                 store.retention,
+                store.store_id,
                 Arc::clone(db),
                 workspaces,
                 workspace_authorizer,
@@ -679,10 +677,15 @@ async fn backfill_trace_summaries(
     let Some(store) = store else {
         return Ok(());
     };
-    TraceService::backfill_summaries(store.dir.clone(), store.retention, coral_db)
-        .await
-        .map(|_| ())
-        .map_err(|error| AppError::Database(format!("trace summary import failed: {error}")))
+    TraceService::backfill_summaries(
+        store.dir.clone(),
+        store.retention,
+        &store.store_id,
+        coral_db,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| AppError::Database(format!("trace summary import failed: {error}")))
 }
 
 fn init_credential_store(
@@ -693,24 +696,32 @@ fn init_credential_store(
     let provided_key = resolve_configured_credential_encryption_key(
         credential_config.encryption_key_env.as_deref(),
     )?;
+    require_shared_postgres_credential_key(coral_db.is_postgres(), provided_key.is_some())?;
     let key_provider = Arc::new(LocalFileCredentialKeyProvider::with_source(
         layout,
         provided_key,
         credential_config.encryption_key_source,
     ));
-    let key_origin = key_provider.active_key_origin()?;
-    if coral_db.is_postgres() && key_origin != CredentialEncryptionKeyOrigin::Provided {
-        warn!(
-            ?key_origin,
-            "database-backed credentials are using a host-local encryption key with Postgres; multiple servers can create split key domains and unreadable credential documents; set [credentials].encryption_key_env to the same KEK on every server"
-        );
-    }
-    Ok(CredentialStore::with_database(
+    let credential_store = CredentialStore::with_database(
         layout.clone(),
         credential_config.storage,
         Arc::clone(coral_db),
         key_provider,
-    ))
+    );
+    Ok(credential_store)
+}
+
+fn require_shared_postgres_credential_key(
+    postgres: bool,
+    provided_key: bool,
+) -> Result<(), AppError> {
+    if postgres && !provided_key {
+        return Err(AppError::FailedPrecondition(
+            "Postgres credential storage requires [credentials].encryption_key_env to name the same KEK environment variable on every Coral server"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Replaces one source's encrypted database credential document for integration tests.
@@ -1170,7 +1181,8 @@ mod tests {
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, SessionAuthSettings,
         TraceServerComponents, inaccessible_workspaces_warning,
-        resolve_configured_credential_encryption_key, start_server,
+        require_shared_postgres_credential_key, resolve_configured_credential_encryption_key,
+        start_server,
     };
     use crate::auth::session::test_signing_key;
     use crate::bootstrap::AppError;
@@ -1345,6 +1357,16 @@ enabled = false
                 .expect("run non-UTF-8 subprocess");
             assert!(status.success());
         }
+    }
+
+    #[test]
+    fn postgres_credentials_require_a_shared_provided_key() {
+        require_shared_postgres_credential_key(true, true).expect("provided Postgres key");
+        require_shared_postgres_credential_key(false, false).expect("local SQLite key");
+        let error = require_shared_postgres_credential_key(true, false)
+            .expect_err("host-local Postgres key should fail closed");
+        assert!(error.to_string().contains("encryption_key_env"));
+        assert!(error.to_string().contains("every Coral server"));
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {

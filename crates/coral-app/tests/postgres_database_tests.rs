@@ -59,7 +59,7 @@ async fn start_server_with_postgres_config(database_url: &str) -> PostgresServer
     fs::create_dir_all(&config_dir).expect("create config dir");
     fs::write(
         config_dir.join("config.toml"),
-        "[database]\nbackend = \"postgres\"\nurl_env = \"CORAL_TEST_POSTGRES_URL\"\n",
+        "[database]\nbackend = \"postgres\"\nurl_env = \"CORAL_TEST_POSTGRES_URL\"\n\n[credentials]\nstorage = \"database\"\nencryption_key_env = \"CORAL_TEST_CREDENTIAL_KEK\"\n",
     )
     .expect("write config");
 

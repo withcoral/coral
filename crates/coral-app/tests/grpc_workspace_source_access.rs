@@ -468,7 +468,7 @@ async fn refused_source_requests_leave_the_workspace_untouched() {
     let task_id = start_task(&owner, "source-record")
         .await
         .expect("the owner opens a task");
-    let before = deployment.workspace_work("source-record").await;
+    let before = deployment.settled_workspace_work("source-record").await;
     assert!(
         before.tasks > 0,
         "the attributed refusal below only probes anything if that task really is on this workspace's record: {before:?}",
@@ -511,7 +511,7 @@ async fn refused_source_requests_leave_the_workspace_untouched() {
     );
 
     assert_eq!(
-        deployment.workspace_work("source-record").await,
+        deployment.settled_workspace_work("source-record").await,
         before,
         "refused work must add no task row, no recorded query, and no attributed span — not even when the statement names a task that really is in this workspace",
     );
@@ -532,7 +532,7 @@ async fn refused_source_requests_leave_the_workspace_untouched() {
     execute_sql_in_task(&owner, "source-record", &task_id, "select 1")
         .await
         .expect("the owner runs a statement under their own task");
-    let recorded = deployment.workspace_work("source-record").await;
+    let recorded = deployment.settled_workspace_work("source-record").await;
     assert!(
         recorded.queries > before.queries && recorded.attributed_spans > before.attributed_spans,
         "permitted work must move the counters the refusals left where they were: {recorded:?} after {before:?}",

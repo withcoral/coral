@@ -1347,7 +1347,7 @@ mod tests {
             .expect("upsert source with secret metadata");
         setup.commit().await.expect("commit setup");
 
-        let mut stale_upsert = db.begin().await.expect("begin stale upsert");
+        let mut stale_upsert = db.begin_deferred().await.expect("begin stale upsert");
         stale_upsert
             .sources()
             .source_created_at(&workspace, &source_name)

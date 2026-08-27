@@ -221,6 +221,7 @@ pub(in crate::state::db) enum TraceSummaries {
     Table,
     TraceId,
     WorkspaceId,
+    StoreId,
     RootSpanId,
     Name,
     Query,

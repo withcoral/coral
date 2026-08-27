@@ -19,6 +19,23 @@ enum CoralTxBackend<'a> {
 impl<'a> CoralTx<'a> {
     pub(super) async fn begin(backend: &'a CoralDbBackend) -> Result<Self, DbError> {
         let backend = match backend {
+            // Every caller of `begin` opens a write transaction. Reserve the
+            // SQLite writer before taking a read snapshot so a background
+            // writer cannot make the later read-to-write upgrade fail with
+            // SQLITE_BUSY_SNAPSHOT. `begin_read_snapshot` remains deferred.
+            CoralDbBackend::Sqlite(db) => {
+                CoralTxBackend::Sqlite(db.pool.begin_with("BEGIN IMMEDIATE").await?)
+            }
+            CoralDbBackend::Postgres(db) => CoralTxBackend::Postgres(db.pool.begin().await?),
+        };
+        Ok(Self { backend })
+    }
+
+    /// Opens the old deferred transaction shape for tests that deliberately
+    /// manufacture a stale read-to-write race. Production writes use `begin`.
+    #[cfg(test)]
+    pub(super) async fn begin_deferred(backend: &'a CoralDbBackend) -> Result<Self, DbError> {
+        let backend = match backend {
             CoralDbBackend::Sqlite(db) => CoralTxBackend::Sqlite(db.pool.begin().await?),
             CoralDbBackend::Postgres(db) => CoralTxBackend::Postgres(db.pool.begin().await?),
         };

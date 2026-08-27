@@ -134,7 +134,7 @@ fn prepare_config_dir(temp_dir: &Path) -> Result<PathBuf> {
         .with_context(|| format!("creating {}", config_dir.display()))?;
     fs::write(
         config_dir.join("config.toml"),
-        "[credentials]\nstorage = \"file\"\n",
+        "[credentials]\nstorage = \"database\"\nencryption_key_source = \"file\"\n",
     )
     .with_context(|| format!("writing {}", config_dir.join("config.toml").display()))?;
     Ok(config_dir)

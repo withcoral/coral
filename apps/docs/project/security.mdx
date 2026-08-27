@@ -52,10 +52,10 @@ trust boundary:
   never written into `config.toml`.
 - Source secrets are encrypted before they are written to Coral's configured
   database. The database stores ciphertext, nonces, wrapped data-encryption
-  keys, and key identifiers. The local KEK comes from
+  keys, and key identifiers. SQLite can obtain its KEK from
   `[credentials].encryption_key_env`, the OS keychain, or
-  `credentials/encryption.key`, depending on
-  `[credentials].encryption_key_source`.
+  `credentials/encryption.key`. Postgres requires
+  `[credentials].encryption_key_env` so every server uses the same KEK.
 - Older file-backed and keychain-backed credential material is imported into
   encrypted database documents during startup when Coral can read and verify
   it. Coral retains the legacy material if the database write cannot be
@@ -164,6 +164,8 @@ you configure; it does not make an otherwise untrusted local agent safe.
 - Keep Postgres on a host and network path you trust. Remote Postgres URLs must
   use hostname-verified TLS; loopback Postgres without TLS is intended for
   local development and CI.
+- Set `[credentials].encryption_key_env` to the same KEK environment variable
+  on every Coral server before enabling Postgres.
 - Use `coral source list` or `coral source info <NAME>` to inspect whether a
   source has encrypted database-backed secret storage or a legacy keychain
   route.

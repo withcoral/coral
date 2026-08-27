@@ -162,7 +162,11 @@ impl<S> TraceSummariesRepo<'_, S>
 where
     S: DbSession,
 {
-    pub(crate) async fn upsert(&mut self, summary: &TraceSummaryRecord) -> Result<(), DbError> {
+    pub(crate) async fn upsert(
+        &mut self,
+        summary: &TraceSummaryRecord,
+        store_id: &str,
+    ) -> Result<(), DbError> {
         let row_count = row_count_to_db(summary)?;
         let workspace_id = summary_workspace_id(summary)?;
         let span_count = i64::from(summary.span_count);
@@ -171,6 +175,7 @@ where
             .columns([
                 TraceSummaries::TraceId,
                 TraceSummaries::WorkspaceId,
+                TraceSummaries::StoreId,
                 TraceSummaries::RootSpanId,
                 TraceSummaries::Name,
                 TraceSummaries::Query,
@@ -187,6 +192,7 @@ where
             .values_panic([
                 Expr::val(summary.trace_id.clone()),
                 Expr::val(workspace_id),
+                Expr::val(store_id.to_string()),
                 Expr::val(summary.root_span_id.clone()),
                 Expr::val(summary.name.clone()),
                 Expr::val(summary.query.clone()),
@@ -204,6 +210,7 @@ where
                 OnConflict::columns([TraceSummaries::WorkspaceId, TraceSummaries::TraceId])
                     .update_columns([
                         TraceSummaries::RootSpanId,
+                        TraceSummaries::StoreId,
                         TraceSummaries::Name,
                         TraceSummaries::Query,
                         TraceSummaries::Status,
@@ -225,6 +232,21 @@ where
             )
             .to_owned();
         self.session.execute(statement).await
+    }
+
+    pub(crate) async fn delete_if_owned(
+        &mut self,
+        workspace_id: &str,
+        trace_id: &str,
+        store_id: &str,
+    ) -> Result<bool, DbError> {
+        let statement = Query::delete()
+            .from_table(TraceSummaries::Table)
+            .and_where(Expr::col(TraceSummaries::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(TraceSummaries::TraceId).eq(trace_id))
+            .and_where(Expr::col(TraceSummaries::StoreId).eq(store_id))
+            .to_owned();
+        Ok(self.session.execute_rows_affected(statement).await? == 1)
     }
 }
 
@@ -494,11 +516,11 @@ mod tests {
         ensure_summary_workspace(&mut tx, first).await;
         ensure_summary_workspace(&mut tx, second).await;
         tx.trace_summaries()
-            .upsert(first)
+            .upsert(first, "repository-test-store")
             .await
             .expect("upsert first");
         tx.trace_summaries()
-            .upsert(second)
+            .upsert(second, "repository-test-store")
             .await
             .expect("upsert second");
         tx.commit().await.expect("commit trace summaries");
@@ -525,7 +547,7 @@ mod tests {
     async fn assert_update_and_failed_replacement(db: &CoralDb, updated: &TraceSummaryRecord) {
         let mut tx = db.begin().await.expect("begin update tx");
         tx.trace_summaries()
-            .upsert(updated)
+            .upsert(updated, "repository-test-store")
             .await
             .expect("upsert updated");
         let invalid = TraceSummaryRecord {
@@ -534,7 +556,9 @@ mod tests {
         };
         assert!(
             matches!(
-                tx.trace_summaries().upsert(&invalid).await,
+                tx.trace_summaries()
+                    .upsert(&invalid, "repository-test-store")
+                    .await,
                 Err(DbError::CorruptData(_))
             ),
             "invalid replacement should fail before deleting the existing summary"
@@ -550,6 +574,22 @@ mod tests {
                 .expect("get updated summary"),
             Some(updated.clone())
         );
+
+        let workspace_id = updated.workspace_id.as_deref().expect("updated workspace");
+        let mut tx = db.begin().await.expect("begin owner delete tx");
+        assert!(
+            !tx.trace_summaries()
+                .delete_if_owned(workspace_id, &updated.trace_id, "other-store")
+                .await
+                .expect("preserve foreign summary")
+        );
+        assert!(
+            tx.trace_summaries()
+                .delete_if_owned(workspace_id, &updated.trace_id, "repository-test-store")
+                .await
+                .expect("delete owned summary")
+        );
+        tx.commit().await.expect("commit owner delete");
     }
 
     async fn ensure_summary_workspace<S>(session: &mut S, summary: &TraceSummaryRecord)

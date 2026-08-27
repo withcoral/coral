@@ -331,7 +331,10 @@ mod tests {
             .expect("insert credential document row");
         session
             .trace_summaries()
-            .upsert(&migration_trace_summary(&workspace_id, &trace_id))
+            .upsert(
+                &migration_trace_summary(&workspace_id, &trace_id),
+                "migration-test-store",
+            )
             .await
             .expect("insert trace summary row");
         assert_eq!(

@@ -368,7 +368,11 @@ async fn replace_document(
     now: i64,
     barrier: &tokio::sync::Barrier,
 ) -> i64 {
-    let mut tx = db.begin().await.expect("begin document update");
+    // This contract deliberately lets both writers reach the repository's
+    // atomic version upsert together. Production write transactions reserve
+    // SQLite's writer before reads; use the deferred test seam to manufacture
+    // the repository-level race itself.
+    let mut tx = db.begin_deferred().await.expect("begin document update");
     barrier.wait().await;
     let version = tx
         .identity_spec_documents()

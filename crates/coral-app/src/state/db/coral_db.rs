@@ -25,6 +25,11 @@ impl CoralDb {
         CoralTx::begin(&self.backend).await
     }
 
+    #[cfg(test)]
+    pub(crate) async fn begin_deferred(&self) -> Result<CoralTx<'_>, DbError> {
+        CoralTx::begin_deferred(&self.backend).await
+    }
+
     /// Begin a transaction that keeps multi-query reads on one coherent snapshot.
     pub(crate) async fn begin_read_snapshot(&self) -> Result<CoralTx<'_>, DbError> {
         CoralTx::begin_read_snapshot(&self.backend).await
@@ -133,6 +138,35 @@ fn postgres_ssl_mode_authenticates_server(ssl_mode: PgSslMode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::postgres_connect_options;
+
+    #[tokio::test]
+    async fn sqlite_write_transactions_reserve_the_writer_before_reads() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database_file = temp.path().join("coral.db");
+        let first = super::open_sqlite(&database_file)
+            .await
+            .expect("open first sqlite pool");
+        let second = super::open_sqlite(&database_file)
+            .await
+            .expect("open second sqlite pool");
+
+        let first_tx = first.begin().await.expect("reserve first sqlite writer");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), second.begin())
+                .await
+                .is_err(),
+            "a second writer must wait before either transaction takes a stale read snapshot",
+        );
+        first_tx.rollback().await.expect("release first writer");
+
+        second
+            .begin()
+            .await
+            .expect("reserve writer after release")
+            .rollback()
+            .await
+            .expect("release second writer");
+    }
 
     #[cfg(unix)]
     #[tokio::test]

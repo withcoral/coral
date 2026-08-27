@@ -100,8 +100,8 @@ Encrypted database credential documents are protected by a key-encryption key
 
 ```toml
 [credentials]
+storage = "database"
 encryption_key_env = "CORAL_CREDENTIAL_KEK"
-encryption_key_source = "auto"
 ```
 
 If `encryption_key_env` is set, Coral reads that environment variable first.
@@ -110,20 +110,22 @@ of key material. Missing or invalid environment material fails closed; Coral
 does not fall back to another KEK source after an explicit env key is
 configured.
 
-If no env key is configured, `encryption_key_source` controls local KEK
-selection:
+For SQLite, if no env key is configured, `encryption_key_source` controls local
+KEK selection:
 
 | Value | Behavior |
 | ----- | -------- |
 | `auto` | Reuses an existing `credentials/encryption.key` file if one exists. Otherwise prefers the OS keychain. If keychain access is unavailable, logs a warning and creates the file key. |
-| `keychain` | Uses the OS keychain and fails closed when keychain access is unavailable. Keychains are per host, so shared-Postgres deployments must pre-seed every server with the same key material before use. |
+| `keychain` | Uses the OS keychain and fails closed when keychain access is unavailable. |
 | `file` | Uses `credentials/encryption.key` under the local state directory. |
 | `vault` | Reserved for external vault-backed KEKs and currently fails closed because it is not implemented. |
 
-For shared Postgres, every Coral server that can read or write encrypted
-credential documents must use the same KEK before Postgres is enabled. If two
-servers create different auto-generated local keys, each server can create
-documents the other cannot decrypt.
+Postgres requires `encryption_key_env`; host-local keychain and file KEKs are
+rejected at startup. Every Coral server that can read or write encrypted
+credential documents must set the named environment variable to the same KEK.
+Omit `storage` or set it to `database`; legacy `file` and `keychain` storage
+preferences remain readable for startup import, but are rejected for new
+credential writes after database-backed state is active.
 
 ## Server
 

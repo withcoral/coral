@@ -246,7 +246,7 @@ async fn workspace_access_read_harness_seats_two_people_around_one_workspace() {
     // all: without this, an emptiness assertion would pass on a blind observer.
     assert!(
         deployment
-            .workspace_work("read-harness")
+            .settled_workspace_work("read-harness")
             .await
             .attributed_spans
             > 0,
@@ -366,7 +366,7 @@ async fn refused_reads_leave_the_workspace_no_record_of_them() {
         "every read surface must refuse before it does anything: {refused:?}",
     );
     assert_eq!(
-        deployment.workspace_work("read-record").await,
+        deployment.settled_workspace_work("read-record").await,
         WorkspaceWork::default(),
         "refused work must create no task row, no recorded query, and no attributed span",
     );
@@ -377,7 +377,7 @@ async fn refused_reads_leave_the_workspace_no_record_of_them() {
     execute_sql_in_task(&owner, "read-record", &task_id, "select 1")
         .await
         .expect("the owner runs a statement under it");
-    let recorded = deployment.workspace_work("read-record").await;
+    let recorded = deployment.settled_workspace_work("read-record").await;
     assert!(
         recorded.tasks > 0 && recorded.queries > 0 && recorded.attributed_spans > 0,
         "permitted work must move every counter the refusals left at zero: {recorded:?}",
