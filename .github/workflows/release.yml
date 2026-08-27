@@ -113,9 +113,21 @@ jobs:
         shell: pwsh
         env:
           TARGET: ${{ matrix.target }}
+        # Strict mode, because GitHub's pwsh shell only propagates the LAST
+        # command's exit code: a failing command followed by a passing one
+        # reads as a green step. That masking hid the fresh-install workspace
+        # regression in validate's smoke until this workflow — where the same
+        # command happens to come last — failed the v0.15.0 tag build.
+        #
+        # The workspace is created first because that is what a fresh install
+        # requires since workspace access control: `source discover` on a
+        # stateless machine exits 1 by design, telling the user to create one.
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $coral = "target\$env:TARGET\release\coral.exe"
           & $coral --version
+          & $coral workspace create smoke
           & $coral source discover
 
       - name: Package Linux

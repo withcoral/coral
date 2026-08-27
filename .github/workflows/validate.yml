@@ -284,8 +284,17 @@ jobs:
 
       - name: Smoke CLI
         shell: pwsh
+        # Strict mode: without it only the final command's exit code decides
+        # the step, and this step passed for days while `source discover` was
+        # failing on every run — the trailing completion call reset the exit
+        # code. The workspace is created first because a fresh install has
+        # none since workspace access control, and `source discover` without
+        # one exits 1 by design.
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           .\target\debug\coral.exe --version
+          .\target\debug\coral.exe workspace create smoke
           .\target\debug\coral.exe source discover
           .\target\debug\coral.exe completion powershell > $null
 
