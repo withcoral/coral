@@ -2026,6 +2026,11 @@ mod tests {
             async move {
                 let db = crate::state::db::open_test_database(&layout).await?;
                 crate::state::db::run_state_migrations(&db, &config_store, &layout).await?;
+                let mut tx = db.begin().await?;
+                tx.workspaces()
+                    .ensure(WorkspaceName::default().as_str(), 1)
+                    .await?;
+                tx.commit().await?;
                 Ok(db)
             }
         })
