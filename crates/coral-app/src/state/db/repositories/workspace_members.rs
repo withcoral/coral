@@ -305,7 +305,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
     async fn workspace_members_repository_contract_on_postgres() {
         let Some(db) = open_postgres().await else {
             return;
@@ -320,7 +319,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
     async fn workspace_members_repository_add_race_contract_on_postgres() {
         let Some(db) = open_postgres().await else {
             return;
@@ -335,7 +333,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
     async fn local_ownership_repository_contract_on_postgres() {
         let Some(db) = open_postgres().await else {
             return;

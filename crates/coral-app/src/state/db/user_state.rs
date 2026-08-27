@@ -177,7 +177,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
     async fn login_provisioning_contract_on_postgres() {
         let Some(db) = open_postgres().await else {
             return;

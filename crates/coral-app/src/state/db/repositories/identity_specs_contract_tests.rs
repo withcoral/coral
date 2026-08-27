@@ -51,7 +51,6 @@ async fn identity_spec_contract_preserves_preexisting_reserved_name_workspace() 
 }
 
 #[tokio::test]
-#[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
 async fn identity_spec_persistence_contract_on_postgres() {
     let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
         .expect("read CORAL_TEST_POSTGRES_URL")

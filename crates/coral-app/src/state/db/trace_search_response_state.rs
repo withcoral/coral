@@ -333,7 +333,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn trace_search_response_repository_round_trips_against_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
@@ -457,7 +456,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "set CORAL_TEST_POSTGRES_URL to verify prune/delete parent locking on Postgres"]
     async fn trace_search_response_repository_round_trips_against_postgres_with_prune_delete_locking()
      {
         let Some(postgres_url) = postgres_test_url() else {

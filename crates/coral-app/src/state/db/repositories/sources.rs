@@ -567,9 +567,10 @@ mod tests {
     use sqlx::FromRow;
     use sqlx::postgres::PgRow;
     use sqlx::sqlite::SqliteRow;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
     use tokio::sync::Barrier;
 
+    use crate::bootstrap;
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
@@ -693,12 +694,8 @@ mod tests {
 
     #[tokio::test]
     async fn source_repository_round_trips_across_configured_backends() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let db = open_sqlite(&layout).await;
-
-        assert_source_repository_round_trip(&db).await;
-        if let Some(db) = open_configured_postgres().await {
+        let (_temp, databases) = configured_databases().await;
+        for db in databases {
             assert_source_repository_round_trip(&db).await;
         }
     }
@@ -811,26 +808,28 @@ mod tests {
 
     #[tokio::test]
     async fn source_repository_rejects_source_without_workspace_across_configured_backends() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let db = open_sqlite(&layout).await;
-
-        assert_source_repository_rejects_source_without_workspace(&db).await;
-        if let Some(db) = open_configured_postgres().await {
+        let (_temp, databases) = configured_databases().await;
+        for db in databases {
             assert_source_repository_rejects_source_without_workspace(&db).await;
         }
     }
 
     #[tokio::test]
     async fn source_repository_rejects_invalid_persisted_source_name_across_configured_backends() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let db = open_sqlite(&layout).await;
-
-        assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
-        if let Some(db) = open_configured_postgres().await {
+        let (_temp, databases) = configured_databases().await;
+        for db in databases {
             assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
         }
+    }
+
+    async fn configured_databases() -> (TempDir, Vec<CoralDb>) {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let mut databases = vec![open_sqlite(&layout).await];
+        if let Some(db) = open_configured_postgres().await {
+            databases.push(db);
+        }
+        (temp, databases)
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
@@ -1216,13 +1215,9 @@ mod tests {
         WorkspaceName::parse(&format!("source-repository-{nanos}")).expect("workspace name")
     }
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "The optional Postgres branch of the shared repository harness is gated by this CI/test-only variable."
-    )]
     fn postgres_test_url() -> Option<String> {
-        std::env::var("CORAL_TEST_POSTGRES_URL")
-            .ok()
+        bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+            .expect("read CORAL_TEST_POSTGRES_URL")
             .filter(|value| !value.is_empty())
     }
 }
