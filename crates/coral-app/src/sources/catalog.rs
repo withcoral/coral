@@ -65,8 +65,10 @@ pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceMani
     })
 }
 
-/// Resolve the effective installed manifest and verify it still matches the
-/// installed source identity in app state.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "removed by the v4 runtime follow-up")
+)]
 pub(crate) fn resolve_installed_manifest(
     workspace_name: &WorkspaceName,
     source: &InstalledSource,
