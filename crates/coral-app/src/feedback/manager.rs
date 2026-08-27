@@ -181,6 +181,7 @@ fn feedback_record(report: &FeedbackReport) -> Result<FeedbackReportRecord, AppE
         trying_to_do: report.trying_to_do.clone(),
         tried: report.tried.clone(),
         stuck: report.stuck.clone(),
+        task_id: report.task_id.map(|task_id| task_id.to_string()),
         publish_status: None,
         publish_error: None,
         published_at_unix_nanos: None,
