@@ -328,15 +328,10 @@ async fn list_database_traces(
                     valid_seen = valid_seen.saturating_add(1);
                     retained_rows += 1;
                 }
-                Err(TraceManagerError::NotFound { .. }) => {
-                    if let Err(error) = delete_trace_summary(db, &summary).await {
-                        retained_rows += 1;
-                        tracing::warn!(
-                            trace_id = %summary.trace_id,
-                            "failed to prune stale database trace summary: {error}"
-                        );
-                    }
-                }
+                // Raw spans are host-local even when the database is shared.
+                // A local miss therefore cannot prove that the summary is
+                // stale: another server may still own the trace detail.
+                Err(TraceManagerError::NotFound { .. }) => retained_rows += 1,
                 Err(error) => return Err(trace_manager_status(error)),
             }
             if summaries.len() == limit {
@@ -346,18 +341,6 @@ async fn list_database_traces(
         db_offset = db_offset.saturating_add(retained_rows);
     }
     Ok(summaries)
-}
-
-async fn delete_trace_summary(db: &CoralDb, summary: &TraceSummaryRecord) -> Result<(), DbError> {
-    let Some(workspace_id) = summary.workspace_id.as_deref() else {
-        return Ok(());
-    };
-    let mut tx = db.begin().await?;
-    tx.trace_summaries()
-        .delete(workspace_id, &summary.trace_id)
-        .await?;
-    tx.commit().await?;
-    Ok(())
 }
 
 fn normalize_page_size(page_size: i32) -> usize {
@@ -1204,7 +1187,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exported_summary_is_visible_and_pruned_without_retained_details() {
+    async fn exported_summary_is_hidden_but_retained_without_local_details() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = Arc::new(open_sqlite(&layout).await);
@@ -1270,13 +1253,16 @@ mod tests {
 
         assert!(response.traces.is_empty());
         let mut session = db.as_ref();
-        assert!(
+        assert_eq!(
             session
                 .trace_summaries()
                 .list(10, 0)
                 .await
                 .expect("list trace summaries")
-                .is_empty()
+                .into_iter()
+                .map(|summary| summary.trace_id)
+                .collect::<Vec<_>>(),
+            vec!["trace-1"]
         );
     }
 
