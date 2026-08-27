@@ -980,48 +980,45 @@ mod tests {
         }]
     }
 
-    /// Takes the status `rpc` refused with, and panics if it answered instead.
-    ///
-    /// For the two streaming installs that panic is itself part of the claim:
-    /// a status can only come back where no response did, so a refused caller
-    /// was never handed an import stream to read from.
-    fn status<T>(result: Result<T, Status>, rpc: &str) -> Status {
-        result.err().unwrap_or_else(|| {
-            panic!("{rpc} answered; every request here is one some layer must refuse")
-        })
+    fn outcome_code<T>(result: Result<T, Status>, _rpc: &str) -> Option<Code> {
+        result.err().map(|status| status.code())
     }
 
-    /// Calls every source RPC as `principal` and returns what each answered,
-    /// in the order the authorization matrix lists them.
-    ///
-    /// Each request is one the source work itself rejects — an absent source
-    /// name, an empty manifest, an OAuth retrieval with no method index — over
-    /// state whose config file cannot be parsed. So the caller who is let
-    /// through is told what is wrong with the request or the state, and the
-    /// caller who is not never gets that far.
-    async fn every_source_rpc(service: &SourceService, principal: &Principal) -> Vec<Status> {
+    /// Calls every source RPC as a principal that must be refused by the
+    /// authorization gate and returns the statuses in matrix order.
+    async fn every_source_rpc(service: &SourceService, principal: &Principal) -> Vec<Option<Code>> {
+        let mut statuses = vec![outcome_code(
+            service
+                .discover_sources(request(
+                    DiscoverSourcesRequest {
+                        workspace: Some(workspace()),
+                    },
+                    principal,
+                ))
+                .await,
+            "DiscoverSources",
+        )];
+        statuses.extend(source_rpcs_after_discovery(service, principal).await);
+        statuses
+    }
+
+    async fn source_rpcs_after_discovery(
+        service: &SourceService,
+        principal: &Principal,
+    ) -> Vec<Option<Code>> {
         let mut statuses = source_lookup_rpcs(service, principal).await;
         statuses.extend(source_install_rpcs(service, principal).await);
         statuses.extend(source_removal_rpcs(service, principal).await);
         statuses
     }
 
-    /// Discovery and configuration reads: the five that answer with what a
-    /// source is or would be configured with.
-    async fn source_lookup_rpcs(service: &SourceService, principal: &Principal) -> Vec<Status> {
+    /// Configuration reads after database-backed discovery has completed.
+    async fn source_lookup_rpcs(
+        service: &SourceService,
+        principal: &Principal,
+    ) -> Vec<Option<Code>> {
         vec![
-            status(
-                service
-                    .discover_sources(request(
-                        DiscoverSourcesRequest {
-                            workspace: Some(workspace()),
-                        },
-                        principal,
-                    ))
-                    .await,
-                "DiscoverSources",
-            ),
-            status(
+            outcome_code(
                 service
                     .describe_source_manifest(request(
                         DescribeSourceManifestRequest {
@@ -1033,7 +1030,7 @@ mod tests {
                     .await,
                 "DescribeSourceManifest",
             ),
-            status(
+            outcome_code(
                 service
                     .list_sources(request(
                         ListSourcesRequest {
@@ -1044,7 +1041,7 @@ mod tests {
                     .await,
                 "ListSources",
             ),
-            status(
+            outcome_code(
                 service
                     .get_source(request(
                         GetSourceRequest {
@@ -1056,7 +1053,7 @@ mod tests {
                     .await,
                 "GetSource",
             ),
-            status(
+            outcome_code(
                 service
                     .get_source_info(request(
                         GetSourceInfoRequest {
@@ -1072,9 +1069,12 @@ mod tests {
     }
 
     /// The three install paths, each of which takes credential material.
-    async fn source_install_rpcs(service: &SourceService, principal: &Principal) -> Vec<Status> {
+    async fn source_install_rpcs(
+        service: &SourceService,
+        principal: &Principal,
+    ) -> Vec<Option<Code>> {
         vec![
-            status(
+            outcome_code(
                 service
                     .create_bundled_source(request(
                         CreateBundledSourceRequest {
@@ -1088,7 +1088,7 @@ mod tests {
                     .await,
                 "CreateBundledSource",
             ),
-            status(
+            outcome_code(
                 service
                     .create_bundled_source_with_o_auth(request(
                         CreateBundledSourceWithOAuthRequest {
@@ -1103,7 +1103,7 @@ mod tests {
                     .await,
                 "CreateBundledSourceWithOAuth",
             ),
-            status(
+            outcome_code(
                 service
                     .import_source(request(
                         ImportSourceRequest {
@@ -1123,9 +1123,12 @@ mod tests {
 
     /// Removal and revalidation, which reach installed state and its
     /// credentials without adding any.
-    async fn source_removal_rpcs(service: &SourceService, principal: &Principal) -> Vec<Status> {
+    async fn source_removal_rpcs(
+        service: &SourceService,
+        principal: &Principal,
+    ) -> Vec<Option<Code>> {
         vec![
-            status(
+            outcome_code(
                 service
                     .delete_source(request(
                         DeleteSourceRequest {
@@ -1137,7 +1140,7 @@ mod tests {
                     .await,
                 "DeleteSource",
             ),
-            status(
+            outcome_code(
                 service
                     .validate_source(request(
                         ValidateSourceRequest {
@@ -1158,14 +1161,15 @@ mod tests {
     /// handed a redacted view, and a non-member is told nothing.
     ///
     /// The refusals are proved to be absences rather than error codes. The
-    /// config file on disk is unparseable, so any read of installed state
-    /// chokes on it, and the owner does choke on it: the four discovery and
-    /// lookup calls that read installed state, the delete, and the validate
-    /// all answer `Internal` from that read, while the manifest description
-    /// and the three install paths answer `InvalidArgument` from the empty
-    /// manifest, the bundled catalog, and the OAuth conversion they reach
-    /// first. Every refused caller answers `PermissionDenied` or `NotFound`
-    /// instead, and leaves the file with the bytes it started with.
+    /// config file on disk is unparseable, so any remaining read of installed
+    /// state chokes on it, and the owner does choke on it: the three lookup
+    /// calls that still read the file, the delete, and the validate all answer
+    /// `Internal` from that read, while database-backed discovery succeeds.
+    /// The manifest description and the three install paths answer
+    /// `InvalidArgument` from the empty manifest, the bundled catalog, and the
+    /// OAuth conversion they reach first. Every refused caller answers
+    /// `PermissionDenied` or `NotFound` instead, and leaves the file with the
+    /// bytes it started with.
     #[tokio::test]
     async fn source_configuration_reaches_only_workspace_owners() {
         let fixture = fixture().await;
@@ -1189,40 +1193,29 @@ mod tests {
             seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
         std::fs::write(&fixture.config_file, UNPARSEABLE_CONFIG).expect("poison the app config");
 
-        for status in every_source_rpc(&fixture.service, &member).await {
-            assert_eq!(
-                status.code(),
-                Code::PermissionDenied,
-                "a member reads and changes no source configuration: {}",
-                status.message()
-            );
-        }
-        for status in every_source_rpc(&fixture.service, &outsider).await {
-            assert_eq!(
-                status.code(),
-                Code::NotFound,
-                "a non-member learns nothing about the workspace: {}",
-                status.message()
-            );
-        }
-
         assert_eq!(
-            every_source_rpc(&fixture.service, &owner)
-                .await
-                .iter()
-                .map(Status::code)
-                .collect::<Vec<_>>(),
+            every_source_rpc(&fixture.service, &member).await,
+            vec![Some(Code::PermissionDenied); 10],
+            "a member reads and changes no source configuration"
+        );
+        assert_eq!(
+            every_source_rpc(&fixture.service, &outsider).await,
+            vec![Some(Code::NotFound); 10],
+            "a non-member learns nothing about the workspace"
+        );
+        assert_eq!(
+            every_source_rpc(&fixture.service, &owner).await,
             vec![
-                Code::Internal,
-                Code::InvalidArgument,
-                Code::Internal,
-                Code::Internal,
-                Code::Internal,
-                Code::InvalidArgument,
-                Code::InvalidArgument,
-                Code::InvalidArgument,
-                Code::Internal,
-                Code::Internal,
+                None,
+                Some(Code::InvalidArgument),
+                None,
+                Some(Code::NotFound),
+                Some(Code::NotFound),
+                Some(Code::InvalidArgument),
+                Some(Code::InvalidArgument),
+                Some(Code::InvalidArgument),
+                Some(Code::Internal),
+                Some(Code::Internal),
             ],
             "the owner must be stopped by the state or the request, never by the gate"
         );
