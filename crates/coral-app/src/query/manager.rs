@@ -1520,7 +1520,7 @@ mod tests {
     use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
-    use crate::state::db::{CoralDb, open_test_database, run_state_migrations};
+    use crate::state::db::{CoralDb, DbRepos, open_test_database, run_state_migrations};
     use crate::task::activity::TaskActivityRecorder;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
@@ -1609,21 +1609,8 @@ mod tests {
         }
     }
 
-    async fn persist_source(
-        db: &CoralDb,
-        workspace_name: &WorkspaceName,
-        source: &InstalledSource,
-    ) {
-        let mut tx = db.begin().await.expect("begin source transaction");
-        tx.sources()
-            .upsert_source(workspace_name, source, 1)
-            .await
-            .expect("persist source");
-        tx.commit().await.expect("commit source transaction");
-    }
-
     async fn install_keychain_github_source(db: &CoralDb, workspace_name: &WorkspaceName) {
-        persist_source(
+        upsert_test_source(
             db,
             workspace_name,
             &InstalledSource {
@@ -1743,6 +1730,23 @@ mod tests {
     /// two identical messages into different ones.
     fn normalize(message: &str, name: &str) -> String {
         message.replace(&format!("'{name}'"), "'<workspace>'")
+    }
+
+    async fn upsert_test_source(
+        db: &CoralDb,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) {
+        let mut tx = db.begin().await.expect("begin source seed transaction");
+        tx.workspaces()
+            .ensure(workspace_name.as_str(), 1)
+            .await
+            .expect("ensure source seed workspace");
+        tx.sources()
+            .upsert_source(workspace_name, source, 1)
+            .await
+            .expect("seed source catalog");
+        tx.commit().await.expect("commit source seed transaction");
     }
 
     fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
@@ -2670,7 +2674,7 @@ tables:
             credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         };
-        persist_source(&fixture.db, &workspace_name, &source).await;
+        upsert_test_source(&fixture.db, &workspace_name, &source).await;
         fixture
             .manager
             .credential_manager
@@ -3522,7 +3526,7 @@ surface:
 ",
         )
         .expect("write manifest");
-        persist_source(
+        upsert_test_source(
             db,
             workspace_name,
             &InstalledSource {
@@ -3572,7 +3576,7 @@ tables:
 "#,
         )
         .expect("write manifest");
-        persist_source(
+        upsert_test_source(
             db,
             workspace_name,
             &InstalledSource {
@@ -3967,7 +3971,7 @@ select 1 as value
             credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Bundled,
         };
-        persist_source(&fixture.db, &workspace_name, &installed_source).await;
+        upsert_test_source(&fixture.db, &workspace_name, &installed_source).await;
         fixture
             .manager
             .credential_manager
@@ -4089,7 +4093,7 @@ tables:
 ",
         )
         .expect("write manifest");
-        persist_source(&fixture.db, &workspace, &installed_source).await;
+        upsert_test_source(&fixture.db, &workspace, &installed_source).await;
         fixture
             .manager
             .credential_manager
