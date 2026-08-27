@@ -5,9 +5,16 @@ import { useLocation, useNavigate, useOutletContext } from 'react-router'
 import { Button, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 import { EmptyPage } from '@/components/empty-page'
-import { QueryDetailSummary } from '@/components/query-detail'
+import {
+  QueryDetailSummary,
+  SearchResponseResults,
+  mapTraceSearchResponse,
+  searchResultsTabLabel,
+  type QueryDetailStat,
+} from '@/components/query-detail'
 import { TraceStatus } from '@/generated/coral/v1/traces_pb'
 import { formatDuration, formatDurationFromNanos, nanosToMs } from '@/utils/format-time'
 
@@ -17,9 +24,12 @@ import { traceLocation } from './trace-location'
 import type { TracesOutletContext } from './traces-index'
 import { routePath } from '@/routing/routemap'
 import { useTimelineTree, type TimelineRow } from './use-timeline-tree'
+import { timelineShortcutsEnabled, traceDetailPolicy } from './trace-detail-policy'
 import {
+  formatInvocation,
   formatRows,
   isHttpSpan,
+  isSearchOperation,
   operationCodeLanguage,
   operationDetailLabel,
   operationDetailText,
@@ -33,7 +43,7 @@ import {
   type TraceSummaryData,
 } from './trace-utils'
 
-export type DetailTab = 'timeline' | 'api'
+export type DetailTab = 'results' | 'timeline' | 'api'
 type WaterfallTone = 'query' | 'http' | 'span' | 'error'
 
 const WATERFALL_LABEL_PADDING_INLINE_PX = 10
@@ -59,9 +69,17 @@ function focusSpanRow(spanId: string) {
 }
 
 export interface ExtraDetailTab {
+  description?: string
   id: string
   label: string
   content: React.ReactNode
+  show?: boolean
+}
+
+interface DetailTabPresentation {
+  description?: string
+  id: string
+  label: string
   show?: boolean
 }
 
@@ -358,6 +376,7 @@ function TimelineWaterfall({
   expandedHttpSpanId,
   onExpandedHttpSpanIdChange,
   onNavigableSpanIdsChange,
+  proMode,
   spans,
   summary,
 }: {
@@ -366,10 +385,10 @@ function TimelineWaterfall({
     spanId: string | null | ((current: string | null) => string | null),
   ) => void
   onNavigableSpanIdsChange: (spanIds: string[]) => void
+  proMode: boolean
   spans: TraceSpanData[]
   summary?: TraceSummaryData
 }) {
-  const proMode = useProMode()
   const timelineSpans = useMemo(
     () => (proMode ? spans : spans.filter(isHttpSpan)),
     [proMode, spans],
@@ -621,33 +640,85 @@ function TimelineWaterfall({
   )
 }
 
+function tabDomId(tabId: string): string {
+  return tabId.replace(/[^a-zA-Z0-9_-]/g, '-')
+}
+
 function DetailTabs({
   activeTab,
-  extraTabs,
+  idPrefix,
   onTab,
+  tabs,
 }: {
   activeTab: string
-  extraTabs?: ExtraDetailTab[]
+  idPrefix: string
   onTab: (tab: string) => void
+  tabs: DetailTabPresentation[]
 }) {
-  const tabs = [
-    { id: 'timeline', label: 'Trace', show: true },
-    ...(extraTabs ?? []).map((tab) => ({ id: tab.id, label: tab.label, show: tab.show ?? true })),
-  ]
+  const visibleTabs = tabs.filter((tab) => tab.show ?? true)
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+
+    const tabButtons = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    )
+    const currentIndex = tabButtons.indexOf(document.activeElement as HTMLButtonElement)
+    if (currentIndex < 0) return
+
+    let nextIndex = currentIndex
+    if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + visibleTabs.length) % visibleTabs.length
+    } else if (event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % visibleTabs.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else if (event.key === 'End') {
+      nextIndex = visibleTabs.length - 1
+    }
+
+    event.preventDefault()
+    onTab(visibleTabs[nextIndex].id)
+    tabButtons[nextIndex].focus()
+  }
+
   return (
-    <div className={s.tabList}>
-      {tabs
-        .filter((tab) => tab.show)
-        .map((tab) => (
+    <div
+      aria-label="Operation details"
+      className={s.tabList}
+      onKeyDown={handleKeyDown}
+      role="tablist"
+    >
+      {visibleTabs.map((tab) => (
+        <div className={s.tabItem} key={tab.id} role="presentation">
           <button
+            aria-controls={`${idPrefix}-panel-${tabDomId(tab.id)}`}
+            aria-describedby={
+              tab.description ? `${idPrefix}-description-${tabDomId(tab.id)}` : undefined
+            }
+            aria-selected={activeTab === tab.id}
             className={classNames(s.tabTrigger, { [s.tabTriggerActive]: activeTab === tab.id })}
-            key={tab.id}
+            id={`${idPrefix}-tab-${tabDomId(tab.id)}`}
             onClick={() => onTab(tab.id)}
+            role="tab"
+            tabIndex={activeTab === tab.id ? 0 : -1}
             type="button"
           >
             <Typography.BodySmallStrong as="span">{tab.label}</Typography.BodySmallStrong>
           </button>
-        ))}
+          {tab.description ? (
+            <>
+              <Tooltip content={tab.description} side="bottom">
+                <span aria-hidden="true" className={s.tabInfo}>
+                  <Icon name="Info" size="16" />
+                </span>
+              </Tooltip>
+              <span className={s.visuallyHidden} id={`${idPrefix}-description-${tabDomId(tab.id)}`}>
+                {tab.description}
+              </span>
+            </>
+          ) : null}
+        </div>
+      ))}
     </div>
   )
 }
@@ -673,13 +744,30 @@ function TraceDetailContent({
   onSelectTrace?: (traceId: string) => void
   traceId: string
 }) {
-  const [activeTab, setActiveTab] = useState<string>('timeline')
+  const proMode = useProMode()
+  const summary = detail?.summary ?? initialSummary
+  const searchResultsView = useMemo(
+    () => mapTraceSearchResponse(detail?.searchResponse),
+    [detail?.searchResponse],
+  )
+  const searchOperation = Boolean(summary && isSearchOperation(summary))
+  const showSearchDiagnosticSpans = Boolean(
+    searchOperation &&
+    (summary?.status === TraceStatus.ERROR ||
+      (detail !== null && searchResultsView.state !== 'available')),
+  )
+  const showSearchTrace = Boolean(
+    searchOperation && (proMode || showSearchDiagnosticSpans || detail?.spans.some(isHttpSpan)),
+  )
+  const detailPolicy = summary
+    ? traceDetailPolicy(summary, searchResultsTabLabel(searchResultsView), showSearchTrace)
+    : null
+  const defaultTab = detailPolicy?.defaultTab ?? 'timeline'
+  const [activeTab, setActiveTab] = useState<string>(() => defaultTab)
+  const activeTabChangedByUser = useRef(false)
   const [expandedHttpSpanId, setExpandedHttpSpanId] = useState<string | null>(null)
   const [navigableSpanIds, setNavigableSpanIds] = useState<string[]>([])
-  useEffect(() => {
-    setActiveTab('timeline')
-    setExpandedHttpSpanId(null)
-  }, [traceId])
+  const tabIdPrefix = `trace-detail-${tabDomId(traceId)}`
 
   const selectAdjacentSpan = useCallback(
     (direction: -1 | 1) => {
@@ -713,14 +801,14 @@ function TraceDetailContent({
 
   const handleEscapeShortcut = useCallback(
     (event: KeyboardEvent) => {
-      if (expandedHttpSpanId) {
+      if (activeTab === 'timeline' && expandedHttpSpanId) {
         event.preventDefault()
         setExpandedHttpSpanId(null)
         return
       }
       onClose()
     },
-    [expandedHttpSpanId, onClose],
+    [activeTab, expandedHttpSpanId, onClose],
   )
 
   const focusFirstSpan = useCallback(
@@ -762,13 +850,24 @@ function TraceDetailContent({
     () => handleSpanArrowShortcut(1),
     [handleSpanArrowShortcut],
   )
-  const summary = detail?.summary ?? initialSummary
   const httpSpans = useMemo(() => detail?.spans.filter(isHttpSpan) ?? [], [detail?.spans])
   const sources = useMemo(() => sourceNames(detail?.spans ?? []), [detail?.spans])
   const resolvedExtraTabs = useMemo(
     () => (detail ? (extraTabs?.(detail) ?? []) : []),
     [detail, extraTabs],
   )
+  const activeTabAvailable = Boolean(
+    detailPolicy?.primaryTabs.some((tab) => tab.id === activeTab) ||
+    resolvedExtraTabs.some((tab) => (tab.show ?? true) && tab.id === activeTab),
+  )
+  useEffect(() => {
+    if (!activeTabAvailable) {
+      activeTabChangedByUser.current = false
+      setActiveTab(defaultTab)
+      return
+    }
+    if (!activeTabChangedByUser.current) setActiveTab(defaultTab)
+  }, [activeTabAvailable, defaultTab])
 
   if (loadError)
     return (
@@ -796,7 +895,48 @@ function TraceDetailContent({
     )
   }
 
-  const activeExtraTab = resolvedExtraTabs.find((tab) => tab.id === activeTab)
+  const primaryTabs = detailPolicy?.primaryTabs ?? [{ id: 'timeline', label: 'Trace' }]
+  const tabs: DetailTabPresentation[] = [
+    ...primaryTabs,
+    ...resolvedExtraTabs.map((tab) => ({
+      description: tab.description,
+      id: tab.id,
+      label: tab.label,
+      show: tab.show,
+    })),
+  ]
+  const visibleTabs = tabs.filter((tab) => tab.show ?? true)
+  const activePanelTab =
+    visibleTabs.find((tab) => tab.id === activeTab) ??
+    visibleTabs.find((tab) => tab.id === defaultTab) ??
+    visibleTabs[0]
+  const showTabList = !isSearchOperation(summary) || visibleTabs.length > 1
+  const sharedTraceStats: QueryDetailStat[] = [
+    { label: 'Duration', value: formatDurationFromNanos(summary.durationNanos) },
+    { label: 'Rows', value: formatRows(summary) },
+    { label: 'Table scans', value: detail ? sources.length : '—' },
+    { label: 'API requests', value: detail ? httpSpans.length : '—' },
+  ]
+  const searchTraceStats: QueryDetailStat[] = [
+    { label: 'Duration', value: formatDurationFromNanos(summary.durationNanos) },
+    { label: 'Invocation', value: formatInvocation(summary.invocationKind) },
+    { label: 'Table scans', value: detail ? sources.length : '—' },
+    { label: 'API requests', value: detail ? httpSpans.length : '—' },
+  ]
+  const handleTab = (nextTab: string) => {
+    activeTabChangedByUser.current = true
+    setActiveTab(nextTab)
+  }
+  const timelineWaterfall = detail ? (
+    <TimelineWaterfall
+      expandedHttpSpanId={expandedHttpSpanId}
+      onExpandedHttpSpanIdChange={setExpandedHttpSpanId}
+      onNavigableSpanIdsChange={setNavigableSpanIds}
+      proMode={proMode || showSearchDiagnosticSpans}
+      spans={detail.spans}
+      summary={summary}
+    />
+  ) : null
 
   return (
     <QueryDetailSummary
@@ -836,7 +976,11 @@ function TraceDetailContent({
           <KeyboardShortcut
             handler={handleEscapeShortcut}
             shortcut="Escape"
-            tooltipContent={expandedHttpSpanId ? 'Close span inspector' : 'Close operation details'}
+            tooltipContent={
+              activeTab === 'timeline' && expandedHttpSpanId
+                ? 'Close span inspector'
+                : 'Close operation details'
+            }
             tooltipSide="bottom"
           >
             <Button.IconButton
@@ -850,18 +994,15 @@ function TraceDetailContent({
         </>
       }
       shortcuts={
-        <>
-          <KeyboardShortcut handler={handlePreviousSpanShortcut} shortcut="ArrowUp" />
-          <KeyboardShortcut handler={handleNextSpanShortcut} shortcut="ArrowDown" />
-        </>
+        timelineShortcutsEnabled(summary, activeTab) ? (
+          <>
+            <KeyboardShortcut handler={handlePreviousSpanShortcut} shortcut="ArrowUp" />
+            <KeyboardShortcut handler={handleNextSpanShortcut} shortcut="ArrowDown" />
+          </>
+        ) : undefined
       }
       sql={operationDetailText(summary)}
-      stats={[
-        { label: 'Duration', value: formatDurationFromNanos(summary.durationNanos) },
-        { label: 'Rows', value: formatRows(summary) },
-        { label: 'Table scans', value: detail ? sources.length : '—' },
-        { label: 'API requests', value: detail ? httpSpans.length : '—' },
-      ]}
+      stats={isSearchOperation(summary) ? searchTraceStats : sharedTraceStats}
       statusLabel={statusLabel(summary.status)}
       statusTone={statusTone(summary.status)}
       title={
@@ -880,20 +1021,38 @@ function TraceDetailContent({
         </>
       }
     >
-      <DetailTabs activeTab={activeTab} extraTabs={resolvedExtraTabs} onTab={setActiveTab} />
-      <div className={s.tabContent}>
-        {activeTab === 'timeline' &&
-          (detail ? (
-            <TimelineWaterfall
-              expandedHttpSpanId={expandedHttpSpanId}
-              onExpandedHttpSpanIdChange={setExpandedHttpSpanId}
-              onNavigableSpanIdsChange={setNavigableSpanIds}
-              spans={detail.spans}
-              summary={summary}
-            />
-          ) : null)}
-        {activeExtraTab?.content}
-      </div>
+      {showTabList ? (
+        <DetailTabs
+          activeTab={activePanelTab?.id ?? activeTab}
+          idPrefix={tabIdPrefix}
+          onTab={handleTab}
+          tabs={tabs}
+        />
+      ) : null}
+      {visibleTabs.map((tab) => {
+        const isActive = tab.id === activePanelTab?.id
+        const extraTab = resolvedExtraTabs.find((candidate) => candidate.id === tab.id)
+
+        return (
+          <div
+            aria-label={showTabList ? undefined : tab.label}
+            aria-labelledby={showTabList ? `${tabIdPrefix}-tab-${tabDomId(tab.id)}` : undefined}
+            className={s.tabContent}
+            hidden={!isActive}
+            id={`${tabIdPrefix}-panel-${tabDomId(tab.id)}`}
+            key={tab.id}
+            role={showTabList ? 'tabpanel' : 'region'}
+          >
+            {isActive ? (
+              <>
+                {tab.id === 'results' ? <SearchResponseResults view={searchResultsView} /> : null}
+                {tab.id === 'timeline' ? timelineWaterfall : null}
+                {extraTab?.content}
+              </>
+            ) : null}
+          </div>
+        )
+      })}
     </QueryDetailSummary>
   )
 }
@@ -923,6 +1082,7 @@ export function TraceDetail({
   return (
     <div className={s.detailOverlay}>
       <TraceDetailContent
+        key={traceId}
         detail={detail}
         extraTabs={extraTabs}
         initialSummary={initialSummary}

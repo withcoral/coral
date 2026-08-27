@@ -65,16 +65,22 @@ export function QueryDetailSummary({
       <ScrollArea className={styles.scrollBody} constrainWidth fade="none" fillContent>
         <div className={styles.content}>
           <CodeBlock code={sql} language={codeLanguage} />
-          {stats.length > 0 ? (
-            <div className={styles.statGrid}>
-              {stats.map((stat) => (
-                <QueryDetailStatCard key={stat.label} label={stat.label} value={stat.value} />
-              ))}
-            </div>
-          ) : null}
+          <QueryDetailStats stats={stats} />
           {children}
         </div>
       </ScrollArea>
+    </div>
+  )
+}
+
+export function QueryDetailStats({ stats }: { stats: QueryDetailStat[] }) {
+  if (stats.length === 0) return null
+
+  return (
+    <div className={styles.statGrid}>
+      {stats.map((stat) => (
+        <QueryDetailStatCard key={stat.label} label={stat.label} value={stat.value} />
+      ))}
     </div>
   )
 }
