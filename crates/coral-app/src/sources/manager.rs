@@ -280,8 +280,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
         Ok(self
-            .config_store
-            .list_workspace_sources(workspace_name)?
+            .load_workspace_sources(workspace_name)?
             .into_iter()
             .map(|source| self.populate_source_version_or_keep(workspace_name, source))
             .collect())
@@ -292,10 +291,10 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        Ok(self.populate_source_version_or_keep(
-            workspace_name,
-            self.config_store.get_source(workspace_name, source_name)?,
-        ))
+        let source = self
+            .load_source(workspace_name, source_name)?
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))?;
+        Ok(self.populate_source_version_or_keep(workspace_name, source))
     }
 
     pub(crate) fn get_source_info(
@@ -303,7 +302,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<CandidateSource, AppError> {
-        match self.config_store.get_source(workspace_name, source_name) {
+        match self.get_source(workspace_name, source_name) {
             Ok(source) => {
                 return Ok(
                     resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
@@ -326,7 +325,7 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<CandidateSource>, AppError> {
-        let installed_sources = self.config_store.list_workspace_sources(workspace_name)?;
+        let installed_sources = self.load_workspace_sources(workspace_name)?;
         let installed = installed_sources
             .iter()
             .map(|source| source.name.clone())
@@ -1085,7 +1084,7 @@ impl SourceManager {
         let candidate_manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let candidate_schema_names = runtime_schema_names(&candidate_manifest);
-        for installed in self.config_store.list_workspace_sources(workspace_name)? {
+        for installed in self.load_workspace_sources(workspace_name)? {
             if installed.name == *candidate_name {
                 continue;
             }
@@ -1110,10 +1109,8 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<bool, AppError> {
-        Ok(self
-            .config_store
-            .load_catalog()?
-            .contains(workspace_name, source_name))
+        self.load_source(workspace_name, source_name)
+            .map(|source| source.is_some())
     }
 
     fn read_source_material(
@@ -1145,25 +1142,21 @@ impl SourceManager {
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        let (credential_storage, persisted_secret_keys) = match self
-            .config_store
-            .get_source(workspace_name, &candidate.name)
-        {
-            Ok(source) => (
-                source.credential_storage_for_material(),
-                Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
-            ),
-            Err(AppError::SourceNotFound(_))
-                if self
+        let (credential_storage, persisted_secret_keys) =
+            match self.load_source(workspace_name, &candidate.name)? {
+                Some(source) => (
+                    source.credential_storage_for_material(),
+                    Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
+                ),
+                None if self
                     .layout
                     .secret_file(workspace_name, &candidate.name)
                     .exists() =>
-            {
-                (Some(CredentialStorageKind::File), None)
-            }
-            Err(AppError::SourceNotFound(_)) => (None, Some(BTreeSet::new())),
-            Err(error) => return Err(error),
-        };
+                {
+                    (Some(CredentialStorageKind::File), None)
+                }
+                None => (None, Some(BTreeSet::new())),
+            };
 
         if !source_needs_stored_material_for_validation(
             candidate,
@@ -1193,12 +1186,9 @@ impl SourceManager {
                 && input.required
                 && !bindings.secrets.contains_key(&input.key)
         });
-        let existing_storage = match self
-            .config_store
-            .get_source_unlocked(workspace_name, &candidate.name)
-        {
-            Ok(source) => source.credential_storage_for_material(),
-            Err(AppError::SourceNotFound(_)) if needs_stored_material => {
+        let existing_storage = match self.load_source(workspace_name, &candidate.name)? {
+            Some(source) => source.credential_storage_for_material(),
+            None if needs_stored_material => {
                 let legacy_secret_file = self.layout.secret_file(workspace_name, &candidate.name);
                 if legacy_secret_file.is_file() {
                     Some(CredentialStorageKind::File)
@@ -1206,8 +1196,7 @@ impl SourceManager {
                     None
                 }
             }
-            Err(AppError::SourceNotFound(_)) => None,
-            Err(error) => return Err(error),
+            None => None,
         };
         let stored_material = match existing_storage {
             Some(storage) => self.read_source_material(workspace_name, &candidate.name, storage)?,
@@ -1223,6 +1212,60 @@ impl SourceManager {
         } else {
             self.credential_manager.default_write_storage().map(Some)
         }
+    }
+
+    fn load_workspace_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        let db = Arc::clone(&self.db);
+        let workspace_name = workspace_name.clone();
+        run_source_db_operation(async move {
+            let mut session = db.as_ref();
+            Self::require_workspace(&mut session, &workspace_name).await?;
+            session
+                .sources()
+                .list_workspace_sources(&workspace_name)
+                .await
+                .map_err(AppError::from)
+        })
+    }
+
+    fn load_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        let db = Arc::clone(&self.db);
+        let workspace_name = workspace_name.clone();
+        let source_name = source_name.clone();
+        run_source_db_operation(async move {
+            let mut session = db.as_ref();
+            Self::require_workspace(&mut session, &workspace_name).await?;
+            session
+                .sources()
+                .get_source(&workspace_name, &source_name)
+                .await
+                .map_err(AppError::from)
+        })
+    }
+
+    async fn require_workspace<S>(
+        session: &mut S,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(), AppError>
+    where
+        S: DbRepos,
+    {
+        if session
+            .workspaces()
+            .get(workspace_name.as_str())
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
     }
 
     fn upsert_source_with_state_lock_held(
@@ -1409,13 +1452,8 @@ impl SourceManager {
         source_name: &SourceName,
         credential_material: &CredentialMaterialGuard<'_>,
     ) -> Result<Option<SourceRollbackState>, AppError> {
-        let source = match self
-            .config_store
-            .get_source_unlocked(workspace_name, source_name)
-        {
-            Ok(source) => source,
-            Err(AppError::SourceNotFound(_)) => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(source) = self.load_source(workspace_name, source_name)? else {
+            return Ok(None);
         };
         let credential_material = source
             .credential_storage_for_material()
@@ -1988,6 +2026,11 @@ mod tests {
             async move {
                 let db = crate::state::db::open_test_database(&layout).await?;
                 crate::state::db::run_state_migrations(&db, &config_store, &layout).await?;
+                let mut tx = db.begin().await?;
+                tx.workspaces()
+                    .ensure(WorkspaceName::default().as_str(), 1)
+                    .await?;
+                tx.commit().await?;
                 Ok(db)
             }
         })
@@ -4005,8 +4048,9 @@ surface:
         );
         assert!(
             config_store
-                .list_workspace_sources(&workspace_name)
-                .expect("list sources")
+                .load_config()
+                .expect("load config")
+                .workspace_sources(&workspace_name)
                 .is_empty()
         );
         let source_name = SourceName::parse("public_messages").expect("source");
@@ -4095,8 +4139,9 @@ surface:
         fixture.token_server.await.expect("token server");
         assert!(
             config_store
-                .list_workspace_sources(&workspace_name)
-                .expect("list sources")
+                .load_config()
+                .expect("load config")
+                .workspace_sources(&workspace_name)
                 .is_empty()
         );
         let source_name = SourceName::parse("secured_messages").expect("source");
