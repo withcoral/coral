@@ -572,6 +572,13 @@ struct PersistedFeedbackReport {
     task_id: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum FeedbackImportOutcome {
+    Imported,
+    AlreadyPresent,
+    WorkspaceMissing,
+}
+
 pub(crate) async fn import_filesystem_feedback_reports(
     db: &CoralDb,
     layout: &AppStateLayout,
@@ -609,8 +616,17 @@ pub(crate) async fn import_filesystem_feedback_reports(
             }
         }
         for record in records {
-            if insert_imported_feedback_report(db, &workspace_name, &record).await? {
-                imported += 1;
+            match insert_imported_feedback_report(db, &workspace_name, &record).await? {
+                FeedbackImportOutcome::Imported => imported += 1,
+                FeedbackImportOutcome::AlreadyPresent => {}
+                FeedbackImportOutcome::WorkspaceMissing => {
+                    has_unimported_rows = true;
+                    tracing::warn!(
+                        path = %path.display(),
+                        %workspace_name,
+                        "legacy feedback JSONL retained because its workspace no longer exists"
+                    );
+                }
             }
         }
         if has_unimported_rows {
@@ -629,15 +645,21 @@ async fn insert_imported_feedback_report(
     db: &CoralDb,
     workspace_name: &WorkspaceName,
     record: &FeedbackReportRecord,
-) -> Result<bool, AppError> {
+) -> Result<FeedbackImportOutcome, AppError> {
     let mut tx = db.begin().await?;
-    tx.workspaces()
-        .ensure(workspace_name.as_str(), record.created_at_unix_nanos)
-        .await?;
+    if tx
+        .workspaces()
+        .get(workspace_name.as_str())
+        .await?
+        .is_none()
+    {
+        tx.rollback().await?;
+        return Ok(FeedbackImportOutcome::WorkspaceMissing);
+    }
     match tx.feedback_reports().append(workspace_name, record).await {
         Ok(()) => {
             tx.commit().await?;
-            Ok(true)
+            Ok(FeedbackImportOutcome::Imported)
         }
         Err(error) if is_unique_constraint_error(&error) => {
             tx.rollback().await?;
@@ -648,7 +670,7 @@ async fn insert_imported_feedback_report(
                 .await?
                 .is_some()
             {
-                Ok(false)
+                Ok(FeedbackImportOutcome::AlreadyPresent)
             } else {
                 Err(error.into())
             }
@@ -2198,6 +2220,7 @@ mod tests {
         let default = WorkspaceName::parse("default").expect("workspace");
         let healthy = WorkspaceName::parse("healthy").expect("workspace");
         let corrupt = WorkspaceName::parse("corrupt").expect("workspace");
+        let deleted = WorkspaceName::parse("deleted").expect("workspace");
         let retained_file = layout.feedback_reports_file(&default);
         let healthy_file = layout.feedback_reports_file(&healthy);
         write_feedback_reports_file(
@@ -2205,6 +2228,8 @@ mod tests {
             &format!("{}not json\n", feedback_jsonl("default", "feedback-1")),
         );
         write_feedback_reports_file(&healthy_file, &feedback_jsonl("healthy", "feedback-1"));
+        let deleted_file = layout.feedback_reports_file(&deleted);
+        write_feedback_reports_file(&deleted_file, &feedback_jsonl("deleted", "feedback-1"));
         let corrupt_file = layout.feedback_reports_file(&corrupt);
         fs::create_dir_all(corrupt_file.parent().expect("reports parent"))
             .expect("create reports parent");
@@ -2225,6 +2250,16 @@ mod tests {
             .join("reports.jsonl");
         write_feedback_reports_file(&rollback_file, &feedback_jsonl("rollback", "feedback-1"));
         let db = open_sqlite(&layout).await;
+        let mut tx = db.begin().await.expect("begin workspace seed");
+        tx.workspaces()
+            .ensure(default.as_str(), 1)
+            .await
+            .expect("seed default workspace");
+        tx.workspaces()
+            .ensure(healthy.as_str(), 1)
+            .await
+            .expect("seed healthy workspace");
+        tx.commit().await.expect("commit workspace seed");
 
         let imported = import_filesystem_feedback_reports(&db, &layout)
             .await
@@ -2233,6 +2268,7 @@ mod tests {
         assert_eq!(imported, 2);
         assert!(retained_file.exists());
         assert!(!healthy_file.exists());
+        assert!(deleted_file.exists());
         assert!(corrupt_file.exists());
         assert!(invalid_workspace_file.exists());
         assert!(rollback_file.exists());
@@ -2247,6 +2283,14 @@ mod tests {
                 .task_id
                 .as_deref(),
             Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert!(
+            session
+                .workspaces()
+                .get(deleted.as_str())
+                .await
+                .unwrap()
+                .is_none()
         );
         assert!(
             session
@@ -2293,7 +2337,10 @@ mod tests {
             panic!("loser feedback import completed before winner commit");
         }
         tx.commit().await.expect("commit winner feedback");
-        assert!(!import.await.expect("loser import should recover"));
+        assert_eq!(
+            import.await.expect("loser import should recover"),
+            super::FeedbackImportOutcome::AlreadyPresent
+        );
         let mut session = &db;
         assert_eq!(
             session
