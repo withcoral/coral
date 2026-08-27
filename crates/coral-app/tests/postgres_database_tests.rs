@@ -38,7 +38,7 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
     assert_source_catalog_schema_shape(&pool).await;
     assert_source_catalog_rows_round_trip(&pool).await;
 
-    server.shutdown().await;
+    Box::pin(server.shutdown()).await;
 }
 
 struct PostgresServer {
