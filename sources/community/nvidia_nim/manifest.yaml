@@ -1,0 +1,253 @@
+name: nvidia_nim
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query NVIDIA NIM model catalogs and run bounded synchronous OpenAI-compatible chat checks through SQL.
+base_url: https://integrate.api.nvidia.com/v1
+inputs:
+  NVIDIA_API_KEY:
+    kind: secret
+    hint: |
+      NVIDIA API key for build.nvidia.com / NVIDIA NIM.
+
+      Create or copy an API key from:
+      https://build.nvidia.com/settings/api-keys
+
+      The key is sent as a Bearer token to NVIDIA's hosted NIM API.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.NVIDIA_API_KEY}}"
+test_queries:
+  - SELECT id, object, owned_by FROM nvidia_nim.models LIMIT 5
+tables:
+  - name: models
+    description: NVIDIA NIM models from GET /models.
+    request:
+      method: GET
+      path: /models
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Model ID used in NVIDIA NIM OpenAI-compatible requests.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Model creation timestamp when returned by the API.
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: Model owner or provider.
+
+  - name: chat_completions
+    description: Run one synchronous non-streaming NVIDIA NIM chat completion with required bounded SQL filters.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: max_tokens
+        required: true
+    request:
+      method: POST
+      path: /chat/completions
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - messages
+            - "0"
+            - role
+          from: literal
+          value: user
+        - path:
+            - messages
+            - "0"
+            - content
+          from: filter
+          key: prompt
+        - path:
+            - max_tokens
+          from: filter_int
+          key: max_tokens
+        - path:
+            - stream
+          from: literal
+          value: false
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: max_tokens
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Positive max_tokens value supplied in SQL filter; NVIDIA rejects non-positive values.
+        expr:
+          kind: from_filter
+          key: max_tokens
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Chat completion response ID.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Response creation timestamp.
+      - name: returned_model
+        type: Utf8
+        nullable: true
+        description: Actual model returned by NVIDIA NIM.
+        expr:
+          kind: path
+          path:
+            - model
+      - name: usage
+        type: Json
+        nullable: true
+        description: Token usage metadata returned by NVIDIA NIM.
+      - name: prompt_tokens
+        type: Int64
+        nullable: true
+        description: Prompt token count when returned by NVIDIA NIM.
+        expr:
+          kind: path
+          path:
+            - usage
+            - prompt_tokens
+      - name: completion_tokens
+        type: Int64
+        nullable: true
+        description: Completion token count when returned by NVIDIA NIM.
+        expr:
+          kind: path
+          path:
+            - usage
+            - completion_tokens
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total token count when returned by NVIDIA NIM.
+        expr:
+          kind: path
+          path:
+            - usage
+            - total_tokens
+      - name: prompt_tokens_details
+        type: Json
+        nullable: true
+        description: Prompt token detail metadata when returned by NVIDIA NIM.
+        expr:
+          kind: path
+          path:
+            - usage
+            - prompt_tokens_details
+      - name: nvext
+        type: Json
+        nullable: true
+        description: NVIDIA extension metadata such as worker and timing details.
+      - name: nvext_timing
+        type: Json
+        nullable: true
+        description: NVIDIA timing metadata when returned.
+        expr:
+          kind: path
+          path:
+            - nvext
+            - timing
+      - name: choices
+        type: Json
+        nullable: true
+        description: Raw choices array returned by NVIDIA NIM.
+      - name: index
+        type: Int64
+        nullable: true
+        description: First choice index.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - index
+      - name: finish_reason
+        type: Utf8
+        nullable: true
+        description: Why the model stopped.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - finish_reason
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Assistant response text.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - content
+      - name: reasoning_content
+        type: Utf8
+        nullable: true
+        description: Reasoning text when returned by the model.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - reasoning_content
+      - name: message_role
+        type: Utf8
+        nullable: true
+        description: Assistant message role.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - role
