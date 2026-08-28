@@ -7,7 +7,7 @@
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://withcoral.com/discord)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/withcoral/coral)
 
-Coral is a single SQL interface for APIs, files, and other data sources.
+Coral is a single query interface for agents calling data source APIs.
 
 Agents make fewer, more precise tool calls with Coral than they do with
 per-source MCP servers, CLI tools, or API wrappers. For agent read tasks, SQL
