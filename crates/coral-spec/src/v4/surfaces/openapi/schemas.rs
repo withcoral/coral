@@ -309,6 +309,7 @@ impl OpenApiImporter<'_> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<(), AllOfMergeError> {
         merge_json_object_shape_annotation_insensitive(
+            self.schema_root(),
             merged,
             direct_json_object_shape(self.schema_root(), resolved),
             0,

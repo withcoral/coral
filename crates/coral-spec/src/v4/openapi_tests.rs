@@ -4015,14 +4015,20 @@ components:
     Base:
       type: object
       properties:
-        id: {type: [string, 'null']}
+        meta:
+          type: object
+          properties:
+            id: {type: [string, 'null']}
     Extra:
       type: object
       properties:
-        id:
-          anyOf:
-            - {type: string}
-            - {type: 'null'}
+        meta:
+          type: object
+          properties:
+            id:
+              anyOf:
+                - {type: string}
+                - {type: 'null'}
         name: {type: string}
     Composed:
       allOf:
@@ -4062,7 +4068,7 @@ paths:
             .iter()
             .map(|field| field.name.as_str())
             .collect::<Vec<_>>(),
-        ["id", "name"]
+        ["meta", "name"]
     );
 }
 
