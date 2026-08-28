@@ -4070,6 +4070,28 @@ paths:
             .collect::<Vec<_>>(),
         ["meta", "name"]
     );
+
+    let meta_type_ref = fields
+        .iter()
+        .find(|field| field.name == "meta")
+        .expect("meta field")
+        .type_ref
+        .as_str();
+    let meta_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == meta_type_ref)
+        .expect("meta type");
+    let IrTypeShape::Object { fields } = &meta_type.shape else {
+        panic!("the meta field should import as an object: {meta_type:?}");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id"]
+    );
 }
 
 fn import_parameter_surface(paths: &str) -> ImportedSurface {
