@@ -1,0 +1,56 @@
+name: hackerearth
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query hackathons and coding challenges from HackerEarth's public events feed.
+  No authentication required.
+base_url: https://www.hackerearth.com
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT title FROM hackerearth.events LIMIT 1
+tables:
+  - name: events
+    description: >-
+      Hackathons and coding challenges from HackerEarth's public events feed.
+      Returns the full current feed in a single request (no pagination).
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /chrome-extension/events/
+    response:
+      rows_path: [response]
+      row_strategy: direct
+    columns:
+      - name: title
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: status
+        type: Utf8
+        description: HackerEarth status (ONGOING / UPCOMING).
+      - name: college
+        type: Boolean
+        description: Whether the event is college-restricted.
+      - name: challenge_type
+        type: Utf8
+        description: e.g. "Monthly Challenges", "Hiring Challenge".
+      - name: start_utc
+        type: Utf8
+        description: Start time, UTC ("2026-04-27 04:30:00+00:00"); parsed downstream.
+        expr:
+          kind: path
+          path: [start_utc_tz]
+      - name: end_utc
+        type: Utf8
+        description: End time, UTC ("2026-05-31 18:29:00+00:00"); parsed downstream.
+        expr:
+          kind: path
+          path: [end_utc_tz]
+      - name: thumbnail
+        type: Utf8
