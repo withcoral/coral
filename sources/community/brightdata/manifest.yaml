@@ -1,0 +1,520 @@
+name: brightdata
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query your Bright Data account through its public API: account balance and
+  status, active zones, zone usage/cost details, the Web Unlocker for fetching
+  pages as HTML or markdown, and Google and Bing search engine results (SERP).
+  SERP responses include organic results with titles, URLs, and snippets.
+base_url: https://api.brightdata.com
+inputs:
+  BRIGHT_DATA_API_KEY:
+    kind: secret
+    hint: >-
+      Bright Data API token from the Bright Data dashboard (Account →
+      API access → Create API token). Looks like a UUID with hyphens, for
+      example `3afceabe-5ccb-4341-84ca-95b6fb044915`. Use the Admin
+      permission level when creating the token: this source calls both
+      billing endpoints (balance, zone cost) and proxy endpoints (Web
+      Unlocker, SERP), and only Admin covers both with a single token
+      (Finance covers billing only; Ops and User cover proxy access only).
+  BRIGHT_DATA_ZONE:
+    kind: variable
+    default: unlocker
+    hint: >-
+      Name of a Web Unlocker zone to use by default for web_unlocker and
+      serp_search calls. Zone names are shown in the Bright Data dashboard
+      under Zones. Override per call with the zone argument when you have
+      several zones.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.BRIGHT_DATA_API_KEY}}"
+test_queries:
+  - SELECT balance, credit FROM brightdata.customer_balance
+  - SELECT name, type FROM brightdata.zones
+  - SELECT link, title FROM brightdata.serp_search(url => 'https://www.google.com/search?q=coral+sql&brd_json=1') LIMIT 2
+tables:
+  - name: customer_balance
+    description: >-
+      Your Bright Data account prepaid balance, active credit, and prepayment
+      totals. One row per account.
+    guide: |
+      No filter required. Values are USD. Free-credit accounts show a small
+      balance plus a credit line that renews periodically.
+    request:
+      method: GET
+      path: /customer/balance
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Current account balance in USD.
+        expr: {kind: path, path: [balance]}
+      - name: credit
+        type: Float64
+        nullable: true
+        description: Active credit amount in USD.
+        expr: {kind: path, path: [credit]}
+      - name: prepayment
+        type: Float64
+        nullable: true
+        description: Prepayment amount in USD.
+        expr: {kind: path, path: [prepayment]}
+      - name: pending_costs
+        type: Float64
+        nullable: true
+        description: Costs not yet settled in USD.
+        expr: {kind: path, path: [pending_costs]}
+
+  - name: customer_status
+    description: >-
+      Your Bright Data account status: subscription state, customer id, and
+      proxy-level request authorization state. One row per account.
+    guide: |
+      No filter required. can_make_requests and auth_fail_reason describe
+      proxy (zone password) authentication, not the API token used by this
+      source; API calls such as web_unlocker still work when the zone is
+      correctly configured.
+    request:
+      method: GET
+      path: /status
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Account status, for example `active`.
+        expr: {kind: path, path: [status]}
+      - name: customer
+        type: Utf8
+        nullable: true
+        description: Customer id used to build proxy hostnames.
+        expr: {kind: path, path: [customer]}
+      - name: can_make_requests
+        type: Boolean
+        nullable: true
+        description: Whether the proxy authorizes requests with the configured zone.
+        expr: {kind: path, path: [can_make_requests]}
+      - name: auth_fail_reason
+        type: Utf8
+        nullable: true
+        description: Proxy authentication failure reason when can_make_requests is false.
+        expr: {kind: path, path: [auth_fail_reason]}
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: Egress IP address for proxy requests.
+        expr: {kind: path, path: [ip]}
+
+  - name: zones
+    description: >-
+      Active zones on your Bright Data account, with their type (for example
+      `unblocker` or `browser_api`).
+    guide: |
+      No filter required. Use zone names in web_unlocker and serp_search
+      calls or to look up zone_info.
+    request:
+      method: GET
+      path: /zone/get_active_zones
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Zone name.
+        expr: {kind: path, path: [name]}
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Zone type, for example `unblocker` or `browser_api`.
+        expr: {kind: path, path: [type]}
+
+  - name: datasets
+    description: >-
+      Bright Data public dataset marketplace catalog. Each row is one
+      dataset with its id, name, and row count.
+    guide: |
+      No filter required. Dataset ids can be used with the Bright Data
+      dataset APIs (outside this source) to trigger collection runs.
+    request:
+      method: GET
+      path: /datasets/list
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Dataset identifier, for example `gd_l1vijqt9jfj7olije`.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable dataset name.
+        expr: {kind: path, path: [name]}
+      - name: size
+        type: Int64
+        nullable: true
+        description: Number of records in the dataset.
+        expr: {kind: path, path: [size]}
+
+functions:
+  - name: zone_info
+    kind: table
+    description: >-
+      Details for one zone: creation time, allowed egress IPs, permission
+      scope, and plan information.
+    guide: |
+      Pass the zone name: `SELECT * FROM
+      brightdata.zone_info(zone => 'cli_unlocker')`. Zone passwords are
+      intentionally not exposed.
+    args:
+      - name: zone
+        required: true
+        bind: {arg: zone}
+    request:
+      method: GET
+      path: /zone
+      query:
+        - name: zone
+          from: arg
+          key: zone
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: zone
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the requested zone name.
+        expr: {kind: from_arg, key: zone}
+      - name: created
+        type: Utf8
+        nullable: true
+        description: Zone creation timestamp.
+        expr: {kind: path, path: [created]}
+      - name: ips
+        type: Json
+        nullable: true
+        description: Allowed egress IPs for this zone.
+        expr: {kind: path, path: [ips]}
+      - name: perm
+        type: Utf8
+        nullable: true
+        description: Permission scope, for example `country`.
+        expr: {kind: path, path: [perm]}
+      - name: plan_type
+        type: Utf8
+        nullable: true
+        description: Plan type, for example `unblocker`.
+        expr: {kind: path, path: [plan, type]}
+      - name: plan_product
+        type: Utf8
+        nullable: true
+        description: Plan product, for example `unblocker`.
+        expr: {kind: path, path: [plan, product]}
+      - name: plan_vips_type
+        type: Utf8
+        nullable: true
+        description: VIP pool type, for example `shared`.
+        expr: {kind: path, path: [plan, vips_type]}
+      - name: plan_start
+        type: Utf8
+        nullable: true
+        description: Plan start timestamp.
+        expr: {kind: path, path: [plan, start]}
+      - name: plan_trial_id
+        type: Utf8
+        nullable: true
+        description: Trial identifier when the zone runs on a trial plan.
+        expr: {kind: path, path: [plan, trial_id]}
+
+  - name: zone_cost
+    kind: table
+    description: >-
+      Usage cost and bandwidth for one zone, grouped into monthly and daily
+      billing periods. One row per customer on the account.
+    guide: |
+      Pass the zone name, and optionally a `from`/`to` month filter
+      (`YYYY-MM`): `SELECT customer_id, month_cost, day_cost FROM
+      brightdata.zone_cost(zone => 'cli_unlocker')`. Columns report the
+      current month (`back_m0`) and current day (`back_d0`) buckets; the
+      `month_range` and `day_range` Json columns carry the covered period
+      bounds.
+    args:
+      - name: zone
+        required: true
+        bind: {arg: zone}
+      - name: from
+        bind: {arg: from}
+      - name: to
+        bind: {arg: to}
+    request:
+      method: GET
+      path: /zone/cost
+      query:
+        - name: zone
+          from: arg
+          key: zone
+        - name: from
+          from: arg
+          key: from
+        - name: to
+          from: arg
+          key: to
+    response:
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: customer_id
+        type: Utf8
+        nullable: false
+        description: Customer id the usage belongs to.
+        expr: {kind: path, path: [_key]}
+      - name: month_cost
+        type: Float64
+        nullable: true
+        description: Cost accrued in the current calendar month (`back_m0`).
+        expr: {kind: path, path: [back_m0, cost]}
+      - name: month_bw
+        type: Int64
+        nullable: true
+        description: Bandwidth used in the current calendar month, in bytes.
+        expr: {kind: path, path: [back_m0, bw]}
+      - name: month_reqs_serp
+        type: Int64
+        nullable: true
+        description: SERP requests in the current calendar month.
+        expr: {kind: path, path: [back_m0, reqs_serp]}
+      - name: month_reqs_unblocker
+        type: Int64
+        nullable: true
+        description: Unlocker requests in the current calendar month.
+        expr: {kind: path, path: [back_m0, reqs_unblocker]}
+      - name: month_range
+        type: Json
+        nullable: true
+        description: Month period bounds (`{from, to}`).
+        expr: {kind: path, path: [back_m0, range]}
+      - name: day_cost
+        type: Float64
+        nullable: true
+        description: Cost accrued today (`back_d0`).
+        expr: {kind: path, path: [back_d0, cost]}
+      - name: day_bw
+        type: Int64
+        nullable: true
+        description: Bandwidth used today, in bytes.
+        expr: {kind: path, path: [back_d0, bw]}
+      - name: day_reqs_serp
+        type: Int64
+        nullable: true
+        description: SERP requests today.
+        expr: {kind: path, path: [back_d0, reqs_serp]}
+      - name: day_reqs_unblocker
+        type: Int64
+        nullable: true
+        description: Unlocker requests today.
+        expr: {kind: path, path: [back_d0, reqs_unblocker]}
+      - name: day_range
+        type: Json
+        nullable: true
+        description: Day period bounds (`{from, to}`).
+        expr: {kind: path, path: [back_d0, range]}
+      - name: zone
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the requested zone name.
+        expr: {kind: from_arg, key: zone}
+
+  - name: web_unlocker
+    kind: table
+    description: >-
+      Fetch any public URL through the Bright Data Web Unlocker and get the
+      response status, headers, and body as HTML (or markdown when
+      data_format is set).
+    guide: |
+      Pass the target URL: `SELECT status_code, body FROM
+      brightdata.web_unlocker(url => 'https://example.com')`. Request
+      markdown output with `data_format => 'markdown'`. Use `country => 'us'`
+      to fetch from a specific country and `zone => '<name>'` to override the
+      configured BRIGHT_DATA_ZONE.
+    args:
+      - name: url
+        required: true
+        bind: {arg: url}
+      - name: zone
+        bind: {arg: zone}
+      - name: country
+        bind: {arg: country}
+      - name: locale
+        bind: {arg: locale}
+      - name: data_format
+        bind: {arg: data_format}
+    request:
+      method: POST
+      path: /request
+      body:
+        - path: [zone]
+          from: one_of
+          values:
+            - from: arg
+              key: zone
+            - from: input
+              key: BRIGHT_DATA_ZONE
+        - path: [url]
+          from: arg
+          key: url
+        - path: [format]
+          from: literal
+          value: json
+        - path: [country]
+          from: arg
+          key: country
+        - path: [locale]
+          from: arg
+          key: locale
+        - path: [data_format]
+          from: arg
+          key: data_format
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the requested URL.
+        expr: {kind: from_arg, key: url}
+      - name: status_code
+        type: Int64
+        nullable: true
+        description: HTTP status code of the target response.
+        expr: {kind: path, path: [status_code]}
+      - name: headers
+        type: Json
+        nullable: true
+        description: Response headers of the target page.
+        expr: {kind: path, path: [headers]}
+      - name: body
+        type: Utf8
+        nullable: true
+        description: >-
+          Page body as raw HTML, or as markdown when data_format =>
+          'markdown' is passed.
+        expr: {kind: path, path: [body]}
+
+  - name: serp_search
+    kind: search
+    description: >-
+      Search engine results for a Google or Bing search URL. Pass the full
+      search URL with brd_json=1; returns organic results with links, titles,
+      descriptions, and ranks.
+    guide: |
+      Build the search URL and pass it as the url argument. Examples:
+
+      - Google: `https://www.google.com/search?q=coral+sql&brd_json=1`
+      - Bing: `https://www.bing.com/search?q=coral+sql&brd_json=1`
+
+      Use `gl=XX`/`hl=XX` query params to control country and language, and
+      `start=N` on Google to fetch the next results page. Query text must be
+      URL-encoded (spaces as `+` or `%20`). Override the configured
+      BRIGHT_DATA_ZONE with `zone => '<name>'`.
+    args:
+      - name: url
+        required: true
+        bind: {arg: url}
+      - name: zone
+        bind: {arg: zone}
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 50
+      max_calls_per_query: 1
+    request:
+      method: POST
+      path: /request
+      body:
+        - path: [zone]
+          from: one_of
+          values:
+            - from: arg
+              key: zone
+            - from: input
+              key: BRIGHT_DATA_ZONE
+        - path: [url]
+          from: arg
+          key: url
+        - path: [format]
+          from: literal
+          value: raw
+    response:
+      rows_path:
+        - organic
+    pagination:
+      mode: none
+    columns:
+      - name: link
+        type: Utf8
+        nullable: false
+        description: URL of the organic search result.
+        expr: {kind: path, path: [link]}
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Source site name of the result.
+        expr: {kind: path, path: [source]}
+      - name: display_link
+        type: Utf8
+        nullable: true
+        description: Displayed link text of the result.
+        expr: {kind: path, path: [display_link]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the result.
+        expr: {kind: path, path: [title]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Search snippet describing the result.
+        expr: {kind: path, path: [description]}
+      - name: rank
+        type: Int64
+        nullable: true
+        description: 1-based position of the result within the page.
+        expr: {kind: path, path: [rank]}
+      - name: global_rank
+        type: Int64
+        nullable: true
+        description: Overall position of the result across pages.
+        expr: {kind: path, path: [global_rank]}
+      - name: snippet_highlighted_words
+        type: Json
+        nullable: true
+        description: Words highlighted in the snippet by the engine.
+        expr: {kind: path, path: [snippet_highlighted_words]}
+      - name: search_url
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the requested search URL.
+        expr: {kind: from_arg, key: url}
