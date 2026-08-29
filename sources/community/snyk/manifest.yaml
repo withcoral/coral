@@ -1,0 +1,573 @@
+name: snyk
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Snyk organizations, targets, projects, issues, issue paths, and dependencies via the Snyk REST API.
+base_url: https://api.snyk.io/rest
+inputs:
+  SNYK_API_TOKEN:
+    kind: secret
+    hint: |
+      Snyk API Token (Personal Access Token or Service Account token).
+      Create one in Snyk Account Settings. The token is sent as `Authorization: Token <SNYK_API_TOKEN>`.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Token {{input.SNYK_API_TOKEN}}
+test_queries:
+  - SELECT * FROM snyk.current_user LIMIT 1
+tables:
+  - name: current_user
+    description: Current authenticated Snyk user identity.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /self
+      query:
+        - name: version
+          from: literal
+          value: "2025-11-05"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: User ID.
+        expr:
+          kind: path
+          path: [data, id]
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username.
+        expr:
+          kind: path
+          path: [data, attributes, username]
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address.
+        expr:
+          kind: path
+          path: [data, attributes, email]
+      - name: account_type
+        type: Utf8
+        nullable: true
+        description: Account type.
+        expr:
+          kind: path
+          path: [data, type]
+
+  - name: organizations
+    description: Snyk organizations available to the authenticated user.
+    guide: |
+      Use `org_id` from this table when querying targets, projects, and issues.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /orgs
+      query:
+        - name: version
+          from: literal
+          value: "2025-11-05"
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path: [links, next]
+    columns:
+      - name: org_id
+        type: Utf8
+        nullable: false
+        description: Organization ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Organization name.
+        expr:
+          kind: path
+          path: [attributes, name]
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Organization slug.
+        expr:
+          kind: path
+          path: [attributes, slug]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Organization creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+
+  - name: targets
+    description: Snyk targets (GitHub repos, Docker images, Kubernetes workloads, etc.).
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+      - name: source_types
+      - name: is_private
+      - name: display_name
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/targets
+      query:
+        - name: version
+          from: literal
+          value: "2025-11-05"
+        - name: source_types
+          from: filter
+          key: source_types
+        - name: is_private
+          from: filter
+          key: is_private
+        - name: display_name
+          from: filter
+          key: display_name
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path: [links, next]
+    columns:
+      - name: target_id
+        type: Utf8
+        nullable: false
+        description: Target ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: org_id
+        type: Utf8
+        nullable: false
+        description: Organization ID.
+        expr:
+          kind: from_filter
+          key: org_id
+      - name: display_name
+        type: Utf8
+        nullable: false
+        description: Target display name.
+        expr:
+          kind: path
+          path: [attributes, display_name]
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Target URL.
+        expr:
+          kind: path
+          path: [attributes, url]
+      - name: source_type
+        type: Utf8
+        nullable: false
+        description: Target source type (e.g., github, dockerhub).
+        expr:
+          kind: path
+          path: [attributes, source_type]
+      - name: is_private
+        type: Boolean
+        nullable: true
+        description: Whether the target is private.
+        expr:
+          kind: path
+          path: [attributes, is_private]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Target creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+
+  - name: projects
+    description: Snyk scan projects belonging to targets.
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+      - name: target_id
+      - name: target_reference
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/projects
+      query:
+        - name: version
+          from: literal
+          value: "2025-11-05"
+        - name: target_id
+          from: filter
+          key: target_id
+        - name: target_reference
+          from: filter
+          key: target_reference
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path: [links, next]
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: org_id
+        type: Utf8
+        nullable: false
+        description: Organization ID.
+        expr:
+          kind: from_filter
+          key: org_id
+      - name: target_id
+        type: Utf8
+        nullable: true
+        description: Target ID.
+        expr:
+          kind: path
+          path: [relationships, target, data, id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name.
+        expr:
+          kind: path
+          path: [attributes, name]
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Project type.
+        expr:
+          kind: path
+          path: [attributes, type]
+      - name: lifecycle
+        type: Utf8
+        nullable: true
+        description: Project lifecycle.
+        expr:
+          kind: path
+          path: [attributes, lifecycle]
+      - name: business_criticality
+        type: Utf8
+        nullable: true
+        description: Project business criticality.
+        expr:
+          kind: path
+          path: [attributes, business_criticality]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Project creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+
+  - name: project_issue_counts
+    description: Issue counts for Snyk projects.
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/projects
+      query:
+        - name: version
+          from: literal
+          value: "2025-11-05"
+        - name: expand
+          from: literal
+          value: "meta.latest_issue_counts"
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path: [links, next]
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: critical_count
+        type: Int64
+        nullable: true
+        description: Critical issue count.
+        expr:
+          kind: path
+          path: [meta, latest_issue_counts, critical]
+      - name: high_count
+        type: Int64
+        nullable: true
+        description: High issue count.
+        expr:
+          kind: path
+          path: [meta, latest_issue_counts, high]
+      - name: medium_count
+        type: Int64
+        nullable: true
+        description: Medium issue count.
+        expr:
+          kind: path
+          path: [meta, latest_issue_counts, medium]
+      - name: low_count
+        type: Int64
+        nullable: true
+        description: Low issue count.
+        expr:
+          kind: path
+          path: [meta, latest_issue_counts, low]
+
+  - name: issues
+    description: Vulnerabilities and license issues in Snyk projects.
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+      - name: project_id
+        required: true
+      - name: severity
+      - name: type
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/issues
+      query:
+        - name: version
+          from: literal
+          value: "2025-11-05"
+        - name: project_id
+          from: filter
+          key: project_id
+        - name: severity
+          from: filter
+          key: severity
+        - name: type
+          from: filter
+          key: type
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path: [links, next]
+    columns:
+      - name: issue_id
+        type: Utf8
+        nullable: false
+        description: Issue ID.
+        expr:
+          kind: path
+          path: [id]
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: issue_type
+        type: Utf8
+        nullable: true
+        description: Issue type (e.g., vulnerability or license).
+        expr:
+          kind: path
+          path: [attributes, issue_type]
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Severity level.
+        expr:
+          kind: path
+          path: [attributes, severity]
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Issue title.
+        expr:
+          kind: path
+          path: [attributes, title]
+      - name: package_name
+        type: Utf8
+        nullable: true
+        description: Vulnerable package name.
+        expr:
+          kind: path
+          path: [attributes, coordinates, "0", representations, "0", dependency, package_name]
+      - name: package_version
+        type: Utf8
+        nullable: true
+        description: Vulnerable package version.
+        expr:
+          kind: path
+          path: [attributes, coordinates, "0", representations, "0", dependency, package_version]
+      - name: fix_available
+        type: Boolean
+        nullable: true
+        description: Whether a fix is available.
+        expr:
+          kind: path
+          path: [attributes, fix_available]
+      - name: exploited
+        type: Boolean
+        nullable: true
+        description: Whether the vulnerability is exploited.
+        expr:
+          kind: path
+          path: [attributes, exploited]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Issue creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+
+  - name: issue_paths
+    description: Dependency paths that introduce a specific issue.
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+      - name: project_id
+        required: true
+      - name: issue_id
+        required: true
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/projects/{{filter.project_id}}/issues/{{filter.issue_id}}/paths
+      query:
+        - name: version
+          from: literal
+          value: "2025-11-05"
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path: [links, next]
+    columns:
+      - name: issue_id
+        type: Utf8
+        nullable: false
+        description: Issue ID.
+        expr:
+          kind: from_filter
+          key: issue_id
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: path_index
+        type: Utf8
+        nullable: false
+        description: Path index/identifier.
+        expr:
+          kind: path
+          path: [id]
+      - name: dependency_path
+        type: Json
+        nullable: false
+        description: The full dependency path.
+        expr:
+          kind: path
+          path: [attributes, path]
+
+  - name: dependencies
+    description: Project dependency inventory (BOM).
+    fetch_limit_default: 100
+    filters:
+      - name: org_id
+        required: true
+      - name: project_id
+        required: true
+    request:
+      method: GET
+      path: /orgs/{{filter.org_id}}/projects/{{filter.project_id}}/dependencies
+      query:
+        - name: version
+          from: literal
+          value: "2025-11-05"
+    response:
+      rows_path: [data]
+    pagination:
+      mode: cursor_query
+      cursor_param: starting_after
+      response_cursor_path: [links, next]
+    columns:
+      - name: project_id
+        type: Utf8
+        nullable: false
+        description: Project ID.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: package_name
+        type: Utf8
+        nullable: false
+        description: Package name.
+        expr:
+          kind: path
+          path: [attributes, name]
+      - name: version
+        type: Utf8
+        nullable: false
+        description: Package version.
+        expr:
+          kind: path
+          path: [attributes, version]
+      - name: latest_version
+        type: Utf8
+        nullable: true
+        description: Latest package version available.
+        expr:
+          kind: path
+          path: [attributes, latest_version]
+      - name: deprecated
+        type: Boolean
+        nullable: true
+        description: Whether the package is deprecated.
+        expr:
+          kind: path
+          path: [attributes, deprecated]
+      - name: issue_count
+        type: Int64
+        nullable: true
+        description: Number of issues in this dependency.
+        expr:
+          kind: path
+          path: [attributes, issue_count]
