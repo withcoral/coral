@@ -1398,7 +1398,7 @@ mod tests {
         }
 
         fn entry(&self, workspace: &WorkspaceName, name: &SourceName) -> Option<InstalledSource> {
-            self.config_store.get_source(workspace, name).ok()
+            self.config_store.get_source_unlocked(workspace, name).ok()
         }
 
         fn manifest_bytes(&self, workspace: &WorkspaceName, name: &SourceName) -> Option<Vec<u8>> {

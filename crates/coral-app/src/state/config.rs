@@ -48,18 +48,6 @@ impl AppConfig {
         self.catalog.workspace_sources(workspace_name)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "config mirror reader the mirror's tests pin")
-    )]
-    pub(crate) fn get_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Option<InstalledSource> {
-        self.catalog.get_source(workspace_name, source_name)
-    }
-
     pub(crate) fn dependent_join_config(
         &self,
         selected_source_names: &[String],
@@ -578,11 +566,6 @@ impl ConfigStore {
         self.load_unlocked()
     }
 
-    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
-        let _lock = self.state_lock_shared()?;
-        self.load_config_unlocked()
-    }
-
     /// Loads the mirrored source catalog without taking the app state lock.
     ///
     /// The mirror, not the authoritative catalog: production reads installed
@@ -716,23 +699,6 @@ impl ConfigStore {
         })
     }
 
-    /// Lists one workspace's mirrored source entries.
-    ///
-    /// The mirror, not the catalog: production reads the installed catalog from
-    /// the database, so what is left here is the test coverage that pins what
-    /// the mirror was written to hold.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "config mirror assertions in tests")
-    )]
-    pub(crate) fn list_workspace_sources(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<Vec<InstalledSource>, AppError> {
-        let config = self.load_config()?;
-        Ok(config.workspace_sources(workspace_name))
-    }
-
     /// Loads one mirrored source entry without taking the app state lock.
     ///
     /// The mirror, not the authoritative catalog — see
@@ -746,21 +712,6 @@ impl ConfigStore {
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
         self.load_catalog_unlocked()?
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
-    }
-
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "config mirror reader the mirror's tests pin")
-    )]
-    pub(crate) fn get_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<InstalledSource, AppError> {
-        let config = self.load_config()?;
-        config
             .get_source(workspace_name, source_name)
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
@@ -1623,12 +1574,13 @@ origin = "bundled"
 
         assert!(
             store
-                .list_workspace_sources(&missing_workspace)
-                .expect("list source definitions")
+                .load_catalog_unlocked()
+                .expect("load catalog")
+                .workspace_sources(&missing_workspace)
                 .is_empty()
         );
         assert!(matches!(
-            store.get_source(&missing_workspace, &source_name),
+            store.get_source_unlocked(&missing_workspace, &source_name),
             Err(AppError::SourceNotFound(_))
         ));
         store
@@ -1636,7 +1588,7 @@ origin = "bundled"
             .expect("upsert source definition");
         assert_eq!(
             store
-                .get_source(&missing_workspace, &source_name)
+                .get_source_unlocked(&missing_workspace, &source_name)
                 .expect("get source definition")
                 .name,
             source_name
@@ -1645,7 +1597,7 @@ origin = "bundled"
             .remove_source(&missing_workspace, &source_name)
             .expect("remove source definition");
         assert!(matches!(
-            store.get_source(&missing_workspace, &source_name),
+            store.get_source_unlocked(&missing_workspace, &source_name),
             Err(AppError::SourceNotFound(_))
         ));
         assert!(
@@ -1704,8 +1656,9 @@ origin = "bundled"
         assert_eq!(deleted.sources[0].name.as_str(), "github");
         assert!(
             store
-                .list_workspace_sources(&deleted.workspace.name)
-                .expect("list source definitions")
+                .load_catalog_unlocked()
+                .expect("load catalog")
+                .workspace_sources(&deleted.workspace.name)
                 .is_empty()
         );
         assert!(
@@ -1749,7 +1702,7 @@ origin = "bundled"
 
         assert_eq!(
             store
-                .load_config()
+                .load_config_unlocked()
                 .expect("load config")
                 .legacy_workspace_records()
                 .into_iter()
@@ -1759,8 +1712,9 @@ origin = "bundled"
         );
         assert_eq!(
             store
-                .list_workspace_sources(&workspace_name)
-                .expect("list source definitions")
+                .load_catalog_unlocked()
+                .expect("load catalog")
+                .workspace_sources(&workspace_name)
                 .into_iter()
                 .map(|source| source.name)
                 .collect::<Vec<_>>(),

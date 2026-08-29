@@ -473,8 +473,9 @@ tables:
         credential_revision: Uuid,
     ) {
         let mut source = config_store
-            .list_workspace_sources(workspace)
-            .expect("list sources")
+            .load_catalog_unlocked()
+            .expect("load mirrored catalog")
+            .workspace_sources(workspace)
             .into_iter()
             .find(|source| &source.name == source_name)
             .expect("installed source");

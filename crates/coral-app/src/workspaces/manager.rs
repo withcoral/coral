@@ -947,8 +947,9 @@ mod tests {
         );
         assert_eq!(
             store
-                .list_workspace_sources(&workspace_name)
-                .expect("list workspace sources")
+                .load_catalog_unlocked()
+                .expect("load mirrored catalog")
+                .workspace_sources(&workspace_name)
                 .into_iter()
                 .map(|source| source.name)
                 .collect::<Vec<_>>(),
@@ -1362,8 +1363,9 @@ mod tests {
         assert_eq!(deleted.name, workspace_name);
         assert!(
             store
-                .list_workspace_sources(&workspace_name)
-                .expect("list source definitions")
+                .load_catalog_unlocked()
+                .expect("load mirrored catalog")
+                .workspace_sources(&workspace_name)
                 .is_empty()
         );
         assert!(
