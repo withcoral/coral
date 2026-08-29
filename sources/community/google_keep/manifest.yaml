@@ -1,0 +1,222 @@
+name: google_keep
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query notes and checklists from Google Keep (Google Keep API).
+inputs:
+  GOOGLE_KEEP_API_BASE:
+    kind: variable
+    default: https://keep.googleapis.com
+    hint: |
+      Base URL for the Google Keep API. Keep the default unless you are
+      testing against a mock Google Keep API.
+  GOOGLE_KEEP_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Use a read-only OAuth 2.0 access token for the Google Keep API.
+      The guided OAuth flow requests the keep.readonly scope.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Keep
+          description: Use Google OAuth to retrieve a Keep access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_KEEP_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_KEEP_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/keep.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Keep OAuth access token.
+base_url: "{{input.GOOGLE_KEEP_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_KEEP_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM google_keep.notes LIMIT 1
+  - SELECT * FROM google_keep.notes WHERE filter = 'trashed = true' LIMIT 1
+  - SELECT * FROM google_keep.notes WHERE filter = 'update_time >= "2026-01-01T00:00:00Z"' LIMIT 1
+tables:
+  - name: notes
+    description: Notes and checklists owned by the authenticated user
+    fetch_limit_default: 100
+    guide: |
+      Exposes the user's notes and checklists from the Google Keep API.
+      Includes standard text notes and checklists (list notes), update times, and attachments.
+      Note: Google Keep API v1 does not support labels/tags, so notes cannot be queried by label.
+
+      By default, this table fetches up to 100 notes. Specify a higher SQL LIMIT (e.g. LIMIT 500)
+      to retrieve more notes.
+    filters:
+      - name: filter
+        required: false
+        description: |
+          Filter string following Google AIP-160 filtering syntax (e.g. `trashed = true` or `update_time >= "2026-01-01T00:00:00Z"`).
+    request:
+      method: GET
+      path: /v1/notes
+      query:
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path:
+        - notes
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Note identifier (extracted from resource name)
+        expr:
+          kind: replace
+          expr:
+            kind: path
+            path:
+              - name
+          from: notes/
+          to: ""
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique resource name for the note (e.g. notes/abc123_xyz)
+        expr:
+          kind: path
+          path:
+            - name
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the note
+        expr:
+          kind: path
+          path:
+            - title
+      - name: body_text
+        type: Utf8
+        nullable: true
+        description: Text content of standard text notes
+        expr:
+          kind: path
+          path:
+            - body
+            - text
+            - text
+      - name: list_items_text
+        type: Utf8
+        nullable: true
+        description: Top-level checklist items formatted as a newline-separated string
+        expr:
+          kind: join_array_path
+          path:
+            - body
+            - list
+            - listItems
+          item_path:
+            - text
+            - text
+          separator: "\n"
+      - name: create_time
+        type: Timestamp
+        nullable: true
+        description: Time the note was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createTime
+      - name: update_time
+        type: Timestamp
+        nullable: true
+        description: Time the note was last updated
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updateTime
+      - name: trash_time
+        type: Timestamp
+        nullable: true
+        description: Time the note was moved to trash (only present if trashed is true)
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - trashTime
+      - name: trashed
+        type: Boolean
+        nullable: true
+        description: Whether the note has been trashed
+        expr:
+          kind: path
+          path:
+            - trashed
+      - name: list_items
+        type: Json
+        nullable: true
+        description: Raw JSON list items array preserving nesting hierarchy (childListItems)
+        expr:
+          kind: path
+          path:
+            - body
+            - list
+            - listItems
+      - name: attachments
+        type: Json
+        nullable: true
+        description: Raw JSON array of attachments associated with the note
+        expr:
+          kind: path
+          path:
+            - attachments
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw note object from Google Keep API
+        expr:
+          kind: current_row
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter string used to filter the Keep notes list
+        expr:
+          kind: from_filter
+          key: filter
