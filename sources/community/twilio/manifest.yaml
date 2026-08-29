@@ -1,0 +1,1776 @@
+name: twilio
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query messages, calls, phone numbers, recordings, conferences, queues,
+  applications, caller IDs, accounts, and usage records from Twilio.
+inputs:
+  TWILIO_ACCOUNT_SID:
+    kind: variable
+    hint: |
+      Twilio Account SID whose resources should be queried. Account SIDs
+      start with `AC`; find yours in the Twilio Console account dashboard.
+  TWILIO_API_KEY:
+    kind: variable
+    hint: |
+      Twilio API key SID to use as the HTTP Basic username. API key SIDs
+      usually start with `SK`. Twilio recommends API keys for production.
+      For local testing, you can use your Account SID here.
+  TWILIO_API_KEY_SECRET:
+    kind: secret
+    hint: |
+      Twilio API key secret for `TWILIO_API_KEY`. For local testing with
+      Account SID authentication, use your Auth Token instead. Prefer a
+      Restricted API key with only the read/list permissions for the
+      resources you plan to query. See https://www.twilio.com/docs/usage/requests-to-twilio.
+base_url: https://api.twilio.com
+auth:
+  type: BasicAuth
+  username: "{{input.TWILIO_API_KEY}}"
+  password: "{{input.TWILIO_API_KEY_SECRET}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM twilio.messages LIMIT 1
+  - SELECT * FROM twilio.usage_records LIMIT 1
+tables:
+  - name: accounts
+    description: Twilio accounts and subaccounts visible to the credential
+    guide: |
+      Lists the main account and subaccounts visible to the credential.
+      Standard API keys cannot access `/Accounts`; use Account SID/Auth Token
+      or a key type with account read access when querying this table.
+    filters:
+      - name: friendly_name
+        required: false
+      - name: status
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts.json
+      query:
+        - name: FriendlyName
+          from: filter
+          key: friendly_name
+        - name: Status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - accounts
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Account SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: friendly_name
+        type: Utf8
+        nullable: true
+        description: Human-readable account name
+        expr:
+          kind: path
+          path: [friendly_name]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Account status, such as active, suspended, or closed
+        expr:
+          kind: path
+          path: [status]
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Account type
+        expr:
+          kind: path
+          path: [type]
+      - name: owner_account_sid
+        type: Utf8
+        nullable: true
+        description: Parent account SID
+        expr:
+          kind: path
+          path: [owner_account_sid]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: subresource_uris
+        type: Json
+        nullable: true
+        description: Related account resource URIs
+        expr:
+          kind: path
+          path: [subresource_uris]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this account
+        expr:
+          kind: path
+          path: [uri]
+      - name: friendly_name_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional exact friendly name filter
+        expr:
+          kind: from_filter
+          key: friendly_name
+      - name: status_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional status filter
+        expr:
+          kind: from_filter
+          key: status
+
+  - name: messages
+    description: Twilio SMS, MMS, WhatsApp, and channel message records
+    guide: |
+      Each row is one Message resource. Results are newest first according to
+      Twilio. Use `to_number`, `from_number`, and date filters to avoid broad
+      scans on busy accounts. Message body and phone number fields can contain
+      PII.
+    filters:
+      - name: to_number
+        required: false
+      - name: from_number
+        required: false
+      - name: date_sent
+        required: false
+      - name: date_sent_after
+        required: false
+      - name: date_sent_before
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Messages.json
+      query:
+        - name: To
+          from: filter
+          key: to_number
+        - name: From
+          from: filter
+          key: from_number
+        - name: DateSent
+          from: filter
+          key: date_sent
+        - name: "DateSent>"
+          from: filter
+          key: date_sent_after
+        - name: "DateSent<"
+          from: filter
+          key: date_sent_before
+    response:
+      rows_path:
+        - messages
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Message SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that owns the message
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: messaging_service_sid
+        type: Utf8
+        nullable: true
+        description: Messaging Service SID, when used
+        expr:
+          kind: path
+          path: [messaging_service_sid]
+      - name: direction
+        type: Utf8
+        nullable: true
+        description: Message direction
+        expr:
+          kind: path
+          path: [direction]
+      - name: from_number
+        type: Utf8
+        nullable: true
+        description: Sender address or phone number
+        expr:
+          kind: path
+          path: [from]
+      - name: to_number
+        type: Utf8
+        nullable: true
+        description: Recipient address or phone number
+        expr:
+          kind: path
+          path: [to]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Message delivery status
+        expr:
+          kind: path
+          path: [status]
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Message body text
+        expr:
+          kind: path
+          path: [body]
+      - name: num_segments
+        type: Utf8
+        nullable: true
+        description: Number of billable message segments
+        expr:
+          kind: path
+          path: [num_segments]
+      - name: num_media
+        type: Utf8
+        nullable: true
+        description: Number of media attachments
+        expr:
+          kind: path
+          path: [num_media]
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Message price as returned by Twilio
+        expr:
+          kind: path
+          path: [price]
+      - name: price_unit
+        type: Utf8
+        nullable: true
+        description: Currency for price
+        expr:
+          kind: path
+          path: [price_unit]
+      - name: error_code
+        type: Utf8
+        nullable: true
+        description: Twilio error code, when delivery failed
+        expr:
+          kind: path
+          path: [error_code]
+      - name: error_message
+        type: Utf8
+        nullable: true
+        description: Twilio error message, when available
+        expr:
+          kind: path
+          path: [error_message]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: date_sent
+        type: Utf8
+        nullable: true
+        description: Date the message was sent
+        expr:
+          kind: path
+          path: [date_sent]
+      - name: api_version
+        type: Utf8
+        nullable: true
+        description: Twilio API version
+        expr:
+          kind: path
+          path: [api_version]
+      - name: subresource_uris
+        type: Json
+        nullable: true
+        description: Related message subresource URIs
+        expr:
+          kind: path
+          path: [subresource_uris]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this message
+        expr:
+          kind: path
+          path: [uri]
+      - name: date_sent_after
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional DateSent greater-than filter
+        expr:
+          kind: from_filter
+          key: date_sent_after
+      - name: date_sent_before
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional DateSent less-than filter
+        expr:
+          kind: from_filter
+          key: date_sent_before
+
+  - name: calls
+    description: Twilio Programmable Voice call records
+    guide: |
+      Each row is one Call resource. Twilio call records are retained by the
+      Calls endpoint for a limited period; older records require Twilio Bulk
+      Export. Use filters such as `status`, `to_number`, `from_number`, and
+      start time filters to scope large accounts.
+    filters:
+      - name: to_number
+        required: false
+      - name: from_number
+        required: false
+      - name: status
+        required: false
+      - name: parent_call_sid
+        required: false
+      - name: start_time
+        required: false
+      - name: start_time_after
+        required: false
+      - name: start_time_before
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Calls.json
+      query:
+        - name: To
+          from: filter
+          key: to_number
+        - name: From
+          from: filter
+          key: from_number
+        - name: Status
+          from: filter
+          key: status
+        - name: ParentCallSid
+          from: filter
+          key: parent_call_sid
+        - name: StartTime
+          from: filter
+          key: start_time
+        - name: "StartTime>"
+          from: filter
+          key: start_time_after
+        - name: "StartTime<"
+          from: filter
+          key: start_time_before
+    response:
+      rows_path:
+        - calls
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Call SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: parent_call_sid
+        type: Utf8
+        nullable: true
+        description: Parent call SID, when this is a child leg
+        expr:
+          kind: path
+          path: [parent_call_sid]
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that owns the call
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: to_number
+        type: Utf8
+        nullable: true
+        description: Destination number or client identifier
+        expr:
+          kind: path
+          path: [to]
+      - name: from_number
+        type: Utf8
+        nullable: true
+        description: Source number or client identifier
+        expr:
+          kind: path
+          path: [from]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Call status
+        expr:
+          kind: path
+          path: [status]
+      - name: direction
+        type: Utf8
+        nullable: true
+        description: Call direction
+        expr:
+          kind: path
+          path: [direction]
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: Call duration in seconds as returned by Twilio
+        expr:
+          kind: path
+          path: [duration]
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Call price as returned by Twilio
+        expr:
+          kind: path
+          path: [price]
+      - name: price_unit
+        type: Utf8
+        nullable: true
+        description: Currency for price
+        expr:
+          kind: path
+          path: [price_unit]
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: Call start timestamp
+        expr:
+          kind: path
+          path: [start_time]
+      - name: end_time
+        type: Utf8
+        nullable: true
+        description: Call end timestamp
+        expr:
+          kind: path
+          path: [end_time]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: answered_by
+        type: Utf8
+        nullable: true
+        description: Answering machine detection result, when present
+        expr:
+          kind: path
+          path: [answered_by]
+      - name: caller_name
+        type: Utf8
+        nullable: true
+        description: Caller ID name, when available
+        expr:
+          kind: path
+          path: [caller_name]
+      - name: forwarded_from
+        type: Utf8
+        nullable: true
+        description: Original forwarding number, when available
+        expr:
+          kind: path
+          path: [forwarded_from]
+      - name: phone_number_sid
+        type: Utf8
+        nullable: true
+        description: Twilio phone number SID involved in the call
+        expr:
+          kind: path
+          path: [phone_number_sid]
+      - name: group_sid
+        type: Utf8
+        nullable: true
+        description: Group SID for related call legs
+        expr:
+          kind: path
+          path: [group_sid]
+      - name: queue_time
+        type: Utf8
+        nullable: true
+        description: Queue time as returned by Twilio
+        expr:
+          kind: path
+          path: [queue_time]
+      - name: subresource_uris
+        type: Json
+        nullable: true
+        description: Related call subresource URIs
+        expr:
+          kind: path
+          path: [subresource_uris]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this call
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: incoming_phone_numbers
+    description: Twilio phone numbers provisioned, ported, or hosted on the account
+    guide: |
+      Inventory active Twilio numbers and their voice/SMS webhook
+      configuration. Phone numbers and webhook URLs can be sensitive.
+    filters:
+      - name: phone_number
+        required: false
+      - name: friendly_name
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/IncomingPhoneNumbers.json
+      query:
+        - name: PhoneNumber
+          from: filter
+          key: phone_number
+        - name: FriendlyName
+          from: filter
+          key: friendly_name
+    response:
+      rows_path:
+        - incoming_phone_numbers
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Phone number SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that owns the number
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: friendly_name
+        type: Utf8
+        nullable: true
+        description: Human-readable phone number name
+        expr:
+          kind: path
+          path: [friendly_name]
+      - name: phone_number
+        type: Utf8
+        nullable: true
+        description: E.164 phone number
+        expr:
+          kind: path
+          path: [phone_number]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Number status
+        expr:
+          kind: path
+          path: [status]
+      - name: origin
+        type: Utf8
+        nullable: true
+        description: Number origin
+        expr:
+          kind: path
+          path: [origin]
+      - name: capabilities
+        type: Json
+        nullable: true
+        description: Voice, SMS, MMS, and fax capabilities
+        expr:
+          kind: path
+          path: [capabilities]
+      - name: voice_url
+        type: Utf8
+        nullable: true
+        description: Voice webhook URL
+        expr:
+          kind: path
+          path: [voice_url]
+      - name: voice_method
+        type: Utf8
+        nullable: true
+        description: Voice webhook HTTP method
+        expr:
+          kind: path
+          path: [voice_method]
+      - name: sms_url
+        type: Utf8
+        nullable: true
+        description: SMS webhook URL
+        expr:
+          kind: path
+          path: [sms_url]
+      - name: sms_method
+        type: Utf8
+        nullable: true
+        description: SMS webhook HTTP method
+        expr:
+          kind: path
+          path: [sms_method]
+      - name: sms_application_sid
+        type: Utf8
+        nullable: true
+        description: Application SID that handles inbound SMS for this number
+        expr:
+          kind: path
+          path: [sms_application_sid]
+      - name: voice_application_sid
+        type: Utf8
+        nullable: true
+        description: Application SID that handles inbound calls for this number
+        expr:
+          kind: path
+          path: [voice_application_sid]
+      - name: trunk_sid
+        type: Utf8
+        nullable: true
+        description: Attached Elastic SIP Trunk SID
+        expr:
+          kind: path
+          path: [trunk_sid]
+      - name: bundle_sid
+        type: Utf8
+        nullable: true
+        description: Regulatory bundle SID
+        expr:
+          kind: path
+          path: [bundle_sid]
+      - name: emergency_status
+        type: Utf8
+        nullable: true
+        description: Emergency calling status
+        expr:
+          kind: path
+          path: [emergency_status]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this phone number
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: recordings
+    description: Voice call, conference, and SIP Trunk recordings
+    guide: |
+      Lists Recording metadata, not binary media. Use `call_sid`,
+      `conference_sid`, or date filters to scope results. Recording metadata
+      and media URLs can identify sensitive conversations.
+    filters:
+      - name: call_sid
+        required: false
+      - name: conference_sid
+        required: false
+      - name: date_created
+        required: false
+      - name: date_created_after
+        required: false
+      - name: date_created_before
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Recordings.json
+      query:
+        - name: CallSid
+          from: filter
+          key: call_sid
+        - name: ConferenceSid
+          from: filter
+          key: conference_sid
+        - name: DateCreated
+          from: filter
+          key: date_created
+        - name: "DateCreated>"
+          from: filter
+          key: date_created_after
+        - name: "DateCreated<"
+          from: filter
+          key: date_created_before
+    response:
+      rows_path:
+        - recordings
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Recording SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that owns the recording
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: call_sid
+        type: Utf8
+        nullable: true
+        description: Related call SID
+        expr:
+          kind: path
+          path: [call_sid]
+      - name: conference_sid
+        type: Utf8
+        nullable: true
+        description: Related conference SID
+        expr:
+          kind: path
+          path: [conference_sid]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Recording status
+        expr:
+          kind: path
+          path: [status]
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Recording source
+        expr:
+          kind: path
+          path: [source]
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: Recording duration in seconds as returned by Twilio
+        expr:
+          kind: path
+          path: [duration]
+      - name: channels
+        type: Int64
+        nullable: true
+        description: Number of recording channels
+        expr:
+          kind: path
+          path: [channels]
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Recording price as returned by Twilio
+        expr:
+          kind: path
+          path: [price]
+      - name: price_unit
+        type: Utf8
+        nullable: true
+        description: Currency for price
+        expr:
+          kind: path
+          path: [price_unit]
+      - name: error_code
+        type: Utf8
+        nullable: true
+        description: Error code when recording is absent or failed
+        expr:
+          kind: path
+          path: [error_code]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: Recording start timestamp
+        expr:
+          kind: path
+          path: [start_time]
+      - name: media_url
+        type: Utf8
+        nullable: true
+        description: Recording media URL, when provided
+        expr:
+          kind: path
+          path: [media_url]
+      - name: encryption_details
+        type: Json
+        nullable: true
+        description: Recording encryption metadata, when encrypted
+        expr:
+          kind: path
+          path: [encryption_details]
+      - name: subresource_uris
+        type: Json
+        nullable: true
+        description: Related recording subresource URIs
+        expr:
+          kind: path
+          path: [subresource_uris]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this recording
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: conferences
+    description: Twilio Programmable Voice conference records
+    guide: |
+      Use this table to inspect conference lifecycle state and discover
+      conference SIDs for related recordings or participant APIs.
+    filters:
+      - name: friendly_name
+        required: false
+      - name: status
+        required: false
+      - name: date_created
+        required: false
+      - name: date_created_after
+        required: false
+      - name: date_created_before
+        required: false
+      - name: date_updated
+        required: false
+      - name: date_updated_after
+        required: false
+      - name: date_updated_before
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Conferences.json
+      query:
+        - name: FriendlyName
+          from: filter
+          key: friendly_name
+        - name: Status
+          from: filter
+          key: status
+        - name: DateCreated
+          from: filter
+          key: date_created
+        - name: "DateCreated>"
+          from: filter
+          key: date_created_after
+        - name: "DateCreated<"
+          from: filter
+          key: date_created_before
+        - name: DateUpdated
+          from: filter
+          key: date_updated
+        - name: "DateUpdated>"
+          from: filter
+          key: date_updated_after
+        - name: "DateUpdated<"
+          from: filter
+          key: date_updated_before
+    response:
+      rows_path:
+        - conferences
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Conference SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that owns the conference
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: friendly_name
+        type: Utf8
+        nullable: true
+        description: Conference friendly name
+        expr:
+          kind: path
+          path: [friendly_name]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Conference status
+        expr:
+          kind: path
+          path: [status]
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Conference region
+        expr:
+          kind: path
+          path: [region]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: api_version
+        type: Utf8
+        nullable: true
+        description: Twilio API version
+        expr:
+          kind: path
+          path: [api_version]
+      - name: subresource_uris
+        type: Json
+        nullable: true
+        description: Related conference subresource URIs
+        expr:
+          kind: path
+          path: [subresource_uris]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this conference
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: queues
+    description: Twilio Voice queues
+    guide: |
+      Queues are call queues that persist until deleted. Use this table for
+      live queue size and wait-time snapshots.
+    filters:
+      - name: friendly_name
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Queues.json
+      query:
+        - name: FriendlyName
+          from: filter
+          key: friendly_name
+    response:
+      rows_path:
+        - queues
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Queue SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that owns the queue
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: friendly_name
+        type: Utf8
+        nullable: true
+        description: Queue friendly name
+        expr:
+          kind: path
+          path: [friendly_name]
+      - name: current_size
+        type: Int64
+        nullable: true
+        description: Number of calls currently in the queue
+        expr:
+          kind: path
+          path: [current_size]
+      - name: average_wait_time
+        type: Int64
+        nullable: true
+        description: Average wait time in seconds
+        expr:
+          kind: path
+          path: [average_wait_time]
+      - name: max_size
+        type: Int64
+        nullable: true
+        description: Maximum queue size
+        expr:
+          kind: path
+          path: [max_size]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this queue
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: applications
+    description: Twilio TwiML applications
+    guide: |
+      Applications hold reusable voice and messaging webhook configuration.
+      Use this table to audit configured callback URLs and methods.
+    filters:
+      - name: friendly_name
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Applications.json
+      query:
+        - name: FriendlyName
+          from: filter
+          key: friendly_name
+    response:
+      rows_path:
+        - applications
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Application SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that owns the application
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: friendly_name
+        type: Utf8
+        nullable: true
+        description: Application friendly name
+        expr:
+          kind: path
+          path: [friendly_name]
+      - name: voice_url
+        type: Utf8
+        nullable: true
+        description: Voice webhook URL
+        expr:
+          kind: path
+          path: [voice_url]
+      - name: voice_method
+        type: Utf8
+        nullable: true
+        description: Voice webhook HTTP method
+        expr:
+          kind: path
+          path: [voice_method]
+      - name: sms_url
+        type: Utf8
+        nullable: true
+        description: SMS webhook URL
+        expr:
+          kind: path
+          path: [sms_url]
+      - name: sms_method
+        type: Utf8
+        nullable: true
+        description: SMS webhook HTTP method
+        expr:
+          kind: path
+          path: [sms_method]
+      - name: status_callback
+        type: Utf8
+        nullable: true
+        description: Status callback URL
+        expr:
+          kind: path
+          path: [status_callback]
+      - name: status_callback_method
+        type: Utf8
+        nullable: true
+        description: Status callback HTTP method
+        expr:
+          kind: path
+          path: [status_callback_method]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: api_version
+        type: Utf8
+        nullable: true
+        description: Twilio API version
+        expr:
+          kind: path
+          path: [api_version]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this application
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: outgoing_caller_ids
+    description: Verified outbound caller IDs on the account
+    guide: |
+      Use this table to audit caller IDs verified for outbound calls.
+      Phone number values can be sensitive.
+    filters:
+      - name: phone_number
+        required: false
+      - name: friendly_name
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/OutgoingCallerIds.json
+      query:
+        - name: PhoneNumber
+          from: filter
+          key: phone_number
+        - name: FriendlyName
+          from: filter
+          key: friendly_name
+    response:
+      rows_path:
+        - outgoing_caller_ids
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Outgoing caller ID SID
+        expr:
+          kind: path
+          path: [sid]
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that owns the caller ID
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: friendly_name
+        type: Utf8
+        nullable: true
+        description: Caller ID friendly name
+        expr:
+          kind: path
+          path: [friendly_name]
+      - name: phone_number
+        type: Utf8
+        nullable: true
+        description: Verified phone number
+        expr:
+          kind: path
+          path: [phone_number]
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: Creation timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_created]
+      - name: date_updated
+        type: Utf8
+        nullable: true
+        description: Last update timestamp from Twilio
+        expr:
+          kind: path
+          path: [date_updated]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this caller ID
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: usage_records
+    description: Twilio usage totals by category for the account
+    guide: |
+      Returns all-time UsageRecord rows by default, or rows narrowed by
+      `category`, `start_date`, and `end_date`. For time-bucketed usage,
+      query `usage_records_daily` or `usage_records_monthly`.
+    filters:
+      - name: category
+        required: false
+      - name: start_date
+        required: false
+      - name: end_date
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Usage/Records.json
+      query:
+        - name: Category
+          from: filter
+          key: category
+        - name: StartDate
+          from: filter
+          key: start_date
+        - name: EndDate
+          from: filter
+          key: end_date
+    response:
+      rows_path:
+        - usage_records
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that accrued the usage
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Usage category
+        expr:
+          kind: path
+          path: [category]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable usage category description
+        expr:
+          kind: path
+          path: [description]
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: First usage date included
+        expr:
+          kind: path
+          path: [start_date]
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Last usage date included
+        expr:
+          kind: path
+          path: [end_date]
+      - name: as_of
+        type: Utf8
+        nullable: true
+        description: Usage freshness timestamp
+        expr:
+          kind: path
+          path: [as_of]
+      - name: usage
+        type: Utf8
+        nullable: true
+        description: Billable usage amount
+        expr:
+          kind: path
+          path: [usage]
+      - name: usage_unit
+        type: Utf8
+        nullable: true
+        description: Unit for usage
+        expr:
+          kind: path
+          path: [usage_unit]
+      - name: count
+        type: Utf8
+        nullable: true
+        description: Event count
+        expr:
+          kind: path
+          path: [count]
+      - name: count_unit
+        type: Utf8
+        nullable: true
+        description: Unit for count
+        expr:
+          kind: path
+          path: [count_unit]
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Total price for the usage row
+        expr:
+          kind: path
+          path: [price]
+      - name: price_unit
+        type: Utf8
+        nullable: true
+        description: Currency for price
+        expr:
+          kind: path
+          path: [price_unit]
+      - name: api_version
+        type: Utf8
+        nullable: true
+        description: Twilio API version
+        expr:
+          kind: path
+          path: [api_version]
+      - name: subresource_uris
+        type: Json
+        nullable: true
+        description: Related usage subresource URIs
+        expr:
+          kind: path
+          path: [subresource_uris]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this usage record
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: usage_records_daily
+    description: Daily Twilio usage records by category
+    guide: |
+      Returns one UsageRecord per usage category per day over the requested
+      date range. Use `category`, `start_date`, and `end_date` to keep result
+      sets bounded.
+    filters:
+      - name: category
+        required: false
+      - name: start_date
+        required: false
+      - name: end_date
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Usage/Records/Daily.json
+      query:
+        - name: Category
+          from: filter
+          key: category
+        - name: StartDate
+          from: filter
+          key: start_date
+        - name: EndDate
+          from: filter
+          key: end_date
+    response:
+      rows_path:
+        - usage_records
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that accrued the usage
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Usage category
+        expr:
+          kind: path
+          path: [category]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable usage category description
+        expr:
+          kind: path
+          path: [description]
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: First usage date included
+        expr:
+          kind: path
+          path: [start_date]
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Last usage date included
+        expr:
+          kind: path
+          path: [end_date]
+      - name: as_of
+        type: Utf8
+        nullable: true
+        description: Usage freshness timestamp
+        expr:
+          kind: path
+          path: [as_of]
+      - name: usage
+        type: Utf8
+        nullable: true
+        description: Billable usage amount
+        expr:
+          kind: path
+          path: [usage]
+      - name: usage_unit
+        type: Utf8
+        nullable: true
+        description: Unit for usage
+        expr:
+          kind: path
+          path: [usage_unit]
+      - name: count
+        type: Utf8
+        nullable: true
+        description: Event count
+        expr:
+          kind: path
+          path: [count]
+      - name: count_unit
+        type: Utf8
+        nullable: true
+        description: Unit for count
+        expr:
+          kind: path
+          path: [count_unit]
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Total price for the usage row
+        expr:
+          kind: path
+          path: [price]
+      - name: price_unit
+        type: Utf8
+        nullable: true
+        description: Currency for price
+        expr:
+          kind: path
+          path: [price_unit]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this usage record
+        expr:
+          kind: path
+          path: [uri]
+
+  - name: usage_records_monthly
+    description: Monthly Twilio usage records by category
+    guide: |
+      Returns one UsageRecord per usage category per month over the requested
+      date range. Use this table for invoice-style summaries.
+    filters:
+      - name: category
+        required: false
+      - name: start_date
+        required: false
+      - name: end_date
+        required: false
+    request:
+      method: GET
+      path: /2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}/Usage/Records/Monthly.json
+      query:
+        - name: Category
+          from: filter
+          key: category
+        - name: StartDate
+          from: filter
+          key: start_date
+        - name: EndDate
+          from: filter
+          key: end_date
+    response:
+      rows_path:
+        - usage_records
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: Page
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    columns:
+      - name: account_sid
+        type: Utf8
+        nullable: true
+        description: Account SID that accrued the usage
+        expr:
+          kind: path
+          path: [account_sid]
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Usage category
+        expr:
+          kind: path
+          path: [category]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable usage category description
+        expr:
+          kind: path
+          path: [description]
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: First usage date included
+        expr:
+          kind: path
+          path: [start_date]
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Last usage date included
+        expr:
+          kind: path
+          path: [end_date]
+      - name: as_of
+        type: Utf8
+        nullable: true
+        description: Usage freshness timestamp
+        expr:
+          kind: path
+          path: [as_of]
+      - name: usage
+        type: Utf8
+        nullable: true
+        description: Billable usage amount
+        expr:
+          kind: path
+          path: [usage]
+      - name: usage_unit
+        type: Utf8
+        nullable: true
+        description: Unit for usage
+        expr:
+          kind: path
+          path: [usage_unit]
+      - name: count
+        type: Utf8
+        nullable: true
+        description: Event count
+        expr:
+          kind: path
+          path: [count]
+      - name: count_unit
+        type: Utf8
+        nullable: true
+        description: Unit for count
+        expr:
+          kind: path
+          path: [count_unit]
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Total price for the usage row
+        expr:
+          kind: path
+          path: [price]
+      - name: price_unit
+        type: Utf8
+        nullable: true
+        description: Currency for price
+        expr:
+          kind: path
+          path: [price_unit]
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Relative URI for this usage record
+        expr:
+          kind: path
+          path: [uri]
