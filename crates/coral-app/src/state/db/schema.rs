@@ -159,7 +159,6 @@ pub(in crate::state::db) enum SourceTombstones {
 }
 
 #[derive(Iden)]
-#[expect(dead_code, reason = "source repositories wire these next")]
 pub(in crate::state::db) enum SourceManifests {
     Table,
     WorkspaceId,
@@ -170,7 +169,6 @@ pub(in crate::state::db) enum SourceManifests {
 }
 
 #[derive(Iden)]
-#[expect(dead_code, reason = "source repositories wire these next")]
 pub(in crate::state::db) enum Materializations {
     Table,
     WorkspaceId,

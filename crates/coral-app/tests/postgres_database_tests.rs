@@ -249,6 +249,217 @@ async fn assert_workspace_deletion_cascades_tombstones(pool: &PgPool) {
     );
 }
 
+/// Pins the source artifact tables against the schema a real Postgres-configured
+/// boot leaves behind.
+///
+/// `SourceManifestsRepo` and `MaterializationsRepo` are covered in-crate against
+/// both backends over a pool the harness migrates itself. What is asserted here
+/// is what only Postgres can answer: that `source_document_raw` is a real
+/// `bytea` and returns the bytes it was given rather than a text round trip,
+/// that the two optional artifact columns are the only nullable ones, and that
+/// removing a source — or the workspace above it — takes its artifacts with it.
+#[tokio::test]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run the source artifact write contract"]
+async fn source_artifacts_hold_their_write_contract_after_a_postgres_boot() {
+    let Some(database_url) = postgres_test_url() else {
+        return;
+    };
+    let temp = TempDir::new().expect("temp dir");
+    let server = ServerBuilder::new()
+        .with_config_dir(postgres_config_dir(&temp))
+        .start()
+        .await
+        .expect("start server with Postgres config");
+    let pool = PgPoolOptions::new()
+        .connect(&database_url)
+        .await
+        .expect("open Postgres database");
+
+    assert_manifest_round_trips_and_replaces_in_place(&pool).await;
+    assert_materialization_keeps_the_raw_document_byte_for_byte(&pool).await;
+    assert_optional_artifacts_are_the_only_nullable_columns(&pool).await;
+    assert_artifacts_cascade_from_the_source_and_the_workspace(&pool).await;
+
+    server.shutdown().await.expect("shutdown server");
+}
+
+/// A manifest reads back as what was written, a second write replaces it in
+/// place, and a manifest for a source this database does not have is refused.
+async fn assert_manifest_round_trips_and_replaces_in_place(pool: &PgPool) {
+    let (workspace_id, source_name) = install_source_with_children(pool).await;
+
+    upsert_manifest(
+        pool,
+        &workspace_id,
+        &source_name,
+        MANIFEST_YAML,
+        MANIFEST_HASH,
+        10,
+    )
+    .await
+    .expect("store manifest");
+    assert_eq!(
+        manifest_row(pool, &workspace_id, &source_name).await,
+        Some((MANIFEST_YAML.to_owned(), MANIFEST_HASH.to_owned(), 10))
+    );
+
+    upsert_manifest(
+        pool,
+        &workspace_id,
+        &source_name,
+        REPLACEMENT_MANIFEST_YAML,
+        REPLACEMENT_MANIFEST_HASH,
+        20,
+    )
+    .await
+    .expect("replace manifest");
+    assert_eq!(
+        manifest_row(pool, &workspace_id, &source_name).await,
+        Some((
+            REPLACEMENT_MANIFEST_YAML.to_owned(),
+            REPLACEMENT_MANIFEST_HASH.to_owned(),
+            20,
+        )),
+        "a manifest is replaced wholesale, so the write restates its timestamp"
+    );
+    assert_eq!(
+        artifact_counts(pool, &workspace_id).await,
+        (1, 0),
+        "a source has one manifest, however many times it is written"
+    );
+
+    assert!(
+        upsert_manifest(
+            pool,
+            &workspace_id,
+            "source_this_database_never_installed",
+            MANIFEST_YAML,
+            MANIFEST_HASH,
+            10,
+        )
+        .await
+        .is_err(),
+        "a manifest hangs off a catalog row, so one without a source must be refused"
+    );
+}
+
+/// The raw source document survives Postgres as the bytes it went in as, out of
+/// a column that is genuinely `bytea` rather than text that happened to hold
+/// them, and a replacement restates those bytes rather than appending a row.
+async fn assert_materialization_keeps_the_raw_document_byte_for_byte(pool: &PgPool) {
+    let (workspace_id, source_name) = install_source_with_children(pool).await;
+
+    let stored = MaterializationArtifacts {
+        fingerprint_yaml: Some("inputs:\n  - orders.sql\n".to_owned()),
+        diagnostics_yaml: Some("warnings: []\n".to_owned()),
+        source_document_raw: RAW_DOCUMENT.to_vec(),
+    };
+    upsert_materialization(pool, &workspace_id, &source_name, &stored, 10)
+        .await
+        .expect("store materialization");
+
+    let read_back = materialization_row(pool, &workspace_id, &source_name)
+        .await
+        .expect("a stored materialization reads back");
+    assert_eq!(
+        read_back.source_document_raw, RAW_DOCUMENT,
+        "the raw source document must survive Postgres byte for byte"
+    );
+    assert_eq!(
+        read_back,
+        MaterializationRow {
+            materialization_version: MATERIALIZATION_VERSION.to_owned(),
+            fingerprint_yaml: stored.fingerprint_yaml.clone(),
+            diagnostics_yaml: stored.diagnostics_yaml.clone(),
+            source_document_raw: RAW_DOCUMENT.to_vec(),
+            created_at_unix_nanos: 10,
+        }
+    );
+    assert_eq!(
+        artifact_column_type(pool, "source_document_raw").await,
+        "bytea",
+        "the raw document must be stored as bytes, not as a lossy text column"
+    );
+
+    let replacement = MaterializationArtifacts {
+        source_document_raw: REPLACEMENT_RAW_DOCUMENT.to_vec(),
+        ..stored
+    };
+    upsert_materialization(pool, &workspace_id, &source_name, &replacement, 20)
+        .await
+        .expect("replace materialization");
+    let replaced = materialization_row(pool, &workspace_id, &source_name)
+        .await
+        .expect("a replaced materialization reads back");
+    assert_eq!(replaced.source_document_raw, REPLACEMENT_RAW_DOCUMENT);
+    assert_eq!(replaced.created_at_unix_nanos, 20);
+    assert_eq!(
+        artifact_counts(pool, &workspace_id).await,
+        (0, 1),
+        "a source has one materialization, however many times it is written"
+    );
+}
+
+/// The fingerprint and the diagnostics are the only artifacts the v4 loader
+/// treats as optional, so they are the only columns the schema lets go missing —
+/// and a write without them stores SQL NULL rather than an empty string.
+async fn assert_optional_artifacts_are_the_only_nullable_columns(pool: &PgPool) {
+    assert_eq!(
+        nullable_columns(pool, "source_manifests").await,
+        Vec::<String>::new(),
+        "every part of a stored manifest is required"
+    );
+    assert_eq!(
+        nullable_columns(pool, "materializations").await,
+        ["diagnostics_yaml", "fingerprint_yaml"]
+    );
+
+    let (workspace_id, source_name) = install_source_with_children(pool).await;
+    let without_optionals = MaterializationArtifacts {
+        fingerprint_yaml: None,
+        diagnostics_yaml: None,
+        source_document_raw: RAW_DOCUMENT.to_vec(),
+    };
+    upsert_materialization(pool, &workspace_id, &source_name, &without_optionals, 10)
+        .await
+        .expect("store materialization without optionals");
+
+    let read_back = materialization_row(pool, &workspace_id, &source_name)
+        .await
+        .expect("a stored materialization reads back");
+    assert_eq!(read_back.fingerprint_yaml, None);
+    assert_eq!(read_back.diagnostics_yaml, None);
+}
+
+/// Removing a source takes its artifacts with it, and so does removing the
+/// workspace above it: the cascade runs the whole chain, not just one link.
+async fn assert_artifacts_cascade_from_the_source_and_the_workspace(pool: &PgPool) {
+    let (workspace_id, source_name) = install_source_with_children(pool).await;
+    write_both_artifacts(pool, &workspace_id, &source_name).await;
+    assert_eq!(artifact_counts(pool, &workspace_id).await, (1, 1));
+
+    delete_source(pool, &workspace_id, &source_name).await;
+    assert_eq!(
+        artifact_counts(pool, &workspace_id).await,
+        (0, 0),
+        "artifacts must not outlive the source row they describe"
+    );
+
+    let (workspace_id, source_name) = install_source_with_children(pool).await;
+    write_both_artifacts(pool, &workspace_id, &source_name).await;
+    sqlx::query("DELETE FROM workspaces WHERE id = $1")
+        .bind(&workspace_id)
+        .execute(pool)
+        .await
+        .expect("delete workspace");
+    assert_eq!(
+        artifact_counts(pool, &workspace_id).await,
+        (0, 0),
+        "artifacts must not outlive the workspace that scoped them"
+    );
+    assert_eq!(source_count(pool, &workspace_id).await, 0);
+}
+
 #[tokio::test]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run Postgres source inventory coverage"]
 async fn postgres_source_inventory_reads_information_schema_domain_columns_as_utf8() {
@@ -607,6 +818,225 @@ async fn tombstone_deleted_at(pool: &PgPool, workspace_id: &str, source_name: &s
     .fetch_optional(pool)
     .await
     .expect("read the deletion record")
+}
+
+/// Bytes chosen to break anything that round-trips a `bytea` through text: an
+/// embedded NUL, a lone `0xFF` that is not valid UTF-8, and a trailing NUL a
+/// C-style truncation would eat.
+const RAW_DOCUMENT: &[u8] = &[0x00, 0x01, 0xFF, 0xFE, b'y', b'a', b'm', b'l', 0x00];
+const REPLACEMENT_RAW_DOCUMENT: &[u8] = &[0xFF, 0x00, b'v', b'2'];
+
+const MANIFEST_YAML: &str = "dsl_version: 4\nname: orders\n";
+const REPLACEMENT_MANIFEST_YAML: &str = "dsl_version: 4\nname: shipments\n";
+
+/// The hash column holds opaque text here on purpose: which digest a manifest
+/// gets is the repository's business and is pinned in-crate, while what this
+/// file asserts is that the column carries whatever it was handed.
+const MANIFEST_HASH: &str = "0f4d1c3a";
+const REPLACEMENT_MANIFEST_HASH: &str = "9b27ae60";
+
+const MATERIALIZATION_VERSION: &str = "v4";
+
+/// The artifacts one materialization write varies. The rest of the row is the
+/// same fixed YAML every time, because what is under test is the columns rather
+/// than the artifact contents.
+struct MaterializationArtifacts {
+    fingerprint_yaml: Option<String>,
+    diagnostics_yaml: Option<String>,
+    source_document_raw: Vec<u8>,
+}
+
+/// One materialization row as Postgres hands it back.
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+struct MaterializationRow {
+    materialization_version: String,
+    fingerprint_yaml: Option<String>,
+    diagnostics_yaml: Option<String>,
+    source_document_raw: Vec<u8>,
+    created_at_unix_nanos: i64,
+}
+
+/// Stores one manifest, replacing any manifest already held for the source.
+async fn upsert_manifest(
+    pool: &PgPool,
+    workspace_id: &str,
+    source_name: &str,
+    manifest_yaml: &str,
+    manifest_hash: &str,
+    now_unix_nanos: i64,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO source_manifests (
+             workspace_id, source_name, manifest_yaml, manifest_hash, created_at_unix_nanos
+         )
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (workspace_id, source_name) DO UPDATE SET
+             manifest_yaml = EXCLUDED.manifest_yaml,
+             manifest_hash = EXCLUDED.manifest_hash,
+             created_at_unix_nanos = EXCLUDED.created_at_unix_nanos",
+    )
+    .bind(workspace_id)
+    .bind(source_name)
+    .bind(manifest_yaml)
+    .bind(manifest_hash)
+    .bind(now_unix_nanos)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+async fn manifest_row(
+    pool: &PgPool,
+    workspace_id: &str,
+    source_name: &str,
+) -> Option<(String, String, i64)> {
+    sqlx::query_as(
+        "SELECT manifest_yaml, manifest_hash, created_at_unix_nanos
+         FROM source_manifests
+         WHERE workspace_id = $1 AND source_name = $2",
+    )
+    .bind(workspace_id)
+    .bind(source_name)
+    .fetch_optional(pool)
+    .await
+    .expect("read the stored manifest")
+}
+
+/// Stores one materialization, replacing any row already held for the source.
+///
+/// The conflict clause restates only the columns these tests vary rather than
+/// transcribing the repository's, so the statement carries no copy of the
+/// repository's write that could drift out from under it. What is exercised
+/// here is the migrated table: its keys, its nullability, and its `bytea`.
+async fn upsert_materialization(
+    pool: &PgPool,
+    workspace_id: &str,
+    source_name: &str,
+    artifacts: &MaterializationArtifacts,
+    now_unix_nanos: i64,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO materializations (
+             workspace_id,
+             source_name,
+             materialization_version,
+             fingerprint_yaml,
+             projections_yaml,
+             diagnostics_yaml,
+             source_document_raw,
+             source_document_yaml,
+             semantic_ir_yaml,
+             operation_metadata_yaml,
+             created_at_unix_nanos
+         )
+         VALUES (
+             $1, $2, $3, $4, 'projections:\n  - name: orders\n', $5, $6,
+             'document:\n  kind: source\n', 'ir:\n  version: 4\n', 'operations: []\n', $7
+         )
+         ON CONFLICT (workspace_id, source_name) DO UPDATE SET
+             fingerprint_yaml = EXCLUDED.fingerprint_yaml,
+             diagnostics_yaml = EXCLUDED.diagnostics_yaml,
+             source_document_raw = EXCLUDED.source_document_raw,
+             created_at_unix_nanos = EXCLUDED.created_at_unix_nanos",
+    )
+    .bind(workspace_id)
+    .bind(source_name)
+    .bind(MATERIALIZATION_VERSION)
+    .bind(artifacts.fingerprint_yaml.as_deref())
+    .bind(artifacts.diagnostics_yaml.as_deref())
+    .bind(artifacts.source_document_raw.as_slice())
+    .bind(now_unix_nanos)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+async fn materialization_row(
+    pool: &PgPool,
+    workspace_id: &str,
+    source_name: &str,
+) -> Option<MaterializationRow> {
+    sqlx::query_as(
+        "SELECT materialization_version, fingerprint_yaml, diagnostics_yaml,
+                source_document_raw, created_at_unix_nanos
+         FROM materializations
+         WHERE workspace_id = $1 AND source_name = $2",
+    )
+    .bind(workspace_id)
+    .bind(source_name)
+    .fetch_optional(pool)
+    .await
+    .expect("read the stored materialization")
+}
+
+/// Writes one manifest and one materialization for a source, so a cascade has
+/// both artifact kinds to take with it.
+async fn write_both_artifacts(pool: &PgPool, workspace_id: &str, source_name: &str) {
+    upsert_manifest(
+        pool,
+        workspace_id,
+        source_name,
+        MANIFEST_YAML,
+        MANIFEST_HASH,
+        10,
+    )
+    .await
+    .expect("store manifest");
+    upsert_materialization(
+        pool,
+        workspace_id,
+        source_name,
+        &MaterializationArtifacts {
+            fingerprint_yaml: None,
+            diagnostics_yaml: None,
+            source_document_raw: RAW_DOCUMENT.to_vec(),
+        },
+        10,
+    )
+    .await
+    .expect("store materialization");
+}
+
+/// Counts a workspace's `(manifest, materialization)` rows.
+async fn artifact_counts(pool: &PgPool, workspace_id: &str) -> (i64, i64) {
+    let mut counts = [0_i64; 2];
+    for (slot, statement) in counts.iter_mut().zip([
+        "SELECT COUNT(*) FROM source_manifests WHERE workspace_id = $1",
+        "SELECT COUNT(*) FROM materializations WHERE workspace_id = $1",
+    ]) {
+        *slot = sqlx::query_scalar(statement)
+            .bind(workspace_id)
+            .fetch_one(pool)
+            .await
+            .expect("count artifact rows");
+    }
+    (counts[0], counts[1])
+}
+
+/// Reports the physical Postgres type of one `materializations` column.
+async fn artifact_column_type(pool: &PgPool, column: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT data_type FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'materializations'
+           AND column_name = $1",
+    )
+    .bind(column)
+    .fetch_one(pool)
+    .await
+    .expect("read the migrated column type")
+}
+
+/// Names the columns of one migrated table that accept SQL NULL.
+async fn nullable_columns(pool: &PgPool, table: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 AND is_nullable = 'YES'
+         ORDER BY column_name",
+    )
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .expect("read the migrated column nullability")
 }
 
 #[expect(
