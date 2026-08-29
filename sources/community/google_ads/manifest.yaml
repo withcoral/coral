@@ -1,0 +1,479 @@
+name: google_ads
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query campaigns, ad groups, ads, and performance metrics from Google Ads.
+inputs:
+  GOOGLE_ADS_API_BASE:
+    kind: variable
+    default: https://googleads.googleapis.com
+    hint: |
+      Base URL for the Google Ads API. Keep the default unless you are
+      testing against a mock Google Ads API.
+  GOOGLE_ADS_CUSTOMER_ID:
+    kind: variable
+    required: true
+    hint: |
+      Google Ads Customer ID (without hyphens, e.g. 1234567890).
+  GOOGLE_ADS_DEVELOPER_TOKEN:
+    kind: secret
+    required: true
+    hint: |
+      Developer token for your Google Ads developer account.
+  GOOGLE_ADS_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      OAuth 2.0 access token for the Google Ads API.
+      The guided OAuth flow requests the adwords scope.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Ads
+          description: Use Google OAuth to retrieve an Ads access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_ADS_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_ADS_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/adwords
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Ads OAuth access token.
+  GOOGLE_ADS_LOGIN_CUSTOMER_ID:
+    kind: variable
+    default: ""
+    hint: |
+      Manager account customer ID (without hyphens), required if accessing
+      the target customer ID via a manager account.
+base_url: "{{input.GOOGLE_ADS_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GOOGLE_ADS_ACCESS_TOKEN}}
+    - name: developer-token
+      from: template
+      template: "{{input.GOOGLE_ADS_DEVELOPER_TOKEN}}"
+    - name: login-customer-id
+      from: template
+      template: "{{input.GOOGLE_ADS_LOGIN_CUSTOMER_ID}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM google_ads.campaigns LIMIT 1
+tables:
+  - name: campaigns
+    description: Google Ads campaigns
+    guide: |
+      Lists campaigns in the Google Ads account.
+    request:
+      method: POST
+      path: /v18/customers/{{input.GOOGLE_ADS_CUSTOMER_ID}}/googleAds:search
+      body:
+        - path:
+            - query
+          from: literal
+          value: >-
+            SELECT campaign.id, campaign.name, campaign.status,
+            campaign.advertising_channel_type, campaign.start_date,
+            campaign.end_date FROM campaign
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the campaign
+        expr:
+          kind: path
+          path:
+            - campaign
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name of the campaign
+        expr:
+          kind: path
+          path:
+            - campaign
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Campaign status (e.g. ENABLED, PAUSED, REMOVED)
+        expr:
+          kind: path
+          path:
+            - campaign
+            - status
+      - name: advertising_channel_type
+        type: Utf8
+        nullable: true
+        description: Channel type (e.g. SEARCH, DISPLAY, SHOPPING)
+        expr:
+          kind: path
+          path:
+            - campaign
+            - advertisingChannelType
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Start date of the campaign (YYYY-MM-DD)
+        expr:
+          kind: path
+          path:
+            - campaign
+            - startDate
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: End date of the campaign (YYYY-MM-DD)
+        expr:
+          kind: path
+          path:
+            - campaign
+            - endDate
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw campaign object from Google Ads API
+        expr:
+          kind: current_row
+
+  - name: ad_groups
+    description: Google Ads ad groups
+    guide: |
+      Lists ad groups in the Google Ads account.
+    request:
+      method: POST
+      path: /v18/customers/{{input.GOOGLE_ADS_CUSTOMER_ID}}/googleAds:search
+      body:
+        - path:
+            - query
+          from: literal
+          value: >-
+            SELECT ad_group.id, ad_group.name, ad_group.status, ad_group.type,
+            ad_group.campaign, campaign.id, campaign.name FROM ad_group
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the ad group
+        expr:
+          kind: path
+          path:
+            - adGroup
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name of the ad group
+        expr:
+          kind: path
+          path:
+            - adGroup
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Ad group status (e.g. ENABLED, PAUSED, REMOVED)
+        expr:
+          kind: path
+          path:
+            - adGroup
+            - status
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Ad group type (e.g. SEARCH_STANDARD, DISPLAY_ACTIVE_VIEW)
+        expr:
+          kind: path
+          path:
+            - adGroup
+            - type
+      - name: campaign_id
+        type: Utf8
+        nullable: true
+        description: Associated campaign ID
+        expr:
+          kind: path
+          path:
+            - campaign
+            - id
+      - name: campaign_name
+        type: Utf8
+        nullable: true
+        description: Associated campaign name
+        expr:
+          kind: path
+          path:
+            - campaign
+            - name
+      - name: campaign_resource
+        type: Utf8
+        nullable: true
+        description: Associated campaign resource path name
+        expr:
+          kind: path
+          path:
+            - adGroup
+            - campaign
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw ad group object from Google Ads API
+        expr:
+          kind: current_row
+
+  - name: ads
+    description: Google Ads ads (ad group ads)
+    guide: |
+      Lists ads in the Google Ads account.
+    request:
+      method: POST
+      path: /v18/customers/{{input.GOOGLE_ADS_CUSTOMER_ID}}/googleAds:search
+      body:
+        - path:
+            - query
+          from: literal
+          value: >-
+            SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status,
+            ad_group_ad.ad.type, ad_group_ad.ad_group, ad_group.id,
+            campaign.id FROM ad_group_ad
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the ad
+        expr:
+          kind: path
+          path:
+            - adGroupAd
+            - ad
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name of the ad (if defined)
+        expr:
+          kind: path
+          path:
+            - adGroupAd
+            - ad
+            - name
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Ad status (e.g. ENABLED, PAUSED, REMOVED)
+        expr:
+          kind: path
+          path:
+            - adGroupAd
+            - status
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Ad type (e.g. RESPONSIVE_SEARCH_AD, TEXT_AD)
+        expr:
+          kind: path
+          path:
+            - adGroupAd
+            - ad
+            - type
+      - name: ad_group_id
+        type: Utf8
+        nullable: true
+        description: Associated ad group ID
+        expr:
+          kind: path
+          path:
+            - adGroup
+            - id
+      - name: campaign_id
+        type: Utf8
+        nullable: true
+        description: Associated campaign ID
+        expr:
+          kind: path
+          path:
+            - campaign
+            - id
+      - name: ad_group_resource
+        type: Utf8
+        nullable: true
+        description: Associated ad group resource path name
+        expr:
+          kind: path
+          path:
+            - adGroupAd
+            - adGroup
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw ad group ad object from Google Ads API
+        expr:
+          kind: current_row
+
+  - name: campaign_performance
+    description: Google Ads campaign performance reports
+    guide: |
+      Lists campaign performance report metrics. Requires `start_date` and `end_date`
+      filters in `YYYY-MM-DD` format to define the query date range.
+    filters:
+      - name: start_date
+        required: true
+        description: Start date filter in YYYY-MM-DD format (inclusive).
+      - name: end_date
+        required: true
+        description: End date filter in YYYY-MM-DD format (inclusive).
+    request:
+      method: POST
+      path: /v18/customers/{{input.GOOGLE_ADS_CUSTOMER_ID}}/googleAds:search
+      body:
+        - path:
+            - query
+          from: template
+          template: >-
+            SELECT campaign.id, campaign.name, segments.date, metrics.impressions,
+            metrics.clicks, metrics.cost_micros, metrics.conversions FROM campaign
+            WHERE segments.date BETWEEN '{{filter.start_date}}' AND '{{filter.end_date}}'
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: campaign_id
+        type: Utf8
+        nullable: false
+        description: Campaign ID
+        expr:
+          kind: path
+          path:
+            - campaign
+            - id
+      - name: campaign_name
+        type: Utf8
+        nullable: true
+        description: Campaign name
+        expr:
+          kind: path
+          path:
+            - campaign
+            - name
+      - name: date
+        type: Utf8
+        nullable: false
+        description: Date of performance metrics (YYYY-MM-DD)
+        expr:
+          kind: path
+          path:
+            - segments
+            - date
+      - name: impressions
+        type: Int64
+        nullable: true
+        description: Count of impressions
+        expr:
+          kind: path
+          path:
+            - metrics
+            - impressions
+      - name: clicks
+        type: Int64
+        nullable: true
+        description: Count of clicks
+        expr:
+          kind: path
+          path:
+            - metrics
+            - clicks
+      - name: cost_micros
+        type: Int64
+        nullable: true
+        description: Total cost in micros (millionths of currency unit)
+        expr:
+          kind: path
+          path:
+            - metrics
+            - costMicros
+      - name: conversions
+        type: Float64
+        nullable: true
+        description: Number of conversions
+        expr:
+          kind: path
+          path:
+            - metrics
+            - conversions
+      - name: start_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_filter
+          key: start_date
+      - name: end_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_filter
+          key: end_date
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw row object from Google Ads API
+        expr:
+          kind: current_row
