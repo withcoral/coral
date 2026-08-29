@@ -1,0 +1,520 @@
+dsl_version: 3
+name: circleci
+version: 0.2.0
+description: Query the current user, recent pipelines, pipeline workflows, and workflow
+  jobs from CircleCI API v2.
+backend: http
+inputs:
+  CIRCLECI_API_BASE:
+    kind: variable
+    default: https://circleci.com/api/v2
+    hint: 'Base URL for the CircleCI API v2.
+
+      '
+  CIRCLECI_TOKEN:
+    kind: secret
+    hint: 'Personal API token for CircleCI. Create a personal API token (not a project
+
+      token) with access to the organizations and projects you want to query.
+
+      This source queries user and organization-level endpoints like /me and
+
+      pipeline listings.
+
+
+      See the [CircleCI token guide](https://circleci.com/docs/managing-api-tokens/).'
+base_url: '{{input.CIRCLECI_API_BASE}}'
+auth:
+  type: HeaderAuth
+  headers:
+  - name: Circle-Token
+    from: template
+    template: '{{input.CIRCLECI_TOKEN}}'
+request_headers:
+- name: Accept
+  from: literal
+  value: application/json
+test_queries:
+- SELECT * FROM circleci.me LIMIT 1
+tables:
+- name: me
+  description: Current CircleCI user for the configured token
+  guide: 'Use this table to verify the token works and inspect the current user
+
+    identity before querying organization-scoped pipeline data.
+
+    '
+  request:
+    method: GET
+    path: /me
+  response:
+    allow_404_empty: false
+    row_strategy: direct
+  pagination:
+    mode: none
+  columns:
+  - name: id
+    type: Utf8
+    nullable: false
+    description: CircleCI user ID
+    expr:
+      kind: path
+      path:
+      - id
+  - name: login
+    type: Utf8
+    nullable: true
+    description: CircleCI login or VCS login
+    expr:
+      kind: path
+      path:
+      - login
+  - name: name
+    type: Utf8
+    nullable: true
+    description: Display name
+    expr:
+      kind: path
+      path:
+      - name
+  - name: avatar_url
+    type: Utf8
+    nullable: true
+    description: Avatar URL
+    expr:
+      kind: path
+      path:
+      - avatar_url
+  - name: raw
+    type: Json
+    nullable: false
+    description: Full raw user object
+    expr:
+      kind: current_row
+- name: me_collaborations
+  description: Organizations and teams the current user has access to
+  guide: 'Use this table to discover organization slugs that can be used as filters
+
+    in the pipelines table. Returns organizations and teams where the current
+
+    user is a member or collaborator.'
+  request:
+    method: GET
+    path: /me/collaborations
+  response:
+    rows_path:
+    - items
+    row_strategy: direct
+    allow_404_empty: false
+  pagination:
+    mode: cursor_query
+    cursor_param: page-token
+    response_cursor_path:
+    - next_page_token
+  columns:
+  - name: id
+    type: Utf8
+    nullable: false
+    description: Collaboration/organization ID
+    expr:
+      kind: path
+      path:
+      - id
+  - name: slug
+    type: Utf8
+    nullable: false
+    description: Organization slug for use with pipelines table
+    expr:
+      kind: path
+      path:
+      - slug
+  - name: name
+    type: Utf8
+    nullable: true
+    description: Organization name
+    expr:
+      kind: path
+      path:
+      - name
+  - name: avatar_url
+    type: Utf8
+    nullable: true
+    description: Organization avatar URL
+    expr:
+      kind: path
+      path:
+      - avatar_url
+  - name: raw
+    type: Json
+    nullable: false
+    description: Full raw collaboration object
+    expr:
+      kind: current_row
+- name: pipelines
+  description: Recent CircleCI pipelines for one organization
+  guide: 'Requires `org_slug`. This table is pipeline-centric and returns recent
+
+    pipelines for one organization slug, not authoritative project inventory.
+
+    '
+  filters:
+  - name: org_slug
+    required: true
+  request:
+    method: GET
+    path: /pipeline
+    query:
+    - name: org-slug
+      from: filter
+      key: org_slug
+  response:
+    rows_path:
+    - items
+    row_strategy: direct
+    allow_404_empty: false
+  pagination:
+    mode: cursor_query
+    cursor_param: page-token
+    response_cursor_path:
+    - next_page_token
+  columns:
+  - name: org_slug
+    type: Utf8
+    nullable: false
+    virtual: true
+    description: Organization slug filter
+    expr:
+      kind: from_filter
+      key: org_slug
+  - name: id
+    type: Utf8
+    nullable: false
+    description: Pipeline ID
+    expr:
+      kind: path
+      path:
+      - id
+  - name: number
+    type: Int64
+    nullable: true
+    description: Pipeline number
+    expr:
+      kind: path
+      path:
+      - number
+  - name: state
+    type: Utf8
+    nullable: true
+    description: Pipeline state
+    expr:
+      kind: path
+      path:
+      - state
+  - name: created_at
+    type: Timestamp
+    nullable: true
+    description: Creation time
+    expr:
+      kind: format_timestamp
+      input: iso8601
+      expr:
+        kind: path
+        path:
+        - created_at
+  - name: project_slug
+    type: Utf8
+    nullable: true
+    description: Project slug (VCS and organization context)
+    expr:
+      kind: path
+      path:
+      - project_slug
+  - name: updated_at
+    type: Timestamp
+    nullable: true
+    description: Last update time
+    expr:
+      kind: format_timestamp
+      input: iso8601
+      expr:
+        kind: path
+        path:
+        - updated_at
+  - name: trigger_parameters
+    type: Json
+    nullable: true
+    description: Pipeline trigger parameters
+    expr:
+      kind: path
+      path:
+      - trigger_parameters
+  - name: trigger
+    type: Json
+    nullable: true
+    description: Trigger metadata
+    expr:
+      kind: path
+      path:
+      - trigger
+  - name: vcs
+    type: Json
+    nullable: true
+    description: Version control metadata
+    expr:
+      kind: path
+      path:
+      - vcs
+  - name: errors
+    type: Json
+    nullable: true
+    description: Pipeline errors when present
+    expr:
+      kind: path
+      path:
+      - errors
+  - name: raw
+    type: Json
+    nullable: false
+    description: Full raw pipeline object
+    expr:
+      kind: current_row
+- name: pipeline_workflows
+  description: Workflow runs inside one CircleCI pipeline
+  guide: 'Requires `pipeline_id`. Use `circleci.pipelines` to discover pipeline
+
+    IDs, then query this table to inspect workflow outcomes.
+
+    '
+  filters:
+  - name: pipeline_id
+    required: true
+  request:
+    method: GET
+    path: /pipeline/{{filter.pipeline_id}}/workflow
+  response:
+    rows_path:
+    - items
+    row_strategy: direct
+    allow_404_empty: false
+  pagination:
+    mode: cursor_query
+    cursor_param: page-token
+    response_cursor_path:
+    - next_page_token
+  columns:
+  - name: pipeline_id
+    type: Utf8
+    nullable: false
+    virtual: true
+    description: Pipeline ID filter
+    expr:
+      kind: from_filter
+      key: pipeline_id
+  - name: id
+    type: Utf8
+    nullable: false
+    description: Workflow ID
+    expr:
+      kind: path
+      path:
+      - id
+  - name: name
+    type: Utf8
+    nullable: true
+    description: Workflow name
+    expr:
+      kind: path
+      path:
+      - name
+  - name: status
+    type: Utf8
+    nullable: true
+    description: Workflow status
+    expr:
+      kind: path
+      path:
+      - status
+  - name: created_at
+    type: Timestamp
+    nullable: true
+    description: Workflow creation time
+    expr:
+      kind: format_timestamp
+      input: iso8601
+      expr:
+        kind: path
+        path:
+        - created_at
+  - name: stopped_at
+    type: Timestamp
+    nullable: true
+    description: Workflow stop time when available
+    expr:
+      kind: format_timestamp
+      input: iso8601
+      expr:
+        kind: path
+        path:
+        - stopped_at
+  - name: project_slug
+    type: Utf8
+    nullable: true
+    description: Project slug associated with the workflow
+    expr:
+      kind: path
+      path:
+      - project_slug
+  - name: tag
+    type: Utf8
+    nullable: true
+    description: Workflow tag when present
+    expr:
+      kind: path
+      path:
+      - tag
+  - name: raw
+    type: Json
+    nullable: false
+    description: Full raw workflow object
+    expr:
+      kind: current_row
+- name: workflow_jobs
+  description: Job runs inside one CircleCI workflow
+  guide: 'Requires `workflow_id`. Use `circleci.pipeline_workflows` to discover
+
+    workflow IDs, then query this table to inspect individual jobs.
+
+    '
+  filters:
+  - name: workflow_id
+    required: true
+  request:
+    method: GET
+    path: /workflow/{{filter.workflow_id}}/job
+  response:
+    rows_path:
+    - items
+    row_strategy: direct
+    allow_404_empty: false
+  pagination:
+    mode: cursor_query
+    cursor_param: page-token
+    response_cursor_path:
+    - next_page_token
+  columns:
+  - name: workflow_id
+    type: Utf8
+    nullable: false
+    virtual: true
+    description: Workflow ID filter
+    expr:
+      kind: from_filter
+      key: workflow_id
+  - name: id
+    type: Utf8
+    nullable: false
+    description: Job ID
+    expr:
+      kind: path
+      path:
+      - id
+  - name: job_number
+    type: Int64
+    nullable: true
+    description: Job number
+    expr:
+      kind: path
+      path:
+      - job_number
+  - name: name
+    type: Utf8
+    nullable: true
+    description: Job name
+    expr:
+      kind: path
+      path:
+      - name
+  - name: status
+    type: Utf8
+    nullable: true
+    description: Job status
+    expr:
+      kind: path
+      path:
+      - status
+  - name: type
+    type: Utf8
+    nullable: true
+    description: Job type
+    expr:
+      kind: path
+      path:
+      - type
+  - name: started_at
+    type: Timestamp
+    nullable: true
+    description: Job start time
+    expr:
+      kind: format_timestamp
+      input: iso8601
+      expr:
+        kind: path
+        path:
+        - started_at
+  - name: stopped_at
+    type: Timestamp
+    nullable: true
+    description: Job stop time
+    expr:
+      kind: format_timestamp
+      input: iso8601
+      expr:
+        kind: path
+        path:
+        - stopped_at
+  - name: project_slug
+    type: Utf8
+    nullable: true
+    description: Project slug associated with the job
+    expr:
+      kind: path
+      path:
+      - project_slug
+  - name: approval_request_id
+    type: Utf8
+    nullable: true
+    description: Approval request ID for approval jobs
+    expr:
+      kind: path
+      path:
+      - approval_request_id
+  - name: approved_by
+    type: Utf8
+    nullable: true
+    description: User ID that approved the job
+    expr:
+      kind: path
+      path:
+      - approved_by
+  - name: dependencies
+    type: Json
+    nullable: true
+    description: Declared job dependencies
+    expr:
+      kind: path
+      path:
+      - dependencies
+  - name: requires
+    type: Json
+    nullable: true
+    description: Required upstream job outcomes
+    expr:
+      kind: path
+      path:
+      - requires
+  - name: raw
+    type: Json
+    nullable: false
+    description: Full raw job object
+    expr:
+      kind: current_row
