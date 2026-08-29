@@ -121,7 +121,6 @@ pub(in crate::state::db) enum GuiOnboardingCompletions {
 }
 
 #[derive(Iden)]
-#[expect(dead_code, reason = "source repositories wire these next")]
 pub(in crate::state::db) enum Sources {
     Table,
     WorkspaceId,
@@ -135,7 +134,6 @@ pub(in crate::state::db) enum Sources {
 }
 
 #[derive(Iden)]
-#[expect(dead_code, reason = "source repositories wire these next")]
 pub(in crate::state::db) enum SourceVariables {
     Table,
     WorkspaceId,
@@ -145,7 +143,6 @@ pub(in crate::state::db) enum SourceVariables {
 }
 
 #[derive(Iden)]
-#[expect(dead_code, reason = "source repositories wire these next")]
 pub(in crate::state::db) enum SourceSecretKeys {
     Table,
     WorkspaceId,
@@ -154,7 +151,6 @@ pub(in crate::state::db) enum SourceSecretKeys {
 }
 
 #[derive(Iden)]
-#[expect(dead_code, reason = "source repositories wire these next")]
 pub(in crate::state::db) enum SourceTombstones {
     Table,
     WorkspaceId,
