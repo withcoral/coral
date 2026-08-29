@@ -1,0 +1,225 @@
+name: clockify
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Clockify workspaces, projects, clients, tags, and users.
+
+inputs:
+  CLOCKIFY_API_KEY:
+    kind: secret
+    hint: >
+      Personal API Key from Clockify. Generate one at
+      https://app.clockify.me/user/preferences#advanced under API.
+  CLOCKIFY_WORKSPACE_ID:
+    kind: variable
+    hint: >
+      The ID of the Clockify workspace to query. You can find this by querying
+      the clockify.workspaces table or in your browser URL when logged in.
+
+base_url: https://api.clockify.me/api/v1
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Api-Key
+      from: template
+      template: "{{input.CLOCKIFY_API_KEY}}"
+
+test_queries:
+  - SELECT id, name FROM clockify.workspaces LIMIT 1
+  - SELECT id, name FROM clockify.projects LIMIT 1
+  - SELECT id, name FROM clockify.clients LIMIT 1
+  - SELECT id, name, email FROM clockify.users LIMIT 1
+  - SELECT id, name FROM clockify.tags LIMIT 1
+
+tables:
+  - name: workspaces
+    description: >
+      List of workspaces the authenticated user belongs to.
+    request:
+      method: GET
+      path: /workspaces
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique identifier of the workspace.
+      - name: name
+        type: Utf8
+        description: Name of the workspace.
+      - name: hourly_rate__amount
+        type: Int64
+        nullable: true
+        description: Default hourly rate amount.
+        expr:
+          kind: path
+          path:
+            - hourlyRate
+            - amount
+      - name: hourly_rate__currency
+        type: Utf8
+        nullable: true
+        description: Currency of the hourly rate.
+        expr:
+          kind: path
+          path:
+            - hourlyRate
+            - currency
+
+  - name: projects
+    description: >
+      List of projects in the configured workspace.
+    request:
+      method: GET
+      path: "/workspaces/{{input.CLOCKIFY_WORKSPACE_ID}}/projects"
+    pagination:
+      mode: page
+      page_param: page
+      page_step: 1
+      page_size:
+        default: 50
+        max: 5000
+        query_param: page-size
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique identifier of the project.
+      - name: name
+        type: Utf8
+        description: Name of the project.
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: ID of the client associated with the project.
+        expr:
+          kind: path
+          path:
+            - clientId
+      - name: workspace_id
+        type: Utf8
+        description: ID of the workspace the project belongs to.
+        expr:
+          kind: path
+          path:
+            - workspaceId
+      - name: billable
+        type: Boolean
+        description: Whether the project is billable by default.
+      - name: public
+        type: Boolean
+        description: Whether the project is public.
+      - name: color
+        type: Utf8
+        description: Color label of the project.
+      - name: note
+        type: Utf8
+        nullable: true
+        description: Note or description of the project.
+
+  - name: clients
+    description: >
+      List of clients in the configured workspace.
+    request:
+      method: GET
+      path: "/workspaces/{{input.CLOCKIFY_WORKSPACE_ID}}/clients"
+    pagination:
+      mode: page
+      page_param: page
+      page_step: 1
+      page_size:
+        default: 50
+        max: 5000
+        query_param: page-size
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique identifier of the client.
+      - name: name
+        type: Utf8
+        description: Name of the client.
+      - name: workspace_id
+        type: Utf8
+        description: ID of the workspace the client belongs to.
+        expr:
+          kind: path
+          path:
+            - workspaceId
+      - name: address
+        type: Utf8
+        nullable: true
+        description: Address of the client.
+      - name: note
+        type: Utf8
+        nullable: true
+        description: Note or description of the client.
+
+  - name: users
+    description: >
+      List of users in the configured workspace.
+    request:
+      method: GET
+      path: "/workspaces/{{input.CLOCKIFY_WORKSPACE_ID}}/users"
+    pagination:
+      mode: page
+      page_param: page
+      page_step: 1
+      page_size:
+        default: 50
+        max: 5000
+        query_param: page-size
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique identifier of the user.
+      - name: name
+        type: Utf8
+        description: Full name of the user.
+      - name: email
+        type: Utf8
+        description: Email address of the user.
+      - name: active_workspace
+        type: Utf8
+        description: ID of the user's active workspace.
+        expr:
+          kind: path
+          path:
+            - activeWorkspace
+      - name: default_workspace
+        type: Utf8
+        description: ID of the user's default workspace.
+        expr:
+          kind: path
+          path:
+            - defaultWorkspace
+      - name: status
+        type: Utf8
+        description: Status of the user in the workspace.
+
+  - name: tags
+    description: >
+      List of tags in the configured workspace.
+    request:
+      method: GET
+      path: "/workspaces/{{input.CLOCKIFY_WORKSPACE_ID}}/tags"
+    pagination:
+      mode: page
+      page_param: page
+      page_step: 1
+      page_size:
+        default: 50
+        max: 5000
+        query_param: page-size
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique identifier of the tag.
+      - name: name
+        type: Utf8
+        description: Name of the tag.
+      - name: workspace_id
+        type: Utf8
+        description: ID of the workspace the tag belongs to.
+        expr:
+          kind: path
+          path:
+            - workspaceId
