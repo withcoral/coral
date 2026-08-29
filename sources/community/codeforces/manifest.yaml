@@ -1,0 +1,467 @@
+# ============================================================
+# Codeforces — Coral Community Source Spec
+# ============================================================
+#
+# WHAT THIS FILE DOES:
+#   Teaches Coral SQL how to connect to the official Codeforces
+#   public API and expose competitive programming data as
+#   queryable SQL tables.
+#
+# AFTER THIS PR MERGES, anyone can run:
+#   coral sql "SELECT handle, rating, rank FROM codeforces.user_info
+#              WHERE handle = 'tourist'"
+#
+#   coral sql "SELECT problem_name, rating, tags
+#              FROM codeforces.submissions
+#              WHERE handle = 'tourist' AND verdict = 'OK'
+#              ORDER BY rating DESC"
+#
+# TABLES PROVIDED:
+#   codeforces.user_info    → profile, rating, rank, max rating
+#   codeforces.submissions  → full submission history with verdicts
+#   codeforces.rating       → contest participation + rating changes
+#   codeforces.contests     → upcoming and past contest list
+#
+# AUTH:
+#   No authentication required — Codeforces public API is open.
+#   User handle is passed as a query parameter.
+#
+# COLUMN NAMING:
+#   snake_case with expr.kind: path mapping to API response fields.
+#
+# Bounty submission for: https://github.com/withcoral/coral
+# ============================================================
+
+name: codeforces
+version: 0.1.0
+dsl_version: 3
+description: >
+  Query Codeforces competitive programming data using SQL.
+  Access user profiles, rating history, submission records,
+  and contest listings via the official public Codeforces API.
+  No authentication required — just pass a user handle as input.
+
+  ### Tables Provided
+
+  - `codeforces.user_info` -> profile, current rating, rank, and maximum achieved rankings.
+  - `codeforces.submissions` -> full submission history records containing verdicts, execution footprints, and question metadata.
+  - `codeforces.rating_history` -> contest-by-contest progression mapping rating updates over time.
+  - `codeforces.contests` -> comprehensive database of past completed and upcoming competitive contest timelines.
+
+  ### Example Queries
+
+  ```sql
+  SELECT handle, rating, rank FROM codeforces.user_info WHERE handle = 'tourist';
+  ```
+
+  ```sql
+  SELECT problem_name, problem_rating, language FROM codeforces.submissions WHERE handle = 'tourist' AND verdict = 'OK' ORDER BY problem_rating DESC;
+  ```
+backend: http
+
+# ── INPUTS ──────────────────────────────────────────────────
+# Coral asks the user for this once at setup.
+# Unlike Gmail/Calendar, Codeforces needs no secret token —
+# just the public handle of the user to query.
+inputs:
+  CODEFORCES_HANDLE:
+    kind: variable
+    hint: >
+      Your Codeforces handle (username).
+      Find it at https://codeforces.com/profile — it appears
+      at the top of your profile page next to your rating.
+      Example: tourist, jiangly, yashasvithakur2005
+
+# ── BASE URL ─────────────────────────────────────────────────
+# All Codeforces API endpoints share this base.
+# No trailing slash — paths in each table start with /api/
+base_url: "https://codeforces.com"
+
+# ── AUTH ─────────────────────────────────────────────────────
+# Codeforces public API requires no authentication.
+# All endpoints are open and rate-limited only by IP.
+# No auth block needed — omitted intentionally.
+
+# ── TABLES ───────────────────────────────────────────────────
+tables:
+
+  # ──────────────────────────────────────────────────────────
+  # TABLE 1: user_info
+  # ──────────────────────────────────────────────────────────
+  # Maps to: GET /api/user.info?handles={handle}
+  #
+  # WHY this table exists:
+  #   This is the primary profile table. It gives you the user's
+  #   current rating, rank, max rating, and contribution score.
+  #   The Codeforces API wraps the result in a "result" array
+  #   even for a single user — rows_path unwraps that for us.
+  #
+  # USAGE:
+  #   SELECT handle, rating, rank, max_rating
+  #   FROM codeforces.user_info
+  #   WHERE handle = 'tourist'
+  # ──────────────────────────────────────────────────────────
+  - name: user_info
+    description: >
+      Codeforces user profile including current rating, rank,
+      maximum rating ever achieved, and contribution score.
+    request:
+      method: GET
+      path: /api/user.info
+      params:
+        - name: handles
+          # {{input.CODEFORCES_HANDLE}} injects the user's handle
+          # set during coral source add --interactive
+          value: "{{input.CODEFORCES_HANDLE}}"
+    response:
+      # API returns: { "status": "OK", "result": [ {...user...} ] }
+      # rows_path drills into result array to get the user object
+      rows_path: [result]
+    columns:
+      - name: handle
+        type: Utf8
+        description: The user's Codeforces username
+
+      - name: rating
+        type: Int64
+        description: Current Codeforces rating (0 if unrated)
+
+      - name: rank
+        type: Utf8
+        description: >
+          Current rank label. One of: newbie, pupil, specialist,
+          expert, candidate master, master, international master,
+          grandmaster, international grandmaster, legendary grandmaster
+
+      - name: max_rating
+        type: Int64
+        description: Highest rating the user has ever achieved
+        expr:
+          kind: path
+          path: maxRating
+
+      - name: max_rank
+        type: Utf8
+        description: Rank corresponding to max_rating
+        expr:
+          kind: path
+          path: maxRank
+
+      - name: contribution
+        type: Int64
+        description: User's contribution score to the Codeforces community
+
+      - name: friend_of_count
+        type: Int64
+        description: Number of users who have added this user as a friend
+        expr:
+          kind: path
+          path: friendOfCount
+
+      - name: first_name
+        type: Utf8
+        expr:
+          kind: path
+          path: firstName
+
+      - name: last_name
+        type: Utf8
+        expr:
+          kind: path
+          path: lastName
+
+      - name: country
+        type: Utf8
+        description: Country the user has set on their profile
+
+      - name: city
+        type: Utf8
+        description: City the user has set on their profile
+
+      - name: organization
+        type: Utf8
+        description: School or organization the user belongs to
+
+      - name: registered_at
+        type: Int64
+        description: Unix timestamp of when the user registered
+        expr:
+          kind: path
+          path: registrationTimeSeconds
+
+      - name: last_online_at
+        type: Int64
+        description: Unix timestamp of the user's last online activity
+        expr:
+          kind: path
+          path: lastOnlineTimeSeconds
+
+      - name: avatar
+        type: Utf8
+        description: URL of the user's profile picture
+
+  # ──────────────────────────────────────────────────────────
+  # TABLE 2: submissions
+  # ──────────────────────────────────────────────────────────
+  # Maps to: GET /api/user.status?handle={handle}
+  #
+  # WHY this table exists:
+  #   This is the most powerful table — up to 500 most recent
+  #   submissions for the user. Filter by verdict='OK' to count
+  #   solved problems. Filter by problem rating to see difficulty
+  #   trends. GROUP BY tags to see which topics are strongest.
+  #   Note: capped at 500 rows; heavy users may have more history.
+  #
+  # USAGE:
+  #   -- Count unique solved problems
+  #   SELECT COUNT(DISTINCT problem_contest_id || problem_index)
+  #   FROM codeforces.submissions
+  #   WHERE verdict = 'OK'
+  #
+  #   -- Problems solved by difficulty
+  #   SELECT problem_rating, COUNT(*) as solved
+  #   FROM codeforces.submissions
+  #   WHERE verdict = 'OK'
+  #   GROUP BY problem_rating ORDER BY problem_rating
+  # ──────────────────────────────────────────────────────────
+  - name: submissions
+    description: >
+      Up to 500 most recent submissions for the configured user handle.
+      Includes verdict, problem details, language, and timestamps.
+      Filter WHERE verdict = 'OK' to get accepted solutions only.
+      Note: capped at 500 rows by the Codeforces API count parameter.
+    request:
+      method: GET
+      path: /api/user.status
+      params:
+        - name: handle
+          value: "{{input.CODEFORCES_HANDLE}}"
+        - name: from
+          value: "1"
+        - name: count
+          value: "500"
+    response:
+      rows_path: [result]
+    columns:
+      - name: id
+        type: Int64
+        description: Unique submission ID
+
+      - name: contest_id
+        type: Int64
+        description: ID of the contest this submission belongs to
+        expr:
+          kind: path
+          path: contestId
+
+      - name: verdict
+        type: Utf8
+        description: >
+          Result of the submission. Key values:
+          OK = Accepted, WRONG_ANSWER, TIME_LIMIT_EXCEEDED,
+          RUNTIME_ERROR, COMPILATION_ERROR, MEMORY_LIMIT_EXCEEDED
+
+      - name: language
+        type: Utf8
+        description: Programming language used (e.g. GNU C++17, PyPy 3)
+        expr:
+          kind: path
+          path: programmingLanguage
+
+      - name: time_consumed_millis
+        type: Int64
+        description: Execution time in milliseconds
+        expr:
+          kind: path
+          path: timeConsumedMillis
+
+      - name: memory_consumed_bytes
+        type: Int64
+        description: Memory used in bytes
+        expr:
+          kind: path
+          path: memoryConsumedBytes
+
+      - name: submitted_at
+        type: Int64
+        description: Unix timestamp of when the submission was made
+        expr:
+          kind: path
+          path: creationTimeSeconds
+
+      - name: problem_name
+        type: Utf8
+        description: Name of the problem
+        expr:
+          kind: path
+          path: problem.name
+
+      - name: problem_index
+        type: Utf8
+        description: Problem index within its contest (A, B, C, D...)
+        expr:
+          kind: path
+          path: problem.index
+
+      - name: problem_contest_id
+        type: Int64
+        description: Contest ID the problem belongs to
+        expr:
+          kind: path
+          path: problem.contestId
+
+      - name: problem_rating
+        type: Int64
+        description: >
+          Difficulty rating of the problem (800 to 3500).
+          Higher = harder. Null if the problem is unrated.
+        expr:
+          kind: path
+          path: problem.rating
+
+      - name: problem_type
+        type: Utf8
+        description: PROGRAMMING or QUESTION
+        expr:
+          kind: path
+          path: problem.type
+
+  # ──────────────────────────────────────────────────────────
+  # TABLE 3: rating_history
+  # ──────────────────────────────────────────────────────────
+  # Maps to: GET /api/user.rating?handle={handle}
+  #
+  # WHY this table exists:
+  #   Shows the user's rating progression over time — one row
+  #   per contest participated in. Great for trend analysis:
+  #   "Is my rating going up or down over the last 10 contests?"
+  #
+  # USAGE:
+  #   SELECT contest_name, new_rating, rank
+  #   FROM codeforces.rating_history
+  #   ORDER BY rated_at DESC
+  #   LIMIT 10
+  # ──────────────────────────────────────────────────────────
+  - name: rating_history
+    description: >
+      Contest participation history with rating changes over time.
+      One row per rated contest the user has participated in.
+    request:
+      method: GET
+      path: /api/user.rating
+      params:
+        - name: handle
+          value: "{{input.CODEFORCES_HANDLE}}"
+    response:
+      rows_path: [result]
+    columns:
+      - name: contest_id
+        type: Int64
+        description: Unique Codeforces contest ID
+        expr:
+          kind: path
+          path: contestId
+
+      - name: contest_name
+        type: Utf8
+        description: Full name of the contest
+        expr:
+          kind: path
+          path: contestName
+
+      - name: rank
+        type: Int64
+        description: The user's final rank in this contest
+
+      - name: old_rating
+        type: Int64
+        description: Rating before this contest
+        expr:
+          kind: path
+          path: oldRating
+
+      - name: new_rating
+        type: Int64
+        description: Rating after this contest
+        expr:
+          kind: path
+          path: newRating
+
+      - name: rated_at
+        type: Int64
+        description: Unix timestamp of when the contest was rated
+        expr:
+          kind: path
+          path: ratingUpdateTimeSeconds
+
+  # ──────────────────────────────────────────────────────────
+  # TABLE 4: contests
+  # ──────────────────────────────────────────────────────────
+  # Maps to: GET /api/contest.list
+  #
+  # WHY this table exists:
+  #   Returns the full list of Codeforces contests — both
+  #   upcoming (BEFORE) and finished (FINISHED). Useful for
+  #   finding the next contest to register for.
+  #
+  # USAGE:
+  #   SELECT name, start_time_seconds, duration_seconds
+  #   FROM codeforces.contests
+  #   WHERE phase = 'BEFORE'
+  #   ORDER BY start_time_seconds ASC
+  #   LIMIT 5
+  # ──────────────────────────────────────────────────────────
+  - name: contests
+    description: >
+      List of all Codeforces contests — upcoming and finished.
+      Filter WHERE phase = 'BEFORE' to find upcoming contests.
+    request:
+      method: GET
+      path: /api/contest.list
+      params:
+        - name: gym
+          value: "false"
+    response:
+      rows_path: [result]
+    columns:
+      - name: id
+        type: Int64
+        description: Unique contest ID
+
+      - name: name
+        type: Utf8
+        description: Full contest name
+
+      - name: type
+        type: Utf8
+        description: CF (Codeforces), IOI, or ICPC scoring type
+
+      - name: phase
+        type: Utf8
+        description: >
+          BEFORE = upcoming, CODING = live right now,
+          PENDING_SYSTEM_TEST = finished but not yet rated,
+          SYSTEM_TEST = being rated, FINISHED = complete
+
+      - name: duration_seconds
+        type: Int64
+        description: Contest duration in seconds
+        expr:
+          kind: path
+          path: durationSeconds
+
+      - name: start_time_seconds
+        type: Int64
+        description: Unix timestamp of contest start time
+        expr:
+          kind: path
+          path: startTimeSeconds
+
+      - name: relative_time_seconds
+        type: Int64
+        description: >
+          Seconds until contest starts (negative if already started).
+          Useful for filtering contests starting in the next 24 hours.
+        expr:
+          kind: path
+          path: relativeTimeSeconds
