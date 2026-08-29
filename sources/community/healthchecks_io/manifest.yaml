@@ -1,0 +1,273 @@
+name: healthchecks_io
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Healthchecks.io checks and status changes for cron job and background
+  task monitoring using read-only API key compatible endpoints.
+base_url: https://healthchecks.io
+
+inputs:
+  HEALTHCHECKS_IO_API_KEY:
+    kind: secret
+    hint: >-
+      Healthchecks.io project API key. Create a read-only API key from
+      Project Settings -> API Access. This source only uses endpoints
+      supported by read-only keys.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Api-Key
+      from: input
+      key: HEALTHCHECKS_IO_API_KEY
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT name, status, tags FROM healthchecks_io.checks LIMIT 1
+
+tables:
+  - name: checks
+    description: >-
+      Healthchecks.io checks in the configured project, including schedule,
+      status, ping timing, tags, notification channels, and generated URLs
+      when available to the API key.
+    guide: |
+      Start here to review monitored jobs:
+      `SELECT name, slug, status, last_ping, next_ping, tags
+       FROM healthchecks_io.checks ORDER BY name LIMIT 50`.
+      The possible status values are new, up, grace, down, and paused.
+      Read-only API keys omit sensitive URL fields and return unique_key.
+    filters:
+      - name: slug
+      - name: tag
+    request:
+      method: GET
+      path: /api/v3/checks/
+      query:
+        - name: slug
+          from: filter
+          key: slug
+        - name: tag
+          from: filter
+          key: tag
+    response:
+      rows_path: [checks]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: uuid
+        type: Utf8
+        nullable: true
+        description: Check UUID. Omitted when using a read-only API key.
+      - name: unique_key
+        type: Utf8
+        nullable: true
+        description: Stable check identifier returned when using a read-only API key.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Check name.
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Custom check slug.
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Space-separated tags assigned to the check.
+      - name: desc
+        type: Utf8
+        nullable: true
+        description: Check description.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current check status.
+      - name: started
+        type: Boolean
+        nullable: true
+        description: Whether the check has received a start signal.
+      - name: grace
+        type: Int64
+        nullable: true
+        description: Grace period in seconds.
+      - name: n_pings
+        type: Int64
+        nullable: true
+        description: Number of pings received by the check.
+      - name: timeout
+        type: Int64
+        nullable: true
+        description: Simple check timeout in seconds.
+      - name: schedule
+        type: Utf8
+        nullable: true
+        description: Cron schedule for cron checks.
+      - name: tz
+        type: Utf8
+        nullable: true
+        description: Time zone for cron schedule evaluation.
+      - name: last_ping
+        type: Timestamp
+        nullable: true
+        description: Last ping time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_ping]}
+      - name: next_ping
+        type: Timestamp
+        nullable: true
+        description: Next expected ping time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [next_ping]}
+      - name: manual_resume
+        type: Boolean
+        nullable: true
+        description: Whether the check requires manual resume after pause.
+      - name: methods
+        type: Utf8
+        nullable: true
+        description: Accepted HTTP methods.
+      - name: start_kw
+        type: Utf8
+        nullable: true
+        description: Keyword that marks a job start.
+      - name: success_kw
+        type: Utf8
+        nullable: true
+        description: Keyword that marks success.
+      - name: failure_kw
+        type: Utf8
+        nullable: true
+        description: Keyword that marks failure.
+      - name: filter_subject
+        type: Boolean
+        nullable: true
+        description: Whether email subject filtering is enabled.
+      - name: filter_body
+        type: Boolean
+        nullable: true
+        description: Whether email body filtering is enabled.
+      - name: filter_http_body
+        type: Boolean
+        nullable: true
+        description: Whether HTTP body filtering is enabled.
+      - name: filter_default_fail
+        type: Boolean
+        nullable: true
+        description: Whether unmatched pings fail by default.
+      - name: badge_url
+        type: Utf8
+        nullable: true
+        description: Badge URL for this check.
+      - name: ping_url
+        type: Utf8
+        nullable: true
+        description: Ping URL. Omitted when using a read-only API key.
+      - name: update_url
+        type: Utf8
+        nullable: true
+        description: Update URL. Omitted when using a read-only API key.
+      - name: pause_url
+        type: Utf8
+        nullable: true
+        description: Pause URL. Omitted when using a read-only API key.
+      - name: resume_url
+        type: Utf8
+        nullable: true
+        description: Resume URL. Omitted when using a read-only API key.
+      - name: channels
+        type: Utf8
+        nullable: true
+        description: Comma-separated notification channel IDs. Omitted when using a read-only API key.
+      - name: slug_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Slug filter value pushed to Healthchecks.io.
+        expr: {kind: from_filter, key: slug}
+      - name: tag
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Tag filter value pushed to Healthchecks.io. Use in WHERE to filter checks by tag.
+        expr: {kind: from_filter, key: tag}
+
+  - name: flips
+    description: >-
+      Status changes for a specific Healthchecks.io check. A flip is a change
+      between up and down states.
+    guide: |
+      Requires check_id, which can be a UUID or read-only unique_key:
+      `SELECT timestamp, up FROM healthchecks_io.flips
+       WHERE check_id = 'check-uuid-or-unique-key' AND seconds = '86400'`.
+    filters:
+      - name: check_id
+        required: true
+      - name: seconds
+      - name: start
+      - name: end
+    request:
+      method: GET
+      path: /api/v3/checks/{{filter.check_id}}/flips/
+      query:
+        - name: seconds
+          from: filter
+          key: seconds
+        - name: start
+          from: filter
+          key: start
+        - name: end
+          from: filter
+          key: end
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: check_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Check UUID or unique_key filter value.
+        expr: {kind: from_filter, key: check_id}
+      - name: timestamp
+        type: Timestamp
+        nullable: true
+        description: Flip timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [timestamp]}
+      - name: up
+        type: Int64
+        nullable: true
+        description: Whether the check was up after the flip, represented as 1 or 0.
+      - name: seconds
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Seconds filter value pushed to Healthchecks.io.
+        expr: {kind: from_filter, key: seconds}
+      - name: start
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Start UNIX timestamp filter value.
+        expr: {kind: from_filter, key: start}
+      - name: end
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: End UNIX timestamp filter value.
+        expr: {kind: from_filter, key: end}
