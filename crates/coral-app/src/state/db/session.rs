@@ -80,26 +80,14 @@ pub(crate) trait DbRepos: DbSession + Sized {
         WorkspaceMembersRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager wires this next")
-    )]
     fn sources(&mut self) -> SourcesRepo<'_, Self> {
         SourcesRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager wires this next")
-    )]
     fn source_manifests(&mut self) -> SourceManifestsRepo<'_, Self> {
         SourceManifestsRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager wires this next")
-    )]
     fn materializations(&mut self) -> MaterializationsRepo<'_, Self> {
         MaterializationsRepo::new(self)
     }

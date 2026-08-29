@@ -78,10 +78,6 @@ where
         Self { session }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the hydration pass reads through this next")
-    )]
     pub(crate) async fn get(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -114,10 +110,6 @@ where
     /// `created_at_unix_nanos` is restated on every write, unlike the catalog
     /// row's: a materialization is replaced wholesale rather than amended, so
     /// the timestamp dates the artifacts that are there.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager writes through this next")
-    )]
     pub(crate) async fn upsert(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -173,10 +165,6 @@ where
     }
 
     /// Drops one source's materialization, reporting whether one was there.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager writes through this next")
-    )]
     pub(crate) async fn remove(
         &mut self,
         workspace_name: &WorkspaceName,

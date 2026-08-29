@@ -1,6 +1,7 @@
 //! Persists the installed source catalog in top-level `config.toml`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
@@ -557,6 +558,15 @@ impl ConfigStore {
         Ok(())
     }
 
+    /// The `config.toml` this store reads and writes.
+    ///
+    /// Host-local siblings of that file — the mirror ledger — are addressed by
+    /// its path, so a caller that maintains one needs the path this store
+    /// resolved rather than a second guess at where the config directory is.
+    pub(crate) fn config_file(&self) -> &Path {
+        self.layout.config_file()
+    }
+
     pub(crate) fn state_lock_shared(&self) -> Result<FileLock, AppError> {
         FileLock::shared(self.layout.state_lock()).map_err(Into::into)
     }
@@ -605,6 +615,11 @@ impl ConfigStore {
         Ok(result)
     }
 
+    /// Updates the config under the state lock, for the test helpers that take
+    /// no lock of their own. Every production writer takes the lock across the
+    /// wider operation its config write belongs to and calls
+    /// [`Self::update_config_unlocked`] under it.
+    #[cfg(test)]
     fn update_config<T>(
         &self,
         update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
@@ -640,13 +655,18 @@ impl ConfigStore {
     ///
     /// What comes back carries everything the removal took away, so a caller
     /// whose next step fails can hand it to
-    /// [`Self::restore_workspace_config_entries`] rather than leave the file
-    /// disagreeing with the catalog it accompanies.
-    pub(crate) fn remove_workspace_config_entries(
+    /// [`Self::restore_workspace_config_entries_unlocked`] rather than leave
+    /// the file disagreeing with the catalog it accompanies.
+    ///
+    /// Callers must already hold the state lock exclusive. Taking it here
+    /// instead would let a workspace deletion wait for the lock with its
+    /// database transaction already open, inverting the lock-then-transaction
+    /// order every source lifecycle write takes.
+    pub(crate) fn remove_workspace_config_entries_unlocked(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Option<RemovedWorkspaceConfig>, AppError> {
-        self.update_config(|config| {
+        self.update_config_unlocked(|config| {
             let removed = config.workspaces.remove(workspace_name);
             if removed {
                 let sources = config
@@ -675,17 +695,21 @@ impl ConfigStore {
         })
     }
 
-    /// Puts back everything [`Self::remove_workspace_config_entries`] removed.
+    /// Puts back everything
+    /// [`Self::remove_workspace_config_entries_unlocked`] removed.
     ///
     /// The removal is durable the moment it returns while the database
     /// transaction it accompanies is not, so a deletion that fails to commit
     /// needs a genuine inverse here — without one the workspace stays in the
     /// catalog with its sources and functions gone from the file.
-    pub(crate) fn restore_workspace_config_entries(
+    ///
+    /// Callers must already hold the state lock exclusive: this runs on the
+    /// abort path of the removal above, under the same held lock.
+    pub(crate) fn restore_workspace_config_entries_unlocked(
         &self,
         removed: RemovedWorkspaceConfig,
     ) -> Result<(), AppError> {
-        self.update_config(|config| {
+        self.update_config_unlocked(|config| {
             let workspace_name = &removed.deleted.workspace.name;
             config.workspaces.insert(workspace_name.clone());
             for source in removed.deleted.sources {
@@ -1647,7 +1671,7 @@ origin = "bundled"
             .expect("upsert function");
 
         let removed = store
-            .remove_workspace_config_entries(&workspace_name)
+            .remove_workspace_config_entries_unlocked(&workspace_name)
             .expect("remove workspace config entries")
             .expect("workspace config should be removed");
         let deleted = removed.into_deleted_workspace();
@@ -1692,12 +1716,12 @@ origin = "bundled"
             .upsert_function(&workspace_name, installed_function("review_queue"))
             .expect("upsert function");
         let removed = store
-            .remove_workspace_config_entries(&workspace_name)
+            .remove_workspace_config_entries_unlocked(&workspace_name)
             .expect("remove workspace config entries")
             .expect("workspace config should be removed");
 
         store
-            .restore_workspace_config_entries(removed)
+            .restore_workspace_config_entries_unlocked(removed)
             .expect("restore workspace config entries");
 
         assert_eq!(
@@ -1750,7 +1774,7 @@ origin = "bundled"
                 .expect("create legacy workspace entry");
 
             let removed = store
-                .remove_workspace_config_entries(&workspace_name)
+                .remove_workspace_config_entries_unlocked(&workspace_name)
                 .expect("remove workspace config entries")
                 .unwrap_or_else(|| panic!("'{name}' should be removable"));
 
@@ -1760,7 +1784,7 @@ origin = "bundled"
             );
             assert!(
                 store
-                    .remove_workspace_config_entries(&workspace_name)
+                    .remove_workspace_config_entries_unlocked(&workspace_name)
                     .expect("remove an already removed workspace")
                     .is_none(),
                 "'{name}' must report nothing left to remove the second time"

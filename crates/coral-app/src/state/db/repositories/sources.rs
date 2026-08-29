@@ -87,10 +87,6 @@ where
     /// source is exactly the operator action that revokes an earlier deletion,
     /// and leaving the record standing would have a peer's boot import skip the
     /// re-added entry.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager writes through this next")
-    )]
     pub(crate) async fn upsert_source(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -161,10 +157,6 @@ where
     /// database never learned about can still exist in a host's config mirror —
     /// written there by an older binary — and deleting it has to stick for the
     /// same reason deleting a known one does.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager writes through this next")
-    )]
     pub(crate) async fn remove_source(
         &mut self,
         workspace_name: &WorkspaceName,

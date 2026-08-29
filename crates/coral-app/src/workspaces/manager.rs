@@ -11,6 +11,7 @@ use crate::state::db::{
     AddMemberOutcome, CoralDb, CreateWorkspaceOutcome, DbError, DbRepos, RemoveMemberOutcome,
     WorkspaceDeletion, WorkspaceMemberRecord, now_unix_nanos_i64,
 };
+use crate::state::mirror_ledger::MirrorLedger;
 use crate::state::{ConfigStore, RemovedWorkspaceConfig};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
@@ -170,6 +171,16 @@ impl WorkspaceManager {
             })?;
 
         let (deleted, workspace_dir_backup) = {
+            // The state lock comes before the transaction, which is the order
+            // every source lifecycle write takes: it locks state and then
+            // writes the database. Opening the transaction first and only then
+            // waiting for the lock — where the config removal below used to
+            // take it — inverts that order and closes a cycle. A source
+            // install in another workspace holds the state lock and blocks on
+            // SQLite's writer lock, which this transaction is holding, while
+            // this deletion blocks on the state lock the install is holding;
+            // neither moves until the busy timeout fails the install.
+            let state_lock = self.config_store.state_lock_exclusive()?;
             let Some(deletion) = self
                 .db
                 .begin_workspace_deletion(workspace_name.as_str())
@@ -179,7 +190,7 @@ impl WorkspaceManager {
             };
             let removed = match self
                 .config_store
-                .remove_workspace_config_entries(workspace_name)
+                .remove_workspace_config_entries_unlocked(workspace_name)
             {
                 Ok(removed) => removed,
                 Err(error) => {
@@ -192,7 +203,9 @@ impl WorkspaceManager {
                 // the catalog while its config entries are already gone. The
                 // removal is durable and carries everything it took away, so
                 // put it back rather than leave the two disagreeing.
-                if let Err(restore_error) = self.restore_workspace_config_entries(removed) {
+                if let Err(restore_error) =
+                    self.restore_workspace_config_entries_with_state_lock_held(removed)
+                {
                     // Both halves failed, which is the split this restore
                     // exists to prevent. Report it instead of the commit
                     // failure alone, so the caller knows the deployment needs
@@ -206,6 +219,14 @@ impl WorkspaceManager {
                 }
                 return Err(commit_error.into());
             }
+            // The transaction is over, so the lock has nothing left to order
+            // against it. The steps below take it again one at a time, the way
+            // they did before it was hoisted above the transaction.
+            drop(state_lock);
+            // The commit is durable and the config entries are gone with it, so
+            // this host's record of what it had mirrored is now describing a
+            // workspace that no longer exists.
+            self.forget_workspace_in_ledger(workspace_name);
             let deleted = removed.map_or_else(
                 || DeletedWorkspace {
                     workspace: WorkspaceRecord {
@@ -238,6 +259,41 @@ impl WorkspaceManager {
         self.prune_deleted_workspace_traces(&deleted_workspace_name)
             .await;
         Ok(deleted.workspace)
+    }
+
+    /// Drops this host's ledger records for a workspace it just deleted.
+    ///
+    /// Holds the state lock across the load-modify-save, because that is the
+    /// ledger's contract: a concurrent source install — in this process or in
+    /// another one sharing the config directory — records its own entry under
+    /// the same lock, and an unlocked read-modify-write here would drop that
+    /// record on the floor, leaving Coral's own mirror write looking
+    /// operator-authored at the next boot.
+    ///
+    /// Best effort, like every other recovery here: a ledger that keeps stale
+    /// records makes a later boot treat mirrored content as unproven, which
+    /// preserves it and warns rather than acting on it.
+    fn forget_workspace_in_ledger(&self, workspace_name: &WorkspaceName) {
+        let _state_lock = match self.config_store.state_lock_exclusive() {
+            Ok(lock) => lock,
+            Err(error) => {
+                warn!(
+                    workspace = %workspace_name,
+                    "workspace deleted, but failed to lock app state to drop it from the mirror \
+                     ledger: {error}"
+                );
+                return;
+            }
+        };
+        let config_path = self.config_store.config_file();
+        let mut ledger = MirrorLedger::load(config_path);
+        ledger.remove_workspace(workspace_name);
+        if let Err(error) = ledger.save(config_path) {
+            warn!(
+                workspace = %workspace_name,
+                "workspace deleted, but failed to drop it from the mirror ledger: {error}"
+            );
+        }
     }
 
     /// Erases the credential material of a workspace that has just been deleted.
@@ -323,7 +379,10 @@ impl WorkspaceManager {
     /// the database holding a workspace whose sources and functions are gone
     /// from the file, and a caller that only hears about the step which
     /// triggered the abort would never learn the two now disagree.
-    fn restore_workspace_config_entries(
+    ///
+    /// Runs under the state lock the deletion already holds, alongside the
+    /// removal it undoes.
+    fn restore_workspace_config_entries_with_state_lock_held(
         &self,
         removed: Option<RemovedWorkspaceConfig>,
     ) -> Result<(), AppError> {
@@ -336,7 +395,8 @@ impl WorkspaceManager {
                 "workspace config restore failed for tests".to_string(),
             ));
         }
-        self.config_store.restore_workspace_config_entries(removed)
+        self.config_store
+            .restore_workspace_config_entries_unlocked(removed)
     }
 
     fn stage_deleted_workspace_dir(
@@ -621,6 +681,7 @@ mod tests {
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
     };
+    use crate::state::mirror_ledger::MirrorLedger;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{
         MemberRole, WorkspaceMember, WorkspaceMembership, WorkspaceName, WorkspacePoolRegistry,
@@ -1230,6 +1291,54 @@ mod tests {
             &pool_registry_before_delete,
             &pool_registry_after_delete
         ));
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_drops_this_hosts_ledger_records() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let db = test_db(&layout).await;
+        let manager = WorkspaceManager::new(
+            store,
+            credential_manager,
+            layout.clone(),
+            None,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+            Arc::clone(&db),
+            SourceDiagnosticReporter::default(),
+        );
+        let workspace_name = WorkspaceName::parse("work").expect("workspace");
+        let kept = WorkspaceName::parse("kept").expect("workspace");
+        let source = installed_source("github");
+        let owner = seed_user(&db, "owner").await;
+        manager
+            .create_workspace_for_user(&workspace_name, &owner)
+            .await
+            .expect("create workspace");
+        let mut ledger = MirrorLedger::load(layout.config_file());
+        ledger.record_workspace(&workspace_name);
+        ledger.record_entry(&workspace_name, &source.name, &source);
+        ledger.record_workspace(&kept);
+        ledger.record_entry(&kept, &source.name, &source);
+        ledger.save(layout.config_file()).expect("save ledger");
+
+        manager
+            .delete_workspace(&workspace_name)
+            .await
+            .expect("delete workspace");
+
+        let ledger = MirrorLedger::load(layout.config_file());
+        assert!(!ledger.has_workspace(&workspace_name));
+        assert!(
+            !ledger.entry_recorded(&workspace_name, &source.name),
+            "a deleted workspace must leave no source records behind"
+        );
+        assert!(
+            ledger.has_workspace(&kept) && ledger.entry_recorded(&kept, &source.name),
+            "deleting one workspace must not disturb another's records"
+        );
     }
 
     #[tokio::test]

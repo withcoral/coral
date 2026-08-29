@@ -42,6 +42,9 @@ pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
 pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
 pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
 pub(crate) const OPERATION_METADATA_FILENAME: &str = "operation-metadata.yaml";
+pub(crate) const SOURCE_DOCUMENT_RAW_FILENAME: &str = "source-document.raw";
+pub(crate) const SOURCE_DOCUMENT_YAML_FILENAME: &str = "source-document.yaml";
+pub(crate) const SEMANTIC_IR_FILENAME: &str = "semantic-ir.yaml";
 
 type ReportedDiagnosticStateKey = (String, String, String);
 type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<String>>;
@@ -402,9 +405,9 @@ pub(crate) fn load_v4_materialization_with_reporter(
     )?;
     let mut diagnostics = load_optional_diagnostics(&diagnostics_path, &mut load_diagnostics);
     let materialized_dir = layout.v4_materialized_dir(workspace_name, source_name);
-    let raw_source_document_path = materialized_dir.join("source-document.raw");
-    let normalized_source_document_path = materialized_dir.join("source-document.yaml");
-    let semantic_ir_path = materialized_dir.join("semantic-ir.yaml");
+    let raw_source_document_path = materialized_dir.join(SOURCE_DOCUMENT_RAW_FILENAME);
+    let normalized_source_document_path = materialized_dir.join(SOURCE_DOCUMENT_YAML_FILENAME);
+    let semantic_ir_path = materialized_dir.join(SEMANTIC_IR_FILENAME);
     let semantic_ir = read_validated_semantic_ir_with_reporter(
         manifest,
         workspace_name,
@@ -927,8 +930,8 @@ fn write_materialization(
         surface: MaterializedSurface {
             plan: materialized_surface.plan,
             source_document_sha256: Some(materialized_surface.observed_sha256),
-            normalized_source_document_path: temp_dir.join("source-document.yaml"),
-            raw_source_document_path: temp_dir.join("source-document.raw"),
+            normalized_source_document_path: temp_dir.join(SOURCE_DOCUMENT_YAML_FILENAME),
+            raw_source_document_path: temp_dir.join(SOURCE_DOCUMENT_RAW_FILENAME),
         },
         projections: projections.clone(),
         diagnostics: diagnostics.clone(),
@@ -956,15 +959,15 @@ fn write_surface_artifacts(
 ) -> Result<(), AppError> {
     fs::ensure_private_dir(materialized_dir)?;
     std::fs::write(
-        materialized_dir.join("source-document.raw"),
+        materialized_dir.join(SOURCE_DOCUMENT_RAW_FILENAME),
         &materialized_surface.raw_document,
     )?;
     std::fs::write(
-        materialized_dir.join("source-document.yaml"),
+        materialized_dir.join(SOURCE_DOCUMENT_YAML_FILENAME),
         &materialized_surface.normalized_document,
     )?;
     write_yaml(
-        &materialized_dir.join("semantic-ir.yaml"),
+        &materialized_dir.join(SEMANTIC_IR_FILENAME),
         materialized_surface.plan.semantic_ir(),
     )?;
     write_yaml(
