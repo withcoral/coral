@@ -1,0 +1,1035 @@
+name: temporal
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query self-hosted Temporal Server workflow runtime data — namespaces,
+  workflow executions, schedules, and more — via the Temporal HTTP API.
+  Core tables (namespaces, workflows, schedules) require Temporal Server
+  v1.24+. Newer tables require higher versions; see the README for details.
+
+inputs:
+  TEMPORAL_ADDRESS:
+    kind: variable
+    required: true
+    hint: >-
+      Base URL of the self-hosted Temporal HTTP API frontend. Do not include
+      a trailing slash. Core tables require Temporal Server v1.24+ with the
+      HTTP API enabled; some tables require newer versions. Temporal Cloud
+      namespace endpoints are not supported.
+      Examples: http://localhost:7243, http://temporal.internal:7243,
+      https://temporal.mycompany.com:7243.
+
+base_url: "{{input.TEMPORAL_ADDRESS}}"
+
+test_queries:
+  # Namespace discovery only — no namespace filter required, works on any
+  # self-hosted cluster regardless of which namespaces are configured.
+  # Namespace-scoped tables (workflows, schedules, batch_operations) are
+  # documented as manual checks in README.md because they require a
+  # namespace that varies per cluster.
+  - SELECT name, state FROM temporal.namespaces LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # namespaces — discovery table
+  # ──────────────────────────────────────────────────────────────────────
+  - name: namespaces
+    description: >-
+      List all namespaces registered on this Temporal cluster. Use the name
+      column as the namespace filter when querying workflows and schedules.
+    request:
+      method: GET
+      path: /api/v1/namespaces
+    response:
+      rows_path: [namespaces]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 200
+        max: 200
+        query_param: pageSize
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Unique namespace name.
+        expr: {kind: path, path: [namespaceInfo, name]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Namespace state. One of: NAMESPACE_STATE_REGISTERED,
+          NAMESPACE_STATE_DEPRECATED, NAMESPACE_STATE_DELETED.
+        expr: {kind: path, path: [namespaceInfo, state]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Namespace description.
+        expr: {kind: path, path: [namespaceInfo, description]}
+      - name: owner_email
+        type: Utf8
+        nullable: true
+        description: Email address of the namespace owner.
+        expr: {kind: path, path: [namespaceInfo, ownerEmail]}
+      - name: workflow_execution_retention_ttl
+        type: Utf8
+        nullable: true
+        description: >-
+          Workflow execution retention period as a duration string (e.g.
+          "86400s"). Older closed executions are purged after this window.
+        expr: {kind: path, path: [config, workflowExecutionRetentionTtl]}
+      - name: active_cluster_name
+        type: Utf8
+        nullable: true
+        description: Name of the active cluster for this namespace.
+        expr: {kind: path, path: [replicationConfig, activeClusterName]}
+      - name: is_global_namespace
+        type: Boolean
+        nullable: true
+        description: Whether the namespace is replicated across multiple clusters.
+        expr: {kind: path, path: [isGlobalNamespace]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full namespace object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # workflows — workflow executions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: workflows
+    description: >-
+      List workflow executions in a Temporal namespace. Each row is one
+      execution instance — a running or closed workflow run. Filter by
+      namespace (required). Optionally narrow by query (Temporal Visibility
+      query language) to filter by status, workflow type, task queue, etc.
+    guide: >-
+      Always supply namespace: `SELECT workflow_id, workflow_type, status
+      FROM temporal.workflows WHERE namespace = 'default' LIMIT 20`.
+      Use the query filter for visibility queries:
+      `WHERE namespace = 'default' AND query = 'WorkflowType="OrderWorkflow"'`.
+    filters:
+      - name: namespace
+        required: true
+        description: >-
+          Namespace to list workflow executions from. Use names from the
+          namespaces table.
+      - name: query
+        mode: search
+        description: >-
+          Temporal Visibility query string (e.g.
+          'WorkflowType="OrderWorkflow" AND ExecutionStatus="Running"').
+    request:
+      method: GET
+      path: /api/v1/namespaces/{{filter.namespace}}/workflows
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path: [executions]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Namespace this execution belongs to (from filter).
+        expr: {kind: from_filter, key: namespace}
+      - name: workflow_id
+        type: Utf8
+        nullable: false
+        description: Workflow ID (user-defined business key).
+        expr: {kind: path, path: [execution, workflowId]}
+      - name: run_id
+        type: Utf8
+        nullable: false
+        description: Run ID (unique per execution attempt).
+        expr: {kind: path, path: [execution, runId]}
+      - name: workflow_type
+        type: Utf8
+        nullable: true
+        description: Registered workflow type name.
+        expr: {kind: path, path: [type, name]}
+      - name: task_queue
+        type: Utf8
+        nullable: true
+        description: Task queue the workflow is dispatched on.
+        expr: {kind: path, path: [taskQueue]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Workflow execution status. One of: WORKFLOW_EXECUTION_STATUS_RUNNING,
+          WORKFLOW_EXECUTION_STATUS_COMPLETED, WORKFLOW_EXECUTION_STATUS_FAILED,
+          WORKFLOW_EXECUTION_STATUS_CANCELED, WORKFLOW_EXECUTION_STATUS_TERMINATED,
+          WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW, WORKFLOW_EXECUTION_STATUS_TIMED_OUT,
+          WORKFLOW_EXECUTION_STATUS_PAUSED.
+        expr: {kind: path, path: [status]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Time when the workflow execution started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [startTime]}
+      - name: close_time
+        type: Timestamp
+        nullable: true
+        description: Time when the workflow execution closed (null if still running).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [closeTime]}
+      - name: execution_time
+        type: Timestamp
+        nullable: true
+        description: Scheduled execution time (for cron or delayed workflows).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [executionTime]}
+      - name: history_length
+        type: Int64
+        nullable: true
+        description: Number of events in the workflow history.
+        expr: {kind: path, path: [historyLength]}
+      - name: history_size_bytes
+        type: Int64
+        nullable: true
+        description: Size of the workflow history in bytes.
+        expr: {kind: path, path: [historySizeBytes]}
+      - name: parent_workflow_id
+        type: Utf8
+        nullable: true
+        description: Workflow ID of the parent workflow (child workflows only).
+        expr: {kind: path, path: [parentExecution, workflowId]}
+      - name: parent_run_id
+        type: Utf8
+        nullable: true
+        description: Run ID of the parent workflow (child workflows only).
+        expr: {kind: path, path: [parentExecution, runId]}
+      - name: search_attributes
+        type: Json
+        nullable: true
+        description: Custom search attributes on this execution.
+        expr: {kind: path, path: [searchAttributes, indexedFields]}
+      - name: memo
+        type: Json
+        nullable: true
+        description: Memo fields attached to this execution.
+        expr: {kind: path, path: [memo, fields]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full workflow execution object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # schedules — scheduled workflows
+  # ──────────────────────────────────────────────────────────────────────
+  - name: schedules
+    description: >-
+      List schedules in a Temporal namespace. Each row is one schedule that
+      triggers workflow executions on a cron or interval basis. Filter by
+      namespace (required).
+    guide: >-
+      Always supply namespace: `SELECT schedule_id, workflow_type, paused
+      FROM temporal.schedules WHERE namespace = 'default' LIMIT 20`.
+    filters:
+      - name: namespace
+        required: true
+        description: >-
+          Namespace to list schedules from. Use names from the namespaces
+          table.
+    request:
+      method: GET
+      path: /api/v1/namespaces/{{filter.namespace}}/schedules
+    response:
+      rows_path: [schedules]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: maximumPageSize
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Namespace this schedule belongs to (from filter).
+        expr: {kind: from_filter, key: namespace}
+      - name: schedule_id
+        type: Utf8
+        nullable: false
+        description: Unique schedule identifier within the namespace.
+        expr: {kind: path, path: [scheduleId]}
+      - name: workflow_type
+        type: Utf8
+        nullable: true
+        description: Registered workflow type name that this schedule triggers.
+        expr: {kind: path, path: [info, workflowType, name]}
+      - name: paused
+        type: Boolean
+        nullable: true
+        description: Whether the schedule is currently paused.
+        expr: {kind: path, path: [info, paused]}
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: User-provided notes about this schedule.
+        expr: {kind: path, path: [info, notes]}
+      - name: spec
+        type: Json
+        nullable: true
+        description: >-
+          Schedule spec defining when the schedule fires (cron expressions,
+          intervals, calendars).
+        expr: {kind: path, path: [info, spec]}
+      - name: recent_actions
+        type: Json
+        nullable: true
+        description: Most recent schedule actions taken.
+        expr: {kind: path, path: [info, recentActions]}
+      - name: future_action_times
+        type: Json
+        nullable: true
+        description: Next scheduled trigger times.
+        expr: {kind: path, path: [info, futureActionTimes]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full schedule object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # activities — standalone activity executions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: activities
+    description: >-
+      List standalone activity executions in a Temporal namespace
+      (ListActivityExecutions). Each row is one activity execution instance.
+      Filter by namespace (required). Optionally narrow with a Visibility
+      query string.
+    guide: >-
+      Always supply namespace: `SELECT activity_id, activity_type, status
+      FROM temporal.activities WHERE namespace = 'default' LIMIT 20`.
+      Use the query filter for visibility queries:
+      `WHERE namespace = 'default' AND query = 'ActivityType="SendEmail"'`.
+    filters:
+      - name: namespace
+        required: true
+        description: >-
+          Namespace to list activity executions from. Use names from the
+          namespaces table.
+      - name: query
+        mode: search
+        description: >-
+          Temporal Visibility query string (e.g.
+          'ActivityType="SendEmail" AND ExecutionStatus="Running"').
+    request:
+      method: GET
+      path: /api/v1/namespaces/{{filter.namespace}}/activities
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path: [executions]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Namespace this activity belongs to (from filter).
+        expr: {kind: from_filter, key: namespace}
+      - name: activity_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of this activity within its namespace and run ID.
+        expr: {kind: path, path: [activityId]}
+      - name: run_id
+        type: Utf8
+        nullable: true
+        description: The run ID of the standalone activity.
+        expr: {kind: path, path: [runId]}
+      - name: activity_type
+        type: Utf8
+        nullable: true
+        description: The type of the activity, mapping to a registered activity on a worker.
+        expr: {kind: path, path: [activityType, name]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Activity execution status. One of: ACTIVITY_EXECUTION_STATUS_RUNNING,
+          ACTIVITY_EXECUTION_STATUS_COMPLETED, ACTIVITY_EXECUTION_STATUS_FAILED,
+          ACTIVITY_EXECUTION_STATUS_CANCELED, ACTIVITY_EXECUTION_STATUS_TERMINATED,
+          ACTIVITY_EXECUTION_STATUS_TIMED_OUT.
+        expr: {kind: path, path: [status]}
+      - name: task_queue
+        type: Utf8
+        nullable: true
+        description: Task queue this activity was scheduled on.
+        expr: {kind: path, path: [taskQueue]}
+      - name: schedule_time
+        type: Timestamp
+        nullable: true
+        description: Time the activity was originally scheduled.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [scheduleTime]}
+      - name: close_time
+        type: Timestamp
+        nullable: true
+        description: Time the activity transitioned to a terminal status (null if still running).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [closeTime]}
+      - name: execution_duration
+        type: Utf8
+        nullable: true
+        description: >-
+          Difference between close time and scheduled time as a duration
+          string (e.g. "30s"). Only populated for closed activities.
+        expr: {kind: path, path: [executionDuration]}
+      - name: state_transition_count
+        type: Int64
+        nullable: true
+        description: Updated on terminal status.
+        expr: {kind: path, path: [stateTransitionCount]}
+      - name: search_attributes
+        type: Json
+        nullable: true
+        description: Search attributes from the start request.
+        expr: {kind: path, path: [searchAttributes, indexedFields]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full activity execution list info object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # archived_workflows — archived workflow executions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: archived_workflows
+    description: >-
+      List archived workflow executions in a Temporal namespace
+      (ListArchivedWorkflowExecutions). Each row is one archived execution.
+      Filter by namespace (required). Requires archival to be configured
+      and enabled on the cluster.
+    guide: >-
+      Always supply namespace: `SELECT workflow_id, workflow_type, status
+      FROM temporal.archived_workflows WHERE namespace = 'default' LIMIT 20`.
+      Use the query filter for archive-supported queries.
+    filters:
+      - name: namespace
+        required: true
+        description: >-
+          Namespace to list archived workflow executions from. Use names from
+          the namespaces table.
+      - name: query
+        mode: search
+        description: >-
+          Archival visibility query string.
+    request:
+      method: GET
+      path: /api/v1/namespaces/{{filter.namespace}}/archived-workflows
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path: [executions]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Namespace this execution belongs to (from filter).
+        expr: {kind: from_filter, key: namespace}
+      - name: workflow_id
+        type: Utf8
+        nullable: false
+        description: Workflow ID (user-defined business key).
+        expr: {kind: path, path: [execution, workflowId]}
+      - name: run_id
+        type: Utf8
+        nullable: false
+        description: Run ID (unique per execution attempt).
+        expr: {kind: path, path: [execution, runId]}
+      - name: workflow_type
+        type: Utf8
+        nullable: true
+        description: Registered workflow type name.
+        expr: {kind: path, path: [type, name]}
+      - name: task_queue
+        type: Utf8
+        nullable: true
+        description: Task queue the workflow was dispatched on.
+        expr: {kind: path, path: [taskQueue]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Workflow execution status. One of: WORKFLOW_EXECUTION_STATUS_RUNNING,
+          WORKFLOW_EXECUTION_STATUS_COMPLETED, WORKFLOW_EXECUTION_STATUS_FAILED,
+          WORKFLOW_EXECUTION_STATUS_CANCELED, WORKFLOW_EXECUTION_STATUS_TERMINATED,
+          WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW, WORKFLOW_EXECUTION_STATUS_TIMED_OUT,
+          WORKFLOW_EXECUTION_STATUS_PAUSED.
+        expr: {kind: path, path: [status]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Time when the workflow execution started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [startTime]}
+      - name: close_time
+        type: Timestamp
+        nullable: true
+        description: Time when the workflow execution closed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [closeTime]}
+      - name: history_length
+        type: Int64
+        nullable: true
+        description: Number of events in the workflow history.
+        expr: {kind: path, path: [historyLength]}
+      - name: history_size_bytes
+        type: Int64
+        nullable: true
+        description: Size of the workflow history in bytes.
+        expr: {kind: path, path: [historySizeBytes]}
+      - name: search_attributes
+        type: Json
+        nullable: true
+        description: Custom search attributes on this execution.
+        expr: {kind: path, path: [searchAttributes, indexedFields]}
+      - name: memo
+        type: Json
+        nullable: true
+        description: Memo fields attached to this execution.
+        expr: {kind: path, path: [memo, fields]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full workflow execution object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # batch_operations — bulk workflow operation jobs
+  # ──────────────────────────────────────────────────────────────────────
+  - name: batch_operations
+    description: >-
+      List batch operations in a Temporal namespace
+      (ListBatchOperations). Each row is one batch job (bulk cancel,
+      terminate, signal, reset, etc.). Filter by namespace (required).
+    guide: >-
+      Always supply namespace: `SELECT job_id, state, start_time, close_time
+      FROM temporal.batch_operations WHERE namespace = 'default' LIMIT 20`.
+    filters:
+      - name: namespace
+        required: true
+        description: >-
+          Namespace that contains the batch operations. Use names from the
+          namespaces table.
+    request:
+      method: GET
+      path: /api/v1/namespaces/{{filter.namespace}}/batch-operations
+    response:
+      rows_path: [operationInfo]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Namespace this batch operation belongs to (from filter).
+        expr: {kind: from_filter, key: namespace}
+      - name: job_id
+        type: Utf8
+        nullable: false
+        description: Unique batch job ID.
+        expr: {kind: path, path: [jobId]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: >-
+          Batch operation state. One of: BATCH_OPERATION_STATE_RUNNING,
+          BATCH_OPERATION_STATE_COMPLETED, BATCH_OPERATION_STATE_FAILED.
+        expr: {kind: path, path: [state]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Time when the batch operation started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [startTime]}
+      - name: close_time
+        type: Timestamp
+        nullable: true
+        description: Time when the batch operation closed (null if still running).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [closeTime]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full batch operation info object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # nexus_operations — standalone Nexus operation executions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: nexus_operations
+    description: >-
+      List standalone Nexus operation executions in a Temporal namespace
+      (ListNexusOperationExecutions). Each row is one Nexus operation instance.
+      Filter by namespace (required). Optionally narrow with a Visibility
+      query string.
+    guide: >-
+      Always supply namespace: `SELECT operation_id, endpoint, service,
+      operation, status FROM temporal.nexus_operations WHERE namespace =
+      'default' LIMIT 20`.
+      Supported search attributes: OperationId, RunId, Endpoint, Service,
+      Operation, RequestId, StartTime, ExecutionTime, CloseTime,
+      ExecutionStatus, ExecutionDuration, StateTransitionCount.
+    filters:
+      - name: namespace
+        required: true
+        description: >-
+          Namespace to list Nexus operation executions from. Use names from
+          the namespaces table.
+      - name: query
+        mode: search
+        description: >-
+          Temporal Visibility query string filtered to Nexus operation
+          search attributes (e.g. 'Endpoint="my-endpoint" AND
+          ExecutionStatus="Running"').
+    request:
+      method: GET
+      path: /api/v1/namespaces/{{filter.namespace}}/nexus-operations
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path: [operations]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Namespace this Nexus operation belongs to (from filter).
+        expr: {kind: from_filter, key: namespace}
+      - name: operation_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of this Nexus operation within its namespace and run ID.
+        expr: {kind: path, path: [operationId]}
+      - name: run_id
+        type: Utf8
+        nullable: true
+        description: The run ID of the standalone Nexus operation.
+        expr: {kind: path, path: [runId]}
+      - name: endpoint
+        type: Utf8
+        nullable: true
+        description: Nexus endpoint name.
+        expr: {kind: path, path: [endpoint]}
+      - name: service
+        type: Utf8
+        nullable: true
+        description: Nexus service name.
+        expr: {kind: path, path: [service]}
+      - name: operation
+        type: Utf8
+        nullable: true
+        description: Nexus operation name.
+        expr: {kind: path, path: [operation]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Operation execution status. One of:
+          NEXUS_OPERATION_EXECUTION_STATUS_RUNNING,
+          NEXUS_OPERATION_EXECUTION_STATUS_COMPLETED,
+          NEXUS_OPERATION_EXECUTION_STATUS_FAILED,
+          NEXUS_OPERATION_EXECUTION_STATUS_CANCELED,
+          NEXUS_OPERATION_EXECUTION_STATUS_TERMINATED,
+          NEXUS_OPERATION_EXECUTION_STATUS_TIMED_OUT.
+        expr: {kind: path, path: [status]}
+      - name: schedule_time
+        type: Timestamp
+        nullable: true
+        description: Time the operation was originally scheduled.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [scheduleTime]}
+      - name: close_time
+        type: Timestamp
+        nullable: true
+        description: Time the operation transitioned to a terminal status (null if still running).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [closeTime]}
+      - name: execution_duration
+        type: Utf8
+        nullable: true
+        description: >-
+          Difference between close time and scheduled time as a duration
+          string (e.g. "30s"). Only populated for closed operations.
+        expr: {kind: path, path: [executionDuration]}
+      - name: state_transition_count
+        type: Int64
+        nullable: true
+        description: Updated on terminal status.
+        expr: {kind: path, path: [stateTransitionCount]}
+      - name: search_attributes
+        type: Json
+        nullable: true
+        description: Search attributes from the start request.
+        expr: {kind: path, path: [searchAttributes, indexedFields]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full Nexus operation execution list info object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # workflow_rules — namespace workflow automation rules
+  # ──────────────────────────────────────────────────────────────────────
+  - name: workflow_rules
+    description: >-
+      List workflow rules configured in a Temporal namespace
+      (ListWorkflowRules). Each row is one rule that can automatically act
+      on workflows (e.g. pause an activity on start). Filter by namespace
+      (required). Requires Temporal Server v1.28+ with
+      frontend.workflowRulesAPIsEnabled enabled.
+    guide: >-
+      Always supply namespace: `SELECT rule_id, description, visibility_query,
+      create_time FROM temporal.workflow_rules WHERE namespace = 'default'
+      LIMIT 20`. If the feature flag is disabled, the endpoint may return
+      Unimplemented.
+    filters:
+      - name: namespace
+        required: true
+        description: >-
+          Namespace to list workflow rules from. Use names from the namespaces
+          table.
+    request:
+      method: GET
+      path: /api/v1/namespaces/{{filter.namespace}}/workflow-rules
+    response:
+      rows_path: [rules]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Namespace this rule belongs to (from filter).
+        expr: {kind: from_filter, key: namespace}
+      - name: rule_id
+        type: Utf8
+        nullable: true
+        description: Unique rule ID within the namespace.
+        expr: {kind: path, path: [spec, id]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable rule description.
+        expr: {kind: path, path: [description]}
+      - name: visibility_query
+        type: Utf8
+        nullable: true
+        description: >-
+          Restricted Visibility query that filters which workflows this rule
+          applies to.
+        expr: {kind: path, path: [spec, visibilityQuery]}
+      - name: actions
+        type: Json
+        nullable: true
+        description: >-
+          Array of WorkflowRuleAction objects defining what to do when
+          the rule is triggered.
+        expr: {kind: path, path: [spec, actions]}
+      - name: expiration_time
+        type: Timestamp
+        nullable: true
+        description: Time when the rule expires and is auto-deleted (null if no expiry).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [spec, expirationTime]}
+      - name: create_time
+        type: Timestamp
+        nullable: true
+        description: Time when the rule was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createTime]}
+      - name: created_by_identity
+        type: Utf8
+        nullable: true
+        description: Identity of the actor that created the rule.
+        expr: {kind: path, path: [createdByIdentity]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full workflow rule object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # nexus_endpoints — cluster-global Nexus endpoint registry
+  # ──────────────────────────────────────────────────────────────────────
+  - name: nexus_endpoints
+    description: >-
+      List cluster-global Nexus endpoints (ListNexusEndpoints). Each row is
+      one endpoint binding an ID to a target for dispatching Nexus requests.
+      No namespace filter is required — endpoints are cluster-scoped.
+    guide: >-
+      `SELECT id, name, target_namespace, target_task_queue, created_time
+      FROM temporal.nexus_endpoints LIMIT 20`.
+    request:
+      method: GET
+      path: /api/v1/nexus/endpoints
+    response:
+      rows_path: [endpoints]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique server-generated endpoint ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: >-
+          Endpoint name, unique for this cluster. Must match
+          `[a-zA-Z_][a-zA-Z0-9_]*`.
+        expr: {kind: path, path: [spec, name]}
+      - name: target_namespace
+        type: Utf8
+        nullable: true
+        description: >-
+          Namespace to route Nexus requests to (for worker-target endpoints).
+        expr: {kind: path, path: [spec, target, worker, namespace]}
+      - name: target_task_queue
+        type: Utf8
+        nullable: true
+        description: >-
+          Nexus task queue to route requests to (for worker-target endpoints).
+        expr: {kind: path, path: [spec, target, worker, taskQueue]}
+      - name: target_external_url
+        type: Utf8
+        nullable: true
+        description: External URL to call (for external-target endpoints).
+        expr: {kind: path, path: [spec, target, external, url]}
+      - name: url_prefix
+        type: Utf8
+        nullable: true
+        description: >-
+          Server-exposed URL prefix for invoking operations on this endpoint
+          (excludes protocol, hostname, and port).
+        expr: {kind: path, path: [urlPrefix]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Data version for this endpoint, incremented on every update.
+        expr: {kind: path, path: [version]}
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Time when the endpoint was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdTime]}
+      - name: last_modified_time
+        type: Timestamp
+        nullable: true
+        description: Time when the endpoint was last modified (null if never modified).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastModifiedTime]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full Nexus endpoint object as returned by the API.
+        expr: {kind: current_row}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # worker_deployments — versioned worker deployment registry
+  # ──────────────────────────────────────────────────────────────────────
+  - name: worker_deployments
+    description: >-
+      List worker deployments in a Temporal namespace
+      (ListWorkerDeployments). Each row is one worker deployment summary,
+      showing current and ramping versions and their traffic routing
+      configuration. Filter by namespace (required).
+    guide: >-
+      Always supply namespace: `SELECT name, current_version,
+      ramping_version, ramping_version_percentage FROM
+      temporal.worker_deployments WHERE namespace = 'default' LIMIT 20`.
+    filters:
+      - name: namespace
+        required: true
+        description: >-
+          Namespace to list worker deployments from. Use names from the
+          namespaces table.
+    request:
+      method: GET
+      path: /api/v1/namespaces/{{filter.namespace}}/worker-deployments
+    response:
+      rows_path: [workerDeployments]
+    pagination:
+      mode: cursor_query
+      cursor_param: nextPageToken
+      response_cursor_path: [nextPageToken]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: namespace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Namespace this worker deployment belongs to (from filter).
+        expr: {kind: from_filter, key: namespace}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Worker deployment name.
+        expr: {kind: path, path: [name]}
+      - name: create_time
+        type: Timestamp
+        nullable: true
+        description: Time when the deployment was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createTime]}
+      - name: current_version
+        type: Utf8
+        nullable: true
+        description: >-
+          Build ID of the current deployment version that receives new
+          workflow executions and tasks.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path: [routingConfig, currentDeploymentVersion, buildId]
+            - kind: path
+              path: [routingConfig, currentVersion]
+      - name: ramping_version
+        type: Utf8
+        nullable: true
+        description: >-
+          Build ID of the ramping deployment version that receives a
+          configured percentage of traffic.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: path
+              path: [routingConfig, rampingDeploymentVersion, buildId]
+            - kind: path
+              path: [routingConfig, rampingVersion]
+      - name: ramping_version_percentage
+        type: Float64
+        nullable: true
+        description: >-
+          Percentage of tasks routed to the ramping version instead of the
+          current version. Valid range: [0, 100].
+        expr: {kind: path, path: [routingConfig, rampingVersionPercentage]}
+      - name: current_version_changed_time
+        type: Timestamp
+        nullable: true
+        description: Last time the current version was changed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [routingConfig, currentVersionChangedTime]}
+      - name: ramping_version_changed_time
+        type: Timestamp
+        nullable: true
+        description: Last time the ramping version was changed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [routingConfig, rampingVersionChangedTime]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full worker deployment summary object as returned by the API.
+        expr: {kind: current_row}
