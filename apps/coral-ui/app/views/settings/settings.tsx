@@ -68,12 +68,6 @@ export function Settings({
     >
       <KeyboardShortcut handler={onSearchShortcut} shortcut="$mod+f" />
 
-      {loaderData.runtime === 'web' && loaderData.usesRemoteMcp ? (
-        <Banner>
-          Remote MCP connections use the default workspace configured by the Coral endpoint.
-        </Banner>
-      ) : null}
-
       <Banner>
         {desktop
           ? 'This page shows only global MCP configurations. Project-specific and other connections will not appear here.'
