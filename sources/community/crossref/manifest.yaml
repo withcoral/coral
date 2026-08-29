@@ -1,0 +1,410 @@
+name: crossref
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query scholarly works, DOI metadata, journal publications, members, and
+  funders from the public Crossref REST API. No authentication required.
+base_url: https://api.crossref.org
+request_headers:
+  - name: User-Agent
+    from: literal
+    value: "Coral Crossref source (https://github.com/withcoral/coral)"
+
+test_queries:
+  - SELECT doi, title, publisher FROM crossref.works WHERE query = 'machine learning' LIMIT 1
+  - SELECT doi, title, publisher FROM crossref.work_by_doi WHERE doi = '10.1038/nphys1170' LIMIT 1
+  - SELECT doi, title FROM crossref.journal_works WHERE issn = '1932-6203' LIMIT 1
+  - SELECT id, name FROM crossref.funders WHERE query = 'National Science Foundation' LIMIT 1
+
+tables:
+  - name: works
+    description: |
+      Search Crossref works by keyword and optional filters. Pass `query` for
+      full-text search, `filter` for Crossref filter expressions such as
+      `from-pub-date:2024-01-01,type:journal-article`, and `sort` / `order`
+      for result ordering. Use SQL LIMIT to bound API calls.
+    fetch_limit_default: 20
+    filters:
+      - name: query
+      - name: filter
+      - name: sort
+      - name: order
+    request:
+      method: GET
+      path: /works
+      query:
+        - name: query
+          from: filter
+          key: query
+        - name: filter
+          from: filter
+          key: filter
+        - name: sort
+          from: filter
+          key: sort
+        - name: order
+          from: filter
+          key: order
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 20
+        max: 100
+        query_param: rows
+    columns: &work_columns
+      - name: doi
+        type: Utf8
+        nullable: false
+        description: Digital Object Identifier.
+        expr:
+          kind: path
+          path:
+            - DOI
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Primary title, joined when Crossref returns multiple values.
+        expr:
+          kind: join_array
+          path:
+            - title
+      - name: subtitle
+        type: Utf8
+        nullable: true
+        description: Subtitle values joined with commas.
+        expr:
+          kind: join_array
+          path:
+            - subtitle
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Crossref work type, such as journal-article or book-chapter.
+      - name: publisher
+        type: Utf8
+        nullable: true
+        description: Publisher name.
+      - name: container_title
+        type: Utf8
+        nullable: true
+        description: Journal, book, or proceedings title.
+        expr:
+          kind: join_array
+          path:
+            - container-title
+      - name: issn
+        type: Utf8
+        nullable: true
+        description: ISSN values joined with commas when present.
+        expr:
+          kind: join_array
+          path:
+            - ISSN
+      - name: isbn
+        type: Utf8
+        nullable: true
+        description: ISBN values joined with commas when present.
+        expr:
+          kind: join_array
+          path:
+            - ISBN
+      - name: url
+        type: Utf8
+        nullable: true
+        description: DOI landing page URL.
+        expr:
+          kind: path
+          path:
+            - URL
+      - name: published_print
+        type: Json
+        nullable: true
+        description: Crossref published-print date object.
+        expr:
+          kind: path
+          path:
+            - published-print
+      - name: published_online
+        type: Json
+        nullable: true
+        description: Crossref published-online date object.
+        expr:
+          kind: path
+          path:
+            - published-online
+      - name: issued
+        type: Json
+        nullable: true
+        description: Crossref issued date object.
+      - name: created
+        type: Json
+        nullable: true
+        description: Crossref created date object.
+      - name: deposited
+        type: Json
+        nullable: true
+        description: Crossref deposited date object.
+      - name: author
+        type: Json
+        nullable: true
+        description: Author objects as returned by Crossref.
+      - name: editor
+        type: Json
+        nullable: true
+        description: Editor objects as returned by Crossref.
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Subject tags joined with commas.
+        expr:
+          kind: join_array
+          path:
+            - subject
+      - name: reference_count
+        type: Int64
+        nullable: true
+        description: Number of references in Crossref metadata.
+        expr:
+          kind: path
+          path:
+            - reference-count
+      - name: is_referenced_by_count
+        type: Int64
+        nullable: true
+        description: Crossref citation count.
+        expr:
+          kind: path
+          path:
+            - is-referenced-by-count
+      - name: score
+        type: Float64
+        nullable: true
+        description: Search relevance score when returned by Crossref.
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the search query filter that produced this row.
+        expr:
+          kind: from_filter
+          key: query
+      - name: license
+        type: Json
+        nullable: true
+        description: License records.
+      - name: link
+        type: Json
+        nullable: true
+        description: Full-text and metadata links.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full Crossref work object for fields not flattened yet.
+        expr:
+          kind: current_row
+
+  - name: work_by_doi
+    description: |
+      Resolve a single Crossref work by DOI. Requires `doi`, for example
+      `10.1038/nphys1170`.
+    filters:
+      - name: doi
+        required: true
+      - name: query
+    request:
+      method: GET
+      path: /works/{{filter.doi}}
+    response:
+      rows_path:
+        - message
+    pagination:
+      mode: none
+    columns: *work_columns
+
+  - name: journal_works
+    description: |
+      List works for a journal by ISSN. Requires `issn`; optional `filter`,
+      `sort`, and `order` are passed through to Crossref.
+    fetch_limit_default: 20
+    filters:
+      - name: issn
+        required: true
+      - name: query
+      - name: filter
+      - name: sort
+      - name: order
+    request:
+      method: GET
+      path: /journals/{{filter.issn}}/works
+      query:
+        - name: filter
+          from: filter
+          key: filter
+        - name: sort
+          from: filter
+          key: sort
+        - name: order
+          from: filter
+          key: order
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 20
+        max: 100
+        query_param: rows
+    columns: *work_columns
+
+  - name: members
+    description: |
+      Browse Crossref member organizations. Optional `query` searches member
+      names; use SQL LIMIT to bound results.
+    fetch_limit_default: 20
+    filters:
+      - name: query
+    request:
+      method: GET
+      path: /members
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 20
+        max: 100
+        query_param: rows
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Crossref member ID.
+      - name: primary_name
+        type: Utf8
+        nullable: true
+        description: Primary member name.
+        expr:
+          kind: path
+          path:
+            - primary-name
+      - name: prefix
+        type: Json
+        nullable: true
+        description: DOI prefixes registered to this member.
+      - name: counts
+        type: Json
+        nullable: true
+        description: DOI count breakdown for the member.
+      - name: coverage
+        type: Json
+        nullable: true
+        description: Metadata coverage statistics.
+      - name: breakdowns
+        type: Json
+        nullable: true
+        description: Work type breakdowns.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full Crossref member object.
+        expr:
+          kind: current_row
+
+  - name: funders
+    description: |
+      Search Crossref funders by name and metadata. Optional `query` searches
+      funder names and alternate names.
+    fetch_limit_default: 20
+    filters:
+      - name: query
+    request:
+      method: GET
+      path: /funders
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - message
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 20
+        max: 100
+        query_param: rows
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Crossref funder identifier.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Funder name.
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Funder country or location.
+      - name: alt_names
+        type: Utf8
+        nullable: true
+        description: Alternate names joined with commas.
+        expr:
+          kind: join_array
+          path:
+            - alt-names
+      - name: uri
+        type: Utf8
+        nullable: true
+        description: Crossref funder URI.
+      - name: tokens
+        type: Utf8
+        nullable: true
+        description: Search tokens joined with commas.
+        expr:
+          kind: join_array
+          path:
+            - tokens
+      - name: query
+        type: Utf8
+        nullable: true
+        description: Echoes the search query filter that produced this row.
+        expr:
+          kind: from_filter
+          key: query
+      - name: replaces
+        type: Json
+        nullable: true
+        description: Funder IDs this record replaces.
+      - name: replaced_by
+        type: Json
+        nullable: true
+        description: Replacement funder IDs, if any.
+        expr:
+          kind: path
+          path:
+            - replaced-by
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full Crossref funder object.
+        expr:
+          kind: current_row
