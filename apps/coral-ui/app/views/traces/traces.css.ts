@@ -160,6 +160,44 @@ export const cell = style({
   whiteSpace: 'nowrap',
 })
 export const cellTimestamp = style({ minWidth: 80 })
+export const cellUser = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 8,
+  maxWidth: 176,
+  minWidth: 0,
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      gap: 0,
+      maxWidth: 20,
+    },
+  },
+})
+export const desktopUserAvatar = style({
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: { display: 'none' },
+  },
+})
+export const mobileUserAvatar = style({
+  display: 'none',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: { display: 'inline-flex' },
+  },
+})
+export const userLabel = style({
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      clip: 'rect(0 0 0 0)',
+      clipPath: 'inset(50%)',
+      height: 1,
+      position: 'absolute',
+      whiteSpace: 'nowrap',
+      width: 1,
+    },
+  },
+})
 export const sqlPreview = style({
   color: utils.opacify(theme.content.primary, 85),
   flex: 1,
