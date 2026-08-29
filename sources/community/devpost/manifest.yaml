@@ -1,0 +1,145 @@
+name: devpost
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query public hackathons from Devpost. Browse the catalog or run keyword
+  search; no authentication required.
+base_url: https://devpost.com
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT id, title FROM devpost.events LIMIT 1
+  - SELECT id, title FROM devpost.search(q => 'ai') LIMIT 1
+tables:
+  - name: events
+    description: >-
+      Browse public hackathons listed on Devpost in the provider's default
+      ranking. Use a LIMIT (results are paginated 9 per page); avoid unbounded
+      ORDER BY, which forces fetching the entire catalog. For keyword retrieval
+      use the devpost.search() function instead.
+    fetch_limit_default: 100
+    filters:
+      - name: status
+        type: Utf8
+        description: Open state filter, mapped to ?status[]= (e.g. 'open', 'upcoming', 'ended').
+    request:
+      method: GET
+      path: /api/hackathons
+      query:
+        - name: "status[]"
+          from: filter
+          key: status
+    response:
+      rows_path: [hackathons]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 25
+    columns: &event_columns
+      - name: id
+        type: Int64
+        description: Devpost numeric hackathon id.
+      - name: title
+        type: Utf8
+        description: Hackathon title.
+      - name: url
+        type: Utf8
+        description: Canonical hackathon URL.
+      - name: organizer
+        type: Utf8
+        description: Hosting organization name.
+        expr:
+          kind: path
+          path: [organization_name]
+      - name: location
+        type: Utf8
+        description: Displayed location (e.g. "Online" or a city).
+        expr:
+          kind: path
+          path: [displayed_location, location]
+      - name: status
+        type: Utf8
+        description: Open state (open/upcoming/ended).
+        expr:
+          kind: path
+          path: [open_state]
+      - name: tracks
+        type: Utf8
+        description: Comma-joined theme names (e.g. "Machine Learning/AI,Databases").
+        expr:
+          kind: join_array_path
+          path: [themes]
+          item_path: [name]
+          separator: ","
+      - name: registrations_count
+        type: Int64
+        description: Number of registered participants.
+      - name: featured
+        type: Boolean
+        description: Whether Devpost features this hackathon.
+      - name: invite_only
+        type: Boolean
+        description: Whether participation is invite-only.
+      - name: prize_amount_raw
+        type: Utf8
+        description: Raw prize markup from Devpost (HTML, e.g. "$<span ...>60,000</span>"); parse downstream.
+        expr:
+          kind: path
+          path: [prize_amount]
+      - name: submission_period_dates_raw
+        type: Utf8
+        description: Human-readable submission window (e.g. "May 05 - Jun 11, 2026"); parse downstream.
+        expr:
+          kind: path
+          path: [submission_period_dates]
+      - name: time_left_to_submission
+        type: Utf8
+        description: Human-readable time remaining (e.g. "12 days left").
+      - name: thumbnail_url
+        type: Utf8
+        description: Thumbnail image URL.
+      - name: submission_gallery_url
+        type: Utf8
+        description: URL of the project submission gallery.
+functions:
+  - name: search
+    kind: search
+    description: >-
+      Keyword search across Devpost hackathons, preserving Devpost's provider
+      ranking. Call as devpost.search(q => 'ai'). Optionally pass status.
+    search_limits:
+      default_top_k: 25
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: status
+        bind:
+          arg: status
+    request:
+      method: GET
+      path: /api/hackathons
+      query:
+        - name: search
+          from: arg
+          key: q
+        - name: "status[]"
+          from: arg
+          key: status
+    response:
+      rows_path: [hackathons]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 12
+    columns: *event_columns
