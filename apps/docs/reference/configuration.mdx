@@ -87,8 +87,8 @@ unchanged: keep using `coral source add`, `list`, `info`, and `remove`.
 ### Every boot imports what it finds
 
 On each start, Coral imports the source entries in `config.toml` that its
-database does not already have, then brings the mirror and the on-disk caches
-back in line. The pass is additive and never fails startup: legacy data Coral
+database does not already have — or that changed on this host since Coral last
+wrote them — then brings the mirror and the on-disk caches back in line. The pass is additive and never fails startup: legacy data Coral
 cannot read is reported and skipped, and no boot empties a catalog you
 populated. A source added by hand or by an older Coral appears the next time you
 start Coral, with no migration step to run and no version stamp to satisfy.
@@ -127,7 +127,7 @@ An earlier Coral reads `config.toml` as it always did — there is no gate that
 refuses to start — and the mirror keeps its catalog current rather than frozen.
 One asymmetry: the entry for a source deleted through another host lingers in
 this host's file, inert to the current version but still listed by an older one.
-Four more consequences are worth knowing, all resolved toward restoring data
+Four more consequences are worth knowing, all resolved toward preserving data
 rather than losing it:
 
 - A source an older binary **deletes** comes back on the next boot of the current
@@ -141,9 +141,10 @@ rather than losing it:
 - A source **re-added** with an older binary is imported on the next boot, unless
   the entry that binary writes is identical to the stale one already in the file.
   Re-import the source with the current version to bring it back.
-- On a host's first boot on the current version, a config entry or manifest cache
-  that differs from the database is left in place with a warning, or set aside
-  once. From then on, routine cross-host updates are refreshed silently.
+- On a host's first boot on the current version, a config entry that differs
+  from the database is left in place with a warning, and a manifest cache that
+  differs is set aside once. From then on, routine cross-host updates are
+  refreshed silently.
 
 ### Credentials and what stays in files
 
