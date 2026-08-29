@@ -1,0 +1,838 @@
+name: socket_dev
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query organizations, quota, dependency inventory, package scores, package
+  metadata, and package alerts from Socket.dev.
+inputs:
+  SOCKET_API_BASE:
+    kind: variable
+    default: https://api.socket.dev/v0
+    hint: |
+      Base URL for the Socket API. Keep the default for Socket Cloud.
+      Do not include a trailing slash.
+      See https://api.socket.dev/v0/openapi for the current OpenAPI document.
+  SOCKET_API_TOKEN:
+    kind: secret
+    hint: |
+      Socket organization API token. Create one in your Socket organization
+      settings. Package lookup requires the `packages:list` scope; organization
+      and quota discovery require authentication but no additional scope.
+      Coral sends the token as `Authorization: Bearer <token>`.
+      See https://docs.socket.dev/reference/authentication.
+base_url: "{{input.SOCKET_API_BASE}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.SOCKET_API_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT quota, max_quota, next_window_refresh FROM socket_dev.quota LIMIT 1
+  - SELECT slug, name, plan FROM socket_dev.organizations LIMIT 5
+tables:
+  - name: quota
+    description: Current Socket API quota for the configured token.
+    guide: |
+      Use this table to check remaining API quota before running package or
+      dependency inventory lookups. This maps to GET /quota and consumes no
+      quota according to Socket's API reference.
+    request:
+      method: GET
+      path: /quota
+    response:
+      row_strategy: direct
+      error_path:
+        - error
+        - message
+    pagination:
+      mode: none
+    columns:
+      - name: quota
+        type: Int64
+        nullable: false
+        description: Remaining quota in the current Socket API window.
+        expr:
+          kind: path
+          path:
+            - quota
+      - name: max_quota
+        type: Int64
+        nullable: false
+        description: Maximum quota for the current Socket API window.
+        expr:
+          kind: path
+          path:
+            - maxQuota
+      - name: next_window_refresh
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the quota window refreshes, when provided.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - nextWindowRefresh
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Socket quota response.
+        expr:
+          kind: current_row
+
+  - name: organizations
+    description: Socket organizations associated with the configured API token.
+    guide: |
+      Use this table to discover the `slug` value required by org-scoped
+      package lookup tables such as `socket_dev.package_artifacts` and
+      `socket_dev.package_alerts`.
+    request:
+      method: GET
+      path: /organizations
+    response:
+      rows_path:
+        - organizations
+      row_strategy: dict_entries
+      error_path:
+        - error
+        - message
+    pagination:
+      mode: none
+    columns:
+      - name: organization_key
+        type: Utf8
+        nullable: false
+        description: Map key from the Socket organizations response.
+        expr:
+          kind: path
+          path:
+            - _key
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Socket organization identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: Socket organization slug used in org-scoped endpoints.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable organization name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: plan
+        type: Utf8
+        nullable: true
+        description: Socket organization plan.
+        expr:
+          kind: path
+          path:
+            - plan
+      - name: image
+        type: Utf8
+        nullable: true
+        description: Organization image URL, when configured.
+        expr:
+          kind: path
+          path:
+            - image
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full raw Socket organization object.
+        expr:
+          kind: current_row
+
+  - name: dependency_search
+    description: Dependencies observed in the authenticated Socket organization.
+    guide: |
+      Requires `limit` and `offset`. Use this table to page through
+      dependencies Socket has observed for the organization. Include `purl` to
+      narrow results to one Package URL. Socket accepts `limit` values from
+      1 through 100, and `offset` must be 0 or greater.
+    filters:
+      - name: limit
+        required: true
+      - name: offset
+        required: true
+      - name: purl
+        required: false
+    request:
+      method: POST
+      path: /dependencies/search
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - limit
+          from: filter
+          key: limit
+        - path:
+            - offset
+          from: filter
+          key: offset
+        - path:
+            - purls
+            - "0"
+          from: filter
+          key: purl
+    response:
+      rows_path:
+        - rows
+      row_strategy: direct
+      error_path:
+        - error
+        - message
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Socket dependency identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Package ecosystem or PURL type.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: Package namespace, scope, or group.
+        expr:
+          kind: path
+          path:
+            - namespace
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Package name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Package version.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: release
+        type: Utf8
+        nullable: true
+        description: Package release identifier, when present.
+        expr:
+          kind: path
+          path:
+            - release
+      - name: repository
+        type: Utf8
+        nullable: false
+        description: Repository associated with this dependency in Socket.
+        expr:
+          kind: path
+          path:
+            - repository
+      - name: branch
+        type: Utf8
+        nullable: false
+        description: Repository branch where this dependency was observed.
+        expr:
+          kind: path
+          path:
+            - branch
+      - name: workspace
+        type: Utf8
+        nullable: true
+        description: Workspace where this dependency was observed.
+        expr:
+          kind: path
+          path:
+            - workspace
+      - name: direct
+        type: Boolean
+        nullable: false
+        description: Whether Socket observed this as a direct dependency.
+        expr:
+          kind: path
+          path:
+            - direct
+      - name: limit
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Requested page size. Socket accepts values from 1 through 100.
+        expr:
+          kind: from_filter
+          key: limit
+      - name: offset
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Requested page offset. Must be 0 or greater.
+        expr:
+          kind: from_filter
+          key: offset
+      - name: purl
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional requested PURL filter.
+        expr:
+          kind: from_filter
+          key: purl
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Socket dependency search row.
+        expr:
+          kind: current_row
+
+  - name: package_artifacts
+    description: Socket package metadata, scores, links, and alert summaries by PURL.
+    guide: |
+      Requires `org_slug` and one package URL in `purl`, for example
+      `pkg:npm/express@4.19.2`, `pkg:pypi/django@5.0.6`, or
+      `pkg:maven/log4j/log4j@1.2.17`. Use `socket_dev.organizations` to
+      discover organization slugs visible to the token. Set
+      `include_alerts = 'true'` to include alert metadata in the raw payload
+      and alert-priority fields.
+      Socket's org-scoped PURL endpoint consumes 100 quota units per request,
+      so check `socket_dev.quota` first and keep package lookups narrow.
+      Optional `poll = 'true'` waits for package analysis. If you set
+      `timeout_sec`, Socket accepts values from 1 through 1200 seconds.
+    filters:
+      - name: org_slug
+        required: true
+      - name: purl
+        required: true
+      - name: include_alerts
+        required: false
+      - name: compact
+        required: false
+      - name: poll
+        required: false
+      - name: timeout_sec
+        required: false
+    request:
+      method: POST
+      path: /orgs/{{filter.org_slug}}/purl
+      headers:
+        - name: Accept
+          from: literal
+          value: application/x-ndjson
+        - name: Content-Type
+          from: literal
+          value: application/json
+      query:
+        - name: alerts
+          from: filter
+          key: include_alerts
+        - name: compact
+          from: filter
+          key: compact
+        - name: poll
+          from: filter
+          key: poll
+        - name: timeoutSec
+          from: filter
+          key: timeout_sec
+      body:
+        - path:
+            - components
+            - "0"
+            - purl
+          from: filter
+          key: purl
+    response:
+      format: json_each_row
+      row_strategy: direct
+      error_path:
+        - error
+        - message
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Socket artifact identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: input_purl
+        type: Utf8
+        nullable: true
+        description: Original PURL submitted to Socket before normalization.
+        expr:
+          kind: path
+          path:
+            - inputPurl
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Package ecosystem or PURL type.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: Package namespace, scope, or group.
+        expr:
+          kind: path
+          path:
+            - namespace
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Package name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Package version.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: release
+        type: Utf8
+        nullable: true
+        description: Package release identifier, when present.
+        expr:
+          kind: path
+          path:
+            - release
+      - name: subpath
+        type: Utf8
+        nullable: true
+        description: PURL subpath, when present.
+        expr:
+          kind: path
+          path:
+            - subpath
+      - name: license
+        type: Utf8
+        nullable: true
+        description: Socket license summary for this package artifact.
+        expr:
+          kind: path
+          path:
+            - license
+      - name: size
+        type: Float64
+        nullable: true
+        description: Package artifact size in bytes.
+        expr:
+          kind: path
+          path:
+            - size
+      - name: score_overall
+        type: Float64
+        nullable: true
+        description: Overall Socket package score from 0.0 to 1.0.
+        expr:
+          kind: path
+          path:
+            - score
+            - overall
+      - name: score_supply_chain
+        type: Float64
+        nullable: true
+        description: Socket supply-chain score from 0.0 to 1.0.
+        expr:
+          kind: path
+          path:
+            - score
+            - supplyChain
+      - name: score_vulnerability
+        type: Float64
+        nullable: true
+        description: Socket vulnerability score from 0.0 to 1.0.
+        expr:
+          kind: path
+          path:
+            - score
+            - vulnerability
+      - name: score_quality
+        type: Float64
+        nullable: true
+        description: Socket quality score from 0.0 to 1.0.
+        expr:
+          kind: path
+          path:
+            - score
+            - quality
+      - name: score_maintenance
+        type: Float64
+        nullable: true
+        description: Socket maintenance score from 0.0 to 1.0.
+        expr:
+          kind: path
+          path:
+            - score
+            - maintenance
+      - name: score_license
+        type: Float64
+        nullable: true
+        description: Socket license score from 0.0 to 1.0.
+        expr:
+          kind: path
+          path:
+            - score
+            - license
+      - name: direct
+        type: Boolean
+        nullable: true
+        description: Whether this package is a direct dependency in the analyzed context.
+        expr:
+          kind: path
+          path:
+            - direct
+      - name: dev
+        type: Boolean
+        nullable: true
+        description: Whether this package is development-only in the analyzed context.
+        expr:
+          kind: path
+          path:
+            - dev
+      - name: dead
+        type: Boolean
+        nullable: true
+        description: Whether Socket marks this package as deprecated or abandoned.
+        expr:
+          kind: path
+          path:
+            - dead
+      - name: authors
+        type: Json
+        nullable: true
+        description: Package authors or maintainers reported by Socket.
+        expr:
+          kind: path
+          path:
+            - author
+      - name: dependencies
+        type: Json
+        nullable: true
+        description: Direct dependency identifiers for this package artifact.
+        expr:
+          kind: path
+          path:
+            - dependencies
+      - name: manifest_files
+        type: Json
+        nullable: true
+        description: Manifest files associated with this package artifact.
+        expr:
+          kind: path
+          path:
+            - manifestFiles
+      - name: alert_priorities
+        type: Json
+        nullable: true
+        description: Computed alert priorities by alert type.
+        expr:
+          kind: path
+          path:
+            - alertPriorities
+      - name: alerts
+        type: Json
+        nullable: true
+        description: Alert array when requested with `alerts = 'true'`.
+        expr:
+          kind: path
+          path:
+            - alerts
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Socket organization slug used for this request.
+        expr:
+          kind: from_filter
+          key: org_slug
+      - name: purl
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: PURL submitted for this request.
+        expr:
+          kind: from_filter
+          key: purl
+      - name: include_alerts
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional alerts query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: include_alerts
+      - name: compact
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional compact query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: compact
+      - name: poll
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional poll query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: poll
+      - name: timeout_sec
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional timeoutSec query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: timeout_sec
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Socket package artifact row.
+        expr:
+          kind: current_row
+
+  - name: package_alerts
+    description: Socket alerts for one package artifact by PURL.
+    guide: |
+      Requires `org_slug` and `purl`. This table calls the same org-scoped
+      PURL endpoint as `package_artifacts` with `alerts=true`, then expands
+      the returned artifact's alert array into one row per alert. Socket's
+      org-scoped PURL endpoint consumes 100 quota units per request, so check
+      `socket_dev.quota` first and expect provider rate-limit responses when
+      quota is exhausted.
+      Optional `poll = 'true'` waits for package analysis. If you set
+      `timeout_sec`, Socket accepts values from 1 through 1200 seconds.
+    filters:
+      - name: org_slug
+        required: true
+      - name: purl
+        required: true
+      - name: poll
+        required: false
+      - name: timeout_sec
+        required: false
+    request:
+      method: POST
+      path: /orgs/{{filter.org_slug}}/purl
+      headers:
+        - name: Accept
+          from: literal
+          value: application/x-ndjson
+        - name: Content-Type
+          from: literal
+          value: application/json
+      query:
+        - name: alerts
+          from: literal
+          value: "true"
+        - name: poll
+          from: filter
+          key: poll
+        - name: timeoutSec
+          from: filter
+          key: timeout_sec
+      body:
+        - path:
+            - components
+            - "0"
+            - purl
+          from: filter
+          key: purl
+    response:
+      format: json_each_row
+      rows_path:
+        - "0"
+        - alerts
+      row_strategy: direct
+      error_path:
+        - error
+        - message
+    pagination:
+      mode: none
+    columns:
+      - name: key
+        type: Utf8
+        nullable: false
+        description: Unique Socket alert key.
+        expr:
+          kind: path
+          path:
+            - key
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Socket alert type identifier.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: severity
+        type: Utf8
+        nullable: true
+        description: Socket alert severity.
+        expr:
+          kind: path
+          path:
+            - severity
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Socket alert category.
+        expr:
+          kind: path
+          path:
+            - category
+      - name: action
+        type: Utf8
+        nullable: true
+        description: Policy action for this alert, when included.
+        expr:
+          kind: path
+          path:
+            - action
+      - name: file
+        type: Utf8
+        nullable: true
+        description: File path where Socket detected the alert, when applicable.
+        expr:
+          kind: path
+          path:
+            - file
+      - name: start
+        type: Int64
+        nullable: true
+        description: Start position for the alert location, when applicable.
+        expr:
+          kind: path
+          path:
+            - start
+      - name: end
+        type: Int64
+        nullable: true
+        description: End position for the alert location, when applicable.
+        expr:
+          kind: path
+          path:
+            - end
+      - name: sub_type
+        type: Utf8
+        nullable: true
+        description: Generic alert subtype, when included.
+        expr:
+          kind: path
+          path:
+            - subType
+      - name: props
+        type: Json
+        nullable: true
+        description: Alert-specific metadata that varies by alert type.
+        expr:
+          kind: path
+          path:
+            - props
+      - name: fix
+        type: Json
+        nullable: true
+        description: Fix metadata when Socket reports an available fix.
+        expr:
+          kind: path
+          path:
+            - fix
+      - name: reachability
+        type: Json
+        nullable: true
+        description: Reachability metadata when available.
+        expr:
+          kind: path
+          path:
+            - reachability
+      - name: action_source
+        type: Json
+        nullable: true
+        description: Policy or override source for the alert action.
+        expr:
+          kind: path
+          path:
+            - actionSource
+      - name: org_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Socket organization slug used for this request.
+        expr:
+          kind: from_filter
+          key: org_slug
+      - name: purl
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: PURL submitted for this request.
+        expr:
+          kind: from_filter
+          key: purl
+      - name: poll
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional poll query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: poll
+      - name: timeout_sec
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional timeoutSec query parameter submitted for this request.
+        expr:
+          kind: from_filter
+          key: timeout_sec
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw Socket alert row.
+        expr:
+          kind: current_row
