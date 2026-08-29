@@ -69,7 +69,13 @@ fn rows_match_current_migrations(rows: &[(i64, Vec<u8>, bool)]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use sea_query::{Expr, ExprTrait, Func, OnConflict, Query, SelectStatement};
+    use tempfile::tempdir;
+
     use super::{MIGRATOR, rows_match_current_migrations};
+    use crate::state::AppStateLayout;
+    use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources, Workspaces};
+    use crate::state::db::{CoralDb, DatabaseConfig, DbError, DbSession, ResolvedDatabaseConfig};
 
     #[test]
     fn current_migration_rows_must_match_versions_checksums_and_success() {
@@ -275,5 +281,389 @@ mod tests {
             error.to_string().contains("FOREIGN KEY constraint failed"),
             "unexpected error: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn source_catalog_migration_contract_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let config = DatabaseConfig::load(&layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+
+        assert_source_catalog_migration_contract(&db).await;
+    }
+
+    async fn assert_source_catalog_migration_contract(db: &CoralDb) {
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let workspace_id = format!("workspace_{suffix}");
+        let source_name = format!("source_{suffix}");
+        let mut session = db;
+
+        insert_source_catalog_rows(&mut session, &workspace_id, &source_name)
+            .await
+            .expect("insert source catalog rows");
+        assert_eq!(
+            source_variable_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count variables"),
+            1
+        );
+        assert_eq!(
+            source_secret_key_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count secret keys"),
+            1
+        );
+        assert_eq!(
+            source_credential_revision(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("read credential revision"),
+            uuid::Uuid::nil().to_string()
+        );
+        assert_source_catalog_uniqueness_contract(&mut session, &workspace_id, &source_name).await;
+
+        let alternate_workspace_id = format!("alternate_workspace_{suffix}");
+        insert_source_catalog_rows(&mut session, &alternate_workspace_id, &source_name)
+            .await
+            .expect("insert same source name in another workspace");
+        assert_eq!(
+            source_count(&mut session, &alternate_workspace_id)
+                .await
+                .expect("count alternate workspace source"),
+            1
+        );
+        delete_workspace(&mut session, &alternate_workspace_id)
+            .await
+            .expect("delete alternate workspace");
+
+        delete_source(&mut session, &workspace_id, &source_name)
+            .await
+            .expect("delete source");
+        assert_eq!(
+            source_variable_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count variables after source delete"),
+            0
+        );
+        assert_eq!(
+            source_secret_key_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count secret keys after source delete"),
+            0
+        );
+
+        insert_source_catalog_rows(&mut session, &workspace_id, &source_name)
+            .await
+            .expect("reinsert source catalog rows");
+        delete_workspace(&mut session, &workspace_id)
+            .await
+            .expect("delete workspace");
+        assert_eq!(
+            source_count(&mut session, &workspace_id)
+                .await
+                .expect("count sources after workspace delete"),
+            0
+        );
+        assert_eq!(
+            source_variable_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count variables after workspace delete"),
+            0
+        );
+        assert_eq!(
+            source_secret_key_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count secret keys after workspace delete"),
+            0
+        );
+    }
+
+    async fn insert_source_catalog_rows<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        insert_workspace_row(session, workspace_id).await?;
+        insert_source_row(session, workspace_id, source_name).await?;
+        insert_source_variable_row(session, workspace_id, source_name, "REGION", "us-east-1")
+            .await?;
+        insert_source_secret_key_row(session, workspace_id, source_name, "API_TOKEN").await
+    }
+
+    async fn assert_source_catalog_uniqueness_contract<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) where
+        S: DbSession,
+    {
+        assert!(
+            insert_source_row(session, workspace_id, source_name)
+                .await
+                .is_err(),
+            "duplicate source identity should fail"
+        );
+        assert!(
+            insert_source_variable_row(session, workspace_id, source_name, "REGION", "eu-west-1")
+                .await
+                .is_err(),
+            "duplicate source variable key should fail"
+        );
+        assert!(
+            insert_source_secret_key_row(session, workspace_id, source_name, "OTHER_TOKEN")
+                .await
+                .is_ok(),
+            "distinct source secret keys should be allowed"
+        );
+        assert!(
+            insert_source_secret_key_row(session, workspace_id, source_name, "API_TOKEN")
+                .await
+                .is_err(),
+            "duplicate source secret key should fail"
+        );
+    }
+
+    async fn insert_workspace_row<S>(session: &mut S, workspace_id: &str) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::insert()
+                    .into_table(Workspaces::Table)
+                    .columns([Workspaces::Id, Workspaces::CreatedAtUnixNanos])
+                    .values_panic([Expr::val(workspace_id), Expr::val(1)])
+                    .on_conflict(OnConflict::column(Workspaces::Id).do_nothing().to_owned())
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn insert_source_row<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::insert()
+                    .into_table(Sources::Table)
+                    .columns([
+                        Sources::WorkspaceId,
+                        Sources::Name,
+                        Sources::Version,
+                        Sources::OriginKind,
+                        Sources::CredentialStorage,
+                        Sources::CreatedAtUnixNanos,
+                        Sources::UpdatedAtUnixNanos,
+                    ])
+                    .values_panic([
+                        Expr::val(workspace_id),
+                        Expr::val(source_name),
+                        Expr::val("1.0.0"),
+                        Expr::val("imported"),
+                        Expr::val("file"),
+                        Expr::val(2),
+                        Expr::val(3),
+                    ])
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn insert_source_variable_row<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::insert()
+                    .into_table(SourceVariables::Table)
+                    .columns([
+                        SourceVariables::WorkspaceId,
+                        SourceVariables::SourceName,
+                        SourceVariables::Key,
+                        SourceVariables::Value,
+                    ])
+                    .values_panic([
+                        Expr::val(workspace_id),
+                        Expr::val(source_name),
+                        Expr::val(key),
+                        Expr::val(value),
+                    ])
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn insert_source_secret_key_row<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+        key: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::insert()
+                    .into_table(SourceSecretKeys::Table)
+                    .columns([
+                        SourceSecretKeys::WorkspaceId,
+                        SourceSecretKeys::SourceName,
+                        SourceSecretKeys::Key,
+                    ])
+                    .values_panic([
+                        Expr::val(workspace_id),
+                        Expr::val(source_name),
+                        Expr::val(key),
+                    ])
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn delete_source<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::delete()
+                    .from_table(Sources::Table)
+                    .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_id))
+                    .and_where(Expr::col(Sources::Name).eq(source_name))
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn delete_workspace<S>(session: &mut S, workspace_id: &str) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::delete()
+                    .from_table(Workspaces::Table)
+                    .and_where(Expr::col(Workspaces::Id).eq(workspace_id))
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn source_count<S>(session: &mut S, workspace_id: &str) -> Result<i64, DbError>
+    where
+        S: DbSession,
+    {
+        fetch_count(
+            session,
+            Query::select()
+                .expr(Func::count(Expr::val(1)))
+                .from(Sources::Table)
+                .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_id))
+                .to_owned(),
+        )
+        .await
+    }
+
+    async fn source_variable_count<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<i64, DbError>
+    where
+        S: DbSession,
+    {
+        fetch_count(
+            session,
+            Query::select()
+                .expr(Func::count(Expr::val(1)))
+                .from(SourceVariables::Table)
+                .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_id))
+                .and_where(Expr::col(SourceVariables::SourceName).eq(source_name))
+                .to_owned(),
+        )
+        .await
+    }
+
+    async fn source_secret_key_count<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<i64, DbError>
+    where
+        S: DbSession,
+    {
+        fetch_count(
+            session,
+            Query::select()
+                .expr(Func::count(Expr::val(1)))
+                .from(SourceSecretKeys::Table)
+                .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_id))
+                .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name))
+                .to_owned(),
+        )
+        .await
+    }
+
+    async fn source_credential_revision<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<String, DbError>
+    where
+        S: DbSession,
+    {
+        Ok(session
+            .fetch_all::<(String,)>(
+                Query::select()
+                    .column(Sources::CredentialRevision)
+                    .from(Sources::Table)
+                    .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_id))
+                    .and_where(Expr::col(Sources::Name).eq(source_name))
+                    .to_owned(),
+            )
+            .await?
+            .into_iter()
+            .next()
+            .expect("source row")
+            .0)
+    }
+
+    async fn fetch_count<S>(session: &mut S, statement: SelectStatement) -> Result<i64, DbError>
+    where
+        S: DbSession,
+    {
+        Ok(session
+            .fetch_all::<(i64,)>(statement)
+            .await?
+            .into_iter()
+            .next()
+            .expect("count row")
+            .0)
     }
 }
