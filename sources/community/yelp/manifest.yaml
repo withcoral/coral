@@ -1,0 +1,948 @@
+name: yelp
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Yelp Fusion as SQL — Local Business Intelligence in Coral. Free Yelp
+  Fusion plan covers `search_businesses`, `business_details`, and
+  `autocomplete_terms` end-to-end; `business_reviews`, `search_events` /
+  `event_details`, and `categories` require Yelp's Business / Developer Beta
+  tiers and remain in the spec for users with elevated access.
+inputs:
+  YELP_API_KEY:
+    kind: secret
+    credential:
+      methods:
+        - type: source_config
+          label: Paste Yelp Fusion API Key
+          description: >-
+            Paste an existing Yelp Fusion API Key. Create one for free at
+            https://www.yelp.com/developers/v3/manage_app (no Yelp Business
+            account required, 500 calls/day on the free plan).
+    hint: |
+      Yelp Fusion uses an opaque Bearer API Key for server-to-server access.
+
+      1. Visit https://www.yelp.com/developers/v3/manage_app
+      2. Create an app (only an app name and email are required)
+      3. Copy the **API Key** field — it's a long opaque string
+      4. Paste it here. Coral stores it locally in the secret store.
+
+      Yelp's free plan allows 500 API calls per day, which is plenty for
+      interactive SQL exploration and most agent workloads.
+base_url: https://api.yelp.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.YELP_API_KEY}}
+test_queries:
+  - SELECT id, name, rating FROM yelp.search_businesses(location => 'San Francisco, CA', term => 'coffee') LIMIT 1
+  - SELECT text FROM yelp.autocomplete_terms(text => 'piz') LIMIT 1
+functions:
+  - name: search_businesses
+    kind: search
+    description: >-
+      Search Yelp businesses by term, location, and filters. Provider-ranked
+      retrieval — pass term + (location | latitude+longitude). Returns the
+      best-matching businesses ordered by Yelp's relevance score.
+    search_limits:
+      default_top_k: 20
+      max_top_k: 240
+      max_calls_per_query: 5
+    args:
+      - name: term
+        bind:
+          arg: term
+      - name: location
+        bind:
+          arg: location
+      - name: latitude
+        bind:
+          arg: latitude
+      - name: longitude
+        bind:
+          arg: longitude
+      - name: radius
+        bind:
+          arg: radius
+      - name: categories
+        bind:
+          arg: categories
+      - name: locale
+        bind:
+          arg: locale
+      - name: price
+        values: ["1", "2", "3", "4", "1,2", "1,2,3", "1,2,3,4", "2,3", "2,3,4", "3,4"]
+        bind:
+          arg: price
+      - name: open_now
+        bind:
+          arg: open_now
+      - name: sort_by
+        values: [best_match, rating, review_count, distance]
+        bind:
+          arg: sort_by
+    request:
+      method: GET
+      path: /v3/businesses/search
+      query:
+        - name: term
+          from: arg
+          key: term
+        - name: location
+          from: arg
+          key: location
+        - name: latitude
+          from: arg
+          key: latitude
+        - name: longitude
+          from: arg
+          key: longitude
+        - name: radius
+          from: arg
+          key: radius
+        - name: categories
+          from: arg
+          key: categories
+        - name: locale
+          from: arg
+          key: locale
+        - name: price
+          from: arg
+          key: price
+        - name: open_now
+          from: arg
+          key: open_now
+        - name: sort_by
+          from: arg
+          key: sort_by
+    response:
+      rows_path: [businesses]
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 50
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stable Yelp business ID — use with yelp.business_details and yelp.business_reviews
+        expr: {kind: path, path: [id]}
+      - name: alias
+        type: Utf8
+        nullable: true
+        description: URL-friendly business slug
+        expr: {kind: path, path: [alias]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Business display name
+        expr: {kind: path, path: [name]}
+      - name: rating
+        type: Float64
+        nullable: true
+        description: Yelp star rating, 0–5 in 0.5 increments
+        expr: {kind: path, path: [rating]}
+      - name: review_count
+        type: Int64
+        nullable: true
+        description: Number of Yelp reviews
+        expr: {kind: path, path: [review_count]}
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Price tier as `$`, `$$`, `$$$`, or `$$$$`
+        expr: {kind: path, path: [price]}
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: E.164 phone number
+        expr: {kind: path, path: [phone]}
+      - name: display_phone
+        type: Utf8
+        nullable: true
+        description: Locally-formatted phone number
+        expr: {kind: path, path: [display_phone]}
+      - name: is_closed
+        type: Boolean
+        nullable: true
+        description: Whether the business is permanently closed
+        expr: {kind: path, path: [is_closed]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Yelp page URL
+        expr: {kind: path, path: [url]}
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: Primary business image URL
+        expr: {kind: path, path: [image_url]}
+      - name: distance
+        type: Float64
+        nullable: true
+        description: Distance from search center in meters (when location/lat-lng provided)
+        expr: {kind: path, path: [distance]}
+      - name: coordinates__latitude
+        type: Float64
+        nullable: true
+        description: Latitude of the business
+        expr: {kind: path, path: [coordinates, latitude]}
+      - name: coordinates__longitude
+        type: Float64
+        nullable: true
+        description: Longitude of the business
+        expr: {kind: path, path: [coordinates, longitude]}
+      - name: location__address1
+        type: Utf8
+        nullable: true
+        description: Street address line 1
+        expr: {kind: path, path: [location, address1]}
+      - name: location__address2
+        type: Utf8
+        nullable: true
+        description: Street address line 2
+        expr: {kind: path, path: [location, address2]}
+      - name: location__city
+        type: Utf8
+        nullable: true
+        description: City
+        expr: {kind: path, path: [location, city]}
+      - name: location__state
+        type: Utf8
+        nullable: true
+        description: State/region code
+        expr: {kind: path, path: [location, state]}
+      - name: location__zip_code
+        type: Utf8
+        nullable: true
+        description: Postal code
+        expr: {kind: path, path: [location, zip_code]}
+      - name: location__country
+        type: Utf8
+        nullable: true
+        description: ISO-3166-1 country code
+        expr: {kind: path, path: [location, country]}
+      - name: category_aliases
+        type: Utf8
+        nullable: true
+        description: Comma-separated Yelp category aliases (e.g. "italian,pizza")
+        expr:
+          kind: join_array_path
+          path: [categories]
+          item_path: [alias]
+          separator: ","
+      - name: category_titles
+        type: Utf8
+        nullable: true
+        description: Comma-separated human-readable category titles
+        expr:
+          kind: join_array_path
+          path: [categories]
+          item_path: [title]
+          separator: ", "
+      - name: transactions
+        type: Utf8
+        nullable: true
+        description: JSON array of supported transactions (pickup, delivery, restaurant_reservation)
+        expr: {kind: path, path: [transactions]}
+  - name: search_events
+    kind: search
+    description: >-
+      Search Yelp local events by location, date range, category, and price.
+      Returns provider-ranked events. Requires Yelp's Developer Beta access —
+      the free Fusion plan returns 403 on the events endpoints.
+    search_limits:
+      default_top_k: 20
+      max_top_k: 200
+      max_calls_per_query: 4
+    args:
+      - name: location
+        bind:
+          arg: location
+      - name: latitude
+        bind:
+          arg: latitude
+      - name: longitude
+        bind:
+          arg: longitude
+      - name: radius
+        bind:
+          arg: radius
+      - name: categories
+        bind:
+          arg: categories
+      - name: start_date
+        bind:
+          arg: start_date
+      - name: end_date
+        bind:
+          arg: end_date
+      - name: is_free
+        bind:
+          arg: is_free
+      - name: locale
+        bind:
+          arg: locale
+      - name: sort_by
+        values: [desc, asc]
+        bind:
+          arg: sort_by
+      - name: sort_on
+        values: [popularity, time_start]
+        bind:
+          arg: sort_on
+    request:
+      method: GET
+      path: /v3/events
+      query:
+        - name: location
+          from: arg
+          key: location
+        - name: latitude
+          from: arg
+          key: latitude
+        - name: longitude
+          from: arg
+          key: longitude
+        - name: radius
+          from: arg
+          key: radius
+        - name: categories
+          from: arg
+          key: categories
+        - name: start_date
+          from: arg
+          key: start_date
+        - name: end_date
+          from: arg
+          key: end_date
+        - name: is_free
+          from: arg
+          key: is_free
+        - name: locale
+          from: arg
+          key: locale
+        - name: sort_by
+          from: arg
+          key: sort_by
+        - name: sort_on
+          from: arg
+          key: sort_on
+    response:
+      rows_path: [events]
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 50
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stable Yelp event ID — use with yelp.event_details
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Event name
+        expr: {kind: path, path: [name]}
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Event category (music, festivals-fairs, food-and-drink, …)
+        expr: {kind: path, path: [category]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Event description text
+        expr: {kind: path, path: [description]}
+      - name: event_site_url
+        type: Utf8
+        nullable: true
+        description: Yelp event page URL
+        expr: {kind: path, path: [event_site_url]}
+      - name: tickets_url
+        type: Utf8
+        nullable: true
+        description: External ticket purchase URL
+        expr: {kind: path, path: [tickets_url]}
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: Event image URL
+        expr: {kind: path, path: [image_url]}
+      - name: is_canceled
+        type: Boolean
+        nullable: true
+        description: Whether the event has been canceled
+        expr: {kind: path, path: [is_canceled]}
+      - name: is_free
+        type: Boolean
+        nullable: true
+        description: Whether the event is free
+        expr: {kind: path, path: [is_free]}
+      - name: is_official
+        type: Boolean
+        nullable: true
+        description: Whether the event is officially curated by Yelp
+        expr: {kind: path, path: [is_official]}
+      - name: cost
+        type: Float64
+        nullable: true
+        description: Minimum cost in local currency
+        expr: {kind: path, path: [cost]}
+      - name: cost_max
+        type: Float64
+        nullable: true
+        description: Maximum cost in local currency
+        expr: {kind: path, path: [cost_max]}
+      - name: attending_count
+        type: Int64
+        nullable: true
+        description: Number of Yelp users marked as attending
+        expr: {kind: path, path: [attending_count]}
+      - name: interested_count
+        type: Int64
+        nullable: true
+        description: Number of Yelp users marked as interested
+        expr: {kind: path, path: [interested_count]}
+      - name: time_start
+        type: Utf8
+        nullable: true
+        description: Event start time as `YYYY-MM-DD HH:MM:SS` in the event's local timezone
+        expr: {kind: path, path: [time_start]}
+      - name: time_end
+        type: Utf8
+        nullable: true
+        description: Event end time as `YYYY-MM-DD HH:MM:SS` in the event's local timezone
+        expr: {kind: path, path: [time_end]}
+      - name: latitude
+        type: Float64
+        nullable: true
+        description: Event latitude
+        expr: {kind: path, path: [latitude]}
+      - name: longitude
+        type: Float64
+        nullable: true
+        description: Event longitude
+        expr: {kind: path, path: [longitude]}
+      - name: business_id
+        type: Utf8
+        nullable: true
+        description: Associated Yelp business ID (when the event is hosted by a business)
+        expr: {kind: path, path: [business_id]}
+      - name: location__city
+        type: Utf8
+        nullable: true
+        description: Event city
+        expr: {kind: path, path: [location, city]}
+      - name: location__state
+        type: Utf8
+        nullable: true
+        description: Event state/region
+        expr: {kind: path, path: [location, state]}
+      - name: location__country
+        type: Utf8
+        nullable: true
+        description: Event country (ISO-3166-1)
+        expr: {kind: path, path: [location, country]}
+      - name: location__address1
+        type: Utf8
+        nullable: true
+        description: Event street address line 1
+        expr: {kind: path, path: [location, address1]}
+      - name: location__zip_code
+        type: Utf8
+        nullable: true
+        description: Event postal code
+        expr: {kind: path, path: [location, zip_code]}
+  - name: autocomplete_terms
+    description: >-
+      Yelp autocomplete suggestions for a partial search term. Useful for
+      interactive UIs and agents that want to disambiguate user input before
+      issuing a full search.
+    args:
+      - name: text
+        required: true
+        bind:
+          arg: text
+      - name: latitude
+        bind:
+          arg: latitude
+      - name: longitude
+        bind:
+          arg: longitude
+      - name: locale
+        bind:
+          arg: locale
+    request:
+      method: GET
+      path: /v3/autocomplete
+      query:
+        - name: text
+          from: arg
+          key: text
+        - name: latitude
+          from: arg
+          key: latitude
+        - name: longitude
+          from: arg
+          key: longitude
+        - name: locale
+          from: arg
+          key: locale
+    response:
+      rows_path: [terms]
+      allow_404_empty: false
+      row_strategy: direct
+    columns:
+      - name: text
+        type: Utf8
+        nullable: false
+        description: Suggested search term
+        expr: {kind: path, path: [text]}
+tables:
+  - name: business_details
+    description: Full business profile by Yelp business ID — includes hours, photos, and claim status
+    guide: >
+      Requires id (the Yelp business_id from yelp.search_businesses.id). Returns
+      a single row. Use this to enrich search results with full address,
+      operating hours, and photos.
+    filters:
+      - name: id
+        required: true
+      - name: locale
+        required: false
+    request:
+      method: GET
+      path: /v3/businesses/{{filter.id}}
+      query:
+        - name: locale
+          from: filter
+          key: locale
+    response:
+      allow_404_empty: false
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Yelp business ID
+        expr: {kind: path, path: [id]}
+      - name: alias
+        type: Utf8
+        nullable: true
+        description: URL-friendly business slug
+        expr: {kind: path, path: [alias]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Business display name
+        expr: {kind: path, path: [name]}
+      - name: rating
+        type: Float64
+        nullable: true
+        description: Yelp star rating, 0–5
+        expr: {kind: path, path: [rating]}
+      - name: review_count
+        type: Int64
+        nullable: true
+        description: Total review count
+        expr: {kind: path, path: [review_count]}
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Price tier as `$`, `$$`, `$$$`, or `$$$$`
+        expr: {kind: path, path: [price]}
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: E.164 phone number
+        expr: {kind: path, path: [phone]}
+      - name: display_phone
+        type: Utf8
+        nullable: true
+        description: Locally-formatted phone number
+        expr: {kind: path, path: [display_phone]}
+      - name: is_claimed
+        type: Boolean
+        nullable: true
+        description: Whether the business owner has claimed the listing
+        expr: {kind: path, path: [is_claimed]}
+      - name: is_closed
+        type: Boolean
+        nullable: true
+        description: Whether the business is permanently closed
+        expr: {kind: path, path: [is_closed]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Canonical Yelp business page URL
+        expr: {kind: path, path: [url]}
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: Primary image URL
+        expr: {kind: path, path: [image_url]}
+      - name: photos
+        type: Utf8
+        nullable: true
+        description: JSON array of additional business photo URLs
+        expr: {kind: path, path: [photos]}
+      - name: coordinates__latitude
+        type: Float64
+        nullable: true
+        description: Latitude
+        expr: {kind: path, path: [coordinates, latitude]}
+      - name: coordinates__longitude
+        type: Float64
+        nullable: true
+        description: Longitude
+        expr: {kind: path, path: [coordinates, longitude]}
+      - name: location__address1
+        type: Utf8
+        nullable: true
+        description: Street address line 1
+        expr: {kind: path, path: [location, address1]}
+      - name: location__city
+        type: Utf8
+        nullable: true
+        description: City
+        expr: {kind: path, path: [location, city]}
+      - name: location__state
+        type: Utf8
+        nullable: true
+        description: State/region code
+        expr: {kind: path, path: [location, state]}
+      - name: location__zip_code
+        type: Utf8
+        nullable: true
+        description: Postal code
+        expr: {kind: path, path: [location, zip_code]}
+      - name: location__country
+        type: Utf8
+        nullable: true
+        description: ISO-3166-1 country code
+        expr: {kind: path, path: [location, country]}
+      - name: location__cross_streets
+        type: Utf8
+        nullable: true
+        description: Cross-streets free-text field
+        expr: {kind: path, path: [location, cross_streets]}
+      - name: category_aliases
+        type: Utf8
+        nullable: true
+        description: Comma-separated Yelp category aliases
+        expr:
+          kind: join_array_path
+          path: [categories]
+          item_path: [alias]
+          separator: ","
+      - name: category_titles
+        type: Utf8
+        nullable: true
+        description: Comma-separated human-readable category titles
+        expr:
+          kind: join_array_path
+          path: [categories]
+          item_path: [title]
+          separator: ", "
+      - name: transactions
+        type: Utf8
+        nullable: true
+        description: JSON array of supported transactions
+        expr: {kind: path, path: [transactions]}
+      - name: hours
+        type: Utf8
+        nullable: true
+        description: >-
+          JSON array of hour schedules, each with `open` (per-day intervals),
+          `hours_type` (typically `REGULAR`), and `is_open_now`
+        expr: {kind: path, path: [hours]}
+      - name: special_hours
+        type: Utf8
+        nullable: true
+        description: JSON array of holiday/special-hours overrides
+        expr: {kind: path, path: [special_hours]}
+  - name: business_reviews
+    description: >-
+      Reviews for a Yelp business (requires Yelp Business / Partner tier — the
+      free Fusion plan returns 404). Yelp returns up to 3 excerpted reviews per
+      business with the reviewer profile attached.
+    guide: >
+      Requires business_id. Yelp's public Fusion API returns a small sample
+      (up to 3) of recent reviews per business — this table mirrors that
+      sample, including the reviewer profile fields.
+    filters:
+      - name: business_id
+        required: true
+      - name: locale
+        required: false
+      - name: sort_by
+        required: false
+    request:
+      method: GET
+      path: /v3/businesses/{{filter.business_id}}/reviews
+      query:
+        - name: locale
+          from: filter
+          key: locale
+        - name: sort_by
+          from: filter
+          key: sort_by
+    response:
+      rows_path: [reviews]
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 50
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Yelp review ID
+        expr: {kind: path, path: [id]}
+      - name: business_id
+        type: Utf8
+        nullable: false
+        description: Echo of the queried business_id (from the request filter)
+        virtual: true
+        expr:
+          kind: from_filter
+          key: business_id
+      - name: rating
+        type: Int64
+        nullable: true
+        description: Review star rating, 1–5
+        expr: {kind: path, path: [rating]}
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Review excerpt text (Yelp truncates long reviews)
+        expr: {kind: path, path: [text]}
+      - name: time_created
+        type: Utf8
+        nullable: true
+        description: Review creation time as `YYYY-MM-DD HH:MM:SS` (Pacific time, per Yelp)
+        expr: {kind: path, path: [time_created]}
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Direct URL to the full review on Yelp
+        expr: {kind: path, path: [url]}
+      - name: user__id
+        type: Utf8
+        nullable: true
+        description: Reviewer Yelp user ID
+        expr: {kind: path, path: [user, id]}
+      - name: user__name
+        type: Utf8
+        nullable: true
+        description: Reviewer display name
+        expr: {kind: path, path: [user, name]}
+      - name: user__profile_url
+        type: Utf8
+        nullable: true
+        description: Reviewer Yelp profile URL
+        expr: {kind: path, path: [user, profile_url]}
+      - name: user__image_url
+        type: Utf8
+        nullable: true
+        description: Reviewer avatar image URL
+        expr: {kind: path, path: [user, image_url]}
+  - name: event_details
+    description: >-
+      Full event detail by Yelp event ID (requires Yelp's Developer Beta access
+      — the free Fusion plan returns 403)
+    guide: >
+      Requires id (the Yelp event_id from yelp.search_events.id). Returns a
+      single row with the full event description, schedule, and host business.
+    filters:
+      - name: id
+        required: true
+      - name: locale
+        required: false
+    request:
+      method: GET
+      path: /v3/events/{{filter.id}}
+      query:
+        - name: locale
+          from: filter
+          key: locale
+    response:
+      allow_404_empty: false
+      row_strategy: direct
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Yelp event ID
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Event name
+        expr: {kind: path, path: [name]}
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Event category
+        expr: {kind: path, path: [category]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Full event description
+        expr: {kind: path, path: [description]}
+      - name: event_site_url
+        type: Utf8
+        nullable: true
+        description: Yelp event page URL
+        expr: {kind: path, path: [event_site_url]}
+      - name: tickets_url
+        type: Utf8
+        nullable: true
+        description: External tickets URL
+        expr: {kind: path, path: [tickets_url]}
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: Event image URL
+        expr: {kind: path, path: [image_url]}
+      - name: is_canceled
+        type: Boolean
+        nullable: true
+        description: Whether the event is canceled
+        expr: {kind: path, path: [is_canceled]}
+      - name: is_free
+        type: Boolean
+        nullable: true
+        description: Whether the event is free
+        expr: {kind: path, path: [is_free]}
+      - name: is_official
+        type: Boolean
+        nullable: true
+        description: Whether the event is officially curated by Yelp
+        expr: {kind: path, path: [is_official]}
+      - name: cost
+        type: Float64
+        nullable: true
+        description: Minimum cost
+        expr: {kind: path, path: [cost]}
+      - name: cost_max
+        type: Float64
+        nullable: true
+        description: Maximum cost
+        expr: {kind: path, path: [cost_max]}
+      - name: attending_count
+        type: Int64
+        nullable: true
+        description: Users marked attending
+        expr: {kind: path, path: [attending_count]}
+      - name: interested_count
+        type: Int64
+        nullable: true
+        description: Users marked interested
+        expr: {kind: path, path: [interested_count]}
+      - name: time_start
+        type: Utf8
+        nullable: true
+        description: Event start time as `YYYY-MM-DD HH:MM:SS` (local)
+        expr: {kind: path, path: [time_start]}
+      - name: time_end
+        type: Utf8
+        nullable: true
+        description: Event end time as `YYYY-MM-DD HH:MM:SS` (local)
+        expr: {kind: path, path: [time_end]}
+      - name: latitude
+        type: Float64
+        nullable: true
+        description: Event latitude
+        expr: {kind: path, path: [latitude]}
+      - name: longitude
+        type: Float64
+        nullable: true
+        description: Event longitude
+        expr: {kind: path, path: [longitude]}
+      - name: business_id
+        type: Utf8
+        nullable: true
+        description: Host business ID (join key against yelp.business_details)
+        expr: {kind: path, path: [business_id]}
+      - name: location__city
+        type: Utf8
+        nullable: true
+        description: Event city
+        expr: {kind: path, path: [location, city]}
+      - name: location__state
+        type: Utf8
+        nullable: true
+        description: Event state/region
+        expr: {kind: path, path: [location, state]}
+      - name: location__country
+        type: Utf8
+        nullable: true
+        description: Event country
+        expr: {kind: path, path: [location, country]}
+  - name: categories
+    description: >-
+      The Yelp category taxonomy — alias, title, and parent_aliases for every
+      category Yelp supports (requires Yelp's Developer Beta access — the free
+      Fusion plan returns 403)
+    guide: >
+      No filters required. Use this as a lookup table for `categories` arguments
+      in yelp.search_businesses and yelp.search_events. NOTE: as of 2024 the
+      `/v3/categories` endpoint is gated behind Yelp's Developer Beta — request
+      access from the "Manage App" page if you get a 403. All other tables and
+      search functions work on the standard free plan.
+    request:
+      method: GET
+      path: /v3/categories
+    response:
+      rows_path: [categories]
+      allow_404_empty: false
+      row_strategy: direct
+    columns:
+      - name: alias
+        type: Utf8
+        nullable: false
+        description: Stable category identifier (e.g. `italian`, `coffee`, `music_venues`)
+        expr: {kind: path, path: [alias]}
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Human-readable category name
+        expr: {kind: path, path: [title]}
+      - name: parent_aliases
+        type: Utf8
+        nullable: true
+        description: JSON array of parent category aliases
+        expr: {kind: path, path: [parent_aliases]}
+      - name: country_whitelist
+        type: Utf8
+        nullable: true
+        description: JSON array of ISO-3166-1 country codes where this category is valid (empty = global)
+        expr: {kind: path, path: [country_whitelist]}
+      - name: country_blacklist
+        type: Utf8
+        nullable: true
+        description: JSON array of ISO-3166-1 country codes where this category is excluded
+        expr: {kind: path, path: [country_blacklist]}
