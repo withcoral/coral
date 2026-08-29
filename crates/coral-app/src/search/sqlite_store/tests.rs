@@ -8,7 +8,7 @@ use super::{
     WalCheckpointOutcome, classify_capability_probe, configure_connection,
     sqlite_file_creation_result, wal_checkpoint_truncate,
 };
-use crate::search::catalog::sqlite_index::{
+use crate::search::catalog::index::{
     CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
 };
 use crate::state::AppStateLayout;
