@@ -1,0 +1,692 @@
+dsl_version: 3
+name: zendesk
+version: 0.1.0
+description: >-
+  Query users, organizations, groups, tickets, and ticket comments from
+  Zendesk Support.
+backend: http
+inputs:
+  ZENDESK_BASE_URL:
+    kind: variable
+    hint: |
+      Base URL of your Zendesk Support instance, for example
+      `https://acme.zendesk.com`.
+  ZENDESK_EMAIL:
+    kind: variable
+    hint: |
+      Email address used for Zendesk API access.
+  ZENDESK_API_TOKEN:
+    kind: secret
+    hint: |
+      Create an API token in Zendesk Admin Center under Apps and integrations >
+      APIs > Zendesk API.
+
+      Coral uses Zendesk's documented token auth format:
+      `{email}/token:{api_token}`.
+
+      See the [Zendesk API token auth guide](https://developer.zendesk.com/api-reference/introduction/security-and-auth/).
+base_url: "{{input.ZENDESK_BASE_URL}}"
+auth:
+  type: BasicAuth
+  username: "{{input.ZENDESK_EMAIL}}/token"
+  password: "{{input.ZENDESK_API_TOKEN}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM zendesk.tickets LIMIT 1
+tables:
+  - name: users
+    description: Zendesk users visible to the authenticated account
+    guide: |
+      Start here for person-level analysis. Join `organization_id` to
+      `zendesk.organizations` and `default_group_id` to `zendesk.groups`.
+    request:
+      method: GET
+      path: /api/v2/users.json
+    response:
+      rows_path:
+        - users
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page[after]
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Zendesk user ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address
+        expr:
+          kind: path
+          path:
+            - email
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Zendesk role
+        expr:
+          kind: path
+          path:
+            - role
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: Organization ID
+        expr:
+          kind: path
+          path:
+            - organization_id
+      - name: default_group_id
+        type: Utf8
+        nullable: true
+        description: Default group ID
+        expr:
+          kind: path
+          path:
+            - default_group_id
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the user is active
+        expr:
+          kind: path
+          path:
+            - active
+      - name: suspended
+        type: Boolean
+        nullable: true
+        description: Whether the user is suspended
+        expr:
+          kind: path
+          path:
+            - suspended
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: User last update time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: tags
+        type: Json
+        nullable: true
+        description: User tags
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: url
+        type: Utf8
+        nullable: true
+        description: API URL for the user
+        expr:
+          kind: path
+          path:
+            - url
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw user object
+        expr:
+          kind: current_row
+  - name: organizations
+    description: Zendesk organizations (may require admin access)
+    guide: |
+      Use this to map organization metadata for ticket and user analysis.
+      Note: Listing all organizations may require admin permissions.
+    request:
+      method: GET
+      path: /api/v2/organizations.json
+    response:
+      rows_path:
+        - organizations
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page[after]
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: Default group ID for the organization
+        expr:
+          kind: path
+          path:
+            - group_id
+      - name: shared_tickets
+        type: Boolean
+        nullable: true
+        description: Whether tickets are shared with organization members
+        expr:
+          kind: path
+          path:
+            - shared_tickets
+      - name: shared_comments
+        type: Boolean
+        nullable: true
+        description: Whether comments are shared with organization members
+        expr:
+          kind: path
+          path:
+            - shared_comments
+      - name: details
+        type: Utf8
+        nullable: true
+        description: Organization details
+        expr:
+          kind: path
+          path:
+            - details
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: Organization notes
+        expr:
+          kind: path
+          path:
+            - notes
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Organization creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Organization last update time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: domain_names
+        type: Json
+        nullable: true
+        description: Organization domain names
+        expr:
+          kind: path
+          path:
+            - domain_names
+      - name: tags
+        type: Json
+        nullable: true
+        description: Organization tags
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: url
+        type: Utf8
+        nullable: true
+        description: API URL for the organization
+        expr:
+          kind: path
+          path:
+            - url
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw organization object
+        expr:
+          kind: current_row
+  - name: groups
+    description: Zendesk groups (may require admin access)
+    guide: |
+      Use this for assignment metadata. Tickets can be assigned to groups and
+      users can have a default group. Note: Listing all groups may require admin permissions.
+    request:
+      method: GET
+      path: /api/v2/groups.json
+    response:
+      rows_path:
+        - groups
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page[after]
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Group ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Group name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Group description
+        expr:
+          kind: path
+          path:
+            - description
+      - name: is_public
+        type: Boolean
+        nullable: true
+        description: Whether the group is public
+        expr:
+          kind: path
+          path:
+            - is_public
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Group creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Group last update time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: url
+        type: Utf8
+        nullable: true
+        description: API URL for the group
+        expr:
+          kind: path
+          path:
+            - url
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw group object
+        expr:
+          kind: current_row
+  - name: tickets
+    description: Zendesk tickets (listed by ID ascending, excludes archived by default)
+    guide: |
+      The List Tickets endpoint returns tickets sorted by ID ascending and excludes
+      archived tickets by default. For recent-tickets analysis, filter by
+      `updated_at` or other timestamp fields. See Zendesk API docs for sorting
+      and filtering options.
+
+      `custom_fields` contains account-specific fields as a JSON object.
+      Refer to your Zendesk admin panel for field definitions and structure.
+    request:
+      method: GET
+      path: /api/v2/tickets.json
+    response:
+      rows_path:
+        - tickets
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: page[after]
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Ticket ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Ticket subject
+        expr:
+          kind: path
+          path:
+            - subject
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Ticket status
+        expr:
+          kind: path
+          path:
+            - status
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: Ticket priority
+        expr:
+          kind: path
+          path:
+            - priority
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Ticket type
+        expr:
+          kind: path
+          path:
+            - type
+      - name: assignee_id
+        type: Utf8
+        nullable: true
+        description: Assigned agent ID
+        expr:
+          kind: path
+          path:
+            - assignee_id
+      - name: requester_id
+        type: Utf8
+        nullable: true
+        description: Requester user ID
+        expr:
+          kind: path
+          path:
+            - requester_id
+      - name: submitter_id
+        type: Utf8
+        nullable: true
+        description: Submitter user ID
+        expr:
+          kind: path
+          path:
+            - submitter_id
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: Organization ID
+        expr:
+          kind: path
+          path:
+            - organization_id
+      - name: group_id
+        type: Utf8
+        nullable: true
+        description: Group ID
+        expr:
+          kind: path
+          path:
+            - group_id
+      - name: brand_id
+        type: Utf8
+        nullable: true
+        description: Brand ID
+        expr:
+          kind: path
+          path:
+            - brand_id
+      - name: recipient
+        type: Utf8
+        nullable: true
+        description: Recipient email
+        expr:
+          kind: path
+          path:
+            - recipient
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Ticket creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Ticket last update time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: tags
+        type: Json
+        nullable: true
+        description: Ticket tags
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: custom_fields
+        type: Json
+        nullable: true
+        description: Ticket custom fields (account-specific structure)
+        expr:
+          kind: path
+          path:
+            - custom_fields
+      - name: via
+        type: Json
+        nullable: true
+        description: Ticket channel metadata
+        expr:
+          kind: path
+          path:
+            - via
+      - name: url
+        type: Utf8
+        nullable: true
+        description: API URL for the ticket
+        expr:
+          kind: path
+          path:
+            - url
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw ticket object
+        expr:
+          kind: current_row
+  - name: ticket_comments
+    description: Comments for a specific Zendesk ticket (requires ticket_id filter)
+    guide: |
+      Lookup-style table for a single ticket's conversation history.
+      Filter by `ticket_id` to retrieve all comments for that ticket.
+    filters:
+      - name: ticket_id
+        required: true
+    request:
+      method: GET
+      path: /api/v2/tickets/{{filter.ticket_id}}/comments.json
+    response:
+      rows_path:
+        - comments
+      row_strategy: direct
+      allow_404_empty: false
+    pagination:
+      mode: cursor_query
+      cursor_param: page[after]
+      response_cursor_path:
+        - meta
+        - after_cursor
+      page_size:
+        default: 100
+        max: 100
+        query_param: page[size]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: ticket_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Ticket ID (from required filter)
+        expr:
+          kind: from_filter
+          key: ticket_id
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Comment author ID
+        expr:
+          kind: path
+          path:
+            - author_id
+      - name: public
+        type: Boolean
+        nullable: true
+        description: Whether the comment is public
+        expr:
+          kind: path
+          path:
+            - public
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Plain comment body
+        expr:
+          kind: path
+          path:
+            - body
+      - name: html_body
+        type: Utf8
+        nullable: true
+        description: HTML comment body
+        expr:
+          kind: path
+          path:
+            - html_body
+      - name: plain_body
+        type: Utf8
+        nullable: true
+        description: Normalized plain comment body
+        expr:
+          kind: path
+          path:
+            - plain_body
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Comment creation time
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: attachments
+        type: Json
+        nullable: true
+        description: Comment attachments
+        expr:
+          kind: path
+          path:
+            - attachments
+      - name: via
+        type: Json
+        nullable: true
+        description: Comment channel metadata
+        expr:
+          kind: path
+          path:
+            - via
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw comment object
+        expr:
+          kind: current_row
