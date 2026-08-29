@@ -9,7 +9,7 @@ Coral stores local configuration in `config.toml` inside its platform-specific [
 
 Coral writes source installation state to `config.toml` when you run commands such as `coral source add` and `coral source remove`.
 
-This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary.
+This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary. For installed sources the file is a mirror of Coral's database — see [Source persistence](#source-persistence).
 
 <Note>
   Prefer the `coral source` commands for source state instead of editing workspace entries manually.
@@ -73,6 +73,95 @@ shell default or `--workspace <NAME>` for one command, as described in
 Source specs imported from files and source credential material remain scoped
 to the source installation in a workspace. Reusable global source specs and
 reusable credential references are not config objects today.
+
+## Source persistence
+
+Which sources are installed, the manifests Coral imported for them, and the
+artifacts Coral materialized from those manifests are recorded in Coral's
+[database](#database). The `[workspaces.<name>.sources.<name>]` entries above are
+a mirror of that record, kept current so earlier Coral versions and
+hand-maintained setups keep working, and the imported `manifest.yaml` and
+`materialized/` files stay on disk as a per-host cache. Managing sources is
+unchanged: keep using `coral source add`, `list`, `info`, and `remove`.
+
+### Every boot imports what it finds
+
+On each start, Coral imports the source entries in `config.toml` that its
+database does not already have, then brings the mirror and the on-disk caches
+back in line. The pass is additive and never fails startup: legacy data Coral
+cannot read is reported and skipped, and no boot empties a catalog you
+populated. A source added by hand or by an older Coral appears the next time you
+start Coral, with no migration step to run and no version stamp to satisfy.
+
+### How Coral tells its own files apart
+
+Coral records what it last wrote to this host's files in `config.toml.ledger`,
+beside `config.toml`. Other Coral versions ignore that file; if it goes missing,
+Coral rebuilds it and treats the next start as this host's first. Every
+file-versus-database decision follows one rule:
+
+- Content **matching** the record is provably Coral's own, so Coral leaves it or
+  refreshes it silently.
+- Content **differing** from the record was rewritten locally, by you or by an
+  older binary, so the file wins and Coral imports it.
+- Content Coral has **no record of** cannot be proven either way, so Coral never
+  guesses: it keeps what is on disk and tells you.
+
+An upgrade that adds a field to a stored source entry changes every recorded
+hash with it, so the first boot on that version reads every mirrored entry as
+locally rewritten and re-imports it from `config.toml` once. Entries and rows
+agree at that point, so nothing changes but the record.
+
+### Coral owns the installed manifest copy
+
+Once a source is imported, the `manifest.yaml` under
+`workspaces/<workspace>/sources/<source>/` is Coral's copy to maintain. To change
+a source, edit your own manifest and re-import it with `coral source add --file`.
+A copy Coral cannot prove it wrote is never overwritten in place: Coral renames
+it to `manifest.yaml.diverged-<timestamp>` beside the original, restores the
+database copy, and warns with both paths.
+
+### Running an older version again
+
+An earlier Coral reads `config.toml` as it always did — there is no gate that
+refuses to start — and the mirror keeps its catalog current rather than frozen.
+One asymmetry: the entry for a source deleted through another host lingers in
+this host's file, inert to the current version but still listed by an older one.
+Four more consequences are worth knowing, all resolved toward restoring data
+rather than losing it:
+
+- A source an older binary **deletes** comes back on the next boot of the current
+  version, usually reporting missing credentials because the old binary removed
+  its secrets.
+- A deletion made by the current version sticks across reboots and across hosts
+  sharing one database — except on a host whose *first* boot on the current
+  version happens after that deletion. With no record of the entry, that host
+  restores the source once; the same applies to a deleted workspace and its
+  sources.
+- A source **re-added** with an older binary is imported on the next boot, unless
+  the entry that binary writes is identical to the stale one already in the file.
+  Re-import the source with the current version to bring it back.
+- On a host's first boot on the current version, a config entry or manifest cache
+  that differs from the database is left in place with a warning, or set aside
+  once. From then on, routine cross-host updates are refreshed silently.
+
+### Credentials and what stays in files
+
+Credential material is untouched by all of this: it is stored, provided, and
+secured exactly as before, which also means it stays on the host that holds it.
+A second host reading the same database lists and inspects a source normally,
+but its queries fail with a missing-credentials error until you provision that
+host's credentials.
+
+Each host keeps these in files rather than in the database:
+
+- every non-source section of `config.toml`, plus the source mirror itself
+- credential material and its encryption key
+- `overrides/` files, which take precedence over what Coral restores and are
+  never rewritten by it
+- installed functions and their `function.sql`
+- the search index, trace history, and lock files
+- `config.toml.ledger`, the host-local record described above
 
 ## Server
 

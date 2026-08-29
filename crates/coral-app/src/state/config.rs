@@ -583,7 +583,14 @@ impl ConfigStore {
         self.load_config_unlocked()
     }
 
-    /// Loads the source catalog without taking the app state lock.
+    /// Loads the mirrored source catalog without taking the app state lock.
+    ///
+    /// The mirror, not the authoritative catalog: production reads installed
+    /// sources from the database. What this returns is what the file world
+    /// claims, which is the input the boot import reconciles and the baseline
+    /// mirror reconciliation diffs against — plus the delete path's fallback
+    /// for a source an older binary added that no boot has imported yet. A
+    /// reader that wants the installed catalog wants `SourcesRepo`.
     ///
     /// Callers must already hold the state lock in shared or exclusive mode
     /// while using any filesystem-backed source artifacts derived from the
@@ -726,7 +733,10 @@ impl ConfigStore {
         Ok(config.workspace_sources(workspace_name))
     }
 
-    /// Loads one installed source without taking the app state lock.
+    /// Loads one mirrored source entry without taking the app state lock.
+    ///
+    /// The mirror, not the authoritative catalog — see
+    /// [`Self::load_catalog_unlocked`] for which readers legitimately want it.
     ///
     /// Callers must already hold the state lock while using source artifacts
     /// associated with the returned config entry.
@@ -755,7 +765,14 @@ impl ConfigStore {
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
-    /// Upserts one installed source without taking the app state lock.
+    /// Writes one source into the legacy config mirror without taking the app
+    /// state lock.
+    ///
+    /// This is a mirror write, not the commit: the database transaction is what
+    /// makes an install durable, and callers run this *after* it so a
+    /// downgraded binary reads a current catalog. A failure here therefore
+    /// compensates the committed rows rather than being ignored, and the mirror
+    /// ledger is stamped only once this write has returned.
     ///
     /// Callers must already hold the state lock in exclusive mode.
     pub(crate) fn upsert_source_unlocked(
@@ -778,7 +795,13 @@ impl ConfigStore {
         })
     }
 
-    /// Removes one installed source without taking the app state lock.
+    /// Drops one source from the legacy config mirror without taking the app
+    /// state lock.
+    ///
+    /// The counterpart of [`Self::upsert_source_unlocked`], with the same
+    /// after-the-commit ordering. What makes the deletion stick is the
+    /// tombstone row written in the removing transaction; this write only stops
+    /// a downgraded binary from still listing the source.
     ///
     /// Callers must already hold the state lock in exclusive mode.
     pub(crate) fn remove_source_unlocked(
