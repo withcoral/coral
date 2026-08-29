@@ -7,6 +7,7 @@ use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::identity::Principal;
 use crate::sources::materialization::SourceDiagnosticReporter;
+use crate::sources::model::InstalledSource;
 use crate::state::db::{
     AddMemberOutcome, CoralDb, CreateWorkspaceOutcome, DbError, DbRepos, RemoveMemberOutcome,
     WorkspaceDeletion, WorkspaceMemberRecord, now_unix_nanos_i64,
@@ -92,7 +93,6 @@ impl WorkspaceManager {
     /// Lends the workspace database to sibling app code that needs the same
     /// handle, so callers share this manager's database rather than opening or
     /// threading a second one.
-    #[expect(dead_code, reason = "the query manager reads through this next")]
     pub(crate) fn database(&self) -> &Arc<CoralDb> {
         &self.db
     }
@@ -181,6 +181,16 @@ impl WorkspaceManager {
             // this deletion blocks on the state lock the install is holding;
             // neither moves until the busy timeout fails the install.
             let state_lock = self.config_store.state_lock_exclusive()?;
+            // Read the catalog before the deletion cascades its rows away:
+            // they are what the credential and artifact cleanup below works
+            // from.
+            let catalog_sources = {
+                let mut session = self.db.as_ref();
+                session
+                    .sources()
+                    .list_workspace_sources(workspace_name)
+                    .await?
+            };
             let Some(deletion) = self
                 .db
                 .begin_workspace_deletion(workspace_name.as_str())
@@ -227,7 +237,7 @@ impl WorkspaceManager {
             // this host's record of what it had mirrored is now describing a
             // workspace that no longer exists.
             self.forget_workspace_in_ledger(workspace_name);
-            let deleted = removed.map_or_else(
+            let mut deleted = removed.map_or_else(
                 || DeletedWorkspace {
                     workspace: WorkspaceRecord {
                         name: workspace_name.clone(),
@@ -236,6 +246,7 @@ impl WorkspaceManager {
                 },
                 RemovedWorkspaceConfig::into_deleted_workspace,
             );
+            deleted.sources = deleted_workspace_sources(catalog_sources, deleted.sources);
             self.pool_registry.remove(workspace_name);
             self.remove_deleted_workspace_credentials(&deleted);
             // Staging comes last, and failing to move the directory only
@@ -454,6 +465,25 @@ impl WorkspaceManager {
             );
         }
     }
+}
+
+/// The sources a deleted workspace's cleanup has to cover.
+///
+/// The catalog rows are authoritative, but a source an older binary added has
+/// a config entry and no row of its own until the next boot imports it. Its
+/// credentials and artifacts still have to be erased, so the config entries
+/// fill in whatever the catalog does not name.
+fn deleted_workspace_sources(
+    catalog_sources: Vec<InstalledSource>,
+    config_entries: Vec<InstalledSource>,
+) -> Vec<InstalledSource> {
+    let mut sources = catalog_sources;
+    for entry in config_entries {
+        if !sources.iter().any(|source| source.name == entry.name) {
+            sources.push(entry);
+        }
+    }
+    sources
 }
 
 /// The creator-owned workspace and membership seam.
@@ -1195,6 +1225,77 @@ mod tests {
                 .expect("read the directory row")
                 .is_some(),
             "deleting a workspace must not delete its members' directory rows"
+        );
+    }
+
+    /// A source the catalog holds and the config mirror does not still has to
+    /// lose its credentials when its workspace goes, and its rows have to go
+    /// with the workspace.
+    #[tokio::test]
+    async fn delete_workspace_cleans_credentials_of_a_catalog_only_source() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let db = test_db(&layout).await;
+        let manager = WorkspaceManager::new(
+            store,
+            credential_manager.clone(),
+            layout,
+            None,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+            Arc::clone(&db),
+            SourceDiagnosticReporter::default(),
+        );
+        let workspace_name = WorkspaceName::parse("work").expect("workspace");
+        let owner = seed_user(&db, "owner").await;
+        manager
+            .create_workspace_for_user(&workspace_name, &owner)
+            .await
+            .expect("create workspace");
+        let mut source = installed_source("github");
+        source.credential_storage = Some(crate::credentials::CredentialStorageKind::File);
+        let credential_set_id = CredentialSetId::for_source(&source.name);
+        let mut tx = db.begin().await.expect("begin source seed");
+        tx.sources()
+            .upsert_source(&workspace_name, &source, 1)
+            .await
+            .expect("seed catalog row");
+        tx.commit().await.expect("commit source seed");
+        credential_manager
+            .replace_material(
+                &workspace_name,
+                &credential_set_id,
+                crate::credentials::CredentialStorageKind::File,
+                &BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]),
+            )
+            .expect("write credential material");
+
+        manager
+            .delete_workspace(&workspace_name)
+            .await
+            .expect("delete workspace");
+
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                crate::credentials::CredentialStorageKind::File,
+            )
+            .expect("read credential material");
+        assert!(
+            material.is_empty(),
+            "a catalog-only source must still have its credentials erased"
+        );
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .sources()
+                .list_workspace_sources(&workspace_name)
+                .await
+                .expect("list catalog rows")
+                .is_empty(),
+            "deleting the workspace must cascade its source rows"
         );
     }
 

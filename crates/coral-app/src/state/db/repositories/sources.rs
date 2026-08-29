@@ -60,10 +60,8 @@ where
         self.load(workspace_name, None).await
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager reads through this next")
-    )]
+    /// Reads one workspace's installed source, or `None` when it has no such
+    /// row.
     pub(crate) async fn get_source(
         &mut self,
         workspace_name: &WorkspaceName,

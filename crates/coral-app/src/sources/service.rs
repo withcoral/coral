@@ -100,7 +100,8 @@ impl SourceServiceApi for SourceService {
             authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources = sources
-                .discover_sources(&workspace_name)
+                .discover_sources_async(&workspace_name)
+                .await
                 .map_err(app_status)?
                 .into_iter()
                 .map(candidate_source_to_proto)
@@ -125,7 +126,8 @@ impl SourceServiceApi for SourceService {
             authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources: Vec<_> = sources
-                .list_workspace_sources(&workspace_name)
+                .list_workspace_sources_async(&workspace_name)
+                .await
                 .map_err(app_status)?
                 .into_iter()
                 .map(|source| installed_source_to_proto(&workspace_name, source))
@@ -151,7 +153,8 @@ impl SourceServiceApi for SourceService {
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
-                .get_source(&workspace_name, &source_name)
+                .get_source_async(&workspace_name, &source_name)
+                .await
                 .map_err(app_status)?;
             Ok(Response::new(GetSourceResponse {
                 source: Some(installed_source_to_proto(&workspace_name, source)),
@@ -176,7 +179,8 @@ impl SourceServiceApi for SourceService {
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
-                .get_source_info(&workspace_name, &source_name)
+                .get_source_info_async(&workspace_name, &source_name)
+                .await
                 .map_err(app_status)?;
             Ok(Response::new(GetSourceInfoResponse {
                 source_info: Some(candidate_source_to_proto(source)),
@@ -398,6 +402,7 @@ impl SourceServiceApi for SourceService {
             require_workspace(&workspaces, &workspace_name).await?;
             let candidate = sources
                 .describe_source_manifest(&workspace_name, &request.manifest_yaml)
+                .await
                 .map_err(app_status)?;
             Ok(Response::new(DescribeSourceManifestResponse {
                 source_info: Some(candidate_source_to_proto(candidate)),
@@ -980,6 +985,16 @@ mod tests {
         })
     }
 
+    /// The status an RPC refused with, or an `Ok` status when it answered.
+    ///
+    /// The two whole-workspace listings read the catalog from the database,
+    /// which the poisoned config file cannot break, so an authorized caller is
+    /// answered rather than stopped by the state. What they still prove is the
+    /// gate: a refused caller never reaches that read.
+    fn outcome<T>(result: Result<T, Status>) -> Status {
+        result.err().unwrap_or_else(|| Status::ok(""))
+    }
+
     /// Calls every source RPC as `principal` and returns what each answered,
     /// in the order the authorization matrix lists them.
     ///
@@ -999,7 +1014,7 @@ mod tests {
     /// source is or would be configured with.
     async fn source_lookup_rpcs(service: &SourceService, principal: &Principal) -> Vec<Status> {
         vec![
-            status(
+            outcome(
                 service
                     .discover_sources(request(
                         DiscoverSourcesRequest {
@@ -1008,7 +1023,6 @@ mod tests {
                         principal,
                     ))
                     .await,
-                "DiscoverSources",
             ),
             status(
                 service
@@ -1022,7 +1036,7 @@ mod tests {
                     .await,
                 "DescribeSourceManifest",
             ),
-            status(
+            outcome(
                 service
                     .list_sources(request(
                         ListSourcesRequest {
@@ -1031,7 +1045,6 @@ mod tests {
                         principal,
                     ))
                     .await,
-                "ListSources",
             ),
             status(
                 service
@@ -1147,14 +1160,15 @@ mod tests {
     /// handed a redacted view, and a non-member is told nothing.
     ///
     /// The refusals are proved to be absences rather than error codes. The
-    /// config file on disk is unparseable, so any read of installed state
-    /// chokes on it, and the owner does choke on it: the four discovery and
-    /// lookup calls that read installed state, the delete, and the validate
-    /// all answer `Internal` from that read, while the manifest description
-    /// and the three install paths answer `InvalidArgument` from the empty
-    /// manifest, the bundled catalog, and the OAuth conversion they reach
-    /// first. Every refused caller answers `PermissionDenied` or `NotFound`
-    /// instead, and leaves the file with the bytes it started with.
+    /// config file on disk is unparseable, so the state a caller must be let
+    /// through to reach is unreadable, and the owner is let through to it: the
+    /// delete and the validate answer `Internal` from that read, the manifest
+    /// description and the three install paths answer `InvalidArgument` from
+    /// the empty manifest, the bundled catalog, and the OAuth conversion they
+    /// reach first, and the four catalog reads — which come from the database,
+    /// not the file — answer with the workspace's sources or with the absence
+    /// of the one named. Every refused caller answers `PermissionDenied` or
+    /// `NotFound` instead, and leaves the file with the bytes it started with.
     #[tokio::test]
     async fn source_configuration_reaches_only_workspace_owners() {
         let fixture = fixture().await;
@@ -1195,18 +1209,15 @@ mod tests {
             );
         }
 
+        let owner_outcomes = every_source_rpc(&fixture.service, &owner).await;
         assert_eq!(
-            every_source_rpc(&fixture.service, &owner)
-                .await
-                .iter()
-                .map(Status::code)
-                .collect::<Vec<_>>(),
+            owner_outcomes.iter().map(Status::code).collect::<Vec<_>>(),
             vec![
-                Code::Internal,
+                Code::Ok,
                 Code::InvalidArgument,
-                Code::Internal,
-                Code::Internal,
-                Code::Internal,
+                Code::Ok,
+                Code::NotFound,
+                Code::NotFound,
                 Code::InvalidArgument,
                 Code::InvalidArgument,
                 Code::InvalidArgument,
@@ -1215,6 +1226,16 @@ mod tests {
             ],
             "the owner must be stopped by the state or the request, never by the gate"
         );
+        // The owner's two `NotFound`s name the source the catalog does not
+        // hold, which is what separates them from the non-member's, who is
+        // told only that the workspace is not there.
+        for lookup in &owner_outcomes[3..=4] {
+            assert!(
+                lookup.message().contains(ABSENT_SOURCE),
+                "the owner must be answered about the source, not about the workspace: {}",
+                lookup.message()
+            );
+        }
         assert_eq!(
             std::fs::read_to_string(&fixture.config_file).expect("config file"),
             UNPARSEABLE_CONFIG,

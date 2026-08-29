@@ -6,7 +6,7 @@ use std::path::Path;
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
-use tracing::{info_span, warn};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
@@ -48,6 +48,10 @@ impl AppConfig {
         self.catalog.workspace_sources(workspace_name)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "config mirror reader the mirror's tests pin")
+    )]
     pub(crate) fn get_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -302,16 +306,6 @@ impl SourceCatalog {
             .get(workspace_name)
             .and_then(|sources| sources.get(source_name))
             .cloned()
-    }
-
-    pub(crate) fn contains(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> bool {
-        self.0
-            .get(workspace_name)
-            .is_some_and(|sources| sources.contains_key(source_name))
     }
 
     pub(crate) fn upsert_source(
@@ -598,13 +592,6 @@ impl ConfigStore {
         self.load_config_unlocked().map(|config| config.catalog)
     }
 
-    pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
-        let span = info_span!("coral.app.config.load_catalog");
-        let _guard = span.enter();
-        let _lock = self.state_lock_shared()?;
-        self.load_catalog_unlocked()
-    }
-
     fn update_config_unlocked<T>(
         &self,
         update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
@@ -722,6 +709,15 @@ impl ConfigStore {
         })
     }
 
+    /// Lists one workspace's mirrored source entries.
+    ///
+    /// The mirror, not the catalog: production reads the installed catalog from
+    /// the database, so what is left here is the test coverage that pins what
+    /// the mirror was written to hold.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "config mirror assertions in tests")
+    )]
     pub(crate) fn list_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
@@ -744,6 +740,10 @@ impl ConfigStore {
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "config mirror reader the mirror's tests pin")
+    )]
     pub(crate) fn get_source(
         &self,
         workspace_name: &WorkspaceName,
