@@ -1019,6 +1019,79 @@ pub(crate) fn read_v4_materialization_record(
     }))
 }
 
+/// Writes the `materialized/v4` directory one stored record describes.
+///
+/// The inverse of [`read_v4_materialization_record`], and deliberately its
+/// mirror image: the same flat file set, with every optional artifact written
+/// only when the record carries it, and the fingerprint written verbatim. The
+/// verbatim part is load-bearing — the boot pass decides a cache's freshness by
+/// comparing the on-disk fingerprint's bytes against the row's, which is only
+/// well defined while hydration reproduces them exactly.
+///
+/// Installed through the same tmp-dir-and-swap as a freshly materialized
+/// directory, so a crash mid-swap leaves the cache old, new, or absent, never
+/// torn — and an absent one is hydrated again by the next boot.
+pub(crate) fn hydrate_v4_materialization_cache(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    record: &MaterializationRecord,
+) -> Result<(), AppError> {
+    let temp_dir = layout.v4_materialized_tmp_dir(
+        workspace_name,
+        source_name,
+        &new_materialization_suffix("hydrate"),
+    );
+    if let Err(error) = write_materialization_record(&temp_dir, record) {
+        cleanup_materialization_tmp(Some(&temp_dir));
+        return Err(error);
+    }
+    match replace_or_retire_v4_materialization(layout, workspace_name, source_name, Some(&temp_dir))
+    {
+        Ok(backup) => {
+            cleanup_materialization_backup(backup);
+            Ok(())
+        }
+        Err(error) => {
+            cleanup_materialization_tmp(Some(&temp_dir));
+            Err(error)
+        }
+    }
+}
+
+fn write_materialization_record(
+    temp_dir: &Path,
+    record: &MaterializationRecord,
+) -> Result<(), AppError> {
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(temp_dir)?;
+    }
+    fs::ensure_private_dir(temp_dir)?;
+    for (file, contents) in [
+        (FINGERPRINT_FILENAME, record.fingerprint_yaml.as_deref()),
+        (PROJECTIONS_FILENAME, Some(record.projections_yaml.as_str())),
+        (DIAGNOSTICS_FILENAME, record.diagnostics_yaml.as_deref()),
+        (
+            OPERATION_METADATA_FILENAME,
+            Some(record.operation_metadata_yaml.as_str()),
+        ),
+        (
+            SOURCE_DOCUMENT_YAML_FILENAME,
+            Some(record.source_document_yaml.as_str()),
+        ),
+        (SEMANTIC_IR_FILENAME, Some(record.semantic_ir_yaml.as_str())),
+    ] {
+        if let Some(contents) = contents {
+            std::fs::write(temp_dir.join(file), contents)?;
+        }
+    }
+    std::fs::write(
+        temp_dir.join(SOURCE_DOCUMENT_RAW_FILENAME),
+        &record.source_document_raw,
+    )?;
+    Ok(())
+}
+
 fn materialize_surface(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,

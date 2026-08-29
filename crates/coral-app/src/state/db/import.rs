@@ -1,17 +1,23 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
+use chrono::Utc;
 use tracing::{info, warn};
 
 use super::session::DbRepos;
-use super::{CoralDb, MaterializationRecord, now_unix_nanos_i64};
+use super::{CoralDb, MaterializationRecord, SourceManifestRecord, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::hash::sha256_hex;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::read_v4_materialization_record;
+use crate::sources::materialization::{
+    hydrate_v4_materialization_cache, read_v4_materialization_record,
+};
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::mirror_ledger::MirrorLedger;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
+use crate::storage::fs as storage_fs;
 use crate::workspaces::{WorkspaceName, WorkspaceRecord};
 
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
@@ -28,15 +34,16 @@ pub(crate) async fn run_state_migrations(
     layout: &AppStateLayout,
 ) -> Result<(), AppError> {
     cutover_legacy_workspace_catalog(db, config_store, layout).await?;
-    import_legacy_source_state(db, config_store, layout)
+    reconcile_source_state(db, config_store, layout)
         .await?
         .log();
     remove_legacy_task_jsonl(config_store, layout)?;
     Ok(())
 }
 
-/// What one boot's source import did, one counter per branch of the
-/// discrimination rule.
+/// What one boot's reconciliation did: one counter per branch of the
+/// discrimination rule, then what the mirror and hydration passes rebuilt from
+/// the rows.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct SourceImportReport {
     pub(crate) imported: usize,
@@ -61,12 +68,12 @@ pub(crate) struct SourceImportReport {
     /// Config-only workspaces the ledger proves were deleted through the
     /// database, skipped together with their sources.
     pub(crate) workspaces_skipped_deleted: usize,
-    /// Reserved for the artifact-cache hydration pass.
+    /// Manifest and materialization caches rebuilt from their rows.
     pub(crate) hydrated_caches: usize,
-    /// Reserved for mirror reconciliation: database rows added to the config.
+    /// Mirror reconciliation: database rows added to the config.
     pub(crate) mirrored_entries: usize,
-    /// Reserved for mirror reconciliation: ledger-proven stale config entries
-    /// rewritten from the database.
+    /// Mirror reconciliation: ledger-proven stale config entries rewritten
+    /// from the database.
     pub(crate) mirror_entries_refreshed: usize,
 }
 
@@ -90,16 +97,23 @@ impl SourceImportReport {
     }
 }
 
-/// Imports the config file's source catalog into the database.
+/// Reconciles this host's file world with the database, in three passes.
+///
+/// The import carries the config file's source catalog into the database, the
+/// mirror pass carries the database's rows back into `config.toml` where this
+/// host's copy is provably behind, and hydration rebuilds the artifact caches
+/// the rows are the record for. All three run under one hold of the state lock
+/// and over one ledger, because each pass rules on what the previous one
+/// recorded.
 ///
 /// Runs on every boot and carries no marker: a source — or a whole workspace —
 /// an older binary added to `config.toml` after the last boot has to be picked
 /// up at the next one, and a marker is exactly what would stop that.
 ///
-/// Additive by construction. It never edits `config.toml` and never removes a
-/// database row; unreadable legacy data is warned about and skipped, so only a
-/// broken database fails startup.
-async fn import_legacy_source_state(
+/// Additive by construction. It never removes a database row and never removes
+/// a config entry; unreadable legacy data is warned about and skipped, so only
+/// a broken database fails startup.
+async fn reconcile_source_state(
     db: &CoralDb,
     config_store: &ConfigStore,
     layout: &AppStateLayout,
@@ -121,12 +135,19 @@ async fn import_legacy_source_state(
         }
     };
 
-    for workspace in import.reconcilable_workspaces(&config).await? {
-        import.import_workspace_sources(&config, &workspace).await?;
+    let workspaces = import.reconcilable_workspaces(&config).await?;
+    for workspace in &workspaces {
+        import.import_workspace_sources(&config, workspace).await?;
+    }
+    for workspace in &workspaces {
+        import
+            .reconcile_source_mirror(config_store, &config, workspace)
+            .await?;
+        import.hydrate_missing_artifact_caches(workspace).await?;
     }
 
     if let Err(error) = import.ledger.save(config_path) {
-        warn!("legacy source import finished, but the mirror ledger could not be saved: {error}");
+        warn!("source reconciliation finished, but the mirror ledger could not be saved: {error}");
     }
     Ok(import.report)
 }
@@ -418,6 +439,223 @@ impl SourceImport<'_> {
             }
         }
     }
+
+    /// Brings the config mirror back up to the rows it mirrors.
+    ///
+    /// A row with no entry is the mirror write a crash separated from its
+    /// commit — or another host's addition — and is written out. An entry that
+    /// disagrees with its row while still matching this host's ledger is
+    /// provably Coral's own stale copy of a row another host has since updated,
+    /// and is rewritten; that is what keeps a downgraded binary's catalog
+    /// current for updates rather than only for additions. Anything else
+    /// disagrees with the ledger too, so it is an operator's entry and is left
+    /// byte-for-byte alone — the import pass has already warned about it, and
+    /// the served catalog is the database either way.
+    ///
+    /// Entries are never removed: a stale entry of a source deleted through
+    /// another host stays visible to a downgraded binary and inert to this one.
+    async fn reconcile_source_mirror(
+        &mut self,
+        config_store: &ConfigStore,
+        config: &AppConfig,
+        workspace: &WorkspaceName,
+    ) -> Result<(), AppError> {
+        let entries = config
+            .workspace_sources(workspace)
+            .into_iter()
+            .map(|entry| (entry.name.clone(), entry))
+            .collect::<BTreeMap<_, _>>();
+        let mut session = self.db;
+        for row in session.sources().list_workspace_sources(workspace).await? {
+            match entries.get(&row.name) {
+                None => {
+                    if self.write_mirror_entry(config_store, workspace, &row) {
+                        self.report.mirrored_entries += 1;
+                    }
+                }
+                Some(entry)
+                    if *entry != row && self.ledger.matches_entry(workspace, &row.name, entry) =>
+                {
+                    if self.write_mirror_entry(config_store, workspace, &row) {
+                        self.report.mirror_entries_refreshed += 1;
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes one row into the config mirror and records it, reporting whether
+    /// it landed.
+    ///
+    /// A mirror this host cannot write is warned about rather than fatal: the
+    /// database is what this binary serves, and the next boot tries again.
+    fn write_mirror_entry(
+        &mut self,
+        config_store: &ConfigStore,
+        workspace: &WorkspaceName,
+        row: &InstalledSource,
+    ) -> bool {
+        if let Err(error) = config_store.upsert_source_unlocked(workspace, row.clone()) {
+            warn!(
+                "the config mirror for source '{}' in workspace '{workspace}' could not be brought up to its database row: {error}",
+                row.name
+            );
+            return false;
+        }
+        self.ledger.record_entry(workspace, &row.name, row);
+        true
+    }
+
+    /// Rebuilds the artifact caches whose rows this host is missing or behind.
+    ///
+    /// Best-effort throughout: a cache that cannot be restored is warned about
+    /// and left as it is, because the row it came from is still the record.
+    async fn hydrate_missing_artifact_caches(
+        &mut self,
+        workspace: &WorkspaceName,
+    ) -> Result<(), AppError> {
+        let mut session = self.db;
+        let rows = session.sources().list_workspace_sources(workspace).await?;
+        for row in rows {
+            let mut session = self.db;
+            let manifest = session.source_manifests().get(workspace, &row.name).await?;
+            if let Some(manifest) = manifest {
+                self.hydrate_manifest_cache(workspace, &row.name, &manifest);
+            }
+            let mut session = self.db;
+            let materialization = session.materializations().get(workspace, &row.name).await?;
+            if let Some(materialization) = materialization {
+                self.hydrate_materialization_cache(workspace, &row.name, &materialization);
+            }
+        }
+        Ok(())
+    }
+
+    /// Restores one `manifest.yaml` from the row that is its record.
+    ///
+    /// An absent file is written outright. A file that disagrees with the row
+    /// is overwritten in place only when the ledger proves the bytes are
+    /// Coral's own stale cache — the routine cross-host update, which stays
+    /// silent and leaves no litter. Anything else has no provable owner, so it
+    /// is preserved under a timestamped sibling name before the row's copy
+    /// lands: hydration never silently destroys an edit.
+    fn hydrate_manifest_cache(
+        &mut self,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+        record: &SourceManifestRecord,
+    ) {
+        let path = self.layout.manifest_file(workspace, source_name);
+        let on_disk = match std::fs::read(&path) {
+            Ok(bytes) => Some(sha256_hex(&bytes)),
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => {
+                warn!(
+                    "leaving the manifest cache for source '{source_name}' in workspace '{workspace}' alone: it could not be read: {error}"
+                );
+                return;
+            }
+        };
+        if on_disk.as_deref() == Some(record.manifest_hash.as_str()) {
+            self.ledger
+                .record_manifest(workspace, source_name, &record.manifest_hash);
+            return;
+        }
+        if on_disk.is_some_and(|on_disk| {
+            !self
+                .ledger
+                .matches_manifest(workspace, source_name, &on_disk)
+        }) {
+            match set_aside_diverged_file(&path) {
+                Ok(kept) => warn!(
+                    "the manifest at '{}' for source '{source_name}' in workspace '{workspace}' is not the one the database holds and this host cannot prove Coral wrote it; keeping it as '{}' and restoring the database copy",
+                    path.display(),
+                    kept.display()
+                ),
+                Err(error) => {
+                    warn!(
+                        "leaving the manifest at '{}' for source '{source_name}' in workspace '{workspace}' alone: it could not be set aside: {error}",
+                        path.display()
+                    );
+                    return;
+                }
+            }
+        }
+        if let Err(error) = write_manifest_cache(&path, &record.manifest_yaml) {
+            warn!(
+                "the manifest cache for source '{source_name}' in workspace '{workspace}' could not be restored from the database: {error}"
+            );
+            return;
+        }
+        self.ledger
+            .record_manifest(workspace, source_name, &record.manifest_hash);
+        self.report.hydrated_caches += 1;
+    }
+
+    /// Restores one `materialized/v4` directory from the row that is its
+    /// record, when it is absent or the row's fingerprint is not the one on
+    /// disk.
+    ///
+    /// Freshness is a byte comparison of the fingerprint rather than of the
+    /// manifest hash: a re-materialization at unchanged manifest bytes still
+    /// moves the fingerprint's descriptor hash and generator versions, and
+    /// byte-identical fingerprints mean identical inputs and generators, so
+    /// there is nothing to refresh. A row without a fingerprint can prove
+    /// nothing either way, so it hydrates on absence only and never loops.
+    fn hydrate_materialization_cache(
+        &mut self,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+        record: &MaterializationRecord,
+    ) {
+        let materialized_dir = self.layout.v4_materialized_dir(workspace, source_name);
+        let fingerprint_file = self.layout.v4_fingerprint_file(workspace, source_name);
+        let stale = match std::fs::read_to_string(fingerprint_file) {
+            Ok(on_disk) => record
+                .fingerprint_yaml
+                .as_ref()
+                .is_some_and(|row| *row != on_disk),
+            Err(_) => record.fingerprint_yaml.is_some(),
+        };
+        if materialized_dir.exists() && !stale {
+            return;
+        }
+        if let Err(error) =
+            hydrate_v4_materialization_cache(self.layout, workspace, source_name, record)
+        {
+            warn!(
+                "the materialized cache for source '{source_name}' in workspace '{workspace}' could not be restored from the database: {error}"
+            );
+            return;
+        }
+        self.report.hydrated_caches += 1;
+    }
+}
+
+/// Moves a file this host cannot prove Coral wrote out of the way, preserved
+/// under a timestamped sibling name, and reports where it went.
+///
+/// The timestamp carries sub-second precision so that a second set-aside can
+/// never land on — and destroy — the first.
+fn set_aside_diverged_file(path: &Path) -> Result<PathBuf, AppError> {
+    let mut kept_name = path.file_name().unwrap_or_default().to_os_string();
+    kept_name.push(format!(
+        ".diverged-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.9fZ")
+    ));
+    let kept = path.with_file_name(kept_name);
+    std::fs::rename(path, &kept)?;
+    Ok(kept)
+}
+
+fn write_manifest_cache(path: &Path, manifest_yaml: &str) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        storage_fs::ensure_dir(parent)?;
+    }
+    storage_fs::write_atomic(path, manifest_yaml.as_bytes())?;
+    Ok(())
 }
 
 fn remove_legacy_task_jsonl(
@@ -591,6 +829,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     use tempfile::tempdir;
 
@@ -598,7 +837,10 @@ mod tests {
         InstalledSource, MirrorLedger, SourceImportReport, SourceName, SourceOrigin,
         WORKSPACE_CATALOG_CUTOVER_ID, WorkspaceCatalogCutoverReport,
         cutover_legacy_workspace_catalog, cutover_legacy_workspace_catalog_at,
-        import_legacy_source_state, run_state_migrations,
+        reconcile_source_state, resolve_installed_manifest, run_state_migrations,
+    };
+    use crate::credentials::{
+        CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStore,
     };
     use crate::sources::materialization::{
         FINGERPRINT_FILENAME, OPERATION_METADATA_FILENAME, PROJECTIONS_FILENAME,
@@ -955,11 +1197,42 @@ mod tests {
 
     impl ImportFixture {
         async fn new() -> Self {
+            Self::open(None).await
+        }
+
+        /// A second config directory reconciling against this one's database.
+        ///
+        /// One file-backed `SQLite` file stands in for the shared server
+        /// database: what makes a host a host in every rule here is its own
+        /// config file, ledger, and source tree, not how it reaches the rows.
+        async fn peer_host(&self) -> Self {
+            Self::open(Some(self.layout.database_file())).await
+        }
+
+        /// A peer host that has already reconciled the same install once: it
+        /// holds the same files and a ledger that records them, which is what
+        /// later makes its disagreements with the database provable.
+        async fn reconciled_peer_host(
+            &self,
+            workspace: &WorkspaceName,
+            source: &InstalledSource,
+        ) -> Self {
+            let peer = self.peer_host().await;
+            peer.declare_workspace(workspace);
+            peer.install(workspace, source);
+            peer.import().await;
+            peer
+        }
+
+        async fn open(shared_database: Option<PathBuf>) -> Self {
             let temp = tempdir().expect("temp dir");
             let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
             layout.ensure().expect("ensure layout");
             let config_store = ConfigStore::new(layout.clone());
-            let db = open_sqlite(&layout).await;
+            let db = match shared_database {
+                Some(path) => open_sqlite_at(path).await,
+                None => open_sqlite(&layout).await,
+            };
             Self {
                 _temp: temp,
                 layout,
@@ -1062,7 +1335,7 @@ mod tests {
         }
 
         async fn import(&self) -> SourceImportReport {
-            import_legacy_source_state(&self.db, &self.config_store, &self.layout)
+            reconcile_source_state(&self.db, &self.config_store, &self.layout)
                 .await
                 .expect("import legacy source state")
         }
@@ -1122,6 +1395,89 @@ mod tests {
 
         fn config_bytes(&self) -> Vec<u8> {
             std::fs::read(self.layout.config_file()).expect("read config file")
+        }
+
+        fn entry(&self, workspace: &WorkspaceName, name: &SourceName) -> Option<InstalledSource> {
+            self.config_store.get_source(workspace, name).ok()
+        }
+
+        fn manifest_bytes(&self, workspace: &WorkspaceName, name: &SourceName) -> Option<Vec<u8>> {
+            std::fs::read(self.layout.manifest_file(workspace, name)).ok()
+        }
+
+        /// Every file in the source's directory tree, keyed by its path
+        /// relative to that directory — what "restored byte-for-byte" means.
+        fn source_files(
+            &self,
+            workspace: &WorkspaceName,
+            name: &SourceName,
+        ) -> BTreeMap<PathBuf, Vec<u8>> {
+            let root = self.layout.source_dir(workspace, name);
+            let mut files = BTreeMap::new();
+            let mut pending = vec![root.clone()];
+            while let Some(dir) = pending.pop() {
+                for entry in std::fs::read_dir(&dir).expect("read source dir") {
+                    let path = entry.expect("dir entry").path();
+                    if path.is_dir() {
+                        pending.push(path);
+                    } else {
+                        let relative = path.strip_prefix(&root).expect("relative path").to_owned();
+                        files.insert(relative, std::fs::read(&path).expect("read artifact"));
+                    }
+                }
+            }
+            files
+        }
+
+        /// The manifests hydration preserved rather than overwrote.
+        fn set_aside_manifests(
+            &self,
+            workspace: &WorkspaceName,
+            name: &SourceName,
+        ) -> Vec<std::path::PathBuf> {
+            let mut kept = self
+                .source_files(workspace, name)
+                .into_keys()
+                .filter(|path| path.to_string_lossy().contains(".diverged-"))
+                .collect::<Vec<_>>();
+            kept.sort();
+            kept
+        }
+
+        fn fingerprint(&self, workspace: &WorkspaceName, name: &SourceName) -> Option<String> {
+            std::fs::read_to_string(self.layout.v4_fingerprint_file(workspace, name)).ok()
+        }
+
+        /// Replays another host's re-materialization of an unchanged manifest:
+        /// only the fingerprint the row carries moves.
+        async fn rematerialize_elsewhere(
+            &self,
+            workspace: &WorkspaceName,
+            name: &SourceName,
+            fingerprint_yaml: &str,
+        ) {
+            let mut record = self
+                .materialization_row(workspace, name)
+                .await
+                .expect("materialization row");
+            record.fingerprint_yaml = Some(fingerprint_yaml.to_string());
+            let mut tx = self.db.begin().await.expect("begin rematerialize tx");
+            tx.materializations()
+                .upsert(workspace, name, &record, 13)
+                .await
+                .expect("rewrite materialization row");
+            tx.commit().await.expect("commit rematerialize tx");
+        }
+
+        /// Removes a workspace the way another host sharing this database
+        /// would: the row and everything it cascades go, this host's files stay.
+        async fn delete_workspace_elsewhere(&self, workspace: &WorkspaceName) {
+            let mut tx = self.db.begin().await.expect("begin workspace delete tx");
+            tx.workspaces()
+                .delete(workspace.as_str())
+                .await
+                .expect("delete workspace row");
+            tx.commit().await.expect("commit workspace delete tx");
         }
     }
 
@@ -1542,11 +1898,319 @@ tables:
         assert_eq!(materialization.projections_yaml, "projections: []");
     }
 
+    /// The rows are the record; the files are a cache. Losing the cache costs
+    /// a boot, not the source — and what comes back is the same bytes the
+    /// manifest and materialization readers were serving before.
+    #[tokio::test]
+    async fn a_deleted_artifact_cache_is_restored_from_its_rows() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        fixture.import().await;
+        let installed = fixture.source_files(&workspace, &source.name);
+
+        std::fs::remove_file(fixture.layout.manifest_file(&workspace, &source.name))
+            .expect("delete manifest");
+        std::fs::remove_dir_all(fixture.layout.v4_materialized_dir(&workspace, &source.name))
+            .expect("delete materialization");
+        let report = fixture.import().await;
+
+        assert_eq!(report.hydrated_caches, 2);
+        assert_eq!(
+            fixture.source_files(&workspace, &source.name),
+            installed,
+            "hydration must restore the artifact files byte-for-byte"
+        );
+    }
+
+    /// The routine cross-host update: one host updates a source, the other
+    /// boots. Its stale mirror entry and its stale cache are both provably
+    /// Coral's own, so both are brought forward silently — no set-aside file,
+    /// and a downgrade catalog that is current rather than frozen.
+    #[tokio::test]
+    async fn an_update_on_one_host_refreshes_the_other_hosts_mirror_and_cache() {
+        let first = ImportFixture::new().await;
+        let workspace = analytics();
+        first.cut_over_workspace(&workspace).await;
+        let mut source = imported_source("reports");
+        first.install(&workspace, &source);
+        first.import().await;
+        let second = first.reconciled_peer_host(&workspace, &source).await;
+
+        source
+            .variables
+            .insert("region".to_string(), "eu".to_string());
+        first.write_entry(&workspace, &source);
+        let updated_manifest = manifest_yaml("reports").replace("version: 0.1.0", "version: 0.2.0");
+        first.write_manifest(&workspace, &source.name, &updated_manifest);
+        assert_eq!(first.import().await.updated_from_files, 1);
+
+        let report = second.import().await;
+
+        assert_eq!(report.mirror_entries_refreshed, 1);
+        assert_eq!(report.mirrored_entries, 0);
+        assert_eq!(second.entry(&workspace, &source.name), Some(source.clone()));
+        assert_eq!(
+            second.manifest_bytes(&workspace, &source.name),
+            Some(updated_manifest.into_bytes())
+        );
+        assert!(
+            second
+                .set_aside_manifests(&workspace, &source.name)
+                .is_empty(),
+            "a provably stale cache must be refreshed in place, not set aside"
+        );
+    }
+
+    /// A mirror entry that agrees with neither the row nor the ledger has no
+    /// provable owner, so the mirror pass leaves it exactly as the operator
+    /// wrote it — the database is what this binary serves either way.
+    #[tokio::test]
+    async fn an_entry_differing_from_both_its_row_and_the_ledger_is_left_alone() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let entry = imported_source("reports");
+        fixture.install(&workspace, &entry);
+        let mut row = entry.clone();
+        row.version = Some("9.9.9".to_string());
+        fixture.seed_rows(&workspace, &row).await;
+        let config_before = fixture.config_bytes();
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.mirror_entries_refreshed, 0);
+        assert_eq!(report.mirrored_entries, 0);
+        assert_eq!(fixture.config_bytes(), config_before);
+    }
+
+    /// A manifest this host cannot prove Coral wrote is never overwritten in
+    /// place: the edit is preserved beside the file, and the artifact of record
+    /// is restored over it.
+    #[tokio::test]
+    async fn a_hand_edited_manifest_is_set_aside_and_the_row_restored() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        fixture.import().await;
+        let edited = manifest_yaml("reports").replace("Rows", "Hand-edited rows");
+        fixture.write_manifest(&workspace, &source.name, &edited);
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.hydrated_caches, 1);
+        assert_eq!(
+            fixture.manifest_bytes(&workspace, &source.name),
+            Some(manifest_yaml("reports").into_bytes())
+        );
+        let kept = fixture.set_aside_manifests(&workspace, &source.name);
+        let [kept] = kept.as_slice() else {
+            panic!("the edit must be preserved beside the file, exactly once: {kept:?}");
+        };
+        let kept_bytes = std::fs::read(
+            fixture
+                .layout
+                .source_dir(&workspace, &source.name)
+                .join(kept),
+        )
+        .expect("read the set-aside manifest");
+        assert_eq!(kept_bytes, edited.into_bytes());
+    }
+
+    /// A host's first reconciled boot has no ledger, so the import seeds
+    /// records for caches that already match their rows. Without that, every
+    /// first boot would litter the install with set-aside files.
+    #[tokio::test]
+    async fn a_first_reconciled_boot_leaves_a_matching_cache_alone() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        fixture.seed_rows(&workspace, &source).await;
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.already_present, 1);
+        assert_eq!(report.hydrated_caches, 0);
+        assert!(
+            fixture
+                .set_aside_manifests(&workspace, &source.name)
+                .is_empty(),
+            "a cache byte-identical to its row is never set aside"
+        );
+    }
+
+    /// The disclosed first-boot residual: a cache that genuinely differs from
+    /// its row on a host that has never reconciled it is set aside once, and
+    /// the boot after that is quiet.
+    #[tokio::test]
+    async fn a_first_reconciled_boot_sets_a_differing_cache_aside_exactly_once() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        fixture.seed_rows(&workspace, &source).await;
+        fixture.write_manifest(&workspace, &source.name, "name: stale\n");
+
+        assert_eq!(fixture.import().await.hydrated_caches, 1);
+        assert_eq!(fixture.import().await.hydrated_caches, 0);
+
+        assert_eq!(
+            fixture.set_aside_manifests(&workspace, &source.name).len(),
+            1,
+            "the second boot must find the cache provably Coral's own"
+        );
+        assert_eq!(
+            fixture.manifest_bytes(&workspace, &source.name),
+            Some(manifest_yaml("reports").into_bytes())
+        );
+    }
+
+    /// Re-materializing an unchanged manifest moves the fingerprint's
+    /// generator versions and descriptor hash while its manifest hash stands
+    /// still, which is why freshness is decided on the fingerprint's bytes.
+    #[tokio::test]
+    async fn a_rematerialization_at_unchanged_manifest_bytes_refreshes_the_other_host() {
+        // Same length, one generator version apart: only a byte comparison
+        // separates these, which is the comparison the rule is built on.
+        const MATERIALIZED: &str = "projection_generator_version: 1\ndescriptor_sha256: aa\n";
+        const REMATERIALIZED: &str = "projection_generator_version: 2\ndescriptor_sha256: aa\n";
+
+        let first = ImportFixture::new().await;
+        let workspace = analytics();
+        first.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        first.install(&workspace, &source);
+        first.write_materialization(&workspace, &source.name, Some(MATERIALIZED));
+        first.import().await;
+        let second = first.peer_host().await;
+        second.declare_workspace(&workspace);
+        second.install(&workspace, &source);
+        second.write_materialization(&workspace, &source.name, Some(MATERIALIZED));
+        second.import().await;
+
+        first
+            .rematerialize_elsewhere(&workspace, &source.name, REMATERIALIZED)
+            .await;
+        let report = second.import().await;
+
+        assert_eq!(report.hydrated_caches, 1);
+        assert_eq!(
+            second.fingerprint(&workspace, &source.name),
+            Some(REMATERIALIZED.to_string())
+        );
+        assert!(
+            second
+                .set_aside_manifests(&workspace, &source.name)
+                .is_empty(),
+            "the manifest never moved, so nothing about it is divergent"
+        );
+    }
+
+    /// Deletions have to stick across hosts, and neither pass may undo one: the
+    /// import skips the stale mirror entry, and the mirror pass adds only rows,
+    /// of which the deleted source has none.
+    #[tokio::test]
+    async fn a_source_deleted_on_one_host_does_not_resurrect_from_the_other() {
+        let first = ImportFixture::new().await;
+        let workspace = analytics();
+        first.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        first.install(&workspace, &source);
+        first.import().await;
+        let second = first.reconciled_peer_host(&workspace, &source).await;
+
+        first.delete_rows_elsewhere(&workspace, &source.name).await;
+        let report = second.import().await;
+
+        assert_eq!(report.skipped_tombstoned, 1);
+        assert_eq!(report.imported, 0);
+        assert!(second.row(&workspace, &source.name).await.is_none());
+    }
+
+    /// Workspace deletions cascade their sources without tombstones, so the
+    /// workspace ledger is the only proof the other host has that its config
+    /// entry is a stale mirror rather than a new workspace.
+    #[tokio::test]
+    async fn a_workspace_deleted_on_one_host_does_not_resurrect_from_the_other() {
+        let first = ImportFixture::new().await;
+        let workspace = analytics();
+        first.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        first.install(&workspace, &source);
+        first.import().await;
+        let second = first.reconciled_peer_host(&workspace, &source).await;
+
+        first.delete_workspace_elsewhere(&workspace).await;
+        let report = second.import().await;
+
+        assert_eq!(report.workspaces_skipped_deleted, 1);
+        assert_eq!(report.workspaces_created, 0);
+        assert!(workspace_ids(&second.db).await.is_empty());
+    }
+
+    /// What a second host gets for free, and what it does not. The catalog row
+    /// and both artifact caches arrive from the database — enough to list,
+    /// inspect, and load the source. Credential material does not: it is
+    /// host-local by design, which is what a query against it surfaces as the
+    /// missing-secret diagnostic `load_query_source` raises.
+    #[tokio::test]
+    async fn a_second_host_hydrates_an_imported_source_but_never_its_credentials() {
+        let first = ImportFixture::new().await;
+        let workspace = analytics();
+        first.cut_over_workspace(&workspace).await;
+        let mut source = imported_source("reports");
+        source.secrets = vec!["token".to_string()];
+        source.credential_storage = Some(CredentialStorageKind::File);
+        first.install(&workspace, &source);
+        let credential_set = CredentialSetId::for_source(&source.name);
+        CredentialManager::new(CredentialStore::new(first.layout.clone()))
+            .replace_material(
+                &workspace,
+                &credential_set,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("token".to_string(), "first-host-secret".to_string())]),
+            )
+            .expect("store credential material");
+        first.import().await;
+
+        let second = first.peer_host().await;
+        let report = second.import().await;
+
+        assert_eq!(report.mirrored_entries, 1);
+        assert_eq!(report.hydrated_caches, 2);
+        assert_eq!(
+            second.row(&workspace, &source.name).await,
+            Some(source.clone()),
+            "the second host lists the source from the rows of record"
+        );
+        assert_eq!(second.entry(&workspace, &source.name), Some(source.clone()));
+        resolve_installed_manifest(&workspace, &source, &second.layout)
+            .expect("the second host resolves the hydrated manifest");
+        assert_eq!(
+            CredentialManager::new(CredentialStore::new(second.layout.clone()))
+                .read_material(&workspace, &credential_set, CredentialStorageKind::File)
+                .expect("read credential material"),
+            BTreeMap::new(),
+            "credential material is per host and never travels with the row"
+        );
+    }
+
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
         let config = DatabaseConfig::load(layout).expect("db config");
         let DatabaseConfig::Sqlite { path } = config else {
             panic!("default test config should be sqlite");
         };
+        open_sqlite_at(path).await
+    }
+
+    async fn open_sqlite_at(path: PathBuf) -> CoralDb {
         let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
             .await
             .expect("open sqlite");
