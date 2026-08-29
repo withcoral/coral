@@ -31,6 +31,44 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 7. Query with `sql`: select useful columns, include required filters or function arguments, and add `LIMIT` unless complete output is requested.
 8. Summarize evidence, gaps, and next action. If editing code, use the Coral result to guide changes.
 
+## Worked Example
+
+The Workflow above, demonstrated for one canonical request.
+
+User: "What open issues are in `withcoral/coral` right now?"
+
+1. `search_catalog` with `query: "github issues"` → returns `github.issues`.
+2. `describe_table` with `name: "github.issues"` → reports required filters `owner`, `repo`.
+3. `sql`:
+   ```sql
+   SELECT number, title, html_url, created_at
+   FROM github.issues
+   WHERE owner = 'withcoral' AND repo = 'coral' AND state = 'open'
+   ORDER BY created_at DESC
+   LIMIT 20
+   ```
+4. Lead with count and most recent row; cite `github.issues`; omit the SQL unless the user wants to reuse it.
+
+## Cross-Source JOIN
+
+A single statement spans multiple installed sources; each source scans locally before the join executes. Provider-direct MCPs cannot reproduce this.
+
+Example — GitHub issues that still have no Linear attachment:
+
+```sql
+SELECT i.number, i.title, i.html_url
+FROM github.issues i
+LEFT JOIN linear.attachments l ON l.url = i.html_url
+WHERE i.owner = 'withcoral' AND i.repo = 'coral'
+  AND i.state = 'open'
+  AND l.id IS NULL
+```
+
+- Confirm each schema is installed (`coral.tables` per schema) before composing the join.
+- Apply the tightest filter on each side; sources scan independently before joining.
+- Use `LEFT JOIN ... WHERE B.id IS NULL` for "missing on the other side" reports; `INNER JOIN` for symmetric correlation on a stable identifier.
+- Reach for a cross-source JOIN when the user's question implies correlating two systems ("which X already has a Y", "which Y is missing an X"); do not synthesize across sources by running two queries and merging in prose.
+
 ## Query Rules
 
 - Use each table's `sql_reference` when available. Empty `catalog_name` means `schema_name.table_name`; otherwise use `catalog_name.schema_name.table_name`. Quote identifiers separately, never the whole qualified reference.
@@ -39,7 +77,7 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 - Virtual columns are filter-only and return `NULL`; check `is_virtual`.
 - Required filters must appear in `WHERE`; inspect `required_filters` and `is_required_filter`.
 - Secret inputs always return `value = NULL`; use `is_set`.
-- Cross-source joins work and execute locally after source scans complete.
+- Cross-source joins work and execute locally after source scans complete; see *Cross-Source JOIN* above.
 - Keep answers compact: name the source, table, required filters, and query shape. Avoid exhaustive column dumps unless requested.
 - Lead with the answer or blocker. Include SQL only when it helps the user trust or reuse the result.
 
