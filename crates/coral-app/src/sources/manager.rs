@@ -30,6 +30,10 @@ use crate::sources::materialization::{
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::db::CoralDb;
+#[cfg(test)]
+use crate::state::db::{
+    DatabaseConfig, DbRepos as _, ResolvedDatabaseConfig, run_state_migrations,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{
@@ -194,6 +198,73 @@ fn materialization_inputs_from_bindings(
     }
 }
 
+/// Drives `future` to completion from a synchronous caller, whether or not a
+/// tokio runtime is already running on this thread.
+///
+/// `block_in_place` cannot do this: it panics on the current-thread runtime
+/// `#[tokio::test]` builds by default, which most of this crate's async tests
+/// run on. A fresh current-thread runtime on a borrowed scoped thread is the
+/// one shape that holds under every flavor — the work never touches the
+/// ambient runtime, so the caller only ever waits on the join.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the dual-write bridge blocks through this next")
+)]
+fn block_on_runtime_aware<F>(future: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    fn drive<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build current-thread runtime")
+            .block_on(future)
+    }
+
+    if tokio::runtime::Handle::try_current().is_err() {
+        return drive(future);
+    }
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| drive(future))
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    })
+}
+
+/// Opens, migrates, and seeds the database a test's source manager reads
+/// through.
+///
+/// The file under the test's own layout is the only workable shape: in-memory
+/// `SQLite` is unreachable through `ResolvedDatabaseConfig`, and it is per
+/// connection anyway, so a pooled one would hand each checkout a different
+/// empty schema.
+#[cfg(test)]
+async fn test_database(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+    let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(layout).expect("database config")
+    else {
+        panic!("the default test database is sqlite")
+    };
+    let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+        .await
+        .expect("open sqlite");
+    db.migrate().await.expect("migrate sqlite");
+    run_state_migrations(&db, config_store, layout)
+        .await
+        .expect("run state migrations");
+    // A fresh layout carries no legacy workspaces for the cutover to import,
+    // so the workspace these tests address has to be seeded outright.
+    let mut tx = db.begin().await.expect("begin workspace seed");
+    tx.workspaces()
+        .ensure(WorkspaceName::default().as_str(), 1)
+        .await
+        .expect("seed default workspace");
+    tx.commit().await.expect("commit workspace seed");
+    Arc::new(db)
+}
+
 impl SourceManager {
     #[cfg(test)]
     pub(crate) fn new_for_tests(
@@ -216,6 +287,7 @@ impl SourceManager {
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
+        let db = block_on_runtime_aware(test_database(&layout, &config_store));
         Self::with_diagnostic_reporter(
             config_store,
             credential_manager,
@@ -224,6 +296,7 @@ impl SourceManager {
             SourceDiagnosticReporter::default(),
         )
         .with_database_sources_enabled(true)
+        .with_database(db)
     }
 
     pub(crate) fn with_diagnostic_reporter(
