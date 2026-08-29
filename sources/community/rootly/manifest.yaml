@@ -1,0 +1,1054 @@
+name: rootly
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query incidents, services, users, teams, alerts, and schedules from
+  Rootly via the Rootly REST API v1.
+base_url: https://api.rootly.com/v1
+
+inputs:
+  ROOTLY_TOKEN:
+    kind: secret
+    hint: |
+      Rootly API key or OAuth 2.0 access token. Generate an API key at
+      Organization Settings → API Keys in your Rootly workspace. The
+      token is sent as Authorization: Bearer and works with both API
+      keys and OAuth 2.0 access tokens — Rootly detects the type
+      automatically.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.ROOTLY_TOKEN}}
+
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/vnd.api+json
+
+test_queries:
+  - SELECT id, title, status FROM rootly.incidents LIMIT 1
+  - SELECT id, name, slug FROM rootly.services LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # users
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: users
+    description: >-
+      Users in the Rootly organization. Each row is one user. Join
+      email to linear.users or github.members for cross-tool analytics.
+    guide: |
+      No required filters. All fields are sourced from the nested
+      attributes object in the JSON:API response. Join `email` to
+      `linear.users` or `github.members` for cross-source team analytics.
+      Note: `role_id` is sourced from the relationships object
+      (`relationships.role.data.id`) rather than attributes.
+    request:
+      method: GET
+      path: /users
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - email
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: User full name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - full_name
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: User first name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - first_name
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: User last name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - last_name
+      - name: role_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Role ID assigned to the user. Sourced from
+          relationships.role.data.id in the JSON:API response.
+        expr:
+          kind: path
+          path:
+            - relationships
+            - role
+            - data
+            - id
+      - name: time_zone
+        type: Utf8
+        nullable: true
+        description: User time zone.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - time_zone
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the user was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the user was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # services
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: services
+    description: >-
+      Services defined in the Rootly organization. Each row is one
+      service. Use pagerduty_id or opsgenie_id for cross-source joins.
+    guide: |
+      No required filters. Use `pagerduty_id` or `opsgenie_id` to
+      join with PagerDuty or OpsGenie sources. Use
+      `github_repository_name` to join with `github.repos`.
+    request:
+      method: GET
+      path: /services
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Service ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Service name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Service slug.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - slug
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Service description.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - description
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Service color hex code.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - color
+      - name: pagerduty_id
+        type: Utf8
+        nullable: true
+        description: PagerDuty service ID for cross-source joins.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - pagerduty_id
+      - name: opsgenie_id
+        type: Utf8
+        nullable: true
+        description: OpsGenie service ID for cross-source joins.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - opsgenie_id
+      - name: github_repository_name
+        type: Utf8
+        nullable: true
+        description: Connected GitHub repository name. Join to github.repos.name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - github_repository_name
+      - name: github_repository_branch
+        type: Utf8
+        nullable: true
+        description: Connected GitHub repository default branch.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - github_repository_branch
+      - name: gitlab_repository_name
+        type: Utf8
+        nullable: true
+        description: Connected GitLab repository name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - gitlab_repository_name
+      - name: alerts_email_address
+        type: Utf8
+        nullable: true
+        description: Email address used to route alerts to this service.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - alerts_email_address
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the service was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the service was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # teams
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: teams
+    description: >-
+      Teams in the Rootly organization. Each row is one team. Use
+      pagerduty_id or opsgenie_id for cross-source joins.
+    guide: |
+      No required filters. Use `pagerduty_id` to join with PagerDuty
+      teams. Join `shortcut.stories` or `linear.issues` via team name
+      for cross-source engineering analytics.
+    request:
+      method: GET
+      path: /teams
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Team name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Team slug.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - slug
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Team description.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - description
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Team color hex code.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - color
+      - name: pagerduty_id
+        type: Utf8
+        nullable: true
+        description: PagerDuty team ID for cross-source joins.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - pagerduty_id
+      - name: opsgenie_id
+        type: Utf8
+        nullable: true
+        description: OpsGenie team ID for cross-source joins.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - opsgenie_id
+      - name: alerts_email_address
+        type: Utf8
+        nullable: true
+        description: Email address used to route alerts to this team.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - alerts_email_address
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the team was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the team was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # incidents
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: incidents
+    description: >-
+      Incidents in the Rootly organization. Each row is one incident.
+      Use started_at, mitigated_at, and resolved_at for MTTR analytics.
+      All filters push down to the Rootly API for efficient narrowing.
+    guide: |
+      No required filters. All filters push down to the Rootly API.
+
+      Common filter patterns:
+      - `status` = started | mitigated | resolved | cancelled | in_triage | acknowledged | closed
+      (see Rootly incident lifecycle docs for the full status list)
+      - `severity` = slug of the severity (e.g. sev0, sev1, critical, high)
+      - `started_at_gte` / `started_at_lte` for time-bounded incident windows
+      - `created_at_gte` / `created_at_lte` for creation date ranges
+
+      For large organizations always supply a time filter to avoid
+      unbounded pagination scans.
+
+      Severity is a nested JSON:API object in the response. Use
+      `severity__name` and `severity__slug` to access the severity name
+      and slug. The `filter[severity]` pushdown accepts the severity slug.
+
+      Use `jira_issue_key`, `linear_issue_id`, or `github_issue_id` for
+      cross-source joins.
+    filters:
+      - name: status
+        type: Utf8
+        description: >-
+          Filter by incident status. Common values include: started,
+          mitigated, resolved, cancelled, in_triage, acknowledged,
+          closed. See Rootly incident lifecycle docs for the full list.
+      - name: severity
+        type: Utf8
+        description: >-
+          Filter by severity slug (e.g. sev0, sev1, critical, high).
+          Matches against the severity slug field.
+      - name: started_at_gte
+        type: Utf8
+        description: Return incidents with started_at >= this ISO8601 timestamp.
+      - name: started_at_lte
+        type: Utf8
+        description: Return incidents with started_at <= this ISO8601 timestamp.
+      - name: created_at_gte
+        type: Utf8
+        description: Return incidents with created_at >= this ISO8601 timestamp.
+      - name: created_at_lte
+        type: Utf8
+        description: Return incidents with created_at <= this ISO8601 timestamp.
+    request:
+      method: GET
+      path: /incidents
+      query:
+        - name: filter[status]
+          from: filter
+          key: status
+        - name: filter[severity]
+          from: filter
+          key: severity
+        - name: filter[started_at][gte]
+          from: filter
+          key: started_at_gte
+        - name: filter[started_at][lte]
+          from: filter
+          key: started_at_lte
+        - name: filter[created_at][gte]
+          from: filter
+          key: created_at_gte
+        - name: filter[created_at][lte]
+          from: filter
+          key: created_at_lte
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Incident ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Incident title.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - title
+      - name: sequential_id
+        type: Int64
+        nullable: true
+        description: Sequential incident number within the organization.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - sequential_id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Incident status. Common values: started, mitigated, resolved,
+          cancelled, in_triage, acknowledged, closed. See
+          https://docs.rootly.com/incidents/incident-lifecycle for the
+          full list including planned-maintenance states.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status
+      - name: severity__name
+        type: Utf8
+        nullable: true
+        description: >-
+          Name of the severity (e.g. SEV0, SEV1). Sourced from
+          attributes.severity.data.attributes.name in the JSON:API response.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - severity
+            - data
+            - attributes
+            - name
+      - name: severity__slug
+        type: Utf8
+        nullable: true
+        description: >-
+          Slug of the severity (e.g. sev0, sev1). Sourced from
+          attributes.severity.data.attributes.slug in the JSON:API response.
+          Use this value with the severity filter.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - severity
+            - data
+            - attributes
+            - slug
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Incident kind.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - kind
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Incident summary.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - summary
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL of the incident in Rootly.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - url
+      - name: slack_channel_name
+        type: Utf8
+        nullable: true
+        description: Slack channel name created for this incident.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - slack_channel_name
+      - name: jira_issue_key
+        type: Utf8
+        nullable: true
+        description: Linked Jira issue key. Join to jira.issues.key.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - jira_issue_key
+      - name: linear_issue_id
+        type: Utf8
+        nullable: true
+        description: Linked Linear issue ID for cross-source joins.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - linear_issue_id
+      - name: github_issue_id
+        type: Utf8
+        nullable: true
+        description: Linked GitHub issue ID for cross-source joins.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - github_issue_id
+      - name: shortcut_story_id
+        type: Utf8
+        nullable: true
+        description: Linked Shortcut story ID. Join to shortcut.stories.id.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - shortcut_story_id
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident was started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - started_at
+      - name: detected_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident was detected.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - detected_at
+      - name: acknowledged_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident was acknowledged.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - acknowledged_at
+      - name: mitigated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident was mitigated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - mitigated_at
+      - name: resolved_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident was resolved.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - resolved_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident record was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the incident record was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # alerts
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: alerts
+    description: >-
+      Alerts in the Rootly organization. Each row is one alert. Use
+      source to identify the originating system. All filters push down
+      to the Rootly API for efficient narrowing.
+    guide: |
+      No required filters. All filters push down to the Rootly API.
+
+      Common filter patterns:
+      - `status` for alert lifecycle state (open, triggered, acknowledged, resolved)
+      - `source` to narrow by originating system
+      - `created_at_gte` / `created_at_lte` for time-bounded windows
+
+      For large organizations always supply a time filter to avoid
+      unbounded pagination scans. Use `external_id` to correlate with
+      the external system's alert identifier.
+    filters:
+      - name: status
+        type: Utf8
+        description: Filter by alert status.
+      - name: source
+        type: Utf8
+        description: Filter by originating alert source system.
+      - name: created_at_gte
+        type: Utf8
+        description: Return alerts with created_at >= this ISO8601 timestamp.
+      - name: created_at_lte
+        type: Utf8
+        description: Return alerts with created_at <= this ISO8601 timestamp.
+    request:
+      method: GET
+      path: /alerts
+      query:
+        - name: filter[status]
+          from: filter
+          key: status
+        - name: filter[source]
+          from: filter
+          key: source
+        - name: filter[created_at][gte]
+          from: filter
+          key: created_at_gte
+        - name: filter[created_at][lte]
+          from: filter
+          key: created_at_lte
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Alert ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: short_id
+        type: Utf8
+        nullable: true
+        description: Human-readable short identifier for the alert.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - short_id
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Source system that generated the alert.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - source
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Alert lifecycle status: open, triggered, acknowledged, or resolved."
+        expr:
+          kind: path
+          path:
+            - attributes
+            - status
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Summary of the alert.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the alert.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - description
+      - name: noise
+        type: Utf8
+        nullable: true
+        description: Whether the alert is marked as noise. One of noise, not_noise.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - noise
+      - name: external_id
+        type: Utf8
+        nullable: true
+        description: External alert identifier from the source system.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - external_id
+      - name: external_url
+        type: Utf8
+        nullable: true
+        description: URL linking back to the alert in the source system.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - external_url
+      - name: deduplication_key
+        type: Utf8
+        nullable: true
+        description: Deduplication key used to group related alerts.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - deduplication_key
+      - name: notification_target_id
+        type: Utf8
+        nullable: true
+        description: >-
+          ID of the notification target object. Only present for organizations
+          with Rootly On-Call enabled.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - notification_target_id
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the alert started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - started_at
+      - name: ended_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the alert ended.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - ended_at
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the alert was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the alert was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # schedules
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: schedules
+    description: >-
+      On-call schedules in the Rootly organization. Each row is one
+      schedule. Use owner_user_id to join with rootly.users.
+    guide: |
+      No required filters. Use `owner_user_id` to join with
+      `rootly.users.id` to identify schedule owners. Use
+      `all_time_coverage` to identify 24/7 schedules.
+    request:
+      method: GET
+      path: /schedules
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_size:
+        default: 25
+        max: 100
+        query_param: page[size]
+      page_param: page[number]
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Schedule ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Schedule name.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Schedule description.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - description
+      - name: owner_user_id
+        type: Utf8
+        nullable: true
+        description: ID of the user who owns the schedule. Join to rootly.users.id.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - owner_user_id
+      - name: all_time_coverage
+        type: Boolean
+        nullable: true
+        description: Whether the schedule provides 24/7 coverage.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - all_time_coverage
+      - name: shift_report_time_zone
+        type: Utf8
+        nullable: true
+        description: Time zone for shift reports.
+        expr:
+          kind: path
+          path:
+            - attributes
+            - shift_report_time_zone
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the schedule was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the schedule was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - attributes
+              - updated_at
