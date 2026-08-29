@@ -1,0 +1,2185 @@
+name: lemon_squeezy
+version: 0.1.0
+dsl_version: 3
+description: >
+  Query your Lemon Squeezy store data. Covers orders, subscriptions, customers,
+  products, variants, license keys, discount codes, and subscription invoices.
+  Supports both test-mode and live-mode API keys; the two modes access completely
+  separate datasets.
+backend: http
+inputs:
+  LEMON_SQUEEZY_API_KEY:
+    kind: secret
+    hint: >
+      Your Lemon Squeezy API key. Create one at
+      https://app.lemonsqueezy.com/settings/api.
+      Use a test-mode key while developing; switch to a live-mode key for
+      production data.
+
+base_url: https://api.lemonsqueezy.com
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.LEMON_SQUEEZY_API_KEY}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/vnd.api+json
+  - name: Content-Type
+    from: literal
+    value: application/vnd.api+json
+
+rate_limit:
+  retry_after_header: Retry-After
+
+test_queries:
+  - SELECT * FROM lemon_squeezy.stores LIMIT 1
+  - SELECT * FROM lemon_squeezy.products LIMIT 1
+  - SELECT * FROM lemon_squeezy.prices LIMIT 1
+  - SELECT * FROM lemon_squeezy.orders LIMIT 1
+  - SELECT * FROM lemon_squeezy.order_items LIMIT 1
+  - SELECT * FROM lemon_squeezy.subscriptions LIMIT 1
+  - SELECT * FROM lemon_squeezy.subscription_invoices LIMIT 1
+  - SELECT * FROM lemon_squeezy.customers LIMIT 1
+  - SELECT * FROM lemon_squeezy.discounts LIMIT 1
+  - SELECT * FROM lemon_squeezy.discount_redemptions LIMIT 1
+  - SELECT * FROM lemon_squeezy.license_keys LIMIT 1
+  - SELECT * FROM lemon_squeezy.variants LIMIT 1
+
+tables:
+  # ---------------------------------------------------------------------------
+  # stores
+  # ---------------------------------------------------------------------------
+  - name: stores
+    description: >
+      Lemon Squeezy stores owned by the authenticated account. Each store is a
+      distinct storefront with its own products, orders, and currency settings.
+      Aggregate revenue and 30-day sales figures are included per store.
+    request:
+      method: GET
+      path: /v1/stores
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique store ID.
+      - name: name
+        type: Utf8
+        description: Store display name.
+        expr:
+          kind: path
+          path: [attributes, name]
+      - name: slug
+        type: Utf8
+        description: URL slug for the store.
+        expr:
+          kind: path
+          path: [attributes, slug]
+      - name: domain
+        type: Utf8
+        description: "Domain of the store either {slug}.lemonsqueezy.com by default, or a custom domain if one has been configured."
+        expr:
+          kind: path
+          path: [attributes, domain]
+      - name: url
+        type: Utf8
+        description: Full storefront URL.
+        expr:
+          kind: path
+          path: [attributes, url]
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        description: URL of the store avatar image.
+        expr:
+          kind: path
+          path: [attributes, avatar_url]
+      - name: plan
+        type: Utf8
+        description: "Lemon Squeezy billing plan name (e.g. fresh, sweet)."
+        expr:
+          kind: path
+          path: [attributes, plan]
+      - name: country
+        type: Utf8
+        description: Two-letter ISO 3166-1 alpha-2 country code of the store.
+        expr:
+          kind: path
+          path: [attributes, country]
+      - name: country_nicename
+        type: Utf8
+        description: Human-readable country name.
+        expr:
+          kind: path
+          path: [attributes, country_nicename]
+      - name: currency
+        type: Utf8
+        description: Three-letter ISO 4217 currency code used by the store.
+        expr:
+          kind: path
+          path: [attributes, currency]
+      - name: total_sales
+        type: Int64
+        description: Total number of paid orders across all time.
+        expr:
+          kind: path
+          path: [attributes, total_sales]
+      - name: total_revenue
+        type: Int64
+        description: Total revenue in USD cents across all time.
+        expr:
+          kind: path
+          path: [attributes, total_revenue]
+      - name: thirty_day_sales
+        type: Int64
+        description: Number of paid orders in the last 30 days.
+        expr:
+          kind: path
+          path: [attributes, thirty_day_sales]
+      - name: thirty_day_revenue
+        type: Int64
+        description: Revenue in USD cents in the last 30 days.
+        expr:
+          kind: path
+          path: [attributes, thirty_day_revenue]
+      - name: created_at
+        type: Timestamp
+        description: When the store was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the store was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # products
+  # ---------------------------------------------------------------------------
+  - name: products
+    description: >
+      Products listed in Lemon Squeezy stores. Each product can have multiple
+      variants with distinct prices, licensing rules, and subscription billing
+      intervals. Filter by store_id to scope to a specific store.
+    request:
+      method: GET
+      path: /v1/products
+      query:
+        - name: "filter[store_id]"
+          from: filter_int
+          key: store_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: store_id
+        type: Int64
+        description: Filter products to a specific store.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique product ID.
+      - name: store_id
+        type: Int64
+        description: ID of the store this product belongs to.
+        expr:
+          kind: path
+          path: [attributes, store_id]
+      - name: name
+        type: Utf8
+        description: Product name.
+        expr:
+          kind: path
+          path: [attributes, name]
+      - name: slug
+        type: Utf8
+        description: URL slug for the product.
+        expr:
+          kind: path
+          path: [attributes, slug]
+      - name: description
+        type: Utf8
+        description: The description of the product in HTML.
+        expr:
+          kind: path
+          path: [attributes, description]
+      - name: status
+        type: Utf8
+        description: "Product status: draft or published."
+        expr:
+          kind: path
+          path: [attributes, status]
+      - name: status_formatted
+        type: Utf8
+        description: The formatted status of the product.
+        expr:
+          kind: path
+          path: [attributes, status_formatted]
+      - name: buy_now_url
+        type: Utf8
+        nullable: true
+        description: Direct buy-now checkout URL.
+        expr:
+          kind: path
+          path: [attributes, buy_now_url]
+      - name: price
+        type: Int64
+        description: Base price in store-currency cents.
+        expr:
+          kind: path
+          path: [attributes, price]
+      - name: price_formatted
+        type: Utf8
+        description: Human-readable formatted price string (e.g. "$9.99").
+        expr:
+          kind: path
+          path: [attributes, price_formatted]
+      - name: from_price
+        type: Int64
+        nullable: true
+        description: Lowest variant price in cents (when multiple variants exist).
+        expr:
+          kind: path
+          path: [attributes, from_price]
+      - name: from_price_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable price of the cheapest variant (when multiple variants exist).
+        expr:
+          kind: path
+          path: [attributes, from_price_formatted]
+      - name: to_price
+        type: Int64
+        nullable: true
+        description: Highest variant price in cents (when multiple variants exist).
+        expr:
+          kind: path
+          path: [attributes, to_price]
+      - name: to_price_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable price of the most expensive variant (when multiple variants exist).
+        expr:
+          kind: path
+          path: [attributes, to_price_formatted]
+      - name: pay_what_you_want
+        type: Boolean
+        description: Whether the product uses pay-what-you-want pricing.
+        expr:
+          kind: path
+          path: [attributes, pay_what_you_want]
+      - name: thumb_url
+        type: Utf8
+        nullable: true
+        description: URL of the product thumbnail image.
+        expr:
+          kind: path
+          path: [attributes, thumb_url]
+      - name: large_thumb_url
+        type: Utf8
+        nullable: true
+        description: URL of the product large thumbnail image.
+        expr:
+          kind: path
+          path: [attributes, large_thumb_url]
+      - name: created_at
+        type: Timestamp
+        description: When the product was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the product was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # variants
+  # ---------------------------------------------------------------------------
+  - name: variants
+    description: >
+      Legacy variant metadata for Lemon Squeezy products. Variants still carry
+      back-compat pricing and billing defaults, but current price records live
+      in the prices table. Filter by product_id to scope to a specific product.
+    request:
+      method: GET
+      path: /v1/variants
+      query:
+        - name: "filter[product_id]"
+          from: filter_int
+          key: product_id
+        - name: "filter[status]"
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: product_id
+        type: Int64
+        description: Filter variants to a specific product.
+      - name: status
+        type: Utf8
+        description: "Filter variants by status: pending, draft, or published."
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique variant ID.
+      - name: product_id
+        type: Int64
+        description: ID of the product this variant belongs to.
+        expr:
+          kind: path
+          path: [attributes, product_id]
+      - name: name
+        type: Utf8
+        description: Variant name.
+        expr:
+          kind: path
+          path: [attributes, name]
+      - name: slug
+        type: Utf8
+        description: URL slug for the variant.
+        expr:
+          kind: path
+          path: [attributes, slug]
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Variant description (may contain HTML).
+        expr:
+          kind: path
+          path: [attributes, description]
+      - name: price
+        type: Int64
+        description: Price in store-currency cents.
+        expr:
+          kind: path
+          path: [attributes, price]
+      - name: pay_what_you_want
+        type: Boolean
+        description: Whether this variant uses pay-what-you-want pricing.
+        expr:
+          kind: path
+          path: [attributes, pay_what_you_want]
+      - name: min_price
+        type: Int64
+        nullable: true
+        description: Minimum price in cents when pay_what_you_want is true.
+        expr:
+          kind: path
+          path: [attributes, min_price]
+      - name: suggested_price
+        type: Int64
+        nullable: true
+        description: Suggested price in cents when pay_what_you_want is true.
+        expr:
+          kind: path
+          path: [attributes, suggested_price]
+      - name: status
+        type: Utf8
+        description: "Variant status: pending, draft, or published."
+        expr:
+          kind: path
+          path: [attributes, status]
+      - name: status_formatted
+        type: Utf8
+        description: Human-readable status label.
+        expr:
+          kind: path
+          path: [attributes, status_formatted]
+      - name: sort
+        type: Int64
+        description: Display sort order of this variant within the product.
+        expr:
+          kind: path
+          path: [attributes, sort]
+      - name: has_license_keys
+        type: Boolean
+        description: Whether this variant generates license keys on purchase.
+        expr:
+          kind: path
+          path: [attributes, has_license_keys]
+      - name: license_activation_limit
+        type: Int64
+        nullable: true
+        description: Maximum number of license activations allowed. Null when unlimited.
+        expr:
+          kind: path
+          path: [attributes, license_activation_limit]
+      - name: is_license_limit_unlimited
+        type: Boolean
+        description: Whether the license activation limit is unlimited.
+        expr:
+          kind: path
+          path: [attributes, is_license_limit_unlimited]
+      - name: license_length_value
+        type: Int64
+        nullable: true
+        description: Numeric duration of the license validity period.
+        expr:
+          kind: path
+          path: [attributes, license_length_value]
+      - name: license_length_unit
+        type: Utf8
+        nullable: true
+        description: "Unit of the license validity period: days, months, or years."
+        expr:
+          kind: path
+          path: [attributes, license_length_unit]
+      - name: is_license_length_unlimited
+        type: Boolean
+        description: Whether the license key never expires.
+        expr:
+          kind: path
+          path: [attributes, is_license_length_unlimited]
+      - name: has_free_trial
+        type: Boolean
+        description: Whether this variant includes a free trial period.
+        expr:
+          kind: path
+          path: [attributes, has_free_trial]
+      - name: trial_interval
+        type: Utf8
+        nullable: true
+        description: "Trial period unit: day, week, month, or year."
+        expr:
+          kind: path
+          path: [attributes, trial_interval]
+      - name: trial_interval_count
+        type: Int64
+        nullable: true
+        description: Number of trial period units.
+        expr:
+          kind: path
+          path: [attributes, trial_interval_count]
+      - name: is_subscription
+        type: Boolean
+        description: Whether this variant is sold as a subscription.
+        expr:
+          kind: path
+          path: [attributes, is_subscription]
+      - name: interval
+        type: Utf8
+        nullable: true
+        description: "Subscription billing interval: day, week, month, or year."
+        expr:
+          kind: path
+          path: [attributes, interval]
+      - name: interval_count
+        type: Int64
+        nullable: true
+        description: Number of interval units between each billing cycle.
+        expr:
+          kind: path
+          path: [attributes, interval_count]
+      - name: created_at
+        type: Timestamp
+        description: When the variant was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the variant was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # prices
+  # ---------------------------------------------------------------------------
+  - name: prices
+    description: >
+      Current Lemon Squeezy price records for variants. Use this table for
+      authoritative price, setup fee, package, tier, usage aggregation,
+      subscription interval, trial, and price history data. Filter by
+      variant_id to scope to a specific variant.
+    request:
+      method: GET
+      path: /v1/prices
+      query:
+        - name: "filter[variant_id]"
+          from: filter_int
+          key: variant_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: variant_id
+        type: Int64
+        description: Filter prices to a specific variant.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique price ID.
+      - name: variant_id
+        type: Int64
+        description: ID of the variant this price belongs to.
+        expr:
+          kind: path
+          path: [attributes, variant_id]
+      - name: category
+        type: Utf8
+        description: "Price category: one_time, subscription, lead_magnet, or pwyw."
+        expr:
+          kind: path
+          path: [attributes, category]
+      - name: scheme
+        type: Utf8
+        description: "Pricing scheme: standard, package, graduated, or volume."
+        expr:
+          kind: path
+          path: [attributes, scheme]
+      - name: usage_aggregation
+        type: Utf8
+        nullable: true
+        description: "Usage aggregation mode when usage-based billing is enabled: sum, last_during_period, last_ever, or max."
+        expr:
+          kind: path
+          path: [attributes, usage_aggregation]
+      - name: unit_price
+        type: Int64
+        nullable: true
+        description: "Price in cents. For volume/graduated pricing use tier data. If usage aggregation is enabled, use unit_price_decimal."
+        expr:
+          kind: path
+          path: [attributes, unit_price]
+      - name: unit_price_decimal
+        type: Utf8
+        nullable: true
+        description: >-
+          Cents as a decimal string ("999.0"=$9.99).
+          Null unless usage_aggregation is set; authoritative price when unit_price is null.
+          Cast to DECIMAL and divide by 100.
+        expr:
+          kind: path
+          path: [attributes, unit_price_decimal]
+      - name: setup_fee_enabled
+        type: Boolean
+        nullable: true
+        description: Whether this price has a setup fee. Will be null for non-subscription pricing.
+        expr:
+          kind: path
+          path: [attributes, setup_fee_enabled]
+      - name: setup_fee
+        type: Int64
+        nullable: true
+        description: Setup fee in store-currency cents.
+        expr:
+          kind: path
+          path: [attributes, setup_fee]
+      - name: package_size
+        type: Int64
+        description: Number of units per package for package pricing. Defaults to 1 for non-package schemes.
+        expr:
+          kind: path
+          path: [attributes, package_size]
+      - name: tiers
+        type: Json
+        nullable: true
+        description: "Tier data for volume/graduated pricing, including limits, prices, and fixed fees. Null for standard/package pricing."
+        expr:
+          kind: path
+          path: [attributes, tiers]
+      - name: renewal_interval_unit
+        type: Utf8
+        nullable: true
+        description: "Subscription billing interval unit: day, week, month, or year."
+        expr:
+          kind: path
+          path: [attributes, renewal_interval_unit]
+      - name: renewal_interval_quantity
+        type: Int64
+        nullable: true
+        description: Number of interval units between subscription billings.
+        expr:
+          kind: path
+          path: [attributes, renewal_interval_quantity]
+      - name: trial_interval_unit
+        type: Utf8
+        nullable: true
+        description: "Free-trial interval unit: day, week, month, or year."
+        expr:
+          kind: path
+          path: [attributes, trial_interval_unit]
+      - name: trial_interval_quantity
+        type: Int64
+        nullable: true
+        description: Number of interval units in the free trial.
+        expr:
+          kind: path
+          path: [attributes, trial_interval_quantity]
+      - name: min_price
+        type: Int64
+        nullable: true
+        description: Minimum price in cents for pay-what-you-want pricing.
+        expr:
+          kind: path
+          path: [attributes, min_price]
+      - name: suggested_price
+        type: Int64
+        nullable: true
+        description: Suggested price in cents for pay-what-you-want pricing.
+        expr:
+          kind: path
+          path: [attributes, suggested_price]
+      - name: tax_code
+        type: Utf8
+        nullable: true
+        description: "Tax category for the underlying product: eservice, ebook, or saas."
+        expr:
+          kind: path
+          path: [attributes, tax_code]
+      - name: created_at
+        type: Timestamp
+        description: When the price was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the price was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # customers
+  # ---------------------------------------------------------------------------
+  - name: customers
+    description: >
+      Customers who have made purchases from Lemon Squeezy stores. Includes
+      cumulative revenue and monthly recurring revenue (MRR) per customer.
+      Filter by store_id or email to narrow results.
+    request:
+      method: GET
+      path: /v1/customers
+      query:
+        - name: "filter[store_id]"
+          from: filter_int
+          key: store_id
+        - name: "filter[email]"
+          from: filter
+          key: email
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    fetch_limit_default: 500
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: store_id
+        type: Int64
+        description: Filter customers to a specific store.
+      - name: email
+        type: Utf8
+        description: Filter by exact customer email address.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique customer ID.
+      - name: store_id
+        type: Int64
+        description: ID of the store this customer belongs to.
+        expr:
+          kind: path
+          path: [attributes, store_id]
+      - name: name
+        type: Utf8
+        description: Full name of the customer.
+        expr:
+          kind: path
+          path: [attributes, name]
+      - name: email
+        type: Utf8
+        description: Email address of the customer.
+        expr:
+          kind: path
+          path: [attributes, email]
+      - name: status
+        type: Utf8
+        description: "Email marketing status of the customer: subscribed, unsubscribed, archived, requires_verification, invalid_email, or bounced."
+        expr:
+          kind: path
+          path: [attributes, status]
+      - name: status_formatted
+        type: Utf8
+        description: Human-readable status label.
+        expr:
+          kind: path
+          path: [attributes, status_formatted]
+      - name: city
+        type: Utf8
+        nullable: true
+        description: Customer's city.
+        expr:
+          kind: path
+          path: [attributes, city]
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Customer's region or state.
+        expr:
+          kind: path
+          path: [attributes, region]
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Two-letter ISO 3166-1 alpha-2 country code of the customer.
+        expr:
+          kind: path
+          path: [attributes, country]
+      - name: country_formatted
+        type: Utf8
+        nullable: true
+        description: Human-readable country name of the customer (e.g. "United States").
+        expr:
+          kind: path
+          path: [attributes, country_formatted]
+      - name: total_revenue_currency
+        type: Int64
+        description: Total revenue from this customer in USD cents.
+        expr:
+          kind: path
+          path: [attributes, total_revenue_currency]
+      - name: total_revenue_currency_formatted
+        type: Utf8
+        description: Human-readable total revenue from this customer (e.g. "$843.32").
+        expr:
+          kind: path
+          path: [attributes, total_revenue_currency_formatted]
+      - name: mrr
+        type: Int64
+        description: Monthly recurring revenue from this customer in USD cents.
+        expr:
+          kind: path
+          path: [attributes, mrr]
+      - name: mrr_formatted
+        type: Utf8
+        description: Human-readable monthly recurring revenue from this customer (e.g. "$19.99").
+        expr:
+          kind: path
+          path: [attributes, mrr_formatted]
+      - name: urls__customer_portal
+        type: Utf8
+        nullable: true
+        description: Customer Portal URL for subscription and billing management. Valid for 24 hours. Null if no subscription exists.
+        expr:
+          kind: path
+          path: [attributes, urls, customer_portal]
+      - name: created_at
+        type: Timestamp
+        description: When the customer record was first created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the customer record was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # orders
+  # ---------------------------------------------------------------------------
+  - name: orders
+    description: >
+      Orders placed across Lemon Squeezy stores. Each row captures the full
+      transaction including pricing breakdowns in both order currency and USD,
+      tax details, and refund status. Filter by store_id or user_email.
+    request:
+      method: GET
+      path: /v1/orders
+      query:
+        - name: "filter[store_id]"
+          from: filter_int
+          key: store_id
+        - name: "filter[user_email]"
+          from: filter
+          key: user_email
+        - name: "filter[order_number]"
+          from: filter_int
+          key: order_number
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    fetch_limit_default: 500
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: store_id
+        type: Int64
+        description: Filter orders to a specific store.
+      - name: user_email
+        type: Utf8
+        description: Filter orders by exact customer email address.
+      - name: order_number
+        type: Int64
+        description: Filter to a specific sequential order number.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique order ID.
+      - name: store_id
+        type: Int64
+        description: ID of the store this order belongs to.
+        expr:
+          kind: path
+          path: [attributes, store_id]
+      - name: customer_id
+        type: Int64
+        description: ID of the customer who placed this order.
+        expr:
+          kind: path
+          path: [attributes, customer_id]
+      - name: identifier
+        type: Utf8
+        description: Human-readable order identifier (UUID format).
+        expr:
+          kind: path
+          path: [attributes, identifier]
+      - name: order_number
+        type: Int64
+        description: Sequential order number within the store.
+        expr:
+          kind: path
+          path: [attributes, order_number]
+      - name: user_name
+        type: Utf8
+        description: Full name of the customer at time of purchase.
+        expr:
+          kind: path
+          path: [attributes, user_name]
+      - name: user_email
+        type: Utf8
+        description: Email address of the customer at time of purchase.
+        expr:
+          kind: path
+          path: [attributes, user_email]
+      - name: currency
+        type: Utf8
+        description: Three-letter ISO 4217 currency code.
+        expr:
+          kind: path
+          path: [attributes, currency]
+      - name: currency_rate
+        type: Utf8
+        description: Exchange rate applied to convert to USD at time of order.
+        expr:
+          kind: path
+          path: [attributes, currency_rate]
+      - name: subtotal
+        type: Int64
+        description: Subtotal in the order currency (orders.currency), stored as cents, before discount and tax.
+        expr:
+          kind: path
+          path: [attributes, subtotal]
+      - name: setup_fee
+        type: Int64
+        description: Setup fee in the order currency (orders.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, setup_fee]
+      - name: discount_total
+        type: Int64
+        description: Total discount applied in the order currency (orders.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, discount_total]
+      - name: tax
+        type: Int64
+        description: Tax charged in the order currency (orders.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, tax]
+      - name: total
+        type: Int64
+        description: Grand total charged in the order currency (orders.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, total]
+      - name: refunded_amount
+        type: Int64
+        description: Refunded amount in the order currency (orders.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount]
+      - name: subtotal_usd
+        type: Int64
+        description: Subtotal in USD cents.
+        expr:
+          kind: path
+          path: [attributes, subtotal_usd]
+      - name: setup_fee_usd
+        type: Int64
+        description: Setup fee in USD cents.
+        expr:
+          kind: path
+          path: [attributes, setup_fee_usd]
+      - name: discount_total_usd
+        type: Int64
+        description: Discount in USD cents.
+        expr:
+          kind: path
+          path: [attributes, discount_total_usd]
+      - name: tax_usd
+        type: Int64
+        description: Tax in USD cents.
+        expr:
+          kind: path
+          path: [attributes, tax_usd]
+      - name: total_usd
+        type: Int64
+        description: Grand total in USD cents.
+        expr:
+          kind: path
+          path: [attributes, total_usd]
+      - name: refunded_amount_usd
+        type: Int64
+        description: Refunded amount in USD cents.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount_usd]
+      - name: tax_name
+        type: Utf8
+        nullable: true
+        description: Name of the tax applied (e.g. VAT, GST).
+        expr:
+          kind: path
+          path: [attributes, tax_name]
+      - name: tax_rate
+        type: Utf8
+        nullable: true
+        description: Tax rate as a percentage string (e.g. "20.00").
+        expr:
+          kind: path
+          path: [attributes, tax_rate]
+      - name: tax_inclusive
+        type: Boolean
+        description: Whether tax is included in the displayed price.
+        expr:
+          kind: path
+          path: [attributes, tax_inclusive]
+      - name: status
+        type: Utf8
+        description: "Order status: pending, failed, paid, refunded, partial_refund, or fraudulent."
+        expr:
+          kind: path
+          path: [attributes, status]
+      - name: status_formatted
+        type: Utf8
+        description: Human-readable status label.
+        expr:
+          kind: path
+          path: [attributes, status_formatted]
+      - name: refunded
+        type: Boolean
+        description: >
+          Whether this order has been fully refunded. True only for complete
+          refunds; partial refunds are represented by status = 'partial_refund'
+          with the refunded amount recorded in refunded_amount.
+        expr:
+          kind: path
+          path: [attributes, refunded]
+      - name: refunded_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp of a full refund. Null for non-refunded and partially refunded orders.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, refunded_at]
+      - name: subtotal_formatted
+        type: Utf8
+        description: Human-readable subtotal in the order currency (e.g. "$9.99").
+        expr:
+          kind: path
+          path: [attributes, subtotal_formatted]
+      - name: setup_fee_formatted
+        type: Utf8
+        description: Human-readable setup fee in the order currency (e.g. "$0.00").
+        expr:
+          kind: path
+          path: [attributes, setup_fee_formatted]
+      - name: discount_total_formatted
+        type: Utf8
+        description: Human-readable total discount in the order currency (e.g. "$0.00").
+        expr:
+          kind: path
+          path: [attributes, discount_total_formatted]
+      - name: tax_formatted
+        type: Utf8
+        description: Human-readable tax amount in the order currency (e.g. "$2.00").
+        expr:
+          kind: path
+          path: [attributes, tax_formatted]
+      - name: total_formatted
+        type: Utf8
+        description: Human-readable grand total in the order currency (e.g. "$11.99").
+        expr:
+          kind: path
+          path: [attributes, total_formatted]
+      - name: refunded_amount_formatted
+        type: Utf8
+        description: Human-readable refunded amount in the order currency (e.g. "$9.99"). Display only use refunded_amount for aggregations.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount_formatted]
+      - name: created_at
+        type: Timestamp
+        description: When the order was placed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the order was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # order_items
+  # ---------------------------------------------------------------------------
+  - name: order_items
+    description: >
+      Line items within Lemon Squeezy orders. Each row represents a single
+      product variant purchased in a given order, recording the price paid and
+      product/variant names at time of purchase. Filter by order_id,
+      product_id, or variant_id to narrow results.
+    request:
+      method: GET
+      path: /v1/order-items
+      query:
+        - name: "filter[order_id]"
+          from: filter_int
+          key: order_id
+        - name: "filter[product_id]"
+          from: filter_int
+          key: product_id
+        - name: "filter[variant_id]"
+          from: filter_int
+          key: variant_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    fetch_limit_default: 500
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: order_id
+        type: Int64
+        description: Filter order items to a specific order.
+      - name: product_id
+        type: Int64
+        description: Filter order items to a specific product.
+      - name: variant_id
+        type: Int64
+        description: Filter order items to a specific variant.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique order item ID.
+      - name: order_id
+        type: Int64
+        description: ID of the order this item belongs to.
+        expr:
+          kind: path
+          path: [attributes, order_id]
+      - name: product_id
+        type: Int64
+        description: ID of the product purchased.
+        expr:
+          kind: path
+          path: [attributes, product_id]
+      - name: variant_id
+        type: Int64
+        description: ID of the variant purchased.
+        expr:
+          kind: path
+          path: [attributes, variant_id]
+      - name: product_name
+        type: Utf8
+        description: Name of the product at time of purchase.
+        expr:
+          kind: path
+          path: [attributes, product_name]
+      - name: variant_name
+        type: Utf8
+        description: Name of the variant at time of purchase.
+        expr:
+          kind: path
+          path: [attributes, variant_name]
+      - name: price
+        type: Int64
+        description: Price paid in the order currency stored as cents.Join to orders via order_id to obtain the currency code
+        expr:
+          kind: path
+          path: [attributes, price]
+      - name: quantity
+        type: Int64
+        description: Quantity purchased for this line item.
+        expr:
+          kind: path
+          path: [attributes, quantity]
+      - name: created_at
+        type: Timestamp
+        description: When this order item was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When this order item was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # subscriptions
+  # ---------------------------------------------------------------------------
+  - name: subscriptions
+    description: >
+      Active and historical subscriptions in Lemon Squeezy stores. Each row
+      tracks billing status, trial period, cancellation, renewal date, and the
+      payment method used. Filter by store_id, product_id, variant_id,
+      user_email, or status to narrow results.
+    request:
+      method: GET
+      path: /v1/subscriptions
+      query:
+        - name: "filter[store_id]"
+          from: filter_int
+          key: store_id
+        - name: "filter[order_id]"
+          from: filter_int
+          key: order_id
+        - name: "filter[order_item_id]"
+          from: filter_int
+          key: order_item_id
+        - name: "filter[product_id]"
+          from: filter_int
+          key: product_id
+        - name: "filter[variant_id]"
+          from: filter_int
+          key: variant_id
+        - name: "filter[user_email]"
+          from: filter
+          key: user_email
+        - name: "filter[status]"
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    fetch_limit_default: 500
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: store_id
+        type: Int64
+        description: Filter subscriptions to a specific store.
+      - name: order_id
+        type: Int64
+        description: Filter subscriptions to a specific originating order.
+      - name: order_item_id
+        type: Int64
+        description: Filter subscriptions to a specific originating order item.
+      - name: product_id
+        type: Int64
+        description: Filter subscriptions to a specific product.
+      - name: variant_id
+        type: Int64
+        description: Filter subscriptions to a specific variant.
+      - name: user_email
+        type: Utf8
+        description: Filter by exact subscriber email address.
+      - name: status
+        type: Utf8
+        description: "Filter by status: on_trial, active, paused, past_due, unpaid, cancelled, expired."
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique subscription ID.
+      - name: store_id
+        type: Int64
+        description: ID of the store this subscription belongs to.
+        expr:
+          kind: path
+          path: [attributes, store_id]
+      - name: customer_id
+        type: Int64
+        description: ID of the customer holding this subscription.
+        expr:
+          kind: path
+          path: [attributes, customer_id]
+      - name: order_id
+        type: Int64
+        description: ID of the order that created this subscription.
+        expr:
+          kind: path
+          path: [attributes, order_id]
+      - name: order_item_id
+        type: Int64
+        description: ID of the order item that created this subscription.
+        expr:
+          kind: path
+          path: [attributes, order_item_id]
+      - name: product_id
+        type: Int64
+        description: ID of the subscribed product.
+        expr:
+          kind: path
+          path: [attributes, product_id]
+      - name: variant_id
+        type: Int64
+        description: ID of the subscribed variant.
+        expr:
+          kind: path
+          path: [attributes, variant_id]
+      - name: product_name
+        type: Utf8
+        description: Name of the subscribed product.
+        expr:
+          kind: path
+          path: [attributes, product_name]
+      - name: variant_name
+        type: Utf8
+        description: Name of the subscribed variant.
+        expr:
+          kind: path
+          path: [attributes, variant_name]
+      - name: user_name
+        type: Utf8
+        description: Full name of the subscriber.
+        expr:
+          kind: path
+          path: [attributes, user_name]
+      - name: user_email
+        type: Utf8
+        description: Email address of the subscriber.
+        expr:
+          kind: path
+          path: [attributes, user_email]
+      - name: status
+        type: Utf8
+        description: "Subscription status: on_trial, active, paused, past_due, unpaid, cancelled, expired."
+        expr:
+          kind: path
+          path: [attributes, status]
+      - name: status_formatted
+        type: Utf8
+        description: Human-readable status label.
+        expr:
+          kind: path
+          path: [attributes, status_formatted]
+      - name: card_brand
+        type: Utf8
+        nullable: true
+        description: Payment card brand (e.g. visa, mastercard). Null for PayPal.
+        expr:
+          kind: path
+          path: [attributes, card_brand]
+      - name: card_last_four
+        type: Utf8
+        nullable: true
+        description: Last four digits of the payment card. Null for PayPal.
+        expr:
+          kind: path
+          path: [attributes, card_last_four]
+      - name: payment_processor
+        type: Utf8
+        nullable: true
+        description: Payment processor (stripe or paypal). Null for older subscriptions or free subscriptions without a payment method
+        expr:
+          kind: path
+          path: [attributes, payment_processor]
+      - name: cancelled
+        type: Boolean
+        description: Whether the subscription has been cancelled.
+        expr:
+          kind: path
+          path: [attributes, cancelled]
+      - name: trial_ends_at
+        type: Timestamp
+        nullable: true
+        description: When the free trial period ends, if applicable.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, trial_ends_at]
+      - name: billing_anchor
+        type: Int64
+        nullable: true
+        description: Day of the month used as the billing anchor date.
+        expr:
+          kind: path
+          path: [attributes, billing_anchor]
+      - name: renews_at
+        type: Timestamp
+        nullable: true
+        description: Next scheduled renewal date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, renews_at]
+      - name: ends_at
+        type: Timestamp
+        nullable: true
+        description: When the subscription ends or ended (grace-period end for cancelled subscriptions).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, ends_at]
+      - name: created_at
+        type: Timestamp
+        description: When the subscription was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the subscription was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # subscription_invoices
+  # ---------------------------------------------------------------------------
+  - name: subscription_invoices
+    description: >
+      Invoices generated for each subscription billing cycle. Covers initial
+      charges, renewals, refunds, and failed payment events. Filter by
+      store_id, subscription_id, or status.
+    request:
+      method: GET
+      path: /v1/subscription-invoices
+      query:
+        - name: "filter[store_id]"
+          from: filter_int
+          key: store_id
+        - name: "filter[subscription_id]"
+          from: filter_int
+          key: subscription_id
+        - name: "filter[status]"
+          from: filter
+          key: status
+        - name: "filter[refunded]"
+          from: filter_bool
+          key: refunded
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    fetch_limit_default: 500
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: store_id
+        type: Int64
+        description: Filter invoices to a specific store.
+      - name: subscription_id
+        type: Int64
+        description: Filter invoices to a specific subscription.
+      - name: status
+        type: Utf8
+        description: "Filter by invoice status: pending, paid, void, refunded, partial_refund."
+      - name: refunded
+        type: Boolean
+        description: "Filter by refund state: true to return only refunded invoices, false for non-refunded."
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique subscription invoice ID.
+      - name: store_id
+        type: Int64
+        description: ID of the store this invoice belongs to.
+        expr:
+          kind: path
+          path: [attributes, store_id]
+      - name: subscription_id
+        type: Int64
+        description: ID of the subscription this invoice is for.
+        expr:
+          kind: path
+          path: [attributes, subscription_id]
+      - name: customer_id
+        type: Int64
+        description: ID of the customer this invoice belongs to.
+        expr:
+          kind: path
+          path: [attributes, customer_id]
+      - name: user_name
+        type: Utf8
+        description: Full name of the customer.
+        expr:
+          kind: path
+          path: [attributes, user_name]
+      - name: user_email
+        type: Utf8
+        description: Email address of the customer.
+        expr:
+          kind: path
+          path: [attributes, user_email]
+      - name: billing_reason
+        type: Utf8
+        description: "Reason for this invoice: initial, renewal, or updated."
+        expr:
+          kind: path
+          path: [attributes, billing_reason]
+      - name: card_brand
+        type: Utf8
+        nullable: true
+        description: Payment card brand used for this invoice.
+        expr:
+          kind: path
+          path: [attributes, card_brand]
+      - name: card_last_four
+        type: Utf8
+        nullable: true
+        description: Last four digits of the payment card.
+        expr:
+          kind: path
+          path: [attributes, card_last_four]
+      - name: currency
+        type: Utf8
+        description: Three-letter ISO 4217 currency code.
+        expr:
+          kind: path
+          path: [attributes, currency]
+      - name: currency_rate
+        type: Utf8
+        description: Exchange rate applied to convert to USD at billing time.
+        expr:
+          kind: path
+          path: [attributes, currency_rate]
+      - name: subtotal
+        type: Int64
+        description: Subtotal in the invoice currency (subscription_invoices.currency), stored as cents, before discount and tax.
+        expr:
+          kind: path
+          path: [attributes, subtotal]
+      - name: discount_total
+        type: Int64
+        description: Discount applied in the invoice currency (subscription_invoices.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, discount_total]
+      - name: tax
+        type: Int64
+        description: Tax charged in the invoice currency (subscription_invoices.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, tax]
+      - name: tax_inclusive
+        type: Boolean
+        description: Whether the invoice was created with tax-inclusive pricing.
+        expr:
+          kind: path
+          path: [attributes, tax_inclusive]
+      - name: subtotal_usd
+        type: Int64
+        description: Subtotal in USD cents.
+        expr:
+          kind: path
+          path: [attributes, subtotal_usd]
+      - name: discount_total_usd
+        type: Int64
+        description: Discount in USD cents.
+        expr:
+          kind: path
+          path: [attributes, discount_total_usd]
+      - name: tax_usd
+        type: Int64
+        description: Tax in USD cents.
+        expr:
+          kind: path
+          path: [attributes, tax_usd]
+      - name: total
+        type: Int64
+        description: Grand total charged in the invoice currency (subscription_invoices.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, total]
+      - name: refunded_amount
+        type: Int64
+        description: Refunded amount in the invoice currency (subscription_invoices.currency), stored as cents.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount]
+      - name: total_usd
+        type: Int64
+        description: Grand total in USD cents.
+        expr:
+          kind: path
+          path: [attributes, total_usd]
+      - name: refunded_amount_usd
+        type: Int64
+        description: Refunded amount in USD cents.
+        expr:
+          kind: path
+          path: [attributes, refunded_amount_usd]
+      - name: subtotal_formatted
+        type: Utf8
+        description: Human-readable subtotal amount (e.g. "$9.99").
+        expr:
+          kind: path
+          path: [attributes, subtotal_formatted]
+      - name: discount_total_formatted
+        type: Utf8
+        description: Human-readable discount amount (e.g. "$0.00").
+        expr:
+          kind: path
+          path: [attributes, discount_total_formatted]
+      - name: tax_formatted
+        type: Utf8
+        description: Human-readable tax amount (e.g. "$2.00").
+        expr:
+          kind: path
+          path: [attributes, tax_formatted]
+      - name: total_formatted
+        type: Utf8
+        description: Human-readable total amount (e.g. "$11.99").
+        expr:
+          kind: path
+          path: [attributes, total_formatted]
+      - name: refunded_amount_formatted
+        type: Utf8
+        description: Human-readable refunded amount (e.g. "$0.00").
+        expr:
+          kind: path
+          path: [attributes, refunded_amount_formatted]
+      - name: status
+        type: Utf8
+        description: "Invoice status: pending, paid, void, refunded, partial_refund."
+        expr:
+          kind: path
+          path: [attributes, status]
+      - name: status_formatted
+        type: Utf8
+        description: Human-readable status label.
+        expr:
+          kind: path
+          path: [attributes, status_formatted]
+      - name: refunded
+        type: Boolean
+        description: >
+          Whether this invoice has been fully refunded. True only for complete
+          refunds; partial refunds are represented by status = 'partial_refund'
+          with the refunded amount recorded in refunded_amount.
+        expr:
+          kind: path
+          path: [attributes, refunded]
+      - name: refunded_at
+        type: Timestamp
+        nullable: true
+        description: When this invoice was fully refunded, if applicable. Null for partial refunds.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, refunded_at]
+      - name: urls__invoice_url
+        type: Utf8
+        nullable: true
+        description: Signed URL to download the PDF invoice. Null for invoices in pending status.
+        expr:
+          kind: path
+          path: [attributes, urls, invoice_url]
+      - name: created_at
+        type: Timestamp
+        description: When this invoice was generated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When this invoice was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # discounts
+  # ---------------------------------------------------------------------------
+  - name: discounts
+    description: >
+      Discount codes configured in Lemon Squeezy stores. Covers both
+      percentage and fixed-amount codes, redemption limits, validity windows,
+      and subscription discount duration settings. Use discount_redemptions to
+      count actual redemptions. Filter by store_id.
+    request:
+      method: GET
+      path: /v1/discounts
+      query:
+        - name: "filter[store_id]"
+          from: filter_int
+          key: store_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: store_id
+        type: Int64
+        description: Filter discounts to a specific store.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique discount ID.
+      - name: store_id
+        type: Int64
+        description: ID of the store this discount belongs to.
+        expr:
+          kind: path
+          path: [attributes, store_id]
+      - name: name
+        type: Utf8
+        description: Internal display name of the discount.
+        expr:
+          kind: path
+          path: [attributes, name]
+      - name: code
+        type: Utf8
+        description: Coupon code customers enter at checkout.
+        expr:
+          kind: path
+          path: [attributes, code]
+      - name: amount
+        type: Int64
+        description: Discount amount - cents for fixed type, integer percentage for percent type.
+        expr:
+          kind: path
+          path: [attributes, amount]
+      - name: amount_type
+        type: Utf8
+        description: "Discount calculation type: percent or fixed."
+        expr:
+          kind: path
+          path: [attributes, amount_type]
+      - name: is_limited_to_products
+        type: Boolean
+        description: >
+          True if this discount can only be applied to certain products or
+          variants. When true, the specific products/variants are available
+          via the `variants` relationship on the discount object in the
+          Lemon Squeezy API.
+        expr:
+          kind: path
+          path: [attributes, is_limited_to_products]
+      - name: is_limited_redemptions
+        type: Boolean
+        description: >
+          True if this discount can only be redeemed a limited number of times.
+          Check this flag before using max_redemptions when false,
+          max_redemptions is 0 (not null) and carries no meaning.
+        expr:
+          kind: path
+          path: [attributes, is_limited_redemptions]
+      - name: max_redemptions
+        type: Int64
+        description: >
+          Maximum number of times this discount can be redeemed.
+          Only meaningful when is_limited_redemptions is true; the API returns
+          0 (not null) when there is no redemption limit, so always gate on
+          is_limited_redemptions rather than testing this field for null or zero.
+        expr:
+          kind: path
+          path: [attributes, max_redemptions]
+      - name: starts_at
+        type: Timestamp
+        nullable: true
+        description: When the discount becomes active. Null if active immediately.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, starts_at]
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: When the discount expires. Null if it never expires.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, expires_at]
+      - name: duration
+        type: Utf8
+        description: "For subscription discounts - duration: once, repeating, or forever."
+        expr:
+          kind: path
+          path: [attributes, duration]
+      - name: duration_in_months
+        type: Int64
+        nullable: true
+        description: Number of months the discount applies when duration is repeating.
+        expr:
+          kind: path
+          path: [attributes, duration_in_months]
+      - name: status
+        type: Utf8
+        description: "Discount status: draft or published."
+        expr:
+          kind: path
+          path: [attributes, status]
+      - name: status_formatted
+        type: Utf8
+        description: Human-readable status label.
+        expr:
+          kind: path
+          path: [attributes, status_formatted]
+      - name: created_at
+        type: Timestamp
+        description: When the discount was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the discount was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # license_keys
+  # ---------------------------------------------------------------------------
+  - name: license_keys
+    description: >
+      License keys issued with Lemon Squeezy product purchases. Tracks each
+      key's activation limit, current activation count (instances_count),
+      expiry, and disabled status. Useful for auditing software license usage.
+      Filter by store_id, order_id, product_id, or status.
+    request:
+      method: GET
+      path: /v1/license-keys
+      query:
+        - name: "filter[store_id]"
+          from: filter_int
+          key: store_id
+        - name: "filter[order_id]"
+          from: filter_int
+          key: order_id
+        - name: "filter[order_item_id]"
+          from: filter_int
+          key: order_item_id
+        - name: "filter[product_id]"
+          from: filter_int
+          key: product_id
+        - name: "filter[status]"
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    fetch_limit_default: 500
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: store_id
+        type: Int64
+        description: Filter license keys to a specific store.
+      - name: order_id
+        type: Int64
+        description: Filter license keys issued with a specific order.
+      - name: order_item_id
+        type: Int64
+        description: Filter license keys issued with a specific order item.
+      - name: product_id
+        type: Int64
+        description: Filter license keys for a specific product.
+      - name: status
+        type: Utf8
+        description: "Filter by key status: inactive, active, disabled, or expired."
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique license key ID.
+      - name: store_id
+        type: Int64
+        description: ID of the store this license key belongs to.
+        expr:
+          kind: path
+          path: [attributes, store_id]
+      - name: customer_id
+        type: Int64
+        description: ID of the customer who received this license key.
+        expr:
+          kind: path
+          path: [attributes, customer_id]
+      - name: order_id
+        type: Int64
+        description: ID of the order this license key was issued with.
+        expr:
+          kind: path
+          path: [attributes, order_id]
+      - name: order_item_id
+        type: Int64
+        description: ID of the order item this license key was issued with.
+        expr:
+          kind: path
+          path: [attributes, order_item_id]
+      - name: product_id
+        type: Int64
+        description: ID of the product this license key is for.
+        expr:
+          kind: path
+          path: [attributes, product_id]
+      - name: user_name
+        type: Utf8
+        description: Full name of the customer who received this key.
+        expr:
+          kind: path
+          path: [attributes, user_name]
+      - name: user_email
+        type: Utf8
+        description: Email address of the customer who received this key.
+        expr:
+          kind: path
+          path: [attributes, user_email]
+      - name: key
+        type: Utf8
+        description: The full license key string.
+        expr:
+          kind: path
+          path: [attributes, key]
+      - name: key_short
+        type: Utf8
+        description: Truncated license key for display (last characters only).
+        expr:
+          kind: path
+          path: [attributes, key_short]
+      - name: activation_limit
+        type: Int64
+        nullable: true
+        description: Maximum number of activations allowed. Null when unlimited.
+        expr:
+          kind: path
+          path: [attributes, activation_limit]
+      - name: instances_count
+        type: Int64
+        description: Number of times this key has been activated so far.
+        expr:
+          kind: path
+          path: [attributes, instances_count]
+      - name: disabled
+        type: Boolean
+        description: Whether this license key has been manually disabled.
+        expr:
+          kind: path
+          path: [attributes, disabled]
+      - name: status
+        type: Utf8
+        description: "Key status: inactive, active, disabled, or expired."
+        expr:
+          kind: path
+          path: [attributes, status]
+      - name: status_formatted
+        type: Utf8
+        description: Human-readable status label.
+        expr:
+          kind: path
+          path: [attributes, status_formatted]
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: When this license key expires. Null when the key does not expire.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, expires_at]
+      - name: created_at
+        type: Timestamp
+        description: When the license key was issued.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When the license key was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
+
+  # ---------------------------------------------------------------------------
+  # discount_redemptions
+  # ---------------------------------------------------------------------------
+  - name: discount_redemptions
+    description: >
+      Individual redemption records for Lemon Squeezy discount codes. Each row
+      represents one application of a discount to an order, recording the amount
+      saved and the order it was applied to. Use this table to count how many
+      times a discount has been redeemed the parent discounts table does not
+      expose a redemption count field. Filter by discount_id or order_id.
+    request:
+      method: GET
+      path: /v1/discount-redemptions
+      query:
+        - name: "filter[discount_id]"
+          from: filter_int
+          key: discount_id
+        - name: "filter[order_id]"
+          from: filter_int
+          key: order_id
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    fetch_limit_default: 500
+    pagination:
+      mode: page
+      page_param: "page[number]"
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: "page[size]"
+    filters:
+      - name: discount_id
+        type: Int64
+        description: Filter redemptions to a specific discount.
+      - name: order_id
+        type: Int64
+        description: Filter redemptions to a specific order.
+    columns:
+      - name: id
+        type: Utf8
+        description: Unique discount redemption ID.
+      - name: discount_id
+        type: Int64
+        description: ID of the discount that was applied.
+        expr:
+          kind: path
+          path: [attributes, discount_id]
+      - name: order_id
+        type: Int64
+        description: ID of the order this discount was applied to.
+        expr:
+          kind: path
+          path: [attributes, order_id]
+      - name: discount_name
+        type: Utf8
+        description: Name of the discount at time of redemption.
+        expr:
+          kind: path
+          path: [attributes, discount_name]
+      - name: discount_code
+        type: Utf8
+        description: Coupon code that was entered at checkout.
+        expr:
+          kind: path
+          path: [attributes, discount_code]
+      - name: discount_amount
+        type: Int64
+        description: Discount value cents for fixed type, integer percentage for percent type.
+        expr:
+          kind: path
+          path: [attributes, discount_amount]
+      - name: discount_amount_type
+        type: Utf8
+        description: "Discount calculation type at time of redemption: percent or fixed."
+        expr:
+          kind: path
+          path: [attributes, discount_amount_type]
+      - name: amount
+        type: Int64
+        description: Actual amount saved on the order for this redemption, expressed in the order currency and stored as cents.
+        expr:
+          kind: path
+          path: [attributes, amount]
+      - name: created_at
+        type: Timestamp
+        description: When this redemption occurred.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, created_at]
+      - name: updated_at
+        type: Timestamp
+        description: When this redemption record was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [attributes, updated_at]
