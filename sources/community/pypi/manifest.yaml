@@ -1,0 +1,233 @@
+name: pypi
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Python package metadata and project URLs
+  via the public PyPI JSON API. No authentication required.
+base_url: https://pypi.org
+
+test_queries:
+  - >-
+    SELECT name, version, summary
+    FROM pypi.packages WHERE name = 'requests' LIMIT 1
+
+tables:
+  - name: packages
+    description: >
+      Look up metadata for a specific Python package on PyPI.
+      Requires the package name as a filter. Returns a single row
+      containing package info, URLs, and author details if the
+      package exists.
+    guide: >
+      Start with `SELECT name, version, summary, author, license
+      FROM pypi.packages WHERE name = 'requests'`. You must provide
+      the `name` filter to specify which package to fetch.
+    filters:
+      - name: name
+        required: true
+    request:
+      method: GET
+      path: /pypi/{{filter.name}}/json
+    response:
+      allow_404_empty: true
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Required package name filter (echoed).
+        expr:
+          kind: from_filter
+          key: name
+      - name: package_name
+        type: Utf8
+        nullable: true
+        description: Package name returned by PyPI.
+        expr:
+          kind: path
+          path:
+            - info
+            - name
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Latest published version.
+        expr:
+          kind: path
+          path:
+            - info
+            - version
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Short project summary.
+        expr:
+          kind: path
+          path:
+            - info
+            - summary
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Project author name.
+        expr:
+          kind: path
+          path:
+            - info
+            - author
+      - name: author_email
+        type: Utf8
+        nullable: true
+        description: Project author email.
+        expr:
+          kind: path
+          path:
+            - info
+            - author_email
+      - name: maintainer
+        type: Utf8
+        nullable: true
+        description: Project maintainer name.
+        expr:
+          kind: path
+          path:
+            - info
+            - maintainer
+      - name: maintainer_email
+        type: Utf8
+        nullable: true
+        description: Project maintainer email.
+        expr:
+          kind: path
+          path:
+            - info
+            - maintainer_email
+      - name: license
+        type: Utf8
+        nullable: true
+        description: Project license.
+        expr:
+          kind: path
+          path:
+            - info
+            - license
+      - name: requires_python
+        type: Utf8
+        nullable: true
+        description: Python version requirements (e.g. >=3.10).
+        expr:
+          kind: path
+          path:
+            - info
+            - requires_python
+      - name: project_url
+        type: Utf8
+        nullable: true
+        description: URL to the PyPI project page.
+        expr:
+          kind: path
+          path:
+            - info
+            - project_url
+      - name: release_url
+        type: Utf8
+        nullable: true
+        description: URL to the specific release on PyPI.
+        expr:
+          kind: path
+          path:
+            - info
+            - release_url
+      - name: docs_url
+        type: Utf8
+        nullable: true
+        description: URL to the project documentation.
+        expr:
+          kind: path
+          path:
+            - info
+            - docs_url
+      - name: home_page
+        type: Utf8
+        nullable: true
+        description: URL to the project homepage.
+        expr:
+          kind: path
+          path:
+            - info
+            - home_page
+      - name: project_urls
+        type: Json
+        nullable: true
+        description: >-
+          JSON object mapping label to URL (e.g. Source, Documentation,
+          Issue Tracker). Modern packages use this instead of home_page
+          or docs_url.
+        expr:
+          kind: path
+          path:
+            - info
+            - project_urls
+      - name: requires_dist
+        type: Json
+        nullable: true
+        description: JSON array of required dependencies.
+        expr:
+          kind: path
+          path:
+            - info
+            - requires_dist
+      - name: classifiers
+        type: Json
+        nullable: true
+        description: JSON array of PyPI Trove classifiers.
+        expr:
+          kind: path
+          path:
+            - info
+            - classifiers
+      - name: keywords
+        type: Utf8
+        nullable: true
+        description: Project keywords as a string.
+        expr:
+          kind: path
+          path:
+            - info
+            - keywords
+      - name: yanked
+        type: Boolean
+        nullable: true
+        description: Whether the latest release is yanked.
+        expr:
+          kind: path
+          path:
+            - info
+            - yanked
+      - name: yanked_reason
+        type: Utf8
+        nullable: true
+        description: Reason for being yanked, if applicable.
+        expr:
+          kind: path
+          path:
+            - info
+            - yanked_reason
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Full project description (often Markdown/RST).
+        expr:
+          kind: path
+          path:
+            - info
+            - description
+      - name: description_content_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the description content.
+        expr:
+          kind: path
+          path:
+            - info
+            - description_content_type
