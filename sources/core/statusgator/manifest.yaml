@@ -9,11 +9,12 @@ description: >-
 inputs:
   STATUSGATOR_API_TOKEN:
     kind: secret
+    required: true
     hint: |
-      Create a read-only API token from the API menu in your
-      StatusGator dashboard. Only organization admins can generate
-      tokens.
-      See [StatusGator API docs](https://statusgator.com/api/v3/docs).
+      REQUIRED. Create a read-only API token from the API menu in your
+      StatusGator dashboard. A read-only organization API token is
+      sufficient for this source. Only organization admins can generate
+      tokens. See [StatusGator API docs](https://statusgator.com/api/v3/docs).
 base_url: "https://statusgator.com/api/v3"
 auth:
   type: HeaderAuth
@@ -97,7 +98,10 @@ tables:
     request:
       method: GET
       path: /boards/{{filter.board_id}}/monitors
-      query: []
+      query:
+        - name: status
+          from: filter
+          key: status
     response:
       rows_path:
         - data
@@ -240,9 +244,16 @@ tables:
           path:
             - group
             - name
+      - name: raw
+        type: Json
+        nullable: false
+        description: Raw JSON for the monitor row
+        expr:
+          kind: current_row
     filters:
       - name: board_id
         required: true
+      - name: status
   - name: history
     description: Status history for a board
     guide: |
@@ -472,6 +483,12 @@ tables:
           kind: path
           path:
             - updated_at
+      - name: raw
+        type: Json
+        nullable: false
+        description: Raw JSON for the incident row
+        expr:
+          kind: current_row
     filters:
       - name: board_id
         required: true
@@ -636,6 +653,12 @@ tables:
           kind: path
           path:
             - description
+      - name: raw
+        type: Json
+        nullable: false
+        description: Raw JSON for the service_search row
+        expr:
+          kind: current_row
     filters:
       - name: q
         required: true
