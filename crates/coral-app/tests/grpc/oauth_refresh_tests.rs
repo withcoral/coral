@@ -599,6 +599,106 @@ SECOND_TOKEN=expired-secondary-token
     );
 }
 
+#[tokio::test]
+async fn refresh_persists_against_the_catalog_row_the_source_was_reimported_into() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::with_workspace().await;
+    let manifest_yaml = oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url);
+    let variables = vec![SourceVariable {
+        key: "API_BASE".to_string(),
+        value: fixture.base_url.clone(),
+    }];
+    let secrets = vec![SourceSecret {
+        key: "API_TOKEN".to_string(),
+        value: "expired-token".to_string(),
+    }];
+    harness
+        .import_source(manifest_yaml.clone(), variables.clone(), secrets.clone())
+        .await;
+    harness
+        .import_source(manifest_yaml.replace("0.1.0", "0.2.0"), variables, secrets)
+        .await;
+    assert_eq!(
+        harness
+            .catalog_entry("refreshed_messages")
+            .await
+            .expect("the re-import should leave a catalog row")
+            .version
+            .as_deref(),
+        Some("0.2.0"),
+        "the re-import should have rewritten the row the refresh matches itself against"
+    );
+
+    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
+    seed_expired_api_token_material(
+        &secret_path,
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
+
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM refreshed_messages.messages")
+        .await;
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(fixture.token_forms().len(), 1);
+    // Persisting is what proves the check read the current row: a refresh whose
+    // snapshot no longer matches the catalog refreshes in memory and keeps its
+    // rotated token to itself.
+    let material = fs::read_to_string(secret_path).expect("read refreshed material");
+    assert!(material.contains("API_TOKEN=refreshed-token"), "{material}");
+    assert!(
+        material.contains("__coral_oauth.QVBJX1RPS0VO.refresh_token=rotated-refresh-token"),
+        "{material}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_the_catalog_forgot_never_reaches_its_token_endpoint() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::with_workspace().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+    seed_expired_api_token_material(
+        &source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env"),
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
+
+    harness.forget_catalog_row("refreshed_messages").await;
+
+    let status = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
+        }))
+        .await
+        .expect_err("a source the catalog does not hold has no tables to query");
+    assert_eq!(status.code(), Code::NotFound);
+    assert!(
+        status.message().contains("refreshed_messages"),
+        "{status:?}"
+    );
+    assert!(
+        fixture.token_forms().is_empty(),
+        "credential refresh follows the catalog, not the files a deletion left behind"
+    );
+}
+
 fn seed_expired_api_token_material(
     secret_path: &Path,
     token_url: &str,
