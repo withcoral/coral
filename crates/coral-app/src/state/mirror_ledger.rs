@@ -9,10 +9,6 @@
 //! operator-authored, which means resurrect-and-import for tombstone and update
 //! decisions and set-aside-and-warn for manifest and divergence decisions —
 //! never a silent overwrite of content this host cannot vouch for.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the reconciliation passes wire this next")
-)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
@@ -146,14 +142,35 @@ impl MirrorLedger {
         self.entry_mut(workspace, name).manifest_sha256 = Some(sha256.to_string());
     }
 
-    /// Record that this host already warned about divergent content `sha256`.
+    /// Record that this host already warned about `source` as divergent.
     pub(crate) fn record_divergence_warned(
         &mut self,
         workspace: &WorkspaceName,
         name: &SourceName,
-        sha256: &str,
+        source: &InstalledSource,
     ) {
-        self.entry_mut(workspace, name).divergence_warned_sha256 = Some(sha256.to_string());
+        if let Some(sha256) = canonical_entry_sha256(source) {
+            self.entry_mut(workspace, name).divergence_warned_sha256 = Some(sha256);
+        }
+    }
+
+    /// Whether this host has already warned about exactly this content.
+    ///
+    /// Keyed on content rather than on the name, so an entry that diverges
+    /// again in a new way is warned about again.
+    pub(crate) fn matches_divergence_warning(
+        &self,
+        workspace: &WorkspaceName,
+        name: &SourceName,
+        source: &InstalledSource,
+    ) -> bool {
+        let Some(recorded) = self
+            .entry(workspace, name)
+            .and_then(|entry| entry.divergence_warned_sha256.as_deref())
+        else {
+            return false;
+        };
+        canonical_entry_sha256(source).is_some_and(|current| current == recorded)
     }
 
     /// Forget every record for `name`, on source delete.
@@ -271,6 +288,12 @@ fn ledger_path(config_path: &Path) -> PathBuf {
 ///
 /// `None` means the entry could not be canonicalized, which the callers treat
 /// as "not recorded" — never as a match.
+///
+/// The hash is coupled to [`InstalledSource`]'s serde shape: adding a field to
+/// it changes every hash, so the boot after such a release sees every recorded
+/// entry as locally rewritten and re-imports it from the file world once. That
+/// reclassification is benign — the entries and the rows agree at that point —
+/// and it is the expected cost of not versioning the hash.
 fn canonical_entry_sha256(source: &InstalledSource) -> Option<String> {
     match serde_json::to_vec(source) {
         Ok(canonical) => Some(sha256_hex(&canonical)),
@@ -415,7 +438,7 @@ mod tests {
         ledger.record_workspace(&team);
         ledger.record_entry(&team, &github, &source);
         ledger.record_manifest(&team, &github, "manifest-hash");
-        ledger.record_divergence_warned(&team, &github, "warned-hash");
+        ledger.record_divergence_warned(&team, &github, &installed("linear"));
         ledger.save(&config).expect("save ledger");
 
         let loaded = MirrorLedger::load(&config);
@@ -424,12 +447,7 @@ mod tests {
         assert!(loaded.entry_recorded(&team, &github));
         assert!(loaded.matches_entry(&team, &github, &source));
         assert!(loaded.matches_manifest(&team, &github, "manifest-hash"));
-        assert_eq!(
-            loaded
-                .entry(&team, &github)
-                .and_then(|entry| entry.divergence_warned_sha256.as_deref()),
-            Some("warned-hash")
-        );
+        assert!(loaded.matches_divergence_warning(&team, &github, &installed("linear")));
     }
 
     /// `write_atomic` renames a temp file into place, so a completed save
@@ -459,11 +477,26 @@ mod tests {
         let source = installed("github");
 
         let mut ledger = MirrorLedger::default();
-        ledger.record_divergence_warned(&team, &github, "warned-hash");
+        ledger.record_divergence_warned(&team, &github, &source);
 
+        assert!(ledger.matches_divergence_warning(&team, &github, &source));
         assert!(!ledger.entry_recorded(&team, &github));
         assert!(!ledger.matches_entry(&team, &github, &source));
-        assert!(!ledger.matches_manifest(&team, &github, "warned-hash"));
+    }
+
+    /// The warning is keyed on content, so an entry that diverges again in a
+    /// new way is reported again rather than swallowed by the old note.
+    #[test]
+    fn a_divergence_warning_covers_only_the_content_it_recorded() {
+        let team = workspace("team");
+        let github = source_name("github");
+        let mut source = installed("github");
+
+        let mut ledger = MirrorLedger::default();
+        ledger.record_divergence_warned(&team, &github, &source);
+        source.version = Some("9.9.9".to_string());
+
+        assert!(!ledger.matches_divergence_warning(&team, &github, &source));
     }
 
     #[test]

@@ -53,10 +53,6 @@ where
     /// Postgres's locale-aware default disagree on names that differ only by
     /// case or punctuation. One listing must not depend on which backend a
     /// deployment happens to run.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the source manager reads through this next")
-    )]
     pub(crate) async fn list_workspace_sources(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -197,10 +193,6 @@ where
     }
 
     /// Reports whether this database records a deletion for `(workspace, name)`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the boot import consults this next")
-    )]
     pub(crate) async fn is_tombstoned(
         &mut self,
         workspace_name: &WorkspaceName,

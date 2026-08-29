@@ -28,6 +28,7 @@ use uuid::Uuid;
 use crate::bootstrap::AppError;
 use crate::hash::sha256_hex;
 use crate::sources::SourceName;
+use crate::state::db::MaterializationRecord;
 use crate::state::{
     AppStateLayout, V4OperationMetadataFile, V4OperationMetadataOrigin, V4ProjectionCatalogFile,
     V4ProjectionCatalogOrigin,
@@ -45,6 +46,9 @@ pub(crate) const OPERATION_METADATA_FILENAME: &str = "operation-metadata.yaml";
 pub(crate) const SOURCE_DOCUMENT_RAW_FILENAME: &str = "source-document.raw";
 pub(crate) const SOURCE_DOCUMENT_YAML_FILENAME: &str = "source-document.yaml";
 pub(crate) const SEMANTIC_IR_FILENAME: &str = "semantic-ir.yaml";
+/// The only materialization shape Coral stores; v4 is single-surface with a
+/// flat file layout, so one installed directory is one row.
+pub(crate) const V4_MATERIALIZATION_VERSION: &str = "v4";
 
 type ReportedDiagnosticStateKey = (String, String, String);
 type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<String>>;
@@ -975,6 +979,44 @@ fn write_surface_artifacts(
         materialized_surface.plan.operation_metadata(),
     )?;
     Ok(())
+}
+
+/// Reads an installed `materialized/v4` directory back as the record that
+/// reproduces it, or `None` when the source has no materialized directory.
+///
+/// Reads the materialized directory rather than the layout's accessors, which
+/// prefer an operator's override file: the record stores what Coral
+/// materialized, and an override is host-local by design. A directory missing a
+/// required artifact is an error rather than a partial record, leaving each
+/// caller to decide whether that fails its write or is warned about and skipped.
+pub(crate) fn read_v4_materialization_record(
+    materialized_dir: &Path,
+) -> Result<Option<MaterializationRecord>, AppError> {
+    if !materialized_dir.exists() {
+        return Ok(None);
+    }
+    let optional_artifact = |file: &str| -> Result<Option<String>, AppError> {
+        let path = materialized_dir.join(file);
+        if path.exists() {
+            Ok(Some(std::fs::read_to_string(path)?))
+        } else {
+            Ok(None)
+        }
+    };
+    Ok(Some(MaterializationRecord {
+        materialization_version: V4_MATERIALIZATION_VERSION.to_string(),
+        fingerprint_yaml: optional_artifact(FINGERPRINT_FILENAME)?,
+        projections_yaml: std::fs::read_to_string(materialized_dir.join(PROJECTIONS_FILENAME))?,
+        diagnostics_yaml: optional_artifact(DIAGNOSTICS_FILENAME)?,
+        source_document_raw: std::fs::read(materialized_dir.join(SOURCE_DOCUMENT_RAW_FILENAME))?,
+        source_document_yaml: std::fs::read_to_string(
+            materialized_dir.join(SOURCE_DOCUMENT_YAML_FILENAME),
+        )?,
+        semantic_ir_yaml: std::fs::read_to_string(materialized_dir.join(SEMANTIC_IR_FILENAME))?,
+        operation_metadata_yaml: std::fs::read_to_string(
+            materialized_dir.join(OPERATION_METADATA_FILENAME),
+        )?,
+    }))
 }
 
 fn materialize_surface(

@@ -23,12 +23,10 @@ use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
-    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, MaterializationBuild, MaterializationInputs,
-    OPERATION_METADATA_FILENAME, PROJECTIONS_FILENAME, SEMANTIC_IR_FILENAME,
-    SOURCE_DOCUMENT_RAW_FILENAME, SOURCE_DOCUMENT_YAML_FILENAME, SourceDiagnosticReporter,
+    MaterializationBuild, MaterializationInputs, SourceDiagnosticReporter,
     build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
-    cleanup_materialization_tmp, new_materialization_suffix, replace_or_retire_v4_materialization,
-    restore_materialization_backup,
+    cleanup_materialization_tmp, new_materialization_suffix, read_v4_materialization_record,
+    replace_or_retire_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
@@ -48,10 +46,6 @@ use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 use uuid::Uuid;
-
-/// The only materialization shape this manager stores; v4 is single-surface
-/// with a flat file layout, so one installed directory is one row.
-const V4_MATERIALIZATION_VERSION: &str = "v4";
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -571,47 +565,6 @@ impl SourceManager {
         if let Err(error) = restored {
             warn!("rollback: failed to restore the source's database rows: {error}");
         }
-    }
-
-    /// Reads the installed `materialized/v4` file set back as the row that
-    /// reproduces it.
-    ///
-    /// Reads the materialized directory rather than the layout's accessors,
-    /// which prefer an operator's override file: the row records what Coral
-    /// materialized, and an override is host-local by design.
-    fn read_v4_materialization_record(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Option<MaterializationRecord>, AppError> {
-        let materialized_dir = self.layout.v4_materialized_dir(workspace_name, source_name);
-        if !materialized_dir.exists() {
-            return Ok(None);
-        }
-        let optional_artifact = |file: &str| -> Result<Option<String>, AppError> {
-            let path = materialized_dir.join(file);
-            if path.exists() {
-                Ok(Some(std::fs::read_to_string(path)?))
-            } else {
-                Ok(None)
-            }
-        };
-        Ok(Some(MaterializationRecord {
-            materialization_version: V4_MATERIALIZATION_VERSION.to_string(),
-            fingerprint_yaml: optional_artifact(FINGERPRINT_FILENAME)?,
-            projections_yaml: std::fs::read_to_string(materialized_dir.join(PROJECTIONS_FILENAME))?,
-            diagnostics_yaml: optional_artifact(DIAGNOSTICS_FILENAME)?,
-            source_document_raw: std::fs::read(
-                materialized_dir.join(SOURCE_DOCUMENT_RAW_FILENAME),
-            )?,
-            source_document_yaml: std::fs::read_to_string(
-                materialized_dir.join(SOURCE_DOCUMENT_YAML_FILENAME),
-            )?,
-            semantic_ir_yaml: std::fs::read_to_string(materialized_dir.join(SEMANTIC_IR_FILENAME))?,
-            operation_metadata_yaml: std::fs::read_to_string(
-                materialized_dir.join(OPERATION_METADATA_FILENAME),
-            )?,
-        }))
     }
 
     /// Writes the `config.toml` mirror of one persisted source.
@@ -1327,8 +1280,10 @@ impl SourceManager {
         // The commit point. The files are staged, so the transaction is what
         // decides whether this installation happened; the config mirror below
         // follows it, and the ledger records the mirror once it has landed.
-        let commit = self
-            .read_v4_materialization_record(workspace_name, &source_name)
+        let materialized_dir = self
+            .layout
+            .v4_materialized_dir(workspace_name, &source_name);
+        let commit = read_v4_materialization_record(&materialized_dir)
             .and_then(|materialization| {
                 self.upsert_source_with_state_lock_held(
                     workspace_name,
@@ -3723,6 +3678,58 @@ surface:
             previous_manifest.manifest_hash
         );
         assert_eq!(after.materialization, before.materialization);
+    }
+
+    #[test]
+    fn a_failed_mirror_write_on_a_delete_restores_the_source_untombstoned() {
+        let fixture = DualWriteFixture::new();
+        let installed = fixture.import();
+        let before = fixture.db_state();
+        let failing = fixture.manager.clone().with_failing_config_mirror();
+
+        failing
+            .delete_source(&default_workspace(), &installed.name)
+            .expect_err("a failed mirror write must fail the delete");
+
+        let after = fixture.db_state();
+        assert_eq!(
+            after.source.as_ref(),
+            before.source.as_ref(),
+            "compensating a delete must put the catalog row back"
+        );
+        let (restored_manifest, previous_manifest) = (
+            after.manifest.expect("manifest row"),
+            before.manifest.expect("manifest row"),
+        );
+        assert_eq!(
+            restored_manifest.manifest_yaml,
+            previous_manifest.manifest_yaml
+        );
+        assert_eq!(
+            restored_manifest.manifest_hash,
+            previous_manifest.manifest_hash
+        );
+        assert_eq!(after.materialization, before.materialization);
+        assert!(
+            !after.tombstoned,
+            "a delete that never landed must leave no tombstone behind"
+        );
+        assert_eq!(
+            fixture.config_entry().as_ref(),
+            before.source.as_ref(),
+            "the config entry must survive a delete that failed"
+        );
+        assert!(
+            fixture.ledger().matches_entry(
+                &default_workspace(),
+                &installed.name,
+                before
+                    .source
+                    .as_ref()
+                    .expect("source row before the delete")
+            ),
+            "a delete that never landed must keep this host's mirror record"
+        );
     }
 
     #[test]

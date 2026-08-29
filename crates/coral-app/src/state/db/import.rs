@@ -1,9 +1,17 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+use tracing::{info, warn};
 
 use super::session::DbRepos;
-use super::{CoralDb, now_unix_nanos_i64};
+use super::{CoralDb, MaterializationRecord, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::hash::sha256_hex;
+use crate::sources::SourceName;
+use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::materialization::read_v4_materialization_record;
+use crate::sources::model::{InstalledSource, SourceOrigin};
+use crate::state::mirror_ledger::MirrorLedger;
+use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::workspaces::{WorkspaceName, WorkspaceRecord};
 
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
@@ -20,8 +28,396 @@ pub(crate) async fn run_state_migrations(
     layout: &AppStateLayout,
 ) -> Result<(), AppError> {
     cutover_legacy_workspace_catalog(db, config_store, layout).await?;
+    import_legacy_source_state(db, config_store, layout)
+        .await?
+        .log();
     remove_legacy_task_jsonl(config_store, layout)?;
     Ok(())
+}
+
+/// What one boot's source import did, one counter per branch of the
+/// discrimination rule.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourceImportReport {
+    pub(crate) imported: usize,
+    /// Present row the ledger proves the entry still matches.
+    pub(crate) already_present: usize,
+    /// Present row whose entry the ledger proves was rewritten locally, so the
+    /// file content won and was imported as an update.
+    pub(crate) updated_from_files: usize,
+    /// No ledger record and an entry that disagrees with the row: warned,
+    /// preserved on both sides, never stamped as reconciled.
+    pub(crate) divergent_unreconciled: usize,
+    /// Warn-and-skip for legacy data that could not be read, never a startup
+    /// failure.
+    pub(crate) skipped_invalid: usize,
+    /// A stale mirror of a source another host deleted through the database.
+    pub(crate) skipped_tombstoned: usize,
+    /// A tombstoned name whose entry changed since this host reconciled it —
+    /// a genuine re-add, which clears the tombstone.
+    pub(crate) readded_after_tombstone: usize,
+    /// Config-only workspaces given a row so their sources stay visible.
+    pub(crate) workspaces_created: usize,
+    /// Config-only workspaces the ledger proves were deleted through the
+    /// database, skipped together with their sources.
+    pub(crate) workspaces_skipped_deleted: usize,
+    /// Reserved for the artifact-cache hydration pass.
+    pub(crate) hydrated_caches: usize,
+    /// Reserved for mirror reconciliation: database rows added to the config.
+    pub(crate) mirrored_entries: usize,
+    /// Reserved for mirror reconciliation: ledger-proven stale config entries
+    /// rewritten from the database.
+    pub(crate) mirror_entries_refreshed: usize,
+}
+
+impl SourceImportReport {
+    fn log(&self) {
+        info!(
+            imported = self.imported,
+            already_present = self.already_present,
+            updated_from_files = self.updated_from_files,
+            divergent_unreconciled = self.divergent_unreconciled,
+            skipped_invalid = self.skipped_invalid,
+            skipped_tombstoned = self.skipped_tombstoned,
+            readded_after_tombstone = self.readded_after_tombstone,
+            workspaces_created = self.workspaces_created,
+            workspaces_skipped_deleted = self.workspaces_skipped_deleted,
+            hydrated_caches = self.hydrated_caches,
+            mirrored_entries = self.mirrored_entries,
+            mirror_entries_refreshed = self.mirror_entries_refreshed,
+            "reconciled the legacy source catalog with the database"
+        );
+    }
+}
+
+/// Imports the config file's source catalog into the database.
+///
+/// Runs on every boot and carries no marker: a source — or a whole workspace —
+/// an older binary added to `config.toml` after the last boot has to be picked
+/// up at the next one, and a marker is exactly what would stop that.
+///
+/// Additive by construction. It never edits `config.toml` and never removes a
+/// database row; unreadable legacy data is warned about and skipped, so only a
+/// broken database fails startup.
+async fn import_legacy_source_state(
+    db: &CoralDb,
+    config_store: &ConfigStore,
+    layout: &AppStateLayout,
+) -> Result<SourceImportReport, AppError> {
+    let _state_lock = config_store.state_lock_exclusive()?;
+    let config_path = layout.config_file();
+    let mut import = SourceImport {
+        db,
+        layout,
+        ledger: MirrorLedger::load(config_path),
+        report: SourceImportReport::default(),
+        now_unix_nanos: now_unix_nanos_i64()?,
+    };
+    let config = match config_store.load_config_unlocked() {
+        Ok(config) => config,
+        Err(error) => {
+            warn!("skipping the legacy source import: config.toml could not be read: {error}");
+            return Ok(import.report);
+        }
+    };
+
+    for workspace in import.reconcilable_workspaces(&config).await? {
+        import.import_workspace_sources(&config, &workspace).await?;
+    }
+
+    if let Err(error) = import.ledger.save(config_path) {
+        warn!("legacy source import finished, but the mirror ledger could not be saved: {error}");
+    }
+    Ok(import.report)
+}
+
+/// One boot's import, carrying the state every branch of the discrimination
+/// rule reads and writes.
+struct SourceImport<'a> {
+    db: &'a CoralDb,
+    layout: &'a AppStateLayout,
+    ledger: MirrorLedger,
+    report: SourceImportReport,
+    now_unix_nanos: i64,
+}
+
+impl SourceImport<'_> {
+    /// The workspaces whose sources this boot imports: the database's rows,
+    /// plus the config-only workspaces the ledger does not prove were deleted.
+    ///
+    /// The union is what carries a workspace an older binary created across —
+    /// the workspace cutover is one-shot, so nothing else would — and the
+    /// ledger gate is what stops it from resurrecting a workspace another host
+    /// deleted through the database, boot after boot.
+    async fn reconcilable_workspaces(
+        &mut self,
+        config: &AppConfig,
+    ) -> Result<Vec<WorkspaceName>, AppError> {
+        let mut session = self.db;
+        let rows = session.workspaces().list().await?;
+        let mut workspaces = Vec::with_capacity(rows.len());
+        for row in rows {
+            let Ok(name) = WorkspaceName::parse(&row.id) else {
+                continue;
+            };
+            self.ledger.record_workspace(&name);
+            workspaces.push(name);
+        }
+
+        let known = workspaces.iter().cloned().collect::<BTreeSet<_>>();
+        for record in config.legacy_workspace_records() {
+            if known.contains(&record.name) {
+                continue;
+            }
+            if self.ledger.has_workspace(&record.name) {
+                warn!(
+                    "skipping workspace '{}' and its sources: this host reconciled it and the database no longer holds it, so it was deleted through the database",
+                    record.name
+                );
+                self.report.workspaces_skipped_deleted += 1;
+                continue;
+            }
+            let mut tx = self.db.begin().await?;
+            tx.workspaces()
+                .ensure(record.name.as_str(), self.now_unix_nanos)
+                .await?;
+            tx.commit().await?;
+            self.ledger.record_workspace(&record.name);
+            self.report.workspaces_created += 1;
+            workspaces.push(record.name);
+        }
+        Ok(workspaces)
+    }
+
+    async fn import_workspace_sources(
+        &mut self,
+        config: &AppConfig,
+        workspace: &WorkspaceName,
+    ) -> Result<(), AppError> {
+        let entries = config.workspace_sources(workspace);
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut session = self.db;
+        let rows = session
+            .sources()
+            .list_workspace_sources(workspace)
+            .await?
+            .into_iter()
+            .map(|source| (source.name.clone(), source))
+            .collect::<BTreeMap<_, _>>();
+        for entry in entries {
+            match rows.get(&entry.name) {
+                Some(row) => {
+                    self.reconcile_present_source(workspace, &entry, row)
+                        .await?;
+                }
+                None => self.import_absent_source(workspace, &entry).await?,
+            }
+        }
+        Ok(())
+    }
+
+    /// The three-way rule for an entry that already has a row.
+    ///
+    /// A ledger match is provably this host's own mirror of the row and needs
+    /// nothing. A ledger record the entry no longer matches means the entry was
+    /// rewritten here since — by a downgraded binary or by an operator — and
+    /// the file content wins. Without a record, agreement seeds the ledger and
+    /// disagreement is unprovable, so neither side is touched.
+    async fn reconcile_present_source(
+        &mut self,
+        workspace: &WorkspaceName,
+        entry: &InstalledSource,
+        row: &InstalledSource,
+    ) -> Result<(), AppError> {
+        if self.ledger.matches_entry(workspace, &entry.name, entry) {
+            self.report.already_present += 1;
+            return self.seed_manifest_record(workspace, entry).await;
+        }
+        if self.ledger.entry_recorded(workspace, &entry.name) {
+            if self.import_source(workspace, entry).await? {
+                self.report.updated_from_files += 1;
+            } else {
+                self.report.skipped_invalid += 1;
+            }
+            return Ok(());
+        }
+        if entry == row {
+            self.report.already_present += 1;
+            self.ledger.record_entry(workspace, &entry.name, entry);
+            return self.seed_manifest_record(workspace, entry).await;
+        }
+
+        self.report.divergent_unreconciled += 1;
+        if !self
+            .ledger
+            .matches_divergence_warning(workspace, &entry.name, entry)
+        {
+            warn!(
+                "the config entry for source '{}' in workspace '{}' disagrees with its database row and this host has never reconciled it; leaving both untouched — re-import the source to make the file win, or fix the entry",
+                entry.name, workspace
+            );
+            self.ledger
+                .record_divergence_warned(workspace, &entry.name, entry);
+        }
+        Ok(())
+    }
+
+    /// The rule for an entry with no row: a tombstone the ledger still matches
+    /// is another host's deletion reaching this host's stale mirror, and
+    /// anything else is content to import — a re-add if the name was deleted.
+    async fn import_absent_source(
+        &mut self,
+        workspace: &WorkspaceName,
+        entry: &InstalledSource,
+    ) -> Result<(), AppError> {
+        let mut session = self.db;
+        let tombstoned = session
+            .sources()
+            .is_tombstoned(workspace, &entry.name)
+            .await?;
+        if tombstoned && self.ledger.matches_entry(workspace, &entry.name, entry) {
+            warn!(
+                "skipping source '{}' in workspace '{}': its config entry is this host's stale mirror of a source deleted through the database",
+                entry.name, workspace
+            );
+            self.report.skipped_tombstoned += 1;
+            return Ok(());
+        }
+        if !self.import_source(workspace, entry).await? {
+            self.report.skipped_invalid += 1;
+        } else if tombstoned {
+            self.report.readded_after_tombstone += 1;
+        } else {
+            self.report.imported += 1;
+        }
+        Ok(())
+    }
+
+    /// Writes one source and its artifacts in a transaction of their own, so
+    /// one unreadable source never blocks the rest, and records what landed.
+    ///
+    /// Reports whether the source was imported; `false` means it was warned
+    /// about and skipped.
+    async fn import_source(
+        &mut self,
+        workspace: &WorkspaceName,
+        entry: &InstalledSource,
+    ) -> Result<bool, AppError> {
+        let materialization = self.read_v4_materialization(workspace, &entry.name);
+        let mut tx = self.db.begin().await?;
+        tx.sources()
+            .upsert_source(workspace, entry, self.now_unix_nanos)
+            .await?;
+        let manifest_yaml = match entry.origin {
+            // A bundled source's manifest ships with the binary, so there is
+            // nothing on disk that is worth storing.
+            SourceOrigin::Bundled => None,
+            SourceOrigin::Imported => {
+                match resolve_installed_manifest(workspace, entry, self.layout) {
+                    Ok(manifest) => Some(manifest.manifest_yaml),
+                    Err(error) => {
+                        tx.rollback().await?;
+                        warn!(
+                            "skipping source '{}' in workspace '{}': its manifest could not be read: {error}",
+                            entry.name, workspace
+                        );
+                        return Ok(false);
+                    }
+                }
+            }
+        };
+        match manifest_yaml.as_deref() {
+            Some(manifest_yaml) => {
+                tx.source_manifests()
+                    .upsert(workspace, &entry.name, manifest_yaml, self.now_unix_nanos)
+                    .await?;
+            }
+            None => {
+                tx.source_manifests().remove(workspace, &entry.name).await?;
+            }
+        }
+        match materialization.as_ref() {
+            Some(materialization) => {
+                tx.materializations()
+                    .upsert(workspace, &entry.name, materialization, self.now_unix_nanos)
+                    .await?;
+            }
+            None => {
+                tx.materializations().remove(workspace, &entry.name).await?;
+            }
+        }
+        tx.commit().await?;
+
+        self.ledger.record_entry(workspace, &entry.name, entry);
+        if let Some(manifest_yaml) = manifest_yaml {
+            self.ledger.record_manifest(
+                workspace,
+                &entry.name,
+                &sha256_hex(manifest_yaml.as_bytes()),
+            );
+        }
+        Ok(true)
+    }
+
+    /// Records an on-disk manifest the row proves is Coral's own.
+    ///
+    /// Without this, a host's first reconciled boot would leave every cache
+    /// unproven, and the hydration pass would set aside caches that are in fact
+    /// byte-identical to the artifact of record.
+    async fn seed_manifest_record(
+        &mut self,
+        workspace: &WorkspaceName,
+        entry: &InstalledSource,
+    ) -> Result<(), AppError> {
+        if entry.origin != SourceOrigin::Imported {
+            return Ok(());
+        }
+        let Ok(bytes) = std::fs::read(self.layout.manifest_file(workspace, &entry.name)) else {
+            return Ok(());
+        };
+        let sha256 = sha256_hex(&bytes);
+        if self
+            .ledger
+            .matches_manifest(workspace, &entry.name, &sha256)
+        {
+            return Ok(());
+        }
+        let mut session = self.db;
+        if session
+            .source_manifests()
+            .get(workspace, &entry.name)
+            .await?
+            .is_some_and(|record| record.manifest_hash == sha256)
+        {
+            self.ledger.record_manifest(workspace, &entry.name, &sha256);
+        }
+        Ok(())
+    }
+
+    /// Reads an installed `materialized/v4` directory back as the row that
+    /// reproduces it, or nothing if it is absent or incomplete.
+    ///
+    /// A directory that is missing a required artifact is warned about and left
+    /// out, exactly as a partially written one is today — the next install
+    /// rebuilds it. Legacy state never fails a boot.
+    fn read_v4_materialization(
+        &self,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Option<MaterializationRecord> {
+        let materialized_dir = self.layout.v4_materialized_dir(workspace, source_name);
+        match read_v4_materialization_record(&materialized_dir) {
+            Ok(record) => record,
+            Err(error) => {
+                warn!(
+                    "importing source '{source_name}' in workspace '{workspace}' without its materialization: {error}"
+                );
+                None
+            }
+        }
+    }
 }
 
 fn remove_legacy_task_jsonl(
@@ -194,12 +590,19 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use tempfile::tempdir;
 
     use super::{
+        InstalledSource, MirrorLedger, SourceImportReport, SourceName, SourceOrigin,
         WORKSPACE_CATALOG_CUTOVER_ID, WorkspaceCatalogCutoverReport,
         cutover_legacy_workspace_catalog, cutover_legacy_workspace_catalog_at,
-        run_state_migrations,
+        import_legacy_source_state, run_state_migrations,
+    };
+    use crate::sources::materialization::{
+        FINGERPRINT_FILENAME, OPERATION_METADATA_FILENAME, PROJECTIONS_FILENAME,
+        SEMANTIC_IR_FILENAME, SOURCE_DOCUMENT_RAW_FILENAME, SOURCE_DOCUMENT_YAML_FILENAME,
     };
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
@@ -539,6 +942,604 @@ mod tests {
 
         assert!(!first_legacy_file.exists());
         assert!(!second_legacy_file.exists());
+    }
+
+    /// One legacy file-based install: a config file, its source tree, and the
+    /// database a boot would reconcile it with.
+    struct ImportFixture {
+        _temp: tempfile::TempDir,
+        layout: AppStateLayout,
+        config_store: ConfigStore,
+        db: CoralDb,
+    }
+
+    impl ImportFixture {
+        async fn new() -> Self {
+            let temp = tempdir().expect("temp dir");
+            let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+            layout.ensure().expect("ensure layout");
+            let config_store = ConfigStore::new(layout.clone());
+            let db = open_sqlite(&layout).await;
+            Self {
+                _temp: temp,
+                layout,
+                config_store,
+                db,
+            }
+        }
+
+        /// Declares a workspace in `config.toml` and gives it a database row,
+        /// the shape an install that has already cut over is in.
+        async fn cut_over_workspace(&self, workspace: &WorkspaceName) {
+            self.declare_workspace(workspace);
+            cutover_legacy_workspace_catalog(&self.db, &self.config_store, &self.layout)
+                .await
+                .expect("cut over the legacy workspace catalog");
+        }
+
+        fn declare_workspace(&self, workspace: &WorkspaceName) {
+            self.config_store
+                .create_legacy_workspace_entry_for_tests(workspace)
+                .expect("declare legacy workspace");
+        }
+
+        fn write_entry(&self, workspace: &WorkspaceName, source: &InstalledSource) {
+            self.config_store
+                .upsert_source(workspace, source.clone())
+                .expect("write config entry");
+        }
+
+        fn write_manifest(&self, workspace: &WorkspaceName, name: &SourceName, yaml: &str) {
+            let path = self.layout.manifest_file(workspace, name);
+            std::fs::create_dir_all(path.parent().expect("source dir")).expect("create source dir");
+            std::fs::write(path, yaml).expect("write manifest");
+        }
+
+        fn write_materialization(
+            &self,
+            workspace: &WorkspaceName,
+            name: &SourceName,
+            fingerprint: Option<&str>,
+        ) {
+            let dir = self.layout.v4_materialized_dir(workspace, name);
+            std::fs::create_dir_all(&dir).expect("create materialized dir");
+            for (file, contents) in [
+                (PROJECTIONS_FILENAME, "projections: []"),
+                (SOURCE_DOCUMENT_RAW_FILENAME, "raw"),
+                (SOURCE_DOCUMENT_YAML_FILENAME, "document: {}"),
+                (SEMANTIC_IR_FILENAME, "ir: {}"),
+                (OPERATION_METADATA_FILENAME, "operations: {}"),
+            ] {
+                std::fs::write(dir.join(file), contents).expect("write artifact");
+            }
+            if let Some(fingerprint) = fingerprint {
+                std::fs::write(dir.join(FINGERPRINT_FILENAME), fingerprint)
+                    .expect("write fingerprint");
+            }
+        }
+
+        /// Installs one source the way a previous boot would have left it:
+        /// config entry, manifest file, and a materialized directory.
+        fn install(&self, workspace: &WorkspaceName, source: &InstalledSource) {
+            self.write_entry(workspace, source);
+            self.write_manifest(
+                workspace,
+                &source.name,
+                &manifest_yaml(source.name.as_str()),
+            );
+            self.write_materialization(workspace, &source.name, Some("fingerprint: {}"));
+        }
+
+        /// Writes rows another host would have written, leaving this host's
+        /// ledger with no record of them.
+        async fn seed_rows(&self, workspace: &WorkspaceName, source: &InstalledSource) {
+            let mut tx = self.db.begin().await.expect("begin seed tx");
+            tx.sources()
+                .upsert_source(workspace, source, 7)
+                .await
+                .expect("seed source row");
+            tx.source_manifests()
+                .upsert(
+                    workspace,
+                    &source.name,
+                    &manifest_yaml(source.name.as_str()),
+                    7,
+                )
+                .await
+                .expect("seed manifest row");
+            tx.commit().await.expect("commit seed tx");
+        }
+
+        /// Removes one source the way another host sharing this database would:
+        /// the row goes, the tombstone lands, and this host's files stay.
+        async fn delete_rows_elsewhere(&self, workspace: &WorkspaceName, name: &SourceName) {
+            let mut tx = self.db.begin().await.expect("begin delete tx");
+            tx.sources()
+                .remove_source(workspace, name, 9)
+                .await
+                .expect("remove source row");
+            tx.commit().await.expect("commit delete tx");
+        }
+
+        async fn import(&self) -> SourceImportReport {
+            import_legacy_source_state(&self.db, &self.config_store, &self.layout)
+                .await
+                .expect("import legacy source state")
+        }
+
+        async fn row(
+            &self,
+            workspace: &WorkspaceName,
+            name: &SourceName,
+        ) -> Option<InstalledSource> {
+            let mut session = &self.db;
+            session
+                .sources()
+                .get_source(workspace, name)
+                .await
+                .expect("read source row")
+        }
+
+        async fn manifest_row(
+            &self,
+            workspace: &WorkspaceName,
+            name: &SourceName,
+        ) -> Option<String> {
+            let mut session = &self.db;
+            session
+                .source_manifests()
+                .get(workspace, name)
+                .await
+                .expect("read manifest row")
+                .map(|record| record.manifest_yaml)
+        }
+
+        async fn materialization_row(
+            &self,
+            workspace: &WorkspaceName,
+            name: &SourceName,
+        ) -> Option<crate::state::db::MaterializationRecord> {
+            let mut session = &self.db;
+            session
+                .materializations()
+                .get(workspace, name)
+                .await
+                .expect("read materialization row")
+        }
+
+        async fn tombstoned(&self, workspace: &WorkspaceName, name: &SourceName) -> bool {
+            let mut session = &self.db;
+            session
+                .sources()
+                .is_tombstoned(workspace, name)
+                .await
+                .expect("read tombstone")
+        }
+
+        fn ledger(&self) -> MirrorLedger {
+            MirrorLedger::load(self.layout.config_file())
+        }
+
+        fn config_bytes(&self) -> Vec<u8> {
+            std::fs::read(self.layout.config_file()).expect("read config file")
+        }
+    }
+
+    fn analytics() -> WorkspaceName {
+        WorkspaceName::parse("analytics").expect("workspace name")
+    }
+
+    fn imported_source(name: &str) -> InstalledSource {
+        InstalledSource {
+            name: SourceName::parse(name).expect("source name"),
+            version: Some("0.1.0".to_string()),
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: uuid::Uuid::nil(),
+            origin: SourceOrigin::Imported,
+        }
+    }
+
+    fn manifest_yaml(name: &str) -> String {
+        format!(
+            r"
+name: {name}
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: rows
+    description: Rows
+    request:
+      method: GET
+      path: /rows
+    response: {{}}
+    columns:
+      - name: id
+        type: Utf8
+"
+        )
+    }
+
+    #[tokio::test]
+    async fn a_fresh_install_imports_nothing() {
+        let fixture = ImportFixture::new().await;
+
+        assert_eq!(fixture.import().await, SourceImportReport::default());
+    }
+
+    #[tokio::test]
+    async fn a_populated_config_imports_once_and_then_reports_it_present() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        let config_before = fixture.config_bytes();
+
+        let first = fixture.import().await;
+
+        assert_eq!(first.imported, 1);
+        assert_eq!(
+            fixture.row(&workspace, &source.name).await,
+            Some(source.clone())
+        );
+        assert_eq!(
+            fixture.manifest_row(&workspace, &source.name).await,
+            Some(manifest_yaml("reports"))
+        );
+        assert!(
+            fixture
+                .materialization_row(&workspace, &source.name)
+                .await
+                .is_some()
+        );
+        assert!(
+            fixture
+                .ledger()
+                .matches_entry(&workspace, &source.name, &source)
+        );
+
+        let second = fixture.import().await;
+
+        assert_eq!(second.imported, 0);
+        assert_eq!(second.already_present, 1);
+        assert_eq!(
+            fixture.config_bytes(),
+            config_before,
+            "the import must never edit config.toml"
+        );
+    }
+
+    /// There is no marker, so a source an older binary wrote to `config.toml`
+    /// after the first boot has to come across at the next one.
+    #[tokio::test]
+    async fn a_source_added_after_the_first_boot_imports_on_the_next_boot() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        fixture.import().await;
+
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+
+        assert_eq!(fixture.import().await.imported, 1);
+        assert_eq!(fixture.row(&workspace, &source.name).await, Some(source));
+    }
+
+    /// A ledger record the entry no longer matches proves the entry was
+    /// rewritten on this host since Coral reconciled it, so the files win.
+    #[tokio::test]
+    async fn an_entry_rewritten_since_reconciliation_imports_as_an_update() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let mut source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        fixture.import().await;
+
+        source
+            .variables
+            .insert("region".to_string(), "eu".to_string());
+        fixture.write_entry(&workspace, &source);
+        let updated_manifest = manifest_yaml("reports").replace("version: 0.1.0", "version: 0.2.0");
+        fixture.write_manifest(&workspace, &source.name, &updated_manifest);
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.updated_from_files, 1);
+        assert_eq!(
+            fixture.row(&workspace, &source.name).await,
+            Some(source.clone())
+        );
+        assert_eq!(
+            fixture.manifest_row(&workspace, &source.name).await,
+            Some(updated_manifest.clone())
+        );
+        let ledger = fixture.ledger();
+        assert!(ledger.matches_entry(&workspace, &source.name, &source));
+        assert!(ledger.matches_manifest(
+            &workspace,
+            &source.name,
+            &crate::hash::sha256_hex(updated_manifest.as_bytes())
+        ));
+    }
+
+    /// A host's first reconciled boot has no ledger. An entry that agrees with
+    /// its row is provably in sync, so the record is seeded — including the
+    /// manifest record, which is what keeps the hydration pass from setting
+    /// aside a cache that is byte-identical to the row.
+    #[tokio::test]
+    async fn an_unrecorded_entry_that_agrees_with_its_row_seeds_the_ledger() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        fixture.seed_rows(&workspace, &source).await;
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.already_present, 1);
+        assert_eq!(report.imported, 0);
+        let ledger = fixture.ledger();
+        assert!(ledger.matches_entry(&workspace, &source.name, &source));
+        assert!(ledger.matches_manifest(
+            &workspace,
+            &source.name,
+            &crate::hash::sha256_hex(manifest_yaml("reports").as_bytes())
+        ));
+    }
+
+    /// An unrecorded entry that disagrees with its row has no provable owner,
+    /// so neither side moves and the warning is recorded once per content.
+    #[tokio::test]
+    async fn an_unrecorded_entry_that_differs_from_its_row_is_warned_about_and_preserved() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let entry = imported_source("reports");
+        fixture.install(&workspace, &entry);
+        let mut row = entry.clone();
+        row.version = Some("9.9.9".to_string());
+        fixture.seed_rows(&workspace, &row).await;
+        let config_before = fixture.config_bytes();
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.divergent_unreconciled, 1);
+        assert_eq!(fixture.row(&workspace, &entry.name).await, Some(row));
+        assert_eq!(fixture.config_bytes(), config_before);
+        let ledger = fixture.ledger();
+        assert!(
+            !ledger.entry_recorded(&workspace, &entry.name),
+            "an unprovable entry must never be stamped as reconciled"
+        );
+        assert!(
+            ledger.matches_divergence_warning(&workspace, &entry.name, &entry),
+            "the warning must be recorded so the next boot stays quiet"
+        );
+
+        let second = fixture.import().await;
+
+        assert_eq!(second.divergent_unreconciled, 1);
+        assert!(!fixture.ledger().entry_recorded(&workspace, &entry.name));
+    }
+
+    /// The workspace cutover is one-shot, so a workspace an older binary added
+    /// to `config.toml` afterwards has no row. Without one, its sources would
+    /// be invisible once reads move to the database.
+    #[tokio::test]
+    async fn a_config_only_workspace_is_created_and_its_sources_imported() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.declare_workspace(&workspace);
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.workspaces_created, 1);
+        assert_eq!(report.imported, 1);
+        assert_eq!(
+            workspace_ids(&fixture.db).await,
+            vec!["analytics".to_string()]
+        );
+        assert_eq!(fixture.row(&workspace, &source.name).await, Some(source));
+    }
+
+    /// A workspace this host reconciled and the database no longer holds was
+    /// deleted through the database. Resurrecting it from this host's stale
+    /// config would undo that deletion at every boot.
+    #[tokio::test]
+    async fn a_config_only_workspace_the_ledger_recorded_is_skipped_with_its_sources() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.declare_workspace(&workspace);
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        let mut ledger = MirrorLedger::default();
+        ledger.record_workspace(&workspace);
+        ledger
+            .save(fixture.layout.config_file())
+            .expect("save ledger");
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.workspaces_skipped_deleted, 1);
+        assert_eq!(report.imported, 0);
+        assert!(workspace_ids(&fixture.db).await.is_empty());
+        assert!(fixture.row(&workspace, &source.name).await.is_none());
+    }
+
+    /// A tombstone plus a ledger-matching entry is another host's deletion
+    /// reaching this host's stale mirror; re-adding it would undo the deletion.
+    #[tokio::test]
+    async fn a_tombstoned_entry_the_ledger_still_matches_is_skipped() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        fixture.import().await;
+        fixture
+            .delete_rows_elsewhere(&workspace, &source.name)
+            .await;
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.skipped_tombstoned, 1);
+        assert!(fixture.row(&workspace, &source.name).await.is_none());
+        assert!(fixture.tombstoned(&workspace, &source.name).await);
+    }
+
+    /// A tombstoned name whose entry changed since Coral reconciled it is a
+    /// genuine re-add — a downgraded binary's, or an operator's.
+    #[tokio::test]
+    async fn a_tombstoned_entry_rewritten_since_reconciliation_is_readded() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let mut source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        fixture.import().await;
+        fixture
+            .delete_rows_elsewhere(&workspace, &source.name)
+            .await;
+
+        source
+            .variables
+            .insert("region".to_string(), "eu".to_string());
+        fixture.write_entry(&workspace, &source);
+        let report = fixture.import().await;
+
+        assert_eq!(report.readded_after_tombstone, 1);
+        assert_eq!(
+            fixture.row(&workspace, &source.name).await,
+            Some(source.clone())
+        );
+        assert!(
+            !fixture.tombstoned(&workspace, &source.name).await,
+            "a re-add must revoke the earlier deletion"
+        );
+    }
+
+    /// A tombstone this host never reconciled is not a deletion reaching a
+    /// stale mirror: compensating a failed fresh install on another host writes
+    /// one, and the config entry it would otherwise suppress here is a live
+    /// config-only source. Only a ledger record makes the entry a mirror.
+    #[tokio::test]
+    async fn a_tombstoned_entry_the_ledger_never_recorded_is_readded() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        // Another host installed and compensated the same name, leaving a
+        // tombstone; this host only ever had the source in its own files.
+        fixture.seed_rows(&workspace, &source).await;
+        fixture
+            .delete_rows_elsewhere(&workspace, &source.name)
+            .await;
+        fixture.install(&workspace, &source);
+        assert!(
+            fixture.tombstoned(&workspace, &source.name).await,
+            "the fixture must leave a tombstone for the import to rule on"
+        );
+        assert!(
+            !fixture.ledger().entry_recorded(&workspace, &source.name),
+            "this host must never have reconciled the entry"
+        );
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.readded_after_tombstone, 1);
+        assert_eq!(report.skipped_tombstoned, 0);
+        assert_eq!(
+            fixture.row(&workspace, &source.name).await,
+            Some(source.clone())
+        );
+        assert!(
+            !fixture.tombstoned(&workspace, &source.name).await,
+            "importing the entry must revoke the unreconciled deletion"
+        );
+    }
+
+    /// One unreadable source must not cost the install its other sources, nor
+    /// its startup.
+    #[tokio::test]
+    async fn a_source_whose_manifest_cannot_be_read_is_skipped_and_the_rest_import() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let healthy = imported_source("reports");
+        fixture.install(&workspace, &healthy);
+        let broken = imported_source("broken");
+        fixture.write_entry(&workspace, &broken);
+        fixture.write_manifest(&workspace, &broken.name, "this is not a manifest");
+
+        let report = fixture.import().await;
+
+        assert_eq!(report.imported, 1);
+        assert_eq!(report.skipped_invalid, 1);
+        assert_eq!(fixture.row(&workspace, &healthy.name).await, Some(healthy));
+        assert!(
+            fixture.row(&workspace, &broken.name).await.is_none(),
+            "the rolled-back transaction must leave no half-imported source"
+        );
+        assert!(!fixture.ledger().entry_recorded(&workspace, &broken.name));
+    }
+
+    /// Legacy data Coral cannot parse is never a reason to refuse to start.
+    #[tokio::test]
+    async fn an_unreadable_config_file_does_not_fail_startup() {
+        let fixture = ImportFixture::new().await;
+        std::fs::write(fixture.layout.config_file(), "[[workspaces]\n").expect("corrupt config");
+
+        assert_eq!(fixture.import().await, SourceImportReport::default());
+    }
+
+    /// The ledger is proof, not state of record: losing it costs a re-import,
+    /// never a boot.
+    #[tokio::test]
+    async fn a_corrupt_ledger_is_ignored_and_the_import_still_runs() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.install(&workspace, &source);
+        let ledger_path = fixture.layout.config_file().with_extension("toml.ledger");
+        std::fs::write(&ledger_path, b"{ not json at all").expect("corrupt ledger");
+
+        assert_eq!(fixture.import().await.imported, 1);
+        assert!(
+            fixture
+                .ledger()
+                .matches_entry(&workspace, &source.name, &source)
+        );
+    }
+
+    /// The fingerprint is optional to the v4 loader, so a materialization
+    /// written without one imports with a null fingerprint rather than being
+    /// dropped.
+    #[tokio::test]
+    async fn a_materialization_without_a_fingerprint_imports_with_a_null_one() {
+        let fixture = ImportFixture::new().await;
+        let workspace = analytics();
+        fixture.cut_over_workspace(&workspace).await;
+        let source = imported_source("reports");
+        fixture.write_entry(&workspace, &source);
+        fixture.write_manifest(&workspace, &source.name, &manifest_yaml("reports"));
+        fixture.write_materialization(&workspace, &source.name, None);
+
+        assert_eq!(fixture.import().await.imported, 1);
+        let materialization = fixture
+            .materialization_row(&workspace, &source.name)
+            .await
+            .expect("materialization row");
+        assert_eq!(materialization.fingerprint_yaml, None);
+        assert_eq!(materialization.projections_yaml, "projections: []");
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
