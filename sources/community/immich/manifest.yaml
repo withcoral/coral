@@ -1,0 +1,201 @@
+name: immich
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query assets, albums, and user configurations from your self-hosted
+  Immich photo and video management platform via the Immich REST API.
+base_url: "{{input.IMMICH_BASE_URL}}/api"
+
+inputs:
+  IMMICH_BASE_URL:
+    kind: variable
+    hint: |
+      The root URL of your self-hosted Immich instance with NO trailing slash
+      and no /api path suffix, for example `http://192.168.1.50:2283`.
+  IMMICH_API_KEY:
+    kind: secret
+    hint: |
+      An active Immich API key generated under Account Settings -> API Keys.
+      Grant at least `user.read`, `album.read`, and `asset.read` for this source.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: x-api-key
+      from: template
+      template: "{{input.IMMICH_API_KEY}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id FROM immich.albums LIMIT 1
+  - SELECT id, file_name, type FROM immich.assets LIMIT 1
+
+tables:
+  - name: users
+    description: User accounts visible to the authenticated API key.
+    guide: |
+      Lists users returned by `GET /api/users`. Requires the `user.read`
+      permission. Non-admin API keys may see a reduced user set depending on
+      Immich server policy.
+    request:
+      method: GET
+      path: /users
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the user.
+        expr: {kind: path, path: [id]}
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Email address of the user.
+        expr: {kind: path, path: [email]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Full name of the user.
+        expr: {kind: path, path: [name]}
+
+  - name: albums
+    description: Albums visible to the authenticated API key.
+    guide: |
+      Lists albums from `GET /api/albums`. Requires the `album.read`
+      permission.
+    request:
+      method: GET
+      path: /albums
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the album.
+        expr: {kind: path, path: [id]}
+      - name: album_name
+        type: Utf8
+        nullable: false
+        description: Display title of the album.
+        expr: {kind: path, path: [albumName]}
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: Timestamp when the album was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: asset_count
+        type: Int64
+        nullable: false
+        description: Number of assets associated with the album.
+        expr: {kind: path, path: [assetCount]}
+      - name: shared
+        type: Boolean
+        nullable: false
+        description: Whether the album is shared with other users.
+        expr: {kind: path, path: [shared]}
+
+  - name: assets
+    description: Media assets returned by Immich metadata search.
+    guide: |
+      Each row is one asset from `POST /api/search/metadata`. Requires the
+      `asset.read` permission. Coral requests `withExif=true` so file size is
+      available from `exifInfo.fileSizeInByte`.
+
+      Narrow scans with pushdown filters instead of scanning the full library:
+      - `type` maps to the Immich `type` body field. Immich's asset type enum
+        is `IMAGE`, `VIDEO`, `AUDIO`, or `OTHER`.
+      - `is_favorite` maps to the Immich `isFavorite` body field.
+
+      This table reads a single page of up to 1000 assets (Immich's maximum
+      `size` for `POST /search/metadata`) in one request. Coral does not follow
+      Immich's `assets.nextPage` cursor here, because Immich's `page` field is an
+      integer body value and Coral's body cursor is written as a string; sending
+      a string `page` to a later page would be rejected by Immich. Use `type`,
+      `is_favorite`, and a SQL `LIMIT` to target the assets you need. Queries
+      that must span more than one page are not supported until numeric body
+      pagination is available.
+    filters:
+      - name: type
+      - name: is_favorite
+    fetch_limit_default: 1000
+    request:
+      method: POST
+      path: /search/metadata
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path: [withExif]
+          from: literal
+          value: true
+        - path: [page]
+          from: literal
+          value: 1
+        - path: [size]
+          from: literal
+          value: 1000
+        - path: [type]
+          from: filter
+          key: type
+        - path: [isFavorite]
+          from: filter_bool
+          key: is_favorite
+    response:
+      row_strategy: direct
+      rows_path: [assets, items]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Persistent identifier of the media asset.
+        expr: {kind: path, path: [id]}
+      - name: owner_id
+        type: Utf8
+        nullable: false
+        description: Owner user ID for the asset.
+        expr: {kind: path, path: [ownerId]}
+      - name: file_name
+        type: Utf8
+        nullable: false
+        description: Original uploaded filename.
+        expr: {kind: path, path: [originalFileName]}
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Media type (`IMAGE` or `VIDEO`).
+        expr: {kind: path, path: [type]}
+      - name: file_size_bytes
+        type: Int64
+        nullable: true
+        description: File size in bytes from EXIF metadata when available.
+        expr: {kind: path, path: [exifInfo, fileSizeInByte]}
+      - name: file_created_at
+        type: Timestamp
+        nullable: true
+        description: File creation timestamp from asset metadata.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [fileCreatedAt]}
+      - name: is_favorite
+        type: Boolean
+        nullable: false
+        description: Whether the asset is marked as a favorite.
+        expr: {kind: path, path: [isFavorite]}
