@@ -1,0 +1,197 @@
+name: opensearch
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query OpenSearch cluster topology, index storage states, and snapshot metadata via the REST API.
+base_url: "{{input.OPENSEARCH_URL}}"
+
+inputs:
+  OPENSEARCH_URL:
+    kind: variable
+    hint: |
+      OpenSearch base cluster URL with port and without trailing slash,
+      for example `https://localhost:9200` or `https://opensearch.infra.local`.
+  OPENSEARCH_USERNAME:
+    kind: variable
+    hint: Basic authentication username for cluster connection.
+  OPENSEARCH_PASSWORD:
+    kind: secret
+    hint: Basic authentication password for cluster connection.
+
+auth:
+  type: BasicAuth
+  username: "{{input.OPENSEARCH_USERNAME}}"
+  password: "{{input.OPENSEARCH_PASSWORD}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT node_name, role FROM opensearch.nodes LIMIT 1
+
+tables:
+  - name: nodes
+    description: Operational runtime state, roles, and load indicators for active cluster nodes.
+    request:
+      method: GET
+      path: /_cat/nodes
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: h
+          from: literal
+          value: "name,ip,node.role,cluster_manager,heap.percent,ram.percent,cpu"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: node_name
+        type: Utf8
+        nullable: false
+        description: Unique human-readable name assigned to the cluster node.
+        expr: {kind: path, path: [name]}
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: Bound IP address of the node interface.
+        expr: {kind: path, path: [ip]}
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Node roles allocated within the cluster topology.
+        expr: {kind: path, path: ["node.role"]}
+      - name: cluster_manager_status
+        type: Utf8
+        nullable: true
+        description: Indicates if the node is the active cluster manager (*, -, or m).
+        expr: {kind: path, path: [cluster_manager]}
+      - name: heap_percent
+        type: Int64
+        nullable: true
+        description: JVM heap utilization percentage.
+        expr: {kind: path, path: ["heap.percent"]}
+      - name: ram_percent
+        type: Int64
+        nullable: true
+        description: System physical RAM utilization percentage.
+        expr: {kind: path, path: ["ram.percent"]}
+      - name: cpu_percent
+        type: Int64
+        nullable: true
+        description: Machine CPU utilization percentage.
+        expr: {kind: path, path: [cpu]}
+
+  - name: indices
+    description: Catalog of indices with sizing and shard-health telemetry.
+    filters:
+      - name: index
+        required: false
+        description: Index name or pattern, pushed to the CAT path (e.g., 'logs-*').
+      - name: health
+        required: false
+        description: Health filter pushed to the CAT API (green, yellow, or red).
+    request:
+      method: GET
+      path: /_cat/indices
+      query:
+        - name: format
+          from: literal
+          value: json
+        - name: health
+          from: filter
+          key: health
+    requests:
+      - when_filters:
+          - index
+        method: GET
+        path: "/_cat/indices/{{filter.index}}"
+        query:
+          - name: format
+            from: literal
+            value: json
+          - name: health
+            from: filter
+            key: health
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: index
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Index name/pattern pushdown filter, applied to the CAT request path.
+        expr: {kind: from_filter, key: index}
+      - name: index_name
+        type: Utf8
+        nullable: false
+        description: Name of the index.
+        expr: {kind: path, path: [index]}
+      - name: health
+        type: Utf8
+        nullable: true
+        description: Shard allocation health (green, yellow, red). Also a pushdown filter.
+        expr: {kind: path, path: [health]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Index lifecycle status (open or closed).
+        expr: {kind: path, path: [status]}
+      - name: doc_count
+        type: Int64
+        nullable: true
+        description: Count of searchable documents indexed.
+        expr: {kind: path, path: ["docs.count"]}
+      - name: store_size
+        type: Utf8
+        nullable: true
+        description: Total storage footprint for primary and replica shards.
+        expr: {kind: path, path: ["store.size"]}
+
+  - name: snapshots
+    description: Snapshot lifecycle metadata for a specific backup repository.
+    filters:
+      - name: repository
+        type: Utf8
+        required: true
+        description: Snapshot repository to query (required; used in the request path).
+    request:
+      method: GET
+      path: "/_snapshot/{{filter.repository}}/_all"
+    response:
+      row_strategy: direct
+      rows_path: [snapshots]
+    pagination:
+      mode: none
+    columns:
+      - name: repository
+        type: Utf8
+        nullable: false
+        description: Repository the snapshots belong to (derived from the required filter).
+        expr: {kind: from_filter, key: repository}
+      - name: snapshot_name
+        type: Utf8
+        nullable: false
+        description: Snapshot identifier.
+        expr: {kind: path, path: [snapshot]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Snapshot execution state (e.g., SUCCESS, FAILED, IN_PROGRESS).
+        expr: {kind: path, path: [state]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: OpenSearch version that produced the snapshot.
+        expr: {kind: path, path: [version]}
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: Snapshot start timestamp (ISO-8601 string from the API).
+        expr: {kind: path, path: [start_time]}
