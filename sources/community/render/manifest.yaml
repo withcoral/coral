@@ -1,0 +1,694 @@
+name: render
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query projects, environments, services, deploys, and jobs from the Render cloud hosting platform.
+base_url: https://api.render.com/v1
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.RENDER_API_KEY}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+inputs:
+  RENDER_API_KEY:
+    kind: secret
+    hint: "Render API key from Render Dashboard → Account Settings → API Keys"
+
+test_queries:
+  - SELECT id, name FROM render.projects LIMIT 5
+  - SELECT id, name FROM render.services LIMIT 5
+  - SELECT id, name FROM render.environments WHERE id = 'env-dummy' LIMIT 5
+  - SELECT id, status, service_id FROM render.deploys WHERE service_id = 'srv-dummy' LIMIT 5
+  - SELECT id, status, service_id FROM render.jobs WHERE service_id = 'srv-dummy' LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # render.projects — list all projects
+  # ──────────────────────────────────────────────────────────────────────
+  - name: projects
+    description: List all projects in the Render account.
+    request:
+      method: GET
+      path: /projects
+    response:
+      rows_path: []
+      row_strategy: direct
+      error_path:
+        - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the project.
+        expr:
+          kind: path
+          path:
+            - project
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the project.
+        expr:
+          kind: path
+          path:
+            - project
+            - name
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the project was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - project
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the project was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - project
+              - updatedAt
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: ID of the project owner.
+        expr:
+          kind: path
+          path:
+            - project
+            - owner
+            - id
+      - name: owner_name
+        type: Utf8
+        nullable: true
+        description: Name of the project owner.
+        expr:
+          kind: path
+          path:
+            - project
+            - owner
+            - name
+      - name: owner_email
+        type: Utf8
+        nullable: true
+        description: Email of the project owner.
+        expr:
+          kind: path
+          path:
+            - project
+            - owner
+            - email
+      - name: owner_type
+        type: Utf8
+        nullable: true
+        description: Type of the owner (e.g. user, team).
+        expr:
+          kind: path
+          path:
+            - project
+            - owner
+            - type
+      - name: environment_ids
+        type: Json
+        nullable: true
+        description: List of environment IDs associated with the project.
+        expr:
+          kind: path
+          path:
+            - project
+            - environmentIds
+
+  # ──────────────────────────────────────────────────────────────────────
+  # render.environments — list environments per project
+  # ──────────────────────────────────────────────────────────────────────
+  - name: environments
+    description: List environments or retrieve a single environment.
+    filters:
+      - name: project_id
+      - name: id
+    request:
+      method: GET
+      path: /environments
+      query:
+        - name: projectId
+          from: filter
+          key: project_id
+    requests:
+      - when_filters:
+          - id
+        method: GET
+        path: /environments/{{filter.id}}
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+      error_path:
+        - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the environment.
+        expr:
+          kind: path
+          path:
+            - environment
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the environment.
+        expr:
+          kind: path
+          path:
+            - environment
+            - name
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: ID of the project the environment belongs to.
+        expr:
+          kind: path
+          path:
+            - environment
+            - projectId
+      - name: protected_status
+        type: Utf8
+        nullable: true
+        description: Protected status of the environment (e.g. protected, unprotected).
+        expr:
+          kind: path
+          path:
+            - environment
+            - protectedStatus
+      - name: network_isolation_enabled
+        type: Boolean
+        nullable: true
+        description: Whether network isolation is enabled for the environment.
+        expr:
+          kind: path
+          path:
+            - environment
+            - networkIsolationEnabled
+      - name: database_ids
+        type: Json
+        nullable: true
+        description: List of database IDs in the environment.
+        expr:
+          kind: path
+          path:
+            - environment
+            - databasesIds
+      - name: service_ids
+        type: Json
+        nullable: true
+        description: List of service IDs in the environment.
+        expr:
+          kind: path
+          path:
+            - environment
+            - serviceIds
+      - name: redis_ids
+        type: Json
+        nullable: true
+        description: List of Redis instance IDs in the environment.
+        expr:
+          kind: path
+          path:
+            - environment
+            - redisIds
+      - name: env_group_ids
+        type: Json
+        nullable: true
+        description: List of environment group IDs in the environment.
+        expr:
+          kind: path
+          path:
+            - environment
+            - envGroupIds
+
+  # ──────────────────────────────────────────────────────────────────────
+  # render.services — list services
+  # ──────────────────────────────────────────────────────────────────────
+  - name: services
+    description: List all services in the Render account.
+    request:
+      method: GET
+      path: /services
+    response:
+      rows_path: []
+      row_strategy: direct
+      error_path:
+        - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the service.
+        expr:
+          kind: path
+          path:
+            - service
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the service.
+        expr:
+          kind: path
+          path:
+            - service
+            - name
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Type of the service (e.g. web_service, static_site).
+        expr:
+          kind: path
+          path:
+            - service
+            - type
+      - name: repo
+        type: Utf8
+        nullable: true
+        description: Repository URL for Git-backed services.
+        expr:
+          kind: path
+          path:
+            - service
+            - repo
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Git branch deployed for the service.
+        expr:
+          kind: path
+          path:
+            - service
+            - branch
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the service was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - service
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the service was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - service
+              - updatedAt
+      - name: dashboard_url
+        type: Utf8
+        nullable: true
+        description: URL to the service details page in the Render Dashboard.
+        expr:
+          kind: path
+          path:
+            - service
+            - dashboardUrl
+      - name: environment_id
+        type: Utf8
+        nullable: true
+        description: ID of the environment the service belongs to.
+        expr:
+          kind: path
+          path:
+            - service
+            - environmentId
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: ID of the owner of the service.
+        expr:
+          kind: path
+          path:
+            - service
+            - ownerId
+      - name: suspended
+        type: Boolean
+        nullable: true
+        description: Whether the service is currently suspended.
+        expr:
+          kind: path
+          path:
+            - service
+            - suspended
+      - name: auto_deploy
+        type: Boolean
+        nullable: true
+        description: Whether auto-deploys are enabled for the service.
+        expr:
+          kind: path
+          path:
+            - service
+            - autoDeploy
+      - name: service_details
+        type: Json
+        nullable: true
+        description: Service-type-specific details block.
+        expr:
+          kind: path
+          path:
+            - service
+            - serviceDetails
+
+  # ──────────────────────────────────────────────────────────────────────
+  # render.deploys — list deployment history for a service
+  # ──────────────────────────────────────────────────────────────────────
+  - name: deploys
+    description: List deployment history for a service.
+    filters:
+      - name: service_id
+        required: true
+    request:
+      method: GET
+      path: /services/{{filter.service_id}}/deploys
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+      error_path:
+        - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the deployment.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - id
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Current status of the deployment.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - status
+      - name: commit_id
+        type: Utf8
+        nullable: true
+        description: Commit SHA for the deploy.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - commit
+            - id
+      - name: commit_message
+        type: Utf8
+        nullable: true
+        description: Commit message for the deploy.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - commit
+            - message
+      - name: commit_created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the commit was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - commit
+              - createdAt
+      - name: image_ref
+        type: Utf8
+        nullable: true
+        description: Image reference used when creating the deploy.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - image
+            - ref
+      - name: image_sha
+        type: Utf8
+        nullable: true
+        description: SHA that the image reference resolved to.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - image
+            - sha
+      - name: image_registry_credential
+        type: Utf8
+        nullable: true
+        description: Name of credential used to pull the image.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - image
+            - registryCredential
+      - name: trigger
+        type: Utf8
+        nullable: true
+        description: What triggered the deployment.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - trigger
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the deploy record was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the deploy record was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - updatedAt
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the build or deploy started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - startedAt
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the build or deploy finished.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - finishedAt
+      - name: service_id
+        type: Utf8
+        nullable: false
+        description: ID of the deployed service.
+        expr:
+          kind: from_filter
+          key: service_id
+
+  # ──────────────────────────────────────────────────────────────────────
+  # render.jobs — list cron job executions for a service
+  # ──────────────────────────────────────────────────────────────────────
+  - name: jobs
+    description: List execution history of cron jobs for a service.
+    filters:
+      - name: service_id
+        required: true
+    request:
+      method: GET
+      path: /services/{{filter.service_id}}/jobs
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+      error_path:
+        - message
+    pagination:
+      mode: cursor_query
+      response_cursor_path:
+        - "19"
+        - cursor
+      cursor_param: cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier of the job run.
+        expr:
+          kind: path
+          path:
+            - job
+            - id
+      - name: start_command
+        type: Utf8
+        nullable: false
+        description: Command executed by the job.
+        expr:
+          kind: path
+          path:
+            - job
+            - startCommand
+      - name: plan_id
+        type: Utf8
+        nullable: false
+        description: Plan ID associated with the job run.
+        expr:
+          kind: path
+          path:
+            - job
+            - planId
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Execution status of the job run.
+        expr:
+          kind: path
+          path:
+            - job
+            - status
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the job run was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - job
+              - createdAt
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the job run started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - job
+              - startedAt
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the job run finished.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - job
+              - finishedAt
+      - name: service_id
+        type: Utf8
+        nullable: false
+        description: ID of the cron job service.
+        expr:
+          kind: from_filter
+          key: service_id
