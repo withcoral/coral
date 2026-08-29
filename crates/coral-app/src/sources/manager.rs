@@ -29,6 +29,7 @@ use crate::sources::materialization::{
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
+use crate::state::db::CoralDb;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{
@@ -50,6 +51,7 @@ pub(crate) struct SourceManager {
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    db: Option<Arc<CoralDb>>,
     database_sources_enabled: bool,
 }
 
@@ -240,6 +242,7 @@ impl SourceManager {
             diagnostic_reporter,
             search_observations: None,
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
+            db: None,
             database_sources_enabled: false,
         }
     }
@@ -254,12 +257,30 @@ impl SourceManager {
         self
     }
 
+    pub(crate) fn with_database(mut self, db: Arc<CoralDb>) -> Self {
+        self.db = Some(db);
+        self
+    }
+
     pub(crate) fn with_search_observation_handle(
         mut self,
         search_observations: SearchObservationHandle,
     ) -> Self {
         self.search_observations = Some(search_observations);
         self
+    }
+
+    /// The database every DB-backed source path reads and writes through.
+    ///
+    /// The server always attaches one, so an absent database means a test
+    /// constructed the manager without one and then reached a DB-backed path.
+    /// That is a wiring defect, not a deployment shape: reporting it keeps the
+    /// gap loud instead of silently degrading to file-only behavior.
+    #[expect(dead_code, reason = "the source manager reads through this next")]
+    fn database(&self) -> Result<&Arc<CoralDb>, AppError> {
+        self.db.as_ref().ok_or_else(|| {
+            AppError::Internal("source manager was constructed without a database".to_string())
+        })
     }
 
     pub(crate) fn list_workspace_sources(

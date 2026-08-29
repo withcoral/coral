@@ -404,6 +404,7 @@ impl ServerBuilder {
             diagnostic_reporter.clone(),
         )
         .with_pool_registry(Arc::clone(&workspace_pool_registry))
+        .with_database(Arc::clone(&coral_db))
         .with_database_sources_enabled(database_sources_enabled);
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),

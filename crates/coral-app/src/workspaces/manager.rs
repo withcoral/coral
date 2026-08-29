@@ -88,6 +88,14 @@ impl WorkspaceManager {
         self
     }
 
+    /// Lends the workspace database to sibling app code that needs the same
+    /// handle, so callers share this manager's database rather than opening or
+    /// threading a second one.
+    #[expect(dead_code, reason = "the query manager reads through this next")]
+    pub(crate) fn database(&self) -> &Arc<CoralDb> {
+        &self.db
+    }
+
     #[cfg(test)]
     pub(crate) const fn with_failing_deletion_commit(mut self) -> Self {
         self.deletion_commit_fails = true;
