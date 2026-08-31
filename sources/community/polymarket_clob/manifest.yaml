@@ -24,6 +24,12 @@ test_queries:
     WHERE market = '32338220190071351435772801779725302244575775216413325951443816017994629993401'
       AND history_interval = '1d'
     LIMIT 5
+  - >-
+    SELECT token_id, side, price
+    FROM polymarket_clob.price
+    WHERE token_id = '32338220190071351435772801779725302244575775216413325951443816017994629993401'
+      AND side = 'BUY'
+    LIMIT 1
 
 tables:
   - name: simplified_markets
@@ -374,7 +380,7 @@ tables:
         description: CLOB token id.
       - name: side
         required: true
-        description: Order side (`buy` or `sell`).
+        description: Order side (`BUY` or `SELL`).
     request:
       method: GET
       path: /price
@@ -643,13 +649,16 @@ tables:
           kind: from_filter
           key: history_interval
       - name: t
-        type: Int64
+        type: Timestamp
         nullable: true
-        description: Unix timestamp of the price point.
+        description: Price point timestamp.
         expr:
-          kind: path
-          path:
-            - t
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - t
       - name: p
         type: Float64
         nullable: true

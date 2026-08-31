@@ -25,7 +25,7 @@ coral source test polymarket_clob
 | `sampling_markets` | Sampling-program markets | — |
 | `sampling_simplified_markets` | Simplified sampling list | — |
 | `order_book` | Book snapshot | `token_id` |
-| `price` | Best price for a side | `token_id`, `side` |
+| `price` | Best price for a side | `token_id`, `side` (`BUY`/`SELL`) |
 | `midpoint` | Midpoint price | `token_id` |
 | `spread` | Bid-ask spread | `token_id` |
 | `last_trade_price` | Last public trade | `token_id` |

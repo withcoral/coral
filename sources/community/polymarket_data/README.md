@@ -33,7 +33,8 @@ coral source test polymarket_data
 | `holders` | Top holders for a market | `market` (condition id) |
 | `live_volume` | Live volume for an event | `event_id` (Gamma event id) |
 
-`builder_volume` returns a large unpaginated list. Always `LIMIT` it.
+`builder_volume` is unpaginated: the full list is transferred before SQL
+`LIMIT` trims it.
 
 `holders` is one row per outcome token. The `holders` column is a JSON array
 of holder objects from the live payload.
@@ -76,5 +77,5 @@ WHERE event_id = '903269';
 
 - Wallet and market filters must be supplied as query parameters. They are
   not implied by a join alone.
-- `live_volume.id` is a Gamma **event** id, not a condition id.
+- `live_volume.event_id` is a Gamma **event** id, not a condition id.
 - No credentials are stored. All endpoints used here are public reads.

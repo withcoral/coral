@@ -22,6 +22,11 @@ test_queries:
     WHERE active_filter = 'true'
     LIMIT 5
   - SELECT id, label, slug FROM polymarket.tags LIMIT 5
+  - >-
+    SELECT id, question, condition_id
+    FROM polymarket.markets
+    WHERE condition_id = '0xa467b14d51f01b957109d9cbb1d6c124fab2a089d52ed8f471d23c2812e743b7'
+    LIMIT 5
   - SELECT id, title, ticker FROM polymarket.series LIMIT 5
   - SELECT id, sport, name FROM polymarket.sports LIMIT 5
   - >-
@@ -97,7 +102,7 @@ tables:
         - name: tag
           from: filter
           key: tag
-        - name: conditionId
+        - name: condition_ids
           from: filter
           key: condition_id
         - name: order
