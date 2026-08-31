@@ -1,0 +1,994 @@
+name: polymarket_data
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Polymarket Data API analytics: public trades, leaderboards,
+  wallet positions, activity, holders, and builder volume.
+base_url: https://data-api.polymarket.com
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT title, side, size, price FROM polymarket_data.trades LIMIT 5
+  - SELECT rank, user_name, pnl, vol FROM polymarket_data.leaderboard LIMIT 5
+  - SELECT rank, builder, volume FROM polymarket_data.builder_leaderboard LIMIT 5
+  - >-
+    SELECT title, size, cash_pnl
+    FROM polymarket_data.positions
+    WHERE user = '0x34dd4a4b70eaf79a17878f7938263c801d4dfd83'
+    LIMIT 5
+  - >-
+    SELECT total
+    FROM polymarket_data.live_volume
+    WHERE event_id = '903269'
+    LIMIT 1
+  - >-
+    SELECT title, realized_pnl, total_bought
+    FROM polymarket_data.closed_positions
+    WHERE user = '0x34dd4a4b70eaf79a17878f7938263c801d4dfd83'
+    LIMIT 5
+
+tables:
+  - name: trades
+    description: Recent public trades across Polymarket markets.
+    guide: >-
+      `SELECT title, side, size, price, transaction_hash
+      FROM polymarket_data.trades LIMIT 20`.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /trades
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: proxy_wallet
+        type: Utf8
+        nullable: true
+        description: Trader proxy wallet.
+        expr:
+          kind: path
+          path:
+            - proxyWallet
+      - name: side
+        type: Utf8
+        nullable: true
+        description: Trade side (BUY or SELL).
+        expr:
+          kind: path
+          path:
+            - side
+      - name: asset
+        type: Utf8
+        nullable: true
+        description: Traded asset / token id.
+        expr:
+          kind: path
+          path:
+            - asset
+      - name: condition_id
+        type: Utf8
+        nullable: true
+        description: Market condition id.
+        expr:
+          kind: path
+          path:
+            - conditionId
+      - name: size
+        type: Float64
+        nullable: true
+        description: Trade size.
+        expr:
+          kind: path
+          path:
+            - size
+      - name: price
+        type: Float64
+        nullable: true
+        description: Trade price.
+        expr:
+          kind: path
+          path:
+            - price
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: Unix timestamp of the trade.
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Market title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Market slug.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: event_slug
+        type: Utf8
+        nullable: true
+        description: Parent event slug.
+        expr:
+          kind: path
+          path:
+            - eventSlug
+      - name: outcome
+        type: Utf8
+        nullable: true
+        description: Outcome label.
+        expr:
+          kind: path
+          path:
+            - outcome
+      - name: outcome_index
+        type: Int64
+        nullable: true
+        description: Outcome index.
+        expr:
+          kind: path
+          path:
+            - outcomeIndex
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Trader display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: pseudonym
+        type: Utf8
+        nullable: true
+        description: Trader pseudonym.
+        expr:
+          kind: path
+          path:
+            - pseudonym
+      - name: transaction_hash
+        type: Utf8
+        nullable: true
+        description: On-chain transaction hash.
+        expr:
+          kind: path
+          path:
+            - transactionHash
+      - name: icon
+        type: Utf8
+        nullable: true
+        description: Market icon URL.
+        expr:
+          kind: path
+          path:
+            - icon
+
+  - name: leaderboard
+    description: Public trader leaderboard by volume and PnL.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /v1/leaderboard
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: rank
+        type: Utf8
+        nullable: true
+        description: Leaderboard rank.
+        expr:
+          kind: path
+          path:
+            - rank
+      - name: proxy_wallet
+        type: Utf8
+        nullable: true
+        description: Trader proxy wallet.
+        expr:
+          kind: path
+          path:
+            - proxyWallet
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: Display user name.
+        expr:
+          kind: path
+          path:
+            - userName
+      - name: x_username
+        type: Utf8
+        nullable: true
+        description: Linked X username.
+        expr:
+          kind: path
+          path:
+            - xUsername
+      - name: verified_badge
+        type: Boolean
+        nullable: true
+        description: Whether the trader is verified.
+        expr:
+          kind: path
+          path:
+            - verifiedBadge
+      - name: vol
+        type: Float64
+        nullable: true
+        description: Reported volume.
+        expr:
+          kind: path
+          path:
+            - vol
+      - name: pnl
+        type: Float64
+        nullable: true
+        description: Reported profit and loss.
+        expr:
+          kind: path
+          path:
+            - pnl
+      - name: profile_image
+        type: Utf8
+        nullable: true
+        description: Profile image URL.
+        expr:
+          kind: path
+          path:
+            - profileImage
+
+  - name: builder_leaderboard
+    description: Builder leaderboard by routed volume and active users.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /v1/builders/leaderboard
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: rank
+        type: Utf8
+        nullable: true
+        description: Builder rank.
+        expr:
+          kind: path
+          path:
+            - rank
+      - name: builder
+        type: Utf8
+        nullable: true
+        description: Builder name.
+        expr:
+          kind: path
+          path:
+            - builder
+      - name: builder_code
+        type: Utf8
+        nullable: true
+        description: Builder code.
+        expr:
+          kind: path
+          path:
+            - builderCode
+      - name: volume
+        type: Float64
+        nullable: true
+        description: Builder volume.
+        expr:
+          kind: path
+          path:
+            - volume
+      - name: active_users
+        type: Int64
+        nullable: true
+        description: Active users.
+        expr:
+          kind: path
+          path:
+            - activeUsers
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the builder is verified.
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: builder_logo
+        type: Utf8
+        nullable: true
+        description: Builder logo URL.
+        expr:
+          kind: path
+          path:
+            - builderLogo
+
+  - name: builder_volume
+    description: >-
+      Daily builder volume time series. The endpoint returns a large
+      unpaginated list; keep queries bounded with LIMIT.
+    fetch_limit_default: 20
+    request:
+      method: GET
+      path: /v1/builders/volume
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: dt
+        type: Utf8
+        nullable: true
+        description: Volume date.
+        expr:
+          kind: path
+          path:
+            - dt
+      - name: builder
+        type: Utf8
+        nullable: true
+        description: Builder name.
+        expr:
+          kind: path
+          path:
+            - builder
+      - name: builder_code
+        type: Utf8
+        nullable: true
+        description: Builder code.
+        expr:
+          kind: path
+          path:
+            - builderCode
+      - name: volume
+        type: Float64
+        nullable: true
+        description: Volume on that date.
+        expr:
+          kind: path
+          path:
+            - volume
+      - name: active_users
+        type: Int64
+        nullable: true
+        description: Active users on that date.
+        expr:
+          kind: path
+          path:
+            - activeUsers
+      - name: rank
+        type: Utf8
+        nullable: true
+        description: Rank on that date.
+        expr:
+          kind: path
+          path:
+            - rank
+      - name: verified
+        type: Boolean
+        nullable: true
+        description: Whether the builder is verified.
+        expr:
+          kind: path
+          path:
+            - verified
+      - name: builder_logo
+        type: Utf8
+        nullable: true
+        description: Builder logo URL.
+        expr:
+          kind: path
+          path:
+            - builderLogo
+
+  - name: positions
+    description: Current open positions for a wallet.
+    guide: >-
+      Requires `user`. Example:
+      `SELECT title, size, cash_pnl FROM polymarket_data.positions
+      WHERE user = '0x34dd4a4b70eaf79a17878f7938263c801d4dfd83'`.
+    filters:
+      - name: user
+        required: true
+        description: Wallet address (0x...).
+    request:
+      method: GET
+      path: /positions
+      query:
+        - name: user
+          from: filter
+          key: user
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: user
+        type: Utf8
+        nullable: false
+        description: Requested wallet.
+        expr:
+          kind: from_filter
+          key: user
+      - name: proxy_wallet
+        type: Utf8
+        nullable: true
+        description: Position proxy wallet.
+        expr:
+          kind: path
+          path:
+            - proxyWallet
+      - name: asset
+        type: Utf8
+        nullable: true
+        description: Position asset / token id.
+        expr:
+          kind: path
+          path:
+            - asset
+      - name: condition_id
+        type: Utf8
+        nullable: true
+        description: Market condition id.
+        expr:
+          kind: path
+          path:
+            - conditionId
+      - name: size
+        type: Float64
+        nullable: true
+        description: Current position size.
+        expr:
+          kind: path
+          path:
+            - size
+      - name: avg_price
+        type: Float64
+        nullable: true
+        description: Average entry price.
+        expr:
+          kind: path
+          path:
+            - avgPrice
+      - name: initial_value
+        type: Float64
+        nullable: true
+        description: Initial position value.
+        expr:
+          kind: path
+          path:
+            - initialValue
+      - name: current_value
+        type: Float64
+        nullable: true
+        description: Current mark-to-market value.
+        expr:
+          kind: path
+          path:
+            - currentValue
+      - name: cash_pnl
+        type: Float64
+        nullable: true
+        description: Unrealized cash PnL.
+        expr:
+          kind: path
+          path:
+            - cashPnl
+      - name: percent_pnl
+        type: Float64
+        nullable: true
+        description: Unrealized percent PnL.
+        expr:
+          kind: path
+          path:
+            - percentPnl
+      - name: realized_pnl
+        type: Float64
+        nullable: true
+        description: Realized PnL.
+        expr:
+          kind: path
+          path:
+            - realizedPnl
+      - name: cur_price
+        type: Float64
+        nullable: true
+        description: Current outcome price.
+        expr:
+          kind: path
+          path:
+            - curPrice
+      - name: redeemable
+        type: Boolean
+        nullable: true
+        description: Whether the position is redeemable.
+        expr:
+          kind: path
+          path:
+            - redeemable
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Market title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Market slug.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: event_slug
+        type: Utf8
+        nullable: true
+        description: Parent event slug.
+        expr:
+          kind: path
+          path:
+            - eventSlug
+      - name: outcome
+        type: Utf8
+        nullable: true
+        description: Outcome label.
+        expr:
+          kind: path
+          path:
+            - outcome
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Market end date.
+        expr:
+          kind: path
+          path:
+            - endDate
+
+  - name: closed_positions
+    description: Closed positions for a wallet.
+    guide: >-
+      Requires `user`. Example:
+      `SELECT title, realized_pnl, total_bought
+      FROM polymarket_data.closed_positions
+      WHERE user = '0x34dd4a4b70eaf79a17878f7938263c801d4dfd83'`.
+    filters:
+      - name: user
+        required: true
+        description: Wallet address (0x...).
+    request:
+      method: GET
+      path: /closed-positions
+      query:
+        - name: user
+          from: filter
+          key: user
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: user
+        type: Utf8
+        nullable: false
+        description: Requested wallet.
+        expr:
+          kind: from_filter
+          key: user
+      - name: proxy_wallet
+        type: Utf8
+        nullable: true
+        description: Position proxy wallet.
+        expr:
+          kind: path
+          path:
+            - proxyWallet
+      - name: asset
+        type: Utf8
+        nullable: true
+        description: Position asset / token id.
+        expr:
+          kind: path
+          path:
+            - asset
+      - name: condition_id
+        type: Utf8
+        nullable: true
+        description: Market condition id.
+        expr:
+          kind: path
+          path:
+            - conditionId
+      - name: avg_price
+        type: Float64
+        nullable: true
+        description: Average entry price.
+        expr:
+          kind: path
+          path:
+            - avgPrice
+      - name: total_bought
+        type: Float64
+        nullable: true
+        description: Total bought size.
+        expr:
+          kind: path
+          path:
+            - totalBought
+      - name: realized_pnl
+        type: Float64
+        nullable: true
+        description: Realized PnL.
+        expr:
+          kind: path
+          path:
+            - realizedPnl
+      - name: cur_price
+        type: Float64
+        nullable: true
+        description: Price at close / current.
+        expr:
+          kind: path
+          path:
+            - curPrice
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Market title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Market slug.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: outcome
+        type: Utf8
+        nullable: true
+        description: Outcome label.
+        expr:
+          kind: path
+          path:
+            - outcome
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Market end date.
+        expr:
+          kind: path
+          path:
+            - endDate
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: Close timestamp.
+        expr:
+          kind: path
+          path:
+            - timestamp
+
+  - name: activity
+    description: Wallet activity (trades, redeems, and related events).
+    filters:
+      - name: user
+        required: true
+        description: Wallet address (0x...).
+    request:
+      method: GET
+      path: /activity
+      query:
+        - name: user
+          from: filter
+          key: user
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: user
+        type: Utf8
+        nullable: false
+        description: Requested wallet.
+        expr:
+          kind: from_filter
+          key: user
+      - name: proxy_wallet
+        type: Utf8
+        nullable: true
+        description: Activity proxy wallet.
+        expr:
+          kind: path
+          path:
+            - proxyWallet
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: Activity unix timestamp.
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: condition_id
+        type: Utf8
+        nullable: true
+        description: Market condition id.
+        expr:
+          kind: path
+          path:
+            - conditionId
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Activity type.
+        expr:
+          kind: path
+          path:
+            - type
+      - name: size
+        type: Float64
+        nullable: true
+        description: Activity size.
+        expr:
+          kind: path
+          path:
+            - size
+      - name: usdc_size
+        type: Float64
+        nullable: true
+        description: USDC notional size.
+        expr:
+          kind: path
+          path:
+            - usdcSize
+      - name: price
+        type: Float64
+        nullable: true
+        description: Activity price.
+        expr:
+          kind: path
+          path:
+            - price
+      - name: side
+        type: Utf8
+        nullable: true
+        description: Side when the activity is a trade.
+        expr:
+          kind: path
+          path:
+            - side
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Market title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Market slug.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: outcome
+        type: Utf8
+        nullable: true
+        description: Outcome label.
+        expr:
+          kind: path
+          path:
+            - outcome
+      - name: transaction_hash
+        type: Utf8
+        nullable: true
+        description: On-chain transaction hash.
+        expr:
+          kind: path
+          path:
+            - transactionHash
+
+  - name: value
+    description: Portfolio value for a wallet.
+    filters:
+      - name: user
+        required: true
+        description: Wallet address (0x...).
+    request:
+      method: GET
+      path: /value
+      query:
+        - name: user
+          from: filter
+          key: user
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user
+        type: Utf8
+        nullable: false
+        description: Requested wallet.
+        expr:
+          kind: from_filter
+          key: user
+      - name: wallet
+        type: Utf8
+        nullable: true
+        description: Value row wallet.
+        expr:
+          kind: path
+          path:
+            - user
+      - name: value
+        type: Float64
+        nullable: true
+        description: Reported portfolio value.
+        expr:
+          kind: path
+          path:
+            - value
+
+  - name: holders
+    description: >-
+      Top holders for a market, grouped by token. The holders array is
+      returned as JSON on each token row.
+    guide: >-
+      Requires `market` (condition id). Example:
+      `SELECT token, holders FROM polymarket_data.holders
+      WHERE market = '0xa467b14d51f01b957109d9cbb1d6c124fab2a089d52ed8f471d23c2812e743b7'`.
+    filters:
+      - name: market
+        required: true
+        description: Market condition id.
+    request:
+      method: GET
+      path: /holders
+      query:
+        - name: market
+          from: filter
+          key: market
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: market
+        type: Utf8
+        nullable: false
+        description: Requested condition id.
+        expr:
+          kind: from_filter
+          key: market
+      - name: token
+        type: Utf8
+        nullable: true
+        description: Outcome token id.
+        expr:
+          kind: path
+          path:
+            - token
+      - name: holders
+        type: Json
+        nullable: true
+        description: Array of holder objects for this token.
+        expr:
+          kind: path
+          path:
+            - holders
+
+  - name: live_volume
+    description: Live volume for an event, with per-market breakdown.
+    guide: >-
+      Requires `event_id` (Gamma event id). Example:
+      `SELECT total, markets FROM polymarket_data.live_volume
+      WHERE event_id = '903269'`.
+    filters:
+      - name: event_id
+        required: true
+        description: Gamma event id.
+    request:
+      method: GET
+      path: /v1/live-volume
+      query:
+        - name: id
+          from: filter
+          key: event_id
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: event_id
+        type: Utf8
+        nullable: false
+        description: Requested event id.
+        expr:
+          kind: from_filter
+          key: event_id
+      - name: total
+        type: Float64
+        nullable: true
+        description: Total live volume for the event.
+        expr:
+          kind: path
+          path:
+            - total
+      - name: markets
+        type: Json
+        nullable: true
+        description: Per-market live volume objects.
+        expr:
+          kind: path
+          path:
+            - markets
