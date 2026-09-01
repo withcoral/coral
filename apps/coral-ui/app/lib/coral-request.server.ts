@@ -11,7 +11,6 @@ import { coralUIAuthConfig } from '@/auth/config.server'
 import { CatalogService } from '@/generated/coral/v1/catalog_pb'
 import { FeatureService } from '@/generated/coral/v1/features_pb'
 import { FunctionService } from '@/generated/coral/v1/functions_pb'
-import { GuiOnboardingService } from '@/generated/coral/v1/gui_onboarding_pb'
 import { QueryService } from '@/generated/coral/v1/query_pb'
 import { SourceService } from '@/generated/coral/v1/sources_pb'
 import { TraceService } from '@/generated/coral/v1/traces_pb'
@@ -44,10 +43,6 @@ export function featureClientForRequest(request: Request, accessToken: string | 
 
 export function functionClientForRequest(request: Request, accessToken: string | null) {
   return createClient(FunctionService, coralTransportForRequest(request, accessToken))
-}
-
-export function guiOnboardingClientForRequest(request: Request, accessToken: string | null) {
-  return createClient(GuiOnboardingService, coralTransportForRequest(request, accessToken))
 }
 
 export function queryClientForRequest(request: Request, accessToken: string | null) {

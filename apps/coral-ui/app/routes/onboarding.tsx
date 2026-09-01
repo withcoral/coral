@@ -1,12 +1,11 @@
 import type { Route } from './+types/onboarding'
 
-import { replace, useFetcher } from 'react-router'
+import { useFetcher } from 'react-router'
 
 import { requestAuthContext } from '@/auth/server-context'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { COMPLETE_ONBOARDING_INTENT } from '@/lib/gui-onboarding'
-import { getGuiOnboardingCompleted } from '@/lib/gui-onboarding.server'
 import { loadOnboardingSampleQuery } from '@/lib/onboarding-query.server'
 import type { CreateWorkspaceActionData } from '@/lib/workspace-name'
 import {
@@ -31,11 +30,6 @@ import {
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const accessToken = context.get(requestAuthContext).accessToken
-  if (await getGuiOnboardingCompleted(request, accessToken)) {
-    const workspace = await impliedWorkspaceForRequest(request, accessToken)
-    return replace(routePath('workspaceTraces', { workspaceId: workspace.name }))
-  }
-
   const workspaces = await listWorkspacesForRequest(request, accessToken)
   const workspace = pickImpliedWorkspace(workspaces)
   if (!workspace) {

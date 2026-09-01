@@ -1,18 +1,13 @@
 import { create } from '@bufbuild/protobuf'
-import { createMemoryRouter, redirect } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
-  completeGuiOnboarding,
-  getGuiOnboardingCompleted,
   impliedWorkspaceForRequest,
   listWorkspacesForRequest,
   loadOnboardingSampleQuery,
   loadSourcesRouteData,
   runSourcesAction,
 } = vi.hoisted(() => ({
-  completeGuiOnboarding: vi.fn(),
-  getGuiOnboardingCompleted: vi.fn(),
   impliedWorkspaceForRequest: vi.fn(),
   listWorkspacesForRequest: vi.fn(),
   loadOnboardingSampleQuery: vi.fn(),
@@ -26,31 +21,25 @@ vi.mock('@/lib/workspaces.server', async (importOriginal) => ({
   impliedWorkspaceForRequest,
   listWorkspacesForRequest,
 }))
-vi.mock('@/lib/gui-onboarding.server', () => ({
-  completeGuiOnboarding,
-  getGuiOnboardingCompleted,
-}))
 vi.mock('@/lib/onboarding-query.server', () => ({ loadOnboardingSampleQuery }))
 vi.mock('./sources-loader', () => ({ loadSourcesRouteData }))
 vi.mock('./sources-action', () => ({ runSourcesAction }))
 
-import { authRouteTestArgs, authTestContext } from '@/auth/server-context.test-helper'
+import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
 
+import { loader as indexLoader } from './index'
 import { action, loader } from './onboarding'
 
 const workspace = create(WorkspaceSchema, { name: 'analytics' })
 const defaultWorkspace = create(WorkspaceSchema, { name: 'default' })
 
 beforeEach(() => {
-  completeGuiOnboarding.mockReset()
   impliedWorkspaceForRequest.mockReset()
   listWorkspacesForRequest.mockReset()
-  getGuiOnboardingCompleted.mockReset()
   loadOnboardingSampleQuery.mockReset()
   loadSourcesRouteData.mockReset()
   runSourcesAction.mockReset()
-  getGuiOnboardingCompleted.mockResolvedValue(false)
   impliedWorkspaceForRequest.mockResolvedValue(workspace)
   listWorkspacesForRequest.mockResolvedValue([workspace])
   loadSourcesRouteData.mockResolvedValue({
@@ -106,20 +95,13 @@ describe('onboarding route authentication', () => {
     expect(runSourcesAction).toHaveBeenCalledWith(request, workspace, 'coral-access-token')
   })
 
-  it('passes the hosted token through onboarding completion', async () => {
-    completeGuiOnboarding.mockResolvedValue(undefined)
-
+  it('passes the hosted token through the finishing action', async () => {
     await action(authRouteTestArgs(completionRequest(), {}, 'coral-access-token'))
 
-    expect(completeGuiOnboarding).toHaveBeenCalledWith(expect.any(Request), 'coral-access-token')
-  })
-
-  it('passes the hosted token through the completion-state check', async () => {
-    await loader(
-      authRouteTestArgs(new Request('http://coral-ui.test/onboarding'), {}, 'coral-token'),
+    expect(impliedWorkspaceForRequest).toHaveBeenCalledWith(
+      expect.any(Request),
+      'coral-access-token',
     )
-
-    expect(getGuiOnboardingCompleted).toHaveBeenCalledWith(expect.any(Request), 'coral-token')
   })
 })
 
@@ -153,63 +135,19 @@ describe('onboarding server route', () => {
     expect(loadSourcesRouteData).not.toHaveBeenCalled()
   })
 
-  it('replaces completed users directly into the normal app before loading onboarding data', async () => {
-    getGuiOnboardingCompleted.mockResolvedValue(true)
-    const request = new Request('http://coral-ui.test/onboarding')
+  it('still renders onboarding for a caller who already walked it', async () => {
+    // Onboarding records nothing now, so nothing can send a returning caller
+    // away from the route: it is walkable as often as someone opens it.
+    const request = new Request('http://coral-ui.test/onboarding?step=query')
 
-    const response = await loader(authRouteTestArgs(request, {}, null))
+    const result = await loader(authRouteTestArgs(request, {}, null))
 
-    expect(response).toBeInstanceOf(Response)
-    expect((response as Response).status).toBe(302)
-    expect((response as Response).headers.get('Location')).toBe('/workspaces/analytics/traces')
-    expect((response as Response).headers.get('X-Remix-Replace')).toBe('true')
-    expect(impliedWorkspaceForRequest).toHaveBeenCalledWith(request, null)
-    expect(listWorkspacesForRequest).not.toHaveBeenCalled()
-    expect(loadSourcesRouteData).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ step: { step: 'query' }, workspaceId: 'analytics' })
   })
 
-  it('does not trap completed users when they navigate back into onboarding history', async () => {
-    getGuiOnboardingCompleted.mockResolvedValue(true)
-    const router = createMemoryRouter(
-      [
-        { path: '/before' },
-        { loader: () => redirect(`/workspaces/${workspace.name}/traces`), path: '/' },
-        { loader, path: '/onboarding' },
-        { path: '/workspaces/:workspaceId/traces' },
-      ],
-      {
-        getContext: () => authTestContext(null),
-        initialEntries: [
-          '/before',
-          '/onboarding?step=query',
-          `/workspaces/${workspace.name}/traces`,
-        ],
-        initialIndex: 2,
-      },
-    )
+  it('redirects to the normal app when onboarding is finished', async () => {
+    const response = await action(authRouteTestArgs(completionRequest(), {}, null))
 
-    try {
-      await router.navigate(-1)
-
-      expect(router.state.location.pathname).toBe(`/workspaces/${workspace.name}/traces`)
-      expect(router.state.historyAction).toBe('REPLACE')
-
-      await router.navigate(-1)
-
-      expect(router.state.location.pathname).toBe('/before')
-      expect(getGuiOnboardingCompleted).toHaveBeenCalledOnce()
-    } finally {
-      router.dispose()
-    }
-  })
-
-  it('persists completion before redirecting to the normal app', async () => {
-    completeGuiOnboarding.mockResolvedValue(undefined)
-    const request = completionRequest()
-
-    const response = await action(authRouteTestArgs(request, {}, null))
-
-    expect(completeGuiOnboarding).toHaveBeenCalledWith(request, null)
     expect(response).toBeInstanceOf(Response)
     expect((response as Response).headers.get('Location')).toBe('/workspaces/analytics/traces')
     expect(runSourcesAction).not.toHaveBeenCalled()
@@ -225,23 +163,21 @@ describe('onboarding server route', () => {
     await expect(action(authRouteTestArgs(completionRequest(), {}, null))).rejects.toBe(
       missingWorkspace,
     )
-    expect(completeGuiOnboarding).not.toHaveBeenCalled()
   })
 
-  it('returns typed internal-error action data when completion fails', async () => {
-    completeGuiOnboarding.mockRejectedValueOnce(new Error('completion database failed'))
+  it('returns typed internal-error action data when finishing fails', async () => {
+    impliedWorkspaceForRequest.mockRejectedValueOnce(new Error('workspace lookup failed'))
 
     const result = await action(authRouteTestArgs(completionRequest(), {}, null))
 
     expect(result).toMatchObject({
       data: {
         intent: 'complete-onboarding',
-        message: 'completion database failed',
+        message: 'workspace lookup failed',
         status: 'error',
       },
       init: { status: 500 },
     })
-    expect(completeGuiOnboarding).toHaveBeenCalledOnce()
   })
 
   it('keeps source intents on the existing source-action path', async () => {
@@ -251,7 +187,32 @@ describe('onboarding server route', () => {
 
     await expect(action(authRouteTestArgs(request, {}, null))).resolves.toBe(result)
     expect(runSourcesAction).toHaveBeenCalledWith(request, workspace, null)
-    expect(completeGuiOnboarding).not.toHaveBeenCalled()
+  })
+})
+
+describe('app index route', () => {
+  it('goes straight to the workspace traces without offering onboarding', async () => {
+    listWorkspacesForRequest.mockResolvedValue([workspace, defaultWorkspace])
+    const request = new Request('http://coral-ui.test/?since=1h')
+
+    const response = await indexLoader(authRouteTestArgs(request, {}, 'coral-token'))
+
+    // One call only: the redirect helper now takes the workspace this loader
+    // already picked, instead of listing the workspaces a second time.
+    expect(listWorkspacesForRequest).toHaveBeenCalledOnce()
+    expect(listWorkspacesForRequest).toHaveBeenCalledWith(request, 'coral-token')
+    expect(response.headers.get('Location')).toBe('/workspaces/default/traces?since=1h')
+  })
+
+  it('sends a caller with no workspace to onboarding for its creation form', async () => {
+    listWorkspacesForRequest.mockResolvedValue([])
+
+    const response = await indexLoader(
+      authRouteTestArgs(new Request('http://coral-ui.test/'), {}, null),
+    )
+
+    expect(response.headers.get('Location')).toBe('/onboarding')
+    expect(response.headers.get('X-Remix-Replace')).toBe('true')
   })
 })
 
