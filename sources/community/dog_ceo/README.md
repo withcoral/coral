@@ -7,7 +7,7 @@ Fetch random dog images and filter by breed using the [Dog CEO API](https://dog.
 No authentication is required. Add the source:
 
 ```bash
-coral source add --file sources/community/dog-ceo/manifest.yaml
+coral source add --file sources/community/dog_ceo/manifest.yaml
 ```
 
 ## Local Testing

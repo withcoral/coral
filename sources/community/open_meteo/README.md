@@ -9,7 +9,7 @@
 Open-Meteo requires no authentication, so you can add it immediately:
 
 ```bash
-coral source add --file sources/community/open-meteo/manifest.yaml
+coral source add --file sources/community/open_meteo/manifest.yaml
 ```
 
 ### 2. Verify
