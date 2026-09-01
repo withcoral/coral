@@ -27,7 +27,7 @@ export function WorkspaceCreationDialog({
         <Dialog.Popup size="m">
           <Dialog.Title>Create workspace</Dialog.Title>
           <Dialog.Description>
-            Choose a name for the local workspace. Use lowercase letters, numbers, and hyphens.
+            Choose a name for the local workspace. Use letters, numbers, and hyphens.
           </Dialog.Description>
           <Dialog.Close />
           <Form

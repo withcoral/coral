@@ -15,7 +15,7 @@ export async function action({ context, request }: Route.ActionArgs) {
   switch (intent) {
     case 'create': {
       const nameValue = formData.get('name')
-      const name = typeof nameValue === 'string' ? nameValue : ''
+      const name = (typeof nameValue === 'string' ? nameValue : '').trim().toLowerCase()
       const validationError = validateWorkspaceName(name)
 
       if (validationError) return actionError(name, validationError, 400)

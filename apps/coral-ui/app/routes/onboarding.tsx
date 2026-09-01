@@ -4,6 +4,7 @@ import { replace, useFetcher } from 'react-router'
 
 import { requestAuthContext } from '@/auth/server-context'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
+import { CreateFirstWorkspace, CREATE_FIRST_WORKSPACE_FETCHER_KEY } from '@/components/workspaces'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { COMPLETE_ONBOARDING_INTENT } from '@/lib/gui-onboarding'
 import { getGuiOnboardingCompleted } from '@/lib/gui-onboarding.server'
@@ -16,10 +17,8 @@ import {
 } from '@/lib/workspaces.server'
 import { routePath } from '@/routing/routemap'
 import { OnboardingView } from '@/views/onboarding/onboarding'
-import { Button, Inputs, Typography } from '@/wax/components'
 import { addToast } from '@/wax/components/toast'
 
-import * as createWorkspaceStyles from './onboarding-create-workspace.css'
 import { runCompleteOnboardingAction } from './onboarding-action'
 import { runSourcesAction } from './sources-action'
 import { loadSourcesRouteData } from './sources-loader'
@@ -111,7 +110,7 @@ export async function clientAction({ request, serverAction }: Route.ClientAction
 }
 
 export default function OnboardingRoute({ actionData, loaderData }: Route.ComponentProps) {
-  if ('mode' in loaderData) return <CreateFirstWorkspace />
+  if ('mode' in loaderData) return <CreateFirstWorkspaceStep />
 
   return <OnboardingExperience actionData={actionData} loaderData={loaderData} />
 }
@@ -149,47 +148,12 @@ function OnboardingExperience({
   )
 }
 
-function CreateFirstWorkspace() {
-  const fetcher = useFetcher<CreateWorkspaceActionData>()
-  const isCreating = fetcher.state !== 'idle'
+function CreateFirstWorkspaceStep() {
+  const fetcher = useFetcher<CreateWorkspaceActionData>({
+    key: CREATE_FIRST_WORKSPACE_FETCHER_KEY,
+  })
 
-  return (
-    <main className={createWorkspaceStyles.page}>
-      <section
-        aria-labelledby="create-first-workspace-title"
-        className={createWorkspaceStyles.content}
-      >
-        <Typography.HeadingLarge as="h1" id="create-first-workspace-title">
-          Create your first workspace
-        </Typography.HeadingLarge>
-        <Typography.Body>
-          No workspace lists you as a member yet. Create one to get started — it makes you its owner
-          — or ask an owner of an existing workspace to add you.
-        </Typography.Body>
-        <fetcher.Form
-          action={routePath('workspaces')}
-          className={createWorkspaceStyles.form}
-          method="post"
-        >
-          <input name="intent" type="hidden" value="create" />
-          <label className={createWorkspaceStyles.field}>
-            <Typography.BodySmallStrong>Workspace name</Typography.BodySmallStrong>
-            <Inputs.TextInput autoFocus name="name" placeholder="engineering" />
-          </label>
-          {fetcher.data?.error && (
-            <Typography.BodySmall as="p" role="alert" variant="error">
-              {fetcher.data.error}
-            </Typography.BodySmall>
-          )}
-          <div className={createWorkspaceStyles.actions}>
-            <Button.TextButton disabled={isCreating} type="submit">
-              {isCreating ? 'Creating…' : 'Create workspace'}
-            </Button.TextButton>
-          </div>
-        </fetcher.Form>
-      </section>
-    </main>
-  )
+  return <CreateFirstWorkspace error={fetcher.data?.error} pending={fetcher.state !== 'idle'} />
 }
 
 export function HydrateFallback() {

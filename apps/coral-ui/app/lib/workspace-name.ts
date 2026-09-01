@@ -12,7 +12,7 @@ export function validateWorkspaceName(name: string): string | null {
     return 'Workspace name must not start or end with a hyphen'
   }
   if (!WORKSPACE_NAME_CHARACTERS.test(name)) {
-    return 'Workspace name may only contain lowercase letters, numbers, and hyphens'
+    return 'Workspace name may only contain letters, numbers, and hyphens'
   }
   return null
 }
