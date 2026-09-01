@@ -1,0 +1,951 @@
+name: coral_files
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query local files, extracted content, document structure, metadata, chunks,
+  structured nodes, headings, sections, table cells, and full-text search
+  results from a running coral-files server.
+base_url: "{{input.CORAL_FILES_BASE_URL}}"
+inputs:
+  CORAL_FILES_BASE_URL:
+    kind: variable
+    default: http://127.0.0.1:8765
+    hint: |
+      Base URL for the local coral-files REST server. The default matches
+      `coral-files serve` with no explicit port:
+      http://127.0.0.1:8765
+
+      If you started coral-files on another localhost port, set this to that
+      loopback URL, for example http://127.0.0.1:18766.
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT id, path, status FROM coral_files.files LIMIT 1
+  - SELECT path, heading_text FROM coral_files.sections LIMIT 1
+  - SELECT path, snippet FROM coral_files.search_files(q => 'Revenue') LIMIT 1
+
+functions:
+  - name: search_files
+    kind: search
+    description: Search indexed file content using the coral-files full-text index.
+    fetch_limit_default: 20
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+    request:
+      method: GET
+      path: /v1/search
+      query:
+        - name: q
+          from: arg
+          key: q
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: q
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Search query passed to coral-files.
+        expr:
+          kind: from_arg
+          key: q
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier returned by coral-files.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: score
+        type: Float64
+        nullable: true
+        description: Ranking score from the local full-text index.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Matched content snippet.
+        expr:
+          kind: path
+          path:
+            - snippet
+
+  - name: file_content
+    description: Fetch extracted Markdown content for one indexed file.
+    fetch_limit_default: 1
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/content
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: content_markdown
+        type: Utf8
+        nullable: true
+        description: Extracted file content rendered as Markdown.
+        expr:
+          kind: path
+          path:
+            - content_markdown
+      - name: content_format
+        type: Utf8
+        nullable: true
+        description: Content format returned by coral-files.
+        expr:
+          kind: path
+          path:
+            - content_format
+
+  - name: file_structure
+    description: Fetch the JSON document structure for one indexed file.
+    fetch_limit_default: 1
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/structure
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: structure
+        type: Json
+        nullable: true
+        description: Structured JSON tree returned by Kreuzberg.
+        expr:
+          kind: path
+          path:
+            - structure
+
+  - name: file_metadata
+    description: Fetch extraction metadata for one indexed file.
+    fetch_limit_default: 1
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/metadata
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Extraction metadata returned by Kreuzberg and coral-files.
+        expr:
+          kind: path
+          path:
+            - metadata
+
+  - name: file_elements
+    description: List normalized document elements for one indexed file.
+    fetch_limit_default: 100
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/elements
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: file_id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier.
+        expr:
+          kind: path
+          path:
+            - file_id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: element_index
+        type: Int64
+        nullable: false
+        description: Zero-based element order within the file.
+        expr:
+          kind: path
+          path:
+            - element_index
+      - name: kind
+        type: Utf8
+        nullable: false
+        description: Element kind, such as Heading, NarrativeText, or Table.
+        expr:
+          kind: path
+          path:
+            - kind
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Text content for the element.
+        expr:
+          kind: path
+          path:
+            - text
+      - name: page
+        type: Int64
+        nullable: true
+        description: One-based page number when known.
+        expr:
+          kind: path
+          path:
+            - page
+      - name: bbox_json
+        type: Json
+        nullable: true
+        description: Bounding box JSON when the extractor provides coordinates.
+        expr:
+          kind: path
+          path:
+            - bbox_json
+      - name: confidence
+        type: Float64
+        nullable: true
+        description: Extraction confidence when provided.
+        expr:
+          kind: path
+          path:
+            - confidence
+
+  - name: file_tables
+    description: List normalized table cells for one indexed file.
+    fetch_limit_default: 100
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/tables
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: file_id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier.
+        expr:
+          kind: path
+          path:
+            - file_id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: table_index
+        type: Int64
+        nullable: false
+        description: Zero-based table index within the file.
+        expr:
+          kind: path
+          path:
+            - table_index
+      - name: row_index
+        type: Int64
+        nullable: false
+        description: Zero-based row index within the normalized table.
+        expr:
+          kind: path
+          path:
+            - row_index
+      - name: column_index
+        type: Int64
+        nullable: false
+        description: Zero-based column index within the normalized table.
+        expr:
+          kind: path
+          path:
+            - column_index
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Cell text.
+        expr:
+          kind: path
+          path:
+            - text
+      - name: page
+        type: Int64
+        nullable: true
+        description: One-based page number when known.
+        expr:
+          kind: path
+          path:
+            - page
+      - name: bbox_json
+        type: Json
+        nullable: true
+        description: Bounding box JSON when the extractor provides coordinates.
+        expr:
+          kind: path
+          path:
+            - bbox_json
+
+  - name: file_chunks
+    description: List text chunks for one indexed file.
+    fetch_limit_default: 100
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/chunks
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: file_id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier.
+        expr:
+          kind: path
+          path:
+            - file_id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: chunk_index
+        type: Int64
+        nullable: false
+        description: Zero-based chunk order within the file.
+        expr:
+          kind: path
+          path:
+            - chunk_index
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Chunk text content.
+        expr:
+          kind: path
+          path:
+            - content
+      - name: start_offset
+        type: Int64
+        nullable: true
+        description: Byte offset where this chunk starts in extracted content.
+        expr:
+          kind: path
+          path:
+            - start_offset
+      - name: end_offset
+        type: Int64
+        nullable: true
+        description: Byte offset where this chunk ends in extracted content.
+        expr:
+          kind: path
+          path:
+            - end_offset
+
+  - name: file_nodes
+    description: List flattened structured document nodes for one indexed file.
+    fetch_limit_default: 100
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+      - name: node_type
+        bind:
+          arg: node_type
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/nodes
+      query:
+        - name: node_type
+          from: arg
+          key: node_type
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - {name: file_id, type: Utf8, nullable: false, description: Stable file identifier., expr: {kind: path, path: [file_id]}}
+      - {name: path, type: Utf8, nullable: false, description: File path relative to the indexed root., expr: {kind: path, path: [path]}}
+      - {name: node_index, type: Int64, nullable: false, description: Zero-based node index in the structure tree., expr: {kind: path, path: [node_index]}}
+      - {name: parent_index, type: Int64, nullable: true, description: Parent node index when the structure supplies one., expr: {kind: path, path: [parent_index]}}
+      - {name: node_type, type: Utf8, nullable: true, description: "Structured node type such as group, heading, paragraph, or table.", expr: {kind: path, path: [node_type]}}
+      - {name: heading_level, type: Int64, nullable: true, description: Heading level associated with this node when present., expr: {kind: path, path: [heading_level]}}
+      - {name: heading_text, type: Utf8, nullable: true, description: Heading text associated with this node when present., expr: {kind: path, path: [heading_text]}}
+      - {name: text, type: Utf8, nullable: true, description: Plain text extracted from the node content., expr: {kind: path, path: [text]}}
+      - {name: page, type: Int64, nullable: true, description: One-based page number when known., expr: {kind: path, path: [page]}}
+      - {name: bbox_json, type: Json, nullable: true, description: Bounding box JSON when available., expr: {kind: path, path: [bbox_json]}}
+      - {name: children_json, type: Json, nullable: true, description: Child node indexes when the structure supplies them., expr: {kind: path, path: [children_json]}}
+      - {name: content_json, type: Json, nullable: true, description: Raw node content JSON., expr: {kind: path, path: [content_json]}}
+
+  - name: file_headings
+    description: List structured headings for one indexed file.
+    fetch_limit_default: 100
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/headings
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - {name: file_id, type: Utf8, nullable: false, description: Stable file identifier., expr: {kind: path, path: [file_id]}}
+      - {name: path, type: Utf8, nullable: false, description: File path relative to the indexed root., expr: {kind: path, path: [path]}}
+      - {name: node_index, type: Int64, nullable: false, description: Node index for the heading., expr: {kind: path, path: [node_index]}}
+      - {name: parent_index, type: Int64, nullable: true, description: Parent node index when supplied., expr: {kind: path, path: [parent_index]}}
+      - {name: level, type: Int64, nullable: false, description: Heading level., expr: {kind: path, path: [level]}}
+      - {name: text, type: Utf8, nullable: false, description: Heading text., expr: {kind: path, path: [text]}}
+      - {name: page, type: Int64, nullable: true, description: One-based page number when known., expr: {kind: path, path: [page]}}
+      - {name: bbox_json, type: Json, nullable: true, description: Bounding box JSON when available., expr: {kind: path, path: [bbox_json]}}
+      - {name: source_node_type, type: Utf8, nullable: true, description: Original node type used to produce this heading., expr: {kind: path, path: [source_node_type]}}
+
+  - name: file_sections
+    description: List heading-scoped text sections for one indexed file.
+    fetch_limit_default: 100
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v1/files/{{arg.id}}/sections
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - {name: file_id, type: Utf8, nullable: false, description: Stable file identifier., expr: {kind: path, path: [file_id]}}
+      - {name: path, type: Utf8, nullable: false, description: File path relative to the indexed root., expr: {kind: path, path: [path]}}
+      - {name: section_index, type: Int64, nullable: false, description: Zero-based section index within the file., expr: {kind: path, path: [section_index]}}
+      - {name: heading_node_index, type: Int64, nullable: true, description: Heading node index that starts the section., expr: {kind: path, path: [heading_node_index]}}
+      - {name: heading_level, type: Int64, nullable: true, description: Heading level for the section., expr: {kind: path, path: [heading_level]}}
+      - {name: heading_text, type: Utf8, nullable: true, description: Heading text for the section., expr: {kind: path, path: [heading_text]}}
+      - {name: text, type: Utf8, nullable: false, description: Section body text assembled from child content nodes., expr: {kind: path, path: [text]}}
+      - {name: node_indexes_json, type: Json, nullable: false, description: Structure node indexes included in the section., expr: {kind: path, path: [node_indexes_json]}}
+
+tables:
+  - name: files
+    description: Files discovered by coral-files with indexing status and metadata.
+    guide: |
+      Start here. Use `id` with source functions such as
+      `coral_files.file_content(id => '<id>')`,
+      `coral_files.file_structure(id => '<id>')`, and
+      `coral_files.file_elements(id => '<id>')`.
+      Files with `status = 'pending'` have been discovered but not indexed yet.
+    fetch_limit_default: 100
+    filters:
+      - name: path_prefix
+        required: false
+        description: Prefix match on paths relative to the indexed root.
+      - name: extension
+        required: false
+        description: File extension without the leading dot.
+      - name: mime_type
+        required: false
+        description: MIME type detected for the file.
+      - name: status
+        required: false
+        description: Indexing status such as pending, indexed, unsupported, failed, or skipped.
+    request:
+      method: GET
+      path: /v1/files
+      query:
+        - name: path_prefix
+          from: filter
+          key: path_prefix
+        - name: extension
+          from: filter
+          key: extension
+        - name: mime_type
+          from: filter
+          key: mime_type
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier returned by coral-files.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: extension
+        type: Utf8
+        nullable: true
+        description: File extension without the leading dot.
+        expr:
+          kind: path
+          path:
+            - extension
+      - name: mime_type
+        type: Utf8
+        nullable: true
+        description: Detected MIME type.
+        expr:
+          kind: path
+          path:
+            - mime_type
+      - name: size_bytes
+        type: Int64
+        nullable: true
+        description: File size in bytes.
+        expr:
+          kind: path
+          path:
+            - size_bytes
+      - name: modified_at
+        type: Timestamp
+        nullable: true
+        description: Last modified timestamp from the filesystem.
+        expr:
+          kind: path
+          path:
+            - modified_at
+      - name: indexed_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp when coral-files last indexed the file.
+        expr:
+          kind: path
+          path:
+            - indexed_at
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Indexing status.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: status_reason
+        type: Utf8
+        nullable: true
+        description: Human-readable reason for unsupported, failed, or skipped files.
+        expr:
+          kind: path
+          path:
+            - status_reason
+      - name: error_summary
+        type: Utf8
+        nullable: true
+        description: Short error summary when indexing failed.
+        expr:
+          kind: path
+          path:
+            - error_summary
+
+  - name: chunks
+    description: Text chunks across indexed files.
+    guide: |
+      Use this table for corpus-wide scans. For chunks belonging to one file,
+      prefer `coral_files.file_chunks(id => '<id>')`.
+    fetch_limit_default: 100
+    filters:
+      - name: path_prefix
+        required: false
+        description: Prefix match on paths relative to the indexed root.
+      - name: status
+        required: false
+        description: File indexing status to include.
+    request:
+      method: GET
+      path: /v1/chunks
+      query:
+        - name: path_prefix
+          from: filter
+          key: path_prefix
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: file_id
+        type: Utf8
+        nullable: false
+        description: Stable file identifier.
+        expr:
+          kind: path
+          path:
+            - file_id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: File path relative to the indexed root.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: chunk_index
+        type: Int64
+        nullable: false
+        description: Zero-based chunk order within the file.
+        expr:
+          kind: path
+          path:
+            - chunk_index
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Chunk text content.
+        expr:
+          kind: path
+          path:
+            - content
+      - name: start_offset
+        type: Int64
+        nullable: true
+        description: Byte offset where this chunk starts in extracted content.
+        expr:
+          kind: path
+          path:
+            - start_offset
+      - name: end_offset
+        type: Int64
+        nullable: true
+        description: Byte offset where this chunk ends in extracted content.
+        expr:
+          kind: path
+          path:
+            - end_offset
+
+  - name: nodes
+    description: Flattened structured document nodes across indexed files.
+    guide: |
+      Use this table to inspect the structured tree produced by Kreuzberg.
+      Filter by `node_type` for focused scans such as headings, paragraphs, or
+      tables. For one file, prefer `coral_files.file_nodes(id => '<id>')`.
+    fetch_limit_default: 100
+    filters:
+      - name: path_prefix
+        required: false
+        description: Prefix match on paths relative to the indexed root.
+      - name: status
+        required: false
+        description: File indexing status to include.
+      - name: node_type
+        required: false
+        description: Structured node type such as heading, paragraph, table, or group.
+    request:
+      method: GET
+      path: /v1/nodes
+      query:
+        - name: path_prefix
+          from: filter
+          key: path_prefix
+        - name: status
+          from: filter
+          key: status
+        - name: node_type
+          from: filter
+          key: node_type
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - {name: file_id, type: Utf8, nullable: false, description: Stable file identifier., expr: {kind: path, path: [file_id]}}
+      - {name: path, type: Utf8, nullable: false, description: File path relative to the indexed root., expr: {kind: path, path: [path]}}
+      - {name: node_index, type: Int64, nullable: false, description: Zero-based node index in the structure tree., expr: {kind: path, path: [node_index]}}
+      - {name: parent_index, type: Int64, nullable: true, description: Parent node index when the structure supplies one., expr: {kind: path, path: [parent_index]}}
+      - {name: node_type, type: Utf8, nullable: true, description: Structured node type., expr: {kind: path, path: [node_type]}}
+      - {name: heading_level, type: Int64, nullable: true, description: Heading level associated with this node when present., expr: {kind: path, path: [heading_level]}}
+      - {name: heading_text, type: Utf8, nullable: true, description: Heading text associated with this node when present., expr: {kind: path, path: [heading_text]}}
+      - {name: text, type: Utf8, nullable: true, description: Plain text extracted from the node content., expr: {kind: path, path: [text]}}
+      - {name: page, type: Int64, nullable: true, description: One-based page number when known., expr: {kind: path, path: [page]}}
+      - {name: bbox_json, type: Json, nullable: true, description: Bounding box JSON when available., expr: {kind: path, path: [bbox_json]}}
+      - {name: children_json, type: Json, nullable: true, description: Child node indexes when the structure supplies them., expr: {kind: path, path: [children_json]}}
+      - {name: content_json, type: Json, nullable: true, description: Raw node content JSON., expr: {kind: path, path: [content_json]}}
+
+  - name: headings
+    description: Structured headings across indexed files.
+    guide: |
+      Use this table to discover file outlines. The implementation prefers
+      direct heading nodes and falls back to grouped heading metadata only when
+      direct heading nodes are absent.
+    fetch_limit_default: 100
+    filters:
+      - name: path_prefix
+        required: false
+        description: Prefix match on paths relative to the indexed root.
+      - name: status
+        required: false
+        description: File indexing status to include.
+    request:
+      method: GET
+      path: /v1/headings
+      query:
+        - name: path_prefix
+          from: filter
+          key: path_prefix
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - {name: file_id, type: Utf8, nullable: false, description: Stable file identifier., expr: {kind: path, path: [file_id]}}
+      - {name: path, type: Utf8, nullable: false, description: File path relative to the indexed root., expr: {kind: path, path: [path]}}
+      - {name: node_index, type: Int64, nullable: false, description: Node index for the heading., expr: {kind: path, path: [node_index]}}
+      - {name: parent_index, type: Int64, nullable: true, description: Parent node index when supplied., expr: {kind: path, path: [parent_index]}}
+      - {name: level, type: Int64, nullable: false, description: Heading level., expr: {kind: path, path: [level]}}
+      - {name: text, type: Utf8, nullable: false, description: Heading text., expr: {kind: path, path: [text]}}
+      - {name: page, type: Int64, nullable: true, description: One-based page number when known., expr: {kind: path, path: [page]}}
+      - {name: bbox_json, type: Json, nullable: true, description: Bounding box JSON when available., expr: {kind: path, path: [bbox_json]}}
+      - {name: source_node_type, type: Utf8, nullable: true, description: Original node type used to produce this heading., expr: {kind: path, path: [source_node_type]}}
+
+  - name: sections
+    description: Heading-scoped text sections across indexed files.
+    guide: |
+      Use this table for agent-friendly document outlines. Each row groups
+      body text beneath one heading. Files without headings produce a single
+      unheaded section when text is available.
+    fetch_limit_default: 100
+    filters:
+      - name: path_prefix
+        required: false
+        description: Prefix match on paths relative to the indexed root.
+      - name: status
+        required: false
+        description: File indexing status to include.
+    request:
+      method: GET
+      path: /v1/sections
+      query:
+        - name: path_prefix
+          from: filter
+          key: path_prefix
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - {name: file_id, type: Utf8, nullable: false, description: Stable file identifier., expr: {kind: path, path: [file_id]}}
+      - {name: path, type: Utf8, nullable: false, description: File path relative to the indexed root., expr: {kind: path, path: [path]}}
+      - {name: section_index, type: Int64, nullable: false, description: Zero-based section index within the file., expr: {kind: path, path: [section_index]}}
+      - {name: heading_node_index, type: Int64, nullable: true, description: Heading node index that starts the section., expr: {kind: path, path: [heading_node_index]}}
+      - {name: heading_level, type: Int64, nullable: true, description: Heading level for the section., expr: {kind: path, path: [heading_level]}}
+      - {name: heading_text, type: Utf8, nullable: true, description: Heading text for the section., expr: {kind: path, path: [heading_text]}}
+      - {name: text, type: Utf8, nullable: false, description: Section body text assembled from child content nodes., expr: {kind: path, path: [text]}}
+      - {name: node_indexes_json, type: Json, nullable: false, description: Structure node indexes included in the section., expr: {kind: path, path: [node_indexes_json]}}

@@ -1,0 +1,33 @@
+[package]
+name = "coral-files"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.91"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4.5", features = ["derive"] }
+globset = "0.4"
+hex = "0.4"
+ignore = "0.4"
+kreuzberg = { version = "5.0.0-rc.10", features = ["pdf", "office", "excel", "html", "xml", "email", "tree-sitter", "archives"] }
+mime_guess = "2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+urlencoding = "2"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
