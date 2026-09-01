@@ -1,5 +1,7 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
 
+import { baseInput } from '@/wax/components/inputs/base-input.css'
+import { theme } from '@/wax/theme/theme.css'
 import { breakpoints } from '@/styles/theme.css'
 
 const MOBILE_QUERY = `screen and (max-width: ${breakpoints.mobile})`
@@ -8,57 +10,80 @@ const MOBILE_QUERY = `screen and (max-width: ${breakpoints.mobile})`
 // themselves are described where the table is rendered.
 export const WORKSPACE_WIDTH_PROPERTY = '--mcp-workspace-width'
 
-export const CLIENT_WIDTH_PROPERTY = '--mcp-client-width'
-
 export const responsiveWidths = style({
   vars: {
-    [CLIENT_WIDTH_PROPERTY]: '180px',
     [WORKSPACE_WIDTH_PROPERTY]: '260px',
   },
   '@media': {
     [MOBILE_QUERY]: {
       vars: {
-        [CLIENT_WIDTH_PROPERTY]: '140px',
         [WORKSPACE_WIDTH_PROPERTY]: '180px',
       },
     },
   },
 })
 
-export const workspaceTrigger = style({
+export const selectTrigger = style({
   justifyContent: 'space-between',
 })
 
-export const workspaceMenu = style({
+export const selectMenu = style({
   maxWidth: 'calc(100vw - 32px)',
   width: '228px',
 })
 
-export const installCommand = style({
-  alignItems: 'center',
+export const installPanel = style({
   display: 'flex',
-  gap: '12px',
-  justifyContent: 'space-between',
-  minWidth: 0,
+  flexDirection: 'column',
+  gap: '20px',
+})
+
+export const installSelects = style({
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '16px',
+})
+
+export const installSelect = style({
+  display: 'flex',
+  flex: '0 1 260px',
+  flexDirection: 'column',
+  gap: '6px',
+  minWidth: '180px',
 })
 
 export const installCommandContainer = style({
-  display: 'grid',
-  gap: '4px',
-  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
 })
 
-export const copyButton = style({
-  opacity: 0,
-  transition: 'opacity 120ms ease',
-  selectors: {
-    [`${installCommand}:focus-within &`]: { opacity: 1 },
-    [`${installCommand}:hover &`]: { opacity: 1 },
+// The command is read before it is copied, so it wraps to whatever height it
+// needs instead of hiding its tail behind an ellipsis.
+export const installField = style([
+  baseInput,
+  {
+    overflow: 'hidden',
+    padding: 0,
+    position: 'relative',
   },
+])
+
+export const installCommand = style({
+  boxSizing: 'border-box',
+  color: theme.content.primary,
+  margin: 0,
+  overflowWrap: 'anywhere',
+  paddingBlock: '12px',
+  paddingInlineEnd: '52px',
+  paddingInlineStart: '12px',
+  whiteSpace: 'pre-wrap',
+  width: '100%',
+  ...theme.typography.code,
 })
 
-globalStyle(`${installCommand} code`, {
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+export const installCopyButton = style({
+  insetBlockStart: '8px',
+  insetInlineEnd: '8px',
+  position: 'absolute',
 })

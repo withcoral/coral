@@ -1,5 +1,5 @@
 export { filterMcpClients } from './filter-mcp-clients'
-export { McpClientInstallList, type McpClientInstallListItem } from './mcp-client-install-list'
+export { McpClientInstall, type McpClientInstallItem, type McpInstall } from './mcp-client-install'
 export {
   McpClientsList,
   type McpClientsConnectionState,

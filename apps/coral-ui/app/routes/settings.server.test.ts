@@ -6,17 +6,11 @@ describe('settings loader', () => {
   beforeEach(() => vi.stubEnv('CORAL_MCP_MODE', 'local'))
   afterEach(() => vi.unstubAllEnvs())
 
-  it('loads local install commands with workspace support', () => {
+  it('loads local stdio installs', () => {
     expect(loader(request())).toEqual({
       runtime: 'web',
       mcpClients: expect.arrayContaining([
-        expect.objectContaining({
-          id: 'codex',
-          installCommand:
-            'npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent codex --name coral --args mcp-stdio --yes',
-          workspaceInstallCommand:
-            'npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent codex --name coral --args mcp-stdio --yes',
-        }),
+        { id: 'codex', install: { shell: 'posix', transport: 'stdio' }, name: 'Codex' },
       ]),
     })
   })
@@ -34,20 +28,18 @@ describe('settings loader', () => {
     })
   })
 
-  it('uses add-mcp directly for remote clients it supports', () => {
+  it('scopes remote installs through the endpoint URL', () => {
     vi.stubEnv('CORAL_MCP_MODE', 'remote')
     vi.stubEnv('CORAL_MCP_URL', 'https://coral.example.com/mcp')
 
     expect(loader(request()).mcpClients).toContainEqual({
       id: 'codex',
-      installCommand:
-        'npx -y add-mcp@1.11.0 https://coral.example.com/mcp --global --agent codex --name coral --transport http --yes',
+      install: { transport: 'http', url: 'https://coral.example.com/mcp' },
       name: 'Codex',
-      workspaceInstallUrl: 'https://coral.example.com/mcp',
     })
   })
 
-  it('loads PowerShell commands for Windows requests', () => {
+  it('loads PowerShell installs for Windows requests', () => {
     expect(
       loader({
         request: new Request('https://reef.example/settings', {
@@ -57,13 +49,7 @@ describe('settings loader', () => {
     ).toEqual({
       runtime: 'web',
       mcpClients: expect.arrayContaining([
-        expect.objectContaining({
-          id: 'codex',
-          installCommand:
-            'npx --yes add-mcp@1.11.0 (Get-Command coral).Source --global --agent codex --name coral --args mcp-stdio --yes',
-          installCommandLabel: 'Requires PowerShell',
-          workspaceInstallShell: 'powershell',
-        }),
+        { id: 'codex', install: { shell: 'powershell', transport: 'stdio' }, name: 'Codex' },
       ]),
     })
   })

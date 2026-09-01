@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 
-import { McpClientInstallList, McpClientsList } from '@/components/mcp-clients-list'
+import { McpClientInstall, McpClientsList } from '@/components/mcp-clients-list'
 import type { SettingsLoaderData } from '@/routes/settings-loader'
 import { Banner, Button, Typography } from '@/wax/components'
 import { TextInput } from '@/wax/components/inputs/text'
@@ -42,7 +42,7 @@ export function Settings({
             <Typography.Body variant="secondary">
               {desktop
                 ? 'Choose the Coral workspace each MCP client can access. '
-                : 'Copy a command to add Coral to a supported MCP client in your user-wide configuration. '}
+                : 'Add Coral to your user-wide configuration by running the command below. '}
               <Button.ExternalLink
                 href="https://withcoral.com/docs/guides/use-coral-over-mcp"
                 size="small"
@@ -52,21 +52,23 @@ export function Settings({
             </Typography.Body>
           </div>
 
-          <div className={styles.searchBar}>
-            <TextInput
-              ariaLabel="Search MCP clients"
-              icon="Search"
-              onChange={setSearch}
-              placeholder="Search MCP clients"
-              ref={searchInputRef}
-              type="search"
-              value={search}
-            />
-          </div>
+          {desktop ? (
+            <div className={styles.searchBar}>
+              <TextInput
+                ariaLabel="Search MCP clients"
+                icon="Search"
+                onChange={setSearch}
+                placeholder="Search MCP clients"
+                ref={searchInputRef}
+                type="search"
+                value={search}
+              />
+            </div>
+          ) : null}
         </>
       }
     >
-      <KeyboardShortcut handler={onSearchShortcut} shortcut="$mod+f" />
+      {desktop ? <KeyboardShortcut handler={onSearchShortcut} shortcut="$mod+f" /> : null}
 
       <Banner>
         {desktop
@@ -84,11 +86,7 @@ export function Settings({
           workspaces={workspaces}
         />
       ) : (
-        <McpClientInstallList
-          clients={loaderData.mcpClients}
-          search={search}
-          workspaces={workspaces}
-        />
+        <McpClientInstall clients={loaderData.mcpClients} workspaces={workspaces} />
       )}
     </SettingsPage>
   )

@@ -98,13 +98,13 @@ export function McpClientsList({
                 <Table.Cell>
                   <Menu.Container>
                     <Menu.Trigger
-                      className={styles.workspaceTrigger}
+                      className={styles.selectTrigger}
                       render={<Button.Container disabled={pending} fullWidth variant="secondary" />}
                     >
                       <Button.Text>{accessLabel}</Button.Text>
                       <Button.Icon name="ChevronDown" />
                     </Menu.Trigger>
-                    <Menu.Content align="end" className={styles.workspaceMenu}>
+                    <Menu.Content align="end" className={styles.selectMenu}>
                       <Menu.RadioGroup
                         onValueChange={(value) => {
                           onWorkspaceChange(
