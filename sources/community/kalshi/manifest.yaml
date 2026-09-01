@@ -98,7 +98,7 @@ tables:
           path:
               - fee_type
       - name: fee_multiplier
-        type: Int64
+        type: Float64
         nullable: true
         description: Fee multiplier.
         expr:
@@ -320,7 +320,7 @@ tables:
       - name: markets
         type: Json
         nullable: true
-        description: Nested markets when with_nested_markets is true.
+        description: Nested market objects when the endpoint returns them.
         expr:
           kind: path
           path:
@@ -475,7 +475,7 @@ tables:
       - name: markets
         type: Json
         nullable: true
-        description: Nested markets when with_nested_markets is true.
+        description: Nested market objects when the endpoint returns them.
         expr:
           kind: path
           path:
@@ -606,7 +606,7 @@ tables:
       - name: markets
         type: Json
         nullable: true
-        description: Nested markets when with_nested_markets is true.
+        description: Nested market objects when the endpoint returns them.
         expr:
           kind: path
           path:
@@ -1550,8 +1550,9 @@ tables:
     description: Recent public trades across markets.
     guide: >-
       `SELECT ticker, yes_price_dollars, count_fp, created_time
-      FROM kalshi.trades LIMIT 20`. Use `is_block_trade_filter` for the
-      query param; `is_block_trade` is the Boolean response column.
+      FROM kalshi.trades LIMIT 20`. The block-trade query param is the
+      `is_block_trade` filter; `is_block_trade_filter` is the virtual column
+      that echoes the requested value.
     fetch_limit_default: 50
     filters:
       - name: ticker
