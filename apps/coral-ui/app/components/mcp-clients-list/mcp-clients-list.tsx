@@ -1,10 +1,14 @@
-import { Button, Menu, Table, Typography } from '@/wax/components'
+import { Table, Typography } from '@/wax/components'
+import { Picker } from '@/wax/components/picker'
 
 import { filterMcpClients } from './filter-mcp-clients'
 import * as styles from './mcp-clients-list.css'
 
-const NOT_CONFIGURED = 'not-configured'
-const WORKSPACE_ACCESS_PREFIX = 'workspace:'
+// A workspace name is lowercase letters, digits and inner hyphens, so a
+// leading colon cannot collide with one. Option values are then the bare
+// names, and a configured workspace the list no longer carries still reads as
+// itself rather than as a raw sentinel.
+const NOT_CONFIGURED = ':not-configured'
 
 export interface McpClientListItem {
   readonly configuredWorkspace?: string
@@ -81,53 +85,25 @@ export function McpClientsList({
         ) : (
           visibleClients.map((client) => {
             const pending = pendingClientIds.includes(client.id)
-            const access =
-              client.configuredWorkspace === undefined
-                ? NOT_CONFIGURED
-                : workspaceAccessValue(client.configuredWorkspace)
-            const accessLabel =
-              client.configuredWorkspace === undefined
-                ? 'Not configured'
-                : client.configuredWorkspace
-
+            const access = client.configuredWorkspace ?? NOT_CONFIGURED
             return (
               <Table.Row key={client.id}>
                 <Table.Cell>
                   <Typography.BodyStrong variant="primary">{client.name}</Typography.BodyStrong>
                 </Table.Cell>
                 <Table.Cell>
-                  <Menu.Container>
-                    <Menu.Trigger
-                      className={styles.selectTrigger}
-                      render={<Button.Container disabled={pending} fullWidth variant="secondary" />}
-                    >
-                      <Button.Text>{accessLabel}</Button.Text>
-                      <Button.Icon name="ChevronDown" />
-                    </Menu.Trigger>
-                    <Menu.Content align="end" className={styles.selectMenu}>
-                      <Menu.RadioGroup
-                        onValueChange={(value) => {
-                          onWorkspaceChange(
-                            client.id,
-                            value === NOT_CONFIGURED
-                              ? undefined
-                              : value.slice(WORKSPACE_ACCESS_PREFIX.length),
-                          )
-                        }}
-                        value={access}
-                      >
-                        <Menu.RadioItem value={NOT_CONFIGURED}>Not configured</Menu.RadioItem>
-                        {workspaces.map((workspace) => (
-                          <Menu.RadioItem
-                            key={workspace.name}
-                            value={workspaceAccessValue(workspace.name)}
-                          >
-                            {workspace.name}
-                          </Menu.RadioItem>
-                        ))}
-                      </Menu.RadioGroup>
-                    </Menu.Content>
-                  </Menu.Container>
+                  <Picker
+                    disabled={pending}
+                    fullWidth
+                    onChange={(value) => {
+                      onWorkspaceChange(client.id, value === NOT_CONFIGURED ? undefined : value)
+                    }}
+                    options={[
+                      { label: 'Not configured', value: NOT_CONFIGURED },
+                      ...workspaces.map(({ name }) => ({ label: name, value: name })),
+                    ]}
+                    value={access}
+                  />
                 </Table.Cell>
               </Table.Row>
             )
@@ -136,8 +112,4 @@ export function McpClientsList({
       </Table.Body>
     </Table.Container>
   )
-}
-
-function workspaceAccessValue(workspaceName: string): string {
-  return `${WORKSPACE_ACCESS_PREFIX}${workspaceName}`
 }

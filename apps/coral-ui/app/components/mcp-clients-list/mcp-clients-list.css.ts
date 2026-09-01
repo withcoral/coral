@@ -23,15 +23,6 @@ export const responsiveWidths = style({
   },
 })
 
-export const selectTrigger = style({
-  justifyContent: 'space-between',
-})
-
-export const selectMenu = style({
-  maxWidth: 'calc(100vw - 32px)',
-  width: '228px',
-})
-
 export const installPanel = style({
   display: 'flex',
   flexDirection: 'column',
@@ -39,17 +30,9 @@ export const installPanel = style({
 })
 
 export const installSelects = style({
-  display: 'flex',
-  flexWrap: 'wrap',
+  display: 'grid',
   gap: '16px',
-})
-
-export const installSelect = style({
-  display: 'flex',
-  flex: '0 1 260px',
-  flexDirection: 'column',
-  gap: '6px',
-  minWidth: '180px',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 260px))',
 })
 
 export const installCommandContainer = style({

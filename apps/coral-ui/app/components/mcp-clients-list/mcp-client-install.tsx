@@ -1,6 +1,7 @@
-import { useId, useState } from 'react'
+import { useState } from 'react'
 
-import { Button, Menu, Typography } from '@/wax/components'
+import { Button, Typography } from '@/wax/components'
+import { Picker } from '@/wax/components/picker'
 
 import * as styles from './mcp-clients-list.css'
 
@@ -68,8 +69,10 @@ export function McpClientInstall({
   return (
     <div className={styles.installPanel}>
       <div className={styles.installSelects}>
-        <InstallSelect
+        <Picker
+          fullWidth
           label="MCP client"
+          labelPlacement="outside"
           onChange={setClientId}
           options={clients.map(({ id, name }) => ({ label: name, value: id }))}
           value={client.id}
@@ -77,9 +80,11 @@ export function McpClientInstall({
         {/* Disabled rather than gone, so the panel keeps its shape as the
             reader moves between clients. */}
         {workspace ? (
-          <InstallSelect
+          <Picker
             disabled={!install}
+            fullWidth
             label="Workspace"
+            labelPlacement="outside"
             onChange={setWorkspaceName}
             options={workspaces.map(({ name }) => ({ label: name, value: name }))}
             value={workspace.name}
@@ -109,57 +114,6 @@ export function McpClientInstall({
             : 'Create a workspace to install Coral in this client.'}
         </Typography.Body>
       )}
-    </div>
-  )
-}
-
-function InstallSelect({
-  disabled = false,
-  label,
-  onChange,
-  options,
-  value,
-}: {
-  readonly disabled?: boolean
-  readonly label: string
-  readonly onChange: (value: string) => void
-  readonly options: ReadonlyArray<{ label: string; value: string }>
-  readonly value: string
-}) {
-  const labelId = useId()
-
-  return (
-    <div className={styles.installSelect}>
-      <Typography.BodySmallStrong id={labelId} variant="tertiary">
-        {label}
-      </Typography.BodySmallStrong>
-      <Menu.Container>
-        <Menu.Trigger
-          className={styles.selectTrigger}
-          render={
-            <Button.Container
-              aria-labelledby={labelId}
-              disabled={disabled}
-              fullWidth
-              variant="secondary"
-            />
-          }
-        >
-          <Button.Text>
-            {options.find((option) => option.value === value)?.label ?? value}
-          </Button.Text>
-          <Button.Icon name="ChevronDown" />
-        </Menu.Trigger>
-        <Menu.Content className={styles.selectMenu}>
-          <Menu.RadioGroup onValueChange={onChange} value={value}>
-            {options.map((option) => (
-              <Menu.RadioItem key={option.value} value={option.value}>
-                {option.label}
-              </Menu.RadioItem>
-            ))}
-          </Menu.RadioGroup>
-        </Menu.Content>
-      </Menu.Container>
     </div>
   )
 }

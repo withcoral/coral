@@ -127,3 +127,35 @@ export const SeverityConfigurations: Story = {
     )
   },
 }
+
+/** A row of pickers reading as a labelled form, with one option set unavailable. */
+export const LabelOutsideAndDisabled: Story = {
+  render: function Render() {
+    const [client, setClient] = useState('claude-code')
+
+    return (
+      <div style={{ display: 'flex', gap: '16px', width: '540px' }}>
+        <Picker
+          fullWidth
+          label="MCP client"
+          labelPlacement="outside"
+          onChange={setClient}
+          options={[
+            { label: 'Claude Code', value: 'claude-code' },
+            { label: 'Codex', value: 'codex' },
+            { label: 'Cursor', value: 'cursor' },
+          ]}
+          value={client}
+        />
+        <Picker
+          disabled
+          fullWidth
+          label="Workspace"
+          labelPlacement="outside"
+          options={[{ label: 'production', value: 'production' }]}
+          value="production"
+        />
+      </div>
+    )
+  },
+}
