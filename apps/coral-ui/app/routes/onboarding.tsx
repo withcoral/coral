@@ -14,7 +14,6 @@ import {
   listWorkspacesForRequest,
   pickImpliedWorkspace,
 } from '@/lib/workspaces.server'
-import { routePath } from '@/routing/routemap'
 import { OnboardingView } from '@/views/onboarding/onboarding'
 import { addToast } from '@/wax/components/toast'
 
