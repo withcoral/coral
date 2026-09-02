@@ -32,6 +32,7 @@ interface OperationApprovalStoryProps {
   showIdentity?: boolean
   showProgramBody?: boolean
   showProgramSnippet?: boolean
+  showProviderReference?: boolean
   showRequestMetadataInHeader?: boolean
   showRequestContext?: boolean
   showRequester?: boolean
@@ -91,6 +92,10 @@ const meta = {
       control: 'boolean',
       description: 'Show Task and exec intent as secondary request context.',
     },
+    showProviderReference: {
+      control: 'boolean',
+      description: 'Show optional provider-authored reference copy as a quiet disclosure.',
+    },
   },
   args: {
     dataset: 'github',
@@ -98,6 +103,7 @@ const meta = {
     onDecline: fn(),
     onViewRun: fn(),
     showRequestContext: false,
+    showProviderReference: false,
   },
   component: OperationApprovalStory,
   decorators: [
@@ -736,6 +742,7 @@ export const MaximalEvidence: Story = {
     showIdentity: true,
     showProgramBody: true,
     showProgramSnippet: true,
+    showProviderReference: true,
     showRequestMetadataInHeader: true,
     showRunContext: true,
     showTechnicalDetails: true,
@@ -768,6 +775,7 @@ function OperationApproval({
   showIdentity,
   showProgramBody,
   showProgramSnippet,
+  showProviderReference,
   showRequestContext,
   showRequestMetadataInHeader,
   showRequester,
@@ -782,6 +790,7 @@ function OperationApproval({
     hasDecisionContext ||
     showProgramBody ||
     showProgramSnippet ||
+    showProviderReference ||
     showRequestContext ||
     showRequester ||
     showRunContext ||
@@ -808,16 +817,16 @@ function OperationApproval({
         />
       ) : null}
 
-      {showRequestContext && approval.requestContext ? (
-        <RequestContextSection requestContext={approval.requestContext} />
+      {(showRequestContext && approval.requestContext) ||
+      (showProgramSnippet && approval.programContext) ? (
+        <ContextSection
+          programSnippet={showProgramSnippet ? approval.programContext?.snippet : undefined}
+          requestContext={showRequestContext ? approval.requestContext : undefined}
+        />
       ) : null}
 
-      {approval.programContext ? (
-        <ProgramContextSection
-          programContext={approval.programContext}
-          showBody={showProgramBody}
-          showSnippet={showProgramSnippet}
-        />
+      {showProgramBody && approval.programContext ? (
+        <ProgramBodyDisclosure programBody={approval.programContext.body} />
       ) : null}
 
       {(showRequester || showExpiry) && !hasDecisionContext && !showRequestMetadataInHeader ? (
@@ -854,6 +863,10 @@ function OperationApproval({
             {approval.policyText}
           </Typography.BodySmall>
         </section>
+      ) : null}
+
+      {showProviderReference && approval.providerReference ? (
+        <ProviderReferenceSection providerReference={approval.providerReference} />
       ) : null}
 
       {showTechnicalDetails ? <TechnicalDetailsSection approval={approval} /> : null}
@@ -958,15 +971,12 @@ function InvocationArgumentsSection({
           </Typography.BodySmallStrong>
         </Button.Container>
       ) : (
-        <Typography.BodySmallStrong as="h3" variant="tertiary">
+        <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
           Arguments
         </Typography.BodySmallStrong>
       )}
       {!collapsible || expanded ? (
-        <dl
-          id={argumentsId}
-          style={{ ...detailsStyle, ...(collapsible ? collapsibleDetailsStyle : {}) }}
-        >
+        <dl id={argumentsId} style={detailsStyle}>
           {invocationArguments.map(({ label, value }, index) => (
             <DetailRow
               key={label}
@@ -981,49 +991,62 @@ function InvocationArgumentsSection({
   )
 }
 
-function RequestContextSection({ requestContext }: { requestContext: RequestContext }) {
+function ContextSection({
+  programSnippet,
+  requestContext,
+}: {
+  programSnippet?: ProgramEvidence
+  requestContext?: RequestContext
+}) {
   return (
-    <section style={supportingEvidenceStyle}>
-      <Typography.BodySmallStrong as="h3" variant="tertiary">
+    <section style={sectionStyle}>
+      <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
         Context
       </Typography.BodySmallStrong>
-      <dl style={contextDetailsStyle}>
-        <DetailRow label="Task" value={requestContext.taskId} />
-        <DetailRow label="Task intent" value={requestContext.taskIntent} />
-        <DetailRow label="Exec intent" showDivider={false} value={requestContext.execIntent} />
-      </dl>
+      {requestContext ? <RequestContextDetails requestContext={requestContext} /> : null}
+      {programSnippet ? <ProgramEvidenceBlock evidence={programSnippet} /> : null}
     </section>
   )
 }
 
-function ProgramContextSection({
-  programContext,
-  showBody,
-  showSnippet,
-}: {
-  programContext: ProgramContext
-  showBody?: boolean
-  showSnippet?: boolean
-}) {
+function RequestContextDetails({ requestContext }: { requestContext: RequestContext }) {
   return (
-    <>
-      {showSnippet ? (
-        <section style={supportingEvidenceStyle}>
-          <Typography.BodySmallStrong as="h3" variant="tertiary">
-            Context
-          </Typography.BodySmallStrong>
-          <ProgramEvidenceBlock evidence={programContext.snippet} />
-        </section>
-      ) : null}
-      {showBody ? (
-        <details open={false} style={programBodyDetailsStyle}>
-          <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
-            Program body
-          </Typography.BodySmallStrong>
-          <ProgramEvidenceBlock evidence={programContext.body} />
-        </details>
-      ) : null}
-    </>
+    <dl style={contextDetailsStyle}>
+      <DetailRow label="Task" value={requestContext.taskId} />
+      <DetailRow label="Task intent" value={requestContext.taskIntent} />
+      <DetailRow label="Exec intent" showDivider={false} value={requestContext.execIntent} />
+    </dl>
+  )
+}
+
+function ProgramBodyDisclosure({ programBody }: { programBody: ProgramEvidence }) {
+  return (
+    <details open={false} style={disclosureSectionStyle}>
+      <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
+        Program body
+      </Typography.BodySmallStrong>
+      <div style={disclosureContentStyle}>
+        <ProgramEvidenceBlock evidence={programBody} />
+      </div>
+    </details>
+  )
+}
+
+function ProviderReferenceSection({ providerReference }: { providerReference: string }) {
+  return (
+    <details style={disclosureSectionStyle}>
+      <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
+        Reference
+      </Typography.BodySmallStrong>
+      <div style={disclosureContentStyle}>
+        <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
+          Optional provider-authored text; it does not define this approval’s exact effect.
+        </Typography.BodySmall>
+        <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
+          {providerReference}
+        </Typography.BodySmall>
+      </div>
+    </details>
   )
 }
 
@@ -1031,34 +1054,21 @@ function TechnicalDetailsSection({ approval }: { approval: OperationApprovalMode
   const technicalDetails = buildTechnicalDetails(approval)
 
   return (
-    <>
-      <details style={technicalDetailsStyle}>
-        <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
-          Provider reference text
-        </Typography.BodySmallStrong>
-        <Typography.BodySmall as="p" style={providerDescriptionStyle} variant="tertiary">
-          Optional provider-authored context. Do not use this as the approval scope.
-        </Typography.BodySmall>
-        <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
-          {approval.providerReference}
-        </Typography.BodySmall>
-      </details>
-      <details style={technicalDetailsStyle}>
-        <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
-          Technical details
-        </Typography.BodySmallStrong>
-        <dl style={technicalListStyle}>
-          {technicalDetails.map(({ label, value }, index) => (
-            <DetailRow
-              key={label}
-              label={label}
-              showDivider={index < technicalDetails.length - 1}
-              value={value}
-            />
-          ))}
-        </dl>
-      </details>
-    </>
+    <details style={disclosureSectionStyle}>
+      <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
+        Technical details
+      </Typography.BodySmallStrong>
+      <dl style={technicalListStyle}>
+        {technicalDetails.map(({ label, value }, index) => (
+          <DetailRow
+            key={label}
+            label={label}
+            showDivider={index < technicalDetails.length - 1}
+            value={value}
+          />
+        ))}
+      </dl>
+    </details>
   )
 }
 
@@ -1187,7 +1197,14 @@ const sectionStyle: CSSProperties = {
   gap: '6px',
 }
 
+const sectionHeadingStyle: CSSProperties = {
+  borderBottom: `1px solid ${theme.stroke.secondary}`,
+  margin: 0,
+  paddingBottom: '6px',
+}
+
 const argumentsDisclosureStyle: CSSProperties = {
+  ...sectionHeadingStyle,
   alignItems: 'center',
   background: 'transparent',
   border: 0,
@@ -1199,16 +1216,6 @@ const argumentsDisclosureStyle: CSSProperties = {
   padding: '0 0 6px',
   textAlign: 'left',
   width: '100%',
-}
-
-const supportingEvidenceStyle: CSSProperties = {
-  background: theme.surface.mainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: '8px',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '6px',
-  padding: '10px 12px',
 }
 
 const contextDetailsStyle: CSSProperties = { margin: 0 }
@@ -1234,12 +1241,7 @@ const currentOperationStyle: CSSProperties = {
   padding: '1px 3px',
 }
 
-const detailsStyle: CSSProperties = {
-  borderTop: `1px solid ${theme.stroke.secondary}`,
-  margin: 0,
-}
-
-const collapsibleDetailsStyle: CSSProperties = { borderTop: 0 }
+const detailsStyle: CSSProperties = { margin: 0 }
 
 const detailRowStyle: CSSProperties = {
   alignItems: 'baseline',
@@ -1275,24 +1277,19 @@ const decisionDetailsStyle: CSSProperties = {
   margin: 0,
 }
 
-const technicalDetailsStyle: CSSProperties = {
-  borderTop: `1px solid ${theme.stroke.secondary}`,
-  paddingTop: '12px',
-}
+const disclosureSectionStyle: CSSProperties = { margin: 0 }
 
-const programBodyDetailsStyle: CSSProperties = {
-  ...technicalDetailsStyle,
-  background: theme.surface.mainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: '8px',
-  padding: '10px 12px',
-}
-
-const providerDescriptionStyle: CSSProperties = { margin: '8px 0' }
-
-const technicalSummaryStyle: CSSProperties = {
+const disclosureSummaryStyle: CSSProperties = {
+  ...sectionHeadingStyle,
   color: theme.content.secondary,
   cursor: 'pointer',
+}
+
+const disclosureContentStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px',
+  paddingTop: '8px',
 }
 
 const technicalListStyle: CSSProperties = { margin: '8px 0 0' }
