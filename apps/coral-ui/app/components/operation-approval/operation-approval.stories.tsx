@@ -33,6 +33,7 @@ interface OperationApprovalStoryProps {
   showApprovalAuthority?: boolean
   showExpiry?: boolean
   showAuthorityEnvelopeMatch?: boolean
+  showEnvelopeOnArgs?: boolean
   showIdentity?: boolean
   showProgramBody?: boolean
   showProgramSnippet?: boolean
@@ -67,6 +68,18 @@ interface RequestContext {
 }
 
 type EnvelopeCheckStatus = 'fail' | 'pass' | 'unknown'
+
+const envelopeStatusColors: Record<EnvelopeCheckStatus, 'amber' | 'green' | 'red'> = {
+  fail: 'red',
+  pass: 'green',
+  unknown: 'amber',
+}
+
+const envelopeStatusLabels: Record<EnvelopeCheckStatus, string> = {
+  fail: 'Fails',
+  pass: 'Pass',
+  unknown: 'Unknown',
+}
 
 interface AuthorityEnvelopeEvaluation {
   checks: Array<{
@@ -141,6 +154,10 @@ const meta = {
       control: 'boolean',
       description: 'Execute and show a Storybook-only deterministic Owner-policy envelope.',
     },
+    showEnvelopeOnArgs: {
+      control: 'boolean',
+      description: 'Annotate exact argument rows with checks from the selected Owner envelope.',
+    },
     showRequestContext: {
       control: 'boolean',
       description: 'Show Task and exec intent as secondary request context.',
@@ -159,6 +176,7 @@ const meta = {
     showRequestContext: false,
     showProviderReference: false,
     showAuthorityEnvelopeMatch: false,
+    showEnvelopeOnArgs: false,
   },
   component: OperationApprovalStory,
   decorators: [
@@ -180,7 +198,7 @@ Every Medium+ story keeps the same first-screen decision contract: Operation cal
 
 Every story uses the same story-local \`OperationApproval\` component. Toggle \`showRequestContext\` in any story to reveal Task and exec intent below Arguments; \`TaskIntentContext\` is the preset that enables it by default.
 
-Every dataset supplies two Storybook-only Owner envelopes: \`inside\` matches its exact Invocation and \`outside\` fails explicit argument filters. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to reveal the evaluation.
+Every dataset supplies two Storybook-only Owner envelopes: \`inside\` matches its exact Invocation and \`outside\` fails explicit argument filters. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to reveal the full evaluation or \`showEnvelopeOnArgs\` to annotate the affected positional arguments inline.
 
 Each story has a **dataset** control. The default GitHub dataset uses \`coral.providers.github.issues.createComment\`; the Linear dataset uses \`coral.providers.linear.issues.update\` inside a program that also reads GitHub context; the loop dataset puts one pending \`coral.providers.linear.issues.update\` Invocation inside a \`for\` loop; the saved-function dataset shows one pending Operation from a linked \`coral.functions.postApprovalFollowUp\` source snapshot. Within a selected dataset, the stories keep the operation/request stable so reviewers can compare disclosure and rendering choices without changing provider, operation, requester, identity, or run context.
 
@@ -1053,6 +1071,7 @@ export const EnvelopeMatches: Story = {
     envelopeMatch: 'inside',
     showArguments: true,
     showAuthorityEnvelopeMatch: true,
+    showEnvelopeOnArgs: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
     showRequester: true,
@@ -1076,6 +1095,7 @@ export const EnvelopeDoesNotMatch: Story = {
     showArguments: true,
     showApprovalAuthority: true,
     showAuthorityEnvelopeMatch: true,
+    showEnvelopeOnArgs: true,
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -1187,6 +1207,7 @@ function OperationApproval({
   showApprovalAuthority,
   showExpiry,
   showAuthorityEnvelopeMatch,
+  showEnvelopeOnArgs,
   showIdentity,
   showProgramBody,
   showProgramSnippet,
@@ -1198,13 +1219,15 @@ function OperationApproval({
   showTechnicalDetails,
 }: OperationApprovalProps) {
   const hasDecisionContext = Boolean(showApprovalAuthority)
-  const envelopeEvaluation = showAuthorityEnvelopeMatch
-    ? evaluateAuthorityEnvelope(approval, authorityEnvelope)
-    : undefined
+  const envelopeEvaluation =
+    showAuthorityEnvelopeMatch || showEnvelopeOnArgs
+      ? evaluateAuthorityEnvelope(approval, authorityEnvelope)
+      : undefined
   const hasContext = Boolean(
     showArguments ||
     showExpiry ||
     showAuthorityEnvelopeMatch ||
+    showEnvelopeOnArgs ||
     showIdentity ||
     hasDecisionContext ||
     showProgramBody ||
@@ -1232,6 +1255,7 @@ function OperationApproval({
       {showArguments ? (
         <InvocationArgumentsSection
           collapsible={argumentsCollapsible}
+          envelopeChecks={showEnvelopeOnArgs ? envelopeEvaluation?.checks : undefined}
           initiallyExpanded={argumentsInitiallyExpanded}
           invocationArguments={approval.invocationArguments}
         />
@@ -1375,10 +1399,12 @@ function ApprovalHeader({
 
 function InvocationArgumentsSection({
   collapsible,
+  envelopeChecks,
   initiallyExpanded,
   invocationArguments,
 }: {
   collapsible?: boolean
+  envelopeChecks?: AuthorityEnvelopeEvaluation['checks']
   initiallyExpanded?: boolean
   invocationArguments: OperationApprovalModel['invocationArguments']
 }) {
@@ -1410,7 +1436,10 @@ function InvocationArgumentsSection({
       {!collapsible || expanded ? (
         <dl id={argumentsId} style={detailsStyle}>
           {invocationArguments.map(({ label, value }, index) => (
-            <DetailRow
+            <InvocationArgumentRow
+              annotations={envelopeChecks?.filter(({ label: checkLabel }) =>
+                checkLabel.startsWith(`args[${index}]`),
+              )}
               key={label}
               label={label}
               showDivider={index < invocationArguments.length - 1}
@@ -1421,6 +1450,53 @@ function InvocationArgumentsSection({
       ) : null}
     </section>
   )
+}
+
+function InvocationArgumentRow({
+  annotations,
+  label,
+  showDivider,
+  value,
+}: {
+  annotations?: AuthorityEnvelopeEvaluation['checks']
+  label: string
+  showDivider: boolean
+  value: ArgumentValue
+}) {
+  const argumentStatus = aggregateEnvelopeStatus(annotations)
+
+  return (
+    <div
+      style={{
+        ...argumentGroupStyle,
+        ...(argumentStatus ? envelopeArgumentBackgrounds[argumentStatus] : {}),
+        ...(!showDivider ? lastDetailRowStyle : {}),
+      }}
+    >
+      <DetailRow label={label} showDivider={false} value={value} />
+      {annotations && annotations.length > 0 ? (
+        <div style={argumentAnnotationsStyle}>
+          {annotations.map(({ label: checkLabel, policy, status }) => (
+            <div key={checkLabel} style={argumentAnnotationStyle}>
+              <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
+                Policy: {checkLabel} {policy}
+              </Typography.BodySmall>
+              <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function aggregateEnvelopeStatus(
+  annotations: AuthorityEnvelopeEvaluation['checks'] | undefined,
+): EnvelopeCheckStatus | undefined {
+  if (!annotations || annotations.length === 0) return undefined
+  if (annotations.some(({ status }) => status === 'fail')) return 'fail'
+  if (annotations.some(({ status }) => status === 'unknown')) return 'unknown'
+  return 'pass'
 }
 
 function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEvaluation }) {
@@ -1478,9 +1554,6 @@ function EnvelopeCheckRow({
   showDivider: boolean
   status: EnvelopeCheckStatus
 }) {
-  const statusLabel = status === 'pass' ? 'Pass' : status === 'fail' ? 'Fails' : 'Unknown'
-  const statusColor = status === 'pass' ? 'green' : status === 'fail' ? 'red' : 'amber'
-
   return (
     <div style={{ ...detailRowStyle, ...(!showDivider ? lastDetailRowStyle : {}) }}>
       <Typography.BodySmall as="dt" variant="tertiary">
@@ -1495,7 +1568,7 @@ function EnvelopeCheckRow({
             Observed: {observed}
           </Typography.BodySmall>
         </div>
-        <Pill color={statusColor}>{statusLabel}</Pill>
+        <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
       </div>
     </div>
   )
@@ -1760,6 +1833,43 @@ const detailRowStyle: CSSProperties = {
   gap: '16px',
   gridTemplateColumns: '140px minmax(0, 1fr)',
   padding: '8px 0',
+}
+
+const argumentGroupStyle: CSSProperties = {
+  borderBottom: `1px solid ${theme.stroke.secondary}`,
+}
+
+const envelopeArgumentBackgrounds: Record<EnvelopeCheckStatus, CSSProperties> = {
+  fail: {
+    background: theme.content.errorBackground,
+    borderRadius: '6px',
+    padding: '0 8px 8px',
+  },
+  pass: {
+    background: theme.content.successBackground,
+    borderRadius: '6px',
+    padding: '0 8px 8px',
+  },
+  unknown: {
+    background: theme.content.warningBackground,
+    borderRadius: '6px',
+    padding: '0 8px 8px',
+  },
+}
+
+const argumentAnnotationsStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+  marginLeft: '156px',
+}
+
+const argumentAnnotationStyle: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  gap: '8px',
+  justifyContent: 'space-between',
+  minWidth: 0,
 }
 
 const lastDetailRowStyle: CSSProperties = { borderBottom: 0 }
