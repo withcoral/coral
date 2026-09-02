@@ -810,6 +810,7 @@ const datasets = {
       ...githubSharedRules,
       stringEqualsRule('args[0].repo', 0, ['repo'], 'coral-internal'),
       numberInRule('args[0].issue_number', 0, ['issue_number'], [99]),
+      stringEqualsRule('args[2]', 2, [], 'approval-card-review'),
     ],
   ),
   linear: createDataset(
