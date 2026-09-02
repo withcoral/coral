@@ -16,7 +16,13 @@ type ArgumentValue =
   | null
   | ArgumentValue[]
   | { [key: string]: ArgumentValue }
-type DatasetKey = 'github' | 'linear' | 'loop' | 'savedFunction'
+type DatasetKey =
+  | 'envelopeMatches'
+  | 'envelopeOutside'
+  | 'github'
+  | 'linear'
+  | 'loop'
+  | 'savedFunction'
 
 interface OperationApprovalStoryProps {
   argumentsCollapsible?: boolean
@@ -29,6 +35,7 @@ interface OperationApprovalStoryProps {
   showArguments?: boolean
   showApprovalAuthority?: boolean
   showExpiry?: boolean
+  showEnvelopeCheck?: boolean
   showIdentity?: boolean
   showProgramBody?: boolean
   showProgramSnippet?: boolean
@@ -61,8 +68,23 @@ interface RequestContext {
   taskIntent: string
 }
 
+type EnvelopeCheckStatus = 'fail' | 'pass' | 'unknown'
+
+interface AuthorityEnvelopeEvaluation {
+  checks: Array<{
+    detail: string
+    label: string
+    status: EnvelopeCheckStatus
+  }>
+  decision: 'allow' | 'requiresApproval'
+  envelopeId: string
+  expiresAt: string
+  installedBy: string
+}
+
 interface OperationApprovalModel {
   approvalAuthority: string
+  authorityEnvelopeEvaluation?: AuthorityEnvelopeEvaluation
   expiresAt: string
   identity: string
   invocationArguments: Array<{ label: string; value: ArgumentValue }>
@@ -86,7 +108,11 @@ const meta = {
   argTypes: {
     dataset: {
       control: 'select',
-      options: ['github', 'linear', 'loop', 'savedFunction'],
+      options: ['github', 'linear', 'loop', 'savedFunction', 'envelopeMatches', 'envelopeOutside'],
+    },
+    showEnvelopeCheck: {
+      control: 'boolean',
+      description: 'Show a Storybook-only deterministic Owner-policy envelope evaluation.',
     },
     showRequestContext: {
       control: 'boolean',
@@ -104,6 +130,7 @@ const meta = {
     onViewRun: fn(),
     showRequestContext: false,
     showProviderReference: false,
+    showEnvelopeCheck: false,
   },
   component: OperationApprovalStory,
   decorators: [
@@ -125,6 +152,8 @@ Every Medium+ story keeps the same first-screen decision contract: Operation cal
 
 Every story uses the same story-local \`OperationApproval\` component. Toggle \`showRequestContext\` in any story to reveal Task and exec intent below Arguments; \`TaskIntentContext\` is the preset that enables it by default.
 
+The envelope stories use Storybook-only mock evaluation data. They explore deterministic authorization from a Workspace Owner-installed policy; they do not model an agent approving another agent or introduce a production API contract. A passing envelope applies only to the exact Invocation shown.
+
 Each story has a **dataset** control. The default GitHub dataset uses \`coral.providers.github.issues.createComment\`; the Linear dataset uses \`coral.providers.linear.issues.update\` inside a program that also reads GitHub context; the loop dataset puts one pending \`coral.providers.linear.issues.update\` Invocation inside a \`for\` loop; the saved-function dataset shows one pending Operation from a linked \`coral.functions.postApprovalFollowUp\` source snapshot. Within a selected dataset, the stories keep the operation/request stable so reviewers can compare disclosure and rendering choices without changing provider, operation, requester, identity, or run context.
 
 - **Minimal** uses the stable operation name with very little extra detail.
@@ -136,6 +165,8 @@ Each story has a **dataset** control. The default GitHub dataset uses \`coral.pr
 - **MediumExpandableExpanded** includes requester and expiry, starts open, and allows arguments to be collapsed.
 - **MediumExpandableCollapsed** includes requester and expiry behind a collapsed-by-default argument review.
 - **TaskIntentContext** adds grounded Task and MCP exec intent as secondary request context.
+- **EnvelopeMatches** shows an exact Invocation that passes every known Owner-policy check.
+- **EnvelopeDoesNotMatch** shows exact failed and unknown checks and retains per-call approval.
 - **ProgramSnippet** adds expandable arguments and highlights one current-operation call as supporting context.
 - **CollapsedProgramBody** adds expandable arguments and a collapsed, self-contained Program body.
 - **MaximalEvidence** keeps arguments expandable while exposing snippet, Program body, provider reference copy, raw args, and ids.
@@ -152,7 +183,122 @@ Use the least disclosure that still makes the concrete target clear. Program bod
 export default meta
 type Story = StoryObj<typeof meta>
 
+function createEnvelopeDataset({
+  body,
+  evaluation,
+  repo,
+}: {
+  body: string
+  evaluation: AuthorityEnvelopeEvaluation
+  repo: string
+}): OperationApprovalModel {
+  const invocationArguments: OperationApprovalModel['invocationArguments'] = [
+    {
+      label: 'Argument 1',
+      value: { body, issue_number: 85, org: 'withcoral', repo },
+    },
+    { label: 'Argument 2', value: { format: 'markdown' } },
+    { label: 'Argument 3', value: 'notify-requester' },
+  ]
+
+  return {
+    approvalAuthority: 'Workspace owner',
+    authorityEnvelopeEvaluation: evaluation,
+    expiresAt: '2026-09-02 16:00 UTC',
+    identity: 'coral-bot',
+    invocationArguments,
+    invokingPrincipal: 'triage-bot',
+    operationCallPath: 'coral.providers.github.issues.createComment',
+    policyText: 'Agents cannot approve their own operations.',
+    provider: 'GitHub',
+    providerReference:
+      'Creates a comment on an issue in the selected repository using the authenticated GitHub account.',
+    rawInvocation: invocationArguments.map(({ value }) => value),
+    requestContext: {
+      execIntent: 'Post the prepared triage note to the selected GitHub issue.',
+      taskId: 'task_01K4B7TP',
+      taskIntent: 'Triage the approval-policy follow-up for the Lagoon workspace.',
+    },
+    runContext: {
+      runId: 'run_01K4B7V2',
+      status: 'running',
+      workspace: 'Lagoon',
+    },
+    technicalDetails: [
+      { label: 'Operation invocation', value: 'inv_01K4B7X4 · pending' },
+      { label: 'Provider generation', value: 'github@gen_0198' },
+      { label: 'Credential route', value: 'route_github_coral_bot' },
+    ],
+  }
+}
+
 const datasets: Record<DatasetKey, OperationApprovalModel> = {
+  envelopeMatches: createEnvelopeDataset({
+    body: 'Approval envelope exploration is ready for review.',
+    evaluation: {
+      checks: [
+        {
+          detail: 'github.issues.createComment is allowed',
+          label: 'Operation',
+          status: 'pass',
+        },
+        {
+          detail: 'withcoral/lagoon matches the allowed repository',
+          label: 'Repository',
+          status: 'pass',
+        },
+        { detail: 'Issue #85 is open', label: 'Issue state', status: 'pass' },
+        { detail: '50 of 2,000 characters', label: 'Body length', status: 'pass' },
+        { detail: 'No mass mentions', label: 'Mention policy', status: 'pass' },
+        { detail: '7 of 20 comments used today', label: 'Daily quota', status: 'pass' },
+        {
+          detail: 'Expires 2026-09-30 23:59 UTC',
+          label: 'Policy expiry',
+          status: 'pass',
+        },
+      ],
+      decision: 'allow',
+      envelopeId: 'env_01K4B6ZA',
+      expiresAt: '2026-09-30 23:59 UTC',
+      installedBy: 'Workspace Owner',
+    },
+    repo: 'lagoon',
+  }),
+  envelopeOutside: createEnvelopeDataset({
+    body: '@channel Approval envelope exploration is ready for review.',
+    evaluation: {
+      checks: [
+        {
+          detail: 'github.issues.createComment is allowed',
+          label: 'Operation',
+          status: 'pass',
+        },
+        {
+          detail: 'withcoral/private-roadmap is outside the allowed repository',
+          label: 'Repository',
+          status: 'fail',
+        },
+        {
+          detail: 'Issue state was unavailable; this check did not pass',
+          label: 'Issue state',
+          status: 'unknown',
+        },
+        { detail: '59 of 2,000 characters', label: 'Body length', status: 'pass' },
+        { detail: 'Body contains @channel', label: 'Mention policy', status: 'fail' },
+        { detail: '7 of 20 comments used today', label: 'Daily quota', status: 'pass' },
+        {
+          detail: 'Expires 2026-09-30 23:59 UTC',
+          label: 'Policy expiry',
+          status: 'pass',
+        },
+      ],
+      decision: 'requiresApproval',
+      envelopeId: 'env_01K4B6ZA',
+      expiresAt: '2026-09-30 23:59 UTC',
+      installedBy: 'Workspace Owner',
+    },
+    repo: 'private-roadmap',
+  }),
   github: {
     invocationArguments: [
       {
@@ -686,6 +832,50 @@ export const TaskIntentContext: Story = {
   },
 }
 
+export const EnvelopeMatches: Story = {
+  args: {
+    argumentsCollapsible: true,
+    argumentsInitiallyExpanded: true,
+    dataset: 'envelopeMatches',
+    showArguments: true,
+    showEnvelopeCheck: true,
+    showIdentity: true,
+    showRequestMetadataInHeader: true,
+    showRequester: true,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'The exact Invocation passes every known check in a Workspace Owner-installed envelope and can continue without per-call approval.',
+      },
+    },
+  },
+}
+
+export const EnvelopeDoesNotMatch: Story = {
+  args: {
+    argumentsCollapsible: true,
+    argumentsInitiallyExpanded: true,
+    dataset: 'envelopeOutside',
+    showArguments: true,
+    showApprovalAuthority: true,
+    showEnvelopeCheck: true,
+    showExpiry: true,
+    showIdentity: true,
+    showRequestMetadataInHeader: true,
+    showRequester: true,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'The same Operation and invoking agent remain approval-required because exact checks fail or cannot be evaluated.',
+      },
+    },
+  },
+}
+
 export const ProgramSnippet: Story = {
   args: {
     argumentsCollapsible: true,
@@ -772,6 +962,7 @@ function OperationApproval({
   showArguments,
   showApprovalAuthority,
   showExpiry,
+  showEnvelopeCheck,
   showIdentity,
   showProgramBody,
   showProgramSnippet,
@@ -786,6 +977,7 @@ function OperationApproval({
   const hasContext = Boolean(
     showArguments ||
     showExpiry ||
+    showEnvelopeCheck ||
     showIdentity ||
     hasDecisionContext ||
     showProgramBody ||
@@ -801,6 +993,7 @@ function OperationApproval({
     <section style={{ ...cardStyle, ...(compact ? compactCardStyle : {}) }}>
       <ApprovalHeader
         approval={approval}
+        envelopeEvaluation={showEnvelopeCheck ? approval.authorityEnvelopeEvaluation : undefined}
         hasContext={hasContext}
         showApprovalAuthority={showApprovalAuthority}
         showExpiry={showExpiry}
@@ -815,6 +1008,10 @@ function OperationApproval({
           initiallyExpanded={argumentsInitiallyExpanded}
           invocationArguments={approval.invocationArguments}
         />
+      ) : null}
+
+      {showEnvelopeCheck && approval.authorityEnvelopeEvaluation ? (
+        <EnvelopeCheckSection evaluation={approval.authorityEnvelopeEvaluation} />
       ) : null}
 
       {(showRequestContext && approval.requestContext) ||
@@ -888,13 +1085,16 @@ function OperationApproval({
         </div>
       ) : null}
 
-      <ApprovalActions onApprove={onApprove} onDecline={onDecline} />
+      {showEnvelopeCheck && approval.authorityEnvelopeEvaluation?.decision === 'allow' ? null : (
+        <ApprovalActions onApprove={onApprove} onDecline={onDecline} />
+      )}
     </section>
   )
 }
 
 function ApprovalHeader({
   approval,
+  envelopeEvaluation,
   hasContext,
   showApprovalAuthority,
   showExpiry,
@@ -903,6 +1103,7 @@ function ApprovalHeader({
   showRequester,
 }: {
   approval: OperationApprovalModel
+  envelopeEvaluation?: AuthorityEnvelopeEvaluation
   hasContext: boolean
   showApprovalAuthority?: boolean
   showExpiry?: boolean
@@ -936,7 +1137,11 @@ function ApprovalHeader({
           </Typography.BodySmall>
         ) : null}
       </div>
-      {hasContext ? <Pill color="amber">Approval required</Pill> : null}
+      {envelopeEvaluation?.decision === 'allow' ? (
+        <Pill color="green">Allowed by Owner policy</Pill>
+      ) : hasContext ? (
+        <Pill color="amber">Approval required</Pill>
+      ) : null}
     </div>
   )
 }
@@ -988,6 +1193,76 @@ function InvocationArgumentsSection({
         </dl>
       ) : null}
     </section>
+  )
+}
+
+function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEvaluation }) {
+  const matches = evaluation.decision === 'allow'
+
+  return (
+    <section style={sectionStyle}>
+      <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
+        Envelope check
+      </Typography.BodySmallStrong>
+      <div style={envelopeResultStyle}>
+        <div style={envelopeResultCopyStyle}>
+          <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
+            {matches ? 'Matches envelope' : 'Outside envelope'}
+          </Typography.BodySmallStrong>
+          <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
+            {matches ? 'Can continue without per-call approval' : 'Requires approval'}
+          </Typography.BodySmall>
+        </div>
+        <Pill color={matches ? 'green' : 'amber'}>{matches ? 'Allowed' : 'Review'}</Pill>
+      </div>
+      <dl style={contextDetailsStyle}>
+        <DetailRow label="Installed by" value={evaluation.installedBy} />
+        <DetailRow label="Envelope expiry" value={evaluation.expiresAt} />
+        {evaluation.checks.map(({ detail, label, status }, index) => (
+          <EnvelopeCheckRow
+            key={label}
+            detail={detail}
+            label={label}
+            showDivider={index < evaluation.checks.length - 1}
+            status={status}
+          />
+        ))}
+      </dl>
+      <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
+        {matches
+          ? `Allowed by envelope ${evaluation.envelopeId}`
+          : `Envelope ${evaluation.envelopeId} did not authorize this Invocation`}
+      </Typography.BodySmall>
+    </section>
+  )
+}
+
+function EnvelopeCheckRow({
+  detail,
+  label,
+  showDivider,
+  status,
+}: {
+  detail: string
+  label: string
+  showDivider: boolean
+  status: EnvelopeCheckStatus
+}) {
+  const statusLabel = status === 'pass' ? 'Pass' : status === 'fail' ? 'Fails' : 'Unknown'
+  const statusColor = status === 'pass' ? 'green' : status === 'fail' ? 'red' : 'amber'
+
+  return (
+    <div style={{ ...detailRowStyle, ...(!showDivider ? lastDetailRowStyle : {}) }}>
+      <Typography.BodySmall as="dt" variant="tertiary">
+        {label}
+      </Typography.BodySmall>
+      <div style={envelopeCheckValueStyle}>
+        <Typography.BodySmall as="dd" style={detailValueStyle} variant="primary">
+          {detail}
+        </Typography.BodySmall>
+        <Pill color={statusColor}>{statusLabel}</Pill>
+      </div>
+    </div>
   )
 }
 
@@ -1258,6 +1533,29 @@ const detailValueStyle: CSSProperties = {
   margin: 0,
   minWidth: 0,
   overflowWrap: 'anywhere',
+}
+
+const envelopeResultStyle: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  gap: '12px',
+  justifyContent: 'space-between',
+  padding: '2px 0 6px',
+}
+
+const envelopeResultCopyStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '2px',
+  minWidth: 0,
+}
+
+const envelopeCheckValueStyle: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  gap: '8px',
+  justifyContent: 'space-between',
+  minWidth: 0,
 }
 
 const nestedValueStyle: CSSProperties = {
