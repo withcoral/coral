@@ -17,17 +17,13 @@ type ArgumentValue =
   | null
   | ArgumentValue[]
   | { [key: string]: ArgumentValue }
-type DatasetKey =
-  | 'envelopeMatches'
-  | 'envelopeOutside'
-  | 'github'
-  | 'linear'
-  | 'loop'
-  | 'savedFunction'
+type DatasetKey = 'github' | 'linear' | 'loop' | 'savedFunction'
+type EnvelopeMatch = 'inside' | 'outside'
 
 interface OperationApprovalStoryProps {
   argumentsCollapsible?: boolean
   argumentsInitiallyExpanded?: boolean
+  envelopeMatch: EnvelopeMatch
   compact?: boolean
   dataset: DatasetKey
   onApprove: () => void
@@ -48,8 +44,9 @@ interface OperationApprovalStoryProps {
   showTechnicalDetails?: boolean
 }
 
-type OperationApprovalProps = Omit<OperationApprovalStoryProps, 'dataset'> & {
+type OperationApprovalProps = Omit<OperationApprovalStoryProps, 'dataset' | 'envelopeMatch'> & {
   approval: OperationApprovalModel
+  authorityEnvelope: AuthorityEnvelope
 }
 
 interface ProgramEvidence {
@@ -86,29 +83,29 @@ interface AuthorityEnvelopeEvaluation {
 
 interface AuthorityEnvelope {
   envelopeId: string
-  facts: {
-    body: string
-    commentsToday?: number
-    evaluatedAt: string
-    issueState?: string
-    operationCallPath: string
-    repository: string
-  }
+  evaluatedAt: string
+  expiresAt: string
   installedBy: string
-  policy: {
-    allowedOperationCallPath: string
-    allowedRepository: string
-    dailyCommentLimit: number
-    expiresAt: string
-    forbiddenMassMentions: string[]
-    maxBodyCharacters: number
-    requiredIssueState: string
+  operationCallPath: string
+  rules: AuthorityEnvelopeRule[]
+}
+
+interface AuthorityEnvelopeRule {
+  evaluate: (approval: OperationApprovalModel) => {
+    observed: string
+    status: EnvelopeCheckStatus
   }
+  label: string
+  policy: string
+}
+
+interface OperationApprovalDataset {
+  approval: OperationApprovalModel
+  authorityEnvelopes: Record<EnvelopeMatch, AuthorityEnvelope>
 }
 
 interface OperationApprovalModel {
   approvalAuthority: string
-  authorityEnvelope?: AuthorityEnvelope
   expiresAt: string
   identity: string
   invocationArguments: Array<{ label: string; value: ArgumentValue }>
@@ -130,9 +127,15 @@ interface OperationApprovalModel {
 
 const meta = {
   argTypes: {
+    envelopeMatch: {
+      control: 'inline-radio',
+      description: 'Choose the Owner envelope evaluated against the selected dataset.',
+      name: 'Match envelope',
+      options: ['inside', 'outside'],
+    },
     dataset: {
       control: 'select',
-      options: ['github', 'linear', 'loop', 'savedFunction', 'envelopeMatches', 'envelopeOutside'],
+      options: ['github', 'linear', 'loop', 'savedFunction'],
     },
     showAuthorityEnvelopeMatch: {
       control: 'boolean',
@@ -148,6 +151,7 @@ const meta = {
     },
   },
   args: {
+    envelopeMatch: 'inside',
     dataset: 'github',
     onApprove: fn(),
     onDecline: fn(),
@@ -176,7 +180,7 @@ Every Medium+ story keeps the same first-screen decision contract: Operation cal
 
 Every story uses the same story-local \`OperationApproval\` component. Toggle \`showRequestContext\` in any story to reveal Task and exec intent below Arguments; \`TaskIntentContext\` is the preset that enables it by default.
 
-The envelope stories execute Storybook-only mock policy definitions against observed Invocation facts with ArkType. They explore deterministic authorization from a Workspace Owner-installed policy; ArkType is not proposed as Coral’s production authorization engine, and the stories do not model an agent approving another agent. A passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to run this experiment for a compatible dataset.
+Every dataset supplies two Storybook-only Owner envelopes: \`inside\` matches its exact Invocation and \`outside\` fails explicit argument filters. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to reveal the evaluation.
 
 Each story has a **dataset** control. The default GitHub dataset uses \`coral.providers.github.issues.createComment\`; the Linear dataset uses \`coral.providers.linear.issues.update\` inside a program that also reads GitHub context; the loop dataset puts one pending \`coral.providers.linear.issues.update\` Invocation inside a \`for\` loop; the saved-function dataset shows one pending Operation from a linked \`coral.functions.postApprovalFollowUp\` source snapshot. Within a selected dataset, the stories keep the operation/request stable so reviewers can compare disclosure and rendering choices without changing provider, operation, requester, identity, or run context.
 
@@ -207,144 +211,31 @@ Use the least disclosure that still makes the concrete target clear. Program bod
 export default meta
 type Story = StoryObj<typeof meta>
 
-function createEnvelopeDataset({
-  body,
-  issueState,
-  repository,
-}: {
-  body: string
-  issueState?: string
-  repository: string
-}): OperationApprovalModel {
-  const [org, repo] = repository.split('/')
-  const invocationArguments: OperationApprovalModel['invocationArguments'] = [
-    {
-      label: 'Argument 1',
-      value: { body, issue_number: 85, org, repo },
-    },
-    { label: 'Argument 2', value: { format: 'markdown' } },
-    { label: 'Argument 3', value: 'notify-requester' },
-  ]
-
-  return {
-    approvalAuthority: 'Workspace owner',
-    authorityEnvelope: {
-      envelopeId: 'env_01K4B6ZA',
-      facts: {
-        body,
-        commentsToday: 7,
-        evaluatedAt: '2026-09-02T12:00:00Z',
-        issueState,
-        operationCallPath: 'coral.providers.github.issues.createComment',
-        repository,
-      },
-      installedBy: 'Workspace Owner',
-      policy: {
-        allowedOperationCallPath: 'coral.providers.github.issues.createComment',
-        allowedRepository: 'withcoral/lagoon',
-        dailyCommentLimit: 20,
-        expiresAt: '2026-09-30T23:59:00Z',
-        forbiddenMassMentions: ['@channel', '@here'],
-        maxBodyCharacters: 2000,
-        requiredIssueState: 'open',
-      },
-    },
-    expiresAt: '2026-09-02 16:00 UTC',
-    identity: 'coral-bot',
-    invocationArguments,
-    invokingPrincipal: 'triage-bot',
-    operationCallPath: 'coral.providers.github.issues.createComment',
-    policyText: 'Agents cannot approve their own operations.',
-    provider: 'GitHub',
-    providerReference:
-      'Creates a comment on an issue in the selected repository using the authenticated GitHub account.',
-    rawInvocation: invocationArguments.map(({ value }) => value),
-    requestContext: {
-      execIntent: 'Post the prepared triage note to the selected GitHub issue.',
-      taskId: 'task_01K4B7TP',
-      taskIntent: 'Triage the approval-policy follow-up for the Lagoon workspace.',
-    },
-    runContext: {
-      runId: 'run_01K4B7V2',
-      status: 'running',
-      workspace: 'Lagoon',
-    },
-    technicalDetails: [
-      { label: 'Operation invocation', value: 'inv_01K4B7X4 · pending' },
-      { label: 'Provider generation', value: 'github@gen_0198' },
-      { label: 'Credential route', value: 'route_github_coral_bot' },
-    ],
-  }
-}
-
-function evaluateAuthorityEnvelope(envelope: AuthorityEnvelope): AuthorityEnvelopeEvaluation {
-  const { facts, policy } = envelope
-  const operationPolicy = type('string').narrow(
-    (value) => value === policy.allowedOperationCallPath,
-  )
-  const repositoryPolicy = type('string').narrow((value) => value === policy.allowedRepository)
-  const bodyLengthPolicy = type('string').narrow(
-    (value) => value.length <= policy.maxBodyCharacters,
-  )
-  const mentionPolicy = type('string').narrow((value) =>
-    policy.forbiddenMassMentions.every((mention) => !value.includes(mention)),
-  )
-  const issueStatePolicy = type('string').narrow((value) => value === policy.requiredIssueState)
-  const quotaPolicy = type('number').narrow((value) => value < policy.dailyCommentLimit)
+function evaluateAuthorityEnvelope(
+  approval: OperationApprovalModel,
+  envelope: AuthorityEnvelope,
+): AuthorityEnvelopeEvaluation {
+  const operationPolicy = type('string').narrow((value) => value === envelope.operationCallPath)
   const expiryPolicy = type('Date').narrow(
-    (evaluatedAt) => evaluatedAt.getTime() < new Date(policy.expiresAt).getTime(),
-  )
-  const detectedMassMentions = policy.forbiddenMassMentions.filter((mention) =>
-    facts.body.includes(mention),
+    (evaluatedAt) => evaluatedAt.getTime() < new Date(envelope.expiresAt).getTime(),
   )
   const checks: AuthorityEnvelopeEvaluation['checks'] = [
     {
-      label: 'Operation',
-      observed: facts.operationCallPath,
-      policy: `Equals ${policy.allowedOperationCallPath}`,
-      status: arkStatus(operationPolicy(facts.operationCallPath)),
+      label: 'Operation call path',
+      observed: approval.operationCallPath,
+      policy: `== ${JSON.stringify(envelope.operationCallPath)}`,
+      status: arkStatus(operationPolicy(approval.operationCallPath)),
     },
-    {
-      label: 'Repository',
-      observed: facts.repository,
-      policy: `Equals ${policy.allowedRepository}`,
-      status: arkStatus(repositoryPolicy(facts.repository)),
-    },
-    {
-      label: 'Issue state',
-      observed: facts.issueState ?? 'Unavailable',
-      policy: `Must be ${policy.requiredIssueState}`,
-      status:
-        facts.issueState === undefined ? 'unknown' : arkStatus(issueStatePolicy(facts.issueState)),
-    },
-    {
-      label: 'Body length',
-      observed: `${facts.body.length.toLocaleString()} characters`,
-      policy: `At most ${policy.maxBodyCharacters.toLocaleString()} characters`,
-      status: arkStatus(bodyLengthPolicy(facts.body)),
-    },
-    {
-      label: 'Mention policy',
-      observed:
-        detectedMassMentions.length > 0 ? detectedMassMentions.join(', ') : 'No mass mentions',
-      policy: `Excludes ${policy.forbiddenMassMentions.join(' and ')}`,
-      status: arkStatus(mentionPolicy(facts.body)),
-    },
-    {
-      label: 'Daily quota',
-      observed:
-        facts.commentsToday === undefined
-          ? 'Unavailable'
-          : `${facts.commentsToday} comments used today`,
-      policy: `Fewer than ${policy.dailyCommentLimit} comments used today`,
-      status:
-        facts.commentsToday === undefined ? 'unknown' : arkStatus(quotaPolicy(facts.commentsToday)),
-    },
+    ...envelope.rules.map(({ evaluate, label, policy }) => ({
+      label,
+      policy,
+      ...evaluate(approval),
+    })),
     {
       label: 'Policy expiry',
-      observed: `Evaluated ${facts.evaluatedAt}`,
-      policy: `Expires ${policy.expiresAt}`,
-      status: arkStatus(expiryPolicy(new Date(facts.evaluatedAt))),
+      observed: `Evaluated ${envelope.evaluatedAt}`,
+      policy: `expires ${envelope.expiresAt}`,
+      status: arkStatus(expiryPolicy(new Date(envelope.evaluatedAt))),
     },
   ]
 
@@ -352,7 +243,7 @@ function evaluateAuthorityEnvelope(envelope: AuthorityEnvelope): AuthorityEnvelo
     checks,
     decision: checks.every(({ status }) => status === 'pass') ? 'allow' : 'requiresApproval',
     envelopeId: envelope.envelopeId,
-    expiresAt: policy.expiresAt,
+    expiresAt: envelope.expiresAt,
     installedBy: envelope.installedBy,
   }
 }
@@ -361,16 +252,7 @@ function arkStatus(result: unknown): EnvelopeCheckStatus {
   return result instanceof type.errors ? 'fail' : 'pass'
 }
 
-const datasets: Record<DatasetKey, OperationApprovalModel> = {
-  envelopeMatches: createEnvelopeDataset({
-    body: 'Approval envelope exploration is ready for review.',
-    issueState: 'open',
-    repository: 'withcoral/lagoon',
-  }),
-  envelopeOutside: createEnvelopeDataset({
-    body: '@channel Approval envelope exploration is ready for review.',
-    repository: 'withcoral/private-roadmap',
-  }),
+const approvalDatasets: Record<DatasetKey, OperationApprovalModel> = {
   github: {
     invocationArguments: [
       {
@@ -694,6 +576,265 @@ export default async function postApprovalFollowUp(input) {
   },
 }
 
+function createArgumentRule({
+  argumentIndex,
+  formatObserved = formatEnvelopeObserved,
+  label,
+  path,
+  policy,
+  validate,
+}: {
+  argumentIndex: number
+  formatObserved?: (value: ArgumentValue) => string
+  label: string
+  path: string[]
+  policy: string
+  validate: (value: ArgumentValue) => unknown
+}): AuthorityEnvelopeRule {
+  return {
+    evaluate: (approval) => {
+      const observed = readInvocationArgument(approval, argumentIndex, path)
+
+      return observed === undefined
+        ? { observed: 'Unavailable', status: 'unknown' }
+        : { observed: formatObserved(observed), status: arkStatus(validate(observed)) }
+    },
+    label,
+    policy,
+  }
+}
+
+function stringEqualsRule(label: string, argumentIndex: number, path: string[], expected: string) {
+  const schema = type('string').narrow((value) => value === expected)
+  return createArgumentRule({
+    argumentIndex,
+    label,
+    path,
+    policy: `== ${JSON.stringify(expected)}`,
+    validate: (value) => schema(value),
+  })
+}
+
+function stringInRule(label: string, argumentIndex: number, path: string[], allowed: string[]) {
+  const schema = type('string').narrow((value) => allowed.includes(value))
+  return createArgumentRule({
+    argumentIndex,
+    label,
+    path,
+    policy: `in ${JSON.stringify(allowed)}`,
+    validate: (value) => schema(value),
+  })
+}
+
+function numberInRule(label: string, argumentIndex: number, path: string[], allowed: number[]) {
+  const schema = type('number').narrow((value) => allowed.includes(value))
+  return createArgumentRule({
+    argumentIndex,
+    label,
+    path,
+    policy: `in ${JSON.stringify(allowed)}`,
+    validate: (value) => schema(value),
+  })
+}
+
+function booleanEqualsRule(
+  label: string,
+  argumentIndex: number,
+  path: string[],
+  expected: boolean,
+) {
+  const schema = type('boolean').narrow((value) => value === expected)
+  return createArgumentRule({
+    argumentIndex,
+    label,
+    path,
+    policy: `== ${String(expected)}`,
+    validate: (value) => schema(value),
+  })
+}
+
+function stringLengthRule(label: string, argumentIndex: number, path: string[], maximum: number) {
+  const schema = type('string').narrow((value) => value.length <= maximum)
+  return createArgumentRule({
+    argumentIndex,
+    formatObserved: (value) =>
+      typeof value === 'string'
+        ? `${value.length.toLocaleString()} characters`
+        : JSON.stringify(value),
+    label,
+    path,
+    policy: `length <= ${maximum.toLocaleString()}`,
+    validate: (value) => schema(value),
+  })
+}
+
+function stringExcludesRule(
+  label: string,
+  argumentIndex: number,
+  path: string[],
+  excluded: string[],
+) {
+  const schema = type('string').narrow((value) =>
+    excluded.every((candidate) => !value.includes(candidate)),
+  )
+  return createArgumentRule({
+    argumentIndex,
+    formatObserved: (value) => {
+      if (typeof value !== 'string') return JSON.stringify(value)
+      const matches = excluded.filter((candidate) => value.includes(candidate))
+      return matches.length > 0 ? matches.join(', ') : 'No excluded values'
+    },
+    label,
+    path,
+    policy: `excludes ${JSON.stringify(excluded)}`,
+    validate: (value) => schema(value),
+  })
+}
+
+function stringArrayIncludesRule(
+  label: string,
+  argumentIndex: number,
+  path: string[],
+  required: string,
+) {
+  const schema = type('string[]').narrow((value) => value.includes(required))
+  return createArgumentRule({
+    argumentIndex,
+    label,
+    path,
+    policy: `includes ${JSON.stringify(required)}`,
+    validate: (value) => schema(value),
+  })
+}
+
+function readInvocationArgument(
+  approval: OperationApprovalModel,
+  argumentIndex: number,
+  path: string[],
+): ArgumentValue | undefined {
+  let value = approval.invocationArguments[argumentIndex]?.value
+
+  for (const segment of path) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+    value = value[segment]
+  }
+
+  return value
+}
+
+function formatEnvelopeObserved(value: ArgumentValue) {
+  return typeof value === 'string' ? value : JSON.stringify(value)
+}
+
+function createAuthorityEnvelope(
+  envelopeId: string,
+  approval: OperationApprovalModel,
+  rules: AuthorityEnvelopeRule[],
+): AuthorityEnvelope {
+  return {
+    envelopeId,
+    evaluatedAt: '2026-09-02T12:00:00Z',
+    expiresAt: '2026-09-30T23:59:00Z',
+    installedBy: 'Workspace Owner',
+    operationCallPath: approval.operationCallPath,
+    rules,
+  }
+}
+
+function createDataset(
+  datasetKey: DatasetKey,
+  insideRules: AuthorityEnvelopeRule[],
+  outsideRules: AuthorityEnvelopeRule[],
+): OperationApprovalDataset {
+  const approval = approvalDatasets[datasetKey]
+  return {
+    approval,
+    authorityEnvelopes: {
+      inside: createAuthorityEnvelope(`env_${datasetKey}_inside`, approval, insideRules),
+      outside: createAuthorityEnvelope(`env_${datasetKey}_outside`, approval, outsideRules),
+    },
+  }
+}
+
+const githubSharedRules = [
+  stringEqualsRule('args[0].org', 0, ['org'], 'withcoral'),
+  stringLengthRule('args[0].body.length', 0, ['body'], 2000),
+  stringExcludesRule('args[0].body mentions', 0, ['body'], ['@channel', '@here']),
+]
+const linearSharedRules = [
+  stringArrayIncludesRule('args[0].labels', 0, ['labels'], 'run-status'),
+  booleanEqualsRule('args[1].notifyAssignee', 1, ['notifyAssignee'], true),
+]
+const loopSharedRules = [
+  stringEqualsRule('args[0].source.issue', 0, ['source', 'issue'], 'withcoral/lagoon#91'),
+  booleanEqualsRule('args[1].notifyAssignee', 1, ['notifyAssignee'], false),
+]
+const savedFunctionSharedRules = [
+  stringEqualsRule('args[0].org', 0, ['org'], 'withcoral'),
+  stringLengthRule('args[0].body.length', 0, ['body'], 2000),
+  stringEqualsRule(
+    'args[1].functionPath',
+    1,
+    ['functionPath'],
+    'coral.functions.postApprovalFollowUp',
+  ),
+]
+
+const datasets = {
+  github: createDataset(
+    'github',
+    [
+      ...githubSharedRules,
+      stringEqualsRule('args[0].repo', 0, ['repo'], 'lagoon'),
+      numberInRule('args[0].issue_number', 0, ['issue_number'], [85]),
+    ],
+    [
+      ...githubSharedRules,
+      stringEqualsRule('args[0].repo', 0, ['repo'], 'coral-internal'),
+      numberInRule('args[0].issue_number', 0, ['issue_number'], [99]),
+    ],
+  ),
+  linear: createDataset(
+    'linear',
+    [
+      ...linearSharedRules,
+      stringInRule('args[0].issue_id', 0, ['issue_id'], ['LIN-482']),
+      stringEqualsRule('args[0].state_id', 0, ['state_id'], 'in_review'),
+    ],
+    [
+      ...linearSharedRules,
+      stringInRule('args[0].issue_id', 0, ['issue_id'], ['LIN-999']),
+      stringEqualsRule('args[0].state_id', 0, ['state_id'], 'done'),
+    ],
+  ),
+  loop: createDataset(
+    'loop',
+    [
+      ...loopSharedRules,
+      stringInRule('args[0].issue_id', 0, ['issue_id'], ['LIN-491']),
+      stringEqualsRule('args[0].state_id', 0, ['state_id'], 'triaged'),
+    ],
+    [
+      ...loopSharedRules,
+      stringInRule('args[0].issue_id', 0, ['issue_id'], ['LIN-999']),
+      stringEqualsRule('args[0].state_id', 0, ['state_id'], 'done'),
+    ],
+  ),
+  savedFunction: createDataset(
+    'savedFunction',
+    [
+      ...savedFunctionSharedRules,
+      stringEqualsRule('args[0].repo', 0, ['repo'], 'lagoon'),
+      numberInRule('args[0].issue_number', 0, ['issue_number'], [85]),
+    ],
+    [
+      ...savedFunctionSharedRules,
+      stringEqualsRule('args[0].repo', 0, ['repo'], 'coral-internal'),
+      numberInRule('args[0].issue_number', 0, ['issue_number'], [99]),
+    ],
+  ),
+} satisfies Record<DatasetKey, OperationApprovalDataset>
+
 export const Minimal: Story = {
   args: {
     compact: true,
@@ -908,7 +1049,8 @@ export const EnvelopeMatches: Story = {
   args: {
     argumentsCollapsible: true,
     argumentsInitiallyExpanded: true,
-    dataset: 'envelopeMatches',
+    dataset: 'github',
+    envelopeMatch: 'inside',
     showArguments: true,
     showAuthorityEnvelopeMatch: true,
     showIdentity: true,
@@ -929,7 +1071,8 @@ export const EnvelopeDoesNotMatch: Story = {
   args: {
     argumentsCollapsible: true,
     argumentsInitiallyExpanded: true,
-    dataset: 'envelopeOutside',
+    dataset: 'github',
+    envelopeMatch: 'outside',
     showArguments: true,
     showApprovalAuthority: true,
     showAuthorityEnvelopeMatch: true,
@@ -1019,14 +1162,23 @@ export const MaximalEvidence: Story = {
   },
 }
 
-function OperationApprovalStory({ dataset, ...props }: OperationApprovalStoryProps) {
-  return <OperationApproval approval={datasets[dataset]} {...props} />
+function OperationApprovalStory({ dataset, envelopeMatch, ...props }: OperationApprovalStoryProps) {
+  const selectedDataset = datasets[dataset]
+
+  return (
+    <OperationApproval
+      approval={selectedDataset.approval}
+      authorityEnvelope={selectedDataset.authorityEnvelopes[envelopeMatch]}
+      {...props}
+    />
+  )
 }
 
 function OperationApproval({
   approval,
   argumentsCollapsible,
   argumentsInitiallyExpanded,
+  authorityEnvelope,
   compact,
   onApprove,
   onDecline,
@@ -1046,10 +1198,9 @@ function OperationApproval({
   showTechnicalDetails,
 }: OperationApprovalProps) {
   const hasDecisionContext = Boolean(showApprovalAuthority)
-  const envelopeEvaluation =
-    showAuthorityEnvelopeMatch && approval.authorityEnvelope
-      ? evaluateAuthorityEnvelope(approval.authorityEnvelope)
-      : undefined
+  const envelopeEvaluation = showAuthorityEnvelopeMatch
+    ? evaluateAuthorityEnvelope(approval, authorityEnvelope)
+    : undefined
   const hasContext = Boolean(
     showArguments ||
     showExpiry ||
@@ -1213,6 +1364,8 @@ function ApprovalHeader({
       </div>
       {envelopeEvaluation?.decision === 'allow' ? (
         <Pill color="green">Allowed by Owner policy</Pill>
+      ) : envelopeEvaluation ? (
+        <Pill color="amber">Outside Owner policy</Pill>
       ) : hasContext ? (
         <Pill color="amber">Approval required</Pill>
       ) : null}
@@ -1281,7 +1434,7 @@ function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEva
       <div style={envelopeResultStyle}>
         <div style={envelopeResultCopyStyle}>
           <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
-            {matches ? 'Matches envelope' : 'Outside envelope'}
+            {matches ? 'Allowed by Owner policy' : 'Outside Owner policy'}
           </Typography.BodySmallStrong>
           <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
             {matches ? 'Can continue without per-call approval' : 'Requires approval'}
