@@ -18,24 +18,29 @@ type ArgumentValue =
   | { [key: string]: ArgumentValue }
 type DatasetKey = 'github' | 'linear' | 'loop' | 'savedFunction'
 
-interface OperationApprovalProps {
+interface OperationApprovalStoryProps {
   argumentsCollapsible?: boolean
   argumentsInitiallyExpanded?: boolean
-  canApprove?: boolean
   compact?: boolean
   dataset: DatasetKey
   onApprove: () => void
   onDecline: () => void
   onViewRun: () => void
   showArguments?: boolean
+  showApprovalAuthority?: boolean
   showExpiry?: boolean
   showIdentity?: boolean
   showProgramBody?: boolean
   showProgramSnippet?: boolean
   showRequestMetadataInHeader?: boolean
+  showRequestContext?: boolean
   showRequester?: boolean
   showRunContext?: boolean
   showTechnicalDetails?: boolean
+}
+
+type OperationApprovalProps = Omit<OperationApprovalStoryProps, 'dataset'> & {
+  approval: OperationApprovalModel
 }
 
 interface ProgramEvidence {
@@ -44,25 +49,36 @@ interface ProgramEvidence {
   currentOperation: string
 }
 
-interface ApprovalDataset {
-  arguments: Array<{ label: string; value: ArgumentValue }>
-  canApprove: string
-  deadline: string
+interface ProgramContext {
+  body: ProgramEvidence
+  snippet: ProgramEvidence
+}
+
+interface RequestContext {
+  execIntent: string
+  taskId: string
+  taskIntent: string
+}
+
+interface OperationApprovalModel {
+  approvalAuthority: string
+  expiresAt: string
   identity: string
-  operationName: string
+  invocationArguments: Array<{ label: string; value: ArgumentValue }>
+  invokingPrincipal: string
+  operationCallPath: string
   policyText: string
-  programBody: ProgramEvidence
-  programSnippet: ProgramEvidence
+  programContext?: ProgramContext
   provider: string
-  providerDescription: string
-  rawArguments: ArgumentValue[]
-  requestedBy: string
+  providerReference?: string
+  rawInvocation: ArgumentValue[]
+  requestContext?: RequestContext
   runContext: {
     runId: string
     status: 'running'
     workspace: string
   }
-  technicalIds: Array<{ label: string; value: string }>
+  technicalDetails: Array<{ label: string; value: string }>
 }
 
 const meta = {
@@ -78,7 +94,7 @@ const meta = {
     onDecline: fn(),
     onViewRun: fn(),
   },
-  component: OperationApproval,
+  component: OperationApprovalStory,
   decorators: [
     (Story) => (
       <div style={storyCanvasStyle}>
@@ -92,6 +108,10 @@ const meta = {
       description: {
         component: `An Operation Approval resolves one pending Operation Invocation. It does not approve the Program Run, future Invocations, or a reusable permission profile. The containing Program Run remains running while it waits for the decision.
 
+The story-only model uses Lagoon-aligned names: \`operationCallPath\`, \`invocationArguments\`, \`invokingPrincipal\`, \`approvalAuthority\`, \`expiresAt\`, optional \`requestContext\`, and optional \`programContext\`. Task and exec intent are request context; they do not replace the exact Invocation arguments or describe the consequence of approval.
+
+Every Medium+ story keeps the same first-screen decision contract: Operation call path, provider identity, invoking principal, approval authority, expiry, exact Invocation arguments, and the unchanged Decline/Approve actions. The prototype does not invent an operation-specific consequence CTA when no trusted renderer provides one.
+
 Each story has a **dataset** control. The default GitHub dataset uses \`coral.providers.github.issues.createComment\`; the Linear dataset uses \`coral.providers.linear.issues.update\` inside a program that also reads GitHub context; the loop dataset puts one pending \`coral.providers.linear.issues.update\` Invocation inside a \`for\` loop; the saved-function dataset shows one pending Operation from a linked \`coral.functions.postApprovalFollowUp\` source snapshot. Within a selected dataset, the stories keep the operation/request stable so reviewers can compare disclosure and rendering choices without changing provider, operation, requester, identity, or run context.
 
 - **Minimal** uses the stable operation name with very little extra detail.
@@ -99,11 +119,10 @@ Each story has a **dataset** control. The default GitHub dataset uses \`coral.pr
 - **MinimalWithRequester** adds only the requesting principal.
 - **MinimalWithRequesterAndExpiry** adds both compact approval-request fields.
 - **Medium** adds identity plus positional/raw arguments.
-- **MediumWithExpiry** adds the approval deadline to Medium disclosure.
-- **MediumWithRequester** adds the requesting principal to Medium disclosure.
-- **MediumWithRequesterAndExpiry** adds both approval-request fields to Medium disclosure.
+- **MediumWithExpiry**, **MediumWithRequester**, and **MediumWithRequesterAndExpiry** retain earlier comparison names, but now preserve the complete Medium+ decision contract.
 - **MediumExpandableExpanded** includes requester and expiry, starts open, and allows arguments to be collapsed.
 - **MediumExpandableCollapsed** includes requester and expiry behind a collapsed-by-default argument review.
+- **TaskIntentContext** adds grounded Task and MCP exec intent as secondary request context.
 - **ProgramSnippet** adds expandable arguments and highlights one current-operation call as supporting context.
 - **CollapsedProgramBody** adds expandable arguments and a collapsed, self-contained Program body.
 - **MaximalEvidence** keeps arguments expandable while exposing snippet, Program body, provider reference copy, raw args, and ids.
@@ -115,14 +134,14 @@ Use the least disclosure that still makes the concrete target clear. Program bod
   },
   tags: ['autodocs'],
   title: 'Components/OperationApproval',
-} satisfies Meta<typeof OperationApproval>
+} satisfies Meta<typeof OperationApprovalStory>
 
 export default meta
 type Story = StoryObj<typeof meta>
 
-const datasets: Record<DatasetKey, ApprovalDataset> = {
+const datasets: Record<DatasetKey, OperationApprovalModel> = {
   github: {
-    arguments: [
+    invocationArguments: [
       {
         label: 'Argument 1',
         value: {
@@ -141,13 +160,14 @@ const datasets: Record<DatasetKey, ApprovalDataset> = {
       },
       { label: 'Argument 3', value: 'notify-requester' },
     ],
-    canApprove: 'Workspace owner',
-    deadline: 'Expires at 14:42 UTC',
+    approvalAuthority: 'Workspace owner',
+    expiresAt: '14:42 UTC',
     identity: 'coral-bot',
-    operationName: 'coral.providers.github.issues.createComment',
+    operationCallPath: 'coral.providers.github.issues.createComment',
     policyText: 'Agents cannot approve their own operations.',
-    programBody: {
-      before: `const selectedIssue = { org: "withcoral", repo: "lagoon", number: 85 }
+    programContext: {
+      body: {
+        before: `const selectedIssue = { org: "withcoral", repo: "lagoon", number: 85 }
 const comment = {
   issue_number: selectedIssue.number,
   org: selectedIssue.org,
@@ -156,19 +176,20 @@ const comment = {
 }
 const options = { format: "markdown", mentions: ["@reef-team"] }
 const routing = "notify-requester"`,
-      currentOperation: 'await github.issues.createComment(comment, options, routing)',
-      after: `await audit.log({ action: "requested_github_comment", issue: selectedIssue.number })`,
-    },
-    programSnippet: {
-      before: `const body = "The approval queue now groups pending actions by Program Run and updates live."
+        currentOperation: 'await github.issues.createComment(comment, options, routing)',
+        after: `await audit.log({ action: "requested_github_comment", issue: selectedIssue.number })`,
+      },
+      snippet: {
+        before: `const body = "The approval queue now groups pending actions by Program Run and updates live."
 const comment = { org: "withcoral", repo: "lagoon", issue_number: 85, body }
 const options = { format: "markdown", mentions: ["@reef-team"] }`,
-      currentOperation: 'await github.issues.createComment(comment, options, "notify-requester")',
+        currentOperation: 'await github.issues.createComment(comment, options, "notify-requester")',
+      },
     },
     provider: 'GitHub',
-    providerDescription:
+    providerReference:
       'Creates a comment on an issue in the selected repository using the authenticated GitHub account.',
-    rawArguments: [
+    rawInvocation: [
       {
         issue_number: 85,
         body: 'The approval queue now groups pending actions by Program Run and updates live.',
@@ -181,13 +202,18 @@ const options = { format: "markdown", mentions: ["@reef-team"] }`,
       },
       'notify-requester',
     ],
-    requestedBy: 'reef-agent',
+    invokingPrincipal: 'reef-agent',
+    requestContext: {
+      execIntent: 'Post the prepared approval-card update to the Lagoon issue.',
+      taskId: 'task_01K3Q7ZX',
+      taskIntent: 'Follow up on the approval-card review for the Run Status Page.',
+    },
     runContext: {
       runId: 'run_01K3Q8DA',
       status: 'running',
       workspace: 'Lagoon',
     },
-    technicalIds: [
+    technicalDetails: [
       { label: 'Approval request', value: 'apr_01K3Q8F1 · pending · created 14:34 UTC' },
       { label: 'Operation invocation', value: 'inv_01K3Q8E4 · pending' },
       { label: 'Provider generation', value: 'github@gen_0198' },
@@ -196,7 +222,7 @@ const options = { format: "markdown", mentions: ["@reef-team"] }`,
     ],
   },
   linear: {
-    arguments: [
+    invocationArguments: [
       {
         label: 'Argument 1',
         value: {
@@ -210,13 +236,14 @@ const options = { format: "markdown", mentions: ["@reef-team"] }`,
       { label: 'Argument 2', value: { notifyAssignee: true, priority: 'normal' } },
       { label: 'Argument 3', value: 'approval-card-review' },
     ],
-    canApprove: 'Workspace owner',
-    deadline: 'Expires at 14:42 UTC',
+    approvalAuthority: 'Workspace owner',
+    expiresAt: '14:42 UTC',
     identity: 'coral-linear-bot',
-    operationName: 'coral.providers.linear.issues.update',
+    operationCallPath: 'coral.providers.linear.issues.update',
     policyText: 'Agents cannot approve their own operations.',
-    programBody: {
-      before: `const githubIssue = { repo: "withcoral/lagoon", number: 85 }
+    programContext: {
+      body: {
+        before: `const githubIssue = { repo: "withcoral/lagoon", number: 85 }
 const linearIssue = { id: "LIN-482", state: "in_review" }
 const updateInput = {
   issue_id: linearIssue.id,
@@ -226,18 +253,21 @@ const updateInput = {
   source: { provider: "github", issue: githubIssue.repo + "#" + githubIssue.number },
 }
 const options = { notifyAssignee: true, priority: "normal" }`,
-      currentOperation: 'await linear.issues.update(updateInput, options, "approval-card-review")',
-      after: `await audit.log({ action: "requested_linear_update", issue: linearIssue.id })`,
-    },
-    programSnippet: {
-      before: `const githubIssue = { repo: "withcoral/lagoon", number: 85 }
+        currentOperation:
+          'await linear.issues.update(updateInput, options, "approval-card-review")',
+        after: `await audit.log({ action: "requested_linear_update", issue: linearIssue.id })`,
+      },
+      snippet: {
+        before: `const githubIssue = { repo: "withcoral/lagoon", number: 85 }
 const updateInput = { issue_id: "LIN-482", state_id: "in_review", source: githubIssue }
 const options = { notifyAssignee: true, priority: "normal" }`,
-      currentOperation: 'await linear.issues.update(updateInput, options, "approval-card-review")',
+        currentOperation:
+          'await linear.issues.update(updateInput, options, "approval-card-review")',
+      },
     },
     provider: 'Linear',
-    providerDescription: 'Updates an issue using the authenticated Linear workspace identity.',
-    rawArguments: [
+    providerReference: 'Updates an issue using the authenticated Linear workspace identity.',
+    rawInvocation: [
       {
         issue_id: 'LIN-482',
         state_id: 'in_review',
@@ -248,13 +278,18 @@ const options = { notifyAssignee: true, priority: "normal" }`,
       { notifyAssignee: true, priority: 'normal' },
       'approval-card-review',
     ],
-    requestedBy: 'reef-agent',
+    invokingPrincipal: 'reef-agent',
+    requestContext: {
+      execIntent: 'Update the Linear review item with the related GitHub issue context.',
+      taskId: 'task_01K3Q9B2',
+      taskIntent: 'Coordinate the approval-card review across Linear and GitHub.',
+    },
     runContext: {
       runId: 'run_01K3Q8DA',
       status: 'running',
       workspace: 'Lagoon',
     },
-    technicalIds: [
+    technicalDetails: [
       { label: 'Approval request', value: 'apr_01K3Q8F1 · pending · created 14:34 UTC' },
       { label: 'Operation invocation', value: 'inv_01K3Q8E4 · pending' },
       { label: 'Provider generation', value: 'linear@gen_0198' },
@@ -263,7 +298,7 @@ const options = { notifyAssignee: true, priority: "normal" }`,
     ],
   },
   loop: {
-    arguments: [
+    invocationArguments: [
       {
         label: 'Argument 1',
         value: {
@@ -276,13 +311,14 @@ const options = { notifyAssignee: true, priority: "normal" }`,
       { label: 'Argument 2', value: { notifyAssignee: false, loopIndex: 2, total: 5 } },
       { label: 'Argument 3', value: 'loop-iteration-2' },
     ],
-    canApprove: 'Workspace owner',
-    deadline: 'Expires at 14:42 UTC',
+    approvalAuthority: 'Workspace owner',
+    expiresAt: '14:42 UTC',
     identity: 'coral-linear-bot',
-    operationName: 'coral.providers.linear.issues.update',
+    operationCallPath: 'coral.providers.linear.issues.update',
     policyText: 'Agents cannot approve their own operations.',
-    programBody: {
-      before: `const githubIssues = [91, 92, 93, 94, 95]
+    programContext: {
+      body: {
+        before: `const githubIssues = [91, 92, 93, 94, 95]
 for (const [index, issueNumber] of githubIssues.entries()) {
   const githubIssue = { repo: "withcoral/lagoon", number: issueNumber }
   const linearIssue = { id: "LIN-" + (489 + index), state: "triaged" }
@@ -292,21 +328,22 @@ for (const [index, issueNumber] of githubIssues.entries()) {
     source: { provider: "github", issue: githubIssue.repo + "#" + githubIssue.number },
   }
   const options = { notifyAssignee: false, loopIndex: index + 1, total: githubIssues.length }`,
-      currentOperation:
-        '  await linear.issues.update(updateInput, options, "loop-iteration-" + (index + 1))',
-      after: `  await audit.log({ action: "requested_loop_update", issue: linearIssue.id })
+        currentOperation:
+          '  await linear.issues.update(updateInput, options, "loop-iteration-" + (index + 1))',
+        after: `  await audit.log({ action: "requested_loop_update", issue: linearIssue.id })
 }`,
-    },
-    programSnippet: {
-      before: `for (const [index, issueNumber] of githubIssues.entries()) {
+      },
+      snippet: {
+        before: `for (const [index, issueNumber] of githubIssues.entries()) {
   const updateInput = { issue_id: "LIN-491", source: { provider: "github", issue: "withcoral/lagoon#91" } }
   const options = { loopIndex: 2, total: 5 }`,
-      currentOperation: '  await linear.issues.update(updateInput, options, "loop-iteration-2")',
-      after: '}',
+        currentOperation: '  await linear.issues.update(updateInput, options, "loop-iteration-2")',
+        after: '}',
+      },
     },
     provider: 'Linear',
-    providerDescription: 'Updates an issue using the authenticated Linear workspace identity.',
-    rawArguments: [
+    providerReference: 'Updates an issue using the authenticated Linear workspace identity.',
+    rawInvocation: [
       {
         issue_id: 'LIN-491',
         state_id: 'triaged',
@@ -316,13 +353,18 @@ for (const [index, issueNumber] of githubIssues.entries()) {
       { notifyAssignee: false, loopIndex: 2, total: 5 },
       'loop-iteration-2',
     ],
-    requestedBy: 'reef-agent',
+    invokingPrincipal: 'reef-agent',
+    requestContext: {
+      execIntent: 'Apply the prepared Linear updates from the submitted Program.',
+      taskId: 'task_01K3Q9L7',
+      taskIntent: 'Bring the tracked approval-review issues up to date.',
+    },
     runContext: {
       runId: 'run_01K3Q8DA',
       status: 'running',
       workspace: 'Lagoon',
     },
-    technicalIds: [
+    technicalDetails: [
       { label: 'Approval request', value: 'apr_01K3Q8L2 · pending · created 14:37 UTC' },
       { label: 'Operation invocation', value: 'inv_01K3Q8K6 · pending' },
       { label: 'Provider generation', value: 'linear@gen_0198' },
@@ -331,7 +373,7 @@ for (const [index, issueNumber] of githubIssues.entries()) {
     ],
   },
   savedFunction: {
-    arguments: [
+    invocationArguments: [
       {
         label: 'Argument 1',
         value: {
@@ -347,13 +389,14 @@ for (const [index, issueNumber] of githubIssues.entries()) {
       },
       { label: 'Argument 3', value: 'saved-function-call-01' },
     ],
-    canApprove: 'Workspace owner',
-    deadline: 'Expires at 14:42 UTC',
+    approvalAuthority: 'Workspace owner',
+    expiresAt: '14:42 UTC',
     identity: 'coral-bot',
-    operationName: 'coral.providers.github.issues.createComment',
+    operationCallPath: 'coral.providers.github.issues.createComment',
     policyText: 'Agents cannot approve their own operations.',
-    programBody: {
-      before: `// Submitted Program body
+    programContext: {
+      body: {
+        before: `// Submitted Program body
 await coral.functions.postApprovalFollowUp({ issueNumber: 85 })
 
 // Linked Saved Function source snapshot: coral.functions.postApprovalFollowUp
@@ -366,23 +409,24 @@ export default async function postApprovalFollowUp(input: { issueNumber: number 
     body: "Linked Saved Function prepared this comment for the current run.",
   }
   const options = { format: "markdown", functionPath: "coral.functions.postApprovalFollowUp" }`,
-      currentOperation:
-        '  await github.issues.createComment(comment, options, "saved-function-call-01")',
-      after: `    return { issue: selectedIssue.number, status: "approval_requested" }
+        currentOperation:
+          '  await github.issues.createComment(comment, options, "saved-function-call-01")',
+        after: `    return { issue: selectedIssue.number, status: "approval_requested" }
 }`,
-    },
-    programSnippet: {
-      before: `// Linked source: coral.functions.postApprovalFollowUp
+      },
+      snippet: {
+        before: `// Linked source: coral.functions.postApprovalFollowUp
 export default async function postApprovalFollowUp(input) {
   const comment = { org: "withcoral", repo: "lagoon", issue_number: input.issueNumber }`,
-      currentOperation:
-        '  await github.issues.createComment(comment, { functionPath: "coral.functions.postApprovalFollowUp" }, "saved-function-call-01")',
-      after: '}',
+        currentOperation:
+          '  await github.issues.createComment(comment, { functionPath: "coral.functions.postApprovalFollowUp" }, "saved-function-call-01")',
+        after: '}',
+      },
     },
     provider: 'GitHub',
-    providerDescription:
+    providerReference:
       'Creates a comment on an issue in the selected repository using the authenticated GitHub account.',
-    rawArguments: [
+    rawInvocation: [
       {
         issue_number: 85,
         body: 'Linked Saved Function prepared this comment for the current run.',
@@ -392,13 +436,19 @@ export default async function postApprovalFollowUp(input) {
       { format: 'markdown', functionPath: 'coral.functions.postApprovalFollowUp' },
       'saved-function-call-01',
     ],
-    requestedBy: 'reef-agent',
+    invokingPrincipal: 'reef-agent',
+    requestContext: {
+      execIntent:
+        'Call coral.functions.postApprovalFollowUp to prepare the linked GitHub follow-up.',
+      taskId: 'task_01K3Q9S8',
+      taskIntent: 'Post the approval-review follow-up using the linked Saved Function source.',
+    },
     runContext: {
       runId: 'run_01K3Q8DA',
       status: 'running',
       workspace: 'Lagoon',
     },
-    technicalIds: [
+    technicalDetails: [
       { label: 'Approval request', value: 'apr_01K3Q8S4 · pending · created 14:39 UTC' },
       { label: 'Operation invocation', value: 'inv_01K3Q8R9 · pending · linked Saved Function' },
       { label: 'Saved Function path', value: 'coral.functions.postApprovalFollowUp' },
@@ -481,13 +531,17 @@ export const Medium: Story = {
   args: {
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
+    showExpiry: true,
     showIdentity: true,
+    showRequestMetadataInHeader: true,
+    showRequester: true,
   },
   parameters: {
     docs: {
       description: {
         story:
-          'Medium disclosure: selected dataset with provider identity and positional/raw arguments, without provider-specific interpretation.',
+          'Medium disclosure with the complete first-screen decision contract and exact positional arguments, without provider-specific interpretation.',
       },
     },
   },
@@ -497,6 +551,8 @@ export const MediumWithRequester: Story = {
   args: {
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
+    showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
     showRequester: true,
@@ -505,7 +561,7 @@ export const MediumWithRequester: Story = {
     docs: {
       description: {
         story:
-          'Medium disclosure with provider identity and requester in the header above exact positional arguments.',
+          'Earlier requester comparison, updated to preserve requester, approval authority, expiry, and exact positional arguments.',
       },
     },
   },
@@ -515,6 +571,7 @@ export const MediumWithExpiry: Story = {
   args: {
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -523,7 +580,7 @@ export const MediumWithExpiry: Story = {
     docs: {
       description: {
         story:
-          'Medium disclosure with provider identity and expiry in the header above exact positional arguments.',
+          'Earlier expiry comparison, updated to preserve requester, approval authority, expiry, and exact positional arguments.',
       },
     },
   },
@@ -533,6 +590,7 @@ export const MediumWithRequesterAndExpiry: Story = {
   args: {
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -542,7 +600,7 @@ export const MediumWithRequesterAndExpiry: Story = {
     docs: {
       description: {
         story:
-          'Medium disclosure with provider identity, requester, and expiry in the header above exact positional arguments.',
+          'Medium disclosure with requester, approval authority, and expiry in the header above exact positional arguments.',
       },
     },
   },
@@ -554,6 +612,7 @@ export const MediumExpandableExpanded: Story = {
     argumentsInitiallyExpanded: true,
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -575,6 +634,7 @@ export const MediumExpandableCollapsed: Story = {
     argumentsInitiallyExpanded: false,
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -590,14 +650,41 @@ export const MediumExpandableCollapsed: Story = {
   },
 }
 
+export const TaskIntentContext: Story = {
+  args: {
+    argumentsCollapsible: true,
+    argumentsInitiallyExpanded: true,
+    dataset: 'github',
+    showApprovalAuthority: true,
+    showArguments: true,
+    showExpiry: true,
+    showIdentity: true,
+    showRequestContext: true,
+    showRequestMetadataInHeader: true,
+    showRequester: true,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Medium+ disclosure with Task intent and MCP exec intent as request context. Exact invocation arguments remain the primary evidence.',
+      },
+    },
+  },
+}
+
 export const ProgramSnippet: Story = {
   args: {
     argumentsCollapsible: true,
     argumentsInitiallyExpanded: true,
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
+    showExpiry: true,
     showIdentity: true,
     showProgramSnippet: true,
+    showRequestMetadataInHeader: true,
+    showRequester: true,
   },
   parameters: {
     docs: {
@@ -615,6 +702,7 @@ export const CollapsedProgramBody: Story = {
     argumentsInitiallyExpanded: true,
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
     showProgramBody: true,
@@ -635,9 +723,9 @@ export const MaximalEvidence: Story = {
   args: {
     argumentsCollapsible: true,
     argumentsInitiallyExpanded: true,
-    canApprove: true,
     dataset: 'github',
     showArguments: true,
+    showApprovalAuthority: true,
     showIdentity: true,
     showProgramBody: true,
     showProgramSnippet: true,
@@ -655,30 +743,31 @@ export const MaximalEvidence: Story = {
   },
 }
 
+function OperationApprovalStory({ dataset, ...props }: OperationApprovalStoryProps) {
+  return <OperationApproval approval={datasets[dataset]} {...props} />
+}
+
 function OperationApproval({
+  approval,
   argumentsCollapsible,
   argumentsInitiallyExpanded,
-  canApprove,
   compact,
-  dataset,
   onApprove,
   onDecline,
   onViewRun,
   showArguments,
+  showApprovalAuthority,
   showExpiry,
   showIdentity,
   showProgramBody,
   showProgramSnippet,
+  showRequestContext,
   showRequestMetadataInHeader,
   showRequester,
   showRunContext,
   showTechnicalDetails,
 }: OperationApprovalProps) {
-  const approval = datasets[dataset]
-  const argumentsId = useId()
-  const [argumentsExpanded, setArgumentsExpanded] = useState(Boolean(argumentsInitiallyExpanded))
-  const hasDecisionContext = Boolean(canApprove)
-  const technicalDetails = buildTechnicalDetails(approval)
+  const hasDecisionContext = Boolean(showApprovalAuthority)
   const hasContext = Boolean(
     showArguments ||
     showExpiry ||
@@ -686,6 +775,7 @@ function OperationApproval({
     hasDecisionContext ||
     showProgramBody ||
     showProgramSnippet ||
+    showRequestContext ||
     showRequester ||
     showRunContext ||
     showTechnicalDetails,
@@ -693,103 +783,64 @@ function OperationApproval({
 
   return (
     <section style={{ ...cardStyle, ...(compact ? compactCardStyle : {}) }}>
-      <div style={headerStyle}>
-        <span style={operationIconStyle}>
-          <Icon color="warning" name="ShieldAlert" size="18" />
-        </span>
-        <div style={titleGroupStyle}>
-          <Typography.BodyLargeStrong as="h2">{approval.operationName}</Typography.BodyLargeStrong>
-          <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
-            {[`Provider: ${approval.provider}`, showIdentity && `Identity: ${approval.identity}`]
-              .filter(Boolean)
-              .join(' · ')}
-          </Typography.BodySmall>
-          {showRequestMetadataInHeader && (showRequester || showExpiry || hasDecisionContext) ? (
-            <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
-              {[
-                (showRequester || hasDecisionContext) && `Requested by: ${approval.requestedBy}`,
-                (showExpiry || hasDecisionContext) && approval.deadline,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            </Typography.BodySmall>
-          ) : null}
-        </div>
-        {hasContext ? <Pill color="amber">Approval required</Pill> : null}
-      </div>
+      <ApprovalHeader
+        approval={approval}
+        hasContext={hasContext}
+        showApprovalAuthority={showApprovalAuthority}
+        showExpiry={showExpiry}
+        showIdentity={showIdentity}
+        showRequestMetadata={showRequestMetadataInHeader}
+        showRequester={showRequester}
+      />
 
       {showArguments ? (
-        <section style={sectionStyle}>
-          {argumentsCollapsible ? (
-            <Button.Container
-              aria-controls={argumentsId}
-              aria-expanded={argumentsExpanded}
-              fullWidth
-              onClick={() => setArgumentsExpanded((expanded) => !expanded)}
-              size="22"
-              style={argumentsDisclosureStyle}
-              variant="bare"
-            >
-              <Button.Icon name={argumentsExpanded ? 'ChevronDown' : 'ChevronRight'} />
-              <Typography.BodySmallStrong variant="tertiary">
-                Arguments ({approval.arguments.length})
-              </Typography.BodySmallStrong>
-            </Button.Container>
-          ) : (
-            <Typography.BodySmallStrong as="h3" variant="tertiary">
-              Arguments
-            </Typography.BodySmallStrong>
-          )}
-          {!argumentsCollapsible || argumentsExpanded ? (
-            <dl
-              id={argumentsId}
-              style={{
-                ...detailsStyle,
-                ...(argumentsCollapsible ? collapsibleDetailsStyle : {}),
-              }}
-            >
-              {approval.arguments.map(({ label, value }) => (
-                <DetailRow key={label} label={label} value={value} />
-              ))}
-            </dl>
-          ) : null}
-        </section>
+        <InvocationArgumentsSection
+          collapsible={argumentsCollapsible}
+          initiallyExpanded={argumentsInitiallyExpanded}
+          invocationArguments={approval.invocationArguments}
+        />
       ) : null}
 
-      {showProgramSnippet ? (
-        <section style={supportingEvidenceStyle}>
-          <Typography.BodySmallStrong as="h3" variant="tertiary">
-            Context
-          </Typography.BodySmallStrong>
-          <ProgramEvidenceBlock evidence={approval.programSnippet} />
-        </section>
+      {showRequestContext && approval.requestContext ? (
+        <RequestContextSection requestContext={approval.requestContext} />
       ) : null}
 
-      {showProgramBody ? (
-        <details open={false} style={programBodyDetailsStyle}>
-          <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
-            Program body
-          </Typography.BodySmallStrong>
-          <ProgramEvidenceBlock evidence={approval.programBody} />
-        </details>
+      {approval.programContext ? (
+        <ProgramContextSection
+          programContext={approval.programContext}
+          showBody={showProgramBody}
+          showSnippet={showProgramSnippet}
+        />
       ) : null}
 
       {(showRequester || showExpiry) && !hasDecisionContext && !showRequestMetadataInHeader ? (
         <dl style={decisionDetailsStyle}>
-          {showRequester ? <DetailRow label="Requested by" value={approval.requestedBy} /> : null}
-          {showExpiry ? <DetailRow label="Expiry" value={approval.deadline} /> : null}
+          {showRequester ? (
+            <DetailRow
+              label="Requested by"
+              showDivider={showExpiry}
+              value={approval.invokingPrincipal}
+            />
+          ) : null}
+          {showExpiry ? (
+            <DetailRow label="Expiry" showDivider={false} value={`Expires ${approval.expiresAt}`} />
+          ) : null}
         </dl>
       ) : null}
 
-      {hasDecisionContext ? (
+      {hasDecisionContext && !showRequestMetadataInHeader ? (
         <section style={decisionContextStyle}>
           <dl style={decisionDetailsStyle}>
             {!showRequestMetadataInHeader ? (
-              <DetailRow label="Requested by" value={approval.requestedBy} />
+              <DetailRow label="Requested by" value={approval.invokingPrincipal} />
             ) : null}
-            <DetailRow label="Can approve" value={approval.canApprove} />
+            <DetailRow label="Can approve" value={approval.approvalAuthority} />
             {!showRequestMetadataInHeader ? (
-              <DetailRow label="Expiry" value={approval.deadline} />
+              <DetailRow
+                label="Expiry"
+                showDivider={false}
+                value={`Expires ${approval.expiresAt}`}
+              />
             ) : null}
           </dl>
           <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
@@ -798,32 +849,7 @@ function OperationApproval({
         </section>
       ) : null}
 
-      {showTechnicalDetails ? (
-        <details style={technicalDetailsStyle}>
-          <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
-            Provider reference text
-          </Typography.BodySmallStrong>
-          <Typography.BodySmall as="p" style={providerDescriptionStyle} variant="tertiary">
-            Optional provider-authored context. Do not use this as the approval scope.
-          </Typography.BodySmall>
-          <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
-            {approval.providerDescription}
-          </Typography.BodySmall>
-        </details>
-      ) : null}
-
-      {showTechnicalDetails ? (
-        <details style={technicalDetailsStyle}>
-          <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
-            Technical details
-          </Typography.BodySmallStrong>
-          <dl style={technicalListStyle}>
-            {technicalDetails.map(({ label, value }) => (
-              <DetailRow key={label} label={label} value={value} />
-            ))}
-          </dl>
-        </details>
-      ) : null}
+      {showTechnicalDetails ? <TechnicalDetailsSection approval={approval} /> : null}
 
       {showRunContext ? (
         <div style={runContextStyle}>
@@ -842,24 +868,218 @@ function OperationApproval({
         </div>
       ) : null}
 
-      <div style={actionsStyle}>
-        <Button.Container onClick={onDecline} size="32" variant="secondary">
-          <Button.Text>Decline</Button.Text>
-        </Button.Container>
-        <Button.Container onClick={onApprove} size="32" variant="primary">
-          <Button.Text>Approve</Button.Text>
-        </Button.Container>
-      </div>
+      <ApprovalActions onApprove={onApprove} onDecline={onDecline} />
     </section>
   )
 }
 
-function buildTechnicalDetails(approval: ApprovalDataset) {
+function ApprovalHeader({
+  approval,
+  hasContext,
+  showApprovalAuthority,
+  showExpiry,
+  showIdentity,
+  showRequestMetadata,
+  showRequester,
+}: {
+  approval: OperationApprovalModel
+  hasContext: boolean
+  showApprovalAuthority?: boolean
+  showExpiry?: boolean
+  showIdentity?: boolean
+  showRequestMetadata?: boolean
+  showRequester?: boolean
+}) {
+  const requestMetadata = [
+    (showRequester || showApprovalAuthority) && `Requested by: ${approval.invokingPrincipal}`,
+    showApprovalAuthority && `Can approve: ${approval.approvalAuthority}`,
+    (showExpiry || showApprovalAuthority) && `Expires ${approval.expiresAt}`,
+  ].filter(Boolean)
+
+  return (
+    <div style={headerStyle}>
+      <span style={operationIconStyle}>
+        <Icon color="warning" name="ShieldAlert" size="18" />
+      </span>
+      <div style={titleGroupStyle}>
+        <Typography.BodyLargeStrong as="h2">
+          {approval.operationCallPath}
+        </Typography.BodyLargeStrong>
+        <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
+          {[`Provider: ${approval.provider}`, showIdentity && `Identity: ${approval.identity}`]
+            .filter(Boolean)
+            .join(' · ')}
+        </Typography.BodySmall>
+        {showRequestMetadata && requestMetadata.length > 0 ? (
+          <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
+            {requestMetadata.join(' · ')}
+          </Typography.BodySmall>
+        ) : null}
+      </div>
+      {hasContext ? <Pill color="amber">Approval required</Pill> : null}
+    </div>
+  )
+}
+
+function InvocationArgumentsSection({
+  collapsible,
+  initiallyExpanded,
+  invocationArguments,
+}: {
+  collapsible?: boolean
+  initiallyExpanded?: boolean
+  invocationArguments: OperationApprovalModel['invocationArguments']
+}) {
+  const argumentsId = useId()
+  const [expanded, setExpanded] = useState(Boolean(initiallyExpanded))
+
+  return (
+    <section style={sectionStyle}>
+      {collapsible ? (
+        <Button.Container
+          aria-controls={argumentsId}
+          aria-expanded={expanded}
+          fullWidth
+          onClick={() => setExpanded((current) => !current)}
+          size="22"
+          style={argumentsDisclosureStyle}
+          variant="bare"
+        >
+          <Button.Icon name={expanded ? 'ChevronDown' : 'ChevronRight'} />
+          <Typography.BodySmallStrong variant="tertiary">
+            Arguments ({invocationArguments.length})
+          </Typography.BodySmallStrong>
+        </Button.Container>
+      ) : (
+        <Typography.BodySmallStrong as="h3" variant="tertiary">
+          Arguments
+        </Typography.BodySmallStrong>
+      )}
+      {!collapsible || expanded ? (
+        <dl
+          id={argumentsId}
+          style={{ ...detailsStyle, ...(collapsible ? collapsibleDetailsStyle : {}) }}
+        >
+          {invocationArguments.map(({ label, value }, index) => (
+            <DetailRow
+              key={label}
+              label={label}
+              showDivider={index < invocationArguments.length - 1}
+              value={value}
+            />
+          ))}
+        </dl>
+      ) : null}
+    </section>
+  )
+}
+
+function RequestContextSection({ requestContext }: { requestContext: RequestContext }) {
+  return (
+    <section style={supportingEvidenceStyle}>
+      <Typography.BodySmallStrong as="h3" variant="tertiary">
+        Context
+      </Typography.BodySmallStrong>
+      <dl style={contextDetailsStyle}>
+        <DetailRow label="Task" value={requestContext.taskId} />
+        <DetailRow label="Task intent" value={requestContext.taskIntent} />
+        <DetailRow label="Exec intent" showDivider={false} value={requestContext.execIntent} />
+      </dl>
+    </section>
+  )
+}
+
+function ProgramContextSection({
+  programContext,
+  showBody,
+  showSnippet,
+}: {
+  programContext: ProgramContext
+  showBody?: boolean
+  showSnippet?: boolean
+}) {
+  return (
+    <>
+      {showSnippet ? (
+        <section style={supportingEvidenceStyle}>
+          <Typography.BodySmallStrong as="h3" variant="tertiary">
+            Context
+          </Typography.BodySmallStrong>
+          <ProgramEvidenceBlock evidence={programContext.snippet} />
+        </section>
+      ) : null}
+      {showBody ? (
+        <details open={false} style={programBodyDetailsStyle}>
+          <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
+            Program body
+          </Typography.BodySmallStrong>
+          <ProgramEvidenceBlock evidence={programContext.body} />
+        </details>
+      ) : null}
+    </>
+  )
+}
+
+function TechnicalDetailsSection({ approval }: { approval: OperationApprovalModel }) {
+  const technicalDetails = buildTechnicalDetails(approval)
+
+  return (
+    <>
+      <details style={technicalDetailsStyle}>
+        <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
+          Provider reference text
+        </Typography.BodySmallStrong>
+        <Typography.BodySmall as="p" style={providerDescriptionStyle} variant="tertiary">
+          Optional provider-authored context. Do not use this as the approval scope.
+        </Typography.BodySmall>
+        <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
+          {approval.providerReference}
+        </Typography.BodySmall>
+      </details>
+      <details style={technicalDetailsStyle}>
+        <Typography.BodySmallStrong as="summary" style={technicalSummaryStyle}>
+          Technical details
+        </Typography.BodySmallStrong>
+        <dl style={technicalListStyle}>
+          {technicalDetails.map(({ label, value }, index) => (
+            <DetailRow
+              key={label}
+              label={label}
+              showDivider={index < technicalDetails.length - 1}
+              value={value}
+            />
+          ))}
+        </dl>
+      </details>
+    </>
+  )
+}
+
+function ApprovalActions({
+  onApprove,
+  onDecline,
+}: {
+  onApprove: () => void
+  onDecline: () => void
+}) {
+  return (
+    <div style={actionsStyle}>
+      <Button.Container onClick={onDecline} size="32" variant="secondary">
+        <Button.Text>Decline</Button.Text>
+      </Button.Container>
+      <Button.Container onClick={onApprove} size="32" variant="primary">
+        <Button.Text>Approve</Button.Text>
+      </Button.Container>
+    </div>
+  )
+}
+
+function buildTechnicalDetails(approval: OperationApprovalModel) {
   return [
-    { label: 'Operation', value: approval.operationName },
+    { label: 'Operation call path', value: approval.operationCallPath },
     { label: 'Identity', value: `${approval.provider} · ${approval.identity}` },
-    { label: 'Raw arguments', value: JSON.stringify(approval.rawArguments, null, 2) },
-    ...approval.technicalIds,
+    { label: 'Raw invocation', value: JSON.stringify(approval.rawInvocation, null, 2) },
+    ...approval.technicalDetails,
   ]
 }
 
@@ -873,9 +1093,17 @@ function ProgramEvidenceBlock({ evidence }: { evidence: ProgramEvidence }) {
   )
 }
 
-function DetailRow({ label, value }: { label: string; value: ArgumentValue }) {
+function DetailRow({
+  label,
+  showDivider = true,
+  value,
+}: {
+  label: string
+  showDivider?: boolean
+  value: ArgumentValue
+}) {
   return (
-    <div style={detailRowStyle}>
+    <div style={{ ...detailRowStyle, ...(!showDivider ? lastDetailRowStyle : {}) }}>
       <Typography.BodySmall as="dt" variant="tertiary">
         {label}
       </Typography.BodySmall>
@@ -976,6 +1204,8 @@ const supportingEvidenceStyle: CSSProperties = {
   padding: '10px 12px',
 }
 
+const contextDetailsStyle: CSSProperties = { margin: 0 }
+
 const codeBlockStyle: CSSProperties = {
   background: theme.surface.main,
   border: `1px solid ${theme.stroke.secondary}`,
@@ -1012,6 +1242,8 @@ const detailRowStyle: CSSProperties = {
   gridTemplateColumns: '140px minmax(0, 1fr)',
   padding: '8px 0',
 }
+
+const lastDetailRowStyle: CSSProperties = { borderBottom: 0 }
 
 const detailValueStyle: CSSProperties = {
   margin: 0,
