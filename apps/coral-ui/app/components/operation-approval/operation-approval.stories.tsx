@@ -87,12 +87,17 @@ const meta = {
       control: 'select',
       options: ['github', 'linear', 'loop', 'savedFunction'],
     },
+    showRequestContext: {
+      control: 'boolean',
+      description: 'Show Task and exec intent as secondary request context.',
+    },
   },
   args: {
     dataset: 'github',
     onApprove: fn(),
     onDecline: fn(),
     onViewRun: fn(),
+    showRequestContext: false,
   },
   component: OperationApprovalStory,
   decorators: [
@@ -111,6 +116,8 @@ const meta = {
 The story-only model uses Lagoon-aligned names: \`operationCallPath\`, \`invocationArguments\`, \`invokingPrincipal\`, \`approvalAuthority\`, \`expiresAt\`, optional \`requestContext\`, and optional \`programContext\`. Task and exec intent are request context; they do not replace the exact Invocation arguments or describe the consequence of approval.
 
 Every Medium+ story keeps the same first-screen decision contract: Operation call path, provider identity, invoking principal, approval authority, expiry, exact Invocation arguments, and the unchanged Decline/Approve actions. The prototype does not invent an operation-specific consequence CTA when no trusted renderer provides one.
+
+Every story uses the same story-local \`OperationApproval\` component. Toggle \`showRequestContext\` in any story to reveal Task and exec intent below Arguments; \`TaskIntentContext\` is the preset that enables it by default.
 
 Each story has a **dataset** control. The default GitHub dataset uses \`coral.providers.github.issues.createComment\`; the Linear dataset uses \`coral.providers.linear.issues.update\` inside a program that also reads GitHub context; the loop dataset puts one pending \`coral.providers.linear.issues.update\` Invocation inside a \`for\` loop; the saved-function dataset shows one pending Operation from a linked \`coral.functions.postApprovalFollowUp\` source snapshot. Within a selected dataset, the stories keep the operation/request stable so reviewers can compare disclosure and rendering choices without changing provider, operation, requester, identity, or run context.
 
