@@ -661,7 +661,6 @@ function TraceDetailContent({
   olderTraceId,
   onClose,
   onSelectTrace,
-  traceId,
 }: {
   detail: TraceDetailData | null
   extraTabs?: (detail: TraceDetailData) => ExtraDetailTab[]
@@ -671,15 +670,10 @@ function TraceDetailContent({
   olderTraceId?: string | null
   onClose: () => void
   onSelectTrace?: (traceId: string) => void
-  traceId: string
 }) {
   const [activeTab, setActiveTab] = useState<string>('timeline')
   const [expandedHttpSpanId, setExpandedHttpSpanId] = useState<string | null>(null)
   const [navigableSpanIds, setNavigableSpanIds] = useState<string[]>([])
-  useEffect(() => {
-    setActiveTab('timeline')
-    setExpandedHttpSpanId(null)
-  }, [traceId])
 
   const selectAdjacentSpan = useCallback(
     (direction: -1 | 1) => {
@@ -917,6 +911,7 @@ export function TraceDetail({
   return (
     <div className={s.detailOverlay}>
       <TraceDetailContent
+        key={traceId}
         detail={detail}
         extraTabs={extraTabs}
         initialSummary={initialSummary}
@@ -932,7 +927,6 @@ export function TraceDetail({
         onSelectTrace={(nextTraceId) =>
           navigate(traceLocation(workspaceId, nextTraceId, location.search))
         }
-        traceId={traceId}
       />
     </div>
   )
