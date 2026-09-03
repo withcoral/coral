@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Form, useNavigate, useNavigation } from 'react-router'
 
+import { ErrorBanner } from '@/components/error-banner'
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
@@ -16,7 +17,6 @@ import * as styles from './source-detail.css'
 import { SourceInstallDialog } from './source-install'
 import {
   formatFieldName,
-  SourceError,
   SourceField,
   SourceIdentityHeader,
   SourceInputField,
@@ -184,9 +184,9 @@ function SourceDetailDialogContent({
           version={source?.version || entry.version}
         />
 
-        {!source ? <SourceError>Installed source details are unavailable.</SourceError> : null}
+        {!source ? <ErrorBanner message="Installed source details are unavailable." /> : null}
 
-        {actionError ? <SourceError>{actionError}</SourceError> : null}
+        {actionError ? <ErrorBanner message={actionError} /> : null}
 
         {!source ? null : inputSpecs ? (
           <SourceInputBindings
@@ -295,7 +295,7 @@ function RemoveConfirmation({
           reinstall later, but you'll need to re-supply any secrets.
         </Dialog.Description>
       </div>
-      {error ? <SourceError>{error}</SourceError> : null}
+      {error ? <ErrorBanner message={error} /> : null}
       <Dialog.Actions className={styles.removeConfirmActions}>
         <ButtonContainer variant="secondary" size="32" onClick={onCancel} disabled={deleting}>
           <ButtonText>Cancel</ButtonText>

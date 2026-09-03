@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Outlet, useLocation, useNavigate, useRevalidator } from 'react-router'
 
 import { Button } from '@/wax/components'
 import { TextInput } from '@/wax/components/inputs/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
-import { Typography } from '@/wax/components/typography'
 import { EmptyPage } from '@/components/empty-page'
+import { ErrorBanner } from '@/components/error-banner'
 import { routePath } from '@/routing/routemap'
 
 import * as s from './traces.css'
@@ -84,14 +84,6 @@ function HeaderActions({
           />
         </div>
       </div>
-    </div>
-  )
-}
-
-function DisconnectedBanner({ message }: { message: string }) {
-  return (
-    <div className={s.disconnectedBanner}>
-      <Typography.Body as="span">{message}</Typography.Body>
     </div>
   )
 }
@@ -185,18 +177,26 @@ export function TracesIndex({
     document.querySelector(`[data-trace-row-id="${escaped}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex, filtered])
 
+  // The poll and the retry button share one guard, so a click during a refresh
+  // does not start a second one.
+  const refresh = useCallback(() => {
+    if (revalidator.state !== 'idle' || revalidationInFlight.current) return
+    revalidationInFlight.current = true
+    void revalidator.revalidate().finally(() => {
+      revalidationInFlight.current = false
+    })
+  }, [revalidator])
+
   useEffect(() => {
     if (!listIsActive) return
-    const interval = window.setInterval(() => {
-      if (revalidator.state !== 'idle' || revalidationInFlight.current) return
-      revalidationInFlight.current = true
-      void revalidator.revalidate().finally(() => {
-        revalidationInFlight.current = false
-      })
-    }, TRACE_LIST_REFRESH_MS)
+    const interval = window.setInterval(refresh, TRACE_LIST_REFRESH_MS)
     return () => window.clearInterval(interval)
-  }, [listIsActive, revalidator])
+  }, [listIsActive, refresh])
 
+  // A load failure is reported once, on the most prominent surface available:
+  // the empty state when nothing ever loaded, a banner above the list when rows
+  // from the last successful load are still on screen.
+  const emptyStateError = traces.length === 0 ? loadError : null
   const connected = !loadError
   return (
     <section className={s.root} aria-label="Coral traces">
@@ -209,8 +209,23 @@ export function TracesIndex({
           setSearchText={setSearchText}
         />
       </PageHeader>
-      {loadError && <DisconnectedBanner message={loadError} />}
-      {filtered.length === 0 ? (
+      {loadError && !emptyStateError ? (
+        <div className={s.listError}>
+          <ErrorBanner message={loadError} onRetry={refresh} title="Couldn't refresh operations" />
+        </div>
+      ) : null}
+      {emptyStateError ? (
+        <EmptyPage
+          action={
+            <Button.TextButton onClick={refresh} variant="secondary">
+              Retry
+            </Button.TextButton>
+          }
+          description={emptyStateError}
+          iconName="CircleAlert"
+          title="Tracing unavailable"
+        />
+      ) : filtered.length === 0 ? (
         searchText.trim() ? (
           <EmptyPage
             action={
@@ -224,13 +239,9 @@ export function TracesIndex({
           />
         ) : (
           <EmptyPage
-            description={
-              loadError && traces.length === 0
-                ? loadError
-                : 'Make sure tracing is enabled, then run an operation to see it here in real-time.'
-            }
-            iconName={loadError && traces.length === 0 ? 'CircleAlert' : 'Activity'}
-            title={loadError && traces.length === 0 ? 'Tracing unavailable' : 'No operations yet'}
+            description="Make sure tracing is enabled, then run an operation to see it here in real-time."
+            iconName="Activity"
+            title="No operations yet"
           />
         )
       ) : (

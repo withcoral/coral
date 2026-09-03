@@ -56,7 +56,13 @@ export const content = style({
 
 export const title = style({ ...theme.typography.bodySmallStrong })
 
-export const message = style({ ...theme.typography.bodySmall })
+// Coral renders errors as newline-separated summary / detail / `Hint:` lines,
+// so keep the server's line structure and break long type paths inside the box.
+export const message = style({
+  ...theme.typography.bodySmall,
+  overflowWrap: 'anywhere',
+  whiteSpace: 'pre-wrap',
+})
 
 export const action = style({
   alignSelf: 'center',

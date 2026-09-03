@@ -1,6 +1,7 @@
 import { type FormEvent, type RefObject, useEffect, useRef } from 'react'
 import { Form, useNavigation } from 'react-router'
 
+import { ErrorBanner } from '@/components/error-banner'
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
@@ -15,12 +16,7 @@ import type { CatalogEntry } from '@/lib/sources'
 import type { DiscardGuard } from './source-add'
 import * as styles from './source-import.css'
 import { SourceInputRows, useSourceInputCollection } from './source-input-collection'
-import {
-  formatFieldName,
-  SourceError,
-  SourceHeader,
-  SourceIdentityHeader,
-} from './source-presentation'
+import { formatFieldName, SourceHeader, SourceIdentityHeader } from './source-presentation'
 
 const STEP_COUNT = 2
 
@@ -111,7 +107,7 @@ export function SourceImportConfigureForm({
         version={entry.version}
       />
       {entry.installed ? (
-        <SourceError>A source named {entry.name} is already configured.</SourceError>
+        <ErrorBanner message={`A source named ${entry.name} is already configured.`} />
       ) : null}
 
       <SourceInputRows collection={collection} disabled={importing} submitLabel="Add source" />

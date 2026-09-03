@@ -1,6 +1,7 @@
 import { type DragEvent, type RefObject, useEffect, useId, useRef, useState } from 'react'
 import { useFetcher } from 'react-router'
 
+import { ErrorBanner } from '@/components/error-banner'
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { Icon as ButtonIcon, SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
@@ -17,7 +18,7 @@ import type { SourceDiscoveryData } from '@/routes/source-discovery'
 import * as styles from './source-add.css'
 import { SourceCreateFlow } from './source-create'
 import { SourceImportConfigureForm } from './source-import'
-import { SourceError, SourceField, SourceHeader } from './source-presentation'
+import { SourceField, SourceHeader } from './source-presentation'
 
 const MANIFEST_FILE_TYPES = '.yaml,.yml'
 /**
@@ -311,7 +312,7 @@ function SourceAddDialogContent({
         )}
       </div>
 
-      {discoveryError ? <SourceError>{discoveryError}</SourceError> : null}
+      {discoveryError ? <ErrorBanner message={discoveryError} /> : null}
 
       <Dialog.Actions>
         <ButtonContainer disabled={busy} onClick={requestCancel} size="32" variant="bare">

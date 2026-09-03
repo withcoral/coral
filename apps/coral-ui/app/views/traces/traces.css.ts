@@ -96,13 +96,9 @@ export const searchField = style({
   },
 })
 
-export const disconnectedBanner = style({
-  backgroundColor: theme.pill.red.background,
-  borderBlockEnd: `1px solid ${theme.pill.red.stroke}`,
-  color: theme.pill.red.color,
-  paddingBlock: 8,
+export const listError = style({
+  paddingBlock: 12,
   paddingInline: 16,
-  textAlign: 'center',
 })
 
 export const queryScroll = style({

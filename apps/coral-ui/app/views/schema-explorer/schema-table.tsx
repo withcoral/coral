@@ -83,7 +83,7 @@ export function SchemaTableError() {
   const retry = useRouteRetry()
   return (
     <TableDetailLayout>
-      <ErrorBanner message={formatError(error)} onRetry={retry} title="Failed to load columns" />
+      <ErrorBanner message={formatError(error)} onRetry={retry} title="Couldn't load columns" />
     </TableDetailLayout>
   )
 }

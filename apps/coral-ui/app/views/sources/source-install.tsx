@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { Form, useNavigate, useRevalidator } from 'react-router'
 
+import { ErrorBanner } from '@/components/error-banner'
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
@@ -12,7 +13,7 @@ import type { CatalogEntry } from '@/lib/sources'
 import { routePath } from '@/routing/routemap'
 
 import { SourceInputRows, useSourceInputCollection } from './source-input-collection'
-import { formatFieldName, SourceError, SourceIdentityHeader } from './source-presentation'
+import { formatFieldName, SourceIdentityHeader } from './source-presentation'
 
 export function SourceInstallDialog({
   actionError,
@@ -134,7 +135,7 @@ function SourceInstallDialogContent({
         progress={oauth.progress}
       />
 
-      {actionError ? <SourceError>{actionError}</SourceError> : null}
+      {actionError ? <ErrorBanner message={actionError} /> : null}
 
       <Dialog.Actions>
         <ButtonContainer disabled={submitting} onClick={cancel} size="32" variant="bare">

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 
+import { ErrorBanner } from '@/components/error-banner'
 import { Tabs } from '@/wax/components'
 import { TextInput } from '@/wax/components/inputs/text'
 
@@ -13,12 +14,7 @@ import type {
 } from '@/lib/sources'
 
 import * as styles from './source-install.css'
-import {
-  formatFieldName,
-  SourceError,
-  SourceInputField,
-  SourceNoConfiguration,
-} from './source-presentation'
+import { formatFieldName, SourceInputField, SourceNoConfiguration } from './source-presentation'
 
 /**
  * Collects values for one source's declared inputs. Bundled installs and imported
@@ -107,7 +103,7 @@ export function SourceInputRows({
 }) {
   const { changeMethod, effectiveChoice, inputSpecs, inputs, setValue, values } = collection
 
-  if (!inputSpecs) return <SourceError>Source metadata is unavailable.</SourceError>
+  if (!inputSpecs) return <ErrorBanner message="Source metadata is unavailable." />
   if (inputs.length === 0) return <SourceNoConfiguration />
 
   return (

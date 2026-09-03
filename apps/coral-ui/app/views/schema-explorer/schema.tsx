@@ -120,7 +120,7 @@ export function SchemaExplorerError() {
               <ErrorBanner
                 message={formatError(error)}
                 onRetry={retry}
-                title="Failed to load schema"
+                title="Couldn't load schema"
               />
             </div>
           </div>

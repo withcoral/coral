@@ -2,7 +2,6 @@ import type { ReactNode } from 'react'
 import classNames from 'classnames'
 
 import { Dialog } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
@@ -12,15 +11,6 @@ import type { CatalogSourceInputSpec, SourceOriginLabel } from '@/lib/sources'
 import { toSentenceCase } from '@/utils/to-sentence-case'
 
 import * as styles from './source-presentation.css'
-
-export function SourceError({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={classNames(styles.error, className)}>
-      <Icon color="inherit" name="CircleAlert" size="18" />
-      <Typography.BodySmall className={styles.errorText}>{children}</Typography.BodySmall>
-    </div>
-  )
-}
 
 export function SourceHeader({
   className,

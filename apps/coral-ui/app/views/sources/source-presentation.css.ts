@@ -1,27 +1,5 @@
 import { style } from '@vanilla-extract/css'
 
-import { theme } from '@/wax/theme/theme.css'
-
-export const error = style({
-  alignItems: 'flex-start',
-  background: theme.pill.red.background,
-  border: `1px solid ${theme.pill.red.stroke}`,
-  borderRadius: 6,
-  color: theme.pill.red.color,
-  display: 'flex',
-  gap: 8,
-  paddingBlock: 8,
-  paddingInline: 12,
-})
-
-// Coral renders errors as newline-separated summary / detail / `Hint:` lines, so
-// keep the server's line structure and break long type paths inside the banner.
-export const errorText = style({
-  minWidth: 0,
-  overflowWrap: 'anywhere',
-  whiteSpace: 'pre-wrap',
-})
-
 export const header = style({
   alignItems: 'flex-start',
   display: 'flex',
