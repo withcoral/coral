@@ -91,8 +91,9 @@ impl<'a> OpenApiImporter<'a> {
                     self.import_operation(path, path_item, method_name, operation_value)?;
                 if !operation_ids.insert(operation.id.clone()) {
                     return Err(ManifestError::validation(format!(
-                        "source '{}' surface imports duplicate operation id '{}'",
-                        self.manifest.common.name, operation.id
+                        "source '{}' surface imports duplicate operation id '{}' ({} {}); \
+disambiguate operationId values in the OpenAPI document",
+                        self.manifest.common.name, operation.id, method_name, path
                     )));
                 }
                 operation_metadata.insert(operation.id.clone(), metadata);
