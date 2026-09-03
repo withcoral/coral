@@ -1,0 +1,220 @@
+name: azure
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Azure subscriptions, resource groups, and resources from
+  Azure Resource Manager. Monitor cloud infrastructure inventory
+  and configuration through SQL.
+base_url: https://management.azure.com
+
+inputs:
+  AZURE_TENANT_ID:
+    kind: variable
+    hint: >-
+      Azure AD tenant ID. Find it in the Azure Portal under
+      Azure Active Directory > Overview, or run: az account show --query tenantId
+  AZURE_SUBSCRIPTION_ID:
+    kind: variable
+    hint: >-
+      Azure subscription ID. Find it in the Azure Portal under
+      Subscriptions, or run: az account show --query id
+  AZURE_ACCESS_TOKEN:
+    kind: secret
+    hint: >-
+      Azure access token for the Resource Manager API. Generate with:
+        az account get-access-token --query accessToken -o tsv
+      Tokens expire after ~1 hour. For persistent access, use the
+      device code OAuth flow with `coral source add --interactive`.
+    credential:
+      methods:
+        - type: oauth
+          label: Sign in with Azure
+          description: >-
+            Open a browser and authorize Coral to read Azure resources
+            using your Azure account.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: "https://login.microsoftonline.com/{{input.AZURE_TENANT_ID}}/oauth2/v2.0/devicecode"
+              token_url: "https://login.microsoftonline.com/{{input.AZURE_TENANT_ID}}/oauth2/v2.0/token"
+            client:
+              id:
+                default: d255a859-bceb-450d-bb8f-f23175794825
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://management.azure.com/.default
+                  - offline_access
+        - type: source_config
+          label: Paste access token
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: AZURE_ACCESS_TOKEN
+
+test_queries:
+  - SELECT subscription_id, display_name, state FROM azure.subscriptions LIMIT 3
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # azure.subscriptions — List subscriptions
+  # GET /subscriptions?api-version=2022-12-01
+  # Array at response.value.
+  # --------------------------------------------------------------------------
+  - name: subscriptions
+    description: >-
+      Azure subscriptions accessible by the authenticated user.
+      Includes subscription ID, display name, state, and tenant ID.
+    guide: |
+      No required filters. Start with:
+        SELECT subscription_id, display_name, state
+        FROM azure.subscriptions
+    request:
+      method: GET
+      path: /subscriptions?api-version=2022-12-01
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: subscription_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the subscription.
+        expr:
+          kind: path
+          path:
+            - subscriptionId
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the subscription.
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Subscription state (Enabled, Disabled, Deleted, PastDue, Warned).
+      - name: tenant_id
+        type: Utf8
+        nullable: true
+        description: Azure AD tenant ID.
+        expr:
+          kind: path
+          path:
+            - tenantId
+
+  # --------------------------------------------------------------------------
+  # azure.resource_groups — List resource groups
+  # GET /subscriptions/{subscriptionId}/resourcegroups?api-version=2024-03-01
+  # Array at response.value.
+  # --------------------------------------------------------------------------
+  - name: resource_groups
+    description: >-
+      Resource groups in the Azure subscription (first page, up to
+      1000). Each group is a container for related Azure resources.
+    guide: |
+      No required filters. Start with:
+        SELECT name, location, provisioning_state
+        FROM azure.resource_groups
+    request:
+      method: GET
+      path: /subscriptions/{{input.AZURE_SUBSCRIPTION_ID}}/resourcegroups?api-version=2024-03-01&$top=1000
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Full resource ID of the resource group.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the resource group.
+      - name: location
+        type: Utf8
+        nullable: false
+        description: Azure region (e.g. eastus, centralindia).
+      - name: provisioning_state
+        type: Utf8
+        nullable: true
+        description: Provisioning state (Succeeded, Failed, etc.).
+        expr:
+          kind: path
+          path:
+            - properties
+            - provisioningState
+      - name: tags
+        type: Json
+        nullable: true
+        description: Tags assigned to the resource group.
+
+  # --------------------------------------------------------------------------
+  # azure.resources — List all resources in the subscription
+  # GET /subscriptions/{subscriptionId}/resources?api-version=2024-03-01
+  # Array at response.value.
+  # --------------------------------------------------------------------------
+  - name: resources
+    description: >-
+      Resources in the Azure subscription (first page, up to 1000).
+      Includes VMs, storage accounts, container apps, databases,
+      and other services. Subscriptions with more than 1000
+      resources will return partial results.
+    guide: |
+      No required filters. Start with:
+        SELECT name, type, location
+        FROM azure.resources LIMIT 20
+      Filter by type (within the first page of up to 1000 resources):
+        SELECT name, location
+        FROM azure.resources
+        WHERE type = 'Microsoft.App/containerApps'
+    request:
+      method: GET
+      path: /subscriptions/{{input.AZURE_SUBSCRIPTION_ID}}/resources?api-version=2024-03-01&$top=1000
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Full resource ID.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the resource.
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Resource type (e.g. Microsoft.App/containerApps, Microsoft.Storage/storageAccounts).
+      - name: location
+        type: Utf8
+        nullable: false
+        description: Azure region.
+      - name: tags
+        type: Json
+        nullable: true
+        description: Tags assigned to the resource.
+      - name: kind
+        type: Utf8
+        nullable: true
+        description: Resource kind (e.g. app, functionapp).
+      - name: sku
+        type: Json
+        nullable: true
+        description: SKU/pricing tier of the resource.
