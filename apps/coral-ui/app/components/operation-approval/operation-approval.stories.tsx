@@ -1485,7 +1485,7 @@ function InvocationArgumentRow({
       style={{
         ...argumentGroupStyle,
         ...(argumentStatus && !isInterleavedObject
-          ? envelopeArgumentBackgrounds[argumentStatus]
+          ? envelopeArgumentStatusStyles[argumentStatus]
           : {}),
         ...(!showDivider ? lastDetailRowStyle : {}),
       }}
@@ -1546,7 +1546,7 @@ function InterleavedArgumentFields({
               key={field}
               style={{
                 ...interleavedFieldStyle,
-                ...(fieldStatus ? envelopeInterleavedBackgrounds[fieldStatus] : {}),
+                ...(fieldStatus ? envelopeArgumentStatusStyles[fieldStatus] : {}),
                 ...(index === fields.length - 1 ? lastDetailRowStyle : {}),
               }}
             >
@@ -1576,9 +1576,9 @@ function EnvelopeArgumentAnnotation({
 }) {
   return (
     <div style={argumentAnnotationStyle}>
-      <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
+      <code style={policyExpressionStyle}>
         Policy: {label} {policy}
-      </Typography.BodySmall>
+      </code>
       <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
     </div>
   )
@@ -1611,7 +1611,9 @@ function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEva
             {matches ? 'Allowed by Owner policy' : 'Outside Owner policy'}
           </Typography.BodySmallStrong>
           <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
-            {matches ? 'Can continue without per-call approval' : 'Requires approval'}
+            {matches
+              ? 'Can continue without per-call approval'
+              : 'Requires owner approval for this Invocation'}
           </Typography.BodySmall>
         </div>
         <Pill color={matches ? 'green' : 'amber'}>{matches ? 'Allowed' : 'Review'}</Pill>
@@ -1659,12 +1661,10 @@ function EnvelopeCheckRow({
       </Typography.BodySmall>
       <div style={envelopeCheckValueStyle}>
         <div style={envelopeCheckCopyStyle}>
-          <Typography.BodySmall as="dd" style={detailValueStyle} variant="primary">
-            Policy: {policy}
-          </Typography.BodySmall>
-          <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
+          <Typography.BodySmall as="dd" style={detailValueStyle} variant="secondary">
             Observed: {observed}
           </Typography.BodySmall>
+          <code style={policyExpressionStyle}>Policy: {policy}</code>
         </div>
         <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
       </div>
@@ -1964,28 +1964,19 @@ const interleavedFieldValueStyle: CSSProperties = {
   gridTemplateColumns: '120px minmax(0, 1fr)',
 }
 
-const envelopeArgumentBackgrounds: Record<EnvelopeCheckStatus, CSSProperties> = {
+const envelopeArgumentStatusStyles: Record<EnvelopeCheckStatus, CSSProperties> = {
   fail: {
-    background: theme.content.errorBackground,
-    borderRadius: '6px',
-    padding: '0 8px 8px',
+    borderLeft: `1px solid ${theme.content.error}`,
+    paddingLeft: '8px',
   },
   pass: {
-    background: theme.content.successBackground,
-    borderRadius: '6px',
-    padding: '0 8px 8px',
+    borderLeft: `1px solid ${theme.content.success}`,
+    paddingLeft: '8px',
   },
   unknown: {
-    background: theme.content.warningBackground,
-    borderRadius: '6px',
-    padding: '0 8px 8px',
+    borderLeft: `1px solid ${theme.content.warning}`,
+    paddingLeft: '8px',
   },
-}
-
-const envelopeInterleavedBackgrounds: Record<EnvelopeCheckStatus, CSSProperties> = {
-  fail: { background: theme.content.errorBackground, borderRadius: '6px' },
-  pass: { background: theme.content.successBackground, borderRadius: '6px' },
-  unknown: { background: theme.content.warningBackground, borderRadius: '6px' },
 }
 
 const argumentAnnotationsStyle: CSSProperties = {
@@ -2001,6 +1992,14 @@ const argumentAnnotationStyle: CSSProperties = {
   gap: '8px',
   justifyContent: 'space-between',
   minWidth: 0,
+}
+
+const policyExpressionStyle: CSSProperties = {
+  color: theme.content.tertiary,
+  fontFamily: 'monospace',
+  fontSize: '11px',
+  lineHeight: 1.4,
+  overflowWrap: 'anywhere',
 }
 
 const lastDetailRowStyle: CSSProperties = { borderBottom: 0 }
