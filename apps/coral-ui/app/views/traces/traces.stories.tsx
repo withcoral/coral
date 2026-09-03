@@ -10,6 +10,7 @@ import {
   TraceSummarySchema,
 } from '@/generated/coral/v1/traces_pb'
 
+import { TraceDetail } from './trace-detail'
 import { TracesIndex } from './traces-index'
 import type { TraceSummaryData } from './trace-utils'
 
@@ -60,7 +61,10 @@ const traces = [
   }),
 ]
 
+type TraceDetailProps = React.ComponentProps<typeof TraceDetail>
+
 const TraceStoryContext = createContext<React.ComponentProps<typeof TracesIndex> | null>(null)
+const TraceDetailStoryContext = createContext<TraceDetailProps | null>(null)
 
 function TraceStoryRoute() {
   const args = useContext(TraceStoryContext)
@@ -68,18 +72,35 @@ function TraceStoryRoute() {
   return <TracesIndex {...args} />
 }
 
+function TraceDetailStoryRoute() {
+  const props = useContext(TraceDetailStoryContext)
+  if (!props) throw new Error('trace detail story props are unavailable')
+  return <TraceDetail {...props} />
+}
+
 const RoutesStub = createRoutesStub([
   {
     Component: TraceStoryRoute,
+    children: [{ Component: TraceDetailStoryRoute, path: ':traceId' }],
     path: '/workspaces/:workspaceId/traces',
   },
 ])
 
-function TraceStory(args: React.ComponentProps<typeof TracesIndex>) {
+function TraceStory({
+  detail,
+  ...args
+}: React.ComponentProps<typeof TracesIndex> & { detail?: TraceDetailProps }) {
+  const path = detail
+    ? `/workspaces/default/traces/${detail.traceId}`
+    : '/workspaces/default/traces'
   return (
-    <TraceStoryContext value={args}>
-      <RoutesStub initialEntries={['/workspaces/default/traces']} />
-    </TraceStoryContext>
+    <div style={{ height: '100dvh' }}>
+      <TraceStoryContext value={args}>
+        <TraceDetailStoryContext value={detail ?? null}>
+          <RoutesStub initialEntries={[path]} />
+        </TraceDetailStoryContext>
+      </TraceStoryContext>
+    </div>
   )
 }
 
@@ -93,11 +114,7 @@ const meta = {
   },
   component: TracesIndex,
   parameters: { layout: 'fullscreen' },
-  render: (args) => (
-    <div style={{ height: '100dvh' }}>
-      <TraceStory {...args} />
-    </div>
-  ),
+  render: (args) => <TraceStory {...args} />,
   tags: ['autodocs'],
   title: 'Views/Traces',
 } satisfies Meta<typeof TracesIndex>
@@ -113,4 +130,21 @@ export const Disconnected: Story = {
   args: {
     loadError: 'Could not connect to Coral. Retrying automatically.',
   },
+}
+
+/**
+ * The detail read can fail for a row the list showed. The row keeps the
+ * header, stats and query text, so the failure replaces the spans only.
+ */
+export const DetailSpansUnavailable: Story = {
+  render: (args) => (
+    <TraceStory
+      {...args}
+      detail={{
+        detail: null,
+        loadError: `[not_found] trace '${traces[0].traceId}' not found`,
+        traceId: traces[0].traceId,
+      }}
+    />
+  ),
 }

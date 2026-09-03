@@ -770,24 +770,16 @@ function TraceDetailContent({
     [detail, extraTabs],
   )
 
-  if (loadError)
-    return (
-      <div className={s.detailEmpty}>
-        <KeyboardShortcut handler={handleEscapeShortcut} shortcut="Escape" />
-        <EmptyPage description={loadError} iconName="CircleAlert" title="Tracing unavailable" />
-        <Button.TextButton onClick={onClose} variant="secondary">
-          Back to query stream
-        </Button.TextButton>
-      </div>
-    )
   if (!summary) {
     return (
       <div className={s.detailEmpty}>
         <KeyboardShortcut handler={handleEscapeShortcut} shortcut="Escape" />
         <EmptyPage
-          title="No spans for this trace"
-          description="This trace did not include an operation summary or spans to display."
-          iconName="Activity"
+          description={
+            loadError ?? 'This trace did not include an operation summary or spans to display.'
+          }
+          iconName={loadError ? 'CircleAlert' : 'Activity'}
+          title={loadError ? 'Tracing unavailable' : 'No spans for this trace'}
         />
         <Button.TextButton onClick={onClose} variant="secondary">
           Back to query stream
@@ -891,6 +883,8 @@ function TraceDetailContent({
               spans={detail.spans}
               summary={summary}
             />
+          ) : loadError ? (
+            <EmptyPage description={loadError} iconName="CircleAlert" title="Spans unavailable" />
           ) : null)}
         {activeExtraTab?.content}
       </div>
