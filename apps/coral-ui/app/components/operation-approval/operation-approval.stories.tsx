@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
+import { Checkbox } from '@base-ui/react/checkbox'
 import { type } from 'arktype'
 import { useId, useState } from 'react'
 import { fn } from 'storybook/test'
@@ -1816,9 +1817,36 @@ function PolicyUpdateProposalDialog({
   const proposedChecks = isCreatingPolicy
     ? evaluation.checks
     : evaluation.checks.filter(({ status }) => status !== 'pass')
-  const canUpdatePolicy = isCreatingPolicy
-    ? proposedChecks.every(({ status }) => status === 'pass')
-    : proposedChecks.every(({ proposal }) => proposal?.kind === 'automatic')
+  const [selectedChanges, setSelectedChanges] = useState(
+    () =>
+      new Set(
+        proposedChecks
+          .filter(({ proposal, status }) =>
+            isCreatingPolicy ? status === 'pass' : proposal?.kind === 'automatic',
+          )
+          .map(({ label }) => label),
+      ),
+  )
+  const unsafeChecks = proposedChecks.filter(({ proposal, status }) =>
+    isCreatingPolicy ? status !== 'pass' : proposal?.kind !== 'automatic',
+  )
+  const unselectedChecks = proposedChecks.filter(
+    ({ label, proposal, status }) =>
+      (isCreatingPolicy ? status === 'pass' : proposal?.kind === 'automatic') &&
+      !selectedChanges.has(label),
+  )
+  const selectionStatus =
+    unsafeChecks.length > 0 ? 'blocked' : unselectedChecks.length > 0 ? 'incomplete' : 'allows'
+  const canUpdatePolicy = selectionStatus === 'allows'
+
+  function toggleChange(label: string, checked: boolean) {
+    setSelectedChanges((current) => {
+      const next = new Set(current)
+      if (checked) next.add(label)
+      else next.delete(label)
+      return next
+    })
+  }
 
   return (
     <Dialog.Root onOpenChange={onOpenChange} open={open}>
@@ -1832,9 +1860,14 @@ function PolicyUpdateProposalDialog({
               : `This proposes an Owner policy update for envelope ${evaluation.envelopeId}. It does not approve this invocation.`}
           </Dialog.Description>
           <Dialog.Close />
+          <PolicySelectionBanner
+            blockingCheck={unsafeChecks[0] ?? unselectedChecks[0]}
+            status={selectionStatus}
+          />
           <section style={policyProposalListStyle}>
             {proposedChecks.map(({ label, observed, policy, proposal, status }, index) => (
               <PolicyUpdateProposalRow
+                checked={selectedChanges.has(label)}
                 key={label}
                 candidatePolicy={
                   isCreatingPolicy
@@ -1843,6 +1876,7 @@ function PolicyUpdateProposalDialog({
                 }
                 label={label}
                 observed={observed}
+                onCheckedChange={(checked) => toggleChange(label, checked)}
                 policy={policy}
                 proposal={proposal}
                 showDivider={index < proposedChecks.length - 1}
@@ -1856,7 +1890,9 @@ function PolicyUpdateProposalDialog({
               style={{ ...zeroMarginStyle, color: theme.content.warning }}
               variant="secondary"
             >
-              Resolve manual or unavailable checks before updating Owner policy.
+              {selectionStatus === 'blocked'
+                ? 'Resolve manual or unavailable checks before changing Owner policy.'
+                : 'Select every required change to allow this Invocation.'}
             </Typography.BodySmall>
           ) : null}
           <Dialog.Actions>
@@ -1870,7 +1906,7 @@ function PolicyUpdateProposalDialog({
                 onOpenChange(false)
               }}
             >
-              {isCreatingPolicy ? 'Create policy' : 'Update policy'}
+              {isCreatingPolicy ? 'Create selected policy' : 'Apply selected policy changes'}
             </Button.TextButton>
           </Dialog.Actions>
         </Dialog.Popup>
@@ -1879,18 +1915,63 @@ function PolicyUpdateProposalDialog({
   )
 }
 
+function PolicySelectionBanner({
+  blockingCheck,
+  status,
+}: {
+  blockingCheck?: AuthorityEnvelopeEvaluation['checks'][number]
+  status: 'allows' | 'blocked' | 'incomplete'
+}) {
+  const copy =
+    status === 'allows'
+      ? {
+          detail: 'The exact Operation Invocation would be covered by the selected policy.',
+          title: 'Selected changes would allow this invocation',
+        }
+      : status === 'blocked'
+        ? {
+            detail: `${blockingCheck?.label ?? 'A required check'} cannot be changed automatically.`,
+            title: 'Cannot create a safe automatic policy update',
+          }
+        : {
+            detail: `${blockingCheck?.label ?? 'A required check'} remains outside policy.`,
+            title: 'Selected changes still require approval',
+          }
+
+  return (
+    <div
+      aria-live="polite"
+      style={{
+        ...policySelectionBannerStyle,
+        ...policySelectionBannerStatusStyles[status],
+      }}
+    >
+      <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
+        {copy.title}
+      </Typography.BodySmallStrong>
+      <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
+        {copy.detail}
+      </Typography.BodySmall>
+    </div>
+  )
+}
+
 function PolicyUpdateProposalRow({
   candidatePolicy,
+  checked,
   label,
   observed,
+  onCheckedChange,
   policy,
   proposal,
   showDivider,
   status,
 }: {
   candidatePolicy?: string
+  checked: boolean
   label: string
   observed: string
+  onCheckedChange: (checked: boolean) => void
   policy: string
   proposal?: PolicyProposal
   showDivider: boolean
@@ -1903,11 +1984,18 @@ function PolicyUpdateProposalRow({
       proposedPolicyChange: 'Cannot propose automatically',
       reason: 'This check is not a mechanically expandable argument filter.',
     } satisfies PolicyProposal)
+  const isCreatingPolicy = candidatePolicy !== undefined
+  const selectable = isCreatingPolicy ? status === 'pass' : resolvedProposal.kind === 'automatic'
 
   return (
     <div style={{ ...policyProposalRowStyle, ...(!showDivider ? lastDetailRowStyle : {}) }}>
       <div style={policyProposalHeadingStyle}>
-        <Typography.BodySmallStrong as="h3">{label}</Typography.BodySmallStrong>
+        <PolicyChangeCheckbox
+          checked={checked}
+          disabled={!selectable}
+          label={label}
+          onCheckedChange={onCheckedChange}
+        />
         <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
       </div>
       <Typography.BodySmall as="p" style={policyObservedStyle} variant="secondary">
@@ -1919,6 +2007,41 @@ function PolicyUpdateProposalRow({
         proposal={resolvedProposal}
       />
     </div>
+  )
+}
+
+function PolicyChangeCheckbox({
+  checked,
+  disabled,
+  label,
+  onCheckedChange,
+}: {
+  checked: boolean
+  disabled: boolean
+  label: string
+  onCheckedChange: (checked: boolean) => void
+}) {
+  const checkboxId = useId()
+
+  return (
+    <label htmlFor={checkboxId} style={policyCheckboxLabelStyle}>
+      <Checkbox.Root
+        checked={checked}
+        disabled={disabled}
+        id={checkboxId}
+        onCheckedChange={onCheckedChange}
+        style={{
+          ...policyCheckboxStyle,
+          ...(checked ? policyCheckboxCheckedStyle : {}),
+          ...(disabled ? policyCheckboxDisabledStyle : {}),
+        }}
+      >
+        <Checkbox.Indicator style={policyCheckboxIndicatorStyle}>
+          <Icon name="Check" size="14" />
+        </Checkbox.Indicator>
+      </Checkbox.Root>
+      <Typography.BodySmallStrong as="span">{label}</Typography.BodySmallStrong>
+    </label>
   )
 }
 
@@ -2385,6 +2508,34 @@ const policyProposalListStyle: CSSProperties = {
   marginTop: '16px',
 }
 
+const policySelectionBannerStyle: CSSProperties = {
+  border: `1px solid ${theme.stroke.secondary}`,
+  borderRadius: '8px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '2px',
+  marginTop: '16px',
+  padding: '10px 12px',
+}
+
+const policySelectionBannerStatusStyles: Record<
+  'allows' | 'blocked' | 'incomplete',
+  CSSProperties
+> = {
+  allows: {
+    background: theme.content.successBackground,
+    borderColor: theme.content.success,
+  },
+  blocked: {
+    background: theme.content.errorBackground,
+    borderColor: theme.content.error,
+  },
+  incomplete: {
+    background: theme.content.warningBackground,
+    borderColor: theme.content.warning,
+  },
+}
+
 const policyProposalRowStyle: CSSProperties = {
   borderBottom: `1px solid ${theme.stroke.secondary}`,
   padding: '12px 0',
@@ -2395,6 +2546,44 @@ const policyProposalHeadingStyle: CSSProperties = {
   display: 'flex',
   gap: '12px',
   justifyContent: 'space-between',
+}
+
+const policyCheckboxLabelStyle: CSSProperties = {
+  alignItems: 'center',
+  cursor: 'pointer',
+  display: 'flex',
+  gap: '8px',
+  minWidth: 0,
+}
+
+const policyCheckboxStyle: CSSProperties = {
+  alignItems: 'center',
+  background: theme.surface.main,
+  border: `1px solid ${theme.stroke.primary}`,
+  borderRadius: '4px',
+  color: theme.surface.main,
+  cursor: 'pointer',
+  display: 'inline-flex',
+  flex: '0 0 16px',
+  height: '16px',
+  justifyContent: 'center',
+  width: '16px',
+}
+
+const policyCheckboxCheckedStyle: CSSProperties = {
+  background: theme.content.primary,
+  borderColor: theme.content.primary,
+}
+
+const policyCheckboxDisabledStyle: CSSProperties = {
+  cursor: 'not-allowed',
+  opacity: 0.45,
+}
+
+const policyCheckboxIndicatorStyle: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  justifyContent: 'center',
 }
 
 const policyObservedStyle: CSSProperties = {
