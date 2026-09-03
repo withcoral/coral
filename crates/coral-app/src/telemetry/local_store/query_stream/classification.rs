@@ -222,31 +222,3 @@ impl QueryStreamPrimaryOperation {
         (self.depth, self.start_time_unix_nanos, &self.span_id)
     }
 }
-
-#[derive(Debug, Default)]
-pub(super) enum QueryStreamWorkspaceEvidence {
-    #[default]
-    None,
-    One(String),
-    Conflict,
-}
-
-impl QueryStreamWorkspaceEvidence {
-    pub(super) fn record(&mut self, workspace: Option<&str>) {
-        let Some(workspace) = workspace.filter(|workspace| !workspace.trim().is_empty()) else {
-            return;
-        };
-        match self {
-            Self::None => *self = Self::One(workspace.to_string()),
-            Self::One(current) if current != workspace => *self = Self::Conflict,
-            Self::One(_) | Self::Conflict => {}
-        }
-    }
-
-    pub(super) fn unique(&self) -> Option<&str> {
-        match self {
-            Self::One(workspace) => Some(workspace),
-            Self::None | Self::Conflict => None,
-        }
-    }
-}

@@ -9,7 +9,8 @@ use super::super::tests::{
     write_record_file_lines,
 };
 use super::super::{
-    StoredTraceStatus, TraceScope, TraceSpanRecord, TraceStore, TraceSummaryRecord,
+    StoredTraceStatus, TraceDetailRecord, TraceScope, TraceSpanRecord, TraceStore, TraceStoreError,
+    TraceSummaryRecord,
 };
 
 pub(super) fn span(trace_id: &str, span_id: &str) -> TestSpan {
@@ -141,5 +142,14 @@ impl TraceFiles {
         TraceStore::new(self.temp.path().to_path_buf())
             .list_query_stream_sync(limit, offset, &scope(workspace_name))
             .expect("list query stream")
+    }
+
+    pub(super) fn get(
+        &self,
+        trace_id: &str,
+        workspace_name: Option<&str>,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        TraceStore::new(self.temp.path().to_path_buf())
+            .get_query_stream_trace_sync(trace_id, &scope(workspace_name))
     }
 }

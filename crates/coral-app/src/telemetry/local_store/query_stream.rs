@@ -5,15 +5,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 mod classification;
 
 use classification::{
-    QueryStreamMetadata, QueryStreamPrimaryOperation, QueryStreamWorkspaceEvidence,
-    is_unmarked_mcp_protocol_attributes, operation_text_from_attributes,
-    operation_text_is_semantic, query_stream_metadata,
+    QueryStreamMetadata, QueryStreamPrimaryOperation, is_unmarked_mcp_protocol_attributes,
+    operation_text_from_attributes, operation_text_is_semantic, query_stream_metadata,
 };
 
 use super::{
     StoredTraceOperationKind, StoredTraceStatus, TraceListSpanRecord, TraceScope, TraceSpanRecord,
-    TraceStore, TraceStoreError, TraceSummaryRecord, attr_string, attr_u64, parse_attributes,
-    read_list_spans_file, status_from_attributes, usize_to_u32,
+    TraceStore, TraceStoreError, TraceSummaryRecord, WorkspaceEvidence, attr_string, attr_u64,
+    parse_attributes, read_list_spans_file, status_from_attributes, usize_to_u32,
 };
 use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
@@ -240,7 +239,7 @@ struct StreamingQueryStreamAggregate {
     span_count: usize,
     primary_descendant_operation: Option<QueryStreamPrimaryOperation>,
     text_enrichment: Option<QueryStreamTextEnrichment>,
-    workspace_evidence: QueryStreamWorkspaceEvidence,
+    workspace_evidence: WorkspaceEvidence,
 }
 
 impl StreamingQueryStreamAggregate {
@@ -250,7 +249,7 @@ impl StreamingQueryStreamAggregate {
             span_count: 0,
             primary_descendant_operation: None,
             text_enrichment: None,
-            workspace_evidence: QueryStreamWorkspaceEvidence::default(),
+            workspace_evidence: WorkspaceEvidence::default(),
         }
     }
 

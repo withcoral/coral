@@ -397,3 +397,72 @@ fn query_stream_keeps_scanning_when_file_mtime_is_coarse() {
         "hidden-newer"
     );
 }
+
+/// The span that names an operation is rarely the one that names a workspace:
+/// a gRPC server span roots the trace, and the `coral.query` beneath it is
+/// what records the workspace the work ran for. The list attributes the whole
+/// operation from that one span, so the detail behind it must do the same, or
+/// every row the list shows answers the click that follows it with a trace
+/// that was never recorded.
+#[test]
+fn query_stream_opens_a_trace_its_descendant_attributes() {
+    let files = TraceFiles::new();
+    let base_time = SystemTime::now() - Duration::from_secs(10);
+
+    let root = span("descendant-attributed", "grpc-root")
+        .named("coral.v1.CatalogService/ListCatalog")
+        .attrs(json!({"rpc.method": "ListCatalog", "status": "ok"}))
+        .times(
+            unix_nanos(base_time),
+            unix_nanos(base_time + Duration::from_millis(900)),
+        )
+        .build();
+    let query = span("descendant-attributed", "query-span")
+        .named("coral.query")
+        .child_of(&root)
+        .attrs(json!({
+            "workspace": "alpha",
+            "sql": "SELECT 42",
+            "row_count": 1,
+            "status": "ok",
+        }))
+        .times(
+            unix_nanos(base_time + Duration::from_millis(100)),
+            unix_nanos(base_time + Duration::from_millis(800)),
+        )
+        .build();
+    // The plan spans a query fans out are the bulk of any real trace and carry
+    // no workspace of their own.
+    let plan = span("descendant-attributed", "plan-span")
+        .named("optimize_logical_plan")
+        .child_of(&query)
+        .times(
+            unix_nanos(base_time + Duration::from_millis(200)),
+            unix_nanos(base_time + Duration::from_millis(700)),
+        )
+        .build();
+    files.write("spans-descendant-attributed.jsonl", &[root, query, plan]);
+
+    let summaries = files.list(10, 0, Some("alpha"));
+    assert_eq!(summaries.len(), 1);
+    let summary = summaries.into_iter().next().expect("listed summary");
+
+    let detail = files
+        .get("descendant-attributed", Some("alpha"))
+        .expect("the workspace that listed the operation opens it");
+    assert_eq!(detail.summary, summary);
+    assert_eq!(
+        detail
+            .spans
+            .iter()
+            .map(|span| span.span_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["grpc-root", "query-span", "plan-span"],
+        "the ancestry that names the operation travels with it",
+    );
+
+    assert!(files.list(10, 0, Some("beta")).is_empty());
+    files
+        .get("descendant-attributed", Some("beta"))
+        .expect_err("a workspace the trace never names reads it as absent");
+}

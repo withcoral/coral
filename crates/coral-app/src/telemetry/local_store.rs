@@ -439,6 +439,39 @@ impl TraceScope {
     }
 }
 
+/// The workspace a set of spans settles on.
+///
+/// Most spans record no workspace of their own; the ones that do are what
+/// attributes the work around them. A set that names exactly one workspace
+/// belongs to it, and a set that names two belongs wholly to neither.
+#[derive(Debug, Default)]
+enum WorkspaceEvidence {
+    #[default]
+    None,
+    One(String),
+    Conflict,
+}
+
+impl WorkspaceEvidence {
+    fn record(&mut self, workspace: Option<&str>) {
+        let Some(workspace) = workspace.filter(|workspace| !workspace.trim().is_empty()) else {
+            return;
+        };
+        match self {
+            Self::None => *self = Self::One(workspace.to_string()),
+            Self::One(current) if current != workspace => *self = Self::Conflict,
+            Self::One(_) | Self::Conflict => {}
+        }
+    }
+
+    fn unique(&self) -> Option<&str> {
+        match self {
+            Self::One(workspace) => Some(workspace),
+            Self::None | Self::Conflict => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TraceStoreFile {
     path: PathBuf,
@@ -828,11 +861,11 @@ impl TraceStore {
         query_stream::list(self, limit, offset, scope)
     }
 
-    fn get_trace_sync(
+    /// Reads every retained span of `trace_id`, before any scope is applied.
+    fn read_trace_spans_sync(
         &self,
         trace_id: &str,
-        scope: &TraceScope,
-    ) -> Result<TraceDetailRecord, TraceStoreError> {
+    ) -> Result<Vec<TraceSpanRecord>, TraceStoreError> {
         let mut spans_by_id = HashMap::new();
         self.prune_expired()?;
         let files = self.jsonl_files_by_modified()?;
@@ -856,7 +889,15 @@ impl TraceStore {
                 break;
             }
         }
-        let mut spans = spans_by_id.into_values().collect::<Vec<_>>();
+        Ok(spans_by_id.into_values().collect())
+    }
+
+    fn get_trace_sync(
+        &self,
+        trace_id: &str,
+        scope: &TraceScope,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        let mut spans = self.read_trace_spans_sync(trace_id)?;
         // The scope projects the trace rather than admitting it: a caller sees
         // the spans their own workspaces recorded and no others, so a trace
         // that two workspaces share carries no query text across the boundary.
@@ -868,28 +909,36 @@ impl TraceStore {
         if spans.is_empty() {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         }
-
-        spans.sort_by(|left, right| {
-            left.start_time_unix_nanos
-                .cmp(&right.start_time_unix_nanos)
-                .then_with(|| left.span_id.cmp(&right.span_id))
-        });
+        sort_trace_spans(&mut spans);
 
         let summary = summary_from_spans(trace_id, &spans);
         Ok(TraceDetailRecord { summary, spans })
     }
 
+    /// Reads one Query Stream operation and the spans behind it.
+    ///
+    /// The list attributes an operation to a workspace from the evidence its
+    /// whole span tree carries, because the span that names the operation is
+    /// rarely the one that names the workspace. The detail therefore reads the
+    /// trace whole and scopes it the same way, or every operation the list
+    /// admitted on a descendant's evidence would answer the click that follows
+    /// it with a trace that was never recorded.
     fn get_query_stream_trace_sync(
         &self,
         trace_id: &str,
         scope: &TraceScope,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
-        let mut detail = self.get_trace_sync(trace_id, scope)?;
-        let Some(summary) = query_stream::summary(&detail.spans, scope) else {
+        let mut spans = self.read_trace_spans_sync(trace_id)?;
+        let Some(summary) = query_stream::summary(&spans, scope) else {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         };
-        detail.summary = summary;
-        Ok(detail)
+        scope_trace_spans(&mut spans, scope);
+        if spans.is_empty() {
+            return Err(TraceStoreError::NotFound(trace_id.to_string()));
+        }
+        sort_trace_spans(&mut spans);
+
+        Ok(TraceDetailRecord { summary, spans })
     }
 
     pub(crate) fn list_query_history_sync(
@@ -1873,6 +1922,41 @@ fn parse_attributes(attributes_json: &str) -> Option<JsonValue> {
 
 fn attributes_match_workspace(attributes_json: &str, workspace_name: &str) -> bool {
     workspace_attribute(attributes_json).is_some_and(|workspace| workspace == workspace_name)
+}
+
+fn sort_trace_spans(spans: &mut [TraceSpanRecord]) {
+    spans.sort_by(|left, right| {
+        left.start_time_unix_nanos
+            .cmp(&right.start_time_unix_nanos)
+            .then_with(|| left.span_id.cmp(&right.span_id))
+    });
+}
+
+/// Applies `scope` to the spans of one trace.
+///
+/// A trace is admitted whole when its spans settle on a single workspace the
+/// scope admits: most spans record no workspace of their own, and the few that
+/// do are what attributes the work around them. Admitting span by span instead
+/// would hand back a trace stripped of the ancestry that names its operation.
+///
+/// Spans naming two workspaces are the exception. There the scope projects
+/// rather than admits, so a trace two workspaces share carries no query text
+/// across the boundary and each owner sees only what their own workspaces
+/// recorded. A trace with nothing in scope reads exactly like one that was
+/// never recorded, which is the answer a caller who may not know it exists
+/// must get.
+fn scope_trace_spans(spans: &mut Vec<TraceSpanRecord>, scope: &TraceScope) {
+    if scope.admits_every_span() {
+        return;
+    }
+    let mut evidence = WorkspaceEvidence::default();
+    for span in spans.iter() {
+        evidence.record(workspace_attribute(&span.attributes_json).as_deref());
+    }
+    if scope.admits(evidence.unique()) {
+        return;
+    }
+    spans.retain(|span| scope.admits_span(&span.attributes_json));
 }
 
 fn workspace_attribute(attributes_json: &str) -> Option<String> {
