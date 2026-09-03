@@ -2558,21 +2558,24 @@ const policyCheckboxLabelStyle: CSSProperties = {
 
 const policyCheckboxStyle: CSSProperties = {
   alignItems: 'center',
-  background: theme.surface.main,
-  border: `1px solid ${theme.stroke.primary}`,
-  borderRadius: '4px',
-  color: theme.surface.main,
+  background: 'transparent',
+  border: `2px solid ${theme.content.tertiary}`,
+  borderRadius: '5px',
+  color: theme.content.accentContent.primaryReverse,
   cursor: 'pointer',
   display: 'inline-flex',
-  flex: '0 0 16px',
-  height: '16px',
+  flex: '0 0 18px',
+  height: '18px',
   justifyContent: 'center',
-  width: '16px',
+  outline: 'none',
+  padding: 0,
+  transition: 'background-color 120ms ease, border-color 120ms ease, opacity 120ms ease',
+  width: '18px',
 }
 
 const policyCheckboxCheckedStyle: CSSProperties = {
-  background: theme.content.primary,
-  borderColor: theme.content.primary,
+  background: theme.stroke.focused,
+  borderColor: theme.stroke.focused,
 }
 
 const policyCheckboxDisabledStyle: CSSProperties = {
