@@ -1,7 +1,7 @@
 {
   "name": "@withcoral/desktop",
   "private": true,
-  "version": "0.15.2",
+  "version": "0.15.3",
   "description": "Coral desktop app",
   "author": "With Coral",
   "license": "Apache-2.0",

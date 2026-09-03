@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.3](https://github.com/withcoral/coral/compare/v0.15.2...v0.15.3) (2026-09-03)
+
+
+### Features
+
+* **coral-ui:** restyle the create-first-workspace page ([#2290](https://github.com/withcoral/coral/issues/2290)) ([2f85364](https://github.com/withcoral/coral/commit/2f853643fcf0de27105150d22d4c5cddd6f4a25a))
+
+
+### Bug Fixes
+
+* **app:** open the Query Stream traces the list shows ([#2298](https://github.com/withcoral/coral/issues/2298)) ([f953370](https://github.com/withcoral/coral/commit/f953370483e25a09a34f4adfeff26b6feef4a882))
+* **coral-ui:** drop the unused routePath import from onboarding ([#2295](https://github.com/withcoral/coral/issues/2295)) ([6fbf47f](https://github.com/withcoral/coral/commit/6fbf47f5cde5fdbb0aa9882bff29a434ecc82338))
+* **coral-ui:** revamp web MCP UI ([#2292](https://github.com/withcoral/coral/issues/2292)) ([3608bbe](https://github.com/withcoral/coral/commit/3608bbec6bb3416281dcf6b9f3cd9c833e06ced4))
+
 ## [0.15.2](https://github.com/withcoral/coral/compare/v0.15.1...v0.15.2) (2026-08-28)
 
 
