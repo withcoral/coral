@@ -19,10 +19,12 @@ type ArgumentValue =
   | { [key: string]: ArgumentValue }
 type DatasetKey = 'github' | 'linear' | 'loop' | 'savedFunction'
 type EnvelopeMatch = 'inside' | 'outside'
+type EnvelopeArgsDisplay = 'interleaved' | 'none' | 'summary'
 
 interface OperationApprovalStoryProps {
   argumentsCollapsible?: boolean
   argumentsInitiallyExpanded?: boolean
+  envelopeArgsDisplay?: EnvelopeArgsDisplay
   envelopeMatch: EnvelopeMatch
   compact?: boolean
   dataset: DatasetKey
@@ -33,7 +35,6 @@ interface OperationApprovalStoryProps {
   showApprovalAuthority?: boolean
   showExpiry?: boolean
   showAuthorityEnvelopeMatch?: boolean
-  showEnvelopeOnArgs?: boolean
   showIdentity?: boolean
   showProgramBody?: boolean
   showProgramSnippet?: boolean
@@ -154,9 +155,10 @@ const meta = {
       control: 'boolean',
       description: 'Execute and show a Storybook-only deterministic Owner-policy envelope.',
     },
-    showEnvelopeOnArgs: {
-      control: 'boolean',
-      description: 'Annotate exact argument rows with checks from the selected Owner envelope.',
+    envelopeArgsDisplay: {
+      control: 'inline-radio',
+      description: 'Show selected Owner-envelope checks beside exact invocation arguments.',
+      options: ['none', 'summary', 'interleaved'],
     },
     showRequestContext: {
       control: 'boolean',
@@ -176,7 +178,7 @@ const meta = {
     showRequestContext: false,
     showProviderReference: false,
     showAuthorityEnvelopeMatch: false,
-    showEnvelopeOnArgs: false,
+    envelopeArgsDisplay: 'none',
   },
   component: OperationApprovalStory,
   decorators: [
@@ -198,7 +200,7 @@ Every Medium+ story keeps the same first-screen decision contract: Operation cal
 
 Every story uses the same story-local \`OperationApproval\` component. Toggle \`showRequestContext\` in any story to reveal Task and exec intent below Arguments; \`TaskIntentContext\` is the preset that enables it by default.
 
-Every dataset supplies two Storybook-only Owner envelopes: \`inside\` matches its exact Invocation and \`outside\` fails explicit argument filters. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to reveal the full evaluation or \`showEnvelopeOnArgs\` to annotate the affected positional arguments inline.
+Every dataset supplies two Storybook-only Owner envelopes: \`inside\` matches its exact Invocation and \`outside\` fails explicit argument filters. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to reveal the full evaluation. Use \`envelopeArgsDisplay\` to show no argument annotations, a positional-argument summary, or policy checks interleaved with their exact fields.
 
 Each story has a **dataset** control. The default GitHub dataset uses \`coral.providers.github.issues.createComment\`; the Linear dataset uses \`coral.providers.linear.issues.update\` inside a program that also reads GitHub context; the loop dataset puts one pending \`coral.providers.linear.issues.update\` Invocation inside a \`for\` loop; the saved-function dataset shows one pending Operation from a linked \`coral.functions.postApprovalFollowUp\` source snapshot. Within a selected dataset, the stories keep the operation/request stable so reviewers can compare disclosure and rendering choices without changing provider, operation, requester, identity, or run context.
 
@@ -1069,10 +1071,10 @@ export const EnvelopeMatches: Story = {
     argumentsCollapsible: true,
     argumentsInitiallyExpanded: true,
     dataset: 'github',
+    envelopeArgsDisplay: 'interleaved',
     envelopeMatch: 'inside',
     showArguments: true,
     showAuthorityEnvelopeMatch: true,
-    showEnvelopeOnArgs: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
     showRequester: true,
@@ -1092,11 +1094,11 @@ export const EnvelopeDoesNotMatch: Story = {
     argumentsCollapsible: true,
     argumentsInitiallyExpanded: true,
     dataset: 'github',
+    envelopeArgsDisplay: 'interleaved',
     envelopeMatch: 'outside',
     showArguments: true,
     showApprovalAuthority: true,
     showAuthorityEnvelopeMatch: true,
-    showEnvelopeOnArgs: true,
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -1201,6 +1203,7 @@ function OperationApproval({
   argumentsInitiallyExpanded,
   authorityEnvelope,
   compact,
+  envelopeArgsDisplay = 'none',
   onApprove,
   onDecline,
   onViewRun,
@@ -1208,7 +1211,6 @@ function OperationApproval({
   showApprovalAuthority,
   showExpiry,
   showAuthorityEnvelopeMatch,
-  showEnvelopeOnArgs,
   showIdentity,
   showProgramBody,
   showProgramSnippet,
@@ -1221,14 +1223,14 @@ function OperationApproval({
 }: OperationApprovalProps) {
   const hasDecisionContext = Boolean(showApprovalAuthority)
   const envelopeEvaluation =
-    showAuthorityEnvelopeMatch || showEnvelopeOnArgs
+    showAuthorityEnvelopeMatch || envelopeArgsDisplay !== 'none'
       ? evaluateAuthorityEnvelope(approval, authorityEnvelope)
       : undefined
   const hasContext = Boolean(
     showArguments ||
     showExpiry ||
     showAuthorityEnvelopeMatch ||
-    showEnvelopeOnArgs ||
+    envelopeArgsDisplay !== 'none' ||
     showIdentity ||
     hasDecisionContext ||
     showProgramBody ||
@@ -1256,13 +1258,16 @@ function OperationApproval({
       {showArguments ? (
         <InvocationArgumentsSection
           collapsible={argumentsCollapsible}
-          envelopeChecks={showEnvelopeOnArgs ? envelopeEvaluation?.checks : undefined}
+          envelopeChecks={envelopeArgsDisplay !== 'none' ? envelopeEvaluation?.checks : undefined}
+          envelopeDisplay={envelopeArgsDisplay}
           initiallyExpanded={argumentsInitiallyExpanded}
           invocationArguments={approval.invocationArguments}
         />
       ) : null}
 
-      {envelopeEvaluation ? <EnvelopeCheckSection evaluation={envelopeEvaluation} /> : null}
+      {showAuthorityEnvelopeMatch && envelopeEvaluation ? (
+        <EnvelopeCheckSection evaluation={envelopeEvaluation} />
+      ) : null}
 
       {(showRequestContext && approval.requestContext) ||
       (showProgramSnippet && approval.programContext) ? (
@@ -1401,11 +1406,13 @@ function ApprovalHeader({
 function InvocationArgumentsSection({
   collapsible,
   envelopeChecks,
+  envelopeDisplay,
   initiallyExpanded,
   invocationArguments,
 }: {
   collapsible?: boolean
   envelopeChecks?: AuthorityEnvelopeEvaluation['checks']
+  envelopeDisplay: EnvelopeArgsDisplay
   initiallyExpanded?: boolean
   invocationArguments: OperationApprovalModel['invocationArguments']
 }) {
@@ -1441,6 +1448,8 @@ function InvocationArgumentsSection({
               annotations={envelopeChecks?.filter(({ label: checkLabel }) =>
                 checkLabel.startsWith(`args[${index}]`),
               )}
+              argumentIndex={index}
+              envelopeDisplay={envelopeDisplay}
               key={label}
               label={label}
               showDivider={index < invocationArguments.length - 1}
@@ -1455,40 +1464,128 @@ function InvocationArgumentsSection({
 
 function InvocationArgumentRow({
   annotations,
+  argumentIndex,
+  envelopeDisplay,
   label,
   showDivider,
   value,
 }: {
   annotations?: AuthorityEnvelopeEvaluation['checks']
+  argumentIndex: number
+  envelopeDisplay: EnvelopeArgsDisplay
   label: string
   showDivider: boolean
   value: ArgumentValue
 }) {
   const argumentStatus = aggregateEnvelopeStatus(annotations)
+  const isInterleavedObject = envelopeDisplay === 'interleaved' && isArgumentRecord(value)
 
   return (
     <div
       style={{
         ...argumentGroupStyle,
-        ...(argumentStatus ? envelopeArgumentBackgrounds[argumentStatus] : {}),
+        ...(argumentStatus && !isInterleavedObject
+          ? envelopeArgumentBackgrounds[argumentStatus]
+          : {}),
         ...(!showDivider ? lastDetailRowStyle : {}),
       }}
     >
-      <DetailRow label={label} showDivider={false} value={value} />
-      {annotations && annotations.length > 0 ? (
+      {isInterleavedObject ? (
+        <InterleavedArgumentFields
+          annotations={annotations}
+          argumentIndex={argumentIndex}
+          argumentLabel={label}
+          value={value}
+        />
+      ) : (
+        <DetailRow label={label} showDivider={false} value={value} />
+      )}
+      {envelopeDisplay !== 'interleaved' && annotations && annotations.length > 0 ? (
         <div style={argumentAnnotationsStyle}>
-          {annotations.map(({ label: checkLabel, policy, status }) => (
-            <div key={checkLabel} style={argumentAnnotationStyle}>
-              <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
-                Policy: {checkLabel} {policy}
-              </Typography.BodySmall>
-              <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
-            </div>
+          {annotations.map((annotation) => (
+            <EnvelopeArgumentAnnotation annotation={annotation} key={annotation.label} />
+          ))}
+        </div>
+      ) : null}
+      {envelopeDisplay === 'interleaved' && !isInterleavedObject && annotations?.length ? (
+        <div style={argumentAnnotationsStyle}>
+          {annotations.map((annotation) => (
+            <EnvelopeArgumentAnnotation annotation={annotation} key={annotation.label} />
           ))}
         </div>
       ) : null}
     </div>
   )
+}
+
+function InterleavedArgumentFields({
+  annotations,
+  argumentIndex,
+  argumentLabel,
+  value,
+}: {
+  annotations?: AuthorityEnvelopeEvaluation['checks']
+  argumentIndex: number
+  argumentLabel: string
+  value: Record<string, ArgumentValue>
+}) {
+  return (
+    <div style={interleavedArgumentStyle}>
+      <Typography.BodySmall as="p" style={interleavedArgumentLabelStyle} variant="tertiary">
+        {argumentLabel}
+      </Typography.BodySmall>
+      <div>
+        {Object.entries(value).map(([field, fieldValue], index, fields) => {
+          const fieldAnnotations = annotations?.filter(({ label }) =>
+            label.startsWith(`args[${argumentIndex}].${field}`),
+          )
+          const fieldStatus = aggregateEnvelopeStatus(fieldAnnotations)
+
+          return (
+            <div
+              key={field}
+              style={{
+                ...interleavedFieldStyle,
+                ...(fieldStatus ? envelopeInterleavedBackgrounds[fieldStatus] : {}),
+                ...(index === fields.length - 1 ? lastDetailRowStyle : {}),
+              }}
+            >
+              <div style={interleavedFieldValueStyle}>
+                <Typography.BodySmallStrong as="span" variant="tertiary">
+                  {field}
+                </Typography.BodySmallStrong>
+                <Typography.BodySmall as="div" style={detailValueStyle} variant="primary">
+                  {renderArgumentValue(fieldValue)}
+                </Typography.BodySmall>
+              </div>
+              {fieldAnnotations?.map((annotation) => (
+                <EnvelopeArgumentAnnotation annotation={annotation} key={annotation.label} />
+              ))}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function EnvelopeArgumentAnnotation({
+  annotation: { label, policy, status },
+}: {
+  annotation: AuthorityEnvelopeEvaluation['checks'][number]
+}) {
+  return (
+    <div style={argumentAnnotationStyle}>
+      <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
+        Policy: {label} {policy}
+      </Typography.BodySmall>
+      <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
+    </div>
+  )
+}
+
+function isArgumentRecord(value: ArgumentValue): value is Record<string, ArgumentValue> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function aggregateEnvelopeStatus(
@@ -1840,6 +1937,33 @@ const argumentGroupStyle: CSSProperties = {
   borderBottom: `1px solid ${theme.stroke.secondary}`,
 }
 
+const interleavedArgumentStyle: CSSProperties = {
+  display: 'grid',
+  gap: '16px',
+  gridTemplateColumns: '140px minmax(0, 1fr)',
+  padding: '8px 0',
+}
+
+const interleavedArgumentLabelStyle: CSSProperties = {
+  margin: 0,
+  paddingTop: '8px',
+}
+
+const interleavedFieldStyle: CSSProperties = {
+  borderBottom: `1px solid ${theme.stroke.secondary}`,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+  padding: '8px',
+}
+
+const interleavedFieldValueStyle: CSSProperties = {
+  alignItems: 'baseline',
+  display: 'grid',
+  gap: '12px',
+  gridTemplateColumns: '120px minmax(0, 1fr)',
+}
+
 const envelopeArgumentBackgrounds: Record<EnvelopeCheckStatus, CSSProperties> = {
   fail: {
     background: theme.content.errorBackground,
@@ -1856,6 +1980,12 @@ const envelopeArgumentBackgrounds: Record<EnvelopeCheckStatus, CSSProperties> = 
     borderRadius: '6px',
     padding: '0 8px 8px',
   },
+}
+
+const envelopeInterleavedBackgrounds: Record<EnvelopeCheckStatus, CSSProperties> = {
+  fail: { background: theme.content.errorBackground, borderRadius: '6px' },
+  pass: { background: theme.content.successBackground, borderRadius: '6px' },
+  unknown: { background: theme.content.warningBackground, borderRadius: '6px' },
 }
 
 const argumentAnnotationsStyle: CSSProperties = {
