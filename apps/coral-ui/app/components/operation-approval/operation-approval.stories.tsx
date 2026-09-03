@@ -30,6 +30,7 @@ interface OperationApprovalStoryProps {
   dataset: DatasetKey
   onApprove: () => void
   onDecline: () => void
+  onUpdatePolicy: () => void
   onViewRun: () => void
   showArguments?: boolean
   showApprovalAuthority?: boolean
@@ -183,6 +184,7 @@ const meta = {
     dataset: 'github',
     onApprove: fn(),
     onDecline: fn(),
+    onUpdatePolicy: fn(),
     onViewRun: fn(),
     showRequestContext: false,
     showProviderReference: false,
@@ -1289,6 +1291,7 @@ function OperationApproval({
   envelopeArgsDisplay = 'none',
   onApprove,
   onDecline,
+  onUpdatePolicy,
   onViewRun,
   showArguments,
   showApprovalAuthority,
@@ -1350,10 +1353,7 @@ function OperationApproval({
       ) : null}
 
       {showAuthorityEnvelopeMatch && envelopeEvaluation ? (
-        <EnvelopeCheckSection
-          evaluation={envelopeEvaluation}
-          onReviewPolicy={() => setPolicyProposalOpen(true)}
-        />
+        <EnvelopeCheckSection evaluation={envelopeEvaluation} />
       ) : null}
 
       {(showRequestContext && approval.requestContext) ||
@@ -1432,6 +1432,9 @@ function OperationApproval({
           approveLabel={showAuthorityEnvelopeMatch ? 'Approve once' : 'Approve'}
           onApprove={onApprove}
           onDecline={onDecline}
+          onReviewPolicy={
+            showAuthorityEnvelopeMatch ? () => setPolicyProposalOpen(true) : undefined
+          }
         />
       )}
 
@@ -1439,6 +1442,7 @@ function OperationApproval({
         <PolicyUpdateProposalDialog
           evaluation={envelopeEvaluation}
           onOpenChange={setPolicyProposalOpen}
+          onUpdatePolicy={onUpdatePolicy}
           open={policyProposalOpen}
         />
       ) : null}
@@ -1696,13 +1700,7 @@ function aggregateEnvelopeStatus(
   return 'pass'
 }
 
-function EnvelopeCheckSection({
-  evaluation,
-  onReviewPolicy,
-}: {
-  evaluation: AuthorityEnvelopeEvaluation
-  onReviewPolicy: () => void
-}) {
+function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEvaluation }) {
   const matches = evaluation.decision === 'allow'
 
   return (
@@ -1723,11 +1721,6 @@ function EnvelopeCheckSection({
         </div>
         <Pill color={matches ? 'green' : 'amber'}>{matches ? 'Allowed' : 'Review'}</Pill>
       </div>
-      {!matches ? (
-        <Button.TextButton onClick={onReviewPolicy} variant="secondary">
-          Allow similar future calls…
-        </Button.TextButton>
-      ) : null}
       <dl style={contextDetailsStyle}>
         <DetailRow label="Installed by" value={evaluation.installedBy} />
         <DetailRow label="Envelope expiry" value={evaluation.expiresAt} />
@@ -1754,13 +1747,16 @@ function EnvelopeCheckSection({
 function PolicyUpdateProposalDialog({
   evaluation,
   onOpenChange,
+  onUpdatePolicy,
   open,
 }: {
   evaluation: AuthorityEnvelopeEvaluation
   onOpenChange: (open: boolean) => void
+  onUpdatePolicy: () => void
   open: boolean
 }) {
   const proposedChecks = evaluation.checks.filter(({ status }) => status !== 'pass')
+  const canUpdatePolicy = proposedChecks.every(({ proposal }) => proposal?.kind === 'automatic')
 
   return (
     <Dialog.Root onOpenChange={onOpenChange} open={open}>
@@ -1770,7 +1766,7 @@ function PolicyUpdateProposalDialog({
           <Dialog.Title>Allow similar future calls</Dialog.Title>
           <Dialog.Description>
             This proposes an Owner policy update for envelope {evaluation.envelopeId}. It does not
-            approve this Invocation; use Approve once separately if you want it to continue.
+            approve this invocation.
           </Dialog.Description>
           <Dialog.Close />
           <section style={policyProposalListStyle}>
@@ -1786,9 +1782,27 @@ function PolicyUpdateProposalDialog({
               />
             ))}
           </section>
+          {!canUpdatePolicy ? (
+            <Typography.BodySmall
+              as="p"
+              style={{ ...zeroMarginStyle, color: theme.content.warning }}
+              variant="secondary"
+            >
+              Resolve manual or unavailable checks before updating Owner policy.
+            </Typography.BodySmall>
+          ) : null}
           <Dialog.Actions>
             <Button.TextButton onClick={() => onOpenChange(false)} variant="secondary">
-              Close proposal
+              Cancel
+            </Button.TextButton>
+            <Button.TextButton
+              disabled={!canUpdatePolicy}
+              onClick={() => {
+                onUpdatePolicy()
+                onOpenChange(false)
+              }}
+            >
+              Update policy
             </Button.TextButton>
           </Dialog.Actions>
         </Dialog.Popup>
@@ -1826,18 +1840,41 @@ function PolicyUpdateProposalRow({
         <Typography.BodySmallStrong as="h3">{label}</Typography.BodySmallStrong>
         <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
       </div>
-      <dl style={policyProposalDetailsStyle}>
-        <DetailRow label="Current policy" value={`${label} ${policy}`} />
-        <DetailRow label="Observed value" value={observed} />
-        <DetailRow
-          label="Proposed change"
-          showDivider={Boolean(resolvedProposal.reason)}
-          value={resolvedProposal.proposedPolicyChange}
-        />
-        {resolvedProposal.reason ? (
-          <DetailRow label="Reason" showDivider={false} value={resolvedProposal.reason} />
-        ) : null}
-      </dl>
+      <Typography.BodySmall as="p" style={policyObservedStyle} variant="secondary">
+        Observed: {observed}
+      </Typography.BodySmall>
+      <PolicyProposalDiff currentPolicy={`${label} ${policy}`} proposal={resolvedProposal} />
+    </div>
+  )
+}
+
+function PolicyProposalDiff({
+  currentPolicy,
+  proposal,
+}: {
+  currentPolicy: string
+  proposal: PolicyProposal
+}) {
+  return (
+    <div aria-label="Proposed policy diff" style={policyDiffStyle}>
+      {proposal.kind === 'automatic' ? (
+        <>
+          <code style={{ ...policyDiffLineStyle, ...policyDiffRemovedStyle }}>
+            - {currentPolicy}
+          </code>
+          <code style={{ ...policyDiffLineStyle, ...policyDiffAddedStyle }}>
+            + {proposal.proposedPolicyChange}
+          </code>
+        </>
+      ) : (
+        <>
+          <code style={policyDiffLineStyle}> {currentPolicy}</code>
+          <code style={{ ...policyDiffLineStyle, ...policyDiffCommentStyle }}>
+            # {proposal.proposedPolicyChange}
+            {proposal.reason ? `: ${proposal.reason}` : ''}
+          </code>
+        </>
+      )}
     </div>
   )
 }
@@ -1958,19 +1995,28 @@ function ApprovalActions({
   approveLabel = 'Approve',
   onApprove,
   onDecline,
+  onReviewPolicy,
 }: {
   approveLabel?: string
   onApprove: () => void
   onDecline: () => void
+  onReviewPolicy?: () => void
 }) {
   return (
-    <div style={actionsStyle}>
-      <Button.Container onClick={onDecline} size="32" variant="secondary">
-        <Button.Text>Decline</Button.Text>
-      </Button.Container>
-      <Button.Container onClick={onApprove} size="32" variant="primary">
-        <Button.Text>{approveLabel}</Button.Text>
-      </Button.Container>
+    <div style={actionFooterStyle}>
+      {onReviewPolicy ? (
+        <Button.Container onClick={onReviewPolicy} size="32" variant="secondary">
+          <Button.Text>Allow similar future calls…</Button.Text>
+        </Button.Container>
+      ) : null}
+      <div style={actionsStyle}>
+        <Button.Container onClick={onDecline} size="32" variant="secondary">
+          <Button.Text>Decline</Button.Text>
+        </Button.Container>
+        <Button.Container onClick={onApprove} size="32" variant="primary">
+          <Button.Text>{approveLabel}</Button.Text>
+        </Button.Container>
+      </div>
     </div>
   )
 }
@@ -2262,8 +2308,41 @@ const policyProposalHeadingStyle: CSSProperties = {
   justifyContent: 'space-between',
 }
 
-const policyProposalDetailsStyle: CSSProperties = {
-  margin: '4px 0 0',
+const policyObservedStyle: CSSProperties = {
+  margin: '4px 0 8px',
+}
+
+const policyDiffStyle: CSSProperties = {
+  background: theme.surface.main,
+  border: `1px solid ${theme.stroke.secondary}`,
+  borderRadius: '8px',
+  overflow: 'hidden',
+}
+
+const policyDiffLineStyle: CSSProperties = {
+  color: theme.content.secondary,
+  display: 'block',
+  fontFamily: 'monospace',
+  fontSize: '11px',
+  lineHeight: 1.5,
+  overflowWrap: 'anywhere',
+  padding: '5px 8px',
+  whiteSpace: 'pre-wrap',
+}
+
+const policyDiffRemovedStyle: CSSProperties = {
+  background: theme.content.errorBackground,
+  color: theme.content.error,
+}
+
+const policyDiffAddedStyle: CSSProperties = {
+  background: theme.content.successBackground,
+  color: theme.content.success,
+}
+
+const policyDiffCommentStyle: CSSProperties = {
+  background: theme.content.warningBackground,
+  color: theme.content.warning,
 }
 
 const nestedValueStyle: CSSProperties = {
@@ -2324,4 +2403,11 @@ const actionsStyle: CSSProperties = {
   flexWrap: 'wrap',
   gap: '8px',
   justifyContent: 'flex-end',
+}
+
+const actionFooterStyle: CSSProperties = {
+  alignItems: 'flex-end',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '8px',
 }
