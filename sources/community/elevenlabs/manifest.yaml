@@ -1,0 +1,213 @@
+name: elevenlabs
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query ElevenLabs voices and text-to-speech models through SQL.
+base_url: https://api.elevenlabs.io
+inputs:
+  ELEVENLABS_API_KEY:
+    kind: secret
+    hint: |
+      ElevenLabs API key.
+
+      Create or copy an API key from your ElevenLabs console:
+      https://elevenlabs.io/app/settings/api-keys
+
+      The key is sent as a xi-api-key header to the ElevenLabs API.
+      API keys are project-scoped. Use a key with access to the Models
+      and Voices APIs.
+      See: https://elevenlabs.io/docs/api-reference/authentication
+auth:
+  type: HeaderAuth
+  headers:
+    - name: xi-api-key
+      from: template
+      template: "{{input.ELEVENLABS_API_KEY}}"
+test_queries:
+  - SELECT model_id, name, can_do_text_to_speech, can_do_voice_conversion FROM elevenlabs.models LIMIT 5
+  - SELECT model_id, name, token_cost_factor, concurrency_group FROM elevenlabs.models WHERE can_do_text_to_speech = true LIMIT 5
+  - SELECT voice_id, name, category FROM elevenlabs.voices LIMIT 5
+tables:
+  - name: models
+    description: Available ElevenLabs text-to-speech models from GET /v1/models.
+    request:
+      method: GET
+      path: /v1/models
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the model.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable model name.
+      - name: can_be_finetuned
+        type: Boolean
+        nullable: false
+        description: Whether the model can be fine-tuned.
+      - name: can_do_text_to_speech
+        type: Boolean
+        nullable: false
+        description: Whether the model supports text-to-speech.
+      - name: can_do_voice_conversion
+        type: Boolean
+        nullable: false
+        description: Whether the model supports voice conversion.
+      - name: can_use_style
+        type: Boolean
+        nullable: false
+        description: Whether the model supports style customization.
+      - name: can_use_speaker_boost
+        type: Boolean
+        nullable: false
+        description: Whether the model supports speaker boost.
+      - name: serves_pro_voices
+        type: Boolean
+        nullable: false
+        description: Whether the model serves pro voices.
+      - name: token_cost_factor
+        type: Float64
+        nullable: true
+        description: Cost multiplier for the model.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the model's capabilities.
+      - name: requires_alpha_access
+        type: Boolean
+        nullable: false
+        description: Whether the model requires alpha access.
+      - name: max_characters_request_free_user
+        type: Int64
+        nullable: true
+        description: Maximum characters per request for free users.
+      - name: max_characters_request_subscribed_user
+        type: Int64
+        nullable: true
+        description: Maximum characters per request for subscribed users.
+      - name: maximum_text_length_per_request
+        type: Int64
+        nullable: true
+        description: Maximum text length per request for this model.
+      - name: languages
+        type: Json
+        nullable: true
+        description: Languages supported by the model.
+      - name: model_rates
+        type: Json
+        nullable: true
+        description: Pricing rates for the model.
+      - name: concurrency_group
+        type: Utf8
+        nullable: true
+        description: Concurrency group for the model.
+
+  - name: voices
+    description: >-
+      Available ElevenLabs voices from GET /v2/voices. Supports cursor
+      pagination and optional filters for category, search, and voice type.
+    guide: |
+      Lists voices using the v2 API with cursor pagination. Optional filters
+      let you narrow results:
+
+        category       — premade, cloned, generated, professional
+        voice_type     — personal, community, default, workspace
+        search         — free-text search in name, description, labels
+        sort           — created_at_unix or name
+        sort_direction — asc or desc
+
+      Example:
+        SELECT voice_id, name, category
+        FROM elevenlabs.voices
+        WHERE category = 'premade'
+        LIMIT 10
+    filters:
+      - name: category
+      - name: voice_type
+      - name: search
+      - name: sort
+      - name: sort_direction
+      - name: fine_tuning_state
+      - name: collection_id
+    request:
+      method: GET
+      path: /v2/voices
+      query:
+        - name: category
+          from: filter
+          key: category
+        - name: voice_type
+          from: filter
+          key: voice_type
+        - name: search
+          from: filter
+          key: search
+        - name: sort
+          from: filter
+          key: sort
+        - name: sort_direction
+          from: filter
+          key: sort_direction
+        - name: fine_tuning_state
+          from: filter
+          key: fine_tuning_state
+        - name: collection_id
+          from: filter
+          key: collection_id
+        - name: include_total_count
+          from: literal
+          value: "false"
+    response:
+      rows_path:
+        - voices
+    pagination:
+      mode: cursor_query
+      cursor_param: next_page_token
+      response_cursor_path:
+        - next_page_token
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: voice_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the voice.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the voice.
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Voice category (premade, professional, cloned, generated).
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Voice description.
+      - name: labels
+        type: Json
+        nullable: true
+        description: Voice metadata labels (accent, age, gender, etc.).
+      - name: preview_url
+        type: Utf8
+        nullable: true
+        description: URL to a preview audio sample.
+      - name: fine_tuning
+        type: Json
+        nullable: true
+        description: Fine-tuning state and progress information.
+      - name: high_quality_base_model_ids
+        type: Json
+        nullable: true
+        description: Compatible high-quality model IDs.
+      - name: verified_languages
+        type: Json
+        nullable: true
+        description: Languages verified for this voice.
