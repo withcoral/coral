@@ -5,6 +5,7 @@ import {
   desktopErrorMessage,
   isCoralDesktopBuild,
   type McpClientDescriptor,
+  type McpLaunchConfig,
 } from '@/lib/coral-desktop'
 import { remoteMcpClientInstructions, webMcpClients } from '@/lib/mcp-clients'
 import { mcpConnectionFromEnv } from '@/lib/mcp-connection'
@@ -55,6 +56,19 @@ export async function clientLoader({
   return {
     mcpClients: await loadDesktopMcpClients(),
     runtime: 'desktop',
+  }
+}
+
+/**
+ * How Desktop wants a client to launch the server, for instructions a person or
+ * an agent follows by hand. Absent when the bridge cannot answer, which the
+ * instructions degrade around rather than fail on.
+ */
+export async function loadDesktopMcpLaunchConfig(): Promise<McpLaunchConfig | undefined> {
+  try {
+    return await coralDesktopApi()?.getMcpLaunchConfig()
+  } catch {
+    return undefined
   }
 }
 

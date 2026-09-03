@@ -11,7 +11,7 @@ import {
 } from 'add-mcp'
 import { isDeepStrictEqual } from 'node:util'
 import type { McpClientDescriptor, McpLaunchConfig } from '../shared/types'
-import { externalCoralPath } from './sidecar'
+import { desktopCoralStateDir, externalCoralPath } from './sidecar'
 
 const DEFAULT_WORKSPACE = 'default'
 
@@ -88,11 +88,31 @@ function persistedShape(value: unknown): unknown {
   return json === undefined ? undefined : JSON.parse(json)
 }
 
+function desktopCoralEnv(): Record<string, string> {
+  return { CORAL_CONFIG_DIR: desktopCoralStateDir() }
+}
+
+/**
+ * Whether this entry is one Desktop wrote, and so one it may rewrite.
+ *
+ * Entries written before Desktop pointed clients at its own state carry no
+ * `CORAL_CONFIG_DIR`, and are recognised here so the app can still show and
+ * upgrade them. Rejecting them would strand a user with an entry Desktop
+ * refuses to touch and no way to fix it but hand-editing the client's config.
+ */
 function isCanonicalCoralConfig(server: InstalledServer, invocation: McpServerConfig): boolean {
-  const expected = agents[server.agentType].transformConfig('coral', invocation, {
-    local: false,
-  })
-  return isDeepStrictEqual(persistedShape(server.config), persistedShape(expected))
+  const persisted = persistedShape(server.config)
+  const candidates: McpServerConfig[] = [
+    { ...invocation, env: desktopCoralEnv() },
+    // The shape Desktop wrote before it pointed clients at its own state.
+    invocation,
+  ]
+  return candidates.some((candidate) =>
+    isDeepStrictEqual(
+      persisted,
+      persistedShape(agents[server.agentType].transformConfig('coral', candidate, { local: false })),
+    ),
+  )
 }
 
 function coralEntry(servers: readonly InstalledServer[]): CoralEntry {
@@ -126,10 +146,19 @@ export async function mcpClients(): Promise<McpClientDescriptor[]> {
     })
 }
 
+/**
+ * The invocation Desktop writes into a client's config.
+ *
+ * `CORAL_CONFIG_DIR` is what makes the server the client launches the same
+ * Coral this app shows. Without it the binary resolves its own default
+ * directory, and the agent reads a different set of sources and workspaces
+ * while its queries never reach the Traces view.
+ */
 async function mcpLaunchConfig(workspaceName?: string): Promise<McpLaunchConfig> {
   return {
     args: workspaceName ? ['mcp-stdio', `--workspace=${workspaceName}`] : ['mcp-stdio'],
     command: await externalCoralPath(),
+    env: desktopCoralEnv(),
   }
 }
 

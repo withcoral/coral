@@ -4,6 +4,7 @@ import { Await, useNavigate, useNavigation, useRevalidator, useSubmit } from 're
 import type { SourcesActionData } from '@/routes/sources-action'
 
 import type { McpClientsConnectionState } from '@/components/mcp-clients-list'
+import type { McpLaunchConfig } from '@/lib/coral-desktop'
 import { OnboardingNextStepsPage } from '@/components/onboarding/onboarding-next-steps-page'
 import { OnboardingSampleQueryPage } from '@/components/onboarding/onboarding-sample-query-page'
 import type { SampleQueryLoadState } from '@/components/onboarding/onboarding-sample-query-page'
@@ -20,6 +21,7 @@ export function OnboardingView({
   actionData,
   loaderData,
   mcpClients,
+  mcpLaunchConfig,
 }: {
   actionData: CompleteGuiOnboardingError | SourcesActionData
   loaderData: {
@@ -32,6 +34,7 @@ export function OnboardingView({
     workspaces: ReadonlyArray<{ name: string }>
   }
   mcpClients: McpClientsConnectionState
+  mcpLaunchConfig?: McpLaunchConfig
 }) {
   const navigate = useNavigate()
   const navigation = useNavigation()
@@ -94,6 +97,7 @@ export function OnboardingView({
         <OnboardingNextStepsStep
           completing={completing}
           mcpClients={mcpClients}
+          mcpLaunchConfig={mcpLaunchConfig}
           onContinue={() =>
             submit({ intent: COMPLETE_ONBOARDING_INTENT }, { method: 'post', replace: true })
           }
@@ -112,6 +116,7 @@ export function OnboardingView({
 function OnboardingNextStepsStep({
   completing,
   mcpClients,
+  mcpLaunchConfig,
   onContinue,
   runtime,
   step,
@@ -119,6 +124,7 @@ function OnboardingNextStepsStep({
 }: {
   completing: boolean
   mcpClients: McpClientsConnectionState
+  mcpLaunchConfig?: McpLaunchConfig
   onContinue: () => void
   runtime: 'desktop' | 'web'
   step: OnboardingStepState
@@ -130,6 +136,7 @@ function OnboardingNextStepsStep({
         <OnboardingNextStepsPage
           completing={completing}
           mcpClients={mcpClients}
+          mcpLaunchConfig={mcpLaunchConfig}
           onContinue={onContinue}
           runtime="desktop"
           step={step}

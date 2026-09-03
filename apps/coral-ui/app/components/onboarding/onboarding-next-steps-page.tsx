@@ -1,4 +1,5 @@
 import { McpClientsList, type McpClientsConnectionState } from '@/components/mcp-clients-list'
+import type { McpLaunchConfig } from '@/lib/coral-desktop'
 import { Inputs, ScrollArea, Tabs, Typography } from '@/wax/components'
 import { CopyButton } from '@/wax/components/button'
 
@@ -8,13 +9,46 @@ import type { OnboardingStepState } from './onboarding-steps'
 
 export const CORAL_SKILL_INSTALL_COMMAND = 'npx skills add withcoral/skills --skill coral --global'
 
-export function coralAgentSetupPrompt(runtime: 'desktop' | 'web'): string {
+/**
+ * How an agent should launch the server, exactly.
+ *
+ * Desktop keeps its own Coral state, so a server started without
+ * `CORAL_CONFIG_DIR` resolves a different directory: the agent would read
+ * sources this app never shows, and none of its queries would reach the Traces
+ * view. The launch config is absent only if the app is older than the bridge
+ * that carries it, where naming the executable is still the useful half.
+ */
+function desktopInvocationGuidance(launchConfig?: McpLaunchConfig): string[] {
+  if (!launchConfig) {
+    return [
+      "Use Coral Desktop's bundled Coral executable for the local stdio MCP server. Resolve its actual path rather than assuming `coral` is on my agent's PATH.",
+    ]
+  }
+
+  const env = Object.entries(launchConfig.env)
+    .map(([name, value]) => `${name}=${value}`)
+    .join(' ')
+  return [
+    "Use Coral Desktop's bundled Coral runtime for the local stdio MCP server, configured exactly as below. Do not substitute a `coral` from my PATH, and do not drop the environment variable.",
+    '',
+    `- command: ${launchConfig.command}`,
+    `- arguments: ${launchConfig.args.join(' ')}`,
+    `- environment: ${env}`,
+    '',
+    'CORAL_CONFIG_DIR points the server at the same Coral state the desktop app runs against. Without it the server reads a different set of sources and workspaces, and nothing it does shows up in the app.',
+  ]
+}
+
+export function coralAgentSetupPrompt(
+  runtime: 'desktop' | 'web',
+  launchConfig?: McpLaunchConfig,
+): string {
   const runtimeGuidance =
     runtime === 'desktop'
       ? [
           'I have completed Coral onboarding and connected at least one source. I am running Coral Desktop with its bundled Coral runtime.',
           '',
-          "Use Coral Desktop's bundled Coral executable for the local stdio MCP server. Resolve its actual path rather than assuming `coral` is on my agent's PATH.",
+          ...desktopInvocationGuidance(launchConfig),
           '',
           'Set it up as follows:',
         ]
@@ -63,19 +97,22 @@ export type OnboardingNextStepsPageProps = {
   onContinue?: () => void
   step: OnboardingStepState
 } & (
-  | ({ runtime: 'desktop' } & ConnectClientsProps)
-  | ({ runtime: 'web' } & Partial<Record<keyof ConnectClientsProps, never>>)
+  | ({ mcpLaunchConfig?: McpLaunchConfig; runtime: 'desktop' } & ConnectClientsProps)
+  | ({ mcpLaunchConfig?: never; runtime: 'web' } & Partial<
+      Record<keyof ConnectClientsProps, never>
+    >)
 )
 
 export function OnboardingNextStepsPage({
   completing = false,
   mcpClients,
+  mcpLaunchConfig,
   onContinue,
   runtime,
   step,
   workspaces,
 }: OnboardingNextStepsPageProps) {
-  const agentSetupPrompt = coralAgentSetupPrompt(runtime)
+  const agentSetupPrompt = coralAgentSetupPrompt(runtime, mcpLaunchConfig)
 
   return (
     <OnboardingPage

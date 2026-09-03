@@ -4,7 +4,7 @@ import { constants } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app } from 'electron'
-import { ensureDesktopCoralConfig } from './coral-config'
+import { desktopCoralConfigDir, ensureDesktopCoralConfig } from './coral-config'
 
 export interface CoralSidecar {
   url: string
@@ -116,6 +116,28 @@ function envWithLoopbackNoProxy(configDir: string): NodeJS.ProcessEnv {
   return env
 }
 
+/**
+ * Where Desktop keeps its own Coral state, isolated from a terminal user's
+ * standalone CLI state. A dev build additionally keys the directory by its
+ * sidecar port, so two checkouts running side by side do not share one runtime.
+ */
+function desktopCoralConfigOptions(): { bindAddr?: string; directory?: string } {
+  if (app.isPackaged) return {}
+  const devPort = process.env.CORAL_DEV_SIDECAR_PORT || '8778'
+  return { bindAddr: `127.0.0.1:${devPort}`, directory: `coral-dev-${devPort}` }
+}
+
+/**
+ * The state directory the sidecar runs against, resolved without creating it.
+ *
+ * Anything Desktop launches, or teaches another program to launch, has to be
+ * pointed here: a Coral process that resolves its own default directory reads
+ * different sources, workspaces and traces than the ones this app shows.
+ */
+export function desktopCoralStateDir(): string {
+  return desktopCoralConfigDir(app.getPath('userData'), desktopCoralConfigOptions().directory)
+}
+
 // Every spawned sidecar process, tracked from spawn time so teardown can
 // force-kill even one that is still starting up — its handle is otherwise only
 // exposed once the start promise resolves.
@@ -128,13 +150,10 @@ export function killAllTrackedChildren(): void {
 }
 
 export async function startCoralSidecar(): Promise<CoralSidecar> {
-  const devPort = process.env.CORAL_DEV_SIDECAR_PORT || '8778'
-  const configDir = app.isPackaged
-    ? await ensureDesktopCoralConfig(app.getPath('userData'))
-    : await ensureDesktopCoralConfig(app.getPath('userData'), {
-        bindAddr: `127.0.0.1:${devPort}`,
-        directory: `coral-dev-${devPort}`,
-      })
+  const configDir = await ensureDesktopCoralConfig(
+    app.getPath('userData'),
+    desktopCoralConfigOptions(),
+  )
   const command = sidecarCommand()
   const child = spawn(command.command, command.args, {
     cwd: command.cwd,

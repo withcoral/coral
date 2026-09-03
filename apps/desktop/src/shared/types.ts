@@ -9,6 +9,8 @@ export interface McpClientDescriptor {
 export interface McpLaunchConfig {
   args: string[]
   command: string
+  /** Always carries CORAL_CONFIG_DIR: the state directory this app runs against. */
+  env: Record<string, string>
 }
 
 export type DesktopUpdateState =

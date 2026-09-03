@@ -22,6 +22,7 @@ import { runSourcesAction } from './sources-action'
 import { loadSourcesRouteData } from './sources-loader'
 import {
   loadDesktopMcpClients,
+  loadDesktopMcpLaunchConfig,
   updateDesktopMcpClient,
   type DesktopMcpClientData,
 } from './settings-loader'
@@ -78,10 +79,11 @@ export async function clientLoader({ serverLoader }: Route.ClientLoaderArgs) {
   const loaderData = await serverLoader()
   if (loaderData.runtime !== 'desktop') return loaderData
 
-  return {
-    ...loaderData,
-    mcpClients: await loadDesktopMcpClients(),
-  }
+  const [mcpClients, mcpLaunchConfig] = await Promise.all([
+    loadDesktopMcpClients(),
+    loadDesktopMcpLaunchConfig(),
+  ])
+  return { ...loaderData, mcpClients, mcpLaunchConfig }
 }
 
 clientLoader.hydrate = true as const
@@ -137,6 +139,7 @@ function OnboardingExperience({
         },
         pendingClientIds: typeof pendingClientId === 'string' ? [pendingClientId] : [],
       }}
+      mcpLaunchConfig={'mcpLaunchConfig' in loaderData ? loaderData.mcpLaunchConfig : undefined}
     />
   )
 }
