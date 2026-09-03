@@ -1488,6 +1488,7 @@ function OperationApproval({
       {canReviewFuturePolicy && envelopeEvaluation ? (
         <PolicyUpdateProposalDialog
           evaluation={envelopeEvaluation}
+          key={`${envelopeEvaluation.envelopeId}-${envelopeEvaluation.envelopeMatch}`}
           onOpenChange={setPolicyProposalOpen}
           onUpdatePolicy={onUpdatePolicy}
           open={policyProposalOpen}
@@ -1862,6 +1863,7 @@ function PolicyUpdateProposalDialog({
           <Dialog.Close />
           <PolicySelectionBanner
             blockingCheck={unsafeChecks[0] ?? unselectedChecks[0]}
+            isCreatingPolicy={isCreatingPolicy}
             status={selectionStatus}
           />
           <section style={policyProposalListStyle}>
@@ -1917,16 +1919,20 @@ function PolicyUpdateProposalDialog({
 
 function PolicySelectionBanner({
   blockingCheck,
+  isCreatingPolicy,
   status,
 }: {
   blockingCheck?: AuthorityEnvelopeEvaluation['checks'][number]
+  isCreatingPolicy: boolean
   status: 'allows' | 'blocked' | 'incomplete'
 }) {
   const copy =
     status === 'allows'
       ? {
           detail: 'The exact Operation Invocation would be covered by the selected policy.',
-          title: 'Selected changes would allow this invocation',
+          title: isCreatingPolicy
+            ? 'Selected policy would allow this invocation'
+            : 'Selected changes would allow this invocation',
         }
       : status === 'blocked'
         ? {
@@ -1934,8 +1940,12 @@ function PolicySelectionBanner({
             title: 'Cannot create a safe automatic policy update',
           }
         : {
-            detail: `${blockingCheck?.label ?? 'A required check'} remains outside policy.`,
-            title: 'Selected changes still require approval',
+            detail: isCreatingPolicy
+              ? `${blockingCheck?.label ?? 'A required check'} is not included in the proposed policy.`
+              : `${blockingCheck?.label ?? 'A required check'} remains outside policy.`,
+            title: isCreatingPolicy
+              ? 'Selected policy would not cover this invocation'
+              : 'Selected changes still require approval',
           }
 
   return (
@@ -1986,6 +1996,9 @@ function PolicyUpdateProposalRow({
     } satisfies PolicyProposal)
   const isCreatingPolicy = candidatePolicy !== undefined
   const selectable = isCreatingPolicy ? status === 'pass' : resolvedProposal.kind === 'automatic'
+  const statusColor = isCreatingPolicy && selectable ? (checked ? 'green' : 'amber') : undefined
+  const statusLabel =
+    isCreatingPolicy && selectable ? (checked ? 'Included' : 'Not included') : null
 
   return (
     <div style={{ ...policyProposalRowStyle, ...(!showDivider ? lastDetailRowStyle : {}) }}>
@@ -1996,7 +2009,9 @@ function PolicyUpdateProposalRow({
           label={label}
           onCheckedChange={onCheckedChange}
         />
-        <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
+        <Pill color={statusColor ?? envelopeStatusColors[status]}>
+          {statusLabel ?? envelopeStatusLabels[status]}
+        </Pill>
       </div>
       <Typography.BodySmall as="p" style={policyObservedStyle} variant="secondary">
         Observed: {observed}
