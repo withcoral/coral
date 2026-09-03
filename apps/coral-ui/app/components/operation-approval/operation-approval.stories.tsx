@@ -1309,10 +1309,12 @@ function OperationApproval({
 }: OperationApprovalProps) {
   const [policyProposalOpen, setPolicyProposalOpen] = useState(false)
   const hasDecisionContext = Boolean(showApprovalAuthority)
-  const envelopeEvaluation =
-    showAuthorityEnvelopeMatch || envelopeArgsDisplay !== 'none'
-      ? evaluateAuthorityEnvelope(approval, authorityEnvelope)
-      : undefined
+  const isEnvelopeVisible = showAuthorityEnvelopeMatch || envelopeArgsDisplay !== 'none'
+  const envelopeEvaluation = isEnvelopeVisible
+    ? evaluateAuthorityEnvelope(approval, authorityEnvelope)
+    : undefined
+  const canReviewFuturePolicy =
+    isEnvelopeVisible && envelopeEvaluation?.decision === 'requiresApproval'
   const hasContext = Boolean(
     showArguments ||
     showExpiry ||
@@ -1429,16 +1431,14 @@ function OperationApproval({
 
       {envelopeEvaluation?.decision === 'allow' ? null : (
         <ApprovalActions
-          approveLabel={showAuthorityEnvelopeMatch ? 'Approve once' : 'Approve'}
+          approveLabel={isEnvelopeVisible ? 'Approve once' : 'Approve'}
           onApprove={onApprove}
           onDecline={onDecline}
-          onReviewPolicy={
-            showAuthorityEnvelopeMatch ? () => setPolicyProposalOpen(true) : undefined
-          }
+          onReviewPolicy={canReviewFuturePolicy ? () => setPolicyProposalOpen(true) : undefined}
         />
       )}
 
-      {showAuthorityEnvelopeMatch && envelopeEvaluation?.decision === 'requiresApproval' ? (
+      {canReviewFuturePolicy && envelopeEvaluation ? (
         <PolicyUpdateProposalDialog
           evaluation={envelopeEvaluation}
           onOpenChange={setPolicyProposalOpen}
