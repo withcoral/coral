@@ -2,9 +2,20 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ensureDesktopCoralConfig } from './coral-config'
+import { desktopRuntimeCoralConfigOptions, ensureDesktopCoralConfig } from './coral-config'
 
 describe('ensureDesktopCoralConfig', () => {
+  it('uses the stable Desktop config directory in packaged builds', () => {
+    expect(desktopRuntimeCoralConfigOptions(true)).toEqual({})
+  })
+
+  it('keeps unpackaged sidecars in their fixed-port development config directory', () => {
+    expect(desktopRuntimeCoralConfigOptions(false, { CORAL_DEV_SIDECAR_PORT: '9001' })).toEqual({
+      bindAddr: '127.0.0.1:9001',
+      directory: 'coral-dev-9001',
+    })
+  })
+
   it('creates an isolated ephemeral-loopback server configuration', async () => {
     const userData = await mkdtemp(join(tmpdir(), 'coral-desktop-'))
     const configDir = await ensureDesktopCoralConfig(userData)

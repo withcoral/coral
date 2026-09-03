@@ -10,7 +10,9 @@ import {
   type McpServerConfig,
 } from 'add-mcp'
 import { isDeepStrictEqual } from 'node:util'
+import { app } from 'electron'
 import type { McpClientDescriptor, McpLaunchConfig } from '../shared/types'
+import { desktopRuntimeCoralConfigOptions, ensureDesktopCoralConfig } from './coral-config'
 import { externalCoralPath } from './sidecar'
 
 const DEFAULT_WORKSPACE = 'default'
@@ -19,6 +21,8 @@ type CoralEntry =
   | { kind: 'absent' }
   | { kind: 'collision' }
   | { kind: 'local'; workspace: string }
+
+type LocalInvocation = McpServerConfig & { args: string[]; command: string }
 
 function descriptor(
   client: Pick<AgentServers, 'agentType' | 'displayName'>,
@@ -61,16 +65,24 @@ function stringArray(value: unknown): string[] | undefined {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : undefined
 }
 
-function localInvocation(
-  config: Record<string, unknown>,
-): { args: string[]; command: string } | undefined {
+function stringRecord(value: unknown): Record<string, string> | undefined {
+  return value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.values(value).every((item) => typeof item === 'string')
+    ? (value as Record<string, string>)
+    : undefined
+}
+
+function localInvocation(config: Record<string, unknown>): LocalInvocation | undefined {
   const commandArray = stringArray(config.command)
   const command =
     commandArray?.[0] ??
     (typeof config.command === 'string' ? config.command : undefined) ??
     (typeof config.cmd === 'string' ? config.cmd : undefined)
   const args = commandArray ? commandArray.slice(1) : stringArray(config.args)
-  return command && args ? { args, command } : undefined
+  const env = stringRecord(config.env) ?? stringRecord(config.envs) ?? stringRecord(config.environment)
+  return command && args ? { ...(env ? { env } : {}), args, command } : undefined
 }
 
 function workspaceFromCanonicalArgs(args: readonly string[]): string | undefined {
@@ -88,14 +100,22 @@ function persistedShape(value: unknown): unknown {
   return json === undefined ? undefined : JSON.parse(json)
 }
 
-function isCanonicalCoralConfig(server: InstalledServer, invocation: McpServerConfig): boolean {
-  const expected = agents[server.agentType].transformConfig('coral', invocation, {
+function isCanonicalCoralConfig(
+  server: InstalledServer,
+  invocation: LocalInvocation,
+  configDir: string,
+): boolean {
+  const expectedInvocation: LocalInvocation = {
+    ...invocation,
+    env: { CORAL_CONFIG_DIR: configDir },
+  }
+  const expected = agents[server.agentType].transformConfig('coral', expectedInvocation, {
     local: false,
   })
   return isDeepStrictEqual(persistedShape(server.config), persistedShape(expected))
 }
 
-function coralEntry(servers: readonly InstalledServer[]): CoralEntry {
+function coralEntry(servers: readonly InstalledServer[], configDir: string): CoralEntry {
   const server = servers.find(({ serverName }) => serverName === 'coral')
   if (!server) return { kind: 'absent' }
 
@@ -106,13 +126,16 @@ function coralEntry(servers: readonly InstalledServer[]): CoralEntry {
   }
 
   const workspace = workspaceFromCanonicalArgs(invocation.args)
-  if (!workspace || !isCanonicalCoralConfig(server, invocation)) {
+  if (!workspace) {
     return { kind: 'collision' }
   }
+  if (invocation.env?.CORAL_CONFIG_DIR !== configDir) return { kind: 'absent' }
+  if (!isCanonicalCoralConfig(server, invocation, configDir)) return { kind: 'collision' }
   return { kind: 'local', workspace }
 }
 
 export async function mcpClients(): Promise<McpClientDescriptor[]> {
+  const configDir = await desktopRuntimeCoralConfigDir()
   return (await stdioClients())
     .sort(
       (left, right) =>
@@ -121,15 +144,24 @@ export async function mcpClients(): Promise<McpClientDescriptor[]> {
         left.agentType.localeCompare(right.agentType),
     )
     .map((client) => {
-      const entry = coralEntry(client.servers)
+      const entry = coralEntry(client.servers, configDir)
       return descriptor(client, entry.kind === 'local' ? entry.workspace : undefined)
     })
 }
 
+async function desktopRuntimeCoralConfigDir(): Promise<string> {
+  return ensureDesktopCoralConfig(
+    app.getPath('userData'),
+    desktopRuntimeCoralConfigOptions(app.isPackaged),
+  )
+}
+
 async function mcpLaunchConfig(workspaceName?: string): Promise<McpLaunchConfig> {
+  const configDir = await desktopRuntimeCoralConfigDir()
   return {
     args: workspaceName ? ['mcp-stdio', `--workspace=${workspaceName}`] : ['mcp-stdio'],
     command: await externalCoralPath(),
+    env: { CORAL_CONFIG_DIR: configDir },
   }
 }
 
@@ -137,8 +169,8 @@ export async function getMcpLaunchConfig(): Promise<McpLaunchConfig> {
   return mcpLaunchConfig()
 }
 
-function requireManageableCoralEntry(client: AgentServers): void {
-  if (coralEntry(client.servers).kind === 'collision') {
+async function requireManageableCoralEntry(client: AgentServers): Promise<void> {
+  if (coralEntry(client.servers, await desktopRuntimeCoralConfigDir()).kind === 'collision') {
     throw new Error(
       `${client.displayName} already has an incompatible global MCP server named "coral".`,
     )
@@ -148,7 +180,7 @@ function requireManageableCoralEntry(client: AgentServers): void {
 export async function configureMcpClient(clientId: unknown, workspaceName: unknown): Promise<void> {
   const workspace = requireWorkspaceArgument(workspaceName)
   const client = await requireStdioClient(clientId)
-  requireManageableCoralEntry(client)
+  await requireManageableCoralEntry(client)
 
   const serverConfig: McpServerConfig = await mcpLaunchConfig(workspace)
   const result = upsertServer(client.agentType, 'coral', serverConfig, { local: false })
@@ -161,7 +193,7 @@ export async function configureMcpClient(clientId: unknown, workspaceName: unkno
 
 export async function removeMcpClient(clientId: unknown): Promise<void> {
   const client = await requireStdioClient(clientId)
-  requireManageableCoralEntry(client)
+  await requireManageableCoralEntry(client)
 
   const result = removeServer(client.agentType, 'coral', { local: false })
   if (!result.success) {

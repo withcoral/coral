@@ -9,6 +9,7 @@ export interface McpClientDescriptor {
 export interface McpLaunchConfig {
   args: string[]
   command: string
+  env?: Record<string, string>
 }
 
 export type DesktopUpdateState =

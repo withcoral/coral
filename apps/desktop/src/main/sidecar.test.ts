@@ -17,6 +17,7 @@ vi.mock('electron', () => ({
 }))
 // Stubbed so the test never creates a real config directory on disk.
 vi.mock('./coral-config', () => ({
+  desktopRuntimeCoralConfigOptions: vi.fn(() => ({})),
   ensureDesktopCoralConfig: mocks.ensureDesktopCoralConfig,
 }))
 

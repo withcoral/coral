@@ -1,9 +1,22 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-interface DesktopCoralConfigOptions {
+export interface DesktopCoralConfigOptions {
   bindAddr?: string
   directory?: string
+}
+
+export function desktopRuntimeCoralConfigOptions(
+  isPackaged: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): DesktopCoralConfigOptions {
+  if (isPackaged) return {}
+
+  const devPort = env.CORAL_DEV_SIDECAR_PORT || '8778'
+  return {
+    bindAddr: `127.0.0.1:${devPort}`,
+    directory: `coral-dev-${devPort}`,
+  }
 }
 
 export function desktopCoralConfigDir(userDataDir: string, directory = 'coral'): string {

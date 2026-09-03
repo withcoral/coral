@@ -4,7 +4,7 @@ import { constants } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app } from 'electron'
-import { ensureDesktopCoralConfig } from './coral-config'
+import { desktopRuntimeCoralConfigOptions, ensureDesktopCoralConfig } from './coral-config'
 
 export interface CoralSidecar {
   url: string
@@ -128,13 +128,10 @@ export function killAllTrackedChildren(): void {
 }
 
 export async function startCoralSidecar(): Promise<CoralSidecar> {
-  const devPort = process.env.CORAL_DEV_SIDECAR_PORT || '8778'
-  const configDir = app.isPackaged
-    ? await ensureDesktopCoralConfig(app.getPath('userData'))
-    : await ensureDesktopCoralConfig(app.getPath('userData'), {
-        bindAddr: `127.0.0.1:${devPort}`,
-        directory: `coral-dev-${devPort}`,
-      })
+  const configDir = await ensureDesktopCoralConfig(
+    app.getPath('userData'),
+    desktopRuntimeCoralConfigOptions(app.isPackaged),
+  )
   const command = sidecarCommand()
   const child = spawn(command.command, command.args, {
     cwd: command.cwd,
