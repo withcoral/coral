@@ -18,7 +18,7 @@ type ArgumentValue =
   | ArgumentValue[]
   | { [key: string]: ArgumentValue }
 type DatasetKey = 'github' | 'linear' | 'loop' | 'savedFunction'
-type EnvelopeMatch = 'inside' | 'outside'
+type EnvelopeMatch = 'inside' | 'none' | 'outside'
 type EnvelopeArgsDisplay = 'interleaved' | 'none' | 'summary'
 
 interface OperationApprovalStoryProps {
@@ -100,6 +100,7 @@ interface AuthorityEnvelopeEvaluation {
   }>
   decision: 'allow' | 'requiresApproval'
   envelopeId: string
+  envelopeMatch: EnvelopeMatch
   expiresAt: string
   installedBy: string
 }
@@ -109,6 +110,7 @@ interface AuthorityEnvelope {
   evaluatedAt: string
   expiresAt: string
   installedBy: string
+  match: EnvelopeMatch
   operationCallPath: string
   rules: AuthorityEnvelopeRule[]
 }
@@ -153,9 +155,10 @@ const meta = {
   argTypes: {
     envelopeMatch: {
       control: 'inline-radio',
-      description: 'Choose the Owner envelope evaluated against the selected dataset.',
+      description:
+        "Choose an existing matching/outside envelope, or 'none' when no Owner envelope exists.",
       name: 'Match envelope',
-      options: ['inside', 'outside'],
+      options: ['inside', 'outside', 'none'],
     },
     dataset: {
       control: 'select',
@@ -167,7 +170,8 @@ const meta = {
     },
     envelopeArgsDisplay: {
       control: 'inline-radio',
-      description: 'Show selected Owner-envelope checks beside exact invocation arguments.',
+      description:
+        "Choose how Owner-policy checks annotate arguments; 'none' here only hides annotations.",
       options: ['none', 'summary', 'interleaved'],
     },
     showRequestContext: {
@@ -211,7 +215,7 @@ Every Medium+ story keeps the same first-screen decision contract: Operation cal
 
 Every story uses the same story-local \`OperationApproval\` component. Toggle \`showRequestContext\` in any story to reveal Task and exec intent below Arguments; \`TaskIntentContext\` is the preset that enables it by default.
 
-Every dataset supplies two Storybook-only Owner envelopes: \`inside\` matches its exact Invocation and \`outside\` fails explicit argument filters. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to reveal the full evaluation. Use \`envelopeArgsDisplay\` to show no argument annotations, a positional-argument summary, or policy checks interleaved with their exact fields.
+Every dataset supplies three Storybook-only Owner-envelope states: \`inside\` matches its exact Invocation, \`outside\` fails explicit filters in an existing envelope, and \`none\` means no existing Owner policy covers the Invocation. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each candidate envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to reveal the full evaluation. Separately, \`envelopeArgsDisplay='none'\` only hides inline annotations; \`summary\` and \`interleaved\` reveal them.
 
 Each story has a **dataset** control. The default GitHub dataset uses \`coral.providers.github.issues.createComment\`; the Linear dataset uses \`coral.providers.linear.issues.update\` inside a program that also reads GitHub context; the loop dataset puts one pending \`coral.providers.linear.issues.update\` Invocation inside a \`for\` loop; the saved-function dataset shows one pending Operation from a linked \`coral.functions.postApprovalFollowUp\` source snapshot. Within a selected dataset, the stories keep the operation/request stable so reviewers can compare disclosure and rendering choices without changing provider, operation, requester, identity, or run context.
 
@@ -227,6 +231,7 @@ Each story has a **dataset** control. The default GitHub dataset uses \`coral.pr
 - **EnvelopeMatches** shows an exact Invocation that passes every known Owner-policy check.
 - **EnvelopeDoesNotMatch** shows exact failed and unknown checks and retains per-call approval.
 - **EnvelopePolicyUpdateProposal** keeps one-time approval separate from reviewing a bounded future Owner-policy change.
+- **EnvelopeNoExistingPolicy** proposes a new bounded Owner policy as a purely additive diff.
 - **ProgramSnippet** adds expandable arguments and highlights one current-operation call as supporting context.
 - **CollapsedProgramBody** adds expandable arguments and a collapsed, self-contained Program body.
 - **MaximalEvidence** keeps arguments expandable while exposing snippet, Program body, provider reference copy, raw args, and ids.
@@ -273,8 +278,12 @@ function evaluateAuthorityEnvelope(
 
   return {
     checks,
-    decision: checks.every(({ status }) => status === 'pass') ? 'allow' : 'requiresApproval',
+    decision:
+      envelope.match !== 'none' && checks.every(({ status }) => status === 'pass')
+        ? 'allow'
+        : 'requiresApproval',
     envelopeId: envelope.envelopeId,
+    envelopeMatch: envelope.match,
     expiresAt: envelope.expiresAt,
     installedBy: envelope.installedBy,
   }
@@ -810,12 +819,14 @@ function createAuthorityEnvelope(
   envelopeId: string,
   approval: OperationApprovalModel,
   rules: AuthorityEnvelopeRule[],
+  match: EnvelopeMatch,
 ): AuthorityEnvelope {
   return {
     envelopeId,
     evaluatedAt: '2026-09-02T12:00:00Z',
     expiresAt: '2026-09-30T23:59:00Z',
-    installedBy: 'Workspace Owner',
+    installedBy: match === 'none' ? 'No existing policy' : 'Workspace Owner',
+    match,
     operationCallPath: approval.operationCallPath,
     rules,
   }
@@ -830,8 +841,14 @@ function createDataset(
   return {
     approval,
     authorityEnvelopes: {
-      inside: createAuthorityEnvelope(`env_${datasetKey}_inside`, approval, insideRules),
-      outside: createAuthorityEnvelope(`env_${datasetKey}_outside`, approval, outsideRules),
+      inside: createAuthorityEnvelope(`env_${datasetKey}_inside`, approval, insideRules, 'inside'),
+      none: createAuthorityEnvelope(`env_new_${datasetKey}`, approval, insideRules, 'none'),
+      outside: createAuthorityEnvelope(
+        `env_${datasetKey}_outside`,
+        approval,
+        outsideRules,
+        'outside',
+      ),
     },
   }
 }
@@ -1199,6 +1216,31 @@ export const EnvelopePolicyUpdateProposal: Story = {
   },
 }
 
+export const EnvelopeNoExistingPolicy: Story = {
+  args: {
+    argumentsCollapsible: true,
+    argumentsInitiallyExpanded: true,
+    dataset: 'github',
+    envelopeArgsDisplay: 'none',
+    envelopeMatch: 'none',
+    showArguments: true,
+    showApprovalAuthority: true,
+    showAuthorityEnvelopeMatch: true,
+    showExpiry: true,
+    showIdentity: true,
+    showRequestMetadataInHeader: true,
+    showRequester: true,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'No existing Owner policy covers the Invocation, so no policy checks annotate its arguments. The future-call action proposes a new bounded policy with additive diff lines only.',
+      },
+    },
+  },
+}
+
 export const ProgramSnippet: Story = {
   args: {
     argumentsCollapsible: true,
@@ -1313,6 +1355,10 @@ function OperationApproval({
   const envelopeEvaluation = isEnvelopeVisible
     ? evaluateAuthorityEnvelope(approval, authorityEnvelope)
     : undefined
+  const envelopeArgumentChecks =
+    envelopeArgsDisplay !== 'none' && envelopeEvaluation?.envelopeMatch !== 'none'
+      ? envelopeEvaluation?.checks
+      : undefined
   const canReviewFuturePolicy =
     isEnvelopeVisible && envelopeEvaluation?.decision === 'requiresApproval'
   const hasContext = Boolean(
@@ -1347,7 +1393,7 @@ function OperationApproval({
       {showArguments ? (
         <InvocationArgumentsSection
           collapsible={argumentsCollapsible}
-          envelopeChecks={envelopeArgsDisplay !== 'none' ? envelopeEvaluation?.checks : undefined}
+          envelopeChecks={envelopeArgumentChecks}
           envelopeDisplay={envelopeArgsDisplay}
           initiallyExpanded={argumentsInitiallyExpanded}
           invocationArguments={approval.invocationArguments}
@@ -1497,6 +1543,8 @@ function ApprovalHeader({
       </div>
       {envelopeEvaluation?.decision === 'allow' ? (
         <Pill color="green">Allowed by Owner policy</Pill>
+      ) : envelopeEvaluation?.envelopeMatch === 'none' ? (
+        <Pill color="amber">No matching Owner policy</Pill>
       ) : envelopeEvaluation ? (
         <Pill color="amber">Outside Owner policy</Pill>
       ) : hasContext ? (
@@ -1702,6 +1750,7 @@ function aggregateEnvelopeStatus(
 
 function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEvaluation }) {
   const matches = evaluation.decision === 'allow'
+  const hasNoExistingEnvelope = evaluation.envelopeMatch === 'none'
 
   return (
     <section style={sectionStyle}>
@@ -1711,7 +1760,11 @@ function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEva
       <div style={envelopeResultStyle}>
         <div style={envelopeResultCopyStyle}>
           <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
-            {matches ? 'Allowed by Owner policy' : 'Outside Owner policy'}
+            {matches
+              ? 'Allowed by Owner policy'
+              : hasNoExistingEnvelope
+                ? 'No matching Owner policy'
+                : 'Outside Owner policy'}
           </Typography.BodySmallStrong>
           <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
             {matches
@@ -1721,24 +1774,28 @@ function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEva
         </div>
         <Pill color={matches ? 'green' : 'amber'}>{matches ? 'Allowed' : 'Review'}</Pill>
       </div>
-      <dl style={contextDetailsStyle}>
-        <DetailRow label="Installed by" value={evaluation.installedBy} />
-        <DetailRow label="Envelope expiry" value={evaluation.expiresAt} />
-        {evaluation.checks.map(({ label, observed, policy, status }, index) => (
-          <EnvelopeCheckRow
-            key={label}
-            label={label}
-            observed={observed}
-            policy={policy}
-            showDivider={index < evaluation.checks.length - 1}
-            status={status}
-          />
-        ))}
-      </dl>
+      {hasNoExistingEnvelope ? null : (
+        <dl style={contextDetailsStyle}>
+          <DetailRow label="Installed by" value={evaluation.installedBy} />
+          <DetailRow label="Envelope expiry" value={evaluation.expiresAt} />
+          {evaluation.checks.map(({ label, observed, policy, status }, index) => (
+            <EnvelopeCheckRow
+              key={label}
+              label={label}
+              observed={observed}
+              policy={policy}
+              showDivider={index < evaluation.checks.length - 1}
+              status={status}
+            />
+          ))}
+        </dl>
+      )}
       <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
         {matches
           ? `Allowed by envelope ${evaluation.envelopeId}`
-          : `Envelope ${evaluation.envelopeId} did not authorize this Invocation`}
+          : hasNoExistingEnvelope
+            ? 'No existing Owner policy authorized this Invocation'
+            : `Envelope ${evaluation.envelopeId} did not authorize this Invocation`}
       </Typography.BodySmall>
     </section>
   )
@@ -1755,8 +1812,13 @@ function PolicyUpdateProposalDialog({
   onUpdatePolicy: () => void
   open: boolean
 }) {
-  const proposedChecks = evaluation.checks.filter(({ status }) => status !== 'pass')
-  const canUpdatePolicy = proposedChecks.every(({ proposal }) => proposal?.kind === 'automatic')
+  const isCreatingPolicy = evaluation.envelopeMatch === 'none'
+  const proposedChecks = isCreatingPolicy
+    ? evaluation.checks
+    : evaluation.checks.filter(({ status }) => status !== 'pass')
+  const canUpdatePolicy = isCreatingPolicy
+    ? proposedChecks.every(({ status }) => status === 'pass')
+    : proposedChecks.every(({ proposal }) => proposal?.kind === 'automatic')
 
   return (
     <Dialog.Root onOpenChange={onOpenChange} open={open}>
@@ -1765,14 +1827,20 @@ function PolicyUpdateProposalDialog({
         <Dialog.Popup size="l">
           <Dialog.Title>Allow similar future calls</Dialog.Title>
           <Dialog.Description>
-            This proposes an Owner policy update for envelope {evaluation.envelopeId}. It does not
-            approve this invocation.
+            {isCreatingPolicy
+              ? 'No existing Owner policy matched this Invocation. This proposes a new bounded Owner policy. It does not approve this invocation.'
+              : `This proposes an Owner policy update for envelope ${evaluation.envelopeId}. It does not approve this invocation.`}
           </Dialog.Description>
           <Dialog.Close />
           <section style={policyProposalListStyle}>
             {proposedChecks.map(({ label, observed, policy, proposal, status }, index) => (
               <PolicyUpdateProposalRow
                 key={label}
+                candidatePolicy={
+                  isCreatingPolicy
+                    ? formatCandidatePolicyLine(evaluation.envelopeId, label, observed, policy)
+                    : undefined
+                }
                 label={label}
                 observed={observed}
                 policy={policy}
@@ -1802,7 +1870,7 @@ function PolicyUpdateProposalDialog({
                 onOpenChange(false)
               }}
             >
-              Update policy
+              {isCreatingPolicy ? 'Create policy' : 'Update policy'}
             </Button.TextButton>
           </Dialog.Actions>
         </Dialog.Popup>
@@ -1812,6 +1880,7 @@ function PolicyUpdateProposalDialog({
 }
 
 function PolicyUpdateProposalRow({
+  candidatePolicy,
   label,
   observed,
   policy,
@@ -1819,6 +1888,7 @@ function PolicyUpdateProposalRow({
   showDivider,
   status,
 }: {
+  candidatePolicy?: string
   label: string
   observed: string
   policy: string
@@ -1843,21 +1913,29 @@ function PolicyUpdateProposalRow({
       <Typography.BodySmall as="p" style={policyObservedStyle} variant="secondary">
         Observed: {observed}
       </Typography.BodySmall>
-      <PolicyProposalDiff currentPolicy={`${label} ${policy}`} proposal={resolvedProposal} />
+      <PolicyProposalDiff
+        addedPolicy={candidatePolicy}
+        currentPolicy={`${label} ${policy}`}
+        proposal={resolvedProposal}
+      />
     </div>
   )
 }
 
 function PolicyProposalDiff({
+  addedPolicy,
   currentPolicy,
   proposal,
 }: {
+  addedPolicy?: string
   currentPolicy: string
   proposal: PolicyProposal
 }) {
   return (
     <div aria-label="Proposed policy diff" style={policyDiffStyle}>
-      {proposal.kind === 'automatic' ? (
+      {addedPolicy ? (
+        <code style={{ ...policyDiffLineStyle, ...policyDiffAddedStyle }}>+ {addedPolicy}</code>
+      ) : proposal.kind === 'automatic' ? (
         <>
           <code style={{ ...policyDiffLineStyle, ...policyDiffRemovedStyle }}>
             - {currentPolicy}
@@ -1877,6 +1955,17 @@ function PolicyProposalDiff({
       )}
     </div>
   )
+}
+
+function formatCandidatePolicyLine(
+  envelopeId: string,
+  label: string,
+  observed: string,
+  policy: string,
+) {
+  if (label === 'Operation call path') return `envelope ${envelopeId} allows ${observed}`
+  if (label === 'Policy expiry') return policy
+  return `${label} ${policy}`
 }
 
 function EnvelopeCheckRow({
