@@ -5,7 +5,7 @@ import { type } from 'arktype'
 import { useId, useState } from 'react'
 import { fn } from 'storybook/test'
 
-import { Button, Typography } from '@/wax/components'
+import { Button, Dialog, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
 import { theme } from '@/wax/theme/theme.css'
@@ -69,6 +69,13 @@ interface RequestContext {
 }
 
 type EnvelopeCheckStatus = 'fail' | 'pass' | 'unknown'
+type PolicyProposalKind = 'automatic' | 'manual' | 'unavailable'
+
+interface PolicyProposal {
+  kind: PolicyProposalKind
+  proposedPolicyChange: string
+  reason?: string
+}
 
 const envelopeStatusColors: Record<EnvelopeCheckStatus, 'amber' | 'green' | 'red'> = {
   fail: 'red',
@@ -87,6 +94,7 @@ interface AuthorityEnvelopeEvaluation {
     label: string
     observed: string
     policy: string
+    proposal?: PolicyProposal
     status: EnvelopeCheckStatus
   }>
   decision: 'allow' | 'requiresApproval'
@@ -107,6 +115,7 @@ interface AuthorityEnvelope {
 interface AuthorityEnvelopeRule {
   evaluate: (approval: OperationApprovalModel) => {
     observed: string
+    proposal?: PolicyProposal
     status: EnvelopeCheckStatus
   }
   label: string
@@ -215,6 +224,7 @@ Each story has a **dataset** control. The default GitHub dataset uses \`coral.pr
 - **TaskIntentContext** adds grounded Task and MCP exec intent as secondary request context.
 - **EnvelopeMatches** shows an exact Invocation that passes every known Owner-policy check.
 - **EnvelopeDoesNotMatch** shows exact failed and unknown checks and retains per-call approval.
+- **EnvelopePolicyUpdateProposal** keeps one-time approval separate from reviewing a bounded future Owner-policy change.
 - **ProgramSnippet** adds expandable arguments and highlights one current-operation call as supporting context.
 - **CollapsedProgramBody** adds expandable arguments and a collapsed, self-contained Program body.
 - **MaximalEvidence** keeps arguments expandable while exposing snippet, Program body, provider reference copy, raw args, and ids.
@@ -602,6 +612,7 @@ function createArgumentRule({
   label,
   path,
   policy,
+  propose,
   validate,
 }: {
   argumentIndex: number
@@ -609,6 +620,7 @@ function createArgumentRule({
   label: string
   path: string[]
   policy: string
+  propose?: (value: ArgumentValue) => PolicyProposal
   validate: (value: ArgumentValue) => unknown
 }): AuthorityEnvelopeRule {
   return {
@@ -616,8 +628,20 @@ function createArgumentRule({
       const observed = readInvocationArgument(approval, argumentIndex, path)
 
       return observed === undefined
-        ? { observed: 'Unavailable', status: 'unknown' }
-        : { observed: formatObserved(observed), status: arkStatus(validate(observed)) }
+        ? {
+            observed: 'Unavailable',
+            proposal: {
+              kind: 'unavailable',
+              proposedPolicyChange: 'Cannot propose automatically',
+              reason: 'The argument value must be available before changing Owner policy.',
+            },
+            status: 'unknown',
+          }
+        : {
+            observed: formatObserved(observed),
+            proposal: propose?.(observed),
+            status: arkStatus(validate(observed)),
+          }
     },
     label,
     policy,
@@ -631,6 +655,7 @@ function stringEqualsRule(label: string, argumentIndex: number, path: string[], 
     label,
     path,
     policy: `== ${JSON.stringify(expected)}`,
+    propose: (observed) => automaticSetExpansion(label, [expected], observed),
     validate: (value) => schema(value),
   })
 }
@@ -642,6 +667,7 @@ function stringInRule(label: string, argumentIndex: number, path: string[], allo
     label,
     path,
     policy: `in ${JSON.stringify(allowed)}`,
+    propose: (observed) => automaticSetExpansion(label, allowed, observed),
     validate: (value) => schema(value),
   })
 }
@@ -653,6 +679,7 @@ function numberInRule(label: string, argumentIndex: number, path: string[], allo
     label,
     path,
     policy: `in ${JSON.stringify(allowed)}`,
+    propose: (observed) => automaticSetExpansion(label, allowed, observed),
     validate: (value) => schema(value),
   })
 }
@@ -669,6 +696,11 @@ function booleanEqualsRule(
     label,
     path,
     policy: `== ${String(expected)}`,
+    propose: () => ({
+      kind: 'manual',
+      proposedPolicyChange: 'Manual policy change required',
+      reason: 'Changing a boolean policy can remove the constraint entirely.',
+    }),
     validate: (value) => schema(value),
   })
 }
@@ -684,6 +716,11 @@ function stringLengthRule(label: string, argumentIndex: number, path: string[], 
     label,
     path,
     policy: `length <= ${maximum.toLocaleString()}`,
+    propose: () => ({
+      kind: 'manual',
+      proposedPolicyChange: 'Manual policy change required',
+      reason: 'Size limits should be reviewed rather than expanded from one observed value.',
+    }),
     validate: (value) => schema(value),
   })
 }
@@ -707,6 +744,11 @@ function stringExcludesRule(
     label,
     path,
     policy: `excludes ${JSON.stringify(excluded)}`,
+    propose: () => ({
+      kind: 'manual',
+      proposedPolicyChange: 'Manual policy change required',
+      reason: 'Excluded mentions are a semantic safety constraint and cannot auto-expand.',
+    }),
     validate: (value) => schema(value),
   })
 }
@@ -723,8 +765,24 @@ function stringArrayIncludesRule(
     label,
     path,
     policy: `includes ${JSON.stringify(required)}`,
+    propose: () => ({
+      kind: 'manual',
+      proposedPolicyChange: 'Manual policy change required',
+      reason: 'Required-list constraints need explicit Owner review.',
+    }),
     validate: (value) => schema(value),
   })
+}
+
+function automaticSetExpansion(
+  label: string,
+  allowed: Array<string | number>,
+  observed: ArgumentValue,
+): PolicyProposal {
+  return {
+    kind: 'automatic',
+    proposedPolicyChange: `${label} in ${JSON.stringify([...allowed, observed])}`,
+  }
 }
 
 function readInvocationArgument(
@@ -1114,6 +1172,31 @@ export const EnvelopeDoesNotMatch: Story = {
   },
 }
 
+export const EnvelopePolicyUpdateProposal: Story = {
+  args: {
+    argumentsCollapsible: true,
+    argumentsInitiallyExpanded: true,
+    dataset: 'github',
+    envelopeArgsDisplay: 'interleaved',
+    envelopeMatch: 'outside',
+    showArguments: true,
+    showApprovalAuthority: true,
+    showAuthorityEnvelopeMatch: true,
+    showExpiry: true,
+    showIdentity: true,
+    showRequestMetadataInHeader: true,
+    showRequester: true,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Outside-envelope approval with a separate review step for bounded future Owner-policy changes. The proposal does not approve the pending Invocation.',
+      },
+    },
+  },
+}
+
 export const ProgramSnippet: Story = {
   args: {
     argumentsCollapsible: true,
@@ -1221,6 +1304,7 @@ function OperationApproval({
   showRunContext,
   showTechnicalDetails,
 }: OperationApprovalProps) {
+  const [policyProposalOpen, setPolicyProposalOpen] = useState(false)
   const hasDecisionContext = Boolean(showApprovalAuthority)
   const envelopeEvaluation =
     showAuthorityEnvelopeMatch || envelopeArgsDisplay !== 'none'
@@ -1266,7 +1350,10 @@ function OperationApproval({
       ) : null}
 
       {showAuthorityEnvelopeMatch && envelopeEvaluation ? (
-        <EnvelopeCheckSection evaluation={envelopeEvaluation} />
+        <EnvelopeCheckSection
+          evaluation={envelopeEvaluation}
+          onReviewPolicy={() => setPolicyProposalOpen(true)}
+        />
       ) : null}
 
       {(showRequestContext && approval.requestContext) ||
@@ -1341,8 +1428,20 @@ function OperationApproval({
       ) : null}
 
       {envelopeEvaluation?.decision === 'allow' ? null : (
-        <ApprovalActions onApprove={onApprove} onDecline={onDecline} />
+        <ApprovalActions
+          approveLabel={showAuthorityEnvelopeMatch ? 'Approve once' : 'Approve'}
+          onApprove={onApprove}
+          onDecline={onDecline}
+        />
       )}
+
+      {showAuthorityEnvelopeMatch && envelopeEvaluation?.decision === 'requiresApproval' ? (
+        <PolicyUpdateProposalDialog
+          evaluation={envelopeEvaluation}
+          onOpenChange={setPolicyProposalOpen}
+          open={policyProposalOpen}
+        />
+      ) : null}
     </section>
   )
 }
@@ -1597,7 +1696,13 @@ function aggregateEnvelopeStatus(
   return 'pass'
 }
 
-function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEvaluation }) {
+function EnvelopeCheckSection({
+  evaluation,
+  onReviewPolicy,
+}: {
+  evaluation: AuthorityEnvelopeEvaluation
+  onReviewPolicy: () => void
+}) {
   const matches = evaluation.decision === 'allow'
 
   return (
@@ -1618,6 +1723,11 @@ function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEva
         </div>
         <Pill color={matches ? 'green' : 'amber'}>{matches ? 'Allowed' : 'Review'}</Pill>
       </div>
+      {!matches ? (
+        <Button.TextButton onClick={onReviewPolicy} variant="secondary">
+          Allow similar future calls…
+        </Button.TextButton>
+      ) : null}
       <dl style={contextDetailsStyle}>
         <DetailRow label="Installed by" value={evaluation.installedBy} />
         <DetailRow label="Envelope expiry" value={evaluation.expiresAt} />
@@ -1638,6 +1748,97 @@ function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEva
           : `Envelope ${evaluation.envelopeId} did not authorize this Invocation`}
       </Typography.BodySmall>
     </section>
+  )
+}
+
+function PolicyUpdateProposalDialog({
+  evaluation,
+  onOpenChange,
+  open,
+}: {
+  evaluation: AuthorityEnvelopeEvaluation
+  onOpenChange: (open: boolean) => void
+  open: boolean
+}) {
+  const proposedChecks = evaluation.checks.filter(({ status }) => status !== 'pass')
+
+  return (
+    <Dialog.Root onOpenChange={onOpenChange} open={open}>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        <Dialog.Popup size="l">
+          <Dialog.Title>Allow similar future calls</Dialog.Title>
+          <Dialog.Description>
+            This proposes an Owner policy update for envelope {evaluation.envelopeId}. It does not
+            approve this Invocation; use Approve once separately if you want it to continue.
+          </Dialog.Description>
+          <Dialog.Close />
+          <section style={policyProposalListStyle}>
+            {proposedChecks.map(({ label, observed, policy, proposal, status }, index) => (
+              <PolicyUpdateProposalRow
+                key={label}
+                label={label}
+                observed={observed}
+                policy={policy}
+                proposal={proposal}
+                showDivider={index < proposedChecks.length - 1}
+                status={status}
+              />
+            ))}
+          </section>
+          <Dialog.Actions>
+            <Button.TextButton onClick={() => onOpenChange(false)} variant="secondary">
+              Close proposal
+            </Button.TextButton>
+          </Dialog.Actions>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
+function PolicyUpdateProposalRow({
+  label,
+  observed,
+  policy,
+  proposal,
+  showDivider,
+  status,
+}: {
+  label: string
+  observed: string
+  policy: string
+  proposal?: PolicyProposal
+  showDivider: boolean
+  status: EnvelopeCheckStatus
+}) {
+  const resolvedProposal =
+    proposal ??
+    ({
+      kind: 'unavailable',
+      proposedPolicyChange: 'Cannot propose automatically',
+      reason: 'This check is not a mechanically expandable argument filter.',
+    } satisfies PolicyProposal)
+
+  return (
+    <div style={{ ...policyProposalRowStyle, ...(!showDivider ? lastDetailRowStyle : {}) }}>
+      <div style={policyProposalHeadingStyle}>
+        <Typography.BodySmallStrong as="h3">{label}</Typography.BodySmallStrong>
+        <Pill color={envelopeStatusColors[status]}>{envelopeStatusLabels[status]}</Pill>
+      </div>
+      <dl style={policyProposalDetailsStyle}>
+        <DetailRow label="Current policy" value={`${label} ${policy}`} />
+        <DetailRow label="Observed value" value={observed} />
+        <DetailRow
+          label="Proposed change"
+          showDivider={Boolean(resolvedProposal.reason)}
+          value={resolvedProposal.proposedPolicyChange}
+        />
+        {resolvedProposal.reason ? (
+          <DetailRow label="Reason" showDivider={false} value={resolvedProposal.reason} />
+        ) : null}
+      </dl>
+    </div>
   )
 }
 
@@ -1754,9 +1955,11 @@ function TechnicalDetailsSection({ approval }: { approval: OperationApprovalMode
 }
 
 function ApprovalActions({
+  approveLabel = 'Approve',
   onApprove,
   onDecline,
 }: {
+  approveLabel?: string
   onApprove: () => void
   onDecline: () => void
 }) {
@@ -1766,7 +1969,7 @@ function ApprovalActions({
         <Button.Text>Decline</Button.Text>
       </Button.Container>
       <Button.Container onClick={onApprove} size="32" variant="primary">
-        <Button.Text>Approve</Button.Text>
+        <Button.Text>{approveLabel}</Button.Text>
       </Button.Container>
     </div>
   )
@@ -2039,6 +2242,28 @@ const envelopeCheckCopyStyle: CSSProperties = {
   flexDirection: 'column',
   gap: '2px',
   minWidth: 0,
+}
+
+const policyProposalListStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  marginTop: '16px',
+}
+
+const policyProposalRowStyle: CSSProperties = {
+  borderBottom: `1px solid ${theme.stroke.secondary}`,
+  padding: '12px 0',
+}
+
+const policyProposalHeadingStyle: CSSProperties = {
+  alignItems: 'center',
+  display: 'flex',
+  gap: '12px',
+  justifyContent: 'space-between',
+}
+
+const policyProposalDetailsStyle: CSSProperties = {
+  margin: '4px 0 0',
 }
 
 const nestedValueStyle: CSSProperties = {
