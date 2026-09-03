@@ -1,0 +1,105 @@
+name: web_scraper
+version: 0.1.0
+dsl_version: 3
+backend: file
+description: >-
+  Query scraped web pages and discovered links from local JSONL files.
+  Extract page content, metadata, and link graphs from any website
+  without an API key.
+
+test_queries:
+  - SELECT url, title, status_code FROM web_scraper.pages LIMIT 3
+  - SELECT source_url, href, is_external FROM web_scraper.links LIMIT 5
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # web_scraper.pages — One row per scraped URL
+  # --------------------------------------------------------------------------
+  - name: pages
+    description: >-
+      Scraped web pages with extracted text, title, description, and
+      metadata. One row per URL.
+    guide: |
+      Start with:
+        SELECT url, title, status_code, scraped_at
+        FROM web_scraper.pages LIMIT 10
+      Use WHERE to filter by URL or status code:
+        SELECT url, title FROM web_scraper.pages
+        WHERE status_code = 200
+    format: jsonl
+    source:
+      location: file://~/.coral/web_scraper/pages.jsonl
+    columns:
+      - name: url
+        type: Utf8
+        nullable: false
+        description: Original URL that was requested.
+      - name: final_url
+        type: Utf8
+        nullable: true
+        description: Final URL after redirects.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Page title from HTML.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Page description from meta tag.
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Extracted plain text content (scripts and styles removed).
+      - name: status_code
+        type: Int64
+        nullable: false
+        description: HTTP status code.
+      - name: content_type
+        type: Utf8
+        nullable: true
+        description: Content-Type header value.
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Language from the HTML lang attribute.
+      - name: scraped_at
+        type: Utf8
+        nullable: false
+        description: Timestamp when the page was scraped (ISO 8601 UTC).
+
+  # --------------------------------------------------------------------------
+  # web_scraper.links — One row per discovered link
+  # --------------------------------------------------------------------------
+  - name: links
+    description: >-
+      Links discovered on scraped pages. One row per anchor tag with an
+      href attribute.
+    guide: |
+      Start with:
+        SELECT source_url, href, text, is_external
+        FROM web_scraper.links LIMIT 10
+      Find external links:
+        SELECT source_url, href, text
+        FROM web_scraper.links
+        WHERE is_external = true
+    format: jsonl
+    source:
+      location: file://~/.coral/web_scraper/links.jsonl
+    columns:
+      - name: source_url
+        type: Utf8
+        nullable: false
+        description: URL of the page where the link was found.
+      - name: href
+        type: Utf8
+        nullable: false
+        description: Absolute URL the link points to.
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Anchor text of the link.
+      - name: is_external
+        type: Boolean
+        nullable: false
+        description: Whether the link points to a different domain.
