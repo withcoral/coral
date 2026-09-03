@@ -1,0 +1,100 @@
+name: rancher
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query managed Kubernetes cluster footprints and control plane details via the Rancher API.
+base_url: "{{input.RANCHER_URL}}/v3"
+
+inputs:
+  RANCHER_URL:
+    kind: variable
+    hint: |
+      Rancher Manager FQDN/URL without trailing slash and without /v3,
+      for example `https://rancher.infra.local`.
+  RANCHER_TOKEN:
+    kind: secret
+    hint: |
+      Rancher API Bearer Token value from the UI (e.g., token-xxxxx:yyyyyyyyyyyyyyyy).
+      Note: Returned results are strictly scoped by this token's cluster/project roles.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.RANCHER_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM rancher.clusters LIMIT 1
+
+tables:
+  - name: clusters
+    description: Kubernetes clusters tracked and provisioned via Rancher Manager.
+    guide: |
+      Each row is one cluster from `GET /v3/clusters`. Rancher v3 collections
+      paginate with an opaque `marker` and return the next page only as a full
+      URL in `pagination.next`, which Coral cannot follow directly. To stay
+      safe on larger installations, this source fetches a single bounded page
+      using `limit=1000` (Rancher's suggested upper bound) rather than silently
+      returning only a default-size first page. Use the `name` and `state`
+      pushdown filters to target specific clusters.
+    filters:
+      - name: name
+        required: false
+      - name: state
+        required: false
+    request:
+      method: GET
+      path: /clusters
+      query:
+        - name: name
+          from: filter
+          key: name
+        - name: state
+          from: filter
+          key: state
+        - name: limit
+          from: literal
+          value: "1000"
+    response:
+      row_strategy: direct
+      rows_path: [data]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique cluster ID string assigned by Rancher.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable cluster name. Also a server-side pushdown filter.
+        expr: {kind: path, path: [name]}
+      - name: state
+        type: Utf8
+        nullable: true
+        description: Runtime operational state of the cluster (e.g., active, pending). Also a server-side pushdown filter.
+        expr: {kind: path, path: [state]}
+      - name: provider
+        type: Utf8
+        nullable: true
+        description: Infrastructure provider associated with the cluster.
+        expr: {kind: path, path: [provider]}
+      - name: kubernetes_version
+        type: Utf8
+        nullable: true
+        description: Kubernetes version reported by the cluster.
+        expr: {kind: path, path: [version, gitVersion]}
+      - name: node_count
+        type: Int64
+        nullable: true
+        description: Number of nodes associated with the cluster.
+        expr: {kind: path, path: [nodeCount]}
