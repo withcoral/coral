@@ -1532,6 +1532,13 @@ function OperationApproval({
   const showIdentity = header.showIdentity
   const showRequester = header.showRequester
   const contextDisplay = combineSectionDisplays(sections.requestContext, sections.programSnippet)
+  const argumentsSectionDisplay: SectionDisplay = !argumentsDisplay.visible
+    ? 'hidden'
+    : argumentsDisplay.collapsible
+      ? argumentsDisplay.initiallyExpanded
+        ? 'expanded'
+        : 'collapsed'
+      : 'visible'
   const hasDecisionContext = Boolean(showApprovalAuthority)
   const isEnvelopeVisible =
     shouldShowSection(sections.authorityEnvelope) || envelopeArgsDisplay !== 'none'
@@ -1585,15 +1592,12 @@ function OperationApproval({
         />
       ) : null}
 
-      {argumentsDisplay.visible ? (
-        <InvocationArgumentsSection
-          collapsible={argumentsDisplay.collapsible}
-          envelopeChecks={envelopeArgumentChecks}
-          envelopeDisplay={envelopeArgsDisplay}
-          initiallyExpanded={argumentsDisplay.initiallyExpanded}
-          invocationArguments={approval.invocationArguments}
-        />
-      ) : null}
+      <InvocationArgumentsSection
+        display={argumentsSectionDisplay}
+        envelopeChecks={envelopeArgumentChecks}
+        envelopeDisplay={envelopeArgsDisplay}
+        invocationArguments={approval.invocationArguments}
+      />
 
       {shouldShowSection(sections.authorityEnvelope) && envelopeEvaluation ? (
         <EnvelopeCheckSection
@@ -1756,71 +1760,42 @@ function ApprovalHeader({
 }
 
 function InvocationArgumentsSection({
-  collapsible,
+  display,
   envelopeChecks,
   envelopeDisplay,
-  initiallyExpanded,
   invocationArguments,
 }: {
-  collapsible?: boolean
+  display: SectionDisplay
   envelopeChecks?: AuthorityEnvelopeEvaluation['checks']
   envelopeDisplay: EnvelopeArgsDisplay
-  initiallyExpanded?: boolean
   invocationArguments: OperationApprovalModel['invocationArguments']
 }) {
-  const argumentsId = useId()
-  const [expanded, setExpanded] = useState(Boolean(initiallyExpanded))
+  const content = (
+    <dl style={detailsStyle}>
+      {invocationArguments.map(({ label, value }, index) => (
+        <InvocationArgumentRow
+          annotations={envelopeChecks?.filter(({ label: checkLabel }) =>
+            checkLabel.startsWith(`args[${index}]`),
+          )}
+          argumentIndex={index}
+          envelopeDisplay={envelopeDisplay}
+          key={label}
+          label={label}
+          showDivider={index < invocationArguments.length - 1}
+          value={value}
+        />
+      ))}
+    </dl>
+  )
 
   return (
-    <section style={sectionStyle}>
-      {collapsible ? (
-        <details
-          onToggle={(event) => setExpanded(event.currentTarget.open)}
-          open={expanded}
-          style={disclosureSectionStyle}
-        >
-          <Typography.BodySmallStrong as="summary" style={argumentsDisclosureStyle}>
-            Arguments ({invocationArguments.length})
-          </Typography.BodySmallStrong>
-          <dl id={argumentsId} style={detailsStyle}>
-            {invocationArguments.map(({ label, value }, index) => (
-              <InvocationArgumentRow
-                annotations={envelopeChecks?.filter(({ label: checkLabel }) =>
-                  checkLabel.startsWith(`args[${index}]`),
-                )}
-                argumentIndex={index}
-                envelopeDisplay={envelopeDisplay}
-                key={label}
-                label={label}
-                showDivider={index < invocationArguments.length - 1}
-                value={value}
-              />
-            ))}
-          </dl>
-        </details>
-      ) : (
-        <>
-          <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle}>
-            Arguments
-          </Typography.BodySmallStrong>
-          <dl id={argumentsId} style={detailsStyle}>
-            {invocationArguments.map(({ label, value }, index) => (
-              <InvocationArgumentRow
-                annotations={envelopeChecks?.filter(({ label: checkLabel }) =>
-                  checkLabel.startsWith(`args[${index}]`),
-                )}
-                argumentIndex={index}
-                envelopeDisplay={envelopeDisplay}
-                key={label}
-                label={label}
-                showDivider={index < invocationArguments.length - 1}
-                value={value}
-              />
-            ))}
-          </dl>
-        </>
-      )}
-    </section>
+    <SectionContainer
+      display={display}
+      summaryTone="primary"
+      title={`Arguments (${invocationArguments.length})`}
+    >
+      {content}
+    </SectionContainer>
   )
 }
 
@@ -2370,20 +2345,29 @@ function EnvelopeCheckRow({
 function SectionContainer({
   children,
   display,
+  summaryTone = 'secondary',
   title,
   visibleHeading = true,
 }: {
   children: ReactNode
   display?: SectionDisplay
+  summaryTone?: 'primary' | 'secondary'
   title: string
   visibleHeading?: boolean
 }) {
   if (!shouldShowSection(display)) return null
+  const titleStyle =
+    summaryTone === 'primary'
+      ? { color: theme.content.primary }
+      : { color: theme.content.secondary }
 
   if (sectionIsDisclosure(display)) {
     return (
       <details open={sectionInitiallyOpen(display)} style={disclosureSectionStyle}>
-        <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
+        <Typography.BodySmallStrong
+          as="summary"
+          style={{ ...disclosureSummaryStyle, ...titleStyle }}
+        >
           {title}
         </Typography.BodySmallStrong>
         <div style={disclosureContentStyle}>{children}</div>
@@ -2394,7 +2378,11 @@ function SectionContainer({
   return (
     <section style={sectionStyle}>
       {visibleHeading ? (
-        <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
+        <Typography.BodySmallStrong
+          as="h3"
+          style={{ ...sectionHeadingStyle, ...titleStyle }}
+          variant={summaryTone === 'primary' ? undefined : 'tertiary'}
+        >
           {title}
         </Typography.BodySmallStrong>
       ) : null}
@@ -2671,12 +2659,6 @@ const sectionHeadingStyle: CSSProperties = {
   paddingBottom: '6px',
 }
 
-const argumentsDisclosureStyle: CSSProperties = {
-  ...sectionHeadingStyle,
-  color: theme.content.primary,
-  cursor: 'pointer',
-}
-
 const contextDetailsStyle: CSSProperties = { margin: 0 }
 
 const codeBlockStyle: CSSProperties = {
@@ -2761,12 +2743,12 @@ const argumentAnnotationsStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: '4px',
-  marginLeft: 'min(156px, 22%)',
 }
 
 const argumentAnnotationStyle: CSSProperties = {
-  alignItems: 'center',
+  alignItems: 'flex-start',
   display: 'flex',
+  flexWrap: 'wrap',
   gap: '8px',
   justifyContent: 'space-between',
   minWidth: 0,
