@@ -1754,12 +1754,12 @@ function InvocationArgumentsSection({
           variant="bare"
         >
           <Button.Icon name={expanded ? 'ChevronDown' : 'ChevronRight'} />
-          <Typography.BodySmallStrong variant="tertiary">
+          <Typography.BodySmallStrong>
             Arguments ({invocationArguments.length})
           </Typography.BodySmallStrong>
         </Button.Container>
       ) : (
-        <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
+        <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle}>
           Arguments
         </Typography.BodySmallStrong>
       )}
@@ -2637,6 +2637,7 @@ const argumentsDisclosureStyle: CSSProperties = {
   background: 'transparent',
   border: 0,
   borderBottom: `1px solid ${theme.stroke.secondary}`,
+  color: theme.content.primary,
   cursor: 'pointer',
   display: 'flex',
   gap: '4px',
