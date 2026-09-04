@@ -1,0 +1,389 @@
+name: chromium
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query local bookmarks, most recent history, downloads, extensions, top sites,
+  and tabs for Chrome, Edge, and Brave through the manually started Chromium
+  local source server.
+inputs:
+  CHROMIUM_API_KEY:
+    kind: secret
+    hint: "Run: export CHROMIUM_API_KEY=$(openssl rand -hex 32)"
+  CHROMIUM_BASE_URL:
+    kind: variable
+    default: "http://127.0.0.1:8765"
+    hint: >-
+      Base URL for the local Chromium browser server.
+      Override if port 8765 is occupied: export CHROMIUM_BASE_URL=http://127.0.0.1:9000
+base_url: "{{input.CHROMIUM_BASE_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.CHROMIUM_API_KEY}}
+test_queries:
+  - SELECT browser, bookmark_count FROM chromium.health LIMIT 1
+
+tables:
+  - name: health
+    description: >-
+      First-available browser health check. Resolves the first installed
+      browser among Chrome, Edge, and Brave and reads its real bookmark data,
+      so coral source test verifies live browser access without requiring any
+      specific browser. Returns one row for the first resolvable browser.
+    request:
+      method: GET
+      path: /health
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: browser
+        type: Utf8
+        nullable: false
+      - name: display_name
+        type: Utf8
+        nullable: false
+      - name: profile_path
+        type: Utf8
+        nullable: false
+      - name: bookmark_count
+        type: Int64
+        nullable: false
+
+  - name: chrome_bookmarks
+    description: Lists Google Chrome bookmarks and folders.
+    request:
+      method: GET
+      path: /chrome/bookmarks
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: &bookmark_cols
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: title
+        type: Utf8
+        nullable: true
+      - name: url
+        type: Utf8
+        nullable: true
+      - name: type
+        type: Utf8
+        nullable: false
+      - name: date_added
+        type: Timestamp
+        nullable: true
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - date_added
+
+  - name: chrome_history
+    description: >-
+      Lists the most recent 5,000 Google Chrome browsing history records.
+    request:
+      method: GET
+      path: /chrome/history
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: &history_cols
+      - name: id
+        type: Int64
+        nullable: false
+      - name: url
+        type: Utf8
+        nullable: false
+      - name: title
+        type: Utf8
+        nullable: true
+      - name: visit_count
+        type: Int64
+        nullable: false
+      - name: last_visit_time
+        type: Timestamp
+        nullable: true
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_visit_time
+
+  - name: chrome_downloads
+    description: >-
+      Lists the most recent 2,000 Google Chrome file download history records.
+    request:
+      method: GET
+      path: /chrome/downloads
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: &download_cols
+      - name: id
+        type: Int64
+        nullable: false
+      - name: target_path
+        type: Utf8
+        nullable: false
+      - name: received_bytes
+        type: Int64
+        nullable: false
+      - name: total_bytes
+        type: Int64
+        nullable: false
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_time
+
+  - name: chrome_extensions
+    description: Lists installed Google Chrome extensions.
+    request:
+      method: GET
+      path: /chrome/extensions
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: &extension_cols
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+        nullable: true
+      - name: version
+        type: Utf8
+        nullable: true
+
+  - name: chrome_top_sites
+    description: >-
+      Lists the top 100 frequently visited websites on Google Chrome.
+    request:
+      method: GET
+      path: /chrome/top_sites
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: &topsite_cols
+      - name: url_rank
+        type: Int64
+        nullable: false
+      - name: url
+        type: Utf8
+        nullable: false
+      - name: title
+        type: Utf8
+        nullable: true
+
+  - name: chrome_tabs
+    description: >-
+      Lists URLs from currently persisted Google Chrome session files.
+    request:
+      method: GET
+      path: /chrome/tabs
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: &tab_cols
+      - name: url
+        type: Utf8
+        nullable: false
+
+  - name: edge_bookmarks
+    description: Lists Microsoft Edge bookmarks and folders.
+    request:
+      method: GET
+      path: /edge/bookmarks
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *bookmark_cols
+
+  - name: edge_history
+    description: >-
+      Lists the most recent 5,000 Microsoft Edge browsing history records.
+    request:
+      method: GET
+      path: /edge/history
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *history_cols
+
+  - name: edge_downloads
+    description: >-
+      Lists the most recent 2,000 Microsoft Edge file download history records.
+    request:
+      method: GET
+      path: /edge/downloads
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *download_cols
+
+  - name: edge_extensions
+    description: Lists installed Microsoft Edge extensions.
+    request:
+      method: GET
+      path: /edge/extensions
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *extension_cols
+
+  - name: edge_top_sites
+    description: >-
+      Lists the top 100 frequently visited websites on Microsoft Edge.
+    request:
+      method: GET
+      path: /edge/top_sites
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *topsite_cols
+
+  - name: edge_tabs
+    description: >-
+      Lists URLs from currently persisted Microsoft Edge session files.
+    request:
+      method: GET
+      path: /edge/tabs
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *tab_cols
+
+  - name: brave_bookmarks
+    description: Lists Brave Browser bookmarks and folders.
+    request:
+      method: GET
+      path: /brave/bookmarks
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *bookmark_cols
+
+  - name: brave_history
+    description: >-
+      Lists the most recent 5,000 Brave Browser browsing history records.
+    request:
+      method: GET
+      path: /brave/history
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *history_cols
+
+  - name: brave_downloads
+    description: >-
+      Lists the most recent 2,000 Brave Browser file download history records.
+    request:
+      method: GET
+      path: /brave/downloads
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *download_cols
+
+  - name: brave_extensions
+    description: Lists installed Brave Browser extensions.
+    request:
+      method: GET
+      path: /brave/extensions
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *extension_cols
+
+  - name: brave_top_sites
+    description: >-
+      Lists the top 100 frequently visited websites on Brave Browser.
+    request:
+      method: GET
+      path: /brave/top_sites
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *topsite_cols
+
+  - name: brave_tabs
+    description: >-
+      Lists URLs from currently persisted Brave Browser session files.
+    request:
+      method: GET
+      path: /brave/tabs
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    fetch_limit_default: 500
+    columns: *tab_cols
