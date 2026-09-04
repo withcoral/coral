@@ -2037,6 +2037,8 @@ function PolicyChangeCheckbox({
   onCheckedChange: (checked: boolean) => void
 }) {
   const checkboxId = useId()
+  const [focused, setFocused] = useState(false)
+  const [hovered, setHovered] = useState(false)
 
   return (
     <label htmlFor={checkboxId} style={policyCheckboxLabelStyle}>
@@ -2044,10 +2046,20 @@ function PolicyChangeCheckbox({
         checked={checked}
         disabled={disabled}
         id={checkboxId}
+        onBlur={() => setFocused(false)}
         onCheckedChange={onCheckedChange}
+        onFocus={() => setFocused(true)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         style={{
           ...policyCheckboxStyle,
           ...(checked ? policyCheckboxCheckedStyle : {}),
+          ...(hovered && !disabled
+            ? checked
+              ? policyCheckboxCheckedHoverStyle
+              : policyCheckboxHoverStyle
+            : {}),
+          ...(focused ? policyCheckboxFocusedStyle : {}),
           ...(disabled ? policyCheckboxDisabledStyle : {}),
         }}
       >
@@ -2573,8 +2585,8 @@ const policyCheckboxLabelStyle: CSSProperties = {
 
 const policyCheckboxStyle: CSSProperties = {
   alignItems: 'center',
-  background: 'transparent',
-  border: `2px solid ${theme.content.tertiary}`,
+  background: theme.button.secondary.default,
+  border: `2px solid ${theme.input.stroke.hover}`,
   borderRadius: '5px',
   color: theme.content.accentContent.primaryReverse,
   cursor: 'pointer',
@@ -2589,8 +2601,22 @@ const policyCheckboxStyle: CSSProperties = {
 }
 
 const policyCheckboxCheckedStyle: CSSProperties = {
-  background: theme.stroke.focused,
-  borderColor: theme.stroke.focused,
+  background: theme.button.primary.default,
+  borderColor: theme.button.primary.default,
+}
+
+const policyCheckboxHoverStyle: CSSProperties = {
+  background: theme.button.secondary.hover,
+  borderColor: theme.stroke.primary,
+}
+
+const policyCheckboxCheckedHoverStyle: CSSProperties = {
+  background: theme.button.primary.hover,
+  borderColor: theme.button.primary.hover,
+}
+
+const policyCheckboxFocusedStyle: CSSProperties = {
+  boxShadow: `0 0 0 2px ${theme.surface.floating}, 0 0 0 4px ${theme.input.stroke.focus}`,
 }
 
 const policyCheckboxDisabledStyle: CSSProperties = {
@@ -2633,7 +2659,7 @@ const policyDiffRemovedStyle: CSSProperties = {
 
 const policyDiffAddedStyle: CSSProperties = {
   background: theme.content.successBackground,
-  color: theme.content.success,
+  color: theme.content.accentContent.secondary,
 }
 
 const policyDiffCommentStyle: CSSProperties = {
