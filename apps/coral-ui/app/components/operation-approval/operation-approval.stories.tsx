@@ -210,7 +210,47 @@ const meta = {
     },
     showRequestContext: {
       control: 'boolean',
-      description: 'Show Task and exec intent as secondary request context.',
+      description: 'Show Task, Task intent, and exec intent as secondary request context.',
+    },
+    showProgramBody: {
+      control: 'boolean',
+      description: 'Show submitted Program body as supporting context.',
+    },
+    showProgramSnippet: {
+      control: 'boolean',
+      description: 'Show highlighted Program snippet as supporting context.',
+    },
+    showArguments: {
+      control: 'boolean',
+      description: 'Show exact positional Invocation arguments as primary evidence.',
+    },
+    showApprovalAuthority: {
+      control: 'boolean',
+      description: 'Show who can approve the pending Invocation.',
+    },
+    showExpiry: {
+      control: 'boolean',
+      description: 'Show the Approval Request expiry.',
+    },
+    showIdentity: {
+      control: 'boolean',
+      description: 'Show the selected provider identity when available.',
+    },
+    showRequester: {
+      control: 'boolean',
+      description: 'Show the invoking principal as Requested by.',
+    },
+    showRequestMetadataInHeader: {
+      control: 'boolean',
+      description: 'Place requester, approval authority, and expiry in the header.',
+    },
+    showRunContext: {
+      control: 'boolean',
+      description: 'Show secondary Program Run context and the View run action.',
+    },
+    showTechnicalDetails: {
+      control: 'boolean',
+      description: 'Show the collapsed technical details disclosure.',
     },
     showProviderReference: {
       control: 'boolean',
@@ -224,6 +264,8 @@ const meta = {
     onDecline: fn(),
     onUpdatePolicy: fn(),
     onViewRun: fn(),
+    showProgramBody: false,
+    showProgramSnippet: false,
     showRequestContext: false,
     showProviderReference: false,
     showAuthorityEnvelopeMatch: false,
