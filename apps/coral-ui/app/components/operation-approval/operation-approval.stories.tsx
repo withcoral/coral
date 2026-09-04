@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { Checkbox } from '@base-ui/react/checkbox'
@@ -37,16 +37,16 @@ interface OperationApprovalStoryProps {
   showArguments?: boolean
   showApprovalAuthority?: boolean
   showExpiry?: boolean
-  showAuthorityEnvelopeMatch?: boolean
+  authorityEnvelopeDisplay?: SectionDisplay
   showIdentity?: boolean
-  showProgramBody?: boolean
-  showProgramSnippet?: boolean
-  showProviderReference?: boolean
+  programBodyDisplay?: SectionDisplay
+  programSnippetDisplay?: SectionDisplay
+  providerReferenceDisplay?: SectionDisplay
   showRequestMetadataInHeader?: boolean
-  showRequestContext?: boolean
+  requestContextDisplay?: SectionDisplay
   showRequester?: boolean
-  showRunContext?: boolean
-  showTechnicalDetails?: boolean
+  runContextDisplay?: SectionDisplay
+  technicalDetailsDisplay?: SectionDisplay
 }
 
 interface OperationApprovalDisplay {
@@ -199,9 +199,10 @@ const meta = {
       control: 'select',
       options: ['github', 'linear', 'loop', 'savedFunction'],
     },
-    showAuthorityEnvelopeMatch: {
-      control: 'boolean',
-      description: 'Execute and show a Storybook-only deterministic Owner-policy envelope.',
+    authorityEnvelopeDisplay: {
+      control: 'inline-radio',
+      description: 'Control the Storybook-only deterministic Owner-policy envelope section.',
+      options: ['hidden', 'visible', 'collapsed', 'expanded'],
     },
     envelopeArgsDisplay: {
       control: 'inline-radio',
@@ -209,17 +210,20 @@ const meta = {
         "Choose how Owner-policy checks annotate arguments; 'none' here only hides annotations.",
       options: ['none', 'summary', 'interleaved'],
     },
-    showRequestContext: {
-      control: 'boolean',
-      description: 'Show Task, Task intent, and exec intent as secondary request context.',
+    requestContextDisplay: {
+      control: 'inline-radio',
+      description: 'Control Task, Task intent, and exec intent as secondary request context.',
+      options: ['hidden', 'visible', 'collapsed', 'expanded'],
     },
-    showProgramBody: {
-      control: 'boolean',
-      description: 'Show submitted Program body as supporting context.',
+    programBodyDisplay: {
+      control: 'inline-radio',
+      description: 'Control submitted Program body as supporting context.',
+      options: ['hidden', 'visible', 'collapsed', 'expanded'],
     },
-    showProgramSnippet: {
-      control: 'boolean',
-      description: 'Show highlighted Program snippet as supporting context.',
+    programSnippetDisplay: {
+      control: 'inline-radio',
+      description: 'Control highlighted Program snippet as supporting context.',
+      options: ['hidden', 'visible', 'collapsed', 'expanded'],
     },
     showArguments: {
       control: 'boolean',
@@ -245,17 +249,20 @@ const meta = {
       control: 'boolean',
       description: 'Place requester, approval authority, and expiry in the header.',
     },
-    showRunContext: {
-      control: 'boolean',
-      description: 'Show secondary Program Run context and the View run action.',
+    runContextDisplay: {
+      control: 'inline-radio',
+      description: 'Control secondary Program Run context and the View run action.',
+      options: ['hidden', 'visible', 'collapsed', 'expanded'],
     },
-    showTechnicalDetails: {
-      control: 'boolean',
-      description: 'Show the collapsed technical details disclosure.',
+    technicalDetailsDisplay: {
+      control: 'inline-radio',
+      description: 'Control the technical details section.',
+      options: ['hidden', 'visible', 'collapsed', 'expanded'],
     },
-    showProviderReference: {
-      control: 'boolean',
-      description: 'Show optional provider-authored reference copy as a quiet disclosure.',
+    providerReferenceDisplay: {
+      control: 'inline-radio',
+      description: 'Control optional provider-authored reference copy.',
+      options: ['hidden', 'visible', 'collapsed', 'expanded'],
     },
   },
   args: {
@@ -265,11 +272,13 @@ const meta = {
     onDecline: fn(),
     onUpdatePolicy: fn(),
     onViewRun: fn(),
-    showProgramBody: false,
-    showProgramSnippet: false,
-    showRequestContext: false,
-    showProviderReference: false,
-    showAuthorityEnvelopeMatch: false,
+    programBodyDisplay: 'hidden',
+    programSnippetDisplay: 'hidden',
+    requestContextDisplay: 'hidden',
+    providerReferenceDisplay: 'hidden',
+    authorityEnvelopeDisplay: 'hidden',
+    runContextDisplay: 'hidden',
+    technicalDetailsDisplay: 'hidden',
     envelopeArgsDisplay: 'none',
   },
   component: OperationApprovalStory,
@@ -290,9 +299,9 @@ The story-only model uses Lagoon-aligned names: \`operationCallPath\`, \`invocat
 
 Every Medium+ story keeps the same first-screen decision contract: Operation call path, provider identity, invoking principal, approval authority, expiry, exact Invocation arguments, and the unchanged Decline/Approve actions. The prototype does not invent an operation-specific consequence CTA when no trusted renderer provides one.
 
-Every story uses the same story-local \`OperationApproval\` component. Toggle \`showRequestContext\` in any story to reveal Task and exec intent below Arguments; \`TaskIntentContext\` is the preset that enables it by default.
+Every story uses the same story-local \`OperationApproval\` component. Set \`requestContextDisplay\` to \`visible\` in any story to reveal Task and exec intent before Arguments; \`TaskIntentContext\` is the preset that enables it by default.
 
-Every dataset supplies three Storybook-only Owner-envelope states: \`inside\` matches its exact Invocation, \`outside\` fails explicit filters in an existing envelope, and \`none\` means no existing Owner policy covers the Invocation. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each candidate envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Toggle \`showAuthorityEnvelopeMatch\` to reveal the full evaluation. Separately, \`envelopeArgsDisplay='none'\` only hides inline annotations; \`summary\` and \`interleaved\` reveal them.
+Every dataset supplies three Storybook-only Owner-envelope states: \`inside\` matches its exact Invocation, \`outside\` fails explicit filters in an existing envelope, and \`none\` means no existing Owner policy covers the Invocation. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each candidate envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Set \`authorityEnvelopeDisplay\` to choose how the full evaluation is disclosed. Separately, \`envelopeArgsDisplay='none'\` only hides inline annotations; \`summary\` and \`interleaved\` reveal them.
 
 Each story has a **dataset** control. The default GitHub dataset uses \`coral.providers.github.issues.createComment\`; the Linear dataset uses \`coral.providers.linear.issues.update\` inside a program that also reads GitHub context; the loop dataset puts one pending \`coral.providers.linear.issues.update\` Invocation inside a \`for\` loop; the saved-function dataset shows one pending Operation from a linked \`coral.functions.postApprovalFollowUp\` source snapshot. Within a selected dataset, the stories keep the operation/request stable so reviewers can compare disclosure and rendering choices without changing provider, operation, requester, identity, or run context.
 
@@ -1206,7 +1215,7 @@ export const TaskIntentContext: Story = {
     showArguments: true,
     showExpiry: true,
     showIdentity: true,
-    showRequestContext: true,
+    requestContextDisplay: 'visible',
     showRequestMetadataInHeader: true,
     showRequester: true,
   },
@@ -1228,7 +1237,7 @@ export const EnvelopeMatches: Story = {
     envelopeArgsDisplay: 'interleaved',
     envelopeMatch: 'inside',
     showArguments: true,
-    showAuthorityEnvelopeMatch: true,
+    authorityEnvelopeDisplay: 'visible',
     showIdentity: true,
     showRequestMetadataInHeader: true,
     showRequester: true,
@@ -1252,7 +1261,7 @@ export const EnvelopeDoesNotMatch: Story = {
     envelopeMatch: 'outside',
     showArguments: true,
     showApprovalAuthority: true,
-    showAuthorityEnvelopeMatch: true,
+    authorityEnvelopeDisplay: 'visible',
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -1277,7 +1286,7 @@ export const EnvelopePolicyUpdateProposal: Story = {
     envelopeMatch: 'outside',
     showArguments: true,
     showApprovalAuthority: true,
-    showAuthorityEnvelopeMatch: true,
+    authorityEnvelopeDisplay: 'visible',
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -1302,7 +1311,7 @@ export const EnvelopeNoExistingPolicy: Story = {
     envelopeMatch: 'none',
     showArguments: true,
     showApprovalAuthority: true,
-    showAuthorityEnvelopeMatch: true,
+    authorityEnvelopeDisplay: 'visible',
     showExpiry: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -1327,7 +1336,7 @@ export const ProgramSnippet: Story = {
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
-    showProgramSnippet: true,
+    programSnippetDisplay: 'visible',
     showRequestMetadataInHeader: true,
     showRequester: true,
   },
@@ -1350,7 +1359,7 @@ export const CollapsedProgramBody: Story = {
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
-    showProgramBody: true,
+    programBodyDisplay: 'collapsed',
     showRequestMetadataInHeader: true,
     showRequester: true,
   },
@@ -1372,12 +1381,12 @@ export const MaximalEvidence: Story = {
     showArguments: true,
     showApprovalAuthority: true,
     showIdentity: true,
-    showProgramBody: true,
-    showProgramSnippet: true,
-    showProviderReference: true,
+    programBodyDisplay: 'collapsed',
+    programSnippetDisplay: 'visible',
+    providerReferenceDisplay: 'collapsed',
     showRequestMetadataInHeader: true,
-    showRunContext: true,
-    showTechnicalDetails: true,
+    runContextDisplay: 'visible',
+    technicalDetailsDisplay: 'collapsed',
   },
   parameters: {
     docs: {
@@ -1387,13 +1396,6 @@ export const MaximalEvidence: Story = {
       },
     },
   },
-}
-
-function sectionDisplay(
-  show: boolean | undefined,
-  defaultWhenShown: SectionDisplay = 'visible',
-): SectionDisplay {
-  return show ? defaultWhenShown : 'hidden'
 }
 
 function shouldShowSection(display: SectionDisplay | undefined): boolean {
@@ -1406,6 +1408,13 @@ function sectionIsDisclosure(display: SectionDisplay | undefined): boolean {
 
 function sectionInitiallyOpen(display: SectionDisplay | undefined): boolean {
   return display === 'expanded'
+}
+
+function combineSectionDisplays(...displays: Array<SectionDisplay | undefined>): SectionDisplay {
+  if (displays.includes('expanded')) return 'expanded'
+  if (displays.includes('visible')) return 'visible'
+  if (displays.includes('collapsed')) return 'collapsed'
+  return 'hidden'
 }
 
 function OperationApprovalStory({
@@ -1421,20 +1430,21 @@ function OperationApprovalStory({
   onViewRun,
   showApprovalAuthority,
   showArguments,
-  showAuthorityEnvelopeMatch,
+  authorityEnvelopeDisplay,
   showExpiry,
   showIdentity,
-  showProgramBody,
-  showProgramSnippet,
-  showProviderReference,
-  showRequestContext,
+  programBodyDisplay,
+  programSnippetDisplay,
+  providerReferenceDisplay,
+  requestContextDisplay,
   showRequester,
   showRequestMetadataInHeader,
-  showRunContext,
-  showTechnicalDetails,
+  runContextDisplay,
+  technicalDetailsDisplay,
 }: OperationApprovalStoryProps) {
   const selectedDataset = datasets[dataset]
-  const isEnvelopeVisible = showAuthorityEnvelopeMatch || envelopeArgsDisplay !== 'none'
+  const isEnvelopeVisible =
+    shouldShowSection(authorityEnvelopeDisplay) || envelopeArgsDisplay !== 'none'
   const authorityEvaluation = isEnvelopeVisible
     ? evaluateAuthorityEnvelope(
         selectedDataset.approval,
@@ -1463,13 +1473,13 @@ function OperationApprovalStory({
           showRequester,
         },
         sections: {
-          authorityEnvelope: sectionDisplay(showAuthorityEnvelopeMatch),
-          programBody: sectionDisplay(showProgramBody, 'collapsed'),
-          programSnippet: sectionDisplay(showProgramSnippet),
-          providerReference: sectionDisplay(showProviderReference, 'collapsed'),
-          requestContext: sectionDisplay(showRequestContext),
-          runContext: sectionDisplay(showRunContext),
-          technicalDetails: sectionDisplay(showTechnicalDetails, 'collapsed'),
+          authorityEnvelope: authorityEnvelopeDisplay ?? 'hidden',
+          programBody: programBodyDisplay ?? 'hidden',
+          programSnippet: programSnippetDisplay ?? 'hidden',
+          providerReference: providerReferenceDisplay ?? 'hidden',
+          requestContext: requestContextDisplay ?? 'hidden',
+          runContext: runContextDisplay ?? 'hidden',
+          technicalDetails: technicalDetailsDisplay ?? 'hidden',
         },
       }}
     />
@@ -1491,6 +1501,7 @@ function OperationApproval({
   const showExpiry = header.showExpiry
   const showIdentity = header.showIdentity
   const showRequester = header.showRequester
+  const contextDisplay = combineSectionDisplays(sections.requestContext, sections.programSnippet)
   const hasDecisionContext = Boolean(showApprovalAuthority)
   const isEnvelopeVisible =
     shouldShowSection(sections.authorityEnvelope) || envelopeArgsDisplay !== 'none'
@@ -1532,6 +1543,7 @@ function OperationApproval({
       {(shouldShowSection(sections.requestContext) && approval.requestContext) ||
       (shouldShowSection(sections.programSnippet) && approval.programContext) ? (
         <ContextSection
+          display={contextDisplay}
           programSnippet={
             shouldShowSection(sections.programSnippet)
               ? approval.programContext?.snippet
@@ -1554,7 +1566,10 @@ function OperationApproval({
       ) : null}
 
       {shouldShowSection(sections.authorityEnvelope) && envelopeEvaluation ? (
-        <EnvelopeCheckSection evaluation={envelopeEvaluation} />
+        <EnvelopeCheckSection
+          display={sections.authorityEnvelope}
+          evaluation={envelopeEvaluation}
+        />
       ) : null}
 
       {shouldShowSection(sections.programBody) && approval.programContext ? (
@@ -1612,20 +1627,22 @@ function OperationApproval({
       ) : null}
 
       {shouldShowSection(sections.runContext) ? (
-        <div style={runContextStyle}>
-          <div style={runCopyStyle}>
-            <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
-              Run {approval.runContext.runId}
-            </Typography.BodySmallStrong>
-            <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
-              {approval.runContext.status} · {approval.runContext.workspace}
-            </Typography.BodySmall>
+        <SectionContainer display={sections.runContext} title="Run context" visibleHeading={false}>
+          <div style={runContextStyle}>
+            <div style={runCopyStyle}>
+              <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
+                Run {approval.runContext.runId}
+              </Typography.BodySmallStrong>
+              <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
+                {approval.runContext.status} · {approval.runContext.workspace}
+              </Typography.BodySmall>
+            </div>
+            <Button.Container onClick={actions.onViewRun} size="22" variant="bare">
+              <Button.Text>View run</Button.Text>
+              <Button.Icon name="ArrowUpRight" />
+            </Button.Container>
           </div>
-          <Button.Container onClick={actions.onViewRun} size="22" variant="bare">
-            <Button.Text>View run</Button.Text>
-            <Button.Icon name="ArrowUpRight" />
-          </Button.Container>
-        </div>
+        </SectionContainer>
       ) : null}
 
       {envelopeEvaluation?.decision === 'allow' ? null : (
@@ -1902,15 +1919,18 @@ function aggregateEnvelopeStatus(
   return 'pass'
 }
 
-function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEvaluation }) {
+function EnvelopeCheckSection({
+  display,
+  evaluation,
+}: {
+  display?: SectionDisplay
+  evaluation: AuthorityEnvelopeEvaluation
+}) {
   const matches = evaluation.decision === 'allow'
   const hasNoExistingEnvelope = evaluation.envelopeMatch === 'none'
 
   return (
-    <section style={sectionStyle}>
-      <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
-        Envelope check
-      </Typography.BodySmallStrong>
+    <SectionContainer display={display} title="Envelope check">
       <div style={envelopeResultStyle}>
         <div style={envelopeResultCopyStyle}>
           <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
@@ -1951,7 +1971,7 @@ function EnvelopeCheckSection({ evaluation }: { evaluation: AuthorityEnvelopeEva
             ? 'No existing Owner policy authorized this Invocation'
             : `Envelope ${evaluation.envelopeId} did not authorize this Invocation`}
       </Typography.BodySmall>
-    </section>
+    </SectionContainer>
   )
 }
 
@@ -2307,21 +2327,56 @@ function EnvelopeCheckRow({
   )
 }
 
+function SectionContainer({
+  children,
+  display,
+  title,
+  visibleHeading = true,
+}: {
+  children: ReactNode
+  display?: SectionDisplay
+  title: string
+  visibleHeading?: boolean
+}) {
+  if (!shouldShowSection(display)) return null
+
+  if (sectionIsDisclosure(display)) {
+    return (
+      <details open={sectionInitiallyOpen(display)} style={disclosureSectionStyle}>
+        <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
+          {title}
+        </Typography.BodySmallStrong>
+        <div style={disclosureContentStyle}>{children}</div>
+      </details>
+    )
+  }
+
+  return (
+    <section style={sectionStyle}>
+      {visibleHeading ? (
+        <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
+          {title}
+        </Typography.BodySmallStrong>
+      ) : null}
+      {children}
+    </section>
+  )
+}
+
 function ContextSection({
+  display,
   programSnippet,
   requestContext,
 }: {
+  display?: SectionDisplay
   programSnippet?: ProgramEvidence
   requestContext?: RequestContext
 }) {
   return (
-    <section style={sectionStyle}>
-      <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
-        Context
-      </Typography.BodySmallStrong>
+    <SectionContainer display={display} title="Context">
       {requestContext ? <RequestContextDetails requestContext={requestContext} /> : null}
       {programSnippet ? <ProgramEvidenceBlock evidence={programSnippet} /> : null}
-    </section>
+    </SectionContainer>
   )
 }
 
