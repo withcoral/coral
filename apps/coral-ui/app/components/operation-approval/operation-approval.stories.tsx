@@ -1789,11 +1789,7 @@ function InvocationArgumentsSection({
   )
 
   return (
-    <SectionContainer
-      display={display}
-      summaryTone="primary"
-      title={`Arguments (${invocationArguments.length})`}
-    >
+    <SectionContainer display={display} title={`Arguments (${invocationArguments.length})`}>
       {content}
     </SectionContainer>
   )
@@ -2345,29 +2341,20 @@ function EnvelopeCheckRow({
 function SectionContainer({
   children,
   display,
-  summaryTone = 'secondary',
   title,
   visibleHeading = true,
 }: {
   children: ReactNode
   display?: SectionDisplay
-  summaryTone?: 'primary' | 'secondary'
   title: string
   visibleHeading?: boolean
 }) {
   if (!shouldShowSection(display)) return null
-  const titleStyle =
-    summaryTone === 'primary'
-      ? { color: theme.content.primary }
-      : { color: theme.content.secondary }
 
   if (sectionIsDisclosure(display)) {
     return (
       <details open={sectionInitiallyOpen(display)} style={disclosureSectionStyle}>
-        <Typography.BodySmallStrong
-          as="summary"
-          style={{ ...disclosureSummaryStyle, ...titleStyle }}
-        >
+        <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
           {title}
         </Typography.BodySmallStrong>
         <div style={disclosureContentStyle}>{children}</div>
@@ -2378,11 +2365,7 @@ function SectionContainer({
   return (
     <section style={sectionStyle}>
       {visibleHeading ? (
-        <Typography.BodySmallStrong
-          as="h3"
-          style={{ ...sectionHeadingStyle, ...titleStyle }}
-          variant={summaryTone === 'primary' ? undefined : 'tertiary'}
-        >
+        <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
           {title}
         </Typography.BodySmallStrong>
       ) : null}
