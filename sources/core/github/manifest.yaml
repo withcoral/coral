@@ -647,6 +647,10 @@ functions:
       offset_start: 0
       link_header_require_results: false
     columns:
+      - name: avatar_url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [avatar_url]}
       - name: login
         type: Utf8
         nullable: true
