@@ -1,0 +1,462 @@
+name: openbao
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query OpenBao mounts, auth methods, policies, audit devices, and KV v2
+  metadata through the OpenBao HTTP API. Read-only and metadata-only; plaintext
+  secret values are intentionally not exposed.
+base_url: "{{input.OPENBAO_BASE_URL}}/v1"
+
+inputs:
+  OPENBAO_BASE_URL:
+    kind: variable
+    default: http://127.0.0.1:8200
+    hint: |
+      Base URL for your OpenBao deployment, without a trailing slash.
+      Examples: http://127.0.0.1:8200 or https://bao.example.com.
+  OPENBAO_TOKEN:
+    kind: secret
+    hint: |
+      OpenBao token with read access to system metadata and KV v2 metadata
+      paths you want Coral to inspect.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Vault-Token
+      from: template
+      template: "{{input.OPENBAO_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT path, type FROM openbao.mounts LIMIT 5
+  - SELECT path, type FROM openbao.auth_methods LIMIT 5
+
+tables:
+  - name: mounts
+    description: Enabled OpenBao secrets engines and mount configuration.
+    guide: |
+      Start here to discover mounted secrets engines. KV v2 mounts usually have
+      `type = 'kv'` and `options.version = '2'`. Use a mount path without the
+      trailing slash as the `mount` filter for KV metadata tables.
+    request:
+      method: GET
+      path: /sys/mounts
+    response:
+      rows_path: [data]
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Mount path, such as secret/.
+        expr: {kind: path, path: [_key]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Secrets engine type, such as kv, cubbyhole, identity, or system.
+        expr: {kind: path, path: [type]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Mount description.
+        expr: {kind: path, path: [description]}
+      - name: accessor
+        type: Utf8
+        nullable: true
+        description: Mount accessor identifier.
+        expr: {kind: path, path: [accessor]}
+      - name: local
+        type: Boolean
+        nullable: true
+        description: Whether the mount is local to this cluster.
+        expr: {kind: path, path: [local]}
+      - name: seal_wrap
+        type: Boolean
+        nullable: true
+        description: Whether seal wrapping is enabled for the mount.
+        expr: {kind: path, path: [seal_wrap]}
+      - name: external_entropy_access
+        type: Boolean
+        nullable: true
+        description: Whether the mount can access external entropy.
+        expr: {kind: path, path: [external_entropy_access]}
+      - name: plugin_version
+        type: Utf8
+        nullable: true
+        description: Configured plugin version, if any.
+        expr: {kind: path, path: [plugin_version]}
+      - name: running_plugin_version
+        type: Utf8
+        nullable: true
+        description: Running plugin version reported by OpenBao.
+        expr: {kind: path, path: [running_plugin_version]}
+      - name: config
+        type: Json
+        nullable: true
+        description: Mount configuration object.
+        expr: {kind: path, path: [config]}
+      - name: options
+        type: Json
+        nullable: true
+        description: Mount options object, such as KV version metadata.
+        expr: {kind: path, path: [options]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full mount payload returned by OpenBao.
+        expr: {kind: path, path: []}
+
+  - name: auth_methods
+    description: Enabled OpenBao authentication methods.
+    guide: |
+      Use this table to inspect which auth backends are enabled and where they
+      are mounted. It does not list users, tokens, or credentials.
+    request:
+      method: GET
+      path: /sys/auth
+    response:
+      rows_path: [data]
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Auth method mount path, such as token/ or userpass/.
+        expr: {kind: path, path: [_key]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Auth method type.
+        expr: {kind: path, path: [type]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Auth method description.
+        expr: {kind: path, path: [description]}
+      - name: accessor
+        type: Utf8
+        nullable: true
+        description: Auth method accessor identifier.
+        expr: {kind: path, path: [accessor]}
+      - name: local
+        type: Boolean
+        nullable: true
+        description: Whether the auth method is local to this cluster.
+        expr: {kind: path, path: [local]}
+      - name: seal_wrap
+        type: Boolean
+        nullable: true
+        description: Whether seal wrapping is enabled for the auth method.
+        expr: {kind: path, path: [seal_wrap]}
+      - name: plugin_version
+        type: Utf8
+        nullable: true
+        description: Configured plugin version, if any.
+        expr: {kind: path, path: [plugin_version]}
+      - name: running_plugin_version
+        type: Utf8
+        nullable: true
+        description: Running plugin version reported by OpenBao.
+        expr: {kind: path, path: [running_plugin_version]}
+      - name: config
+        type: Json
+        nullable: true
+        description: Auth method configuration object.
+        expr: {kind: path, path: [config]}
+      - name: options
+        type: Json
+        nullable: true
+        description: Auth method options object.
+        expr: {kind: path, path: [options]}
+      - name: raw
+        type: Json
+        nullable: true
+        description: Full auth method payload returned by OpenBao.
+        expr: {kind: path, path: []}
+
+  - name: policies
+    description: ACL policy names configured in OpenBao.
+    guide: |
+      Lists policy names only. Use `openbao.policy_details` with a specific
+      policy name to read policy metadata and rules.
+    request:
+      method: GET
+      path: /sys/policy
+    response:
+      rows_path: [policies]
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Policy name.
+        expr: {kind: path, path: []}
+
+  - name: policy_details
+    description: Details and rules for one OpenBao ACL policy.
+    guide: |
+      Requires a `name` filter from `openbao.policies`. Policy rules may reveal
+      path structure and access intent, but do not include secret values.
+    filters:
+      - name: name
+        required: true
+    request:
+      method: GET
+      path: /sys/policy/{{filter.name}}
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Policy name supplied as a filter.
+        expr: {kind: from_filter, key: name}
+      - name: rules
+        type: Utf8
+        nullable: true
+        do_not_index: true
+        description: Policy rules document returned by OpenBao.
+        expr: {kind: path, path: [rules]}
+      - name: modified
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the policy was last modified, if reported.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [modified]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Policy version reported by OpenBao, if available.
+        expr: {kind: path, path: [version]}
+      - name: cas_required
+        type: Boolean
+        nullable: true
+        description: Whether check-and-set is required for policy writes.
+        expr: {kind: path, path: [cas_required]}
+      - name: raw
+        type: Json
+        nullable: true
+        do_not_index: true
+        description: Full policy detail payload returned by OpenBao.
+        expr: {kind: path, path: []}
+
+  - name: audit_devices
+    description: Configured OpenBao audit devices.
+    guide: |
+      Lists audit device configuration. This table does not read audit log
+      records; `/sys/audit` returns configured audit devices only.
+    request:
+      method: GET
+      path: /sys/audit
+    response:
+      rows_path: [data]
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Audit device path, such as file/.
+        expr: {kind: path, path: [_key]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Audit device type.
+        expr: {kind: path, path: [type]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Audit device description.
+        expr: {kind: path, path: [description]}
+      - name: local
+        type: Boolean
+        nullable: true
+        description: Whether the audit device is local to this cluster.
+        expr: {kind: path, path: [local]}
+      - name: options
+        type: Json
+        nullable: true
+        do_not_index: true
+        description: Audit device options. Sensitive option values may be HMAC'd by OpenBao.
+        expr: {kind: path, path: [options]}
+      - name: raw
+        type: Json
+        nullable: true
+        do_not_index: true
+        description: Full audit device payload returned by OpenBao.
+        expr: {kind: path, path: []}
+
+  - name: kv_secret_metadata
+    description: Metadata for one KV v2 secret path without reading secret values.
+    guide: |
+      Requires `mount` and `path` filters. `mount` is the KV v2 mount path
+      without a trailing slash, such as `secret`. `path` is the secret metadata
+      path under that mount, such as `app/config`. This table calls
+      `/metadata/` only and never calls `/data/`.
+    filters:
+      - name: mount
+        required: true
+      - name: path
+        required: true
+    request:
+      method: GET
+      path: /{{filter.mount}}/metadata/{{filter.path}}
+    response:
+      rows_path: [data]
+      row_strategy: direct
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: mount
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: KV v2 mount supplied as a filter.
+        expr: {kind: from_filter, key: mount}
+      - name: path
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Secret metadata path supplied as a filter.
+        expr: {kind: from_filter, key: path}
+      - name: current_version
+        type: Int64
+        nullable: true
+        description: Current KV secret metadata version.
+        expr: {kind: path, path: [current_version]}
+      - name: oldest_version
+        type: Int64
+        nullable: true
+        description: Oldest retained KV secret metadata version.
+        expr: {kind: path, path: [oldest_version]}
+      - name: max_versions
+        type: Int64
+        nullable: true
+        description: Maximum retained versions configured for this path.
+        expr: {kind: path, path: [max_versions]}
+      - name: cas_required
+        type: Boolean
+        nullable: true
+        description: Whether check-and-set is required for writes to this path.
+        expr: {kind: path, path: [cas_required]}
+      - name: delete_version_after
+        type: Utf8
+        nullable: true
+        description: Duration after which new versions are deleted, as returned by OpenBao.
+        expr: {kind: path, path: [delete_version_after]}
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when metadata for this path was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_time]}
+      - name: updated_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when metadata for this path was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_time]}
+      - name: custom_metadata
+        type: Json
+        nullable: true
+        do_not_index: true
+        description: User-provided custom metadata for the secret path.
+        expr: {kind: path, path: [custom_metadata]}
+      - name: versions
+        type: Json
+        nullable: true
+        do_not_index: true
+        description: Version metadata object. Use kv_secret_versions for one row per version.
+        expr: {kind: path, path: [versions]}
+      - name: raw
+        type: Json
+        nullable: true
+        do_not_index: true
+        description: Full KV metadata payload returned by OpenBao.
+        expr: {kind: path, path: []}
+
+  - name: kv_secret_versions
+    description: Per-version metadata for one KV v2 secret path without reading secret values.
+    guide: |
+      Requires `mount` and `path` filters. This table derives rows from the
+      `versions` object in the KV v2 metadata response. It does not read
+      plaintext secret values.
+    filters:
+      - name: mount
+        required: true
+      - name: path
+        required: true
+    request:
+      method: GET
+      path: /{{filter.mount}}/metadata/{{filter.path}}
+    response:
+      rows_path: [data, versions]
+      row_strategy: dict_entries
+      allow_404_empty: true
+    pagination:
+      mode: none
+    columns:
+      - name: mount
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: KV v2 mount supplied as a filter.
+        expr: {kind: from_filter, key: mount}
+      - name: path
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Secret metadata path supplied as a filter.
+        expr: {kind: from_filter, key: path}
+      - name: version
+        type: Int64
+        nullable: false
+        description: KV version number from the metadata versions map.
+        expr: {kind: path, path: [_key]}
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Timestamp when this secret version was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_time]}
+      - name: deletion_time
+        type: Utf8
+        nullable: true
+        description: Deletion timestamp string for this version, if any.
+        expr: {kind: path, path: [deletion_time]}
+      - name: destroyed
+        type: Boolean
+        nullable: true
+        description: Whether this version has been permanently destroyed.
+        expr: {kind: path, path: [destroyed]}
+      - name: raw
+        type: Json
+        nullable: true
+        do_not_index: true
+        description: Full version metadata payload returned by OpenBao.
+        expr: {kind: path, path: []}
