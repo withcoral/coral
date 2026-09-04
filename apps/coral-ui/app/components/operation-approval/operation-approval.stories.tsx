@@ -2425,22 +2425,10 @@ function ProgramBodySection({
   display?: SectionDisplay
   programBody: ProgramEvidence
 }) {
-  const content = <ProgramEvidenceBlock evidence={programBody} />
-
-  return sectionIsDisclosure(display) ? (
-    <details open={sectionInitiallyOpen(display)} style={disclosureSectionStyle}>
-      <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
-        Program body
-      </Typography.BodySmallStrong>
-      <div style={disclosureContentStyle}>{content}</div>
-    </details>
-  ) : (
-    <section style={sectionStyle}>
-      <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
-        Program body
-      </Typography.BodySmallStrong>
-      {content}
-    </section>
+  return (
+    <SectionContainer display={display} title="Program body">
+      <ProgramEvidenceBlock evidence={programBody} />
+    </SectionContainer>
   )
 }
 
