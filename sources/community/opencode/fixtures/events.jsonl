@@ -1,0 +1,3 @@
+{"id":"evt001","aggregate_id":"seq001","seq":1,"type":"session.created","data":{"sessionId":"sess001","project_id":"proj001"}}
+{"id":"evt002","aggregate_id":"seq001","seq":2,"type":"message.appended","data":{"sessionId":"sess001","messageId":"msg001"}}
+{"id":"evt003","aggregate_id":"seq002","seq":1,"type":"todo.updated","data":{"sessionId":"sess001","content":"Implement feature","status":"pending"}}

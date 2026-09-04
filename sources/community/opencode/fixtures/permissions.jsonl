@@ -1,0 +1,2 @@
+{"id":"perm001","project_id":"proj_demo0001aaaExampleProject01","action":"read","resource":"sessions","time_created":1720000000000,"time_updated":1720000000000}
+{"id":"perm002","project_id":"proj_demo0002bbbExampleProject02","action":"write","resource":"projects","time_created":1725000000000,"time_updated":1725000000000}

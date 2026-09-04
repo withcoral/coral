@@ -1,0 +1,3 @@
+{"id":"proj_demo0001aaaExampleProject01","worktree":"/Users/example/projects/demo","vcs":"git","name":"Demo Project One","icon_url":"https://example.com/icon1.png","icon_color":"#3366ff","time_created":1699900000000,"time_updated":1700003600000,"time_initialized":1699900010000}
+{"id":"proj_demo0002bbbExampleProject02","worktree":"/Users/example/projects/demo-sub","vcs":"git","name":"Demo Sub Project","icon_url":null,"icon_color":null,"time_created":1700200000000,"time_updated":1700200400000,"time_initialized":null}
+{"id":"proj_demo0003cccExampleProject03","worktree":"/Users/example/projects/scratch","vcs":null,"name":null,"icon_url":null,"icon_color":null,"time_created":1700300000000,"time_updated":1700300000000,"time_initialized":null}

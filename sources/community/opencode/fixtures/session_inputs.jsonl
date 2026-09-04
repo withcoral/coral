@@ -1,0 +1,2 @@
+{"id":"sin_demo0001aaaExampleInput01","session_id":"ses_demo001aaaExampleSessionId01","prompt":"Hello, demo session. Please summarize the demo project.","delivery":"promoted","admitted_seq":1,"promoted_seq":1,"time_created":1700000010000}
+{"id":"sin_demo0002bbbExampleInput02","session_id":"ses_demo002bbbExampleSessionId02","prompt":"What changed since the last demo run?","delivery":"promoted","admitted_seq":1,"promoted_seq":1,"time_created":1700100010000}

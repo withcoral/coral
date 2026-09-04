@@ -1,0 +1,4 @@
+{"project_id":"proj_demo0001aaaExampleProject01","directory":"/Users/example/projects/demo","type":"worktree","strategy":null,"time_created":1699900010000}
+{"project_id":"proj_demo0001aaaExampleProject01","directory":"/Users/example/projects/demo-sandbox","type":"sandbox","strategy":"copy","time_created":1699900020000}
+{"project_id":"proj_demo0002bbbExampleProject02","directory":"/Users/example/projects/demo-sub","type":"worktree","strategy":null,"time_created":1700200005000}
+{"project_id":"proj_demo0003cccExampleProject03","directory":"/Users/example/projects/scratch","type":null,"strategy":null,"time_created":1700300005000}

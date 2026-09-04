@@ -1,0 +1,2 @@
+{"id":"wrk_demo0001aaaExampleWorkspace01","project_id":"proj_demo0001aaaExampleProject01","directory":"/Users/example/projects/demo","type":"worktree","name":"demo-workspace-one","branch":"main","extra":null,"time_used":1700003600000}
+{"id":"wrk_demo0002bbbExampleWorkspace02","project_id":"proj_demo0002bbbExampleProject02","directory":"/Users/example/projects/demo-sub","type":"worktree","name":"demo-sub-workspace","branch":"feature/demo","extra":"{\"isolation\":\"worktree\"}","time_used":1700200400000}
