@@ -1398,6 +1398,36 @@ export const MaximalEvidence: Story = {
   },
 }
 
+export const LudosFavourite: Story = {
+  name: "Ludo's favourite",
+  args: {
+    argumentsCollapsible: true,
+    argumentsInitiallyExpanded: true,
+    authorityEnvelopeDisplay: 'hidden',
+    dataset: 'github',
+    envelopeArgsDisplay: 'interleaved',
+    envelopeMatch: 'outside',
+    programBodyDisplay: 'collapsed',
+    programSnippetDisplay: 'collapsed',
+    providerReferenceDisplay: 'hidden',
+    requestContextDisplay: 'visible',
+    runContextDisplay: 'hidden',
+    showApprovalAuthority: false,
+    showArguments: true,
+    showIdentity: true,
+    showRequestMetadataInHeader: true,
+    technicalDetailsDisplay: 'hidden',
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Reviewer-preferred dense approval layout with request context visible, policy annotations interleaved with arguments, and low-priority reference sections hidden.',
+      },
+    },
+  },
+}
+
 function shouldShowSection(display: SectionDisplay | undefined): boolean {
   return display !== undefined && display !== 'hidden'
 }
@@ -1744,42 +1774,52 @@ function InvocationArgumentsSection({
   return (
     <section style={sectionStyle}>
       {collapsible ? (
-        <Button.Container
-          aria-controls={argumentsId}
-          aria-expanded={expanded}
-          fullWidth
-          onClick={() => setExpanded((current) => !current)}
-          size="22"
-          style={argumentsDisclosureStyle}
-          variant="bare"
+        <details
+          onToggle={(event) => setExpanded(event.currentTarget.open)}
+          open={expanded}
+          style={disclosureSectionStyle}
         >
-          <Button.Icon name={expanded ? 'ChevronDown' : 'ChevronRight'} />
-          <Typography.BodySmallStrong>
+          <Typography.BodySmallStrong as="summary" style={argumentsDisclosureStyle}>
             Arguments ({invocationArguments.length})
           </Typography.BodySmallStrong>
-        </Button.Container>
+          <dl id={argumentsId} style={detailsStyle}>
+            {invocationArguments.map(({ label, value }, index) => (
+              <InvocationArgumentRow
+                annotations={envelopeChecks?.filter(({ label: checkLabel }) =>
+                  checkLabel.startsWith(`args[${index}]`),
+                )}
+                argumentIndex={index}
+                envelopeDisplay={envelopeDisplay}
+                key={label}
+                label={label}
+                showDivider={index < invocationArguments.length - 1}
+                value={value}
+              />
+            ))}
+          </dl>
+        </details>
       ) : (
-        <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle}>
-          Arguments
-        </Typography.BodySmallStrong>
+        <>
+          <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle}>
+            Arguments
+          </Typography.BodySmallStrong>
+          <dl id={argumentsId} style={detailsStyle}>
+            {invocationArguments.map(({ label, value }, index) => (
+              <InvocationArgumentRow
+                annotations={envelopeChecks?.filter(({ label: checkLabel }) =>
+                  checkLabel.startsWith(`args[${index}]`),
+                )}
+                argumentIndex={index}
+                envelopeDisplay={envelopeDisplay}
+                key={label}
+                label={label}
+                showDivider={index < invocationArguments.length - 1}
+                value={value}
+              />
+            ))}
+          </dl>
+        </>
       )}
-      {!collapsible || expanded ? (
-        <dl id={argumentsId} style={detailsStyle}>
-          {invocationArguments.map(({ label, value }, index) => (
-            <InvocationArgumentRow
-              annotations={envelopeChecks?.filter(({ label: checkLabel }) =>
-                checkLabel.startsWith(`args[${index}]`),
-              )}
-              argumentIndex={index}
-              envelopeDisplay={envelopeDisplay}
-              key={label}
-              label={label}
-              showDivider={index < invocationArguments.length - 1}
-              value={value}
-            />
-          ))}
-        </dl>
-      ) : null}
     </section>
   )
 }
@@ -2633,18 +2673,8 @@ const sectionHeadingStyle: CSSProperties = {
 
 const argumentsDisclosureStyle: CSSProperties = {
   ...sectionHeadingStyle,
-  alignItems: 'center',
-  background: 'transparent',
-  border: 0,
-  borderBottom: `1px solid ${theme.stroke.secondary}`,
   color: theme.content.primary,
   cursor: 'pointer',
-  display: 'flex',
-  gap: '4px',
-  justifyContent: 'flex-start',
-  padding: '0 0 6px',
-  textAlign: 'left',
-  width: '100%',
 }
 
 const contextDetailsStyle: CSSProperties = { margin: 0 }
@@ -2687,8 +2717,8 @@ const argumentGroupStyle: CSSProperties = {
 
 const interleavedArgumentStyle: CSSProperties = {
   display: 'grid',
-  gap: '16px',
-  gridTemplateColumns: '140px minmax(0, 1fr)',
+  gap: '12px',
+  gridTemplateColumns: 'minmax(96px, 0.3fr) minmax(0, 1fr)',
   padding: '8px 0',
 }
 
@@ -2709,7 +2739,7 @@ const interleavedFieldValueStyle: CSSProperties = {
   alignItems: 'baseline',
   display: 'grid',
   gap: '12px',
-  gridTemplateColumns: '120px minmax(0, 1fr)',
+  gridTemplateColumns: 'minmax(88px, 0.28fr) minmax(0, 1fr)',
 }
 
 const envelopeArgumentStatusStyles: Record<EnvelopeCheckStatus, CSSProperties> = {
@@ -2731,7 +2761,7 @@ const argumentAnnotationsStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: '4px',
-  marginLeft: '156px',
+  marginLeft: 'min(156px, 22%)',
 }
 
 const argumentAnnotationStyle: CSSProperties = {
