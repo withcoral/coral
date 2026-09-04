@@ -1749,7 +1749,7 @@ function ApprovalHeader({
       {envelopeEvaluation?.decision === 'allow' ? (
         <Pill color="green">Allowed by Owner policy</Pill>
       ) : envelopeEvaluation?.envelopeMatch === 'none' ? (
-        <Pill color="amber">No matching Owner policy</Pill>
+        <Pill color="amber">No Owner policy yet</Pill>
       ) : envelopeEvaluation ? (
         <Pill color="amber">Outside Owner policy</Pill>
       ) : hasContext ? (
@@ -1948,7 +1948,7 @@ function EnvelopeCheckSection({
             {matches
               ? 'Allowed by Owner policy'
               : hasNoExistingEnvelope
-                ? 'No matching Owner policy'
+                ? 'No Owner policy yet'
                 : 'Outside Owner policy'}
           </Typography.BodySmallStrong>
           <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
@@ -1979,7 +1979,7 @@ function EnvelopeCheckSection({
         {matches
           ? `Allowed by envelope ${evaluation.envelopeId}`
           : hasNoExistingEnvelope
-            ? 'No existing Owner policy authorized this Invocation'
+            ? 'No Owner policy currently covers this Invocation'
             : `Envelope ${evaluation.envelopeId} did not authorize this Invocation`}
       </Typography.BodySmall>
     </SectionContainer>
@@ -2040,7 +2040,7 @@ function PolicyUpdateProposalDialog({
           <Dialog.Title>Allow similar future calls</Dialog.Title>
           <Dialog.Description>
             {isCreatingPolicy
-              ? 'No existing Owner policy matched this Invocation. This proposes a new bounded Owner policy. It does not approve this invocation.'
+              ? 'No Owner policy exists for this Invocation. This drafts a new bounded Owner policy. It does not approve this invocation.'
               : `This proposes an Owner policy update for envelope ${evaluation.envelopeId}. It does not approve this invocation.`}
           </Dialog.Description>
           <Dialog.Close />
@@ -2077,7 +2077,9 @@ function PolicyUpdateProposalDialog({
             >
               {selectionStatus === 'blocked'
                 ? 'Resolve manual or unavailable checks before changing Owner policy.'
-                : 'Select every required change to allow this Invocation.'}
+                : isCreatingPolicy
+                  ? 'Select every required addition to create a policy that covers this Invocation.'
+                  : 'Select every required change to allow this Invocation.'}
             </Typography.BodySmall>
           ) : null}
           <Dialog.Actions>
@@ -2124,10 +2126,10 @@ function PolicySelectionBanner({
           }
         : {
             detail: isCreatingPolicy
-              ? `${blockingCheck?.label ?? 'A required check'} is not included in the proposed policy.`
+              ? `${blockingCheck?.label ?? 'A required check'} is not included in the draft policy.`
               : `${blockingCheck?.label ?? 'A required check'} remains outside policy.`,
             title: isCreatingPolicy
-              ? 'Selected policy would not cover this invocation'
+              ? 'Draft policy would not cover this invocation'
               : 'Selected changes still require approval',
           }
 
