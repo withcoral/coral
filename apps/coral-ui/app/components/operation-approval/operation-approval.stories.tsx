@@ -1508,6 +1508,14 @@ function OperationApproval({
         showRequester={showRequester}
       />
 
+      {(sections.requestContext && approval.requestContext) ||
+      (sections.programSnippet && approval.programContext) ? (
+        <ContextSection
+          programSnippet={sections.programSnippet ? approval.programContext?.snippet : undefined}
+          requestContext={sections.requestContext ? approval.requestContext : undefined}
+        />
+      ) : null}
+
       {argumentsDisplay.visible ? (
         <InvocationArgumentsSection
           collapsible={argumentsDisplay.collapsible}
@@ -1520,14 +1528,6 @@ function OperationApproval({
 
       {sections.authorityEnvelope && envelopeEvaluation ? (
         <EnvelopeCheckSection evaluation={envelopeEvaluation} />
-      ) : null}
-
-      {(sections.requestContext && approval.requestContext) ||
-      (sections.programSnippet && approval.programContext) ? (
-        <ContextSection
-          programSnippet={sections.programSnippet ? approval.programContext?.snippet : undefined}
-          requestContext={sections.requestContext ? approval.requestContext : undefined}
-        />
       ) : null}
 
       {sections.programBody && approval.programContext ? (
