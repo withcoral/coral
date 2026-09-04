@@ -24,8 +24,7 @@ type EnvelopeArgsDisplay = 'interleaved' | 'none' | 'summary'
 type SectionDisplay = 'collapsed' | 'expanded' | 'hidden' | 'visible'
 
 interface OperationApprovalStoryProps {
-  argumentsCollapsible?: boolean
-  argumentsInitiallyExpanded?: boolean
+  argumentsDisplay?: SectionDisplay
   envelopeArgsDisplay?: EnvelopeArgsDisplay
   envelopeMatch: EnvelopeMatch
   compact?: boolean
@@ -34,7 +33,6 @@ interface OperationApprovalStoryProps {
   onDecline: () => void
   onUpdatePolicy: () => void
   onViewRun: () => void
-  showArguments?: boolean
   showApprovalAuthority?: boolean
   showExpiry?: boolean
   authorityEnvelopeDisplay?: SectionDisplay
@@ -51,10 +49,8 @@ interface OperationApprovalStoryProps {
 
 interface OperationApprovalDisplay {
   arguments?: {
-    collapsible?: boolean
+    display?: SectionDisplay
     envelopeDisplay?: EnvelopeArgsDisplay
-    initiallyExpanded?: boolean
-    visible?: boolean
   }
   compact?: boolean
   header?: {
@@ -204,6 +200,11 @@ const meta = {
       description: 'Control the Storybook-only deterministic Owner-policy envelope section.',
       options: ['hidden', 'visible', 'collapsed', 'expanded'],
     },
+    argumentsDisplay: {
+      control: 'inline-radio',
+      description: 'Control exact positional Invocation arguments as primary evidence.',
+      options: ['hidden', 'visible', 'collapsed', 'expanded'],
+    },
     envelopeArgsDisplay: {
       control: 'inline-radio',
       description:
@@ -224,10 +225,6 @@ const meta = {
       control: 'inline-radio',
       description: 'Control highlighted Program snippet as supporting context.',
       options: ['hidden', 'visible', 'collapsed', 'expanded'],
-    },
-    showArguments: {
-      control: 'boolean',
-      description: 'Show exact positional Invocation arguments as primary evidence.',
     },
     showApprovalAuthority: {
       control: 'boolean',
@@ -266,6 +263,7 @@ const meta = {
     },
   },
   args: {
+    argumentsDisplay: 'hidden',
     envelopeMatch: 'inside',
     dataset: 'github',
     onApprove: fn(),
@@ -299,7 +297,7 @@ The story-only model uses Lagoon-aligned names: \`operationCallPath\`, \`invocat
 
 Every Medium+ story keeps the same first-screen decision contract: Operation call path, provider identity, invoking principal, approval authority, expiry, exact Invocation arguments, and the unchanged Decline/Approve actions. The prototype does not invent an operation-specific consequence CTA when no trusted renderer provides one.
 
-Every story uses the same story-local \`OperationApproval\` component. Set \`requestContextDisplay\` to \`visible\` in any story to reveal Task and exec intent before Arguments; \`TaskIntentContext\` is the preset that enables it by default.
+Every story uses the same story-local \`OperationApproval\` component. Set \`argumentsDisplay\` to \`hidden\`, \`visible\`, \`collapsed\`, or \`expanded\` to control the exact Invocation evidence with the same section grammar. Set \`requestContextDisplay\` to \`visible\` in any story to reveal Task and exec intent before Arguments; \`TaskIntentContext\` is the preset that enables it by default.
 
 Every dataset supplies three Storybook-only Owner-envelope states: \`inside\` matches its exact Invocation, \`outside\` fails explicit filters in an existing envelope, and \`none\` means no existing Owner policy covers the Invocation. The \`dataset\` and \`envelopeMatch\` controls select those two dimensions independently. ArkType executes each candidate envelope’s operation, argument-path, and expiry rules; it is not proposed as Coral’s production authorization engine. These stories do not model an agent approving another agent, and a passing envelope applies only to the exact Invocation shown. Set \`authorityEnvelopeDisplay\` to choose how the full evaluation is disclosed. Separately, \`envelopeArgsDisplay='none'\` only hides inline annotations; \`summary\` and \`interleaved\` reveal them.
 
@@ -1085,8 +1083,8 @@ export const MinimalWithRequesterAndExpiry: Story = {
 
 export const Medium: Story = {
   args: {
+    argumentsDisplay: 'visible',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
@@ -1105,8 +1103,8 @@ export const Medium: Story = {
 
 export const MediumWithRequester: Story = {
   args: {
+    argumentsDisplay: 'visible',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
@@ -1125,8 +1123,8 @@ export const MediumWithRequester: Story = {
 
 export const MediumWithExpiry: Story = {
   args: {
+    argumentsDisplay: 'visible',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
@@ -1144,8 +1142,8 @@ export const MediumWithExpiry: Story = {
 
 export const MediumWithRequesterAndExpiry: Story = {
   args: {
+    argumentsDisplay: 'visible',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
@@ -1164,10 +1162,8 @@ export const MediumWithRequesterAndExpiry: Story = {
 
 export const MediumExpandableExpanded: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
@@ -1186,10 +1182,8 @@ export const MediumExpandableExpanded: Story = {
 
 export const MediumExpandableCollapsed: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: false,
+    argumentsDisplay: 'collapsed',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
@@ -1208,11 +1202,9 @@ export const MediumExpandableCollapsed: Story = {
 
 export const TaskIntentContext: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
     showApprovalAuthority: true,
-    showArguments: true,
     showExpiry: true,
     showIdentity: true,
     requestContextDisplay: 'visible',
@@ -1231,12 +1223,10 @@ export const TaskIntentContext: Story = {
 
 export const EnvelopeMatches: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
     envelopeArgsDisplay: 'interleaved',
     envelopeMatch: 'inside',
-    showArguments: true,
     authorityEnvelopeDisplay: 'visible',
     showIdentity: true,
     showRequestMetadataInHeader: true,
@@ -1254,12 +1244,10 @@ export const EnvelopeMatches: Story = {
 
 export const EnvelopeDoesNotMatch: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
     envelopeArgsDisplay: 'interleaved',
     envelopeMatch: 'outside',
-    showArguments: true,
     showApprovalAuthority: true,
     authorityEnvelopeDisplay: 'visible',
     showExpiry: true,
@@ -1279,12 +1267,10 @@ export const EnvelopeDoesNotMatch: Story = {
 
 export const EnvelopePolicyUpdateProposal: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
     envelopeArgsDisplay: 'interleaved',
     envelopeMatch: 'outside',
-    showArguments: true,
     showApprovalAuthority: true,
     authorityEnvelopeDisplay: 'visible',
     showExpiry: true,
@@ -1304,12 +1290,10 @@ export const EnvelopePolicyUpdateProposal: Story = {
 
 export const EnvelopeNoExistingPolicy: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
     envelopeArgsDisplay: 'none',
     envelopeMatch: 'none',
-    showArguments: true,
     showApprovalAuthority: true,
     authorityEnvelopeDisplay: 'visible',
     showExpiry: true,
@@ -1329,10 +1313,8 @@ export const EnvelopeNoExistingPolicy: Story = {
 
 export const ProgramSnippet: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
@@ -1352,10 +1334,8 @@ export const ProgramSnippet: Story = {
 
 export const CollapsedProgramBody: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showExpiry: true,
     showIdentity: true,
@@ -1375,10 +1355,8 @@ export const CollapsedProgramBody: Story = {
 
 export const MaximalEvidence: Story = {
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     dataset: 'github',
-    showArguments: true,
     showApprovalAuthority: true,
     showIdentity: true,
     programBodyDisplay: 'collapsed',
@@ -1401,8 +1379,7 @@ export const MaximalEvidence: Story = {
 export const LudosFavourite: Story = {
   name: "Ludo's favourite",
   args: {
-    argumentsCollapsible: true,
-    argumentsInitiallyExpanded: true,
+    argumentsDisplay: 'expanded',
     authorityEnvelopeDisplay: 'hidden',
     dataset: 'github',
     envelopeArgsDisplay: 'interleaved',
@@ -1413,7 +1390,6 @@ export const LudosFavourite: Story = {
     requestContextDisplay: 'visible',
     runContextDisplay: 'hidden',
     showApprovalAuthority: false,
-    showArguments: true,
     showIdentity: true,
     showRequestMetadataInHeader: true,
     technicalDetailsDisplay: 'hidden',
@@ -1448,8 +1424,7 @@ function combineSectionDisplays(...displays: Array<SectionDisplay | undefined>):
 }
 
 function OperationApprovalStory({
-  argumentsCollapsible,
-  argumentsInitiallyExpanded,
+  argumentsDisplay = 'hidden',
   compact,
   dataset,
   envelopeArgsDisplay = 'none',
@@ -1459,7 +1434,6 @@ function OperationApprovalStory({
   onUpdatePolicy,
   onViewRun,
   showApprovalAuthority,
-  showArguments,
   authorityEnvelopeDisplay,
   showExpiry,
   showIdentity,
@@ -1489,10 +1463,8 @@ function OperationApprovalStory({
       authorityEvaluation={authorityEvaluation}
       display={{
         arguments: {
-          collapsible: argumentsCollapsible,
+          display: argumentsDisplay,
           envelopeDisplay: envelopeArgsDisplay,
-          initiallyExpanded: argumentsInitiallyExpanded,
-          visible: showArguments,
         },
         compact,
         header: {
@@ -1532,13 +1504,7 @@ function OperationApproval({
   const showIdentity = header.showIdentity
   const showRequester = header.showRequester
   const contextDisplay = combineSectionDisplays(sections.requestContext, sections.programSnippet)
-  const argumentsSectionDisplay: SectionDisplay = !argumentsDisplay.visible
-    ? 'hidden'
-    : argumentsDisplay.collapsible
-      ? argumentsDisplay.initiallyExpanded
-        ? 'expanded'
-        : 'collapsed'
-      : 'visible'
+  const argumentsSectionDisplay = argumentsDisplay.display ?? 'hidden'
   const hasDecisionContext = Boolean(showApprovalAuthority)
   const isEnvelopeVisible =
     shouldShowSection(sections.authorityEnvelope) || envelopeArgsDisplay !== 'none'
@@ -1549,7 +1515,7 @@ function OperationApproval({
   const canReviewFuturePolicy =
     isEnvelopeVisible && envelopeEvaluation?.decision === 'requiresApproval'
   const hasContext = Boolean(
-    argumentsDisplay.visible ||
+    shouldShowSection(argumentsSectionDisplay) ||
     showExpiry ||
     shouldShowSection(sections.authorityEnvelope) ||
     envelopeArgsDisplay !== 'none' ||
