@@ -127,6 +127,7 @@ const envelopeStatusLabels: Record<EnvelopeCheckStatus, string> = {
 
 interface AuthorityEnvelopeEvaluation {
   checks: Array<{
+    draftRole: 'coverage' | 'narrowing'
     label: string
     observed: string
     policy: string
@@ -344,17 +345,20 @@ function evaluateAuthorityEnvelope(
   )
   const checks: AuthorityEnvelopeEvaluation['checks'] = [
     {
+      draftRole: 'coverage',
       label: 'Operation call path',
       observed: approval.operationCallPath,
       policy: `== ${JSON.stringify(envelope.operationCallPath)}`,
       status: arkStatus(operationPolicy(approval.operationCallPath)),
     },
     ...envelope.rules.map(({ evaluate, label, policy }) => ({
+      draftRole: 'narrowing' as const,
       label,
       policy,
       ...evaluate(approval),
     })),
     {
+      draftRole: 'narrowing',
       label: 'Policy expiry',
       observed: `Evaluated ${envelope.evaluatedAt}`,
       policy: `expires ${envelope.expiresAt}`,
@@ -2019,9 +2023,26 @@ function PolicyUpdateProposalDialog({
       (isCreatingPolicy ? status === 'pass' : proposal?.kind === 'automatic') &&
       !selectedChanges.has(label),
   )
+  const missingCoverageCheck = isCreatingPolicy
+    ? proposedChecks.find(
+        ({ draftRole, label, status }) =>
+          draftRole === 'coverage' && status === 'pass' && !selectedChanges.has(label),
+      )
+    : undefined
+  const omittedNarrowingChecks = isCreatingPolicy
+    ? unselectedChecks.filter(({ draftRole }) => draftRole === 'narrowing')
+    : []
   const selectionStatus =
-    unsafeChecks.length > 0 ? 'blocked' : unselectedChecks.length > 0 ? 'incomplete' : 'allows'
-  const canUpdatePolicy = selectionStatus === 'allows'
+    unsafeChecks.length > 0
+      ? 'blocked'
+      : missingCoverageCheck
+        ? 'incomplete'
+        : omittedNarrowingChecks.length > 0
+          ? 'broader'
+          : unselectedChecks.length > 0
+            ? 'incomplete'
+            : 'allows'
+  const canUpdatePolicy = selectionStatus === 'allows' || selectionStatus === 'broader'
 
   function toggleChange(label: string, checked: boolean) {
     setSelectedChanges((current) => {
@@ -2045,29 +2066,37 @@ function PolicyUpdateProposalDialog({
           </Dialog.Description>
           <Dialog.Close />
           <PolicySelectionBanner
-            blockingCheck={unsafeChecks[0] ?? unselectedChecks[0]}
+            blockingCheck={
+              unsafeChecks[0] ??
+              missingCoverageCheck ??
+              omittedNarrowingChecks[0] ??
+              unselectedChecks[0]
+            }
             isCreatingPolicy={isCreatingPolicy}
             status={selectionStatus}
           />
           <section style={policyProposalListStyle}>
-            {proposedChecks.map(({ label, observed, policy, proposal, status }, index) => (
-              <PolicyUpdateProposalRow
-                checked={selectedChanges.has(label)}
-                key={label}
-                candidatePolicy={
-                  isCreatingPolicy
-                    ? formatCandidatePolicyLine(evaluation.envelopeId, label, observed, policy)
-                    : undefined
-                }
-                label={label}
-                observed={observed}
-                onCheckedChange={(checked) => toggleChange(label, checked)}
-                policy={policy}
-                proposal={proposal}
-                showDivider={index < proposedChecks.length - 1}
-                status={status}
-              />
-            ))}
+            {proposedChecks.map(
+              ({ draftRole, label, observed, policy, proposal, status }, index) => (
+                <PolicyUpdateProposalRow
+                  checked={selectedChanges.has(label)}
+                  draftRole={draftRole}
+                  key={label}
+                  candidatePolicy={
+                    isCreatingPolicy
+                      ? formatCandidatePolicyLine(evaluation.envelopeId, label, observed, policy)
+                      : undefined
+                  }
+                  label={label}
+                  observed={observed}
+                  onCheckedChange={(checked) => toggleChange(label, checked)}
+                  policy={policy}
+                  proposal={proposal}
+                  showDivider={index < proposedChecks.length - 1}
+                  status={status}
+                />
+              ),
+            )}
           </section>
           {!canUpdatePolicy ? (
             <Typography.BodySmall
@@ -2078,7 +2107,7 @@ function PolicyUpdateProposalDialog({
               {selectionStatus === 'blocked'
                 ? 'Resolve manual or unavailable checks before changing Owner policy.'
                 : isCreatingPolicy
-                  ? 'Select every required addition to create a policy that covers this Invocation.'
+                  ? 'Include the Operation call path to create a policy that covers this Invocation.'
                   : 'Select every required change to allow this Invocation.'}
             </Typography.BodySmall>
           ) : null}
@@ -2109,29 +2138,36 @@ function PolicySelectionBanner({
 }: {
   blockingCheck?: AuthorityEnvelopeEvaluation['checks'][number]
   isCreatingPolicy: boolean
-  status: 'allows' | 'blocked' | 'incomplete'
+  status: 'allows' | 'blocked' | 'broader' | 'incomplete'
 }) {
   const copy =
     status === 'allows'
       ? {
-          detail: 'The exact Operation Invocation would be covered by the selected policy.',
+          detail: isCreatingPolicy
+            ? 'All proposed constraints are included, so similar future calls remain narrowly bounded.'
+            : 'The exact Operation Invocation would be covered by the selected policy.',
           title: isCreatingPolicy
             ? 'Selected policy would allow this invocation'
             : 'Selected changes would allow this invocation',
         }
-      : status === 'blocked'
+      : status === 'broader'
         ? {
-            detail: `${blockingCheck?.label ?? 'A required check'} cannot be changed automatically.`,
-            title: 'Cannot create a safe automatic policy update',
+            detail: `${blockingCheck?.label ?? 'A narrowing constraint'} is not constrained; similar future calls may use other values.`,
+            title: 'Draft policy would allow this invocation, but is broader',
           }
-        : {
-            detail: isCreatingPolicy
-              ? `${blockingCheck?.label ?? 'A required check'} is not included in the draft policy.`
-              : `${blockingCheck?.label ?? 'A required check'} remains outside policy.`,
-            title: isCreatingPolicy
-              ? 'Draft policy would not cover this invocation'
-              : 'Selected changes still require approval',
-          }
+        : status === 'blocked'
+          ? {
+              detail: `${blockingCheck?.label ?? 'A required check'} cannot be changed automatically.`,
+              title: 'Cannot create a safe automatic policy update',
+            }
+          : {
+              detail: isCreatingPolicy
+                ? `${blockingCheck?.label ?? 'A required check'} is not included in the draft policy.`
+                : `${blockingCheck?.label ?? 'A required check'} remains outside policy.`,
+              title: isCreatingPolicy
+                ? 'Draft policy would not cover this invocation'
+                : 'Selected changes still require approval',
+            }
 
   return (
     <div
@@ -2154,6 +2190,7 @@ function PolicySelectionBanner({
 function PolicyUpdateProposalRow({
   candidatePolicy,
   checked,
+  draftRole,
   label,
   observed,
   onCheckedChange,
@@ -2164,6 +2201,7 @@ function PolicyUpdateProposalRow({
 }: {
   candidatePolicy?: string
   checked: boolean
+  draftRole: AuthorityEnvelopeEvaluation['checks'][number]['draftRole']
   label: string
   observed: string
   onCheckedChange: (checked: boolean) => void
@@ -2183,7 +2221,13 @@ function PolicyUpdateProposalRow({
   const selectable = isCreatingPolicy ? status === 'pass' : resolvedProposal.kind === 'automatic'
   const statusColor = isCreatingPolicy && selectable ? (checked ? 'green' : 'amber') : undefined
   const statusLabel =
-    isCreatingPolicy && selectable ? (checked ? 'Included' : 'Not included') : null
+    isCreatingPolicy && selectable
+      ? checked
+        ? 'Included'
+        : draftRole === 'coverage'
+          ? 'Not included'
+          : 'Not constrained'
+      : null
 
   return (
     <div style={{ ...policyProposalRowStyle, ...(!showDivider ? lastDetailRowStyle : {}) }}>
@@ -2791,7 +2835,7 @@ const policySelectionBannerStyle: CSSProperties = {
 }
 
 const policySelectionBannerStatusStyles: Record<
-  'allows' | 'blocked' | 'incomplete',
+  'allows' | 'blocked' | 'broader' | 'incomplete',
   CSSProperties
 > = {
   allows: {
@@ -2801,6 +2845,10 @@ const policySelectionBannerStatusStyles: Record<
   blocked: {
     background: theme.content.errorBackground,
     borderColor: theme.content.error,
+  },
+  broader: {
+    background: theme.content.warningBackground,
+    borderColor: theme.content.warning,
   },
   incomplete: {
     background: theme.content.warningBackground,
