@@ -48,9 +48,42 @@ interface OperationApprovalStoryProps {
   showTechnicalDetails?: boolean
 }
 
-type OperationApprovalProps = Omit<OperationApprovalStoryProps, 'dataset' | 'envelopeMatch'> & {
+interface OperationApprovalDisplay {
+  arguments?: {
+    collapsible?: boolean
+    envelopeDisplay?: EnvelopeArgsDisplay
+    initiallyExpanded?: boolean
+    visible?: boolean
+  }
+  compact?: boolean
+  header?: {
+    metadataPlacement?: 'body' | 'header'
+    showApprovalAuthority?: boolean
+    showExpiry?: boolean
+    showIdentity?: boolean
+    showRequester?: boolean
+  }
+  sections?: {
+    authorityEnvelope?: boolean
+    programBody?: boolean
+    programSnippet?: boolean
+    providerReference?: boolean
+    requestContext?: boolean
+    runContext?: boolean
+    technicalDetails?: boolean
+  }
+}
+
+interface OperationApprovalProps {
+  actions: {
+    onApprove: () => void
+    onDecline: () => void
+    onUpdatePolicy: () => void
+    onViewRun: () => void
+  }
   approval: OperationApprovalModel
-  authorityEnvelope: AuthorityEnvelope
+  authorityEvaluation?: AuthorityEnvelopeEvaluation
+  display: OperationApprovalDisplay
 }
 
 interface ProgramEvidence {
@@ -1313,49 +1346,91 @@ export const MaximalEvidence: Story = {
   },
 }
 
-function OperationApprovalStory({ dataset, envelopeMatch, ...props }: OperationApprovalStoryProps) {
-  const selectedDataset = datasets[dataset]
-
-  return (
-    <OperationApproval
-      approval={selectedDataset.approval}
-      authorityEnvelope={selectedDataset.authorityEnvelopes[envelopeMatch]}
-      {...props}
-    />
-  )
-}
-
-function OperationApproval({
-  approval,
+function OperationApprovalStory({
   argumentsCollapsible,
   argumentsInitiallyExpanded,
-  authorityEnvelope,
   compact,
+  dataset,
   envelopeArgsDisplay = 'none',
+  envelopeMatch,
   onApprove,
   onDecline,
   onUpdatePolicy,
   onViewRun,
-  showArguments,
   showApprovalAuthority,
-  showExpiry,
+  showArguments,
   showAuthorityEnvelopeMatch,
+  showExpiry,
   showIdentity,
   showProgramBody,
   showProgramSnippet,
   showProviderReference,
   showRequestContext,
-  showRequestMetadataInHeader,
   showRequester,
+  showRequestMetadataInHeader,
   showRunContext,
   showTechnicalDetails,
+}: OperationApprovalStoryProps) {
+  const selectedDataset = datasets[dataset]
+  const isEnvelopeVisible = showAuthorityEnvelopeMatch || envelopeArgsDisplay !== 'none'
+  const authorityEvaluation = isEnvelopeVisible
+    ? evaluateAuthorityEnvelope(
+        selectedDataset.approval,
+        selectedDataset.authorityEnvelopes[envelopeMatch],
+      )
+    : undefined
+
+  return (
+    <OperationApproval
+      actions={{ onApprove, onDecline, onUpdatePolicy, onViewRun }}
+      approval={selectedDataset.approval}
+      authorityEvaluation={authorityEvaluation}
+      display={{
+        arguments: {
+          collapsible: argumentsCollapsible,
+          envelopeDisplay: envelopeArgsDisplay,
+          initiallyExpanded: argumentsInitiallyExpanded,
+          visible: showArguments,
+        },
+        compact,
+        header: {
+          metadataPlacement: showRequestMetadataInHeader ? 'header' : 'body',
+          showApprovalAuthority,
+          showExpiry,
+          showIdentity,
+          showRequester,
+        },
+        sections: {
+          authorityEnvelope: showAuthorityEnvelopeMatch,
+          programBody: showProgramBody,
+          programSnippet: showProgramSnippet,
+          providerReference: showProviderReference,
+          requestContext: showRequestContext,
+          runContext: showRunContext,
+          technicalDetails: showTechnicalDetails,
+        },
+      }}
+    />
+  )
+}
+
+function OperationApproval({
+  actions,
+  approval,
+  authorityEvaluation: envelopeEvaluation,
+  display,
 }: OperationApprovalProps) {
   const [policyProposalOpen, setPolicyProposalOpen] = useState(false)
+  const { header = {}, sections = {} } = display
+  const argumentsDisplay = display.arguments ?? {}
+  const envelopeArgsDisplay = argumentsDisplay.envelopeDisplay ?? 'none'
+  const showRequestMetadataInHeader = header.metadataPlacement === 'header'
+  const showApprovalAuthority = header.showApprovalAuthority
+  const showExpiry = header.showExpiry
+  const showIdentity = header.showIdentity
+  const showRequester = header.showRequester
   const hasDecisionContext = Boolean(showApprovalAuthority)
-  const isEnvelopeVisible = showAuthorityEnvelopeMatch || envelopeArgsDisplay !== 'none'
-  const envelopeEvaluation = isEnvelopeVisible
-    ? evaluateAuthorityEnvelope(approval, authorityEnvelope)
-    : undefined
+  const isEnvelopeVisible = sections.authorityEnvelope || envelopeArgsDisplay !== 'none'
   const envelopeArgumentChecks =
     envelopeArgsDisplay !== 'none' && envelopeEvaluation?.envelopeMatch !== 'none'
       ? envelopeEvaluation?.checks
@@ -1363,23 +1438,23 @@ function OperationApproval({
   const canReviewFuturePolicy =
     isEnvelopeVisible && envelopeEvaluation?.decision === 'requiresApproval'
   const hasContext = Boolean(
-    showArguments ||
+    argumentsDisplay.visible ||
     showExpiry ||
-    showAuthorityEnvelopeMatch ||
+    sections.authorityEnvelope ||
     envelopeArgsDisplay !== 'none' ||
     showIdentity ||
     hasDecisionContext ||
-    showProgramBody ||
-    showProgramSnippet ||
-    showProviderReference ||
-    showRequestContext ||
+    sections.programBody ||
+    sections.programSnippet ||
+    sections.providerReference ||
+    sections.requestContext ||
     showRequester ||
-    showRunContext ||
-    showTechnicalDetails,
+    sections.runContext ||
+    sections.technicalDetails,
   )
 
   return (
-    <section style={{ ...cardStyle, ...(compact ? compactCardStyle : {}) }}>
+    <section style={{ ...cardStyle, ...(display.compact ? compactCardStyle : {}) }}>
       <ApprovalHeader
         approval={approval}
         envelopeEvaluation={envelopeEvaluation}
@@ -1391,29 +1466,29 @@ function OperationApproval({
         showRequester={showRequester}
       />
 
-      {showArguments ? (
+      {argumentsDisplay.visible ? (
         <InvocationArgumentsSection
-          collapsible={argumentsCollapsible}
+          collapsible={argumentsDisplay.collapsible}
           envelopeChecks={envelopeArgumentChecks}
           envelopeDisplay={envelopeArgsDisplay}
-          initiallyExpanded={argumentsInitiallyExpanded}
+          initiallyExpanded={argumentsDisplay.initiallyExpanded}
           invocationArguments={approval.invocationArguments}
         />
       ) : null}
 
-      {showAuthorityEnvelopeMatch && envelopeEvaluation ? (
+      {sections.authorityEnvelope && envelopeEvaluation ? (
         <EnvelopeCheckSection evaluation={envelopeEvaluation} />
       ) : null}
 
-      {(showRequestContext && approval.requestContext) ||
-      (showProgramSnippet && approval.programContext) ? (
+      {(sections.requestContext && approval.requestContext) ||
+      (sections.programSnippet && approval.programContext) ? (
         <ContextSection
-          programSnippet={showProgramSnippet ? approval.programContext?.snippet : undefined}
-          requestContext={showRequestContext ? approval.requestContext : undefined}
+          programSnippet={sections.programSnippet ? approval.programContext?.snippet : undefined}
+          requestContext={sections.requestContext ? approval.requestContext : undefined}
         />
       ) : null}
 
-      {showProgramBody && approval.programContext ? (
+      {sections.programBody && approval.programContext ? (
         <ProgramBodyDisclosure programBody={approval.programContext.body} />
       ) : null}
 
@@ -1453,13 +1528,13 @@ function OperationApproval({
         </section>
       ) : null}
 
-      {showProviderReference && approval.providerReference ? (
+      {sections.providerReference && approval.providerReference ? (
         <ProviderReferenceSection providerReference={approval.providerReference} />
       ) : null}
 
-      {showTechnicalDetails ? <TechnicalDetailsSection approval={approval} /> : null}
+      {sections.technicalDetails ? <TechnicalDetailsSection approval={approval} /> : null}
 
-      {showRunContext ? (
+      {sections.runContext ? (
         <div style={runContextStyle}>
           <div style={runCopyStyle}>
             <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
@@ -1469,7 +1544,7 @@ function OperationApproval({
               {approval.runContext.status} · {approval.runContext.workspace}
             </Typography.BodySmall>
           </div>
-          <Button.Container onClick={onViewRun} size="22" variant="bare">
+          <Button.Container onClick={actions.onViewRun} size="22" variant="bare">
             <Button.Text>View run</Button.Text>
             <Button.Icon name="ArrowUpRight" />
           </Button.Container>
@@ -1479,8 +1554,8 @@ function OperationApproval({
       {envelopeEvaluation?.decision === 'allow' ? null : (
         <ApprovalActions
           approveLabel={isEnvelopeVisible ? 'Approve once' : 'Approve'}
-          onApprove={onApprove}
-          onDecline={onDecline}
+          onApprove={actions.onApprove}
+          onDecline={actions.onDecline}
           onReviewPolicy={canReviewFuturePolicy ? () => setPolicyProposalOpen(true) : undefined}
         />
       )}
@@ -1490,7 +1565,7 @@ function OperationApproval({
           evaluation={envelopeEvaluation}
           key={`${envelopeEvaluation.envelopeId}-${envelopeEvaluation.envelopeMatch}`}
           onOpenChange={setPolicyProposalOpen}
-          onUpdatePolicy={onUpdatePolicy}
+          onUpdatePolicy={actions.onUpdatePolicy}
           open={policyProposalOpen}
         />
       ) : null}
@@ -2041,7 +2116,13 @@ function PolicyChangeCheckbox({
   const [hovered, setHovered] = useState(false)
 
   return (
-    <label htmlFor={checkboxId} style={policyCheckboxLabelStyle}>
+    <label
+      htmlFor={checkboxId}
+      style={{
+        ...policyCheckboxLabelStyle,
+        ...(disabled ? { cursor: 'not-allowed', opacity: 0.55 } : {}),
+      }}
+    >
       <Checkbox.Root
         checked={checked}
         disabled={disabled}
