@@ -2064,7 +2064,7 @@ function PolicyChangeCheckbox({
         }}
       >
         <Checkbox.Indicator style={policyCheckboxIndicatorStyle}>
-          <Icon name="Check" size="14" />
+          <Icon color="inherit" name="Check" size="14" />
         </Checkbox.Indicator>
       </Checkbox.Root>
       <Typography.BodySmallStrong as="span">{label}</Typography.BodySmallStrong>
