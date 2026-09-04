@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.4](https://github.com/withcoral/coral/compare/v0.15.3...v0.15.4) (2026-09-04)
+
+
+### Bug Fixes
+
+* **coral-ui:** report a failed trace read inside the detail panel ([#2300](https://github.com/withcoral/coral/issues/2300)) ([9dfe407](https://github.com/withcoral/coral/commit/9dfe407bd9e0d8e3cce67c262edf56f9171276f6))
+* **desktop:** pass config dir to MCP clients ([#2302](https://github.com/withcoral/coral/issues/2302)) ([2cba360](https://github.com/withcoral/coral/commit/2cba360a423312ab0fe79c729ab4c055838dc2ca))
+
 ## [0.15.3](https://github.com/withcoral/coral/compare/v0.15.2...v0.15.3) (2026-09-03)
 
 
