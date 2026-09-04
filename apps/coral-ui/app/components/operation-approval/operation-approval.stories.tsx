@@ -21,6 +21,7 @@ type ArgumentValue =
 type DatasetKey = 'github' | 'linear' | 'loop' | 'savedFunction'
 type EnvelopeMatch = 'inside' | 'none' | 'outside'
 type EnvelopeArgsDisplay = 'interleaved' | 'none' | 'summary'
+type SectionDisplay = 'collapsed' | 'expanded' | 'hidden' | 'visible'
 
 interface OperationApprovalStoryProps {
   argumentsCollapsible?: boolean
@@ -64,13 +65,13 @@ interface OperationApprovalDisplay {
     showRequester?: boolean
   }
   sections?: {
-    authorityEnvelope?: boolean
-    programBody?: boolean
-    programSnippet?: boolean
-    providerReference?: boolean
-    requestContext?: boolean
-    runContext?: boolean
-    technicalDetails?: boolean
+    authorityEnvelope?: SectionDisplay
+    programBody?: SectionDisplay
+    programSnippet?: SectionDisplay
+    providerReference?: SectionDisplay
+    requestContext?: SectionDisplay
+    runContext?: SectionDisplay
+    technicalDetails?: SectionDisplay
   }
 }
 
@@ -1388,6 +1389,25 @@ export const MaximalEvidence: Story = {
   },
 }
 
+function sectionDisplay(
+  show: boolean | undefined,
+  defaultWhenShown: SectionDisplay = 'visible',
+): SectionDisplay {
+  return show ? defaultWhenShown : 'hidden'
+}
+
+function shouldShowSection(display: SectionDisplay | undefined): boolean {
+  return display !== undefined && display !== 'hidden'
+}
+
+function sectionIsDisclosure(display: SectionDisplay | undefined): boolean {
+  return display === 'collapsed' || display === 'expanded'
+}
+
+function sectionInitiallyOpen(display: SectionDisplay | undefined): boolean {
+  return display === 'expanded'
+}
+
 function OperationApprovalStory({
   argumentsCollapsible,
   argumentsInitiallyExpanded,
@@ -1443,13 +1463,13 @@ function OperationApprovalStory({
           showRequester,
         },
         sections: {
-          authorityEnvelope: showAuthorityEnvelopeMatch,
-          programBody: showProgramBody,
-          programSnippet: showProgramSnippet,
-          providerReference: showProviderReference,
-          requestContext: showRequestContext,
-          runContext: showRunContext,
-          technicalDetails: showTechnicalDetails,
+          authorityEnvelope: sectionDisplay(showAuthorityEnvelopeMatch),
+          programBody: sectionDisplay(showProgramBody, 'collapsed'),
+          programSnippet: sectionDisplay(showProgramSnippet),
+          providerReference: sectionDisplay(showProviderReference, 'collapsed'),
+          requestContext: sectionDisplay(showRequestContext),
+          runContext: sectionDisplay(showRunContext),
+          technicalDetails: sectionDisplay(showTechnicalDetails, 'collapsed'),
         },
       }}
     />
@@ -1472,7 +1492,8 @@ function OperationApproval({
   const showIdentity = header.showIdentity
   const showRequester = header.showRequester
   const hasDecisionContext = Boolean(showApprovalAuthority)
-  const isEnvelopeVisible = sections.authorityEnvelope || envelopeArgsDisplay !== 'none'
+  const isEnvelopeVisible =
+    shouldShowSection(sections.authorityEnvelope) || envelopeArgsDisplay !== 'none'
   const envelopeArgumentChecks =
     envelopeArgsDisplay !== 'none' && envelopeEvaluation?.envelopeMatch !== 'none'
       ? envelopeEvaluation?.checks
@@ -1482,17 +1503,17 @@ function OperationApproval({
   const hasContext = Boolean(
     argumentsDisplay.visible ||
     showExpiry ||
-    sections.authorityEnvelope ||
+    shouldShowSection(sections.authorityEnvelope) ||
     envelopeArgsDisplay !== 'none' ||
     showIdentity ||
     hasDecisionContext ||
-    sections.programBody ||
-    sections.programSnippet ||
-    sections.providerReference ||
-    sections.requestContext ||
+    shouldShowSection(sections.programBody) ||
+    shouldShowSection(sections.programSnippet) ||
+    shouldShowSection(sections.providerReference) ||
+    shouldShowSection(sections.requestContext) ||
     showRequester ||
-    sections.runContext ||
-    sections.technicalDetails,
+    shouldShowSection(sections.runContext) ||
+    shouldShowSection(sections.technicalDetails),
   )
 
   return (
@@ -1508,11 +1529,17 @@ function OperationApproval({
         showRequester={showRequester}
       />
 
-      {(sections.requestContext && approval.requestContext) ||
-      (sections.programSnippet && approval.programContext) ? (
+      {(shouldShowSection(sections.requestContext) && approval.requestContext) ||
+      (shouldShowSection(sections.programSnippet) && approval.programContext) ? (
         <ContextSection
-          programSnippet={sections.programSnippet ? approval.programContext?.snippet : undefined}
-          requestContext={sections.requestContext ? approval.requestContext : undefined}
+          programSnippet={
+            shouldShowSection(sections.programSnippet)
+              ? approval.programContext?.snippet
+              : undefined
+          }
+          requestContext={
+            shouldShowSection(sections.requestContext) ? approval.requestContext : undefined
+          }
         />
       ) : null}
 
@@ -1526,12 +1553,15 @@ function OperationApproval({
         />
       ) : null}
 
-      {sections.authorityEnvelope && envelopeEvaluation ? (
+      {shouldShowSection(sections.authorityEnvelope) && envelopeEvaluation ? (
         <EnvelopeCheckSection evaluation={envelopeEvaluation} />
       ) : null}
 
-      {sections.programBody && approval.programContext ? (
-        <ProgramBodyDisclosure programBody={approval.programContext.body} />
+      {shouldShowSection(sections.programBody) && approval.programContext ? (
+        <ProgramBodySection
+          display={sections.programBody}
+          programBody={approval.programContext.body}
+        />
       ) : null}
 
       {(showRequester || showExpiry) && !hasDecisionContext && !showRequestMetadataInHeader ? (
@@ -1570,13 +1600,18 @@ function OperationApproval({
         </section>
       ) : null}
 
-      {sections.providerReference && approval.providerReference ? (
-        <ProviderReferenceSection providerReference={approval.providerReference} />
+      {shouldShowSection(sections.providerReference) && approval.providerReference ? (
+        <ProviderReferenceSection
+          display={sections.providerReference}
+          providerReference={approval.providerReference}
+        />
       ) : null}
 
-      {sections.technicalDetails ? <TechnicalDetailsSection approval={approval} /> : null}
+      {shouldShowSection(sections.technicalDetails) ? (
+        <TechnicalDetailsSection approval={approval} display={sections.technicalDetails} />
+      ) : null}
 
-      {sections.runContext ? (
+      {shouldShowSection(sections.runContext) ? (
         <div style={runContextStyle}>
           <div style={runCopyStyle}>
             <Typography.BodySmallStrong as="p" style={zeroMarginStyle}>
@@ -2300,56 +2335,102 @@ function RequestContextDetails({ requestContext }: { requestContext: RequestCont
   )
 }
 
-function ProgramBodyDisclosure({ programBody }: { programBody: ProgramEvidence }) {
-  return (
-    <details open={false} style={disclosureSectionStyle}>
+function ProgramBodySection({
+  display,
+  programBody,
+}: {
+  display?: SectionDisplay
+  programBody: ProgramEvidence
+}) {
+  const content = <ProgramEvidenceBlock evidence={programBody} />
+
+  return sectionIsDisclosure(display) ? (
+    <details open={sectionInitiallyOpen(display)} style={disclosureSectionStyle}>
       <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
         Program body
       </Typography.BodySmallStrong>
-      <div style={disclosureContentStyle}>
-        <ProgramEvidenceBlock evidence={programBody} />
-      </div>
+      <div style={disclosureContentStyle}>{content}</div>
     </details>
+  ) : (
+    <section style={sectionStyle}>
+      <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
+        Program body
+      </Typography.BodySmallStrong>
+      {content}
+    </section>
   )
 }
 
-function ProviderReferenceSection({ providerReference }: { providerReference: string }) {
-  return (
-    <details style={disclosureSectionStyle}>
+function ProviderReferenceSection({
+  display,
+  providerReference,
+}: {
+  display?: SectionDisplay
+  providerReference: string
+}) {
+  const content = (
+    <>
+      <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
+        Optional provider-authored text; it does not define this approval’s exact effect.
+      </Typography.BodySmall>
+      <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
+        {providerReference}
+      </Typography.BodySmall>
+    </>
+  )
+
+  return sectionIsDisclosure(display) ? (
+    <details open={sectionInitiallyOpen(display)} style={disclosureSectionStyle}>
       <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
         Reference
       </Typography.BodySmallStrong>
-      <div style={disclosureContentStyle}>
-        <Typography.BodySmall as="p" style={zeroMarginStyle} variant="tertiary">
-          Optional provider-authored text; it does not define this approval’s exact effect.
-        </Typography.BodySmall>
-        <Typography.BodySmall as="p" style={zeroMarginStyle} variant="secondary">
-          {providerReference}
-        </Typography.BodySmall>
-      </div>
+      <div style={disclosureContentStyle}>{content}</div>
     </details>
+  ) : (
+    <section style={sectionStyle}>
+      <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
+        Reference
+      </Typography.BodySmallStrong>
+      {content}
+    </section>
   )
 }
 
-function TechnicalDetailsSection({ approval }: { approval: OperationApprovalModel }) {
+function TechnicalDetailsSection({
+  approval,
+  display,
+}: {
+  approval: OperationApprovalModel
+  display?: SectionDisplay
+}) {
   const technicalDetails = buildTechnicalDetails(approval)
+  const content = (
+    <dl style={technicalListStyle}>
+      {technicalDetails.map(({ label, value }, index) => (
+        <DetailRow
+          key={label}
+          label={label}
+          showDivider={index < technicalDetails.length - 1}
+          value={value}
+        />
+      ))}
+    </dl>
+  )
 
-  return (
-    <details style={disclosureSectionStyle}>
+  return sectionIsDisclosure(display) ? (
+    <details open={sectionInitiallyOpen(display)} style={disclosureSectionStyle}>
       <Typography.BodySmallStrong as="summary" style={disclosureSummaryStyle}>
         Technical details
       </Typography.BodySmallStrong>
-      <dl style={technicalListStyle}>
-        {technicalDetails.map(({ label, value }, index) => (
-          <DetailRow
-            key={label}
-            label={label}
-            showDivider={index < technicalDetails.length - 1}
-            value={value}
-          />
-        ))}
-      </dl>
+      {content}
     </details>
+  ) : (
+    <section style={sectionStyle}>
+      <Typography.BodySmallStrong as="h3" style={sectionHeadingStyle} variant="tertiary">
+        Technical details
+      </Typography.BodySmallStrong>
+      {content}
+    </section>
   )
 }
 
