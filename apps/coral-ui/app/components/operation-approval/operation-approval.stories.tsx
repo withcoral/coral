@@ -127,7 +127,6 @@ const envelopeStatusLabels: Record<EnvelopeCheckStatus, string> = {
 
 interface AuthorityEnvelopeEvaluation {
   checks: Array<{
-    draftRole: 'coverage' | 'narrowing'
     label: string
     observed: string
     policy: string
@@ -345,20 +344,17 @@ function evaluateAuthorityEnvelope(
   )
   const checks: AuthorityEnvelopeEvaluation['checks'] = [
     {
-      draftRole: 'coverage',
       label: 'Operation call path',
       observed: approval.operationCallPath,
       policy: `== ${JSON.stringify(envelope.operationCallPath)}`,
       status: arkStatus(operationPolicy(approval.operationCallPath)),
     },
     ...envelope.rules.map(({ evaluate, label, policy }) => ({
-      draftRole: 'narrowing' as const,
       label,
       policy,
       ...evaluate(approval),
     })),
     {
-      draftRole: 'narrowing',
       label: 'Policy expiry',
       observed: `Evaluated ${envelope.evaluatedAt}`,
       policy: `expires ${envelope.expiresAt}`,
@@ -2002,9 +1998,13 @@ function PolicyUpdateProposalDialog({
   open: boolean
 }) {
   const isCreatingPolicy = evaluation.envelopeMatch === 'none'
-  const proposedChecks = isCreatingPolicy
-    ? evaluation.checks
-    : evaluation.checks.filter(({ status }) => status !== 'pass')
+  const proposedChecks = evaluation.checks.filter(
+    ({ label, status }) =>
+      label !== 'Operation call path' && (isCreatingPolicy || status !== 'pass'),
+  )
+  const fixedScopeFailure = evaluation.checks.find(
+    ({ label, status }) => label === 'Operation call path' && status !== 'pass',
+  )
   const [selectedChanges, setSelectedChanges] = useState(
     () =>
       new Set(
@@ -2015,33 +2015,26 @@ function PolicyUpdateProposalDialog({
           .map(({ label }) => label),
       ),
   )
-  const unsafeChecks = proposedChecks.filter(({ proposal, status }) =>
-    isCreatingPolicy ? status !== 'pass' : proposal?.kind !== 'automatic',
-  )
+  const unsafeChecks = [
+    ...(fixedScopeFailure ? [fixedScopeFailure] : []),
+    ...proposedChecks.filter(({ proposal, status }) =>
+      isCreatingPolicy ? status !== 'pass' : proposal?.kind !== 'automatic',
+    ),
+  ]
   const unselectedChecks = proposedChecks.filter(
     ({ label, proposal, status }) =>
       (isCreatingPolicy ? status === 'pass' : proposal?.kind === 'automatic') &&
       !selectedChanges.has(label),
   )
-  const missingCoverageCheck = isCreatingPolicy
-    ? proposedChecks.find(
-        ({ draftRole, label, status }) =>
-          draftRole === 'coverage' && status === 'pass' && !selectedChanges.has(label),
-      )
-    : undefined
-  const omittedNarrowingChecks = isCreatingPolicy
-    ? unselectedChecks.filter(({ draftRole }) => draftRole === 'narrowing')
-    : []
+  const omittedNarrowingChecks = isCreatingPolicy ? unselectedChecks : []
   const selectionStatus =
     unsafeChecks.length > 0
       ? 'blocked'
-      : missingCoverageCheck
-        ? 'incomplete'
-        : omittedNarrowingChecks.length > 0
-          ? 'broader'
-          : unselectedChecks.length > 0
-            ? 'incomplete'
-            : 'allows'
+      : omittedNarrowingChecks.length > 0
+        ? 'broader'
+        : unselectedChecks.length > 0
+          ? 'incomplete'
+          : 'allows'
   const canUpdatePolicy = selectionStatus === 'allows' || selectionStatus === 'broader'
 
   function toggleChange(label: string, checked: boolean) {
@@ -2066,37 +2059,27 @@ function PolicyUpdateProposalDialog({
           </Dialog.Description>
           <Dialog.Close />
           <PolicySelectionBanner
-            blockingCheck={
-              unsafeChecks[0] ??
-              missingCoverageCheck ??
-              omittedNarrowingChecks[0] ??
-              unselectedChecks[0]
-            }
+            blockingCheck={unsafeChecks[0] ?? omittedNarrowingChecks[0] ?? unselectedChecks[0]}
             isCreatingPolicy={isCreatingPolicy}
             status={selectionStatus}
           />
           <section style={policyProposalListStyle}>
-            {proposedChecks.map(
-              ({ draftRole, label, observed, policy, proposal, status }, index) => (
-                <PolicyUpdateProposalRow
-                  checked={selectedChanges.has(label)}
-                  draftRole={draftRole}
-                  key={label}
-                  candidatePolicy={
-                    isCreatingPolicy
-                      ? formatCandidatePolicyLine(evaluation.envelopeId, label, observed, policy)
-                      : undefined
-                  }
-                  label={label}
-                  observed={observed}
-                  onCheckedChange={(checked) => toggleChange(label, checked)}
-                  policy={policy}
-                  proposal={proposal}
-                  showDivider={index < proposedChecks.length - 1}
-                  status={status}
-                />
-              ),
-            )}
+            {proposedChecks.map(({ label, observed, policy, proposal, status }, index) => (
+              <PolicyUpdateProposalRow
+                checked={selectedChanges.has(label)}
+                key={label}
+                candidatePolicy={
+                  isCreatingPolicy ? formatCandidatePolicyLine(label, policy) : undefined
+                }
+                label={label}
+                observed={observed}
+                onCheckedChange={(checked) => toggleChange(label, checked)}
+                policy={policy}
+                proposal={proposal}
+                showDivider={index < proposedChecks.length - 1}
+                status={status}
+              />
+            ))}
           </section>
           {!canUpdatePolicy ? (
             <Typography.BodySmall
@@ -2106,9 +2089,7 @@ function PolicyUpdateProposalDialog({
             >
               {selectionStatus === 'blocked'
                 ? 'Resolve manual or unavailable checks before changing Owner policy.'
-                : isCreatingPolicy
-                  ? 'Include the Operation call path to create a policy that covers this Invocation.'
-                  : 'Select every required change to allow this Invocation.'}
+                : 'Select every required change to allow this Invocation.'}
             </Typography.BodySmall>
           ) : null}
           <Dialog.Actions>
@@ -2190,7 +2171,6 @@ function PolicySelectionBanner({
 function PolicyUpdateProposalRow({
   candidatePolicy,
   checked,
-  draftRole,
   label,
   observed,
   onCheckedChange,
@@ -2201,7 +2181,6 @@ function PolicyUpdateProposalRow({
 }: {
   candidatePolicy?: string
   checked: boolean
-  draftRole: AuthorityEnvelopeEvaluation['checks'][number]['draftRole']
   label: string
   observed: string
   onCheckedChange: (checked: boolean) => void
@@ -2221,13 +2200,7 @@ function PolicyUpdateProposalRow({
   const selectable = isCreatingPolicy ? status === 'pass' : resolvedProposal.kind === 'automatic'
   const statusColor = isCreatingPolicy && selectable ? (checked ? 'green' : 'amber') : undefined
   const statusLabel =
-    isCreatingPolicy && selectable
-      ? checked
-        ? 'Included'
-        : draftRole === 'coverage'
-          ? 'Not included'
-          : 'Not constrained'
-      : null
+    isCreatingPolicy && selectable ? (checked ? 'Included' : 'Not constrained') : null
 
   return (
     <div style={{ ...policyProposalRowStyle, ...(!showDivider ? lastDetailRowStyle : {}) }}>
@@ -2342,13 +2315,7 @@ function PolicyProposalDiff({
   )
 }
 
-function formatCandidatePolicyLine(
-  envelopeId: string,
-  label: string,
-  observed: string,
-  policy: string,
-) {
-  if (label === 'Operation call path') return `envelope ${envelopeId} allows ${observed}`
+function formatCandidatePolicyLine(label: string, policy: string) {
   if (label === 'Policy expiry') return policy
   return `${label} ${policy}`
 }
