@@ -356,6 +356,7 @@ pub(crate) fn json_schema_default_to_string(value: &Value) -> String {
 }
 
 pub(crate) fn merge_json_object_shape_annotation_insensitive(
+    root: SchemaRoot<'_>,
     target: &mut JsonObjectShape,
     source: JsonObjectShape,
     depth: usize,
@@ -363,7 +364,7 @@ pub(crate) fn merge_json_object_shape_annotation_insensitive(
 ) -> Result<(), JsonSchemaComparisonError> {
     for (name, property) in source.properties {
         if let Some(existing) = target.properties.get_mut(&name) {
-            if json_schema_property_schemas_conflict(existing, &property, depth, max_depth)? {
+            if json_schema_property_schemas_conflict(root, existing, &property, depth, max_depth)? {
                 return Err(JsonSchemaComparisonError::PropertyConflict(name));
             }
             merge_json_schema_property_metadata(existing, &property);
@@ -631,21 +632,23 @@ fn scalar_for_typeless_schema_format(schema: &Value) -> Option<IrScalarType> {
 }
 
 fn json_schema_property_schemas_conflict(
+    root: SchemaRoot<'_>,
     existing: &Value,
     candidate: &Value,
     depth: usize,
     max_depth: usize,
 ) -> Result<bool, JsonSchemaComparisonError> {
-    let Ok(left) = schema_validation_fingerprint(existing, depth, max_depth) else {
+    let Ok(left) = schema_validation_fingerprint(root, existing, depth, max_depth) else {
         return Err(JsonSchemaComparisonError::DepthExceeded);
     };
-    let Ok(right) = schema_validation_fingerprint(candidate, depth, max_depth) else {
+    let Ok(right) = schema_validation_fingerprint(root, candidate, depth, max_depth) else {
         return Err(JsonSchemaComparisonError::DepthExceeded);
     };
     Ok(left != right)
 }
 
 fn schema_validation_fingerprint(
+    root: SchemaRoot<'_>,
     schema: &Value,
     depth: usize,
     max_depth: usize,
@@ -655,6 +658,7 @@ fn schema_validation_fingerprint(
     }
     let next_depth = depth + 1;
 
+    let schema = root.read(schema);
     let Some(object) = schema.as_object() else {
         return Ok(schema.clone());
     };
@@ -666,10 +670,10 @@ fn schema_validation_fingerprint(
     {
         let value = match key.as_str() {
             "$defs" | "definitions" | "dependentSchemas" | "patternProperties" | "properties" => {
-                schema_map_validation_fingerprint(value, next_depth, max_depth)?
+                schema_map_validation_fingerprint(root, value, next_depth, max_depth)?
             }
             "dependencies" => {
-                schema_dependency_map_validation_fingerprint(value, next_depth, max_depth)?
+                schema_dependency_map_validation_fingerprint(root, value, next_depth, max_depth)?
             }
             "additionalItems"
             | "additionalProperties"
@@ -683,10 +687,10 @@ fn schema_validation_fingerprint(
             | "then"
             | "unevaluatedItems"
             | "unevaluatedProperties" => {
-                schema_or_schema_array_validation_fingerprint(value, next_depth, max_depth)?
+                schema_or_schema_array_validation_fingerprint(root, value, next_depth, max_depth)?
             }
             "allOf" | "anyOf" | "oneOf" | "prefixItems" => {
-                schema_array_validation_fingerprint(value, next_depth, max_depth)?
+                schema_array_validation_fingerprint(root, value, next_depth, max_depth)?
             }
             "type" => schema_type_validation_fingerprint(value),
             _ => value.clone(),
@@ -697,6 +701,7 @@ fn schema_validation_fingerprint(
 }
 
 fn schema_map_validation_fingerprint(
+    root: SchemaRoot<'_>,
     schemas: &Value,
     depth: usize,
     max_depth: usize,
@@ -714,7 +719,7 @@ fn schema_map_validation_fingerprint(
         object
             .iter()
             .map(|(name, schema)| {
-                schema_validation_fingerprint(schema, next_depth, max_depth)
+                schema_validation_fingerprint(root, schema, next_depth, max_depth)
                     .map(|schema| (name.clone(), schema))
             })
             .collect::<Result<serde_json::Map<_, _>, _>>()?,
@@ -722,6 +727,7 @@ fn schema_map_validation_fingerprint(
 }
 
 fn schema_dependency_map_validation_fingerprint(
+    root: SchemaRoot<'_>,
     dependencies: &Value,
     depth: usize,
     max_depth: usize,
@@ -739,26 +745,32 @@ fn schema_dependency_map_validation_fingerprint(
         object
             .iter()
             .map(|(name, dependency)| {
-                schema_or_schema_array_validation_fingerprint(dependency, next_depth, max_depth)
-                    .map(|dependency| (name.clone(), dependency))
+                schema_or_schema_array_validation_fingerprint(
+                    root, dependency, next_depth, max_depth,
+                )
+                .map(|dependency| (name.clone(), dependency))
             })
             .collect::<Result<serde_json::Map<_, _>, _>>()?,
     ))
 }
 
 fn schema_or_schema_array_validation_fingerprint(
+    root: SchemaRoot<'_>,
     value: &Value,
     depth: usize,
     max_depth: usize,
 ) -> Result<Value, JsonSchemaWalkError> {
     match value {
-        Value::Array(_values) => schema_array_validation_fingerprint(value, depth, max_depth),
-        Value::Object(_) | Value::Bool(_) => schema_validation_fingerprint(value, depth, max_depth),
+        Value::Array(_values) => schema_array_validation_fingerprint(root, value, depth, max_depth),
+        Value::Object(_) | Value::Bool(_) => {
+            schema_validation_fingerprint(root, value, depth, max_depth)
+        }
         other => Ok(other.clone()),
     }
 }
 
 fn schema_array_validation_fingerprint(
+    root: SchemaRoot<'_>,
     schemas: &Value,
     depth: usize,
     max_depth: usize,
@@ -775,7 +787,7 @@ fn schema_array_validation_fingerprint(
     Ok(Value::Array(
         values
             .iter()
-            .map(|schema| schema_validation_fingerprint(schema, next_depth, max_depth))
+            .map(|schema| schema_validation_fingerprint(root, schema, next_depth, max_depth))
             .collect::<Result<Vec<_>, _>>()?,
     ))
 }
@@ -981,7 +993,14 @@ mod tests {
             }),
         );
 
-        merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
+        merge_json_object_shape_annotation_insensitive(
+            SchemaRoot::new(&Value::Null),
+            &mut target,
+            source,
+            0,
+            100,
+        )
+        .expect("merge");
 
         let query = target.properties.get("query").expect("query property");
         assert_eq!(query.get("title").and_then(Value::as_str), Some("Query"));
@@ -1029,7 +1048,14 @@ mod tests {
             }),
         );
 
-        merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
+        merge_json_object_shape_annotation_insensitive(
+            SchemaRoot::new(&Value::Null),
+            &mut target,
+            source,
+            0,
+            100,
+        )
+        .expect("merge");
     }
 
     #[test]
@@ -1070,7 +1096,13 @@ mod tests {
         );
 
         assert_eq!(
-            merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
+            merge_json_object_shape_annotation_insensitive(
+                SchemaRoot::new(&Value::Null),
+                &mut target,
+                source,
+                0,
+                100
+            ),
             Err(JsonSchemaComparisonError::PropertyConflict(
                 "filter".to_string()
             ))
@@ -1117,7 +1149,13 @@ mod tests {
         );
 
         assert_eq!(
-            merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
+            merge_json_object_shape_annotation_insensitive(
+                SchemaRoot::new(&Value::Null),
+                &mut target,
+                source,
+                0,
+                100
+            ),
             Err(JsonSchemaComparisonError::PropertyConflict(
                 "filter".to_string()
             ))
@@ -1154,7 +1192,13 @@ mod tests {
         );
 
         assert_eq!(
-            merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
+            merge_json_object_shape_annotation_insensitive(
+                SchemaRoot::new(&Value::Null),
+                &mut target,
+                source,
+                0,
+                100
+            ),
             Err(JsonSchemaComparisonError::PropertyConflict(
                 "filter".to_string()
             ))
@@ -1210,7 +1254,14 @@ mod tests {
             }),
         );
 
-        merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
+        merge_json_object_shape_annotation_insensitive(
+            SchemaRoot::new(&Value::Null),
+            &mut target,
+            source,
+            0,
+            100,
+        )
+        .expect("merge");
     }
 
     #[test]
@@ -1245,7 +1296,13 @@ mod tests {
         );
 
         assert_eq!(
-            merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 1),
+            merge_json_object_shape_annotation_insensitive(
+                SchemaRoot::new(&Value::Null),
+                &mut target,
+                source,
+                0,
+                1
+            ),
             Err(JsonSchemaComparisonError::DepthExceeded)
         );
     }

@@ -4015,14 +4015,20 @@ components:
     Base:
       type: object
       properties:
-        id: {type: [string, 'null']}
+        meta:
+          type: object
+          properties:
+            id: {type: [string, 'null']}
     Extra:
       type: object
       properties:
-        id:
-          anyOf:
-            - {type: string}
-            - {type: 'null'}
+        meta:
+          type: object
+          properties:
+            id:
+              anyOf:
+                - {type: string}
+                - {type: 'null'}
         name: {type: string}
     Composed:
       allOf:
@@ -4062,7 +4068,29 @@ paths:
             .iter()
             .map(|field| field.name.as_str())
             .collect::<Vec<_>>(),
-        ["id", "name"]
+        ["meta", "name"]
+    );
+
+    let meta_type_ref = fields
+        .iter()
+        .find(|field| field.name == "meta")
+        .expect("meta field")
+        .type_ref
+        .as_str();
+    let meta_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == meta_type_ref)
+        .expect("meta type");
+    let IrTypeShape::Object { fields } = &meta_type.shape else {
+        panic!("the meta field should import as an object: {meta_type:?}");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id"]
     );
 }
 

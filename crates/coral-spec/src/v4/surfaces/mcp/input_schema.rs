@@ -125,6 +125,7 @@ fn input_object_shape(
                         return Ok(None);
                     };
                     if !merge_input_object_shape(
+                        root,
                         &mut shape,
                         item_shape,
                         context,
@@ -193,13 +194,14 @@ fn validate_required_properties(
 }
 
 fn merge_input_object_shape(
+    root: SchemaRoot<'_>,
     target: &mut JsonObjectShape,
     source: JsonObjectShape,
     context: &mut InputSchemaContext<'_, '_>,
     depth: usize,
     max_depth: usize,
 ) -> bool {
-    match merge_json_object_shape_annotation_insensitive(target, source, depth, max_depth) {
+    match merge_json_object_shape_annotation_insensitive(root, target, source, depth, max_depth) {
         Ok(()) => true,
         Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
             context.push_warning(format!(
