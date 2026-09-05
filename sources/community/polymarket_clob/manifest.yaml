@@ -1,0 +1,669 @@
+name: polymarket_clob
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query public Polymarket CLOB reads: simplified markets, order books,
+  prices, midpoints, spreads, last trades, tick sizes, and price history.
+base_url: https://clob.polymarket.com
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT condition_id, active, accepting_orders FROM polymarket_clob.simplified_markets LIMIT 5
+  - SELECT condition_id, active FROM polymarket_clob.sampling_markets LIMIT 5
+  - >-
+    SELECT market, tick_size, last_trade_price
+    FROM polymarket_clob.order_book
+    WHERE token_id = '32338220190071351435772801779725302244575775216413325951443816017994629993401'
+    LIMIT 1
+  - >-
+    SELECT market, t, p
+    FROM polymarket_clob.prices_history
+    WHERE market = '32338220190071351435772801779725302244575775216413325951443816017994629993401'
+      AND history_interval = '1d'
+    LIMIT 5
+  - >-
+    SELECT token_id, side, price
+    FROM polymarket_clob.price
+    WHERE token_id = '32338220190071351435772801779725302244575775216413325951443816017994629993401'
+      AND side = 'BUY'
+    LIMIT 1
+
+tables:
+  - name: simplified_markets
+    description: CLOB simplified market list with token metadata and book flags.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /simplified-markets
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: next_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: condition_id
+        type: Utf8
+        nullable: false
+        description: Market condition id.
+        expr:
+          kind: path
+          path:
+            - condition_id
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the market is active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the market is closed.
+        expr:
+          kind: path
+          path:
+            - closed
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the market is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: accepting_orders
+        type: Boolean
+        nullable: true
+        description: Whether the book accepts orders.
+        expr:
+          kind: path
+          path:
+            - accepting_orders
+      - name: tokens
+        type: Json
+        nullable: true
+        description: Outcome token objects for the market.
+        expr:
+          kind: path
+          path:
+            - tokens
+      - name: rewards
+        type: Json
+        nullable: true
+        description: Reward metadata for the market.
+        expr:
+          kind: path
+          path:
+            - rewards
+
+  - name: sampling_markets
+    description: CLOB sampling market list used for reward / sampling programs.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /sampling-markets
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: next_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: condition_id
+        type: Utf8
+        nullable: false
+        description: Market condition id.
+        expr:
+          kind: path
+          path:
+            - condition_id
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the market is active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the market is closed.
+        expr:
+          kind: path
+          path:
+            - closed
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the market is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: accepting_orders
+        type: Boolean
+        nullable: true
+        description: Whether the book accepts orders.
+        expr:
+          kind: path
+          path:
+            - accepting_orders
+      - name: tokens
+        type: Json
+        nullable: true
+        description: Outcome token objects for the market.
+        expr:
+          kind: path
+          path:
+            - tokens
+      - name: rewards
+        type: Json
+        nullable: true
+        description: Reward metadata for the market.
+        expr:
+          kind: path
+          path:
+            - rewards
+
+  - name: sampling_simplified_markets
+    description: Simplified CLOB sampling-market list.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /sampling-simplified-markets
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: next_cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 100
+        max: 500
+        query_param: limit
+    columns:
+      - name: condition_id
+        type: Utf8
+        nullable: false
+        description: Market condition id.
+        expr:
+          kind: path
+          path:
+            - condition_id
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the market is active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the market is closed.
+        expr:
+          kind: path
+          path:
+            - closed
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the market is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: accepting_orders
+        type: Boolean
+        nullable: true
+        description: Whether the book accepts orders.
+        expr:
+          kind: path
+          path:
+            - accepting_orders
+      - name: tokens
+        type: Json
+        nullable: true
+        description: Outcome token objects for the market.
+        expr:
+          kind: path
+          path:
+            - tokens
+      - name: rewards
+        type: Json
+        nullable: true
+        description: Reward metadata for the market.
+        expr:
+          kind: path
+          path:
+            - rewards
+
+  - name: order_book
+    description: Public order book snapshot for one CLOB token.
+    guide: >-
+      Requires `token_id`. Bids and asks are JSON arrays on a single row.
+    filters:
+      - name: token_id
+        required: true
+        description: CLOB token id.
+    request:
+      method: GET
+      path: /book
+      query:
+        - name: token_id
+          from: filter
+          key: token_id
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: token_id
+        type: Utf8
+        nullable: false
+        description: Requested token id.
+        expr:
+          kind: from_filter
+          key: token_id
+      - name: market
+        type: Utf8
+        nullable: true
+        description: Condition id for the book.
+        expr:
+          kind: path
+          path:
+            - market
+      - name: asset_id
+        type: Utf8
+        nullable: true
+        description: Book asset id.
+        expr:
+          kind: path
+          path:
+            - asset_id
+      - name: timestamp
+        type: Utf8
+        nullable: true
+        description: Book snapshot timestamp.
+        expr:
+          kind: path
+          path:
+            - timestamp
+      - name: hash
+        type: Utf8
+        nullable: true
+        description: Book hash.
+        expr:
+          kind: path
+          path:
+            - hash
+      - name: min_order_size
+        type: Utf8
+        nullable: true
+        description: Minimum order size.
+        expr:
+          kind: path
+          path:
+            - min_order_size
+      - name: tick_size
+        type: Utf8
+        nullable: true
+        description: Tick size.
+        expr:
+          kind: path
+          path:
+            - tick_size
+      - name: neg_risk
+        type: Boolean
+        nullable: true
+        description: Whether the market is negative-risk.
+        expr:
+          kind: path
+          path:
+            - neg_risk
+      - name: last_trade_price
+        type: Utf8
+        nullable: true
+        description: Last trade price on the book.
+        expr:
+          kind: path
+          path:
+            - last_trade_price
+      - name: bids
+        type: Json
+        nullable: true
+        description: Bid levels.
+        expr:
+          kind: path
+          path:
+            - bids
+      - name: asks
+        type: Json
+        nullable: true
+        description: Ask levels.
+        expr:
+          kind: path
+          path:
+            - asks
+
+  - name: price
+    description: Best price for one token and side.
+    filters:
+      - name: token_id
+        required: true
+        description: CLOB token id.
+      - name: side
+        required: true
+        description: Order side (`BUY` or `SELL`).
+    request:
+      method: GET
+      path: /price
+      query:
+        - name: token_id
+          from: filter
+          key: token_id
+        - name: side
+          from: filter
+          key: side
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: token_id
+        type: Utf8
+        nullable: false
+        description: Requested token id.
+        expr:
+          kind: from_filter
+          key: token_id
+      - name: side
+        type: Utf8
+        nullable: false
+        description: Requested side.
+        expr:
+          kind: from_filter
+          key: side
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Best price for that side.
+        expr:
+          kind: path
+          path:
+            - price
+
+  - name: midpoint
+    description: Midpoint price for one token.
+    filters:
+      - name: token_id
+        required: true
+        description: CLOB token id.
+    request:
+      method: GET
+      path: /midpoint
+      query:
+        - name: token_id
+          from: filter
+          key: token_id
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: token_id
+        type: Utf8
+        nullable: false
+        description: Requested token id.
+        expr:
+          kind: from_filter
+          key: token_id
+      - name: mid
+        type: Utf8
+        nullable: true
+        description: Midpoint price.
+        expr:
+          kind: path
+          path:
+            - mid
+
+  - name: spread
+    description: Bid-ask spread for one token.
+    filters:
+      - name: token_id
+        required: true
+        description: CLOB token id.
+    request:
+      method: GET
+      path: /spread
+      query:
+        - name: token_id
+          from: filter
+          key: token_id
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: token_id
+        type: Utf8
+        nullable: false
+        description: Requested token id.
+        expr:
+          kind: from_filter
+          key: token_id
+      - name: spread
+        type: Utf8
+        nullable: true
+        description: Spread value.
+        expr:
+          kind: path
+          path:
+            - spread
+
+  - name: last_trade_price
+    description: Last public trade for one token.
+    filters:
+      - name: token_id
+        required: true
+        description: CLOB token id.
+    request:
+      method: GET
+      path: /last-trade-price
+      query:
+        - name: token_id
+          from: filter
+          key: token_id
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: token_id
+        type: Utf8
+        nullable: false
+        description: Requested token id.
+        expr:
+          kind: from_filter
+          key: token_id
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Last trade price.
+        expr:
+          kind: path
+          path:
+            - price
+      - name: side
+        type: Utf8
+        nullable: true
+        description: Last trade side.
+        expr:
+          kind: path
+          path:
+            - side
+
+  - name: tick_size
+    description: Minimum tick size for one token.
+    filters:
+      - name: token_id
+        required: true
+        description: CLOB token id.
+    request:
+      method: GET
+      path: /tick-size
+      query:
+        - name: token_id
+          from: filter
+          key: token_id
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: token_id
+        type: Utf8
+        nullable: false
+        description: Requested token id.
+        expr:
+          kind: from_filter
+          key: token_id
+      - name: minimum_tick_size
+        type: Float64
+        nullable: true
+        description: Minimum tick size.
+        expr:
+          kind: path
+          path:
+            - minimum_tick_size
+
+  - name: fee_rate
+    description: Base fee rate for one token.
+    filters:
+      - name: token_id
+        required: true
+        description: CLOB token id.
+    request:
+      method: GET
+      path: /fee-rate
+      query:
+        - name: token_id
+          from: filter
+          key: token_id
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: token_id
+        type: Utf8
+        nullable: false
+        description: Requested token id.
+        expr:
+          kind: from_filter
+          key: token_id
+      - name: base_fee
+        type: Int64
+        nullable: true
+        description: Base fee.
+        expr:
+          kind: path
+          path:
+            - base_fee
+
+  - name: prices_history
+    description: Historical price points for one token.
+    guide: >-
+      Requires `market` (CLOB token id) and `history_interval` (`1d`,
+      `6h`, `1h`, or `max`). `interval` is a SQL reserved word, so the
+      filter is named `history_interval`.
+    filters:
+      - name: market
+        required: true
+        description: CLOB token id (the prices-history `market` query).
+      - name: history_interval
+        required: true
+        description: History interval (`1d`, `6h`, `1h`, or `max`).
+    request:
+      method: GET
+      path: /prices-history
+      query:
+        - name: market
+          from: filter
+          key: market
+        - name: interval
+          from: filter
+          key: history_interval
+    response:
+      rows_path:
+        - history
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: market
+        type: Utf8
+        nullable: false
+        description: Requested token id.
+        expr:
+          kind: from_filter
+          key: market
+      - name: history_interval
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested history interval.
+        expr:
+          kind: from_filter
+          key: history_interval
+      - name: t
+        type: Timestamp
+        nullable: true
+        description: Price point timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - t
+      - name: p
+        type: Float64
+        nullable: true
+        description: Price at that timestamp.
+        expr:
+          kind: path
+          path:
+            - p

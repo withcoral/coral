@@ -1,0 +1,1223 @@
+name: polymarket
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Polymarket Gamma catalog data: markets, events, tags, series,
+  sports metadata, and public profiles.
+base_url: https://gamma-api.polymarket.com
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - >-
+    SELECT id, question, volume_24hr, active
+    FROM polymarket.markets
+    WHERE active_filter = 'true' AND sort_by = 'volume24hr'
+    LIMIT 5
+  - >-
+    SELECT id, title, volume, active
+    FROM polymarket.events
+    WHERE active_filter = 'true'
+    LIMIT 5
+  - SELECT id, label, slug FROM polymarket.tags LIMIT 5
+  - >-
+    SELECT id, question, condition_id
+    FROM polymarket.markets
+    WHERE condition_id = '0xa467b14d51f01b957109d9cbb1d6c124fab2a089d52ed8f471d23c2812e743b7'
+    LIMIT 5
+  - SELECT id, title, ticker FROM polymarket.series LIMIT 5
+  - SELECT id, sport, name FROM polymarket.sports LIMIT 5
+  - >-
+    SELECT proxy_wallet, name, verified_badge
+    FROM polymarket.public_profiles
+    WHERE address = '0x34dd4a4b70eaf79a17878f7938263c801d4dfd83'
+    LIMIT 1
+
+tables:
+  - name: markets
+    description: >-
+      Prediction markets from the Gamma catalog, including question text,
+      condition id, volume, liquidity, and book flags.
+    guide: >-
+      `SELECT question, volume_24hr, best_bid, best_ask FROM polymarket.markets
+      WHERE active_filter = 'true' ORDER BY volume_24hr DESC LIMIT 20`.
+      Join to CLOB and data tables on condition_id. Use `active_filter` for
+      the Gamma query param; `active` is the Boolean response column.
+    fetch_limit_default: 50
+    filters:
+      - name: id
+        required: false
+        description: Gamma market id.
+      - name: slug
+        required: false
+        description: Market slug.
+      - name: active_filter
+        required: false
+        description: Gamma `active` query (`true` or `false`).
+      - name: closed_filter
+        required: false
+        description: Gamma `closed` query (`true` or `false`).
+      - name: archived_filter
+        required: false
+        description: Gamma `archived` query (`true` or `false`).
+      - name: tag_id
+        required: false
+        description: Gamma tag id.
+      - name: tag
+        required: false
+        description: Tag slug.
+      - name: condition_id
+        required: false
+        description: On-chain condition id.
+      - name: sort_by
+        required: false
+        description: Gamma `order` field such as volume24hr or volume.
+      - name: ascending
+        required: false
+        description: Sort ascending (`true` or `false`).
+    request:
+      method: GET
+      path: /markets
+      query:
+        - name: id
+          from: filter
+          key: id
+        - name: slug
+          from: filter
+          key: slug
+        - name: active
+          from: filter
+          key: active_filter
+        - name: closed
+          from: filter
+          key: closed_filter
+        - name: archived
+          from: filter
+          key: archived_filter
+        - name: tag_id
+          from: filter
+          key: tag_id
+        - name: tag
+          from: filter
+          key: tag
+        - name: condition_ids
+          from: filter
+          key: condition_id
+        - name: order
+          from: filter
+          key: sort_by
+        - name: ascending
+          from: filter
+          key: ascending
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gamma market id.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: question
+        type: Utf8
+        nullable: true
+        description: Market question text.
+        expr:
+          kind: path
+          path:
+            - question
+      - name: condition_id
+        type: Utf8
+        nullable: true
+        description: On-chain condition id used as the CLOB/data join key.
+        expr:
+          kind: path
+          path:
+            - conditionId
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL slug for the market.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Resolution rules and market description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: resolution_source
+        type: Utf8
+        nullable: true
+        description: Stated resolution source.
+        expr:
+          kind: path
+          path:
+            - resolutionSource
+      - name: outcomes
+        type: Utf8
+        nullable: true
+        description: JSON-encoded outcome labels as returned by Gamma.
+        expr:
+          kind: path
+          path:
+            - outcomes
+      - name: outcome_prices
+        type: Utf8
+        nullable: true
+        description: JSON-encoded outcome prices as returned by Gamma.
+        expr:
+          kind: path
+          path:
+            - outcomePrices
+      - name: clob_token_ids
+        type: Utf8
+        nullable: true
+        description: JSON-encoded CLOB token ids for each outcome.
+        expr:
+          kind: path
+          path:
+            - clobTokenIds
+      - name: volume
+        type: Utf8
+        nullable: true
+        description: Lifetime volume string from the list payload.
+        expr:
+          kind: path
+          path:
+            - volume
+      - name: volume_num
+        type: Float64
+        nullable: true
+        description: Lifetime volume as a number.
+        expr:
+          kind: path
+          path:
+            - volumeNum
+      - name: volume_24hr
+        type: Float64
+        nullable: true
+        description: Rolling 24-hour volume.
+        expr:
+          kind: path
+          path:
+            - volume24hr
+      - name: volume_1wk
+        type: Float64
+        nullable: true
+        description: Rolling 1-week volume.
+        expr:
+          kind: path
+          path:
+            - volume1wk
+      - name: volume_1mo
+        type: Float64
+        nullable: true
+        description: Rolling 1-month volume.
+        expr:
+          kind: path
+          path:
+            - volume1mo
+      - name: liquidity
+        type: Utf8
+        nullable: true
+        description: Listed liquidity string from the list payload.
+        expr:
+          kind: path
+          path:
+            - liquidity
+      - name: liquidity_num
+        type: Float64
+        nullable: true
+        description: Listed liquidity as a number.
+        expr:
+          kind: path
+          path:
+            - liquidityNum
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the market is currently active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the market is closed.
+        expr:
+          kind: path
+          path:
+            - closed
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the market is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: featured
+        type: Boolean
+        nullable: true
+        description: Whether Gamma marks the market as featured.
+        expr:
+          kind: path
+          path:
+            - featured
+      - name: restricted
+        type: Boolean
+        nullable: true
+        description: Whether the market is geo-restricted.
+        expr:
+          kind: path
+          path:
+            - restricted
+      - name: enable_order_book
+        type: Boolean
+        nullable: true
+        description: Whether the CLOB order book is enabled.
+        expr:
+          kind: path
+          path:
+            - enableOrderBook
+      - name: accepting_orders
+        type: Boolean
+        nullable: true
+        description: Whether the book is currently accepting orders.
+        expr:
+          kind: path
+          path:
+            - acceptingOrders
+      - name: best_bid
+        type: Float64
+        nullable: true
+        description: Best bid price on the last list snapshot.
+        expr:
+          kind: path
+          path:
+            - bestBid
+      - name: best_ask
+        type: Float64
+        nullable: true
+        description: Best ask price on the last list snapshot.
+        expr:
+          kind: path
+          path:
+            - bestAsk
+      - name: last_trade_price
+        type: Float64
+        nullable: true
+        description: Last trade price on the last list snapshot.
+        expr:
+          kind: path
+          path:
+            - lastTradePrice
+      - name: spread
+        type: Float64
+        nullable: true
+        description: Bid-ask spread on the last list snapshot.
+        expr:
+          kind: path
+          path:
+            - spread
+      - name: one_day_price_change
+        type: Float64
+        nullable: true
+        description: One-day price change.
+        expr:
+          kind: path
+          path:
+            - oneDayPriceChange
+      - name: competitive
+        type: Float64
+        nullable: true
+        description: Gamma competitiveness score.
+        expr:
+          kind: path
+          path:
+            - competitive
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Market start timestamp.
+        expr:
+          kind: path
+          path:
+            - startDate
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Market end timestamp.
+        expr:
+          kind: path
+          path:
+            - endDate
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Row created-at timestamp.
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Row updated-at timestamp.
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: image
+        type: Utf8
+        nullable: true
+        description: Market image URL.
+        expr:
+          kind: path
+          path:
+            - image
+      - name: events
+        type: Json
+        nullable: true
+        description: Nested event objects attached to the market row.
+        expr:
+          kind: path
+          path:
+            - events
+      - name: active_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gamma `active` query (`true` or `false`).
+        expr:
+          kind: from_filter
+          key: active_filter
+      - name: closed_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gamma `closed` query (`true` or `false`).
+        expr:
+          kind: from_filter
+          key: closed_filter
+      - name: archived_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gamma `archived` query (`true` or `false`).
+        expr:
+          kind: from_filter
+          key: archived_filter
+      - name: tag_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested Gamma tag id.
+        expr:
+          kind: from_filter
+          key: tag_id
+      - name: tag
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested tag slug.
+        expr:
+          kind: from_filter
+          key: tag
+      - name: sort_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested Gamma `order` field such as volume24hr.
+        expr:
+          kind: from_filter
+          key: sort_by
+      - name: ascending
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested Gamma `ascending` query.
+        expr:
+          kind: from_filter
+          key: ascending
+
+  - name: events
+    description: >-
+      Top-level Gamma events that group one or more markets.
+    guide: >-
+      `SELECT title, volume, comment_count FROM polymarket.events
+      WHERE active_filter = 'true' LIMIT 20`. Nested markets and tags are
+      JSON. Use `active_filter` for the Gamma query param.
+    fetch_limit_default: 50
+    filters:
+      - name: id
+        required: false
+        description: Gamma event id.
+      - name: slug
+        required: false
+        description: Event slug.
+      - name: ticker
+        required: false
+        description: Event ticker.
+      - name: active_filter
+        required: false
+        description: Gamma `active` query (`true` or `false`).
+      - name: closed_filter
+        required: false
+        description: Gamma `closed` query (`true` or `false`).
+      - name: archived_filter
+        required: false
+        description: Gamma `archived` query (`true` or `false`).
+      - name: tag_id
+        required: false
+        description: Gamma tag id.
+      - name: tag
+        required: false
+        description: Tag slug.
+      - name: sort_by
+        required: false
+        description: Gamma `order` field such as volume24hr or volume.
+      - name: ascending
+        required: false
+        description: Sort ascending (`true` or `false`).
+    request:
+      method: GET
+      path: /events
+      query:
+        - name: id
+          from: filter
+          key: id
+        - name: slug
+          from: filter
+          key: slug
+        - name: ticker
+          from: filter
+          key: ticker
+        - name: active
+          from: filter
+          key: active_filter
+        - name: closed
+          from: filter
+          key: closed_filter
+        - name: archived
+          from: filter
+          key: archived_filter
+        - name: tag_id
+          from: filter
+          key: tag_id
+        - name: tag
+          from: filter
+          key: tag
+        - name: order
+          from: filter
+          key: sort_by
+        - name: ascending
+          from: filter
+          key: ascending
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Gamma event id.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: ticker
+        type: Utf8
+        nullable: true
+        description: Event ticker.
+        expr:
+          kind: path
+          path:
+            - ticker
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL slug for the event.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Event title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Event description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Event category label.
+        expr:
+          kind: path
+          path:
+            - category
+      - name: series_slug
+        type: Utf8
+        nullable: true
+        description: Parent series slug when present.
+        expr:
+          kind: path
+          path:
+            - seriesSlug
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the event is active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the event is closed.
+        expr:
+          kind: path
+          path:
+            - closed
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the event is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: featured
+        type: Boolean
+        nullable: true
+        description: Whether Gamma marks the event as featured.
+        expr:
+          kind: path
+          path:
+            - featured
+      - name: restricted
+        type: Boolean
+        nullable: true
+        description: Whether the event is geo-restricted.
+        expr:
+          kind: path
+          path:
+            - restricted
+      - name: liquidity
+        type: Float64
+        nullable: true
+        description: Event liquidity.
+        expr:
+          kind: path
+          path:
+            - liquidity
+      - name: volume
+        type: Float64
+        nullable: true
+        description: Event lifetime volume.
+        expr:
+          kind: path
+          path:
+            - volume
+      - name: volume_24hr
+        type: Float64
+        nullable: true
+        description: Event 24-hour volume.
+        expr:
+          kind: path
+          path:
+            - volume24hr
+      - name: comment_count
+        type: Int64
+        nullable: true
+        description: Comment count on the event.
+        expr:
+          kind: path
+          path:
+            - commentCount
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Event start timestamp.
+        expr:
+          kind: path
+          path:
+            - startDate
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: Event end timestamp.
+        expr:
+          kind: path
+          path:
+            - endDate
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Row created-at timestamp.
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Row updated-at timestamp.
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: image
+        type: Utf8
+        nullable: true
+        description: Event image URL.
+        expr:
+          kind: path
+          path:
+            - image
+      - name: markets
+        type: Json
+        nullable: true
+        description: Nested market objects on the event row.
+        expr:
+          kind: path
+          path:
+            - markets
+      - name: tags
+        type: Json
+        nullable: true
+        description: Nested tag objects on the event row.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: series
+        type: Json
+        nullable: true
+        description: Nested series objects on the event row.
+        expr:
+          kind: path
+          path:
+            - series
+      - name: active_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gamma `active` query (`true` or `false`).
+        expr:
+          kind: from_filter
+          key: active_filter
+      - name: closed_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gamma `closed` query (`true` or `false`).
+        expr:
+          kind: from_filter
+          key: closed_filter
+      - name: archived_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gamma `archived` query (`true` or `false`).
+        expr:
+          kind: from_filter
+          key: archived_filter
+      - name: tag_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested Gamma tag id.
+        expr:
+          kind: from_filter
+          key: tag_id
+      - name: tag
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested tag slug.
+        expr:
+          kind: from_filter
+          key: tag
+      - name: sort_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested Gamma `order` field such as volume24hr.
+        expr:
+          kind: from_filter
+          key: sort_by
+      - name: ascending
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested Gamma `ascending` query.
+        expr:
+          kind: from_filter
+          key: ascending
+
+  - name: tags
+    description: Catalog tags used to classify Gamma events and markets.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /tags
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tag id.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: label
+        type: Utf8
+        nullable: true
+        description: Tag display label.
+        expr:
+          kind: path
+          path:
+            - label
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Tag slug.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Tag created-at timestamp.
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Tag updated-at timestamp.
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: requires_translation
+        type: Boolean
+        nullable: true
+        description: Whether Gamma flags the tag for translation.
+        expr:
+          kind: path
+          path:
+            - requiresTranslation
+
+  - name: series
+    description: Recurring series (for example NFL) that group events.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /series
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Series id.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: ticker
+        type: Utf8
+        nullable: true
+        description: Series ticker.
+        expr:
+          kind: path
+          path:
+            - ticker
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: Series slug.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Series title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: series_type
+        type: Utf8
+        nullable: true
+        description: Series type.
+        expr:
+          kind: path
+          path:
+            - seriesType
+      - name: recurrence
+        type: Utf8
+        nullable: true
+        description: Recurrence label such as daily.
+        expr:
+          kind: path
+          path:
+            - recurrence
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Series description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the series is active.
+        expr:
+          kind: path
+          path:
+            - active
+      - name: closed
+        type: Boolean
+        nullable: true
+        description: Whether the series is closed.
+        expr:
+          kind: path
+          path:
+            - closed
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the series is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: featured
+        type: Boolean
+        nullable: true
+        description: Whether the series is featured.
+        expr:
+          kind: path
+          path:
+            - featured
+      - name: volume_24hr
+        type: Float64
+        nullable: true
+        description: Series 24-hour volume.
+        expr:
+          kind: path
+          path:
+            - volume24hr
+      - name: comment_count
+        type: Int64
+        nullable: true
+        description: Comment count on the series.
+        expr:
+          kind: path
+          path:
+            - commentCount
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: Series start timestamp.
+        expr:
+          kind: path
+          path:
+            - startDate
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Row created-at timestamp.
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        description: Row updated-at timestamp.
+        expr:
+          kind: path
+          path:
+            - updatedAt
+      - name: events
+        type: Json
+        nullable: true
+        description: Nested events attached to the series row.
+        expr:
+          kind: path
+          path:
+            - events
+
+  - name: sports
+    description: Sports metadata used to organize sports markets and series.
+    fetch_limit_default: 200
+    request:
+      method: GET
+      path: /sports
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Sports metadata id.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: sport
+        type: Utf8
+        nullable: true
+        description: Sport slug such as nfl or nba.
+        expr:
+          kind: path
+          path:
+            - sport
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Sport display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: image
+        type: Utf8
+        nullable: true
+        description: Sport image URL.
+        expr:
+          kind: path
+          path:
+            - image
+      - name: resolution
+        type: Utf8
+        nullable: true
+        description: Resolution notes.
+        expr:
+          kind: path
+          path:
+            - resolution
+      - name: ordering
+        type: Utf8
+        nullable: true
+        description: Display ordering key.
+        expr:
+          kind: path
+          path:
+            - ordering
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Associated tags as returned by Gamma.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: primary_tag_id
+        type: Int64
+        nullable: true
+        description: Primary tag id.
+        expr:
+          kind: path
+          path:
+            - primaryTagId
+      - name: series
+        type: Utf8
+        nullable: true
+        description: Associated series identifier.
+        expr:
+          kind: path
+          path:
+            - series
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Row created-at timestamp.
+        expr:
+          kind: path
+          path:
+            - createdAt
+
+  - name: public_profiles
+    description: >-
+      Public profile for a wallet address, including display name and
+      verified-badge state.
+    guide: >-
+      Requires `address`. Example:
+      `SELECT name, verified_badge FROM polymarket.public_profiles
+      WHERE address = '0x34dd4a4b70eaf79a17878f7938263c801d4dfd83'`.
+    filters:
+      - name: address
+        required: true
+        description: Wallet address (0x...).
+    request:
+      method: GET
+      path: /public-profile
+      query:
+        - name: address
+          from: filter
+          key: address
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: address
+        type: Utf8
+        nullable: false
+        description: Requested wallet address.
+        expr:
+          kind: from_filter
+          key: address
+      - name: proxy_wallet
+        type: Utf8
+        nullable: true
+        description: Profile proxy wallet.
+        expr:
+          kind: path
+          path:
+            - proxyWallet
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Public display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: pseudonym
+        type: Utf8
+        nullable: true
+        description: Generated pseudonym.
+        expr:
+          kind: path
+          path:
+            - pseudonym
+      - name: verified_badge
+        type: Boolean
+        nullable: true
+        description: Whether the profile has a verified badge.
+        expr:
+          kind: path
+          path:
+            - verifiedBadge
+      - name: display_username_public
+        type: Boolean
+        nullable: true
+        description: Whether the username is public.
+        expr:
+          kind: path
+          path:
+            - displayUsernamePublic
+      - name: taker_tier
+        type: Int64
+        nullable: true
+        description: Taker tier number.
+        expr:
+          kind: path
+          path:
+            - takerTier
+      - name: taker_tier_name
+        type: Utf8
+        nullable: true
+        description: Taker tier label.
+        expr:
+          kind: path
+          path:
+            - takerTierName
+      - name: weighted_volume
+        type: Float64
+        nullable: true
+        description: Weighted volume on the profile.
+        expr:
+          kind: path
+          path:
+            - weightedVolume
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: Profile created-at timestamp.
+        expr:
+          kind: path
+          path:
+            - createdAt
+      - name: users
+        type: Json
+        nullable: true
+        description: Nested user records on the profile.
+        expr:
+          kind: path
+          path:
+            - users
