@@ -1347,6 +1347,7 @@ fn stable_oauth_flow_kind(kind: ManifestOAuthFlowKind) -> &'static str {
     match kind {
         ManifestOAuthFlowKind::AuthorizationCode => "authorization_code",
         ManifestOAuthFlowKind::DeviceCode => "device_code",
+        ManifestOAuthFlowKind::ClientCredentials => "client_credentials",
     }
 }
 

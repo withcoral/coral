@@ -1304,13 +1304,13 @@ Supported credential method types:
 - `source_config`: read the secret from an environment variable by default, or
   from an interactive prompt when `coral source add --interactive` is used. When
   `credential` is omitted, Coral uses this behavior.
-- `oauth`: run an OAuth device-code or authorization-code flow and store the
-  returned access token in the same source secret.
+- `oauth`: run an OAuth device-code, authorization-code, or client-credentials
+  flow and store the returned access token in the same source secret.
 
-Use `type: oauth` when the provider should issue the source secret through a
-device-code or browser-based OAuth setup instead of asking the user to paste a
-token. If you want to support both flows, list the OAuth method first and add a
-`source_config` fallback for users who already have a token.
+Use `type: oauth` when the provider should issue the source secret through an
+OAuth setup instead of asking the user to paste a token. If you want to support
+both setup paths, list the OAuth method first and add a `source_config` fallback
+for users who already have a token.
 
 Each method accepts three optional display fields used during interactive
 install (`coral source add --interactive`) and in the generated source docs:
@@ -1395,7 +1395,8 @@ inputs:
 
 ### OAuth flow and client settings
 
-OAuth supports device-code flow and authorization-code flow.
+OAuth supports device-code flow, authorization-code flow, and
+client-credentials flow.
 
 For device-code flow, declare `flow.type: device_code`,
 `endpoints.device_authorization_url`, `endpoints.token_url`, and either static
@@ -1418,14 +1419,25 @@ sent only to the token endpoint and are never included in the authorization URL.
 They may be stored as internal credential metadata so Coral can refresh the
 access token without prompting the user again.
 
-OAuth methods can also declare `client.dynamic_registration` with a
-`registration_url`. When no static client ID is provided, Coral dynamically
-registers a client during interactive credential setup and uses the returned
-client ID, optional client secret, and token endpoint auth method for the
-OAuth flow. Coral always sends `application_type: native` during Dynamic Client
-Registration because Coral OAuth setup uses native-app flows: loopback
-authorization-code redirects or device code. Source specs cannot configure a
-`web` Dynamic Client Registration application type. Set
+For client-credentials flow, declare `flow.type: client_credentials`,
+`endpoints.token_url`, `client.id.input`, `client.secret.input`, and a
+`client.secret.transport` of `basic_auth` or `request_body`. Client-credentials
+OAuth does not use user authorization, redirect URI fields, authorization or
+device-authorization endpoints, PKCE, or Dynamic Client Registration. Coral
+exchanges the client credentials for an access token during source setup and
+stores the client metadata needed to re-mint the access token when the token
+response includes usable `expires_in` metadata. Without that expiry signal,
+users must reconnect after the provider stops accepting the token.
+
+Authorization-code and device-code methods can also declare
+`client.dynamic_registration` with a `registration_url`. When no static client
+ID is provided, Coral dynamically registers a client during interactive
+credential setup and uses the returned client ID, optional client secret, and
+token endpoint auth method for the OAuth flow. Coral always sends
+`application_type: native` during Dynamic Client Registration because these
+OAuth setup paths use native-app flows: loopback authorization-code redirects
+or device code. Source specs cannot configure a `web` Dynamic Client
+Registration application type. Set
 `request_refresh_token_grant: true` only when the provider supports registering
 clients for refresh-token grants and the source should request refresh-token
 support; otherwise Coral registers only the primary OAuth flow grant and still
@@ -1433,7 +1445,8 @@ stores refresh tokens opportunistically if the token endpoint returns them.
 
 Use `resource` when the authorization server expects an OAuth resource
 indicator, such as OAuth-protected Streamable HTTP MCP servers. Coral sends the
-same resource value on authorization, device-code, token, and refresh requests.
+same resource value on the requests relevant to the selected flow, including
+client-credentials token minting and re-minting.
 
 OAuth URLs may include `{{input.KEY}}` templates for declared
 `kind: variable` inputs, which Coral renders during OAuth credential setup. Use
@@ -1444,8 +1457,9 @@ support secret inputs, filters, function arguments, state, or inline defaults.
 
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
 `scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral stores OAuth
-metadata alongside the source secret and preserves rotated refresh tokens when
-the provider returns a new one during refresh.
+metadata alongside the source secret, preserves rotated refresh tokens when
+the provider returns a new one during refresh, and reuses declared scopes when
+re-minting client-credentials access tokens.
 
 ### OAuth redirect URIs
 

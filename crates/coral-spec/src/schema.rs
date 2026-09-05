@@ -726,6 +726,63 @@ tables:
     }
 
     #[test]
+    fn validate_manifest_schema_enforces_client_credentials_oauth_shape() {
+        let mut manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: client_credentials
+            resource: https://api.example.com/
+            endpoints:
+              token_url: https://provider.example.com/oauth/token
+            client:
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+                transport: basic_auth
+base_url: https://api.example.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: API_TOKEN
+tables:
+  - name: hello
+    description: Hello table
+    request:
+      method: GET
+      path: /hello
+    columns:
+      - name: id
+        type: Utf8
+",
+        );
+
+        validate_manifest_schema(&manifest)
+            .expect("client-credentials OAuth should pass schema validation");
+
+        manifest
+            .pointer_mut("/inputs/API_TOKEN/credential/methods/0/oauth/flow")
+            .and_then(JsonValue::as_object_mut)
+            .expect("client credentials flow")
+            .insert("pkce".to_string(), json!("disabled"));
+        validate_manifest_schema(&manifest)
+            .expect_err("client-credentials OAuth must not declare PKCE");
+    }
+
+    #[test]
     fn validate_manifest_schema_rejects_unknown_dynamic_registration_field() {
         let manifest = manifest_json(
             r"

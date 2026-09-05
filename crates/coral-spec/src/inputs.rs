@@ -291,6 +291,8 @@ pub enum ManifestOAuthFlowKind {
     AuthorizationCode,
     /// OAuth 2.0 device authorization grant.
     DeviceCode,
+    /// OAuth 2.0 client-credentials grant.
+    ClientCredentials,
 }
 
 /// Supported PKCE modes for OAuth credential retrieval.
@@ -976,7 +978,7 @@ fn parse_oauth_with_options(
         oauth.contains_key("redirect_uri_port_mode"),
         authorization_url.as_deref(),
         device_authorization_url.as_deref(),
-        client.secret.is_some(),
+        &client,
     )?;
     if let Some(redirect_uri) = redirect_uri.as_deref() {
         validate_loopback_redirect_uri(oauth_path, redirect_uri, redirect_uri_port_mode)?;
@@ -1025,6 +1027,7 @@ fn parse_oauth_flow(oauth_path: &str, value: &Value) -> Result<ManifestOAuthFlow
     let kind = match flow.get("type").and_then(Value::as_str) {
         Some("authorization_code") => ManifestOAuthFlowKind::AuthorizationCode,
         Some("device_code") => ManifestOAuthFlowKind::DeviceCode,
+        Some("client_credentials") => ManifestOAuthFlowKind::ClientCredentials,
         Some(other) => {
             return Err(ManifestError::validation(format!(
                 "{oauth_path}.flow.type has unsupported value '{other}'"
@@ -1036,11 +1039,26 @@ fn parse_oauth_flow(oauth_path: &str, value: &Value) -> Result<ManifestOAuthFlow
             )));
         }
     };
-    let pkce = match (kind, flow.get("pkce").and_then(Value::as_str)) {
+    if kind == ManifestOAuthFlowKind::ClientCredentials && flow.contains_key("pkce") {
+        return Err(ManifestError::validation(format!(
+            "{oauth_path}.flow must not declare pkce for client_credentials"
+        )));
+    }
+    let pkce = flow
+        .get("pkce")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                ManifestError::validation(format!("{oauth_path}.flow.pkce must be a string"))
+            })
+        })
+        .transpose()?;
+    let pkce = match (kind, pkce) {
         (ManifestOAuthFlowKind::AuthorizationCode, Some("required")) => {
             ManifestOAuthPkceMode::Required
         }
-        (_, Some("disabled")) | (ManifestOAuthFlowKind::DeviceCode, None) => {
+        (_, Some("disabled"))
+        | (ManifestOAuthFlowKind::DeviceCode | ManifestOAuthFlowKind::ClientCredentials, None) => {
             ManifestOAuthPkceMode::Disabled
         }
         (ManifestOAuthFlowKind::DeviceCode, Some("required")) => {
@@ -1288,7 +1306,7 @@ fn validate_oauth_flow_fields(
     has_redirect_uri_port_mode: bool,
     authorization_url: Option<&str>,
     device_authorization_url: Option<&str>,
-    has_client_secret: bool,
+    client: &ManifestOAuthClientSpec,
 ) -> Result<()> {
     match flow.kind {
         ManifestOAuthFlowKind::AuthorizationCode => {
@@ -1304,32 +1322,73 @@ fn validate_oauth_flow_fields(
             }
         }
         ManifestOAuthFlowKind::DeviceCode => {
-            if redirect_uri.is_some() {
-                return Err(ManifestError::validation(format!(
-                    "{oauth_path}: device_code oauth method must not declare redirect_uri"
-                )));
-            }
-            if has_redirect_uri_port_mode {
-                return Err(ManifestError::validation(format!(
-                    "{oauth_path}: device_code oauth method must not declare redirect_uri_port_mode"
-                )));
-            }
-            if authorization_url.is_some() {
-                return Err(ManifestError::validation(format!(
-                    "{oauth_path}: device_code oauth method must not declare endpoints.authorization_url"
-                )));
-            }
+            validate_non_interactive_oauth_fields(
+                oauth_path,
+                "device_code",
+                redirect_uri,
+                has_redirect_uri_port_mode,
+                authorization_url,
+            )?;
             if device_authorization_url.is_none() {
                 return Err(ManifestError::validation(format!(
                     "{oauth_path}: device_code oauth method is missing endpoints.device_authorization_url"
                 )));
             }
-            if has_client_secret {
+            if client.secret.is_some() {
                 return Err(ManifestError::validation(format!(
                     "{oauth_path}: device_code oauth method must not declare client.secret"
                 )));
             }
         }
+        ManifestOAuthFlowKind::ClientCredentials => {
+            validate_non_interactive_oauth_fields(
+                oauth_path,
+                "client_credentials",
+                redirect_uri,
+                has_redirect_uri_port_mode,
+                authorization_url,
+            )?;
+            if device_authorization_url.is_some() {
+                return Err(ManifestError::validation(format!(
+                    "{oauth_path}: client_credentials oauth method must not declare endpoints.device_authorization_url"
+                )));
+            }
+            if client.secret.is_none() {
+                return Err(ManifestError::validation(format!(
+                    "{oauth_path}: client_credentials oauth method requires client.secret"
+                )));
+            }
+            if client.dynamic_registration.is_some() {
+                return Err(ManifestError::validation(format!(
+                    "{oauth_path}: client_credentials oauth method must not declare client.dynamic_registration"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_non_interactive_oauth_fields(
+    oauth_path: &str,
+    flow_label: &str,
+    redirect_uri: Option<&str>,
+    has_redirect_uri_port_mode: bool,
+    authorization_url: Option<&str>,
+) -> Result<()> {
+    if redirect_uri.is_some() {
+        return Err(ManifestError::validation(format!(
+            "{oauth_path}: {flow_label} oauth method must not declare redirect_uri"
+        )));
+    }
+    if has_redirect_uri_port_mode {
+        return Err(ManifestError::validation(format!(
+            "{oauth_path}: {flow_label} oauth method must not declare redirect_uri_port_mode"
+        )));
+    }
+    if authorization_url.is_some() {
+        return Err(ManifestError::validation(format!(
+            "{oauth_path}: {flow_label} oauth method must not declare endpoints.authorization_url"
+        )));
     }
     Ok(())
 }
@@ -1657,6 +1716,28 @@ tables: []
         ))
     }
 
+    fn client_credentials_oauth_input() -> String {
+        r"
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: client_credentials
+            endpoints:
+              token_url: https://provider.example.com/oauth/token
+            client:
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+                transport: basic_auth
+"
+        .to_string()
+    }
+
     #[test]
     fn reserved_input_key_prefix_is_rejected() {
         let error = collect(&manifest_with_input(
@@ -1906,6 +1987,58 @@ tables: []
     }
 
     #[test]
+    fn parses_oauth_client_credentials_flow() {
+        let inputs = collect(&manifest_with_input(
+            r"
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          oauth:
+            flow:
+              type: client_credentials
+            resource: https://provider.example.com/
+            endpoints:
+              token_url: https://provider.example.com/oauth/token
+            client:
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+                transport: basic_auth
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+",
+        ))
+        .expect("inputs");
+        let oauth = inputs[0].credential.as_ref().expect("credential").methods[0]
+            .oauth
+            .as_ref()
+            .expect("oauth");
+        assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::ClientCredentials);
+        assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Disabled);
+        assert_eq!(
+            oauth.resource.as_deref(),
+            Some("https://provider.example.com/")
+        );
+        assert!(oauth.redirect_uri.is_none());
+        assert!(oauth.authorization_url.is_none());
+        assert!(oauth.device_authorization_url.is_none());
+        assert_eq!(oauth.client.id.input.as_deref(), Some("OAUTH_CLIENT_ID"));
+        assert_eq!(
+            oauth.client.secret.as_ref().expect("secret").transport,
+            ManifestOAuthClientSecretTransport::BasicAuth
+        );
+        assert!(oauth.client.dynamic_registration.is_none());
+    }
+
+    #[test]
     fn parses_oauth_public_client_with_input_client_id() {
         let inputs = collect(&oauth_input(
             r"
@@ -2119,6 +2252,71 @@ tables: []
         )
         .expect_err("optional pkce should fail");
         assert!(error.to_string().contains("unsupported value 'optional'"));
+    }
+
+    #[test]
+    fn rejects_client_credentials_pkce() {
+        for pkce in ["disabled", "required", "false", "null"] {
+            let error = collect(&manifest_with_input(
+                &client_credentials_oauth_input().replace(
+                    "              type: client_credentials\n",
+                    &format!(
+                        "              type: client_credentials\n              pkce: {pkce}\n"
+                    ),
+                ),
+            ))
+            .expect_err("client credentials pkce should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("flow must not declare pkce for client_credentials"),
+                "unexpected error for pkce {pkce}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_client_credentials_without_client_secret() {
+        let error = collect(&manifest_with_input(&client_credentials_oauth_input().replace(
+            "              secret:\n                input: OAUTH_CLIENT_SECRET\n                transport: basic_auth\n",
+            "",
+        )))
+        .expect_err("client credentials without secret should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("client_credentials oauth method requires client.secret")
+        );
+    }
+
+    #[test]
+    fn rejects_client_credentials_redirect_uri() {
+        let error = collect(&manifest_with_input(&client_credentials_oauth_input().replace(
+            "            endpoints:\n",
+            "            redirect_uri: http://127.0.0.1:53682/oauth/callback\n            endpoints:\n",
+        )))
+        .expect_err("client credentials redirect should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("client_credentials oauth method must not declare redirect_uri")
+        );
+    }
+
+    #[test]
+    fn rejects_client_credentials_dynamic_client_registration() {
+        let error = collect(&manifest_with_input(&client_credentials_oauth_input().replace(
+            "              secret:\n                input: OAUTH_CLIENT_SECRET\n                transport: basic_auth\n",
+            "              secret:\n                input: OAUTH_CLIENT_SECRET\n                transport: basic_auth\n              dynamic_registration:\n                registration_url: https://provider.example.com/oauth/register\n                token_endpoint_auth_method: client_secret_basic\n",
+        )))
+        .expect_err("client credentials dynamic registration should fail");
+
+        assert!(error.to_string().contains(
+            "client_credentials oauth method must not declare client.dynamic_registration"
+        ));
     }
 
     #[test]

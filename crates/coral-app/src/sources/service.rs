@@ -809,6 +809,7 @@ fn proto_oauth_flow_kind(kind: ManifestOAuthFlowKind) -> OauthCredentialFlowType
     match kind {
         ManifestOAuthFlowKind::AuthorizationCode => OauthCredentialFlowType::AuthorizationCode,
         ManifestOAuthFlowKind::DeviceCode => OauthCredentialFlowType::DeviceCode,
+        ManifestOAuthFlowKind::ClientCredentials => OauthCredentialFlowType::ClientCredentials,
     }
 }
 
@@ -1219,6 +1220,14 @@ mod tests {
             std::fs::read_to_string(&fixture.config_file).expect("config file"),
             UNPARSEABLE_CONFIG,
             "a refused caller must not have rewritten installed source state"
+        );
+    }
+
+    #[test]
+    fn maps_client_credentials_oauth_flow_to_proto() {
+        assert_eq!(
+            proto_oauth_flow_kind(ManifestOAuthFlowKind::ClientCredentials),
+            OauthCredentialFlowType::ClientCredentials
         );
     }
 

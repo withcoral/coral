@@ -1,8 +1,9 @@
 use crate::v4::{SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4SourceManifest};
 use crate::{
     DatabaseConnectionSpec, DatabaseProvider, ManifestCredentialMethodKind,
-    ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
-    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, parse_source_manifest_yaml,
+    ManifestOAuthClientSecretTransport, ManifestOAuthDynamicClientRegistrationAuthMethod,
+    ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
+    ManifestOAuthScopeDelimiter, parse_source_manifest_yaml,
 };
 
 fn parse_v4_without_schema(
@@ -729,6 +730,71 @@ surface:
         oauth.scopes.as_ref().expect("scopes").scope.delimiter,
         ManifestOAuthScopeDelimiter::Comma
     );
+}
+
+#[test]
+fn parses_v4_client_credentials_oauth_metadata() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+inputs:
+  ACCESS_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: client_credentials
+            resource: https://api.example.com/
+            endpoints:
+              token_url: https://login.example.com/oauth/token
+            client:
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+",
+    )
+    .expect("v4 manifest");
+
+    let oauth = manifest
+        .declared_inputs()
+        .first()
+        .expect("ACCESS_TOKEN input")
+        .credential
+        .as_ref()
+        .expect("credential")
+        .methods
+        .first()
+        .expect("OAuth method")
+        .oauth
+        .as_ref()
+        .expect("oauth");
+    assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::ClientCredentials);
+    assert_eq!(oauth.flow.pkce, ManifestOAuthPkceMode::Disabled);
+    assert_eq!(oauth.resource.as_deref(), Some("https://api.example.com/"));
+    assert_eq!(oauth.token_url, "https://login.example.com/oauth/token");
+    assert_eq!(oauth.client.id.input.as_deref(), Some("OAUTH_CLIENT_ID"));
+    let secret = oauth.client.secret.as_ref().expect("client secret");
+    assert_eq!(secret.input, "OAUTH_CLIENT_SECRET");
+    assert_eq!(
+        secret.transport,
+        ManifestOAuthClientSecretTransport::RequestBody
+    );
+    let scope = &oauth.scopes.as_ref().expect("scopes").scope;
+    assert_eq!(scope.delimiter, ManifestOAuthScopeDelimiter::Space);
+    assert_eq!(scope.values.as_slice(), ["read"]);
 }
 
 #[test]
