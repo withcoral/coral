@@ -28,6 +28,7 @@ use uuid::Uuid;
 use crate::bootstrap::AppError;
 use crate::hash::sha256_hex;
 use crate::sources::SourceName;
+use crate::state::db::MaterializationRecord;
 use crate::state::{
     AppStateLayout, V4OperationMetadataFile, V4OperationMetadataOrigin, V4ProjectionCatalogFile,
     V4ProjectionCatalogOrigin,
@@ -42,6 +43,12 @@ pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
 pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
 pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
 pub(crate) const OPERATION_METADATA_FILENAME: &str = "operation-metadata.yaml";
+pub(crate) const SOURCE_DOCUMENT_RAW_FILENAME: &str = "source-document.raw";
+pub(crate) const SOURCE_DOCUMENT_YAML_FILENAME: &str = "source-document.yaml";
+pub(crate) const SEMANTIC_IR_FILENAME: &str = "semantic-ir.yaml";
+/// The only materialization shape Coral stores; v4 is single-surface with a
+/// flat file layout, so one installed directory is one row.
+pub(crate) const V4_MATERIALIZATION_VERSION: &str = "v4";
 
 type ReportedDiagnosticStateKey = (String, String, String);
 type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<String>>;
@@ -402,9 +409,9 @@ pub(crate) fn load_v4_materialization_with_reporter(
     )?;
     let mut diagnostics = load_optional_diagnostics(&diagnostics_path, &mut load_diagnostics);
     let materialized_dir = layout.v4_materialized_dir(workspace_name, source_name);
-    let raw_source_document_path = materialized_dir.join("source-document.raw");
-    let normalized_source_document_path = materialized_dir.join("source-document.yaml");
-    let semantic_ir_path = materialized_dir.join("semantic-ir.yaml");
+    let raw_source_document_path = materialized_dir.join(SOURCE_DOCUMENT_RAW_FILENAME);
+    let normalized_source_document_path = materialized_dir.join(SOURCE_DOCUMENT_YAML_FILENAME);
+    let semantic_ir_path = materialized_dir.join(SEMANTIC_IR_FILENAME);
     let semantic_ir = read_validated_semantic_ir_with_reporter(
         manifest,
         workspace_name,
@@ -927,8 +934,8 @@ fn write_materialization(
         surface: MaterializedSurface {
             plan: materialized_surface.plan,
             source_document_sha256: Some(materialized_surface.observed_sha256),
-            normalized_source_document_path: temp_dir.join("source-document.yaml"),
-            raw_source_document_path: temp_dir.join("source-document.raw"),
+            normalized_source_document_path: temp_dir.join(SOURCE_DOCUMENT_YAML_FILENAME),
+            raw_source_document_path: temp_dir.join(SOURCE_DOCUMENT_RAW_FILENAME),
         },
         projections: projections.clone(),
         diagnostics: diagnostics.clone(),
@@ -956,20 +963,131 @@ fn write_surface_artifacts(
 ) -> Result<(), AppError> {
     fs::ensure_private_dir(materialized_dir)?;
     std::fs::write(
-        materialized_dir.join("source-document.raw"),
+        materialized_dir.join(SOURCE_DOCUMENT_RAW_FILENAME),
         &materialized_surface.raw_document,
     )?;
     std::fs::write(
-        materialized_dir.join("source-document.yaml"),
+        materialized_dir.join(SOURCE_DOCUMENT_YAML_FILENAME),
         &materialized_surface.normalized_document,
     )?;
     write_yaml(
-        &materialized_dir.join("semantic-ir.yaml"),
+        &materialized_dir.join(SEMANTIC_IR_FILENAME),
         materialized_surface.plan.semantic_ir(),
     )?;
     write_yaml(
         &materialized_dir.join(OPERATION_METADATA_FILENAME),
         materialized_surface.plan.operation_metadata(),
+    )?;
+    Ok(())
+}
+
+/// Reads an installed `materialized/v4` directory back as the record that
+/// reproduces it, or `None` when the source has no materialized directory.
+///
+/// Reads the materialized directory rather than the layout's accessors, which
+/// prefer an operator's override file: the record stores what Coral
+/// materialized, and an override is host-local by design. A directory missing a
+/// required artifact is an error rather than a partial record, leaving each
+/// caller to decide whether that fails its write or is warned about and skipped.
+pub(crate) fn read_v4_materialization_record(
+    materialized_dir: &Path,
+) -> Result<Option<MaterializationRecord>, AppError> {
+    if !materialized_dir.exists() {
+        return Ok(None);
+    }
+    let optional_artifact = |file: &str| -> Result<Option<String>, AppError> {
+        let path = materialized_dir.join(file);
+        if path.exists() {
+            Ok(Some(std::fs::read_to_string(path)?))
+        } else {
+            Ok(None)
+        }
+    };
+    Ok(Some(MaterializationRecord {
+        materialization_version: V4_MATERIALIZATION_VERSION.to_string(),
+        fingerprint_yaml: optional_artifact(FINGERPRINT_FILENAME)?,
+        projections_yaml: std::fs::read_to_string(materialized_dir.join(PROJECTIONS_FILENAME))?,
+        diagnostics_yaml: optional_artifact(DIAGNOSTICS_FILENAME)?,
+        source_document_raw: std::fs::read(materialized_dir.join(SOURCE_DOCUMENT_RAW_FILENAME))?,
+        source_document_yaml: std::fs::read_to_string(
+            materialized_dir.join(SOURCE_DOCUMENT_YAML_FILENAME),
+        )?,
+        semantic_ir_yaml: std::fs::read_to_string(materialized_dir.join(SEMANTIC_IR_FILENAME))?,
+        operation_metadata_yaml: std::fs::read_to_string(
+            materialized_dir.join(OPERATION_METADATA_FILENAME),
+        )?,
+    }))
+}
+
+/// Writes the `materialized/v4` directory one stored record describes.
+///
+/// The inverse of [`read_v4_materialization_record`], and deliberately its
+/// mirror image: the same flat file set, with every optional artifact written
+/// only when the record carries it, and the fingerprint written verbatim. The
+/// verbatim part is load-bearing — the boot pass decides a cache's freshness by
+/// comparing the on-disk fingerprint's bytes against the row's, which is only
+/// well defined while hydration reproduces them exactly.
+///
+/// Installed through the same tmp-dir-and-swap as a freshly materialized
+/// directory, so a crash mid-swap leaves the cache old, new, or absent, never
+/// torn — and an absent one is hydrated again by the next boot.
+pub(crate) fn hydrate_v4_materialization_cache(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    record: &MaterializationRecord,
+) -> Result<(), AppError> {
+    let temp_dir = layout.v4_materialized_tmp_dir(
+        workspace_name,
+        source_name,
+        &new_materialization_suffix("hydrate"),
+    );
+    if let Err(error) = write_materialization_record(&temp_dir, record) {
+        cleanup_materialization_tmp(Some(&temp_dir));
+        return Err(error);
+    }
+    match replace_or_retire_v4_materialization(layout, workspace_name, source_name, Some(&temp_dir))
+    {
+        Ok(backup) => {
+            cleanup_materialization_backup(backup);
+            Ok(())
+        }
+        Err(error) => {
+            cleanup_materialization_tmp(Some(&temp_dir));
+            Err(error)
+        }
+    }
+}
+
+fn write_materialization_record(
+    temp_dir: &Path,
+    record: &MaterializationRecord,
+) -> Result<(), AppError> {
+    if temp_dir.exists() {
+        std::fs::remove_dir_all(temp_dir)?;
+    }
+    fs::ensure_private_dir(temp_dir)?;
+    for (file, contents) in [
+        (FINGERPRINT_FILENAME, record.fingerprint_yaml.as_deref()),
+        (PROJECTIONS_FILENAME, Some(record.projections_yaml.as_str())),
+        (DIAGNOSTICS_FILENAME, record.diagnostics_yaml.as_deref()),
+        (
+            OPERATION_METADATA_FILENAME,
+            Some(record.operation_metadata_yaml.as_str()),
+        ),
+        (
+            SOURCE_DOCUMENT_YAML_FILENAME,
+            Some(record.source_document_yaml.as_str()),
+        ),
+        (SEMANTIC_IR_FILENAME, Some(record.semantic_ir_yaml.as_str())),
+    ] {
+        if let Some(contents) = contents {
+            std::fs::write(temp_dir.join(file), contents)?;
+        }
+    }
+    std::fs::write(
+        temp_dir.join(SOURCE_DOCUMENT_RAW_FILENAME),
+        &record.source_document_raw,
     )?;
     Ok(())
 }

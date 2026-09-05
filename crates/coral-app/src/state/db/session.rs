@@ -10,6 +10,9 @@ use crate::state::db::repositories::gui_onboarding::GuiOnboardingRepo;
 use crate::state::db::repositories::identity_specs::{
     IdentitySpecDocumentsRepo, IdentitySpecsRepo,
 };
+use crate::state::db::repositories::materializations::MaterializationsRepo;
+use crate::state::db::repositories::source_manifests::SourceManifestsRepo;
+use crate::state::db::repositories::sources::SourcesRepo;
 use crate::state::db::repositories::state_migrations::StateMigrationsRepo;
 use crate::state::db::repositories::task_queries::TaskQueriesRepo;
 use crate::state::db::repositories::tasks::TasksRepo;
@@ -75,6 +78,18 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn workspace_members(&mut self) -> WorkspaceMembersRepo<'_, Self> {
         WorkspaceMembersRepo::new(self)
+    }
+
+    fn sources(&mut self) -> SourcesRepo<'_, Self> {
+        SourcesRepo::new(self)
+    }
+
+    fn source_manifests(&mut self) -> SourceManifestsRepo<'_, Self> {
+        SourceManifestsRepo::new(self)
+    }
+
+    fn materializations(&mut self) -> MaterializationsRepo<'_, Self> {
+        MaterializationsRepo::new(self)
     }
 
     fn identity_specs(&mut self) -> IdentitySpecsRepo<'_, Self> {

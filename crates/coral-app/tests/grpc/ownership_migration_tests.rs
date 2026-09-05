@@ -13,11 +13,12 @@ use std::path::Path;
 
 use coral_api::v1::{ListSourcesRequest, WorkspaceRole};
 use coral_client::AppClient;
+use serde_json::json;
 use tonic::{Code, Request};
 
 use crate::harness::{
-    Admission, Install, concealed_refusal, create_workspace, execute_sql, membership_rows,
-    named_workspace,
+    Admission, Install, concealed_refusal, create_workspace, execute_sql, manifest_yaml,
+    membership_rows, named_workspace,
 };
 
 /// The user id the upgrade writes its ownership under.
@@ -49,6 +50,41 @@ version = "0.1.0"
 fn write_legacy_config(config_dir: &Path, config: &str) {
     std::fs::create_dir_all(config_dir).expect("create config dir");
     std::fs::write(config_dir.join("config.toml"), config).expect("write legacy config");
+}
+
+/// Writes the installed manifest that goes with a legacy config entry.
+///
+/// An imported source is a directory of files, not a catalog entry alone: the
+/// boot import reads the manifest to bring the source across, and deliberately
+/// skips one it cannot read rather than importing it half-formed. A fixture
+/// that wrote only the entry would describe an install that never existed.
+fn write_legacy_source(config_dir: &Path, workspace: &str, source: &str) {
+    let source_dir = config_dir
+        .join("workspaces")
+        .join(workspace)
+        .join("sources")
+        .join(source);
+    std::fs::create_dir_all(&source_dir).expect("create legacy source dir");
+    let manifest = manifest_yaml(&json!({
+        "name": source,
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://legacy.example.com",
+        "tables": [{
+            "name": "messages",
+            "description": "Legacy messages",
+            "request": {
+                "method": "GET",
+                "path": "/messages",
+            },
+            "response": {},
+            "columns": [
+                {"name": "id", "type": "Utf8"},
+            ],
+        }],
+    }));
+    std::fs::write(source_dir.join("manifest.yaml"), manifest).expect("write legacy manifest");
 }
 
 fn legacy_config_naming(workspaces: &[&str]) -> String {
@@ -114,6 +150,7 @@ async fn listed_memberships(client: &AppClient) -> Vec<(String, WorkspaceRole)> 
 async fn a_single_user_upgrade_adopts_every_legacy_workspace_once_and_keeps_its_name_and_data() {
     let install = Install::new();
     write_legacy_config(install.config_dir(), LEGACY_CONFIG_WITH_DATA);
+    write_legacy_source(install.config_dir(), "analytics", "legacy_messages");
 
     let deployment = install
         .start(Admission::LocalPrincipal)
