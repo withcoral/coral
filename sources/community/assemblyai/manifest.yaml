@@ -1,0 +1,211 @@
+name: assemblyai
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query speech-to-text transcripts from AssemblyAI. List transcripts
+  with status and metadata, or retrieve full transcript text with
+  confidence scores, speaker labels, and audio duration.
+base_url: https://api.assemblyai.com
+
+inputs:
+  ASSEMBLYAI_API_KEY:
+    kind: secret
+    hint: >-
+      AssemblyAI API key from https://www.assemblyai.com/app/account.
+      Free tier includes 100 hours of transcription.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "{{input.ASSEMBLYAI_API_KEY}}"
+
+test_queries:
+  - SELECT id, status, audio_url, created FROM assemblyai.transcripts LIMIT 3
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # assemblyai.transcripts — List all transcripts
+  # GET /v2/transcript
+  # Pagination via before_id/after_id. Sorted newest to oldest.
+  # --------------------------------------------------------------------------
+  - name: transcripts
+    description: >-
+      Speech-to-text transcripts created in your AssemblyAI account.
+      Sorted from newest to oldest. Transcripts are available for
+      the last 90 days.
+    guide: |
+      No required filters. Start with:
+        SELECT id, status, audio_url, created, completed
+        FROM assemblyai.transcripts LIMIT 10
+      Filter by status:
+        SELECT id, audio_url, created
+        FROM assemblyai.transcripts
+        WHERE status = 'completed' LIMIT 10
+      Filter by creation date:
+        SELECT id, status, created
+        FROM assemblyai.transcripts
+        WHERE created_on = '2026-07-01' LIMIT 10
+      Use the id to query full transcript details with the transcript function.
+    filters:
+      - name: status
+      - name: created_on
+      - name: before_id
+      - name: after_id
+    request:
+      method: GET
+      path: /v2/transcript
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: created_on
+          from: filter
+          key: created_on
+        - name: before_id
+          from: filter
+          key: before_id
+        - name: after_id
+          from: filter
+          key: after_id
+    response:
+      rows_path:
+        - transcripts
+    pagination:
+      mode: none
+      page_size:
+        default: 10
+        max: 200
+        query_param: limit
+    fetch_limit_default: 10
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the transcript.
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Status of the transcript (queued, processing, completed, error).
+      - name: audio_url
+        type: Utf8
+        nullable: false
+        description: URL of the audio/video file that was transcribed.
+        expr:
+          kind: path
+          path:
+            - audio_url
+      - name: resource_url
+        type: Utf8
+        nullable: false
+        description: URL to retrieve the full transcript resource.
+        expr:
+          kind: path
+          path:
+            - resource_url
+      - name: created
+        type: Utf8
+        nullable: false
+        description: When the transcript was created (datetime string).
+      - name: completed
+        type: Utf8
+        nullable: true
+        description: When the transcript was completed (datetime string). Null if not yet completed.
+      - name: error
+        type: Utf8
+        nullable: true
+        description: Error message if the transcript failed.
+
+functions:
+
+  # --------------------------------------------------------------------------
+  # assemblyai.transcript — Get a single transcript by ID
+  # GET /v2/transcript/{transcript_id}
+  # Single object response. Returns full text + metadata.
+  # --------------------------------------------------------------------------
+  - name: transcript
+    kind: table
+    description: >-
+      Retrieve the full transcript for a specific transcription job.
+      Pass the transcript ID as a named argument with
+      `id => '<transcript_id>'`. Returns the complete text,
+      confidence score, audio duration, language, and word-level data.
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+    request:
+      method: GET
+      path: /v2/transcript/{{arg.id}}
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the transcript.
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Status of the transcript (queued, processing, completed, error).
+      - name: text
+        type: Utf8
+        nullable: true
+        description: Full transcribed text of the audio/video file.
+      - name: audio_url
+        type: Utf8
+        nullable: false
+        description: URL of the audio/video file that was transcribed.
+        expr:
+          kind: path
+          path:
+            - audio_url
+      - name: audio_duration
+        type: Int64
+        nullable: true
+        description: Duration of the audio file in seconds.
+        expr:
+          kind: path
+          path:
+            - audio_duration
+      - name: confidence
+        type: Float64
+        nullable: true
+        description: Confidence score for the transcript (0.0 to 1.0).
+      - name: language_code
+        type: Utf8
+        nullable: true
+        description: Language code of the transcript (e.g. en_us).
+        expr:
+          kind: path
+          path:
+            - language_code
+      - name: language_confidence
+        type: Float64
+        nullable: true
+        description: Confidence score for detected language (0.0 to 1.0).
+        expr:
+          kind: path
+          path:
+            - language_confidence
+      - name: words
+        type: Json
+        nullable: true
+        description: Word-level transcript data with timestamps and confidence (JSON array).
+      - name: utterances
+        type: Json
+        nullable: true
+        description: Speaker-labeled utterances with timestamps (JSON array). Populated when speaker_labels is enabled.
+      - name: error
+        type: Utf8
+        nullable: true
+        description: Error message if the transcript failed.
