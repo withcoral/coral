@@ -1,0 +1,5 @@
+{"_spreadsheet_id": "DEMO_SPREADSHEET_ID", "_sheet_name": "App_Master", "_row_number": 1, "data": {"category": "scheduling", "app_name": "Calendly", "subcategory_id": "scheduling_001", "headline": "Online booking", "pricing": "freemium"}}
+{"_spreadsheet_id": "DEMO_SPREADSHEET_ID", "_sheet_name": "App_Master", "_row_number": 2, "data": {"category": "scheduling", "app_name": "Acuity", "subcategory_id": "scheduling_002", "headline": "Self-serve scheduling", "pricing": "paid"}}
+{"_spreadsheet_id": "DEMO_SPREADSHEET_ID", "_sheet_name": "App_Master", "_row_number": 3, "data": {"category": "crm", "app_name": "HubSpot", "subcategory_id": "crm_001", "headline": "All-in-one CRM", "pricing": "freemium"}}
+{"_spreadsheet_id": "DEMO_SPREADSHEET_ID", "_sheet_name": "App_Master", "_row_number": 4, "data": {"category": "crm", "app_name": "Salesforce", "subcategory_id": "crm_002", "headline": "Enterprise CRM", "pricing": "paid"}}
+{"_spreadsheet_id": "DEMO_SPREADSHEET_ID", "_sheet_name": "App_Master", "_row_number": 5, "data": {"category": "support", "app_name": "Zendesk", "subcategory_id": "support_001", "headline": "Customer support suite", "pricing": "paid"}}

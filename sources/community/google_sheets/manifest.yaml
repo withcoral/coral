@@ -1,0 +1,96 @@
+name: google_sheets
+version: 0.1.0
+dsl_version: 3
+backend: file
+description: >-
+  Query Google Sheets data from local JSONL files. Extract spreadsheet
+  rows with proper column headers and sheet metadata through SQL.
+
+test_queries:
+  - SELECT _spreadsheet_id, _sheet_name, _row_number, data FROM google_sheets.rows LIMIT 3
+  - SELECT _spreadsheet_title, sheet_name, row_count FROM google_sheets.sheets LIMIT 3
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # google_sheets.rows — Spreadsheet data rows
+  # --------------------------------------------------------------------------
+  - name: rows
+    description: >-
+      Data rows from Google Sheets with column headers as field names.
+      Each row includes the spreadsheet ID and sheet name for
+      multi-sheet queries. Run the converter script first to populate.
+    guide: |
+      Run the converter script first, setting the API key in the environment:
+        export GOOGLE_SHEETS_API_KEY=YOUR_KEY
+        python3 sources/community/google_sheets/scripts/sheets-to-jsonl.py \
+          --spreadsheet-id SHEET_ID
+      Then query:
+        SELECT * FROM google_sheets.rows LIMIT 10
+      Filter by sheet:
+        SELECT * FROM google_sheets.rows
+        WHERE _sheet_name = 'App_Master' LIMIT 10
+    format: jsonl
+    source:
+      location: file://~/.coral/google_sheets/rows.jsonl
+    columns:
+      - name: _spreadsheet_id
+        type: Utf8
+        nullable: false
+        description: Google Spreadsheet ID.
+      - name: _sheet_name
+        type: Utf8
+        nullable: false
+        description: Sheet tab name within the spreadsheet.
+      - name: _row_number
+        type: Int64
+        nullable: false
+        description: Row number within the sheet (1-indexed, excluding header).
+      - name: data
+        type: Json
+        nullable: false
+        description: Row data as a JSON object with column headers as keys.
+
+  # --------------------------------------------------------------------------
+  # google_sheets.sheets — Sheet metadata
+  # --------------------------------------------------------------------------
+  - name: sheets
+    description: >-
+      Metadata for each sheet tab in the spreadsheet, including name,
+      type, and allocated grid dimensions.
+    guide: |
+      No required filters. Start with:
+        SELECT _spreadsheet_title, sheet_name, row_count, column_count
+        FROM google_sheets.sheets
+    format: jsonl
+    source:
+      location: file://~/.coral/google_sheets/sheets.jsonl
+    columns:
+      - name: _spreadsheet_id
+        type: Utf8
+        nullable: false
+        description: Google Spreadsheet ID.
+      - name: _spreadsheet_title
+        type: Utf8
+        nullable: false
+        description: Title of the spreadsheet.
+      - name: sheet_name
+        type: Utf8
+        nullable: false
+        description: Name of the sheet tab.
+      - name: sheet_id
+        type: Int64
+        nullable: true
+        description: Numeric ID of the sheet tab.
+      - name: sheet_type
+        type: Utf8
+        nullable: false
+        description: Sheet type (GRID, OBJECT, etc.).
+      - name: row_count
+        type: Int64
+        nullable: true
+        description: Allocated grid rows (includes empty rows).
+      - name: column_count
+        type: Int64
+        nullable: true
+        description: Allocated grid columns (includes empty columns).
