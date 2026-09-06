@@ -1,0 +1,338 @@
+name: twilio
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query SMS messages, voice calls, and account details from Twilio.
+  Monitor communication history, delivery status, and usage through SQL.
+base_url: https://api.twilio.com/2010-04-01/Accounts/{{input.TWILIO_ACCOUNT_SID}}
+
+inputs:
+  TWILIO_ACCOUNT_SID:
+    kind: variable
+    hint: >-
+      Twilio Account SID from https://console.twilio.com.
+      Starts with `AC`.
+  TWILIO_BASIC_AUTH:
+    kind: secret
+    hint: >-
+      Base64-encoded "AccountSID:AuthToken" for HTTP Basic auth.
+      Generate from your Account SID and Auth Token (found in
+      the Twilio Console):
+        printf '%s:%s' YOUR_ACCOUNT_SID YOUR_AUTH_TOKEN | base64
+      Paste the full base64 string as the value.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Basic {{input.TWILIO_BASIC_AUTH}}"
+
+test_queries:
+  - SELECT sid, status, friendly_name FROM twilio.account
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # twilio.account — Account details
+  # GET /Accounts/{AccountSid}.json
+  # Path is `.json` because base_url already includes the Account SID.
+  # Single object response.
+  # --------------------------------------------------------------------------
+  - name: account
+    description: >-
+      Twilio account details including status, type, and friendly name.
+      Returns exactly one row.
+    guide: |
+      No required filters. Returns one row:
+        SELECT sid, status, friendly_name, type
+        FROM twilio.account
+    request:
+      method: GET
+      path: .json
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Account SID.
+      - name: friendly_name
+        type: Utf8
+        nullable: true
+        description: Friendly name of the account.
+        expr:
+          kind: path
+          path:
+            - friendly_name
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Account status (active, suspended, closed).
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Account type (Trial, Full).
+      - name: date_created
+        type: Utf8
+        nullable: false
+        description: When the account was created.
+        expr:
+          kind: path
+          path:
+            - date_created
+      - name: date_updated
+        type: Utf8
+        nullable: false
+        description: When the account was last updated.
+        expr:
+          kind: path
+          path:
+            - date_updated
+
+  # --------------------------------------------------------------------------
+  # twilio.messages — SMS/MMS messages
+  # GET /Accounts/{AccountSid}/Messages.json
+  # Array at response.messages. Paginated.
+  # --------------------------------------------------------------------------
+  - name: messages
+    description: >-
+      SMS and MMS messages sent and received through Twilio. Includes
+      body, sender, recipient, delivery status, price, and timestamps.
+    guide: |
+      No required filters. Start with:
+        SELECT sid, direction, "from", "to", body, status
+        FROM twilio.messages LIMIT 10
+      Filter by direction (client-side, not pushed to API):
+        SELECT sid, "from", "to", body
+        FROM twilio.messages
+        WHERE direction = 'outbound-api' LIMIT 10
+    filters:
+      - name: date_sent_after
+        description: Only messages sent after this date (YYYY-MM-DD).
+      - name: date_sent_before
+        description: Only messages sent before this date (YYYY-MM-DD).
+      - name: from_number
+        description: Filter by sender phone number.
+      - name: to_number
+        description: Filter by recipient phone number.
+    request:
+      method: GET
+      path: /Messages.json
+      query:
+        - name: "DateSent>"
+          from: filter
+          key: date_sent_after
+        - name: "DateSent<"
+          from: filter
+          key: date_sent_before
+        - name: From
+          from: filter
+          key: from_number
+        - name: To
+          from: filter
+          key: to_number
+    response:
+      rows_path:
+        - messages
+    pagination:
+      mode: none
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    fetch_limit_default: 50
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the message.
+      - name: direction
+        type: Utf8
+        nullable: true
+        description: Direction of the message (inbound, outbound-api, outbound-call, outbound-reply).
+      - name: from
+        type: Utf8
+        nullable: true
+        description: Sender phone number or short code.
+      - name: to
+        type: Utf8
+        nullable: true
+        description: Recipient phone number.
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Text body of the message.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Delivery status (queued, sending, sent, delivered, undelivered, failed, received).
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Cost of the message as a string (e.g. -0.08320, in price_unit currency).
+      - name: price_unit
+        type: Utf8
+        nullable: true
+        description: Currency of the price (e.g. USD).
+        expr:
+          kind: path
+          path:
+            - price_unit
+      - name: num_segments
+        type: Utf8
+        nullable: true
+        description: Number of message segments.
+        expr:
+          kind: path
+          path:
+            - num_segments
+      - name: error_code
+        type: Utf8
+        nullable: true
+        description: Error code if the message failed.
+        expr:
+          kind: path
+          path:
+            - error_code
+      - name: error_message
+        type: Utf8
+        nullable: true
+        description: Error message if the message failed.
+        expr:
+          kind: path
+          path:
+            - error_message
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: When the message was created.
+        expr:
+          kind: path
+          path:
+            - date_created
+      - name: date_sent
+        type: Utf8
+        nullable: true
+        description: When the message was sent.
+        expr:
+          kind: path
+          path:
+            - date_sent
+
+  # --------------------------------------------------------------------------
+  # twilio.calls — Voice calls
+  # GET /Accounts/{AccountSid}/Calls.json
+  # Array at response.calls. Paginated.
+  # --------------------------------------------------------------------------
+  - name: calls
+    description: >-
+      Voice calls made and received through Twilio. Includes caller,
+      recipient, duration, status, price, and timestamps.
+    guide: |
+      No required filters. Start with:
+        SELECT sid, "from", "to", status, duration, price
+        FROM twilio.calls LIMIT 10
+    filters:
+      - name: start_time_after
+        description: Only calls started after this date (YYYY-MM-DD).
+      - name: start_time_before
+        description: Only calls started before this date (YYYY-MM-DD).
+      - name: from_number
+        description: Filter by caller phone number.
+      - name: to_number
+        description: Filter by recipient phone number.
+      - name: status
+        description: Filter by call status.
+    request:
+      method: GET
+      path: /Calls.json
+      query:
+        - name: "StartTime>"
+          from: filter
+          key: start_time_after
+        - name: "StartTime<"
+          from: filter
+          key: start_time_before
+        - name: From
+          from: filter
+          key: from_number
+        - name: To
+          from: filter
+          key: to_number
+        - name: Status
+          from: filter
+          key: status
+    response:
+      rows_path:
+        - calls
+    pagination:
+      mode: none
+      page_size:
+        default: 50
+        max: 1000
+        query_param: PageSize
+    fetch_limit_default: 50
+    columns:
+      - name: sid
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the call.
+      - name: from
+        type: Utf8
+        nullable: true
+        description: Caller phone number.
+      - name: to
+        type: Utf8
+        nullable: true
+        description: Recipient phone number.
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Call status (queued, ringing, in-progress, completed, busy, failed, no-answer, canceled).
+      - name: direction
+        type: Utf8
+        nullable: true
+        description: Direction of the call (inbound, outbound-api, outbound-dial).
+      - name: duration
+        type: Int64
+        nullable: true
+        description: Duration of the call in seconds.
+      - name: price
+        type: Utf8
+        nullable: true
+        description: Cost of the call as a string (e.g. -0.03000, in price_unit currency).
+      - name: price_unit
+        type: Utf8
+        nullable: true
+        description: Currency of the price (e.g. USD).
+        expr:
+          kind: path
+          path:
+            - price_unit
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: When the call started.
+        expr:
+          kind: path
+          path:
+            - start_time
+      - name: end_time
+        type: Utf8
+        nullable: true
+        description: When the call ended.
+        expr:
+          kind: path
+          path:
+            - end_time
+      - name: date_created
+        type: Utf8
+        nullable: true
+        description: When the call record was created.
+        expr:
+          kind: path
+          path:
+            - date_created
