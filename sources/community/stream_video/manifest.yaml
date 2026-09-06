@@ -1,0 +1,630 @@
+name: stream_video
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query video calls, call details, and call members from Stream Video via the
+  Stream Video API v2. The source provides read-only access to video call
+  data using a server JWT token.
+base_url: https://video.stream-io-api.com/api/v2
+inputs:
+  STREAM_API_KEY:
+    kind: secret
+    hint: >-
+      Stream Video API key from https://dashboard.getstream.io/. Used as a
+      query parameter on every request.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+          description: >-
+            Paste your Stream Video API key from the Stream Dashboard at
+            https://dashboard.getstream.io/.
+  STREAM_SERVER_TOKEN:
+    kind: secret
+    hint: >-
+      Server JWT token for authenticating with the Stream Video API.
+      Generate one from your API secret using the following command:
+
+      HEADER=$(echo -n '{"alg":"HS256","typ":"JWT"}' | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
+      PAYLOAD=$(echo -n '{"server":true}' | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
+      SECRET='<your-api-secret>'
+      SIGNATURE=$(echo -n "${HEADER}.${PAYLOAD}" | openssl dgst -sha256 -hmac "${SECRET}" -binary | openssl base64 -e -A | tr '+/' '-_' | tr -d '=')
+      echo "${HEADER}.${PAYLOAD}.${SIGNATURE}"
+    credential:
+      methods:
+        - type: source_config
+          label: Paste server JWT
+          description: >-
+            Paste a server JWT token generated from your Stream Video API
+            secret. Use the openssl command in the hint above to generate one.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "{{input.STREAM_SERVER_TOKEN}}"
+    - name: stream-auth-type
+      from: template
+      template: "jwt"
+    - name: Content-Type
+      from: template
+      template: "application/json"
+test_queries:
+  - SELECT id, name, organization, placement FROM stream_video.app
+  - SELECT id, call_type, created_by_id, created_at, backstage, captioning, translating, team FROM stream_video.calls LIMIT 3
+tables:
+  - name: app
+    description: >-
+      Get information about the Stream Video app. Returns a single row with
+      the app's ID, name, organization, and placement region.
+    guide: >
+      Use this table to verify connectivity and get basic app metadata.
+    request:
+      method: GET
+      path: /app
+      query:
+        - name: api_key
+          from: input
+          key: STREAM_API_KEY
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Stream app ID.
+        expr:
+          kind: path
+          path:
+            - app
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: App name.
+        expr:
+          kind: path
+          path:
+            - app
+            - name
+      - name: organization
+        type: Utf8
+        nullable: true
+        description: Organization name.
+        expr:
+          kind: path
+          path:
+            - app
+            - organization
+      - name: placement
+        type: Utf8
+        nullable: true
+        description: Server placement region.
+        expr:
+          kind: path
+          path:
+            - app
+            - placement
+
+  - name: calls
+    description: >-
+      Query video calls with optional filters, sorting, and pagination.
+      Returns calls ordered by creation date (newest first).
+    guide: >
+      Query recent calls from your Stream Video app. Each row represents
+      a call with its type, creator, and status flags. Add LIMIT to
+      control the number of results.
+    fetch_limit_default: 25
+    request:
+      method: POST
+      path: /video/calls
+      query:
+        - name: api_key
+          from: input
+          key: STREAM_API_KEY
+      body:
+        - path: [sort]
+          from: literal
+          value:
+            - field: created_at
+              direction: -1
+    response:
+      rows_path:
+        - calls
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - next
+      response_cursor_path:
+        - next
+      page_size:
+        default: 25
+        max: 100
+        body_path:
+          - limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Call ID.
+        expr:
+          kind: path
+          path:
+            - call
+            - id
+      - name: call_type
+        type: Utf8
+        nullable: false
+        description: Call type (e.g. default, livestream, audio_room).
+        expr:
+          kind: path
+          path:
+            - call
+            - type
+      - name: cid
+        type: Utf8
+        nullable: false
+        description: Call CID (type:id).
+        expr:
+          kind: path
+          path:
+            - call
+            - cid
+      - name: created_by_id
+        type: Utf8
+        nullable: true
+        description: User ID of the call creator.
+        expr:
+          kind: path
+          path:
+            - call
+            - created_by
+            - id
+      - name: created_by_name
+        type: Utf8
+        nullable: true
+        description: Display name of the call creator.
+        expr:
+          kind: path
+          path:
+            - call
+            - created_by
+            - name
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the call was created.
+        expr:
+          kind: path
+          path:
+            - call
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the call was last updated.
+        expr:
+          kind: path
+          path:
+            - call
+            - updated_at
+      - name: starts_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds of the scheduled start time.
+        expr:
+          kind: path
+          path:
+            - call
+            - starts_at
+      - name: ended_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the call ended.
+        expr:
+          kind: path
+          path:
+            - call
+            - ended_at
+      - name: backstage
+        type: Boolean
+        nullable: true
+        description: Whether the call is in backstage mode.
+        expr:
+          kind: path
+          path:
+            - call
+            - backstage
+      - name: recording
+        type: Boolean
+        nullable: true
+        description: Whether the call is being recorded.
+        expr:
+          kind: path
+          path:
+            - call
+            - recording
+      - name: transcribing
+        type: Boolean
+        nullable: true
+        description: Whether the call is being transcribed.
+        expr:
+          kind: path
+          path:
+            - call
+            - transcribing
+      - name: current_session_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Current session ID if the call has an active session. Empty
+          string means no active session.
+        expr:
+          kind: path
+          path:
+            - call
+            - current_session_id
+      - name: custom
+        type: Json
+        nullable: true
+        description: Custom data JSON object associated with the call.
+        expr:
+          kind: path
+          path:
+            - call
+            - custom
+      - name: captioning
+        type: Boolean
+        nullable: true
+        description: Whether closed captioning is active on the call.
+        expr:
+          kind: path
+          path:
+            - call
+            - captioning
+      - name: translating
+        type: Boolean
+        nullable: true
+        description: Whether translation is active on the call.
+        expr:
+          kind: path
+          path:
+            - call
+            - translating
+      - name: channel_cid
+        type: Utf8
+        nullable: true
+        description: Channel CID if the call is linked to a Stream Chat channel.
+        expr:
+          kind: path
+          path:
+            - call
+            - channel_cid
+      - name: team
+        type: Utf8
+        nullable: true
+        description: Team identifier for the call.
+        expr:
+          kind: path
+          path:
+            - call
+            - team
+
+  - name: call
+    description: >-
+      Get a single video call by its call type and ID. Returns the full
+      call object including settings, creator info, and status flags.
+    guide: >
+      Fetch a specific call by call_type and id. Use the calls table to
+      discover call IDs first.
+    filters:
+      - name: call_type
+        required: true
+      - name: call_id
+        required: true
+    request:
+      method: GET
+      path: /video/call/{{filter.call_type}}/{{filter.call_id}}
+      query:
+        - name: api_key
+          from: input
+          key: STREAM_API_KEY
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Call ID.
+        expr:
+          kind: path
+          path:
+            - call
+            - id
+      - name: call_id
+        type: Utf8
+        nullable: false
+        description: Call ID (alias, used as required filter).
+        expr:
+          kind: path
+          path:
+            - call
+            - id
+      - name: call_type
+        type: Utf8
+        nullable: false
+        description: Call type (e.g. default, livestream, audio_room).
+        expr:
+          kind: path
+          path:
+            - call
+            - type
+      - name: cid
+        type: Utf8
+        nullable: false
+        description: Call CID (type:id).
+        expr:
+          kind: path
+          path:
+            - call
+            - cid
+      - name: created_by_id
+        type: Utf8
+        nullable: true
+        description: User ID of the call creator.
+        expr:
+          kind: path
+          path:
+            - call
+            - created_by
+            - id
+      - name: created_by_name
+        type: Utf8
+        nullable: true
+        description: Display name of the call creator.
+        expr:
+          kind: path
+          path:
+            - call
+            - created_by
+            - name
+      - name: created_by_role
+        type: Utf8
+        nullable: true
+        description: Role of the call creator.
+        expr:
+          kind: path
+          path:
+            - call
+            - created_by
+            - role
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the call was created.
+        expr:
+          kind: path
+          path:
+            - call
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the call was last updated.
+        expr:
+          kind: path
+          path:
+            - call
+            - updated_at
+      - name: starts_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds of the scheduled start time.
+        expr:
+          kind: path
+          path:
+            - call
+            - starts_at
+      - name: ended_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the call ended.
+        expr:
+          kind: path
+          path:
+            - call
+            - ended_at
+      - name: backstage
+        type: Boolean
+        nullable: true
+        description: Whether the call is in backstage mode.
+        expr:
+          kind: path
+          path:
+            - call
+            - backstage
+      - name: recording
+        type: Boolean
+        nullable: true
+        description: Whether the call is being recorded.
+        expr:
+          kind: path
+          path:
+            - call
+            - recording
+      - name: transcribing
+        type: Boolean
+        nullable: true
+        description: Whether the call is being transcribed.
+        expr:
+          kind: path
+          path:
+            - call
+            - transcribing
+      - name: custom
+        type: Json
+        nullable: true
+        description: Custom data JSON object associated with the call.
+        expr:
+          kind: path
+          path:
+            - call
+            - custom
+      - name: captioning
+        type: Boolean
+        nullable: true
+        description: Whether closed captioning is active on the call.
+        expr:
+          kind: path
+          path:
+            - call
+            - captioning
+      - name: translating
+        type: Boolean
+        nullable: true
+        description: Whether translation is active on the call.
+        expr:
+          kind: path
+          path:
+            - call
+            - translating
+      - name: channel_cid
+        type: Utf8
+        nullable: true
+        description: Channel CID if the call is linked to a Stream Chat channel.
+        expr:
+          kind: path
+          path:
+            - call
+            - channel_cid
+      - name: team
+        type: Utf8
+        nullable: true
+        description: Team identifier for the call.
+        expr:
+          kind: path
+          path:
+            - call
+            - team
+
+  - name: call_members
+    description: >-
+      List members of a video call. Requires both call_type and call_id
+      filters. Returns users who are members of the call with their roles.
+    guide: >
+      List members of a specific call. Use the calls table to discover
+      call IDs and types first.
+    fetch_limit_default: 25
+    filters:
+      - name: call_type
+        required: true
+      - name: call_id
+        required: true
+    request:
+      method: POST
+      path: /video/call/members
+      query:
+        - name: api_key
+          from: input
+          key: STREAM_API_KEY
+      body:
+        - path: [type]
+          from: filter
+          key: call_type
+        - path: [id]
+          from: filter
+          key: call_id
+        - path: [sort]
+          from: literal
+          value:
+            - field: user_id
+              direction: 1
+    response:
+      rows_path:
+        - members
+    pagination:
+      mode: cursor_body
+      cursor_body_path:
+        - next
+      response_cursor_path:
+        - next
+      page_size:
+        default: 25
+        max: 100
+        body_path:
+          - limit
+    columns:
+      - name: call_type
+        type: Utf8
+        nullable: false
+        description: Call type filter value.
+        expr:
+          kind: from_filter
+          key: call_type
+      - name: call_id
+        type: Utf8
+        nullable: false
+        description: Call ID filter value.
+        expr:
+          kind: from_filter
+          key: call_id
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: User ID of the member.
+        expr:
+          kind: path
+          path:
+            - user_id
+      - name: role
+        type: Utf8
+        nullable: true
+        description: Role of the member in the call.
+        expr:
+          kind: path
+          path:
+            - role
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the member was added.
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the membership was last updated.
+        expr:
+          kind: path
+          path:
+            - updated_at
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the member.
+        expr:
+          kind: path
+          path:
+            - user
+            - name
+      - name: custom
+        type: Json
+        nullable: true
+        description: Custom member data JSON object associated with the membership.
+        expr:
+          kind: path
+          path:
+            - custom
+      - name: deleted_at
+        type: Int64
+        nullable: true
+        description: Unix nanoseconds when the membership was deleted.
+        expr:
+          kind: path
+          path:
+            - deleted_at
