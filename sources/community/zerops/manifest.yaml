@@ -1,0 +1,298 @@
+name: zerops
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query Zerops regions, supported service stack types, and personal access tokens.
+base_url: "https://{{input.ZEROPS_HOST}}/api/rest/public"
+inputs:
+  ZEROPS_API_KEY:
+    kind: secret
+    hint: |
+      Zerops personal access token from the Zerops GUI
+      Access Token management section.
+
+      For the default prg1 region the GUI lives at
+      https://app-prg1.zerops.io/ — open the user menu and choose
+      Access Token management to create a new personal access token.
+
+      The token is sent as a Bearer token to the Zerops REST API.
+
+      See https://docs.zerops.io/references/api for the API reference.
+  ZEROPS_HOST:
+    kind: variable
+    default: api.app-prg1.zerops.io
+    hint: |
+      Zerops REST API host. The public region API currently reports a single
+      region (prg1), so the default host is the only host verified to work:
+
+      - api.app-prg1.zerops.io (default)
+
+      Use the zerops.regions table to discover the hosts the region API
+      actually exposes instead of assuming additional hosts exist.
+
+      Do not include the scheme or the /api/rest/public path — the
+      manifest prepends `https://` and appends `/api/rest/public`
+      automatically.
+
+      See https://docs.zerops.io/references/api for the API reference.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: ZEROPS_API_KEY
+test_queries:
+  - SELECT name, address, is_default FROM zerops.regions
+  - "SELECT id, name, category, is_runtime, is_managed FROM zerops.service_stack_types WHERE is_runtime = true LIMIT 10"
+  - "SELECT id, name FROM zerops.service_stack_types WHERE id = 'alpine' LIMIT 1"
+  - SELECT id, name, created FROM zerops.user_tokens LIMIT 5
+tables:
+  - name: regions
+    description: Zerops datacenters/regions exposed by the region API.
+    guide: |
+      No required filters. Start with:
+        SELECT name, address, is_default FROM zerops.regions
+    request:
+      method: GET
+      path: /region
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Region identifier (for example prg1).
+      - name: address
+        type: Utf8
+        nullable: false
+        description: API host for the region.
+      - name: is_default
+        type: Boolean
+        nullable: false
+        description: Whether this region is the default region.
+        expr:
+          kind: path
+          path:
+            - isDefault
+  - name: service_stack_types
+    description: |
+      Supported Zerops service stack types (runtimes, databases, storage)
+      with their capabilities and nested version list.
+    guide: |
+      No required filters. Start with:
+        SELECT id, name, category, is_runtime, is_managed
+        FROM zerops.service_stack_types
+      Filter by capability:
+        SELECT id, name
+        FROM zerops.service_stack_types
+        WHERE is_managed = true AND has_backup = true
+    request:
+      method: GET
+      path: /settings
+    response:
+      rows_path:
+        - serviceStackList
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Service stack type identifier.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable service stack type name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Long description of the service stack type.
+      - name: category
+        type: Utf8
+        nullable: true
+        description: >
+          Service stack category (CORE, HTTP_L7_BALANCER, STANDARD, USER,
+          SHARED_STORAGE, OBJECT_STORAGE, BUILD, INTERNAL, PREPARE_RUNTIME).
+      - name: subcategory
+        type: Utf8
+        nullable: true
+        description: Service stack subcategory.
+      - name: docs_url
+        type: Utf8
+        nullable: true
+        description: Link to the upstream documentation page.
+        expr:
+          kind: path
+          path:
+            - docsUrl
+      - name: is_build
+        type: Boolean
+        nullable: true
+        description: Whether this stack type is a build environment.
+        expr:
+          kind: path
+          path:
+            - isBuild
+      - name: is_runtime
+        type: Boolean
+        nullable: true
+        description: Whether this stack type runs user code.
+        expr:
+          kind: path
+          path:
+            - isRuntime
+      - name: is_managed
+        type: Boolean
+        nullable: true
+        description: Whether Zerops fully manages the service.
+        expr:
+          kind: path
+          path:
+            - isManaged
+      - name: has_backup
+        type: Boolean
+        nullable: true
+        description: Whether the service supports backups.
+        expr:
+          kind: path
+          path:
+            - hasBackup
+      - name: has_access_details
+        type: Boolean
+        nullable: true
+        description: Whether the service exposes access details.
+        expr:
+          kind: path
+          path:
+            - hasAccessDetails
+      - name: has_configuration
+        type: Boolean
+        nullable: true
+        description: Whether the service has user-configurable settings.
+        expr:
+          kind: path
+          path:
+            - hasConfiguration
+      - name: os_list
+        type: Json
+        nullable: true
+        description: Supported host OS identifiers (for example alpine, ubuntu).
+        expr:
+          kind: path
+          path:
+            - osList
+      - name: mode_list
+        type: Json
+        nullable: true
+        description: Supported service modes (for example ha, single).
+        expr:
+          kind: path
+          path:
+            - modeList
+      - name: service_stack_type_version_list
+        type: Json
+        nullable: true
+        description: Nested list of versions for this service stack type.
+        expr:
+          kind: path
+          path:
+            - serviceStackTypeVersionList
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: When the service stack type was registered (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: last_update
+        type: Timestamp
+        nullable: true
+        description: When the service stack type was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastUpdate
+  - name: user_tokens
+    description: Personal access tokens issued for the current Zerops user.
+    guide: |
+      No required filters. Start with:
+        SELECT id, name, created FROM zerops.user_tokens
+      Use the id to look up a single token:
+        SELECT id, name, created FROM zerops.user_token
+        WHERE id = 'your_token_id'
+    request:
+      method: GET
+      path: /user-token/list
+    response:
+      rows_path:
+        - list
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Token identifier.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User-defined token name.
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: When the token was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+  - name: user_token
+    description: A single Zerops personal access token by ID.
+    guide: |
+      id is required. List tokens first to find the id:
+        SELECT id, name FROM zerops.user_tokens LIMIT 10
+      Then look up one token:
+        SELECT id, name, created FROM zerops.user_token
+        WHERE id = 'your_token_id'
+    filters:
+      - name: id
+        required: true
+    request:
+      method: GET
+      path: /user-token/{{filter.id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Token identifier.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User-defined token name.
+      - name: created
+        type: Timestamp
+        nullable: true
+        description: When the token was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
