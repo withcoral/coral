@@ -63,6 +63,7 @@
     "@vanilla-extract/css": "^1.20.1",
     "@vanilla-extract/vite-plugin": "^5.2.2",
     "@vitejs/plugin-react": "^6.0.2",
+    "arktype": "^2.2.3",
     "babel-plugin-react-compiler": "^1.0.0",
     "chromatic": "^17.4.1",
     "oxfmt": "^0.55.0",
