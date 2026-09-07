@@ -1,0 +1,204 @@
+name: serper
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Google Search results and news from Serper. Returns ranked
+  web results with titles, URLs, snippets, and positions, plus
+  news articles with sources and dates.
+base_url: https://google.serper.dev
+
+inputs:
+  SERPER_API_KEY:
+    kind: secret
+    hint: >-
+      Serper API key from https://serper.dev.
+      Free tier includes 2500 search queries.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-API-KEY
+      from: template
+      template: "{{input.SERPER_API_KEY}}"
+
+test_queries:
+  - SELECT title, link, snippet FROM serper.search(q => 'Coral SQL') LIMIT 3
+
+functions:
+
+  # --------------------------------------------------------------------------
+  # serper.search — Google web search
+  # POST /search
+  # Array at response.organic. No pagination (single response).
+  # --------------------------------------------------------------------------
+  - name: search
+    kind: search
+    description: >-
+      Search the web using Google via Serper. Pass the query as a
+      named argument with `q => '<query>'`. Returns ranked organic
+      results with titles, URLs, snippets, and positions.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: gl
+        bind:
+          arg: gl
+      - name: hl
+        bind:
+          arg: hl
+      - name: tbs
+        bind:
+          arg: tbs
+    request:
+      method: POST
+      path: /search
+      body:
+        - path: [q]
+          from: arg
+          key: q
+        - path: [gl]
+          from: arg
+          key: gl
+        - path: [hl]
+          from: arg
+          key: hl
+        - path: [tbs]
+          from: arg
+          key: tbs
+    response:
+      rows_path:
+        - organic
+    pagination:
+      mode: none
+      page_size:
+        default: 10
+        max: 100
+        body_path:
+          - num
+    columns:
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Title of the search result.
+      - name: link
+        type: Utf8
+        nullable: false
+        description: URL of the search result.
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Text snippet from the search result.
+      - name: position
+        type: Int64
+        nullable: true
+        description: Position in the search results (1-indexed).
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Date of the result, if available.
+      - name: sitelinks
+        type: Json
+        nullable: true
+        description: Sitelinks for the result (JSON array).
+
+  # --------------------------------------------------------------------------
+  # serper.news — Google news search
+  # POST /news
+  # Array at response.news. No pagination (single response).
+  # --------------------------------------------------------------------------
+  - name: news
+    kind: search
+    description: >-
+      Search Google News via Serper. Pass the query as a named
+      argument with `q => '<query>'`. Returns news articles with
+      titles, URLs, sources, dates, and snippets.
+    fetch_limit_default: 10
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: gl
+        bind:
+          arg: gl
+      - name: hl
+        bind:
+          arg: hl
+      - name: tbs
+        bind:
+          arg: tbs
+    request:
+      method: POST
+      path: /news
+      body:
+        - path: [q]
+          from: arg
+          key: q
+        - path: [gl]
+          from: arg
+          key: gl
+        - path: [hl]
+          from: arg
+          key: hl
+        - path: [tbs]
+          from: arg
+          key: tbs
+    response:
+      rows_path:
+        - news
+    pagination:
+      mode: none
+      page_size:
+        default: 10
+        max: 100
+        body_path:
+          - num
+    columns:
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Title of the news article.
+      - name: link
+        type: Utf8
+        nullable: false
+        description: URL of the news article.
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Text snippet from the article.
+      - name: date
+        type: Utf8
+        nullable: true
+        description: Relative date of the article (e.g. "2 days ago").
+      - name: source
+        type: Utf8
+        nullable: true
+        description: Name of the news source.
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: URL of the article's thumbnail image.
+        expr:
+          kind: path
+          path:
+            - imageUrl
+      - name: position
+        type: Int64
+        nullable: true
+        description: Position in the news results (1-indexed).
