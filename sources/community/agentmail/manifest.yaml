@@ -1,0 +1,561 @@
+name: agentmail
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query inboxes, messages, threads, and domains from AgentMail.
+  Provides read-only access to AI agent email infrastructure
+  including conversations, attachments, and domain configuration.
+base_url: https://api.agentmail.to/v0
+
+inputs:
+  AGENTMAIL_API_KEY:
+    kind: secret
+    hint: >-
+      AgentMail organization-level API key from https://app.agentmail.to.
+      Keys start with `am_`. Requires read permissions: inbox_read,
+      message_read, thread_read, domain_read. Inbox-scoped keys only
+      support the messages and threads tables for that inbox.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: AGENTMAIL_API_KEY
+
+test_queries:
+  - SELECT inbox_id, email, created_at FROM agentmail.inboxes LIMIT 3
+  - SELECT domain_id, domain, created_at FROM agentmail.domains LIMIT 3
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # agentmail.inboxes — List all inboxes
+  # GET /v0/inboxes
+  # Cursor pagination via page_token / next_page_token.
+  # --------------------------------------------------------------------------
+  - name: inboxes
+    description: >-
+      Email inboxes managed by AgentMail. Each inbox is an API-first
+      email account for an AI agent with its own address and metadata.
+    guide: |
+      No required filters. Start with:
+        SELECT inbox_id, email, display_name, created_at
+        FROM agentmail.inboxes LIMIT 10
+      Use the inbox_id to query messages and threads for a specific inbox.
+    request:
+      method: GET
+      path: /inboxes
+    response:
+      rows_path:
+        - inboxes
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    fetch_limit_default: 50
+    columns:
+      - name: inbox_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the inbox.
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Email address of the inbox.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name shown in emails.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: pod_id
+        type: Utf8
+        nullable: true
+        description: ID of the pod this inbox belongs to.
+        expr:
+          kind: path
+          path:
+            - pod_id
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: Client-assigned identifier for the inbox.
+        expr:
+          kind: path
+          path:
+            - client_id
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Custom key-value metadata attached to the inbox.
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: When the inbox was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the inbox was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # --------------------------------------------------------------------------
+  # agentmail.messages — List messages in an inbox
+  # GET /v0/inboxes/{inbox_id}/messages
+  # Requires inbox_id filter. Cursor pagination.
+  # --------------------------------------------------------------------------
+  - name: messages
+    description: >-
+      Email messages in an AgentMail inbox. Includes sender, recipients,
+      subject, preview text, labels, and attachment metadata.
+    guide: |
+      inbox_id is required. Start by listing inboxes to get an inbox_id:
+        SELECT inbox_id, email FROM agentmail.inboxes LIMIT 5
+      Then query messages:
+        SELECT message_id, subject, "from", preview
+        FROM agentmail.messages
+        WHERE inbox_id = 'your-inbox-id' LIMIT 10
+      Filter by time range:
+        SELECT message_id, subject, timestamp
+        FROM agentmail.messages
+        WHERE inbox_id = 'your-inbox-id'
+          AND after = '2026-01-01T00:00:00Z' LIMIT 10
+    filters:
+      - name: inbox_id
+        required: true
+      - name: labels
+      - name: before
+      - name: after
+      - name: from
+      - name: to
+      - name: subject
+      - name: include_spam
+      - name: include_blocked
+      - name: include_unauthenticated
+      - name: include_trash
+      - name: ascending
+    request:
+      method: GET
+      path: /inboxes/{{filter.inbox_id}}/messages
+      query:
+        - name: labels
+          from: filter
+          key: labels
+        - name: before
+          from: filter
+          key: before
+        - name: after
+          from: filter
+          key: after
+        - name: from
+          from: filter
+          key: from
+        - name: to
+          from: filter
+          key: to
+        - name: subject
+          from: filter
+          key: subject
+        - name: include_spam
+          from: filter_bool
+          key: include_spam
+        - name: include_blocked
+          from: filter_bool
+          key: include_blocked
+        - name: include_unauthenticated
+          from: filter_bool
+          key: include_unauthenticated
+        - name: include_trash
+          from: filter_bool
+          key: include_trash
+        - name: ascending
+          from: filter_bool
+          key: ascending
+    response:
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    fetch_limit_default: 50
+    columns:
+      - name: inbox_id
+        type: Utf8
+        nullable: false
+        description: ID of the inbox containing this message.
+        expr:
+          kind: path
+          path:
+            - inbox_id
+      - name: thread_id
+        type: Utf8
+        nullable: false
+        description: ID of the thread this message belongs to.
+        expr:
+          kind: path
+          path:
+            - thread_id
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the message.
+        expr:
+          kind: path
+          path:
+            - message_id
+      - name: from
+        type: Utf8
+        nullable: false
+        description: Sender address.
+        expr:
+          kind: path
+          path:
+            - from
+      - name: to
+        type: Json
+        nullable: false
+        description: Recipient addresses (JSON array).
+      - name: cc
+        type: Json
+        nullable: true
+        description: CC recipient addresses (JSON array).
+      - name: bcc
+        type: Json
+        nullable: true
+        description: BCC recipient addresses (JSON array).
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Subject line of the message.
+      - name: preview
+        type: Utf8
+        nullable: true
+        description: Text preview of the message body.
+      - name: labels
+        type: Json
+        nullable: false
+        description: Labels assigned to the message (JSON array).
+      - name: size
+        type: Int64
+        nullable: false
+        description: Size of the message in bytes.
+      - name: attachments
+        type: Json
+        nullable: true
+        description: Attachment metadata (JSON array with attachment_id, filename, size, content_type).
+      - name: timestamp
+        type: Timestamp
+        nullable: false
+        description: When the message was sent or drafted (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - timestamp
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the message was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # --------------------------------------------------------------------------
+  # agentmail.threads — List threads in an inbox
+  # GET /v0/inboxes/{inbox_id}/threads
+  # Requires inbox_id filter. Cursor pagination.
+  # --------------------------------------------------------------------------
+  - name: threads
+    description: >-
+      Email threads (conversations) in an AgentMail inbox. Groups
+      messages into conversations with sender/recipient summaries,
+      message counts, and preview text.
+    guide: |
+      inbox_id is required. Start by listing inboxes to get an inbox_id:
+        SELECT inbox_id, email FROM agentmail.inboxes LIMIT 5
+      Then query threads:
+        SELECT thread_id, subject, message_count, preview
+        FROM agentmail.threads
+        WHERE inbox_id = 'your-inbox-id' LIMIT 10
+      Filter by time range:
+        SELECT thread_id, subject, timestamp
+        FROM agentmail.threads
+        WHERE inbox_id = 'your-inbox-id'
+          AND after = '2026-01-01T00:00:00Z' LIMIT 10
+    filters:
+      - name: inbox_id
+        required: true
+      - name: labels
+      - name: before
+      - name: after
+      - name: senders
+      - name: recipients
+      - name: subject
+      - name: include_spam
+      - name: include_blocked
+      - name: include_unauthenticated
+      - name: include_trash
+      - name: ascending
+    request:
+      method: GET
+      path: /inboxes/{{filter.inbox_id}}/threads
+      query:
+        - name: labels
+          from: filter
+          key: labels
+        - name: before
+          from: filter
+          key: before
+        - name: after
+          from: filter
+          key: after
+        - name: senders
+          from: filter
+          key: senders
+        - name: recipients
+          from: filter
+          key: recipients
+        - name: subject
+          from: filter
+          key: subject
+        - name: include_spam
+          from: filter_bool
+          key: include_spam
+        - name: include_blocked
+          from: filter_bool
+          key: include_blocked
+        - name: include_unauthenticated
+          from: filter_bool
+          key: include_unauthenticated
+        - name: include_trash
+          from: filter_bool
+          key: include_trash
+        - name: ascending
+          from: filter_bool
+          key: ascending
+    response:
+      rows_path:
+        - threads
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    fetch_limit_default: 50
+    columns:
+      - name: inbox_id
+        type: Utf8
+        nullable: false
+        description: ID of the inbox containing this thread.
+        expr:
+          kind: path
+          path:
+            - inbox_id
+      - name: thread_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the thread.
+        expr:
+          kind: path
+          path:
+            - thread_id
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Subject line of the thread.
+      - name: preview
+        type: Utf8
+        nullable: true
+        description: Text preview of the last message in the thread.
+      - name: senders
+        type: Json
+        nullable: false
+        description: Sender addresses in the thread (JSON array).
+      - name: recipients
+        type: Json
+        nullable: false
+        description: Recipient addresses in the thread (JSON array).
+      - name: labels
+        type: Json
+        nullable: false
+        description: Labels assigned to the thread (JSON array).
+      - name: message_count
+        type: Int64
+        nullable: false
+        description: Number of messages in the thread.
+        expr:
+          kind: path
+          path:
+            - message_count
+      - name: last_message_id
+        type: Utf8
+        nullable: false
+        description: ID of the last message in the thread.
+        expr:
+          kind: path
+          path:
+            - last_message_id
+      - name: size
+        type: Int64
+        nullable: false
+        description: Total size of the thread in bytes.
+      - name: timestamp
+        type: Timestamp
+        nullable: false
+        description: Timestamp of last sent or received message (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - timestamp
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the thread was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+  # --------------------------------------------------------------------------
+  # agentmail.domains — List domains
+  # GET /v0/domains
+  # No required filters. Cursor pagination.
+  # --------------------------------------------------------------------------
+  - name: domains
+    description: >-
+      Custom domains configured in AgentMail. Includes verification
+      status, feedback settings, and subdomain configuration.
+    guide: |
+      No required filters. Start with:
+        SELECT domain_id, domain, feedback_enabled, created_at
+        FROM agentmail.domains
+    request:
+      method: GET
+      path: /domains
+    response:
+      rows_path:
+        - domains
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+      page_size:
+        default: 50
+        max: 100
+        query_param: limit
+    fetch_limit_default: 50
+    columns:
+      - name: domain_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the domain.
+        expr:
+          kind: path
+          path:
+            - domain_id
+      - name: domain
+        type: Utf8
+        nullable: false
+        description: Domain name (e.g. example.com).
+      - name: pod_id
+        type: Utf8
+        nullable: true
+        description: ID of the pod this domain belongs to.
+        expr:
+          kind: path
+          path:
+            - pod_id
+      - name: feedback_enabled
+        type: Boolean
+        nullable: false
+        description: Whether bounce and complaint notifications are sent to inboxes.
+        expr:
+          kind: path
+          path:
+            - feedback_enabled
+      - name: subdomains_enabled
+        type: Boolean
+        nullable: false
+        description: Whether inboxes on any subdomain of this domain are allowed.
+        expr:
+          kind: path
+          path:
+            - subdomains_enabled
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: Client-assigned identifier for the domain.
+        expr:
+          kind: path
+          path:
+            - client_id
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: When the domain was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the domain was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
