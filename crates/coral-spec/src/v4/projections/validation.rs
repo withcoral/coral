@@ -202,14 +202,6 @@ fn validate_projection_columns(
 
 /// Follows the segments below a column's first, stopping as soon as the type it
 /// has reached can no longer say anything about the rest.
-///
-/// `get_path_value` reads a segment that parses as an integer only as an array
-/// index, never as a key, so whether a segment is numeric decides as much as the
-/// shape it lands on does. The generator can emit a numeric *first* segment, for
-/// a resource whose field really is named `0`, and those columns already resolve
-/// to null; rejecting them here would make a freshly generated catalog fail its
-/// own validation, so the rule applies only below the first segment, where
-/// nothing but an authored override can put one.
 fn walk_source_path(
     type_ref: &str,
     segments: &[String],
@@ -221,27 +213,18 @@ fn walk_source_path(
         let Some(ty) = types.get(type_ref) else {
             return Ok(());
         };
-        let numeric = segment.parse::<usize>().is_ok();
         type_ref = match &ty.shape {
             IrTypeShape::Object { fields } => {
-                if numeric {
-                    return Err(numeric_segment_error(type_ref, segment));
-                }
                 let Some(field) = fields.iter().find(|field| field.name == *segment) else {
                     return Err(format!("type '{type_ref}' has no field '{segment}'"));
                 };
                 field.type_ref.as_str()
             }
-            // Any key selects a map value, so only a numeric one is ruled out.
-            IrTypeShape::Map { value_type_ref } => {
-                if numeric {
-                    return Err(numeric_segment_error(type_ref, segment));
-                }
-                value_type_ref.as_str()
-            }
-            // An array is the one shape a numeric segment does address.
+            // Every segment selects a map value, including a numeric key.
+            IrTypeShape::Map { value_type_ref } => value_type_ref.as_str(),
+            // A list can only be addressed by a numeric index.
             IrTypeShape::List { item_type_ref } => {
-                if !numeric {
+                if segment.parse::<usize>().is_err() {
                     return Err(format!(
                         "type '{type_ref}' is a list, so segment '{segment}' must be a numeric index"
                     ));
@@ -258,12 +241,6 @@ fn walk_source_path(
         };
     }
     Ok(())
-}
-
-fn numeric_segment_error(type_ref: &str, segment: &str) -> String {
-    format!(
-        "type '{type_ref}' is keyed by name, but segment '{segment}' is read as an array index and so selects nothing"
-    )
 }
 
 const fn public_exposure_for_kind(kind: &ProjectionKind) -> SqlInputExposure {

@@ -2069,27 +2069,18 @@ fn projection_compatibility_walks_every_segment_of_a_nested_source_path() {
             &["id", "nope"][..],
             Err("names no fields, so segment 'nope' cannot be selected"),
         ),
-        // `get_path_value` indexes arrays numerically, and only numerically.
+        // Arrays are indexed numerically.
         (&["tags", "0"][..], Ok(())),
         (
             &["tags", "name"][..],
             Err("is a list, so segment 'name' must be a numeric index"),
         ),
-        // A map admits any key, and an opaque payload admits anything at all.
+        // Objects and maps admit numeric keys because runtime interpretation
+        // follows the current JSON shape, while opaque payloads admit anything.
+        (&["owner", "0"][..], Ok(())),
         (&["labels", "any_key"][..], Ok(())),
+        (&["labels", "0"][..], Ok(())),
         (&["extra", "anything", "deep"][..], Ok(())),
-        // ...but not a numeric one: runtime reads that as an array index, so it
-        // selects nothing however the payload is shaped. `owner` really does
-        // declare a field named `0`, so this is the numeric rule rejecting it
-        // rather than the missing-field rule.
-        (
-            &["owner", "0"][..],
-            Err("is read as an array index and so selects nothing"),
-        ),
-        (
-            &["labels", "0"][..],
-            Err("is read as an array index and so selects nothing"),
-        ),
         // The first segment is still checked as before.
         (&["nope", "deeper"][..], Err("which has no such field")),
     ] {
