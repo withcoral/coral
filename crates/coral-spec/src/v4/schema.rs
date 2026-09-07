@@ -225,6 +225,7 @@ enum V4CredentialMethodSchema {
 enum V4OAuthCredentialMethodSchema {
     AuthorizationCode(Box<V4AuthorizationCodeOAuthCredentialMethodSchema>),
     DeviceCode(Box<V4DeviceCodeOAuthCredentialMethodSchema>),
+    ClientCredentials(Box<V4ClientCredentialsOAuthCredentialMethodSchema>),
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -263,6 +264,20 @@ struct V4DeviceCodeOAuthCredentialMethodSchema {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct V4ClientCredentialsOAuthCredentialMethodSchema {
+    flow: V4ClientCredentialsOAuthFlowSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
+    resource: Option<String>,
+    endpoints: V4ClientCredentialsOAuthEndpointsSchema,
+    client: V4OAuthConfidentialClientSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    scopes: Option<ManifestOAuthScopesSpec>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct V4AuthorizationCodeOAuthFlowSchema {
     #[serde(rename = "type")]
     flow_type: V4AuthorizationCodeOAuthFlowTypeSchema,
@@ -291,6 +306,19 @@ enum V4DeviceCodeOAuthFlowTypeSchema {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4ClientCredentialsOAuthFlowSchema {
+    #[serde(rename = "type")]
+    flow_type: V4ClientCredentialsOAuthFlowTypeSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4ClientCredentialsOAuthFlowTypeSchema {
+    ClientCredentials,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum V4OAuthDisabledPkceModeSchema {
     Disabled,
@@ -316,6 +344,14 @@ struct V4DeviceCodeOAuthEndpointsSchema {
     #[serde(rename = "device_authorization_url")]
     #[schemars(length(min = 1))]
     device_authorization: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4ClientCredentialsOAuthEndpointsSchema {
+    #[serde(rename = "token_url")]
+    #[schemars(length(min = 1))]
+    token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -807,6 +843,42 @@ surface:
             "generated schema should reject unknown OAuth fields"
         );
         parse_source_manifest_yaml(raw).expect_err("parser should reject unknown OAuth fields");
+    }
+
+    #[test]
+    fn generated_schema_rejects_client_credentials_pkce() {
+        let raw = r"
+name: demo
+dsl_version: 4
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: client_credentials
+              pkce: disabled
+            endpoints:
+              token_url: https://login.example.com/oauth/token
+            client:
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+                transport: basic_auth
+surface:
+  type: openapi
+  url: https://example.com/openapi.yaml
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "generated schema should reject PKCE for client credentials"
+        );
+        parse_source_manifest_yaml(raw)
+            .expect_err("parser should reject PKCE for client credentials");
     }
 
     #[test]

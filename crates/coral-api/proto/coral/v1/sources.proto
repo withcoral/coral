@@ -154,6 +154,8 @@ enum OauthCredentialFlowType {
   OAUTH_CREDENTIAL_FLOW_TYPE_AUTHORIZATION_CODE = 1;
   // OAuth device authorization flow.
   OAUTH_CREDENTIAL_FLOW_TYPE_DEVICE_CODE = 2;
+  // OAuth client-credentials flow.
+  OAUTH_CREDENTIAL_FLOW_TYPE_CLIENT_CREDENTIALS = 3;
 }
 
 // Supported OAuth PKCE modes.

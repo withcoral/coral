@@ -175,6 +175,9 @@ fn oauth_flow_kind_from_proto(flow: i32) -> Result<ManifestOAuthFlowKind, Source
             Ok(ManifestOAuthFlowKind::AuthorizationCode)
         }
         Ok(OauthCredentialFlowType::DeviceCode) => Ok(ManifestOAuthFlowKind::DeviceCode),
+        Ok(OauthCredentialFlowType::ClientCredentials) => {
+            Ok(ManifestOAuthFlowKind::ClientCredentials)
+        }
         Ok(OauthCredentialFlowType::Unspecified) => Ok(ManifestOAuthFlowKind::AuthorizationCode),
         Err(_) => Err(SourceInputDecodeError::UnknownOAuthFlowType),
     }
@@ -611,6 +614,23 @@ mod tests {
             .expect("oauth method");
 
         assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::AuthorizationCode);
+    }
+
+    #[test]
+    fn manifest_input_from_proto_decodes_client_credentials_oauth_flow() {
+        let input = source_input_with_oauth_flow(
+            OauthCredentialFlowType::ClientCredentials,
+            OauthCredentialPkceMode::Disabled,
+        );
+
+        let input = manifest_input_from_proto(&input).expect("oauth flow should decode");
+        let oauth = input
+            .credential
+            .and_then(|credential| credential.methods.into_iter().next())
+            .and_then(|method| method.oauth)
+            .expect("oauth method");
+
+        assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::ClientCredentials);
     }
 
     #[test]

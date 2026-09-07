@@ -213,6 +213,9 @@
         },
         {
           "$ref": "#/$defs/V4DeviceCodeOAuthCredentialMethodSchema"
+        },
+        {
+          "$ref": "#/$defs/V4ClientCredentialsOAuthCredentialMethodSchema"
         }
       ]
     },
@@ -716,6 +719,75 @@
         {
           "$ref": "#/$defs/V4OAuthPublicDynamicClientSchema"
         }
+      ]
+    },
+    "V4ClientCredentialsOAuthCredentialMethodSchema": {
+      "type": "object",
+      "properties": {
+        "flow": {
+          "$ref": "#/$defs/V4ClientCredentialsOAuthFlowSchema"
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoints": {
+          "$ref": "#/$defs/V4ClientCredentialsOAuthEndpointsSchema"
+        },
+        "client": {
+          "$ref": "#/$defs/V4OAuthConfidentialClientSchema"
+        },
+        "scopes": {
+          "description": "OAuth scope parameter configuration.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "description": "The `scope` parameter value definition.",
+              "$ref": "#/$defs/ManifestOAuthScopeSpec"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "scope"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "flow",
+        "endpoints",
+        "client"
+      ]
+    },
+    "V4ClientCredentialsOAuthFlowSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/V4ClientCredentialsOAuthFlowTypeSchema"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "V4ClientCredentialsOAuthFlowTypeSchema": {
+      "type": "string",
+      "enum": [
+        "client_credentials"
+      ]
+    },
+    "V4ClientCredentialsOAuthEndpointsSchema": {
+      "type": "object",
+      "properties": {
+        "token_url": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "token_url"
       ]
     },
     "AcceptedIdentityRequirementSchema": {

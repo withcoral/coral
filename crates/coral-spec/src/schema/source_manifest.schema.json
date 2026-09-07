@@ -230,6 +230,39 @@
               { "required": ["redirect_uri_port_mode"] }
             ]
           }
+        },
+        {
+          "properties": {
+            "flow": {
+              "properties": {
+                "type": { "const": "client_credentials" }
+              },
+              "required": ["type"],
+              "not": { "required": ["pkce"] }
+            },
+            "endpoints": {
+              "required": ["token_url"],
+              "not": {
+                "anyOf": [
+                  { "required": ["authorization_url"] },
+                  { "required": ["device_authorization_url"] }
+                ]
+              }
+            },
+            "client": {
+              "properties": {
+                "id": { "required": ["input"] }
+              },
+              "required": ["id", "secret"],
+              "not": { "required": ["dynamic_registration"] }
+            }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["redirect_uri"] },
+              { "required": ["redirect_uri_port_mode"] }
+            ]
+          }
         }
       ]
     },
@@ -238,7 +271,7 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "type": "string", "enum": ["authorization_code", "device_code"] },
+        "type": { "type": "string", "enum": ["authorization_code", "device_code", "client_credentials"] },
         "pkce": { "type": "string", "enum": ["required", "disabled"] }
       }
     },

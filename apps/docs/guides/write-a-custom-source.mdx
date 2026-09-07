@@ -21,11 +21,11 @@ File-based sources (Parquet, JSONL, JSON, CSV) are the simplest case — define 
 
 API-backed sources vary in difficulty. The source spec model is designed for APIs that have:
 
-- **HTTP credentials Coral can store locally** — an API key, personal access token, service account credential, or OAuth device-code or authorization-code flow that returns an access token for Coral to use on API requests
+- **HTTP credentials Coral can store locally** — an API key, personal access token, service account credential, or OAuth flow that returns an access token for Coral to use on API requests
 - **Structured, accessible documentation** — an OpenAPI spec, GraphQL schema, or clearly organized REST docs that describe endpoints, response shapes, authentication, scopes, and OAuth client settings
 - **Real data to validate against** — actual records in the account so you can confirm the source is returning the expected results during development
 
-OAuth-backed APIs are good candidates when they support device-code flow or authorization-code flow with a local loopback redirect, such as `http://127.0.0.1:<port>/oauth/callback`. During `coral source add --interactive`, Coral can collect an access token and store it as a source secret. If the provider returns a refresh token, Coral can refresh access later; otherwise users reconnect after the access token expires.
+OAuth-backed APIs are good candidates when their setup and token lifecycle fit one of Coral's supported flows. During `coral source add --interactive`, Coral obtains an access token and stores it as a source secret. See [OAuth flow and client settings](/reference/source-spec-reference#oauth-flow-and-client-settings) for flow-specific requirements and token renewal behavior.
 
 If you are unsure whether your API is a good candidate, ask us in [Discord](https://withcoral.com/discord) before getting started.
 
@@ -170,7 +170,7 @@ tables:
 
 ### OAuth credential setup
 
-When a source should offer OAuth setup, add `credential.methods` to the secret input while keeping runtime `auth` focused on how the stored secret is sent to the API. Use `type: oauth` for device-code or authorization-code setup, and add a `type: source_config` fallback when users can paste an existing token.
+When a source should offer OAuth setup, add `credential.methods` to the secret input while keeping runtime `auth` focused on how the stored secret is sent to the API. Use `type: oauth` for OAuth setup, and add a `type: source_config` fallback when users can paste an existing token.
 
 For field-level details and examples, see [Credential methods](/reference/source-spec-reference#credential-methods), [OAuth flow and client settings](/reference/source-spec-reference#oauth-flow-and-client-settings), [OAuth redirect URIs](/reference/source-spec-reference#oauth-redirect-uris), and [`HeaderAuth`](/reference/source-spec-reference#headerauth) for `from: bearer` and `from: one_of`.
 
