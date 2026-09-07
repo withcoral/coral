@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.5](https://github.com/withcoral/coral/compare/v0.15.4...v0.15.5) (2026-09-07)
+
+
+### Features
+
+* **sources:** support OAuth client credentials ([#1220](https://github.com/withcoral/coral/issues/1220)) ([2c58881](https://github.com/withcoral/coral/commit/2c58881841bf62fc52a44bb5c2571760e65a58dd))
+
 ## [0.15.4](https://github.com/withcoral/coral/compare/v0.15.3...v0.15.4) (2026-09-04)
 
 
