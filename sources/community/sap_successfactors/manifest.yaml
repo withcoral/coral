@@ -1,0 +1,2901 @@
+name: sap_successfactors
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query SAP SuccessFactors: RBP roles/assignments/groups, SCIM identity,
+  GenAI-assisted RBP search, data privacy consent, proxy management, new
+  hire onboarding, Time Off, Employee Compensation, Continuous Performance
+  Management, Interview Scheduling, and any OData v2 entity, all over
+  Basic Authentication.
+inputs:
+  SF_API_SERVER:
+    kind: variable
+    hint: |
+      Your SuccessFactors API data center host, without scheme (for example
+      `api10.successfactors.com`). Find yours in Admin Center or from your
+      implementation partner — it is not the same host as your login URL.
+      See SAP's data center list in the SuccessFactors implementation guide
+      for your instance if you are unsure which host to use.
+  SF_USERNAME:
+    kind: secret
+    hint: |
+      SuccessFactors API username used for Basic Authentication, in the
+      form `username@companyId` (for example `api_user@acme001`). This
+      is not a password — it is the login name, but it is kept as a
+      secret because it encodes your company ID. Create or locate the API
+      user in Admin Center → Manage Users. The user must have the
+      appropriate Role-Based Permissions for the tables you intend to query.
+  SF_PASSWORD:
+    kind: secret
+    hint: |
+      Password for the SuccessFactors API user above. This source uses
+      SuccessFactors Basic Authentication for every table and function,
+      including the Time Off / Compensation / Continuous Performance /
+      Interview Scheduling groups whose OpenAPI specs list an OAuth SAML
+      Bearer scheme (`sfOauth`) as their documented default — many tenants
+      accept Basic Auth there too. If yours doesn't, those specific
+      tables/functions will fail with an auth error; see the README.
+base_url: "https://{{input.SF_API_SERVER}}"
+auth:
+  type: BasicAuth
+  username: "{{input.SF_USERNAME}}"
+  password: "{{input.SF_PASSWORD}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+rate_limit:
+  retry_after_header: Retry-After
+test_queries:
+  - SELECT * FROM sap_successfactors.proxy_scopes LIMIT 1
+  - SELECT * FROM sap_successfactors.proxy_grants LIMIT 1
+tables:
+  - name: roles
+    description: Permission roles defining collections of permissions assignable to users
+    fetch_limit_default: 200
+    guide: |
+      Each row is one RBP permission role. `id` joins to
+      `role_assignments.role_id`. Use `odata_filter` for exact-match or
+      range queries (`id eq 500`, `lastModified gt 2024-01-01T00:00:00Z`)
+      and `search` for a simple free-text match over name/description/id.
+    filters:
+      - name: search
+        required: false
+        description: Free-text match over role name, description, and id ($search)
+      - name: odata_filter
+        required: false
+        description: >-
+          Raw OData filter expression ($filter). Supported fields: id, name,
+          description, visibility, userType, lastModified.
+      - name: order_by
+        required: false
+        description: Raw OData order-by expression ($orderby)
+    request:
+      method: GET
+      path: /rest/iam/authorization/pap/v1/roles
+      query:
+        - name: $search
+          from: filter
+          key: search
+        - name: $filter
+          from: filter
+          key: odata_filter
+        - name: $orderby
+          from: filter
+          key: order_by
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique identifier of the permission role
+      - name: name
+        type: Utf8
+        description: Display name of the permission role
+      - name: description
+        type: Utf8
+        description: Detailed description of the role's purpose and permissions
+      - name: status
+        type: Utf8
+        description: ACTIVE if the role has active assignments, otherwise INACTIVE
+      - name: visibility
+        type: Utf8
+        description: VISIBILITY (visible) or PRIVATED (RBP-internal only)
+      - name: user_type
+        type: Utf8
+        description: DEFAULT, ONB, LMS, or ALM
+        expr:
+          kind: path
+          path:
+            - userType
+      - name: created
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: creator_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - creator
+            - id
+      - name: creator_display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - creator
+            - displayName
+      - name: last_modified
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastModified
+      - name: modifier_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - modifier
+            - id
+      - name: modifier_display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - modifier
+            - displayName
+
+  - name: role_assignments
+    description: Role assignments granting a role to an access population over a target population
+    fetch_limit_default: 200
+    guide: |
+      Each row is one role assignment. `role_id` joins to `roles.id`.
+      `access_group_names` / `target_group_names` are comma-joined summaries
+      of the groups involved — join `roles.id` and `groups.id` for full
+      detail. `status` here is the assignment's own ACTIVE/INACTIVE flag.
+    filters:
+      - name: odata_filter
+        required: false
+        description: >-
+          Raw OData filter expression ($filter). Supported fields: id, name,
+          description, status, accessGroupLevel, targetGroupLevel,
+          accessUserType, targetUserType, roleId, lastModified,
+          effectiveDateEnforcement.
+      - name: order_by
+        required: false
+        description: Raw OData order-by expression ($orderby)
+    request:
+      method: GET
+      path: /rest/iam/authorization/pap/v1/assignments
+      query:
+        - name: $filter
+          from: filter
+          key: odata_filter
+        - name: $orderby
+          from: filter
+          key: order_by
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique identifier of the role assignment
+      - name: role_id
+        type: Int64
+        description: ID of the role being assigned — joins to roles.id
+        expr:
+          kind: path
+          path:
+            - roleId
+      - name: name
+        type: Utf8
+        description: Display name of the role assignment
+      - name: description
+        type: Utf8
+      - name: status
+        type: Utf8
+        description: ACTIVE or INACTIVE
+      - name: relationship_type
+        type: Utf8
+        description: Manager, HR Manager, Matrix Manager, etc.
+        expr:
+          kind: path
+          path:
+            - relationshipType
+      - name: access_group_level
+        type: Int64
+        description: 0=direct leader, 1/2/3=N levels up, 32767=all levels up
+        expr:
+          kind: path
+          path:
+            - accessGroupLevel
+      - name: target_group_level
+        type: Int64
+        description: 0=direct reporter, 1/2/3=N levels down, 32767=all levels down
+        expr:
+          kind: path
+          path:
+            - targetGroupLevel
+      - name: access_user_type
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - accessUserType
+      - name: target_user_type
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - targetUserType
+      - name: access_group_names
+        type: Utf8
+        description: Comma-joined names of the access population groups
+        expr:
+          kind: join_array_path
+          path:
+            - accessGroupList
+          item_path:
+            - groupName
+          separator: ","
+      - name: target_group_names
+        type: Utf8
+        description: Comma-joined names of the target population groups
+        expr:
+          kind: join_array_path
+          path:
+            - targetGroupList
+          item_path:
+            - groupName
+          separator: ","
+      - name: effective_date_enforcement
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - effectiveDateEnforcement
+      - name: effective_date_from
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - effectiveDateFrom
+      - name: effective_date_to
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - effectiveDateTo
+      - name: created
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created
+      - name: created_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: last_modified
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastModified
+      - name: last_modified_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - lastModifiedBy
+
+  - name: groups
+    description: Permission groups — collections of users defined through people pools
+    fetch_limit_default: 200
+    guide: |
+      Each row is one dynamic permission group. `id` joins to
+      `role_assignments` group references (matched by name via
+      `access_group_names` / `target_group_names`, since the assignment
+      payload only carries group names, not IDs, in list form).
+    filters:
+      - name: search
+        required: false
+        description: Case-insensitive partial match on group name or id ($search)
+      - name: odata_filter
+        required: false
+        description: >-
+          Raw OData filter expression ($filter), e.g. userType eq 'ONB' or
+          contains(name,'Sales').
+      - name: order_by
+        required: false
+        description: Raw OData order-by expression ($orderby)
+    request:
+      method: GET
+      path: /rest/iam/authorization/pap/v1/groups
+      query:
+        - name: $search
+          from: filter
+          key: search
+        - name: $filter
+          from: filter
+          key: odata_filter
+        - name: $orderby
+          from: filter
+          key: order_by
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique identifier of the group
+      - name: name
+        type: Utf8
+        description: Display name of the group
+      - name: group_leader
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - groupLeader
+      - name: user_type
+        type: Utf8
+        description: DEFAULT, ONB, LMS, or ALM
+        expr:
+          kind: path
+          path:
+            - userType
+      - name: visibility
+        type: Utf8
+        description: VISIBILITY or PRIVATED (RBP-only)
+      - name: is_static
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - isStatic
+      - name: is_locked
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - isLocked
+      - name: total_member_count
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - totalMemberCount
+      - name: active_member_count
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - activeMemberCount
+      - name: last_modified
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastModified
+
+  - name: scim_users
+    description: SCIM 2.0 user identity records (core identity, name, contact, SAP extensions)
+    fetch_limit_default: 200
+    guide: |
+      Each row is one SCIM user. `id` is the SCIM user UUID (different from
+      the RBP `roleId`/`personId` values used elsewhere in this source).
+      `raw` carries the full SCIM record — including emails, phoneNumbers,
+      group memberships, and the SAP/enterprise/workforce/ODM extension
+      schemas keyed by URN — as JSON; pull fields with json_get_str(raw,
+      '<path>') etc. `filter` passes a raw SCIM filter expression straight
+      through, e.g. `userName eq "jsmith"` or `active eq true`.
+    filters:
+      - name: filter
+        required: false
+        description: >-
+          Raw SCIM filter expression. Supported: id, userName, userType,
+          active, meta.lastModified, and SAP extension attributes via full
+          URN (e.g. urn:ietf:params:scim:schemas:extension:sap:2.0:User:userUuid).
+          Operators: eq, ne, gt, ge, lt, le, co, sw, ew, and, or.
+    request:
+      method: GET
+      path: /rest/iam/scim/v2/Users
+      query:
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path:
+        - Resources
+    pagination:
+      mode: offset
+      offset_param: startIndex
+      offset_start: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: SCIM user UUID
+      - name: user_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - userName
+      - name: external_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - externalId
+      - name: display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: given_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - name
+            - givenName
+      - name: family_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - name
+            - familyName
+      - name: formatted_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - name
+            - formatted
+      - name: title
+        type: Utf8
+      - name: user_type
+        type: Utf8
+        description: EMPLOYEE or ONBOARDEE
+        expr:
+          kind: path
+          path:
+            - userType
+      - name: active
+        type: Boolean
+      - name: preferred_language
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - preferredLanguage
+      - name: locale
+        type: Utf8
+      - name: created
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - meta
+              - created
+      - name: last_modified
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - meta
+              - lastModified
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw SCIM user record, including emails, phoneNumbers, groups, and extension schemas
+        expr:
+          kind: current_row
+
+  - name: scim_groups
+    description: SCIM 2.0 permission groups (RBP groups exposed via the SCIM API)
+    guide: |
+      Each row is one SCIM group. `id` is the same numeric permission-group
+      ID as `groups.id` (the RBP Management `/groups` endpoint) — the two
+      are two views of the same underlying object, so join on `id` to
+      combine SCIM's `member_ids`/`type` with RBP's people-pool detail from
+      `group_people_pools`. `raw` carries the full record as JSON.
+    filters:
+      - name: filter
+        required: false
+        description: Raw SCIM filter expression, e.g. displayName co "Sales"
+    request:
+      method: GET
+      path: /rest/iam/scim/v2/Groups
+      query:
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path:
+        - Resources
+    pagination:
+      mode: offset
+      offset_param: startIndex
+      offset_start: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: count
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Permission group ID — joins to groups.id
+      - name: display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: type
+        type: Utf8
+        description: userGroup, deepLinkActivationPermission, embeddedAnalyticsAccessPermission, or mobileAccessPermission
+        expr:
+          kind: path
+          path:
+            - "urn:ietf:params:scim:schemas:extension:sap:2.0:Group"
+            - type
+      - name: supported_operations
+        type: Utf8
+        description: readOnly or readWrite
+        expr:
+          kind: path
+          path:
+            - "urn:ietf:params:scim:schemas:extension:sap:2.0:Group"
+            - supportedOperations
+      - name: member_count
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - meta
+            - memberCount
+      - name: member_ids
+        type: Utf8
+        description: Comma-joined account IDs of direct group members
+        expr:
+          kind: join_array_path
+          path:
+            - members
+          item_path:
+            - value
+          separator: ","
+      - name: created
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - meta
+              - created
+      - name: last_modified
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - meta
+              - lastModified
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw SCIM group record as JSON
+        expr:
+          kind: current_row
+
+  - name: genai_permissions
+    description: Searchable catalog of RBP permissions, for GenAI-assisted role authoring
+    guide: |
+      Lookup/autocomplete-style catalog of permission definitions (not a
+      role's actual granted permissions — see roles.id for that). Use
+      `search` to filter by label/category text and `resource_type` to
+      narrow to permission/mdf_object/resource entries.
+    filters:
+      - name: search
+        required: false
+        description: Free-text match over permission label/category ($search)
+      - name: resource_type
+        required: false
+        description: One of permission, mdf_object, resource
+    request:
+      method: GET
+      path: /rest/iam/authorization/genai/v1/permissions
+      query:
+        - name: $search
+          from: filter
+          key: search
+        - name: resourceType
+          from: filter
+          key: resource_type
+    response:
+      rows_path:
+        - members
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: resource_type
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - resourceType
+      - name: label
+        type: Utf8
+      - name: category
+        type: Utf8
+      - name: category_label
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - categoryLabel
+      - name: category_group
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - categoryGroup
+      - name: action
+        type: Utf8
+      - name: action_label
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - actionLabel
+      - name: description
+        type: Utf8
+
+  - name: genai_users
+    description: Searchable catalog of users, for GenAI-assisted role/assignment authoring
+    guide: |
+      Lookup/autocomplete-style user search — a lighter-weight alternative
+      to scim_users when you just need id/name/email/status for
+      autocomplete-style matching against role assignment access/target
+      populations.
+    filters:
+      - name: search
+        required: false
+        description: Free-text match over user name/id ($search)
+      - name: odata_filter
+        required: false
+        description: Raw OData filter expression ($filter)
+      - name: action
+        required: false
+        description: Action context the search is being performed for (provider-defined)
+    request:
+      method: GET
+      path: /rest/iam/authorization/genai/v1/users
+      query:
+        - name: $search
+          from: filter
+          key: search
+        - name: $filter
+          from: filter
+          key: odata_filter
+        - name: action
+          from: filter
+          key: action
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: assignment_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentId
+      - name: assignment_id_external
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentIdExternal
+      - name: assignment_legacy_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentLegacyId
+      - name: person_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - personId
+      - name: display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: user_type
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - userType
+      - name: email
+        type: Utf8
+      - name: status
+        type: Utf8
+
+  - name: dpcs_statements
+    description: Data privacy consent statement currently in effect for a given type/country/language
+    guide: |
+      Returns at most one statement version per query — `type` and
+      `country` narrow to a single applicable Data Privacy Consent
+      Statement. `template` and `contents`/`attributes` detail live in
+      `raw`; there is no list-all-statements endpoint.
+    filters:
+      - name: type
+        required: false
+        description: DPCS type code
+      - name: country
+        required: false
+        description: Country code the statement applies to
+      - name: custom_field_value
+        required: false
+        description: Value of the company-configured custom field, if used to scope statements
+      - name: language
+        required: false
+        description: Language code for the returned statement text
+    request:
+      method: GET
+      path: /rest/security/privacy/v1/statements
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: country
+          from: filter
+          key: country
+        - name: customFieldValue
+          from: filter
+          key: custom_field_value
+        - name: language
+          from: filter
+          key: language
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    fetch_limit_default: 1
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: version
+        type: Int64
+      - name: custom_field_type
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - customFieldType
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full statement record, including template, contents, and attributes
+        expr:
+          kind: current_row
+
+  - name: dpcs_acknowledgements
+    description: A subject's acknowledgement status (accept/decline/revoke) for a data privacy consent statement
+    guide: |
+      Returns at most one acknowledgement per query, scoped by
+      type/country/subject_id. `status` is a raw numeric code (0=DECLINE,
+      1=ACCEPT, 2=REVOKE, 3=NOT PRESENTED).
+    filters:
+      - name: type
+        required: false
+        description: DPCS type code
+      - name: country
+        required: false
+        description: Country code the statement applies to
+      - name: subject_id
+        required: false
+        description: ID of the person whose acknowledgement is being queried
+      - name: custom_field_value
+        required: false
+        description: Value of the company-configured custom field, if used to scope statements
+      - name: language
+        required: false
+        description: Language code for the returned statement text
+    request:
+      method: GET
+      path: /rest/security/privacy/v1/acknowledgements
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: country
+          from: filter
+          key: country
+        - name: subjectId
+          from: filter
+          key: subject_id
+        - name: customFieldValue
+          from: filter
+          key: custom_field_value
+        - name: language
+          from: filter
+          key: language
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    fetch_limit_default: 1
+    columns:
+      - name: status
+        type: Int64
+        description: "0=DECLINE, 1=ACCEPT, 2=REVOKE, 3=NOT PRESENTED"
+      - name: statement_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - statement
+            - id
+      - name: statement_version
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - statement
+            - version
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full acknowledgement record, including the nested statement
+        expr:
+          kind: current_row
+
+  - name: proxy_grants
+    description: Proxy access grants — who can act on behalf of whom, and with what scopes
+    fetch_limit_default: 200
+    guide: |
+      Each row is one proxy relationship grant. `scopes` is left as raw
+      JSON since it's a nested list of scope codes; cross-reference against
+      `proxy_scopes` for the human-readable name/hint of each code.
+    filters:
+      - name: odata_filter
+        required: false
+        description: Raw OData filter expression ($filter)
+    request:
+      method: GET
+      path: /rest/iam/identity/proxy/v1/grants
+      query:
+        - name: $filter
+          from: filter
+          key: odata_filter
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: proxy_user_id
+        type: Utf8
+        description: User acting on behalf of the principal
+        expr:
+          kind: path
+          path:
+            - proxyUserId
+      - name: proxy_display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - proxyDisplayName
+      - name: principal_user_id
+        type: Utf8
+        description: User being represented
+        expr:
+          kind: path
+          path:
+            - principalUserId
+      - name: principal_display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - principalDisplayName
+      - name: start_date
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - startDate
+      - name: end_date
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - endDate
+      - name: all_scopes_granted
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - allScopesGranted
+      - name: is_valid
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - isValid
+      - name: scopes
+        type: Json
+        description: List of scope codes granted to the proxy, as JSON
+        expr:
+          kind: path
+          path:
+            - scopes
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw proxy grant record as JSON
+        expr:
+          kind: current_row
+
+  - name: proxy_scopes
+    description: Catalog of proxy scope definitions (what a proxy grant can permit) available in this tenant
+    filters: []
+    request:
+      method: GET
+      path: /rest/iam/identity/proxy/v1/scopes
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: code
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+      - name: hint
+        type: Utf8
+      - name: sub_scopes
+        type: Json
+        description: Nested sub-scope definitions, as JSON
+        expr:
+          kind: path
+          path:
+            - subScopes
+
+  - name: available_time_types
+    description: Time-off types an employee is eligible to request as of a given date
+    guide: |
+      Requires `as_of_date`. Optionally scope to time types compatible with
+      an existing absence via `absence_request_code`.
+    filters:
+      - name: as_of_date
+        required: true
+        description: Date (YYYY-MM-DD) for which available time types are requested
+      - name: absence_request_code
+        required: false
+        description: External code of an existing absence, to filter compatible time types
+    request:
+      method: GET
+      path: /rest/timemanagement/absence/v1/availableTimeTypes
+      query:
+        - name: $at
+          from: filter
+          key: as_of_date
+        - name: absenceRequestCode
+          from: filter
+          key: absence_request_code
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: external_code
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - externalCode
+      - name: external_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - externalName
+      - name: unit
+        type: Utf8
+      - name: undetermined_end_date_allowed
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - undeterminedEndDateAllowed
+      - name: leave_of_absence
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - leaveOfAbsence
+      - name: main_absence_time_type
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - mainAbsenceTimeType
+      - name: flexible_requesting_allowed
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - flexibleRequestingAllowed
+      - name: allowed_fractions
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - allowedFractions
+
+  - name: time_account_balances
+    description: An employee's time (leave) account balances as of a given date
+    filters:
+      - name: as_of_date
+        required: true
+        description: Date (YYYY-MM-DD) as of which balances are calculated
+      - name: assignment_id
+        required: false
+        description: Employment assignment ID to scope the query to (defaults to the caller)
+    request:
+      method: GET
+      path: /rest/timemanagement/absence/v1/timeAccountBalances
+      query:
+        - name: $at
+          from: filter
+          key: as_of_date
+        - name: assignmentId
+          from: filter
+          key: assignment_id
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: time_account_external_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeAccount
+            - externalCode
+      - name: time_account_type_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeAccount
+            - timeAccountType
+            - externalCode
+      - name: time_account_type_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeAccount
+            - timeAccountType
+            - externalName
+      - name: unit
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeAccount
+            - timeAccountType
+            - unit
+      - name: bookable_start_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeAccount
+            - bookableStartDate
+      - name: bookable_end_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeAccount
+            - bookableEndDate
+      - name: available_balance
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - balances
+            - available
+            - value
+      - name: available_balance_formatted
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - balances
+            - available
+            - formattedWithUnit
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw balance record, including all balance breakdowns
+        expr:
+          kind: current_row
+
+  - name: time_type_balances
+    description: An employee's time-off balances by time type as of a given date
+    filters:
+      - name: as_of_date
+        required: true
+        description: Date (YYYY-MM-DD) as of which balances are calculated
+      - name: assignment_id
+        required: false
+        description: Employment assignment ID to scope the query to (defaults to the caller)
+      - name: main_absence_time_type_balance_only
+        required: false
+        description: If true, only return the main absence time type's balance
+      - name: favorite_time_type_balances
+        required: false
+        description: If true, only return balances for the employee's favorited time types
+    request:
+      method: GET
+      path: /rest/timemanagement/absence/v1/timeTypeBalances
+      query:
+        - name: $at
+          from: filter
+          key: as_of_date
+        - name: assignmentId
+          from: filter
+          key: assignment_id
+        - name: mainAbsenceTimeTypeBalanceOnly
+          from: filter
+          key: main_absence_time_type_balance_only
+        - name: favoriteTimeTypeBalances
+          from: filter
+          key: favorite_time_type_balances
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: time_type_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeType
+            - externalCode
+      - name: time_type_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeType
+            - externalName
+      - name: unit
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeType
+            - unit
+      - name: main_absence_time_type_balance
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - mainAbsenceTimeTypeBalance
+      - name: favorite_time_type_balance
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - favoriteTimeTypeBalance
+      - name: balance
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - balance
+            - value
+      - name: balance_formatted
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - balance
+            - formattedWithUnit
+      - name: raw
+        type: Json
+        nullable: false
+        expr:
+          kind: current_row
+
+  - name: termination_time_account_balances
+    description: Payable time account balances for an employee's termination/offboarding
+    filters:
+      - name: as_of_date
+        required: false
+        description: Date (YYYY-MM-DD) as of which balances are calculated
+      - name: assignment_id
+        required: false
+        description: Employment assignment ID to scope the query to (defaults to the caller)
+      - name: preview
+        required: false
+        description: If true, calculate a preview without an actual termination on record
+    request:
+      method: GET
+      path: /rest/timemanagement/absence/v1/terminationTimeAccountBalances
+      query:
+        - name: $at
+          from: filter
+          key: as_of_date
+        - name: assignmentId
+          from: filter
+          key: assignment_id
+        - name: preview
+          from: filter
+          key: preview
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: time_account_external_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeAccount
+            - externalCode
+      - name: time_account_type_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeAccount
+            - timeAccountType
+            - externalCode
+      - name: payable_balance
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - balance
+            - value
+      - name: payable
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - balance
+            - payable
+      - name: raw
+        type: Json
+        nullable: false
+        expr:
+          kind: current_row
+
+  - name: instructional_text
+    description: Localized help text shown to employees requesting time off in Employee Self-Service
+    filters:
+      - name: as_of_date
+        required: true
+        description: Date (YYYY-MM-DD) the instructional text applies to
+    request:
+      method: GET
+      path: /rest/timemanagement/absence/v1/instructionalTextsForEmployeeSelfService
+      query:
+        - name: $at
+          from: filter
+          key: as_of_date
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    fetch_limit_default: 1
+    columns:
+      - name: instructional_text
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - instructionalText
+
+  - name: time_off_events
+    description: An employee's time-off (absence) events within a date range
+    guide: |
+      `assignment_id`, `types` (comma-separated time type codes),
+      `start_date`, and `end_date` are all required by the provider.
+    filters:
+      - name: assignment_id
+        required: true
+        description: Employment assignment ID to query events for
+      - name: types
+        required: true
+        description: Comma-separated list of time type external codes to include
+      - name: start_date
+        required: true
+        description: Start of the date range (YYYY-MM-DD)
+      - name: end_date
+        required: true
+        description: End of the date range (YYYY-MM-DD)
+      - name: include_partial_day_absences
+        required: false
+      - name: exclude_absences_starting_before_selection_period
+        required: false
+      - name: absence_status
+        required: false
+        description: Filter by absence status
+    request:
+      method: GET
+      path: /rest/timemanagement/absence/v1/events
+      query:
+        - name: assignmentId
+          from: filter
+          key: assignment_id
+        - name: types
+          from: filter
+          key: types
+        - name: startDate
+          from: filter
+          key: start_date
+        - name: endDate
+          from: filter
+          key: end_date
+        - name: includePartialDayAbsences
+          from: filter
+          key: include_partial_day_absences
+        - name: excludeAbsencesStartingBeforeSelectionPeriod
+          from: filter
+          key: exclude_absences_starting_before_selection_period
+        - name: absenceStatus
+          from: filter
+          key: absence_status
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: external_code
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - externalCode
+      - name: title
+        type: Utf8
+      - name: start_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - startDate
+      - name: end_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - endDate
+      - name: start_time
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - startTime
+      - name: end_time
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - endTime
+      - name: duration
+        type: Float64
+      - name: time_unit
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - timeUnit
+      - name: duration_formatted
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - durationFormatted
+      - name: cross_midnight
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - crossMidnight
+      - name: type
+        type: Utf8
+      - name: type_formatted
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - typeFormatted
+      - name: status
+        type: Utf8
+      - name: status_formatted
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - statusFormatted
+      - name: absence_duration_category
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - absenceDurationCategory
+
+  - name: employee_compensations
+    description: Compensation worksheet entries (salary, stock, bonus, variable pay) for a compensation template
+    guide: |
+      `template_id` is required. Salary/stock/bonus/variable-pay detail,
+      rating info, and force comments are nested — pulled into `raw` rather
+      than flattened, since their shape varies by plan configuration.
+    filters:
+      - name: template_id
+        required: true
+        description: Compensation template ID to query entries for
+      - name: odata_filter
+        required: false
+        description: Raw OData filter expression ($filter)
+      - name: expand
+        required: false
+        description: Raw OData $expand expression
+      - name: select
+        required: false
+        description: Raw OData $select expression
+    request:
+      method: GET
+      path: /employeeCompensations
+      query:
+        - name: templateId
+          from: filter
+          key: template_id
+        - name: $filter
+          from: filter
+          key: odata_filter
+        - name: $expand
+          from: filter
+          key: expand
+        - name: $select
+          from: filter
+          key: select
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: comp_entry_id
+        type: Int64
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - compEntryId
+      - name: comp_plan_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - compPlanId
+      - name: form_data_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - formDataId
+      - name: comp_template_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - compTemplateId
+      - name: entry_user_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - entryUserId
+      - name: entry_user_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - entryUserName
+      - name: entry_user_first_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - entryUserFirstName
+      - name: entry_user_last_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - entryUserLastName
+      - name: reviewee_mgr_user_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - revieweeMgrUserId
+      - name: reviewee_mgr_user_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - revieweeMgrUserName
+      - name: department
+        type: Utf8
+      - name: division
+        type: Utf8
+      - name: location
+        type: Utf8
+      - name: local_currency_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - localCurrencyCode
+      - name: functional_currency_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - functionalCurrencyCode
+      - name: is_ec_user
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - isECUser
+      - name: is_total_comp
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - isTotalComp
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full entry, including salary/stock/bonus/varpay detail, ratings, and comments
+        expr:
+          kind: current_row
+
+  - name: activity_statuses
+    description: Continuous Performance Management activity status definitions available in this tenant
+    filters:
+      - name: include_deleted
+        required: false
+    request:
+      method: GET
+      path: /rest/talent/continuousperformance/v1/activityStatuses
+      query:
+        - name: includeDeleted
+          from: filter
+          key: include_deleted
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: activity_status_record_id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - activityStatusRecordId
+      - name: status_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - statusName
+      - name: color_rgb_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - colorRGBCode
+      - name: create_achievement
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - createAchievement
+      - name: default_status
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - defaultStatus
+      - name: deleted
+        type: Boolean
+      - name: created_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: last_modified_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - lastModifiedBy
+
+  - name: activities
+    description: Continuous Performance Management activities (informal goals/tasks tracked between check-ins)
+    fetch_limit_default: 200
+    filters:
+      - name: subject_user_assignment_uuid
+        required: false
+        description: Limit to activities for a specific subject user's assignment UUID
+    request:
+      method: GET
+      path: /rest/talent/continuousperformance/v1/activities
+      query:
+        - name: subjectUserAssignmentUuid
+          from: filter
+          key: subject_user_assignment_uuid
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: activity_record_id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - activityRecordId
+      - name: name
+        type: Utf8
+      - name: goal_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - goalId
+      - name: dev_goal_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - devGoalId
+      - name: status_record_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - statusRecordId
+      - name: subject_user_assignment_uuid
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - subjectUserAssignmentUuid
+      - name: meeting_owner_assignment_uuid
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - meetingOwnerAssignmentUuid
+      - name: created_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - createdDate
+      - name: last_modified_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - lastModifiedDate
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full activity record, including nested status detail
+        expr:
+          kind: current_row
+
+  - name: achievements
+    description: Continuous Performance Management achievements recorded against activities
+    fetch_limit_default: 200
+    filters:
+      - name: target_user_assignment_uuid
+        required: false
+        description: Limit to achievements for a specific target user's assignment UUID
+    request:
+      method: GET
+      path: /rest/talent/continuousperformance/v1/achievements
+      query:
+        - name: targetUserAssignmentUuid
+          from: filter
+          key: target_user_assignment_uuid
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: achievement_record_id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - achievementRecordId
+      - name: activity_record_id
+        type: Utf8
+        description: Joins to activities.activity_record_id
+        expr:
+          kind: path
+          path:
+            - activityRecordId
+      - name: name
+        type: Utf8
+      - name: subject_user_assignment_uuid
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - subjectUserAssignmentUuid
+      - name: achievement_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - achievementDate
+      - name: goal_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - goalId
+      - name: dev_goal_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - devGoalId
+      - name: created_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - createdDate
+      - name: last_modified_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - lastModifiedDate
+
+  - name: cpm_user_permissions
+    description: The caller's Continuous Performance Management permissions (view/edit) toward a target user
+    filters:
+      - name: target_user_assignment_uuid
+        required: false
+    request:
+      method: GET
+      path: /rest/talent/continuousperformance/v1/userPermissions
+      query:
+        - name: targetUserAssignmentUuid
+          from: filter
+          key: target_user_assignment_uuid
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: target_user_assignment_uuid
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - targetUserAssignmentUUID
+      - name: has_permission
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - hasPermission
+      - name: permission_type
+        type: Utf8
+        description: e.g. ACTIVITY, ACHIEVEMENT
+        expr:
+          kind: path
+          path:
+            - permissionType
+      - name: permission_value
+        type: Utf8
+        description: e.g. VIEW, EDIT
+        expr:
+          kind: path
+          path:
+            - permissionValue
+
+  - name: interview_schedules
+    description: Recruiting interview schedules for a job requisition
+    filters:
+      - name: job_requisition_id
+        required: true
+        description: Job requisition ID to list interview schedules for
+      - name: odata_filter
+        required: false
+        description: Raw OData filter expression ($filter)
+      - name: sort
+        required: false
+        description: Raw OData $sort expression
+      - name: expand
+        required: false
+        description: Raw OData $expand expression
+    request:
+      method: GET
+      path: /recruiting/interview/v1/schedules
+      query:
+        - name: jobRequisitionId
+          from: filter
+          key: job_requisition_id
+        - name: $filter
+          from: filter
+          key: odata_filter
+        - name: $sort
+          from: filter
+          key: sort
+        - name: $expand
+          from: filter
+          key: expand
+    response:
+      rows_path:
+        - values
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: status
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: mode
+        type: Utf8
+        description: Phone, F2F, or Virtual
+      - name: type
+        type: Utf8
+        description: Group or Single
+      - name: communication_platform
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - communicationPlatform
+      - name: duration_in_minutes
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - durationInMinutes
+      - name: application_status_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - applicationStatusId
+      - name: created_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: created_at
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: modified_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - modifiedBy
+      - name: modified_at
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modifiedAt
+      - name: job_requisition_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - jobRequisition
+            - id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full schedule record, including location, owners, and interviewer detail
+        expr:
+          kind: current_row
+
+functions:
+  - name: role_members
+    kind: table
+    description: Users granted access through a specific permission role
+    guide: |
+      Scoped child collection of roles — call with a role_id from
+      `roles.id`. Returns everyone who has access via any assignment of
+      that role.
+    args:
+      - name: role_id
+        required: true
+        bind:
+          arg: role_id
+    request:
+      method: GET
+      path: /rest/iam/authorization/pap/v1/roles/{{arg.role_id}}/members
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: role_id
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Role ID used for the request
+        expr:
+          kind: from_arg
+          key: role_id
+      - name: assignment_id
+        type: Utf8
+        description: Unique user system identifier
+        expr:
+          kind: path
+          path:
+            - assignmentId
+      - name: assignment_id_external
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentIdExternal
+      - name: assignment_legacy_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentLegacyId
+      - name: person_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - personId
+      - name: display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: email
+        type: Utf8
+      - name: user_type
+        type: Utf8
+        description: EMPLOYMENT, ONB, LMS, or ALM
+        expr:
+          kind: path
+          path:
+            - userType
+      - name: status
+        type: Utf8
+        description: ACTIVE or INACTIVE
+
+  - name: assignment_members
+    kind: table
+    description: Users granted access through a specific role assignment
+    guide: |
+      Scoped child collection of role_assignments — call with an
+      assignment_id from `role_assignments.id`.
+    args:
+      - name: assignment_id
+        required: true
+        bind:
+          arg: assignment_id
+    request:
+      method: GET
+      path: /rest/iam/authorization/pap/v1/assignments/{{arg.assignment_id}}/members
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: assignment_id_ref
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Role assignment ID used for the request
+        expr:
+          kind: from_arg
+          key: assignment_id
+      - name: assignment_id
+        type: Utf8
+        description: Unique user system identifier
+        expr:
+          kind: path
+          path:
+            - assignmentId
+      - name: assignment_id_external
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentIdExternal
+      - name: assignment_legacy_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentLegacyId
+      - name: person_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - personId
+      - name: display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: email
+        type: Utf8
+      - name: user_type
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - userType
+      - name: status
+        type: Utf8
+
+  - name: group_members
+    kind: table
+    description: Users belonging to a specific permission group's people pools
+    guide: |
+      Scoped child collection of groups — call with a group_id from
+      `groups.id`. Set active_only => true to exclude inactive members.
+      `status` uses the provider's raw single-character codes (t/T active
+      internal, f/F inactive internal, e active external, d inactive
+      external) rather than the ACTIVE/INACTIVE used elsewhere in RBP.
+    args:
+      - name: group_id
+        required: true
+        bind:
+          arg: group_id
+      - name: active_only
+        required: false
+        bind:
+          arg: active_only
+    request:
+      method: GET
+      path: /rest/iam/authorization/pap/v1/groups/{{arg.group_id}}/members
+      query:
+        - name: activeOnly
+          from: arg_bool
+          key: active_only
+    response:
+      rows_path:
+        - members
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: group_id
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Group ID used for the request
+        expr:
+          kind: from_arg
+          key: group_id
+      - name: assignment_id
+        type: Utf8
+        description: Assignment UUID
+        expr:
+          kind: path
+          path:
+            - assignmentId
+      - name: assignment_id_external
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentIdExternal
+      - name: assignment_legacy_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - assignmentLegacyId
+      - name: person_id
+        type: Utf8
+        description: Person UUID
+        expr:
+          kind: path
+          path:
+            - personId
+      - name: user_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - userName
+      - name: first_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - firstName
+      - name: middle_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - middleName
+      - name: last_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - lastName
+      - name: display_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - displayName
+      - name: status
+        type: Utf8
+        description: "Raw status code: t/T active internal, f/F inactive internal, e active external, d inactive external"
+
+  - name: group_people_pools
+    kind: table
+    description: People pool include/exclude filter definitions for a permission group
+    guide: |
+      Scoped child collection of groups — call with a group_id from
+      `groups.id`. Each row is one people pool (a named block of
+      include/exclude filter criteria); `filters` is the raw filter
+      criteria array as JSON — query it with json_get_* functions.
+    args:
+      - name: group_id
+        required: true
+        bind:
+          arg: group_id
+    request:
+      method: GET
+      path: /rest/iam/authorization/pap/v1/groups/{{arg.group_id}}/peoplePools
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: group_id
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Group ID used for the request
+        expr:
+          kind: from_arg
+          key: group_id
+      - name: people_pool_id
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - peoplePoolId
+      - name: type
+        type: Utf8
+        description: include (adds matching members) or exclude (removes matching members)
+      - name: filters
+        type: Json
+        description: Array of filter criteria defining pool membership, as JSON
+
+  - name: odata_entity
+    kind: table
+    description: Generic query against any SuccessFactors OData v2 entity set, returning full raw records as JSON
+    guide: |
+      Escape hatch covering the ~1000 OData v2 entity sets (User, PerPerson,
+      EmpJob, EmpEmployment, EmpCompensation, JobRequisition, Candidate,
+      Position, FOCompany, EmployeeTime, and many more) that don't yet have
+      a dedicated typed table. Each row's full payload is in `row` as JSON —
+      use json_get_str/json_get_int/etc. to pull fields, for example
+      json_get_str(row, 'firstName'). `select`, `filter`, and `order_by`
+      pass straight through as the provider's raw $select/$filter/$orderby
+      OData expressions. Entity names and their fields are case-sensitive
+      and vary per entity — check your tenant's real $metadata
+      (GET /odata/v2/$metadata) for the exact property names of the
+      entity you're querying before writing a $filter or $select.
+    args:
+      - name: entity
+        required: true
+        bind:
+          arg: entity
+      - name: select
+        required: false
+        bind:
+          arg: select
+      - name: filter
+        required: false
+        bind:
+          arg: filter
+      - name: order_by
+        required: false
+        bind:
+          arg: order_by
+    request:
+      method: GET
+      path: /odata/v2/{{arg.entity}}
+      query:
+        - name: $format
+          from: literal
+          value: json
+        - name: $select
+          from: arg
+          key: select
+        - name: $filter
+          from: arg
+          key: filter
+        - name: $orderby
+          from: arg
+          key: order_by
+    response:
+      rows_path:
+        - d
+        - results
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: entity
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Entity set name used for the request
+        expr:
+          kind: from_arg
+          key: entity
+      - name: row
+        type: Json
+        nullable: false
+        description: Full raw OData v2 record for this entity, as JSON
+        expr:
+          kind: current_row
+
+  - name: newhire_journey
+    kind: table
+    description: Onboarding journey status and detail for a specific new hire
+    guide: |
+      Call with a journeyId. Returns at most one journey record — the
+      underlying endpoint is a single-item lookup wrapped in a value array.
+    args:
+      - name: journey_id
+        required: true
+        bind:
+          arg: journey_id
+    request:
+      method: GET
+      path: /onboarding/newhire/v1/journeys/{{arg.journey_id}}
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    fetch_limit_default: 1
+    columns:
+      - name: journey_id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - journeyId
+      - name: status
+        type: Utf8
+      - name: user_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - userId
+      - name: user_full_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - userFullName
+      - name: manager
+        type: Utf8
+      - name: manager_full_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - managerFullName
+      - name: start_date
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - startDate
+      - name: journey_type
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - journeyType
+      - name: journey_sub_type
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - journeySubType
+      - name: hire_status
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - hireStatus
+
+  - name: genai_groups_for_permission
+    kind: table
+    description: Top permission groups (static and dynamic) associated with a given permission, for GenAI-assisted role authoring
+    guide: |
+      Call with a permission_id from genai_permissions.id. Provider caps
+      results at the top 5 static and top 5 dynamic groups by role count —
+      this is a search-assist endpoint, not a full listing; use `groups`
+      for the complete, unbounded list of permission groups.
+    args:
+      - name: permission_id
+        required: true
+        bind:
+          arg: permission_id
+    request:
+      method: GET
+      path: /rest/iam/authorization/genai/v1/groups
+      query:
+        - name: permissionId
+          from: arg
+          key: permission_id
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    fetch_limit_default: 1
+    columns:
+      - name: permission_id
+        type: Int64
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_arg
+          key: permission_id
+      - name: count
+        type: Int64
+        description: Total number of groups matched (static + dynamic)
+      - name: static_groups
+        type: Json
+        description: Top static groups (groupId, groupName, roleCount), as JSON
+        expr:
+          kind: path
+          path:
+            - staticGroups
+      - name: dynamic_groups
+        type: Json
+        description: Top dynamic groups (groupId, groupName, roleCount), as JSON
+        expr:
+          kind: path
+          path:
+            - dynamicGroups
+  - name: interview_schedule
+    kind: table
+    description: A single interview schedule by ID
+    args:
+      - name: id
+        required: true
+        bind:
+          arg: id
+      - name: expand
+        required: false
+        bind:
+          arg: expand
+    request:
+      method: GET
+      path: /recruiting/interview/v1/schedules/{{arg.id}}
+      query:
+        - name: $expand
+          from: arg
+          key: expand
+    response:
+      rows_path:
+        - values
+    pagination:
+      mode: none
+    fetch_limit_default: 1
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+      - name: status
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full schedule record
+        expr:
+          kind: current_row
+
+  - name: activity_status
+    kind: table
+    description: A single Continuous Performance Management activity status definition by ID
+    args:
+      - name: status_record_id
+        required: true
+        bind:
+          arg: status_record_id
+    request:
+      method: GET
+      path: /rest/talent/continuousperformance/v1/activityStatuses/{{arg.status_record_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    fetch_limit_default: 1
+    columns:
+      - name: activity_status_record_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_arg
+          key: status_record_id
+      - name: status_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - statusName
+      - name: color_rgb_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - colorRGBCode
+      - name: create_achievement
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - createAchievement
+      - name: default_status
+        type: Boolean
+        expr:
+          kind: path
+          path:
+            - defaultStatus
+      - name: deleted
+        type: Boolean
+      - name: created_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: created_date
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdDate
+      - name: last_modified_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - lastModifiedBy
+      - name: last_modified_date_time
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastModifiedDateTime
+
+  - name: activity_updates
+    kind: table
+    description: Comment/update history on a single Continuous Performance Management activity
+    args:
+      - name: activity_record_id
+        required: true
+        bind:
+          arg: activity_record_id
+    request:
+      method: GET
+      path: /rest/talent/continuousperformance/v1/activities/{{arg.activity_record_id}}/activityUpdates
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: offset
+      offset_param: $skip
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: $top
+    columns:
+      - name: activity_record_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_arg
+          key: activity_record_id
+      - name: activity_update_record_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - activityUpdateRecordId
+      - name: commenter_assignment_uuid
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - commenterAssignmentUuid
+      - name: comment_content
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - commentContent
+      - name: created_date
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdDate
+      - name: created_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - createdBy
+      - name: last_modified_date
+        type: Timestamp
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - lastModifiedDate
+      - name: last_modified_by
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - lastModifiedBy
+
+  - name: review_route_map
+    kind: table
+    description: The modify/signoff routing steps configured for a single performance review form
+    args:
+      - name: review_id
+        required: true
+        bind:
+          arg: review_id
+      - name: locale
+        required: false
+        bind:
+          arg: locale
+    request:
+      method: GET
+      path: /rest/talent/performance/admin/v1/reviewRouteMaps/{{arg.review_id}}
+      query:
+        - name: locale
+          from: arg
+          key: locale
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    fetch_limit_default: 1
+    columns:
+      - name: review_id
+        type: Int64
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - reviewId
+      - name: modify_steps
+        type: Json
+        description: Ordered list of routing steps in the modify stage, as JSON
+        expr:
+          kind: path
+          path:
+            - modifySteps
+      - name: signoff_steps
+        type: Json
+        description: Ordered list of routing steps in the signature stage, as JSON
+        expr:
+          kind: path
+          path:
+            - signoffSteps
+
+  - name: onboarding_extension_tasks
+    kind: table
+    description: Extension point task statuses (hiring manager review, personal data collection) for a single onboarding process
+    args:
+      - name: process_id
+        required: true
+        bind:
+          arg: process_id
+      - name: odata_filter
+        required: false
+        bind:
+          arg: odata_filter
+    request:
+      method: GET
+      path: /processes/{{arg.process_id}}/tasks
+      query:
+        - name: $filter
+          from: arg
+          key: odata_filter
+    response:
+      rows_path:
+        - value
+    pagination:
+      mode: none
+    columns:
+      - name: process_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_arg
+          key: process_id
+      - name: task_id
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - taskId
+      - name: task_type
+        type: Utf8
+        description: HIRING_MANAGER_REVIEW_EXTENSION or PERSONAL_DATA_COLLECTION_EXTENSION
+        expr:
+          kind: path
+          path:
+            - taskType
+      - name: process_status
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - processStatus
