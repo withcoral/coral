@@ -10,6 +10,33 @@ use serde::Deserialize;
 use walkdir::WalkDir;
 
 const SOURCE_DIR: &str = "plugins/coral/skills";
+const MARKETPLACE_NAME: &str = "withcoral";
+
+/// Claude Code plugins published from the exported skills, in listing order.
+/// Every skill lands in exactly one plugin: `PLUGINS[0]` is the fallback, so a
+/// newly added skill is published even before this table mentions it.
+const PLUGINS: &[PluginEntry] = &[
+    PluginEntry {
+        name: "coral",
+        description: "Query live sources through Coral MCP: GitHub, Jira, Slack, Linear, Datadog, Sentry, files, and connected data.",
+        keywords: &["coral", "sql", "mcp", "data", "context"],
+        skill_suffix: None,
+    },
+    PluginEntry {
+        name: "coral-sources",
+        description: "Author and review Coral source specs: write source YAML for custom HTTP APIs or local datasets, and review source manifests and PRs.",
+        keywords: &["coral", "source", "yaml", "manifest", "review"],
+        skill_suffix: Some("-source-spec"),
+    },
+];
+
+struct PluginEntry {
+    name: &'static str,
+    description: &'static str,
+    keywords: &'static [&'static str],
+    /// Skill-name suffix claimed by this plugin. `None` takes what is left.
+    skill_suffix: Option<&'static str>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SkillMetadata {
@@ -72,6 +99,13 @@ pub(crate) fn export(dest: &Path) -> Result<bool> {
 
     fs::write(dest.join("README.md"), render_readme(&skills))
         .with_context(|| format!("writing {}", dest.join("README.md").display()))?;
+
+    let marketplace_dir = dest.join(".claude-plugin");
+    fs::create_dir_all(&marketplace_dir)
+        .with_context(|| format!("creating {}", marketplace_dir.display()))?;
+    let marketplace = marketplace_dir.join("marketplace.json");
+    fs::write(&marketplace, render_marketplace(&skills)?)
+        .with_context(|| format!("writing {}", marketplace.display()))?;
     println!(
         "xtask: exported {} skills to {}",
         skills.len(),
@@ -334,6 +368,72 @@ fn copy_dir_all(source: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A plugin claims a skill when the skill name ends with its suffix. The
+/// suffix-less entry claims whatever no other plugin does, so a newly added
+/// skill is always published somewhere.
+fn claims_skill(plugin: &PluginEntry, name: &str) -> bool {
+    match plugin.skill_suffix {
+        Some(suffix) => name.ends_with(suffix),
+        None => !PLUGINS.iter().any(|other| {
+            other
+                .skill_suffix
+                .is_some_and(|suffix| name.ends_with(suffix))
+        }),
+    }
+}
+
+/// Assign every skill to exactly one plugin, dropping plugins that end up empty.
+fn assign_plugins(skills: &[Skill]) -> Vec<(&'static PluginEntry, Vec<&str>)> {
+    PLUGINS
+        .iter()
+        .map(|plugin| {
+            let names = skills
+                .iter()
+                .map(|skill| skill.metadata.name.as_str())
+                .filter(|name| claims_skill(plugin, name))
+                .collect::<Vec<_>>();
+            (plugin, names)
+        })
+        .filter(|(_, names)| !names.is_empty())
+        .collect()
+}
+
+fn render_marketplace(skills: &[Skill]) -> Result<String> {
+    let plugins: Vec<serde_json::Value> = assign_plugins(skills)
+        .into_iter()
+        .map(|(plugin, names)| {
+            serde_json::json!({
+                "name": plugin.name,
+                "source": "./",
+                "skills": names
+                    .iter()
+                    .map(|name| format!("./{name}"))
+                    .collect::<Vec<_>>(),
+                "strict": false,
+                "description": plugin.description,
+                "homepage": "https://withcoral.com",
+                "repository": "https://github.com/withcoral/skills",
+                "license": "Apache-2.0",
+                "category": "data",
+                "keywords": plugin.keywords,
+            })
+        })
+        .collect();
+    if plugins.is_empty() {
+        bail!("no plugins to publish");
+    }
+    let marketplace = serde_json::json!({
+        "name": MARKETPLACE_NAME,
+        "owner": { "name": "Coral", "url": "https://withcoral.com" },
+        "description": "Agent skills for Coral - one SQL interface over APIs, files, and live sources.",
+        "plugins": plugins,
+    });
+    let mut out =
+        serde_json::to_string_pretty(&marketplace).context("serializing marketplace.json")?;
+    out.push('\n');
+    Ok(out)
+}
+
 fn render_readme(skills: &[Skill]) -> String {
     let mut out = String::new();
     out.push_str("# Coral Skills\n\n");
@@ -342,6 +442,16 @@ fn render_readme(skills: &[Skill]) -> String {
     );
     out.push_str("Agent skills for [Coral](https://withcoral.com) - one SQL interface over APIs, files, and live sources, built for agents.\n\n");
     out.push_str("## Installation\n\n");
+    out.push_str("### Claude Code\n\n```\n");
+    writeln!(out, "/plugin marketplace add withcoral/skills")
+        .expect("writing to String is infallible");
+    for plugin in PLUGINS {
+        writeln!(out, "/plugin install {}@{MARKETPLACE_NAME}", plugin.name)
+            .expect("writing to String is infallible");
+    }
+    out.push_str("```\n\n");
+    out.push_str("`coral` is the Coral query skill. `coral-sources` adds the source-spec authoring\nand review skills - install it only if you write or review Coral sources.\n\n");
+    out.push_str("### Other agents\n\n");
     out.push_str("```bash\nnpx skills add withcoral/skills\n```\n\n");
     out.push_str("## Available Skills\n\n");
     out.push_str("| Skill | Description |\n");
@@ -364,9 +474,20 @@ fn render_readme(skills: &[Skill]) -> String {
 mod tests {
     use super::{
         AgentInterface, AgentMetadata, Skill, SkillMetadata, expected_display_name,
-        mentions_skill_token, parse_skill_metadata_str, render_readme, unquote,
+        mentions_skill_token, parse_skill_metadata_str, render_marketplace, render_readme, unquote,
         validate_skill_definition,
     };
+
+    fn skill(name: &str) -> Skill {
+        Skill {
+            dir: name.into(),
+            metadata: SkillMetadata {
+                name: name.to_string(),
+                description: format!("{name} description"),
+                title: "Coral".to_string(),
+            },
+        }
+    }
 
     #[test]
     fn parses_quoted_frontmatter() {
@@ -461,6 +582,83 @@ description: "Query live sources through Coral MCP."
         assert_eq!(unquote("\"hello\""), "hello");
         assert_eq!(unquote("'hello'"), "hello");
         assert_eq!(unquote("hello"), "hello");
+    }
+
+    /// (plugin name, skill paths) for every entry in a rendered marketplace.
+    fn plugin_skills(marketplace: &serde_json::Value) -> Vec<(String, Vec<String>)> {
+        marketplace
+            .get("plugins")
+            .and_then(serde_json::Value::as_array)
+            .expect("plugins array")
+            .iter()
+            .map(|plugin| {
+                let name = plugin
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("plugin name")
+                    .to_owned();
+                let skills = plugin
+                    .get("skills")
+                    .and_then(serde_json::Value::as_array)
+                    .expect("plugin skills")
+                    .iter()
+                    .map(|path| path.as_str().expect("skill path is a string").to_owned())
+                    .collect();
+                assert_eq!(plugin.get("source"), Some(&serde_json::json!("./")));
+                assert_eq!(plugin.get("strict"), Some(&serde_json::json!(false)));
+                (name, skills)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn renders_marketplace_with_one_entry_per_plugin() {
+        let skills = vec![
+            skill("coral"),
+            skill("coral-create-source-spec"),
+            skill("coral-review-source-spec"),
+        ];
+        let marketplace: serde_json::Value =
+            serde_json::from_str(&render_marketplace(&skills).expect("marketplace"))
+                .expect("valid json");
+        assert_eq!(
+            marketplace.get("name"),
+            Some(&serde_json::json!("withcoral"))
+        );
+        assert_eq!(
+            plugin_skills(&marketplace),
+            vec![
+                ("coral".to_owned(), vec!["./coral".to_owned()]),
+                (
+                    "coral-sources".to_owned(),
+                    vec![
+                        "./coral-create-source-spec".to_owned(),
+                        "./coral-review-source-spec".to_owned(),
+                    ],
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn publishes_unclaimed_skills_in_the_fallback_plugin() {
+        let marketplace: serde_json::Value = serde_json::from_str(
+            &render_marketplace(&[skill("coral-explain-query")]).expect("marketplace"),
+        )
+        .expect("valid json");
+        assert_eq!(
+            plugin_skills(&marketplace),
+            vec![("coral".to_owned(), vec!["./coral-explain-query".to_owned()])]
+        );
+    }
+
+    #[test]
+    fn renders_readme_with_claude_code_install_commands() {
+        let readme = render_readme(&[skill("coral")]);
+        assert!(readme.contains("/plugin marketplace add withcoral/skills"));
+        assert!(readme.contains("/plugin install coral@withcoral"));
+        assert!(readme.contains("/plugin install coral-sources@withcoral"));
+        assert!(readme.contains("npx skills add withcoral/skills"));
     }
 
     #[test]
