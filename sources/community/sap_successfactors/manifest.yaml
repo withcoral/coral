@@ -165,6 +165,30 @@ tables:
           path:
             - modifier
             - displayName
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Free-text search filter applied to this query
+        expr:
+          kind: from_filter
+          key: search
+      - name: odata_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData filter expression applied to this query
+        expr:
+          kind: from_filter
+          key: odata_filter
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData order-by expression applied to this query
+        expr:
+          kind: from_filter
+          key: order_by
 
   - name: role_assignments
     description: Role assignments granting a role to an access population over a target population
@@ -327,6 +351,22 @@ tables:
           kind: path
           path:
             - lastModifiedBy
+      - name: odata_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData filter expression applied to this query
+        expr:
+          kind: from_filter
+          key: odata_filter
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData order-by expression applied to this query
+        expr:
+          kind: from_filter
+          key: order_by
 
   - name: groups
     description: Permission groups — collections of users defined through people pools
@@ -429,6 +469,30 @@ tables:
             kind: path
             path:
               - lastModified
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Free-text search filter applied to this query
+        expr:
+          kind: from_filter
+          key: search
+      - name: odata_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData filter expression applied to this query
+        expr:
+          kind: from_filter
+          key: odata_filter
+      - name: order_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData order-by expression applied to this query
+        expr:
+          kind: from_filter
+          key: order_by
 
   - name: scim_users
     description: SCIM 2.0 user identity records (core identity, name, contact, SAP extensions)
@@ -556,6 +620,14 @@ tables:
         description: Full raw SCIM user record, including emails, phoneNumbers, groups, and extension schemas
         expr:
           kind: current_row
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: SCIM filter expression applied to this query
+        expr:
+          kind: from_filter
+          key: filter
 
   - name: scim_groups
     description: SCIM 2.0 permission groups (RBP groups exposed via the SCIM API)
@@ -657,6 +729,14 @@ tables:
         description: Full raw SCIM group record as JSON
         expr:
           kind: current_row
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: SCIM filter expression applied to this query
+        expr:
+          kind: from_filter
+          key: filter
 
   - name: genai_permissions
     description: Searchable catalog of RBP permissions, for GenAI-assisted role authoring
@@ -729,6 +809,22 @@ tables:
             - actionLabel
       - name: description
         type: Utf8
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Free-text search filter applied to this query
+        expr:
+          kind: from_filter
+          key: search
+      - name: resource_type_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Resource type filter applied to this query
+        expr:
+          kind: from_filter
+          key: resource_type
 
   - name: genai_users
     description: Searchable catalog of users, for GenAI-assisted role/assignment authoring
@@ -812,6 +908,30 @@ tables:
         type: Utf8
       - name: status
         type: Utf8
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Free-text search filter applied to this query
+        expr:
+          kind: from_filter
+          key: search
+      - name: odata_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData filter expression applied to this query
+        expr:
+          kind: from_filter
+          key: odata_filter
+      - name: action
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Action context filter applied to this query
+        expr:
+          kind: from_filter
+          key: action
 
   - name: dpcs_statements
     description: Data privacy consent statement currently in effect for a given type/country/language
@@ -1043,9 +1163,17 @@ tables:
       - name: raw
         type: Json
         nullable: false
-        description: Full raw proxy grant record as JSON
+        description: Full proxy grant record as JSON
         expr:
           kind: current_row
+      - name: odata_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData filter expression applied to this query
+        expr:
+          kind: from_filter
+          key: odata_filter
 
   - name: proxy_scopes
     description: Catalog of proxy scope definitions (what a proxy grant can permit) available in this tenant
@@ -1147,6 +1275,22 @@ tables:
           kind: path
           path:
             - allowedFractions
+      - name: as_of_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Date filter applied to this query
+        expr:
+          kind: from_filter
+          key: as_of_date
+      - name: absence_request_code
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Absence request code filter applied to this query
+        expr:
+          kind: from_filter
+          key: absence_request_code
 
   - name: time_account_balances
     description: An employee's time (leave) account balances as of a given date
@@ -1234,6 +1378,22 @@ tables:
             - balances
             - available
             - formattedWithUnit
+      - name: as_of_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Date filter applied to this query
+        expr:
+          kind: from_filter
+          key: as_of_date
+      - name: assignment_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Assignment ID filter applied to this query
+        expr:
+          kind: from_filter
+          key: assignment_id
       - name: raw
         type: Json
         nullable: false
@@ -2095,6 +2255,22 @@ tables:
         description: Full schedule record, including location, owners, and interviewer detail
         expr:
           kind: current_row
+      - name: job_requisition_id_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Job requisition ID filter applied to this query
+        expr:
+          kind: from_filter
+          key: job_requisition_id
+      - name: odata_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: OData filter expression applied to this query
+        expr:
+          kind: from_filter
+          key: odata_filter
 
 functions:
   - name: role_members
