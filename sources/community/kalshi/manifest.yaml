@@ -1,0 +1,2951 @@
+name: kalshi
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Kalshi public Trade API reads: series, events, markets, trades,
+  order books, candlesticks, milestones, and exchange metadata.
+base_url: https://external-api.kalshi.com/trade-api/v2
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - >-
+    SELECT ticker, title, status, yes_bid_dollars
+    FROM kalshi.markets
+    WHERE status = 'open'
+    LIMIT 5
+  - SELECT event_ticker, title, category FROM kalshi.events LIMIT 5
+  - SELECT ticker, title, category FROM kalshi.series WHERE ticker = 'KXELONMARS'
+  - SELECT trade_id, ticker, yes_price_dollars FROM kalshi.trades LIMIT 5
+  - >-
+    SELECT ticker, yes_dollars, no_dollars
+    FROM kalshi.orderbook
+    WHERE ticker = 'KXELONMARS-99'
+    LIMIT 1
+  - SELECT id, title, category FROM kalshi.milestones LIMIT 5
+  - >-
+    SELECT ticker, end_period_ts, volume_fp
+    FROM kalshi.candlesticks
+    WHERE series_ticker = 'KXELONMARS'
+      AND ticker = 'KXELONMARS-99'
+      AND start_ts = '1787702400'
+      AND end_ts = '1788393600'
+      AND period_interval = '1440'
+    LIMIT 5
+
+tables:
+  - name: series
+    description: >-
+      One Kalshi series by ticker. The list endpoint ignores limit and returns
+      a multi-megabyte payload, so this table is a path lookup.
+    guide: >-
+      Requires `ticker`. Example:
+      `SELECT ticker, title, category FROM kalshi.series WHERE ticker = 'KXELONMARS'`.
+    filters:
+      - name: ticker
+        required: true
+        description: Series ticker.
+    request:
+      method: GET
+      path: /series/{{filter.ticker}}
+    response:
+      rows_path:
+        - series
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: ticker
+        type: Utf8
+        nullable: false
+        description: Series ticker.
+        expr:
+          kind: path
+          path:
+              - ticker
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Series title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Series category.
+        expr:
+          kind: path
+          path:
+              - category
+      - name: frequency
+        type: Utf8
+        nullable: true
+        description: Recurrence such as custom or one_off.
+        expr:
+          kind: path
+          path:
+              - frequency
+      - name: fee_type
+        type: Utf8
+        nullable: true
+        description: Fee type such as quadratic.
+        expr:
+          kind: path
+          path:
+              - fee_type
+      - name: fee_multiplier
+        type: Float64
+        nullable: true
+        description: Fee multiplier.
+        expr:
+          kind: path
+          path:
+              - fee_multiplier
+      - name: exchange_index
+        type: Int64
+        nullable: true
+        description: Exchange shard index.
+        expr:
+          kind: path
+          path:
+              - exchange_index
+      - name: contract_url
+        type: Utf8
+        nullable: true
+        description: Product certification URL.
+        expr:
+          kind: path
+          path:
+              - contract_url
+      - name: contract_terms_url
+        type: Utf8
+        nullable: true
+        description: Contract terms PDF URL.
+        expr:
+          kind: path
+          path:
+              - contract_terms_url
+      - name: last_updated_ts
+        type: Timestamp
+        nullable: true
+        description: Last series update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_updated_ts
+      - name: tags
+        type: Json
+        nullable: true
+        description: Series tags.
+        expr:
+          kind: path
+          path:
+              - tags
+      - name: settlement_sources
+        type: Json
+        nullable: true
+        description: Settlement source objects.
+        expr:
+          kind: path
+          path:
+              - settlement_sources
+      - name: additional_prohibitions
+        type: Json
+        nullable: true
+        description: Additional trading prohibitions.
+        expr:
+          kind: path
+          path:
+              - additional_prohibitions
+      - name: product_metadata
+        type: Json
+        nullable: true
+        description: Product metadata object.
+        expr:
+          kind: path
+          path:
+              - product_metadata
+
+  - name: events
+    description: >-
+      Kalshi events excluding multivariate combos. Use multivariate_events for
+      those. Nested markets are omitted unless nested_markets is true.
+    guide: >-
+      `SELECT event_ticker, title, category FROM kalshi.events LIMIT 20`.
+      Filter with `status = 'open'` or `series_ticker`.
+    fetch_limit_default: 50
+    filters:
+      - name: series_ticker
+        required: false
+        description: Parent series ticker.
+      - name: status
+        required: false
+        description: Event status (unopened, open, closed, settled).
+      - name: nested_markets
+        required: false
+        description: If true, include nested markets on each event.
+    request:
+      method: GET
+      path: /events
+      query:
+        - name: series_ticker
+          from: filter
+          key: series_ticker
+        - name: status
+          from: filter
+          key: status
+        - name: with_nested_markets
+          from: filter
+          key: nested_markets
+    response:
+      rows_path:
+        - events
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 50
+        max: 1000
+        query_param: limit
+    columns:
+      - name: event_ticker
+        type: Utf8
+        nullable: false
+        description: Event ticker.
+        expr:
+          kind: path
+          path:
+              - event_ticker
+      - name: series_ticker
+        type: Utf8
+        nullable: true
+        description: Parent series ticker.
+        expr:
+          kind: path
+          path:
+              - series_ticker
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Event title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: sub_title
+        type: Utf8
+        nullable: true
+        description: Event subtitle.
+        expr:
+          kind: path
+          path:
+              - sub_title
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Event category.
+        expr:
+          kind: path
+          path:
+              - category
+      - name: mutually_exclusive
+        type: Boolean
+        nullable: true
+        description: Whether outcomes are mutually exclusive.
+        expr:
+          kind: path
+          path:
+              - mutually_exclusive
+      - name: available_on_brokers
+        type: Boolean
+        nullable: true
+        description: Whether brokers can offer the event.
+        expr:
+          kind: path
+          path:
+              - available_on_brokers
+      - name: exchange_index
+        type: Int64
+        nullable: true
+        description: Exchange shard index.
+        expr:
+          kind: path
+          path:
+              - exchange_index
+      - name: collateral_return_type
+        type: Utf8
+        nullable: true
+        description: Collateral return type.
+        expr:
+          kind: path
+          path:
+              - collateral_return_type
+      - name: strike_period
+        type: Utf8
+        nullable: true
+        description: Strike period label.
+        expr:
+          kind: path
+          path:
+              - strike_period
+      - name: last_updated_ts
+        type: Timestamp
+        nullable: true
+        description: Last metadata update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_updated_ts
+      - name: settlement_sources
+        type: Json
+        nullable: true
+        description: Settlement source objects.
+        expr:
+          kind: path
+          path:
+              - settlement_sources
+      - name: markets
+        type: Json
+        nullable: true
+        description: Nested market objects when the endpoint returns them.
+        expr:
+          kind: path
+          path:
+              - markets
+      - name: nested_markets
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested with_nested_markets query.
+        expr:
+          kind: from_filter
+          key: nested_markets
+      - name: status
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested event status query.
+        expr:
+          kind: from_filter
+          key: status
+
+  - name: multivariate_events
+    description: Multivariate (combo) events created from collections.
+    guide: >-
+      `SELECT event_ticker, title, series_ticker FROM kalshi.multivariate_events
+      LIMIT 20`.
+    fetch_limit_default: 50
+    filters:
+      - name: series_ticker
+        required: false
+        description: Parent series or collection ticker.
+    request:
+      method: GET
+      path: /events/multivariate
+      query:
+        - name: series_ticker
+          from: filter
+          key: series_ticker
+    response:
+      rows_path:
+        - events
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 50
+        max: 1000
+        query_param: limit
+    columns:
+      - name: event_ticker
+        type: Utf8
+        nullable: false
+        description: Event ticker.
+        expr:
+          kind: path
+          path:
+              - event_ticker
+      - name: series_ticker
+        type: Utf8
+        nullable: true
+        description: Parent series ticker.
+        expr:
+          kind: path
+          path:
+              - series_ticker
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Event title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: sub_title
+        type: Utf8
+        nullable: true
+        description: Event subtitle.
+        expr:
+          kind: path
+          path:
+              - sub_title
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Event category.
+        expr:
+          kind: path
+          path:
+              - category
+      - name: mutually_exclusive
+        type: Boolean
+        nullable: true
+        description: Whether outcomes are mutually exclusive.
+        expr:
+          kind: path
+          path:
+              - mutually_exclusive
+      - name: available_on_brokers
+        type: Boolean
+        nullable: true
+        description: Whether brokers can offer the event.
+        expr:
+          kind: path
+          path:
+              - available_on_brokers
+      - name: exchange_index
+        type: Int64
+        nullable: true
+        description: Exchange shard index.
+        expr:
+          kind: path
+          path:
+              - exchange_index
+      - name: collateral_return_type
+        type: Utf8
+        nullable: true
+        description: Collateral return type.
+        expr:
+          kind: path
+          path:
+              - collateral_return_type
+      - name: strike_period
+        type: Utf8
+        nullable: true
+        description: Strike period label.
+        expr:
+          kind: path
+          path:
+              - strike_period
+      - name: last_updated_ts
+        type: Timestamp
+        nullable: true
+        description: Last metadata update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_updated_ts
+      - name: settlement_sources
+        type: Json
+        nullable: true
+        description: Settlement source objects.
+        expr:
+          kind: path
+          path:
+              - settlement_sources
+      - name: markets
+        type: Json
+        nullable: true
+        description: Nested market objects when the endpoint returns them.
+        expr:
+          kind: path
+          path:
+              - markets
+
+  - name: event
+    description: One event by ticker, including nested markets.
+    guide: >-
+      Requires `event_ticker`. Example:
+      `SELECT title, category FROM kalshi.event WHERE event_ticker = 'KXELONMARS-99'`.
+    filters:
+      - name: event_ticker
+        required: true
+        description: Event ticker.
+    request:
+      method: GET
+      path: /events/{{filter.event_ticker}}
+      query:
+        - name: with_nested_markets
+          from: literal
+          value: "true"
+    response:
+      rows_path:
+        - event
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: event_ticker
+        type: Utf8
+        nullable: false
+        description: Event ticker.
+        expr:
+          kind: path
+          path:
+              - event_ticker
+      - name: series_ticker
+        type: Utf8
+        nullable: true
+        description: Parent series ticker.
+        expr:
+          kind: path
+          path:
+              - series_ticker
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Event title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: sub_title
+        type: Utf8
+        nullable: true
+        description: Event subtitle.
+        expr:
+          kind: path
+          path:
+              - sub_title
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Event category.
+        expr:
+          kind: path
+          path:
+              - category
+      - name: mutually_exclusive
+        type: Boolean
+        nullable: true
+        description: Whether outcomes are mutually exclusive.
+        expr:
+          kind: path
+          path:
+              - mutually_exclusive
+      - name: available_on_brokers
+        type: Boolean
+        nullable: true
+        description: Whether brokers can offer the event.
+        expr:
+          kind: path
+          path:
+              - available_on_brokers
+      - name: exchange_index
+        type: Int64
+        nullable: true
+        description: Exchange shard index.
+        expr:
+          kind: path
+          path:
+              - exchange_index
+      - name: collateral_return_type
+        type: Utf8
+        nullable: true
+        description: Collateral return type.
+        expr:
+          kind: path
+          path:
+              - collateral_return_type
+      - name: strike_period
+        type: Utf8
+        nullable: true
+        description: Strike period label.
+        expr:
+          kind: path
+          path:
+              - strike_period
+      - name: last_updated_ts
+        type: Timestamp
+        nullable: true
+        description: Last metadata update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_updated_ts
+      - name: settlement_sources
+        type: Json
+        nullable: true
+        description: Settlement source objects.
+        expr:
+          kind: path
+          path:
+              - settlement_sources
+      - name: markets
+        type: Json
+        nullable: true
+        description: Nested market objects when the endpoint returns them.
+        expr:
+          kind: path
+          path:
+              - markets
+
+  - name: event_metadata
+    description: Image and market-detail metadata for one event.
+    guide: >-
+      Requires `event_ticker`. Example:
+      `SELECT image_url, market_details FROM kalshi.event_metadata
+      WHERE event_ticker = 'KXELONMARS-99'`.
+    filters:
+      - name: event_ticker
+        required: true
+        description: Event ticker.
+    request:
+      method: GET
+      path: /events/{{filter.event_ticker}}/metadata
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: event_ticker
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested event ticker.
+        expr:
+          kind: from_filter
+          key: event_ticker
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: Event image URL.
+        expr:
+          kind: path
+          path:
+              - image_url
+      - name: featured_image_url
+        type: Utf8
+        nullable: true
+        description: Featured market image URL.
+        expr:
+          kind: path
+          path:
+              - featured_image_url
+      - name: market_details
+        type: Json
+        nullable: true
+        description: Per-market image and color metadata.
+        expr:
+          kind: path
+          path:
+              - market_details
+      - name: settlement_sources
+        type: Json
+        nullable: true
+        description: Settlement source objects.
+        expr:
+          kind: path
+          path:
+              - settlement_sources
+
+  - name: markets
+    description: >-
+      Binary markets with prices, volume, and lifecycle times. Settled markets
+      older than the historical cutoff live in historical_markets.
+    guide: >-
+      `SELECT ticker, title, yes_bid_dollars, status FROM kalshi.markets
+      WHERE status = 'open' LIMIT 20`.
+    fetch_limit_default: 50
+    filters:
+      - name: status
+        required: false
+        description: Market status (unopened, open, closed, settled).
+      - name: series_ticker
+        required: false
+        description: Parent series ticker.
+      - name: event_ticker
+        required: false
+        description: Parent event ticker.
+      - name: tickers
+        required: false
+        description: Comma-separated market tickers.
+    request:
+      method: GET
+      path: /markets
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: series_ticker
+          from: filter
+          key: series_ticker
+        - name: event_ticker
+          from: filter
+          key: event_ticker
+        - name: tickers
+          from: filter
+          key: tickers
+    response:
+      rows_path:
+        - markets
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 50
+        max: 1000
+        query_param: limit
+    columns:
+      - name: ticker
+        type: Utf8
+        nullable: false
+        description: Market ticker.
+        expr:
+          kind: path
+          path:
+              - ticker
+      - name: event_ticker
+        type: Utf8
+        nullable: true
+        description: Parent event ticker.
+        expr:
+          kind: path
+          path:
+              - event_ticker
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Market title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: yes_sub_title
+        type: Utf8
+        nullable: true
+        description: YES outcome label.
+        expr:
+          kind: path
+          path:
+              - yes_sub_title
+      - name: no_sub_title
+        type: Utf8
+        nullable: true
+        description: NO outcome label.
+        expr:
+          kind: path
+          path:
+              - no_sub_title
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Market status (unopened, open, closed, settled).
+        expr:
+          kind: path
+          path:
+              - status
+      - name: market_type
+        type: Utf8
+        nullable: true
+        description: Market type such as binary.
+        expr:
+          kind: path
+          path:
+              - market_type
+      - name: strike_type
+        type: Utf8
+        nullable: true
+        description: Strike type.
+        expr:
+          kind: path
+          path:
+              - strike_type
+      - name: result
+        type: Utf8
+        nullable: true
+        description: Settled result if any.
+        expr:
+          kind: path
+          path:
+              - result
+      - name: yes_bid_dollars
+        type: Utf8
+        nullable: true
+        description: YES bid in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - yes_bid_dollars
+      - name: yes_ask_dollars
+        type: Utf8
+        nullable: true
+        description: YES ask in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - yes_ask_dollars
+      - name: no_bid_dollars
+        type: Utf8
+        nullable: true
+        description: NO bid in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - no_bid_dollars
+      - name: no_ask_dollars
+        type: Utf8
+        nullable: true
+        description: NO ask in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - no_ask_dollars
+      - name: last_price_dollars
+        type: Utf8
+        nullable: true
+        description: Last trade price in dollars.
+        expr:
+          kind: path
+          path:
+              - last_price_dollars
+      - name: previous_price_dollars
+        type: Utf8
+        nullable: true
+        description: Previous last price in dollars.
+        expr:
+          kind: path
+          path:
+              - previous_price_dollars
+      - name: liquidity_dollars
+        type: Utf8
+        nullable: true
+        description: Displayed liquidity in dollars.
+        expr:
+          kind: path
+          path:
+              - liquidity_dollars
+      - name: notional_value_dollars
+        type: Utf8
+        nullable: true
+        description: Notional value in dollars.
+        expr:
+          kind: path
+          path:
+              - notional_value_dollars
+      - name: volume_fp
+        type: Utf8
+        nullable: true
+        description: Lifetime volume (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - volume_fp
+      - name: volume_24h_fp
+        type: Utf8
+        nullable: true
+        description: 24h volume (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - volume_24h_fp
+      - name: open_interest_fp
+        type: Utf8
+        nullable: true
+        description: Open interest (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - open_interest_fp
+      - name: yes_bid_size_fp
+        type: Utf8
+        nullable: true
+        description: YES bid size (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - yes_bid_size_fp
+      - name: yes_ask_size_fp
+        type: Utf8
+        nullable: true
+        description: YES ask size (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - yes_ask_size_fp
+      - name: price_level_structure
+        type: Utf8
+        nullable: true
+        description: Price level structure.
+        expr:
+          kind: path
+          path:
+              - price_level_structure
+      - name: can_close_early
+        type: Boolean
+        nullable: true
+        description: Whether the market can close early.
+        expr:
+          kind: path
+          path:
+              - can_close_early
+      - name: is_provisional
+        type: Boolean
+        nullable: true
+        description: Whether the market is provisional.
+        expr:
+          kind: path
+          path:
+              - is_provisional
+      - name: exchange_index
+        type: Int64
+        nullable: true
+        description: Exchange shard index.
+        expr:
+          kind: path
+          path:
+              - exchange_index
+      - name: settlement_timer_seconds
+        type: Int64
+        nullable: true
+        description: Settlement timer in seconds.
+        expr:
+          kind: path
+          path:
+              - settlement_timer_seconds
+      - name: open_time
+        type: Timestamp
+        nullable: true
+        description: Market open time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - open_time
+      - name: close_time
+        type: Timestamp
+        nullable: true
+        description: Market close time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - close_time
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Market created time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: updated_time
+        type: Timestamp
+        nullable: true
+        description: Market updated time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_time
+      - name: expiration_time
+        type: Timestamp
+        nullable: true
+        description: Expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expiration_time
+      - name: expected_expiration_time
+        type: Timestamp
+        nullable: true
+        description: Expected expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expected_expiration_time
+      - name: latest_expiration_time
+        type: Timestamp
+        nullable: true
+        description: Latest expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - latest_expiration_time
+      - name: rules_primary
+        type: Utf8
+        nullable: true
+        description: Primary settlement rules.
+        expr:
+          kind: path
+          path:
+              - rules_primary
+      - name: rules_secondary
+        type: Utf8
+        nullable: true
+        description: Secondary settlement rules.
+        expr:
+          kind: path
+          path:
+              - rules_secondary
+      - name: expiration_value
+        type: Utf8
+        nullable: true
+        description: Expiration value string.
+        expr:
+          kind: path
+          path:
+              - expiration_value
+      - name: mve_collection_ticker
+        type: Utf8
+        nullable: true
+        description: Multivariate collection ticker if any.
+        expr:
+          kind: path
+          path:
+              - mve_collection_ticker
+      - name: custom_strike
+        type: Json
+        nullable: true
+        description: Custom strike object.
+        expr:
+          kind: path
+          path:
+              - custom_strike
+      - name: price_ranges
+        type: Json
+        nullable: true
+        description: Price range objects.
+        expr:
+          kind: path
+          path:
+              - price_ranges
+      - name: mve_selected_legs
+        type: Json
+        nullable: true
+        description: Selected multivariate legs.
+        expr:
+          kind: path
+          path:
+              - mve_selected_legs
+      - name: tickers
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested comma-separated ticker list.
+        expr:
+          kind: from_filter
+          key: tickers
+
+  - name: market
+    description: One market by ticker.
+    guide: >-
+      Requires `ticker`. Example:
+      `SELECT ticker, title, status FROM kalshi.market WHERE ticker = 'KXELONMARS-99'`.
+    filters:
+      - name: ticker
+        required: true
+        description: Market ticker.
+    request:
+      method: GET
+      path: /markets/{{filter.ticker}}
+    response:
+      rows_path:
+        - market
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: ticker
+        type: Utf8
+        nullable: false
+        description: Market ticker.
+        expr:
+          kind: path
+          path:
+              - ticker
+      - name: event_ticker
+        type: Utf8
+        nullable: true
+        description: Parent event ticker.
+        expr:
+          kind: path
+          path:
+              - event_ticker
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Market title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: yes_sub_title
+        type: Utf8
+        nullable: true
+        description: YES outcome label.
+        expr:
+          kind: path
+          path:
+              - yes_sub_title
+      - name: no_sub_title
+        type: Utf8
+        nullable: true
+        description: NO outcome label.
+        expr:
+          kind: path
+          path:
+              - no_sub_title
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Market status (unopened, open, closed, settled).
+        expr:
+          kind: path
+          path:
+              - status
+      - name: market_type
+        type: Utf8
+        nullable: true
+        description: Market type such as binary.
+        expr:
+          kind: path
+          path:
+              - market_type
+      - name: strike_type
+        type: Utf8
+        nullable: true
+        description: Strike type.
+        expr:
+          kind: path
+          path:
+              - strike_type
+      - name: result
+        type: Utf8
+        nullable: true
+        description: Settled result if any.
+        expr:
+          kind: path
+          path:
+              - result
+      - name: yes_bid_dollars
+        type: Utf8
+        nullable: true
+        description: YES bid in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - yes_bid_dollars
+      - name: yes_ask_dollars
+        type: Utf8
+        nullable: true
+        description: YES ask in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - yes_ask_dollars
+      - name: no_bid_dollars
+        type: Utf8
+        nullable: true
+        description: NO bid in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - no_bid_dollars
+      - name: no_ask_dollars
+        type: Utf8
+        nullable: true
+        description: NO ask in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - no_ask_dollars
+      - name: last_price_dollars
+        type: Utf8
+        nullable: true
+        description: Last trade price in dollars.
+        expr:
+          kind: path
+          path:
+              - last_price_dollars
+      - name: previous_price_dollars
+        type: Utf8
+        nullable: true
+        description: Previous last price in dollars.
+        expr:
+          kind: path
+          path:
+              - previous_price_dollars
+      - name: liquidity_dollars
+        type: Utf8
+        nullable: true
+        description: Displayed liquidity in dollars.
+        expr:
+          kind: path
+          path:
+              - liquidity_dollars
+      - name: notional_value_dollars
+        type: Utf8
+        nullable: true
+        description: Notional value in dollars.
+        expr:
+          kind: path
+          path:
+              - notional_value_dollars
+      - name: volume_fp
+        type: Utf8
+        nullable: true
+        description: Lifetime volume (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - volume_fp
+      - name: volume_24h_fp
+        type: Utf8
+        nullable: true
+        description: 24h volume (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - volume_24h_fp
+      - name: open_interest_fp
+        type: Utf8
+        nullable: true
+        description: Open interest (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - open_interest_fp
+      - name: yes_bid_size_fp
+        type: Utf8
+        nullable: true
+        description: YES bid size (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - yes_bid_size_fp
+      - name: yes_ask_size_fp
+        type: Utf8
+        nullable: true
+        description: YES ask size (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - yes_ask_size_fp
+      - name: price_level_structure
+        type: Utf8
+        nullable: true
+        description: Price level structure.
+        expr:
+          kind: path
+          path:
+              - price_level_structure
+      - name: can_close_early
+        type: Boolean
+        nullable: true
+        description: Whether the market can close early.
+        expr:
+          kind: path
+          path:
+              - can_close_early
+      - name: is_provisional
+        type: Boolean
+        nullable: true
+        description: Whether the market is provisional.
+        expr:
+          kind: path
+          path:
+              - is_provisional
+      - name: exchange_index
+        type: Int64
+        nullable: true
+        description: Exchange shard index.
+        expr:
+          kind: path
+          path:
+              - exchange_index
+      - name: settlement_timer_seconds
+        type: Int64
+        nullable: true
+        description: Settlement timer in seconds.
+        expr:
+          kind: path
+          path:
+              - settlement_timer_seconds
+      - name: open_time
+        type: Timestamp
+        nullable: true
+        description: Market open time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - open_time
+      - name: close_time
+        type: Timestamp
+        nullable: true
+        description: Market close time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - close_time
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Market created time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: updated_time
+        type: Timestamp
+        nullable: true
+        description: Market updated time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_time
+      - name: expiration_time
+        type: Timestamp
+        nullable: true
+        description: Expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expiration_time
+      - name: expected_expiration_time
+        type: Timestamp
+        nullable: true
+        description: Expected expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expected_expiration_time
+      - name: latest_expiration_time
+        type: Timestamp
+        nullable: true
+        description: Latest expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - latest_expiration_time
+      - name: rules_primary
+        type: Utf8
+        nullable: true
+        description: Primary settlement rules.
+        expr:
+          kind: path
+          path:
+              - rules_primary
+      - name: rules_secondary
+        type: Utf8
+        nullable: true
+        description: Secondary settlement rules.
+        expr:
+          kind: path
+          path:
+              - rules_secondary
+      - name: expiration_value
+        type: Utf8
+        nullable: true
+        description: Expiration value string.
+        expr:
+          kind: path
+          path:
+              - expiration_value
+      - name: mve_collection_ticker
+        type: Utf8
+        nullable: true
+        description: Multivariate collection ticker if any.
+        expr:
+          kind: path
+          path:
+              - mve_collection_ticker
+      - name: custom_strike
+        type: Json
+        nullable: true
+        description: Custom strike object.
+        expr:
+          kind: path
+          path:
+              - custom_strike
+      - name: price_ranges
+        type: Json
+        nullable: true
+        description: Price range objects.
+        expr:
+          kind: path
+          path:
+              - price_ranges
+      - name: mve_selected_legs
+        type: Json
+        nullable: true
+        description: Selected multivariate legs.
+        expr:
+          kind: path
+          path:
+              - mve_selected_legs
+
+  - name: orderbook
+    description: >-
+      Public order book for one market. Kalshi returns YES and NO bids only;
+      a YES bid at price X is a NO ask at 1-X.
+    guide: >-
+      Requires `ticker`. Bids are JSON arrays of [price, size] strings.
+      `SELECT ticker, yes_dollars, no_dollars FROM kalshi.orderbook
+      WHERE ticker = 'KXELONMARS-99'`.
+    filters:
+      - name: ticker
+        required: true
+        description: Market ticker.
+    request:
+      method: GET
+      path: /markets/{{filter.ticker}}/orderbook
+    response:
+      rows_path:
+        - orderbook_fp
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: ticker
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested market ticker.
+        expr:
+          kind: from_filter
+          key: ticker
+      - name: yes_dollars
+        type: Json
+        nullable: true
+        description: YES bid levels as [price, size] string pairs.
+        expr:
+          kind: path
+          path:
+              - yes_dollars
+      - name: no_dollars
+        type: Json
+        nullable: true
+        description: NO bid levels as [price, size] string pairs.
+        expr:
+          kind: path
+          path:
+              - no_dollars
+
+  - name: orderbooks
+    description: Batched public order books for up to 100 tickers.
+    guide: >-
+      Requires `tickers` (comma-separated). Example:
+      `SELECT ticker, orderbook_fp FROM kalshi.orderbooks
+      WHERE tickers = 'KXELONMARS-99'`.
+    filters:
+      - name: tickers
+        required: true
+        description: Comma-separated market tickers (max 100).
+    request:
+      method: GET
+      path: /markets/orderbooks
+      query:
+        - name: tickers
+          from: filter
+          key: tickers
+    response:
+      rows_path:
+        - orderbooks
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: tickers
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested ticker list.
+        expr:
+          kind: from_filter
+          key: tickers
+      - name: ticker
+        type: Utf8
+        nullable: true
+        description: Market ticker for this book.
+        expr:
+          kind: path
+          path:
+              - ticker
+      - name: orderbook_fp
+        type: Json
+        nullable: true
+        description: Bid book object with yes_dollars and no_dollars.
+        expr:
+          kind: path
+          path:
+              - orderbook_fp
+
+  - name: trades
+    description: Recent public trades across markets.
+    guide: >-
+      `SELECT ticker, yes_price_dollars, count_fp, created_time
+      FROM kalshi.trades LIMIT 20`. The block-trade query param is the
+      `is_block_trade` filter; `is_block_trade_filter` is the virtual column
+      that echoes the requested value.
+    fetch_limit_default: 50
+    filters:
+      - name: ticker
+        required: false
+        description: Market ticker.
+      - name: is_block_trade
+        required: false
+        description: true for block trades only, false to exclude them.
+    request:
+      method: GET
+      path: /markets/trades
+      query:
+        - name: ticker
+          from: filter
+          key: ticker
+        - name: is_block_trade
+          from: filter
+          key: is_block_trade
+    response:
+      rows_path:
+        - trades
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 50
+        max: 1000
+        query_param: limit
+    columns:
+      - name: trade_id
+        type: Utf8
+        nullable: false
+        description: Trade id.
+        expr:
+          kind: path
+          path:
+              - trade_id
+      - name: ticker
+        type: Utf8
+        nullable: true
+        description: Market ticker.
+        expr:
+          kind: path
+          path:
+              - ticker
+      - name: count_fp
+        type: Utf8
+        nullable: true
+        description: Contracts traded (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - count_fp
+      - name: yes_price_dollars
+        type: Utf8
+        nullable: true
+        description: YES price in dollars.
+        expr:
+          kind: path
+          path:
+              - yes_price_dollars
+      - name: no_price_dollars
+        type: Utf8
+        nullable: true
+        description: NO price in dollars.
+        expr:
+          kind: path
+          path:
+              - no_price_dollars
+      - name: taker_outcome_side
+        type: Utf8
+        nullable: true
+        description: Taker outcome side (yes or no).
+        expr:
+          kind: path
+          path:
+              - taker_outcome_side
+      - name: taker_book_side
+        type: Utf8
+        nullable: true
+        description: Taker book side (bid or ask).
+        expr:
+          kind: path
+          path:
+              - taker_book_side
+      - name: taker_side
+        type: Utf8
+        nullable: true
+        description: Deprecated taker side; prefer taker_outcome_side.
+        expr:
+          kind: path
+          path:
+              - taker_side
+      - name: is_block_trade
+        type: Boolean
+        nullable: true
+        description: Whether this was a block trade.
+        expr:
+          kind: path
+          path:
+              - is_block_trade
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Trade execution time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: is_block_trade_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested is_block_trade query (true or false).
+        expr:
+          kind: from_filter
+          key: is_block_trade
+
+  - name: candlesticks
+    description: >-
+      OHLC candlesticks for one market. period_interval is 1, 60, or 1440
+      minutes. start_ts and end_ts are Unix seconds.
+    guide: >-
+      Requires series_ticker, ticker, start_ts, end_ts, and period_interval.
+    filters:
+      - name: series_ticker
+        required: true
+        description: Parent series ticker.
+      - name: ticker
+        required: true
+        description: Market ticker.
+      - name: start_ts
+        required: true
+        description: Start Unix timestamp (seconds).
+      - name: end_ts
+        required: true
+        description: End Unix timestamp (seconds).
+      - name: period_interval
+        required: true
+        description: Candle length in minutes (1, 60, or 1440).
+    request:
+      method: GET
+      path: /series/{{filter.series_ticker}}/markets/{{filter.ticker}}/candlesticks
+      query:
+        - name: start_ts
+          from: filter
+          key: start_ts
+        - name: end_ts
+          from: filter
+          key: end_ts
+        - name: period_interval
+          from: filter
+          key: period_interval
+    response:
+      rows_path:
+        - candlesticks
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: series_ticker
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested series ticker.
+        expr:
+          kind: from_filter
+          key: series_ticker
+      - name: ticker
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Requested market ticker.
+        expr:
+          kind: from_filter
+          key: ticker
+      - name: start_ts
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested start Unix timestamp.
+        expr:
+          kind: from_filter
+          key: start_ts
+      - name: end_ts
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested end Unix timestamp.
+        expr:
+          kind: from_filter
+          key: end_ts
+      - name: period_interval
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Requested period interval in minutes.
+        expr:
+          kind: from_filter
+          key: period_interval
+      - name: end_period_ts
+        type: Timestamp
+        nullable: true
+        description: Inclusive end of the candle period.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - end_period_ts
+      - name: volume_fp
+        type: Utf8
+        nullable: true
+        description: Contracts traded in the period.
+        expr:
+          kind: path
+          path:
+              - volume_fp
+      - name: open_interest_fp
+        type: Utf8
+        nullable: true
+        description: Open interest at period end.
+        expr:
+          kind: path
+          path:
+              - open_interest_fp
+      - name: price
+        type: Json
+        nullable: true
+        description: Traded YES OHLC in dollars.
+        expr:
+          kind: path
+          path:
+              - price
+      - name: yes_bid
+        type: Json
+        nullable: true
+        description: YES bid OHLC in dollars.
+        expr:
+          kind: path
+          path:
+              - yes_bid
+      - name: yes_ask
+        type: Json
+        nullable: true
+        description: YES ask OHLC in dollars.
+        expr:
+          kind: path
+          path:
+              - yes_ask
+
+  - name: historical_markets
+    description: Markets archived past the historical cutoff.
+    guide: >-
+      `SELECT ticker, title, status, settlement_ts FROM kalshi.historical_markets
+      LIMIT 20`.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /historical/markets
+    response:
+      rows_path:
+        - markets
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 50
+        max: 1000
+        query_param: limit
+    columns:
+      - name: ticker
+        type: Utf8
+        nullable: false
+        description: Market ticker.
+        expr:
+          kind: path
+          path:
+              - ticker
+      - name: event_ticker
+        type: Utf8
+        nullable: true
+        description: Parent event ticker.
+        expr:
+          kind: path
+          path:
+              - event_ticker
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Market title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: yes_sub_title
+        type: Utf8
+        nullable: true
+        description: YES outcome label.
+        expr:
+          kind: path
+          path:
+              - yes_sub_title
+      - name: no_sub_title
+        type: Utf8
+        nullable: true
+        description: NO outcome label.
+        expr:
+          kind: path
+          path:
+              - no_sub_title
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Market status (unopened, open, closed, settled).
+        expr:
+          kind: path
+          path:
+              - status
+      - name: market_type
+        type: Utf8
+        nullable: true
+        description: Market type such as binary.
+        expr:
+          kind: path
+          path:
+              - market_type
+      - name: strike_type
+        type: Utf8
+        nullable: true
+        description: Strike type.
+        expr:
+          kind: path
+          path:
+              - strike_type
+      - name: result
+        type: Utf8
+        nullable: true
+        description: Settled result if any.
+        expr:
+          kind: path
+          path:
+              - result
+      - name: yes_bid_dollars
+        type: Utf8
+        nullable: true
+        description: YES bid in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - yes_bid_dollars
+      - name: yes_ask_dollars
+        type: Utf8
+        nullable: true
+        description: YES ask in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - yes_ask_dollars
+      - name: no_bid_dollars
+        type: Utf8
+        nullable: true
+        description: NO bid in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - no_bid_dollars
+      - name: no_ask_dollars
+        type: Utf8
+        nullable: true
+        description: NO ask in dollars (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - no_ask_dollars
+      - name: last_price_dollars
+        type: Utf8
+        nullable: true
+        description: Last trade price in dollars.
+        expr:
+          kind: path
+          path:
+              - last_price_dollars
+      - name: previous_price_dollars
+        type: Utf8
+        nullable: true
+        description: Previous last price in dollars.
+        expr:
+          kind: path
+          path:
+              - previous_price_dollars
+      - name: liquidity_dollars
+        type: Utf8
+        nullable: true
+        description: Displayed liquidity in dollars.
+        expr:
+          kind: path
+          path:
+              - liquidity_dollars
+      - name: notional_value_dollars
+        type: Utf8
+        nullable: true
+        description: Notional value in dollars.
+        expr:
+          kind: path
+          path:
+              - notional_value_dollars
+      - name: volume_fp
+        type: Utf8
+        nullable: true
+        description: Lifetime volume (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - volume_fp
+      - name: volume_24h_fp
+        type: Utf8
+        nullable: true
+        description: 24h volume (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - volume_24h_fp
+      - name: open_interest_fp
+        type: Utf8
+        nullable: true
+        description: Open interest (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - open_interest_fp
+      - name: yes_bid_size_fp
+        type: Utf8
+        nullable: true
+        description: YES bid size (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - yes_bid_size_fp
+      - name: yes_ask_size_fp
+        type: Utf8
+        nullable: true
+        description: YES ask size (fixed-point contracts).
+        expr:
+          kind: path
+          path:
+              - yes_ask_size_fp
+      - name: price_level_structure
+        type: Utf8
+        nullable: true
+        description: Price level structure.
+        expr:
+          kind: path
+          path:
+              - price_level_structure
+      - name: can_close_early
+        type: Boolean
+        nullable: true
+        description: Whether the market can close early.
+        expr:
+          kind: path
+          path:
+              - can_close_early
+      - name: is_provisional
+        type: Boolean
+        nullable: true
+        description: Whether the market is provisional.
+        expr:
+          kind: path
+          path:
+              - is_provisional
+      - name: exchange_index
+        type: Int64
+        nullable: true
+        description: Exchange shard index.
+        expr:
+          kind: path
+          path:
+              - exchange_index
+      - name: settlement_timer_seconds
+        type: Int64
+        nullable: true
+        description: Settlement timer in seconds.
+        expr:
+          kind: path
+          path:
+              - settlement_timer_seconds
+      - name: open_time
+        type: Timestamp
+        nullable: true
+        description: Market open time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - open_time
+      - name: close_time
+        type: Timestamp
+        nullable: true
+        description: Market close time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - close_time
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Market created time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+      - name: updated_time
+        type: Timestamp
+        nullable: true
+        description: Market updated time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_time
+      - name: expiration_time
+        type: Timestamp
+        nullable: true
+        description: Expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expiration_time
+      - name: expected_expiration_time
+        type: Timestamp
+        nullable: true
+        description: Expected expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expected_expiration_time
+      - name: latest_expiration_time
+        type: Timestamp
+        nullable: true
+        description: Latest expiration time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - latest_expiration_time
+      - name: rules_primary
+        type: Utf8
+        nullable: true
+        description: Primary settlement rules.
+        expr:
+          kind: path
+          path:
+              - rules_primary
+      - name: rules_secondary
+        type: Utf8
+        nullable: true
+        description: Secondary settlement rules.
+        expr:
+          kind: path
+          path:
+              - rules_secondary
+      - name: expiration_value
+        type: Utf8
+        nullable: true
+        description: Expiration value string.
+        expr:
+          kind: path
+          path:
+              - expiration_value
+      - name: mve_collection_ticker
+        type: Utf8
+        nullable: true
+        description: Multivariate collection ticker if any.
+        expr:
+          kind: path
+          path:
+              - mve_collection_ticker
+      - name: custom_strike
+        type: Json
+        nullable: true
+        description: Custom strike object.
+        expr:
+          kind: path
+          path:
+              - custom_strike
+      - name: price_ranges
+        type: Json
+        nullable: true
+        description: Price range objects.
+        expr:
+          kind: path
+          path:
+              - price_ranges
+      - name: mve_selected_legs
+        type: Json
+        nullable: true
+        description: Selected multivariate legs.
+        expr:
+          kind: path
+          path:
+              - mve_selected_legs
+      - name: settlement_ts
+        type: Timestamp
+        nullable: true
+        description: Settlement time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - settlement_ts
+      - name: settlement_value_dollars
+        type: Utf8
+        nullable: true
+        description: Settlement value in dollars.
+        expr:
+          kind: path
+          path:
+              - settlement_value_dollars
+
+  - name: historical_trades
+    description: Public trades archived past the historical cutoff.
+    guide: >-
+      `SELECT trade_id, ticker, yes_price_dollars FROM kalshi.historical_trades
+      LIMIT 20`.
+    fetch_limit_default: 50
+    filters:
+      - name: ticker
+        required: false
+        description: Market ticker.
+    request:
+      method: GET
+      path: /historical/trades
+      query:
+        - name: ticker
+          from: filter
+          key: ticker
+    response:
+      rows_path:
+        - trades
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 50
+        max: 1000
+        query_param: limit
+    columns:
+      - name: trade_id
+        type: Utf8
+        nullable: false
+        description: Trade id.
+        expr:
+          kind: path
+          path:
+              - trade_id
+      - name: ticker
+        type: Utf8
+        nullable: true
+        description: Market ticker.
+        expr:
+          kind: path
+          path:
+              - ticker
+      - name: count_fp
+        type: Utf8
+        nullable: true
+        description: Contracts traded (fixed-point string).
+        expr:
+          kind: path
+          path:
+              - count_fp
+      - name: yes_price_dollars
+        type: Utf8
+        nullable: true
+        description: YES price in dollars.
+        expr:
+          kind: path
+          path:
+              - yes_price_dollars
+      - name: no_price_dollars
+        type: Utf8
+        nullable: true
+        description: NO price in dollars.
+        expr:
+          kind: path
+          path:
+              - no_price_dollars
+      - name: taker_outcome_side
+        type: Utf8
+        nullable: true
+        description: Taker outcome side (yes or no).
+        expr:
+          kind: path
+          path:
+              - taker_outcome_side
+      - name: taker_book_side
+        type: Utf8
+        nullable: true
+        description: Taker book side (bid or ask).
+        expr:
+          kind: path
+          path:
+              - taker_book_side
+      - name: taker_side
+        type: Utf8
+        nullable: true
+        description: Deprecated taker side; prefer taker_outcome_side.
+        expr:
+          kind: path
+          path:
+              - taker_side
+      - name: is_block_trade
+        type: Boolean
+        nullable: true
+        description: Whether this was a block trade.
+        expr:
+          kind: path
+          path:
+              - is_block_trade
+      - name: created_time
+        type: Timestamp
+        nullable: true
+        description: Trade execution time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_time
+
+  - name: historical_cutoff
+    description: Timestamps that split live vs archived Kalshi data.
+    request:
+      method: GET
+      path: /historical/cutoff
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: market_settled_ts
+        type: Timestamp
+        nullable: true
+        description: Settled-market cutoff.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - market_settled_ts
+      - name: trades_created_ts
+        type: Timestamp
+        nullable: true
+        description: Public-trade cutoff.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - trades_created_ts
+      - name: orders_updated_ts
+        type: Timestamp
+        nullable: true
+        description: Order-archive cutoff.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - orders_updated_ts
+      - name: market_positions_last_updated_ts
+        type: Timestamp
+        nullable: true
+        description: Position-archive cutoff.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - market_positions_last_updated_ts
+
+  - name: milestones
+    description: Sports and other milestones linked to events.
+    guide: >-
+      `SELECT id, title, category FROM kalshi.milestones LIMIT 20`.
+      The API requires a page size; Coral sends `limit`.
+    fetch_limit_default: 50
+    filters:
+      - name: category
+        required: false
+        description: Milestone category such as Sports.
+    request:
+      method: GET
+      path: /milestones
+      query:
+        - name: category
+          from: filter
+          key: category
+    response:
+      rows_path:
+        - milestones
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 50
+        max: 500
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Milestone id.
+        expr:
+          kind: path
+          path:
+              - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Milestone title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: category
+        type: Utf8
+        nullable: true
+        description: Milestone category.
+        expr:
+          kind: path
+          path:
+              - category
+      - name: milestone_type
+        type: Utf8
+        nullable: true
+        description: Milestone type such as football_game.
+        expr:
+          kind: path
+          path:
+              - type
+      - name: notification_message
+        type: Utf8
+        nullable: true
+        description: Notification text.
+        expr:
+          kind: path
+          path:
+              - notification_message
+      - name: start_date
+        type: Timestamp
+        nullable: true
+        description: Milestone start.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_date
+      - name: end_date
+        type: Timestamp
+        nullable: true
+        description: Milestone end.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end_date
+      - name: last_updated_ts
+        type: Timestamp
+        nullable: true
+        description: Last update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_updated_ts
+      - name: primary_event_tickers
+        type: Json
+        nullable: true
+        description: Primary related event tickers.
+        expr:
+          kind: path
+          path:
+              - primary_event_tickers
+      - name: related_event_tickers
+        type: Json
+        nullable: true
+        description: Related event tickers.
+        expr:
+          kind: path
+          path:
+              - related_event_tickers
+      - name: source_ids
+        type: Json
+        nullable: true
+        description: Upstream source ids.
+        expr:
+          kind: path
+          path:
+              - source_ids
+      - name: details
+        type: Json
+        nullable: true
+        description: Type-specific details.
+        expr:
+          kind: path
+          path:
+              - details
+
+  - name: structured_targets
+    description: Structured target definitions used by some series.
+    fetch_limit_default: 50
+    request:
+      method: GET
+      path: /structured_targets
+    response:
+      rows_path:
+        - structured_targets
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 50
+        max: 2000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Structured target id.
+        expr:
+          kind: path
+          path:
+              - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Target name.
+        expr:
+          kind: path
+          path:
+              - name
+      - name: target_type
+        type: Utf8
+        nullable: true
+        description: Target type.
+        expr:
+          kind: path
+          path:
+              - type
+      - name: last_updated_ts
+        type: Timestamp
+        nullable: true
+        description: Last update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_updated_ts
+      - name: source_ids
+        type: Json
+        nullable: true
+        description: Upstream source ids.
+        expr:
+          kind: path
+          path:
+              - source_ids
+      - name: details
+        type: Json
+        nullable: true
+        description: Type-specific details.
+        expr:
+          kind: path
+          path:
+              - details
+
+  - name: multivariate_collections
+    description: Multivariate event collections that generate combo markets.
+    fetch_limit_default: 20
+    request:
+      method: GET
+      path: /multivariate_event_collections
+    response:
+      rows_path:
+        - multivariate_contracts
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: collection_ticker
+        type: Utf8
+        nullable: false
+        description: Collection ticker.
+        expr:
+          kind: path
+          path:
+              - collection_ticker
+      - name: series_ticker
+        type: Utf8
+        nullable: true
+        description: Series ticker.
+        expr:
+          kind: path
+          path:
+              - series_ticker
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Collection title.
+        expr:
+          kind: path
+          path:
+              - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Collection description.
+        expr:
+          kind: path
+          path:
+              - description
+      - name: functional_description
+        type: Utf8
+        nullable: true
+        description: Functional description.
+        expr:
+          kind: path
+          path:
+              - functional_description
+      - name: exchange_index
+        type: Int64
+        nullable: true
+        description: Exchange shard index.
+        expr:
+          kind: path
+          path:
+              - exchange_index
+      - name: size_min
+        type: Int64
+        nullable: true
+        description: Minimum size.
+        expr:
+          kind: path
+          path:
+              - size_min
+      - name: size_max
+        type: Int64
+        nullable: true
+        description: Maximum size.
+        expr:
+          kind: path
+          path:
+              - size_max
+      - name: is_all_yes
+        type: Boolean
+        nullable: true
+        description: Whether the collection is all-yes.
+        expr:
+          kind: path
+          path:
+              - is_all_yes
+      - name: is_ordered
+        type: Boolean
+        nullable: true
+        description: Whether legs are ordered.
+        expr:
+          kind: path
+          path:
+              - is_ordered
+      - name: is_single_market_per_event
+        type: Boolean
+        nullable: true
+        description: Whether each event has one market.
+        expr:
+          kind: path
+          path:
+              - is_single_market_per_event
+      - name: open_date
+        type: Timestamp
+        nullable: true
+        description: Collection open time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - open_date
+      - name: close_date
+        type: Timestamp
+        nullable: true
+        description: Collection close time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - close_date
+      - name: associated_event_tickers
+        type: Json
+        nullable: true
+        description: Associated event tickers.
+        expr:
+          kind: path
+          path:
+              - associated_event_tickers
+      - name: associated_events
+        type: Json
+        nullable: true
+        description: Associated event objects.
+        expr:
+          kind: path
+          path:
+              - associated_events
+
+  - name: incentive_programs
+    description: Liquidity and other incentive programs on specific markets.
+    guide: >-
+      `SELECT market_ticker, incentive_type, period_reward
+      FROM kalshi.incentive_programs LIMIT 20`. The API page uses next_cursor.
+    fetch_limit_default: 20
+    request:
+      method: GET
+      path: /incentive_programs
+    response:
+      rows_path:
+        - incentive_programs
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path:
+        - next_cursor
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Incentive id.
+        expr:
+          kind: path
+          path:
+              - id
+      - name: market_ticker
+        type: Utf8
+        nullable: true
+        description: Market ticker.
+        expr:
+          kind: path
+          path:
+              - market_ticker
+      - name: market_id
+        type: Utf8
+        nullable: true
+        description: Market id.
+        expr:
+          kind: path
+          path:
+              - market_id
+      - name: incentive_type
+        type: Utf8
+        nullable: true
+        description: Incentive type such as liquidity.
+        expr:
+          kind: path
+          path:
+              - incentive_type
+      - name: incentive_description
+        type: Utf8
+        nullable: true
+        description: Incentive description.
+        expr:
+          kind: path
+          path:
+              - incentive_description
+      - name: period_reward
+        type: Int64
+        nullable: true
+        description: Period reward amount.
+        expr:
+          kind: path
+          path:
+              - period_reward
+      - name: discount_factor_bps
+        type: Int64
+        nullable: true
+        description: Discount factor in basis points.
+        expr:
+          kind: path
+          path:
+              - discount_factor_bps
+      - name: target_size_fp
+        type: Utf8
+        nullable: true
+        description: Target size (fixed-point).
+        expr:
+          kind: path
+          path:
+              - target_size_fp
+      - name: paid_out
+        type: Boolean
+        nullable: true
+        description: Whether the period has paid out.
+        expr:
+          kind: path
+          path:
+              - paid_out
+      - name: start_date
+        type: Timestamp
+        nullable: true
+        description: Program start.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_date
+      - name: end_date
+        type: Timestamp
+        nullable: true
+        description: Program end.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - end_date
+
+  - name: exchange_status
+    description: Whether the exchange and each shard are trading.
+    request:
+      method: GET
+      path: /exchange/status
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: trading_active
+        type: Boolean
+        nullable: true
+        description: Whether trading is active.
+        expr:
+          kind: path
+          path:
+              - trading_active
+      - name: exchange_active
+        type: Boolean
+        nullable: true
+        description: Whether the exchange is active.
+        expr:
+          kind: path
+          path:
+              - exchange_active
+      - name: intra_exchange_transfers_active
+        type: Boolean
+        nullable: true
+        description: Whether intra-exchange transfers are active.
+        expr:
+          kind: path
+          path:
+              - intra_exchange_transfers_active
+      - name: exchange_index_statuses
+        type: Json
+        nullable: true
+        description: Per-shard status objects.
+        expr:
+          kind: path
+          path:
+              - exchange_index_statuses
+
+  - name: exchange_schedule
+    description: Standard hours and maintenance windows.
+    request:
+      method: GET
+      path: /exchange/schedule
+    response:
+      rows_path:
+        - schedule
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: standard_hours
+        type: Json
+        nullable: true
+        description: Standard weekly hours.
+        expr:
+          kind: path
+          path:
+              - standard_hours
+      - name: maintenance_windows
+        type: Json
+        nullable: true
+        description: Maintenance windows.
+        expr:
+          kind: path
+          path:
+              - maintenance_windows
+
+  - name: tags_by_category
+    description: Series tags grouped by category.
+    request:
+      method: GET
+      path: /search/tags_by_categories
+    response:
+      rows_path:
+        - tags_by_categories
+      row_strategy: dict_entries
+    pagination:
+      mode: none
+    columns:
+      - name: category
+        type: Utf8
+        nullable: false
+        description: Series category.
+        expr:
+          kind: path
+          path:
+              - _key
+      - name: tags
+        type: Json
+        nullable: true
+        description: Tags in that category.
+        expr:
+          kind: path
+          path:
+              - _value
