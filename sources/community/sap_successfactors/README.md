@@ -206,7 +206,7 @@ SELECT row
 FROM sap_successfactors.odata_entity(
   entity => 'EmpEmployment',
   select => 'userId,startDate,personIdExternal',
-  filter => "userId eq '12345'"
+  filter => 'userId eq ''12345'''
 );
 ```
 
