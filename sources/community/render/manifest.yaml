@@ -1,0 +1,465 @@
+name: render
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query services, deploys, and workspaces from Render. Monitor deployment
+  status, service configuration, and infrastructure through SQL.
+base_url: https://api.render.com/v1
+
+inputs:
+  RENDER_API_KEY:
+    kind: secret
+    hint: >-
+      Render API key from https://dashboard.render.com/u/settings#api-keys.
+      Keys start with `rnd_`.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: RENDER_API_KEY
+
+test_queries:
+  - SELECT service_id, name, type, status FROM render.services LIMIT 3
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # render.services — List all services
+  # GET /v1/services
+  # Array of {cursor, service} objects. Cursor pagination.
+  # --------------------------------------------------------------------------
+  - name: services
+    description: >-
+      Services deployed on Render. Includes static sites, web services,
+      private services, background workers, and cron jobs with their
+      configuration, status, and URLs.
+    guide: |
+      No required filters. Start with:
+        SELECT service_id, name, type, status, url
+        FROM render.services LIMIT 10
+      Filter by type:
+        SELECT service_id, name, url
+        FROM render.services
+        WHERE type = 'web_service'
+      The status column includes suspension info (e.g. not_suspended, suspended).
+      Use the service_id to query deploys for a specific service.
+      To retrieve another page, pass the last row's cursor to a new query:
+        SELECT cursor, service_id, name FROM render.services
+        WHERE cursor = 'cursor_from_last_row' LIMIT 20
+    filters:
+      - name: type
+        description: >-
+          Filter by service type. Common values: static_site, web_service,
+          private_service, background_worker, cron_job.
+      - name: status
+        description: >-
+          Filter by suspension status. Use 'suspended' to find suspended
+          services or 'not_suspended' for active services.
+      - name: cursor
+        description: Cursor from a previous query for manual pagination.
+    request:
+      method: GET
+      path: /services
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: suspended
+          from: filter
+          key: status
+        - name: cursor
+          from: filter
+          key: cursor
+    response: {}
+    pagination:
+      mode: none
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    fetch_limit_default: 20
+    columns:
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Pagination cursor. Pass to the cursor filter for manual pagination.
+      - name: service_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the service.
+        expr:
+          kind: path
+          path:
+            - service
+            - id
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Name of the service.
+        expr:
+          kind: path
+          path:
+            - service
+            - name
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Service type (static_site, web_service, private_service, background_worker, cron_job).
+        expr:
+          kind: path
+          path:
+            - service
+            - type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Suspension status of the service (not_suspended, suspended).
+        expr:
+          kind: path
+          path:
+            - service
+            - suspended
+      - name: repo
+        type: Utf8
+        nullable: true
+        description: Git repository URL.
+        expr:
+          kind: path
+          path:
+            - service
+            - repo
+      - name: branch
+        type: Utf8
+        nullable: true
+        description: Git branch used for deployments.
+        expr:
+          kind: path
+          path:
+            - service
+            - branch
+      - name: auto_deploy
+        type: Utf8
+        nullable: true
+        description: Whether auto-deploy is enabled (yes/no).
+        expr:
+          kind: path
+          path:
+            - service
+            - autoDeploy
+      - name: url
+        type: Utf8
+        nullable: true
+        description: URL of the service. May be null for service types without a URL; private services may return a non-public internal URL.
+        expr:
+          kind: path
+          path:
+            - service
+            - serviceDetails
+            - url
+      - name: dashboard_url
+        type: Utf8
+        nullable: true
+        description: URL to the Render dashboard for this service.
+        expr:
+          kind: path
+          path:
+            - service
+            - dashboardUrl
+      - name: workspace_id
+        type: Utf8
+        nullable: true
+        description: ID of the workspace (user or team) this service belongs to.
+        expr:
+          kind: path
+          path:
+            - service
+            - ownerId
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL slug of the service.
+        expr:
+          kind: path
+          path:
+            - service
+            - slug
+      - name: created_at
+        type: Timestamp
+        nullable: false
+        description: When the service was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - service
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: false
+        description: When the service was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - service
+              - updatedAt
+
+  # --------------------------------------------------------------------------
+  # render.deploys — List deploys for a service
+  # GET /v1/services/{serviceId}/deploys
+  # Requires service_id filter. Array of {cursor, deploy} objects.
+  # --------------------------------------------------------------------------
+  - name: deploys
+    description: >-
+      Deployment history for a Render service. Includes commit info,
+      status, trigger, and timing for each deploy.
+    guide: |
+      service_id is required. Start by listing services:
+        SELECT service_id, name FROM render.services LIMIT 5
+      Then query deploys:
+        SELECT deploy_id, status, trigger, commit_message
+        FROM render.deploys
+        WHERE service_id = 'srv-your-service-id' LIMIT 10
+      Filter by deploy status:
+        SELECT deploy_id, status, trigger
+        FROM render.deploys
+        WHERE service_id = 'srv-your-service-id'
+        AND status = 'build_failed'
+    filters:
+      - name: service_id
+        required: true
+      - name: status
+        description: >-
+          Filter by deploy status. Values: created, queued, build_in_progress,
+          update_in_progress, live, deactivated, build_failed, update_failed,
+          canceled, pre_deploy_in_progress, pre_deploy_failed.
+      - name: cursor
+        description: Cursor from a previous query for manual pagination.
+    request:
+      method: GET
+      path: /services/{{filter.service_id}}/deploys
+      query:
+        - name: cursor
+          from: filter
+          key: cursor
+        - name: status
+          from: filter
+          key: status
+    response: {}
+    pagination:
+      mode: none
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    fetch_limit_default: 20
+    columns:
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Pagination cursor. Pass to the cursor filter for manual pagination.
+      - name: service_id
+        type: Utf8
+        nullable: true
+        description: ID of the service this deploy belongs to.
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: deploy_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the deploy.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - id
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Deploy status: created, queued, build_in_progress,
+          update_in_progress, live, deactivated, build_failed,
+          update_failed, canceled, pre_deploy_in_progress,
+          pre_deploy_failed.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - status
+      - name: trigger
+        type: Utf8
+        nullable: true
+        description: >-
+          What triggered the deploy: api, blueprint_sync,
+          deploy_hook, deployed_by_render, manual, other,
+          new_commit, rollback, service_resumed, service_updated.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - trigger
+      - name: commit_id
+        type: Utf8
+        nullable: true
+        description: Git commit SHA.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - commit
+            - id
+      - name: commit_message
+        type: Utf8
+        nullable: true
+        description: Git commit message.
+        expr:
+          kind: path
+          path:
+            - deploy
+            - commit
+            - message
+      - name: commit_created_at
+        type: Timestamp
+        nullable: true
+        description: When the commit was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - commit
+              - createdAt
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the deploy was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - createdAt
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: When the deploy started (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - startedAt
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: When the deploy finished (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - finishedAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the deploy was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - deploy
+              - updatedAt
+
+  # --------------------------------------------------------------------------
+  # render.workspaces — List workspaces
+  # GET /v1/owners
+  # Array of {cursor, owner} objects. API key accesses all workspaces the user belongs to.
+  # --------------------------------------------------------------------------
+  - name: workspaces
+    description: >-
+      Workspaces the API key has access to. The key grants access to every workspace the user belongs to.
+    guide: |
+      No required filters. Start with:
+        SELECT workspace_id, name, email, type
+        FROM render.workspaces
+    filters:
+      - name: cursor
+        description: Cursor from a previous query for manual pagination.
+    request:
+      method: GET
+      path: /owners
+      query:
+        - name: cursor
+          from: filter
+          key: cursor
+    response: {}
+    pagination:
+      mode: none
+      page_size:
+        default: 20
+        max: 100
+        query_param: limit
+    fetch_limit_default: 20
+    columns:
+      - name: cursor
+        type: Utf8
+        nullable: true
+        description: Pagination cursor. Pass to the cursor filter for manual pagination.
+      - name: workspace_id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the workspace.
+        expr:
+          kind: path
+          path:
+            - owner
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Name of the workspace.
+        expr:
+          kind: path
+          path:
+            - owner
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Email address of the workspace owner.
+        expr:
+          kind: path
+          path:
+            - owner
+            - email
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Workspace type (user or team).
+        expr:
+          kind: path
+          path:
+            - owner
+            - type
