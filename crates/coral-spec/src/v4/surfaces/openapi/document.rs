@@ -2,8 +2,10 @@ use serde_json::{Map, Value};
 
 use crate::{ManifestError, Result};
 
+use super::yaml_value::parse_yaml_json_value;
+
 pub fn normalize_source_document(bytes: &[u8]) -> Result<String> {
-    let value: Value = serde_yaml::from_slice(bytes).map_err(ManifestError::parse_yaml)?;
+    let value = parse_yaml_json_value(bytes).map_err(ManifestError::parse_yaml)?;
     serde_yaml::to_string(&value).map_err(ManifestError::serialize_yaml)
 }
 
@@ -40,8 +42,8 @@ pub(super) fn validate_supported_openapi_version(document: &Value) -> Result<()>
 }
 
 pub fn openapi_document_metadata(document_bytes: &[u8]) -> Result<OpenApiDocumentMetadata> {
-    let document: Value =
-        serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
+    let document =
+        parse_yaml_json_value(document_bytes).map_err(ManifestError::parse_yaml)?;
     validate_supported_openapi_version(&document)?;
     // Deliberately not normalized: this reads `info` and `servers` only, and
     // neither carries a schema.

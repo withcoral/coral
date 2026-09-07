@@ -15,14 +15,14 @@ use crate::{ManifestError, Result};
 
 use super::document::validate_supported_openapi_version;
 use super::normalize::normalized_schema;
+use super::yaml_value::parse_yaml_json_value;
 
 pub fn import_openapi_surface(
     manifest: &V4SourceManifest,
     surface: &V4Surface,
     document_bytes: &[u8],
 ) -> Result<ImportedSurface> {
-    let document: Value =
-        serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
+    let document = parse_yaml_json_value(document_bytes).map_err(ManifestError::parse_yaml)?;
     validate_supported_openapi_version(&document)?;
 
     let mut importer = OpenApiImporter::new(manifest, surface, &document);
