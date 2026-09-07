@@ -1,0 +1,298 @@
+name: rclone
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query files, directories, and storage usage across 70+ cloud storage
+  providers through rclone's RC API. Supports Google Drive, Dropbox,
+  S3, OneDrive, MEGA, pCloud, Box, Backblaze B2, and more.
+base_url: "{{input.RCLONE_RC_URL}}"
+
+inputs:
+  RCLONE_RC_URL:
+    kind: variable
+    hint: >-
+      URL of the rclone RC API. Default: http://localhost:5572.
+      This source is designed for loopback-only access with
+      --rc-no-auth. Do not expose the RC API on a public network
+      without authentication.
+    default: http://localhost:5572
+
+functions:
+
+  # --------------------------------------------------------------------------
+  # rclone.files — List files and directories in a remote path
+  # POST /operations/list
+  # Array at response.list.
+  # --------------------------------------------------------------------------
+  - name: files
+    kind: table
+    description: >-
+      List files and directories in a cloud storage remote. Pass the
+      remote as `fs => 'remote:'` and the path as `path => 'dir'`.
+      Returns file metadata including name, size, MIME type, and
+      modification time.
+    fetch_limit_default: 100
+    args:
+      - name: fs
+        required: true
+        bind:
+          arg: fs
+      - name: path
+        required: true
+        bind:
+          arg: path
+    request:
+      method: POST
+      path: /operations/list
+      body:
+        - path: [fs]
+          from: arg
+          key: fs
+        - path: [remote]
+          from: arg
+          key: path
+    response:
+      rows_path:
+        - list
+    pagination:
+      mode: none
+    columns:
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Full path relative to the remote root.
+        expr:
+          kind: path
+          path:
+            - Path
+      - name: name
+        type: Utf8
+        nullable: false
+        description: File or directory name.
+        expr:
+          kind: path
+          path:
+            - Name
+      - name: size
+        type: Int64
+        nullable: false
+        description: File size in bytes (-1 for directories).
+        expr:
+          kind: path
+          path:
+            - Size
+      - name: mime_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the file (e.g. application/pdf, inode/directory).
+        expr:
+          kind: path
+          path:
+            - MimeType
+      - name: mod_time
+        type: Utf8
+        nullable: true
+        description: Last modification time (ISO 8601 with timezone).
+        expr:
+          kind: path
+          path:
+            - ModTime
+      - name: is_dir
+        type: Boolean
+        nullable: false
+        description: Whether the entry is a directory.
+        expr:
+          kind: path
+          path:
+            - IsDir
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Provider-specific file or directory ID.
+        expr:
+          kind: path
+          path:
+            - ID
+
+  # --------------------------------------------------------------------------
+  # rclone.about — Storage usage for a remote
+  # POST /operations/about
+  # Single object response.
+  # --------------------------------------------------------------------------
+  - name: about
+    kind: table
+    description: >-
+      Get storage usage for a cloud storage remote. Pass the remote
+      as `fs => 'remote:'`. Returns total, used, and free space in
+      bytes.
+    args:
+      - name: fs
+        required: true
+        bind:
+          arg: fs
+    request:
+      method: POST
+      path: /operations/about
+      body:
+        - path: [fs]
+          from: arg
+          key: fs
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: total
+        type: Int64
+        nullable: true
+        description: Total storage space in bytes.
+      - name: used
+        type: Int64
+        nullable: true
+        description: Storage space used in bytes.
+      - name: free
+        type: Int64
+        nullable: true
+        description: Free storage space in bytes.
+      - name: trashed
+        type: Int64
+        nullable: true
+        description: Space used by trashed files in bytes.
+      - name: other
+        type: Int64
+        nullable: true
+        description: Space used by other (non-file) data in bytes.
+
+  # --------------------------------------------------------------------------
+  # rclone.stat — Get info about a single file or directory
+  # POST /operations/stat
+  # Single object response at `item`.
+  # --------------------------------------------------------------------------
+  - name: stat
+    kind: table
+    description: >-
+      Get metadata for a single file or directory. Pass the remote
+      as `fs => 'remote:'` and the file path as `path => 'file.txt'`.
+      Returns name, size, MIME type, modification time, and provider ID.
+    args:
+      - name: fs
+        required: true
+        bind:
+          arg: fs
+      - name: path
+        required: true
+        bind:
+          arg: path
+    request:
+      method: POST
+      path: /operations/stat
+      body:
+        - path: [fs]
+          from: arg
+          key: fs
+        - path: [remote]
+          from: arg
+          key: path
+    response:
+      rows_path:
+        - item
+    pagination:
+      mode: none
+    columns:
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Full path relative to the remote root.
+        expr:
+          kind: path
+          path:
+            - Path
+      - name: name
+        type: Utf8
+        nullable: false
+        description: File or directory name.
+        expr:
+          kind: path
+          path:
+            - Name
+      - name: size
+        type: Int64
+        nullable: false
+        description: File size in bytes (-1 for directories).
+        expr:
+          kind: path
+          path:
+            - Size
+      - name: mime_type
+        type: Utf8
+        nullable: true
+        description: MIME type of the file.
+        expr:
+          kind: path
+          path:
+            - MimeType
+      - name: mod_time
+        type: Utf8
+        nullable: true
+        description: Last modification time (ISO 8601 with timezone).
+        expr:
+          kind: path
+          path:
+            - ModTime
+      - name: is_dir
+        type: Boolean
+        nullable: false
+        description: Whether the entry is a directory.
+        expr:
+          kind: path
+          path:
+            - IsDir
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Provider-specific file or directory ID.
+        expr:
+          kind: path
+          path:
+            - ID
+
+  # --------------------------------------------------------------------------
+  # rclone.size — Recursive count and total size of files
+  # POST /operations/size
+  # Single object response.
+  # --------------------------------------------------------------------------
+  - name: size
+    kind: table
+    description: >-
+      Get the total size and file count for a remote or path,
+      recursively. Pass the remote with path as
+      `fs => 'remote:path/to/dir'` or `fs => 'remote:'` for the
+      entire remote.
+    args:
+      - name: fs
+        required: true
+        bind:
+          arg: fs
+    request:
+      method: POST
+      path: /operations/size
+      body:
+        - path: [fs]
+          from: arg
+          key: fs
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: bytes
+        type: Int64
+        nullable: false
+        description: Total size of all files in bytes.
+      - name: count
+        type: Int64
+        nullable: false
+        description: Total number of files.
+      - name: sizeless
+        type: Int64
+        nullable: true
+        description: Number of files with unknown size. May not be present on all rclone versions.
