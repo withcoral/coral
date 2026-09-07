@@ -1,0 +1,1000 @@
+name: blogger
+version: 0.2.0
+dsl_version: 3
+backend: http
+description: >-
+  Query public blogs, posts, pages, and comments from Google Blogger via the
+  Blogger v3 API. The source provides read-only access to public blog content
+  using an API key; private/authorized blogs are not supported.
+base_url: https://www.googleapis.com/blogger/v3
+inputs:
+  BLOGGER_API_KEY:
+    kind: secret
+    hint: >-
+      Google API key with the Blogger API enabled. Only provides access to
+      public blog content. Get a key from
+      https://console.cloud.google.com/apis/credentials.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Goog-Api-Key
+      from: template
+      template: "{{input.BLOGGER_API_KEY}}"
+test_queries:
+  - SELECT id, name, posts_total_items, locale_language FROM blogger.blog_by_url WHERE url = 'https://googledevelopers.blogspot.com/'
+  - SELECT id, title, published FROM blogger.posts WHERE blog_id = '596098824972435195' LIMIT 1
+  - SELECT id, title, published FROM blogger.posts_search(blog_id => '596098824972435195', query => 'AI') LIMIT 3
+tables:
+  - name: blogs
+    description: >-
+      Get a blog by its Blogger blog ID. Returns a single row with the blog's
+      metadata including name, description, post and page counts, and locale.
+    guide: >
+      Look up a blog by its numeric Blogger ID. Use blog_by_url if you only
+      know the blog's URL.
+    request:
+      method: GET
+      path: /blogs/{{filter.blog_id}}
+    filters:
+      - name: blog_id
+        required: true
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: blog_id
+        type: Utf8
+        nullable: false
+        description: Blogger blog ID (filter).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Blogger blog ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Blog display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Blog description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 publication date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 last updated date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Blog URL.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: posts_total_items
+        type: Int64
+        nullable: true
+        description: Total number of posts on this blog.
+        expr:
+          kind: path
+          path:
+            - posts
+            - totalItems
+      - name: pages_total_items
+        type: Int64
+        nullable: true
+        description: Total number of pages on this blog.
+        expr:
+          kind: path
+          path:
+            - pages
+            - totalItems
+      - name: locale_language
+        type: Utf8
+        nullable: true
+        description: Blog locale language code (e.g. en).
+        expr:
+          kind: path
+          path:
+            - locale
+            - language
+      - name: locale_country
+        type: Utf8
+        nullable: true
+        description: Blog locale country code.
+        expr:
+          kind: path
+          path:
+            - locale
+            - country
+
+  - name: blog_by_url
+    description: >-
+      Get a blog by its public URL. Returns a single row with the same
+      metadata columns as the blogs table. Use when you know the blog's
+      URL but not its ID.
+    guide: >
+      Start with this table to discover a blog's ID from its public URL,
+      then use the ID with other tables like posts or pages.
+    request:
+      method: GET
+      path: /blogs/byurl
+      query:
+        - name: url
+          from: filter
+          key: url
+    filters:
+      - name: url
+        required: true
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Blogger blog ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Blog display name.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Blog description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 publication date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 last updated date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Blog URL.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: posts_total_items
+        type: Int64
+        nullable: true
+        description: Total number of posts on this blog.
+        expr:
+          kind: path
+          path:
+            - posts
+            - totalItems
+      - name: pages_total_items
+        type: Int64
+        nullable: true
+        description: Total number of pages on this blog.
+        expr:
+          kind: path
+          path:
+            - pages
+            - totalItems
+      - name: locale_language
+        type: Utf8
+        nullable: true
+        description: Blog locale language code (e.g. en).
+        expr:
+          kind: path
+          path:
+            - locale
+            - language
+      - name: locale_country
+        type: Utf8
+        nullable: true
+        description: Blog locale country code.
+        expr:
+          kind: path
+          path:
+            - locale
+            - country
+
+  - name: posts
+    description: >-
+      List posts from a blog. Requires a blog_id filter. Returns posts ordered
+      by publication date (newest first). Paginates automatically through the
+      Blogger API's token-based pagination.
+    guide: >
+      List recent posts from a blog. Add LIMIT to control the number of
+      results. Posts are ordered newest first by the API.
+    fetch_limit_default: 25
+    filters:
+      - name: blog_id
+        required: true
+      - name: max_results
+    request:
+      method: GET
+      path: /blogs/{{filter.blog_id}}/posts
+      query:
+        - name: maxResults
+          from: filter
+          key: max_results
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Post ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: blog_id
+        type: Utf8
+        nullable: false
+        description: Blog ID this post belongs to.
+        expr:
+          kind: path
+          path:
+            - blog
+            - id
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 publication date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 last updated date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Post title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Post body content as HTML.
+        expr:
+          kind: path
+          path:
+            - content
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Post URL.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - displayName
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author profile ID.
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author_url
+        type: Utf8
+        nullable: true
+        description: Author profile URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - url
+      - name: author_image_url
+        type: Utf8
+        nullable: true
+        description: Author avatar image URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - image
+            - url
+      - name: labels
+        type: Json
+        nullable: true
+        description: Labels/tags applied to the post as a JSON array of strings.
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: replies_total_items
+        type: Int64
+        nullable: true
+        description: Total number of comments on this post.
+        expr:
+          kind: path
+          path:
+            - replies
+            - totalItems
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Post status (LIVE, DRAFT, SCHEDULED).
+        expr:
+          kind: path
+          path:
+            - status
+
+  - name: post_by_id
+    description: >-
+      Get a single post by blog ID and post ID. Returns one row with the
+      full post content including author info, labels, and comment count.
+    guide: >
+      Fetch a single post by blog ID and post ID. Returns the full post
+      including HTML content, labels, author info, and comment count.
+    filters:
+      - name: blog_id
+        required: true
+      - name: post_id
+        required: true
+    request:
+      method: GET
+      path: /blogs/{{filter.blog_id}}/posts/{{filter.post_id}}
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Post ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: post_id
+        type: Utf8
+        nullable: false
+        description: Post ID (alias for the id column, used as filter).
+        expr:
+          kind: path
+          path:
+            - id
+      - name: blog_id
+        type: Utf8
+        nullable: false
+        description: Blog ID this post belongs to.
+        expr:
+          kind: path
+          path:
+            - blog
+            - id
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 publication date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 last updated date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Post title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Post body content as HTML.
+        expr:
+          kind: path
+          path:
+            - content
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Post URL.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - displayName
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author profile ID.
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author_url
+        type: Utf8
+        nullable: true
+        description: Author profile URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - url
+      - name: author_image_url
+        type: Utf8
+        nullable: true
+        description: Author avatar image URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - image
+            - url
+      - name: labels
+        type: Json
+        nullable: true
+        description: Labels/tags applied to the post as a JSON array of strings.
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: replies_total_items
+        type: Int64
+        nullable: true
+        description: Total number of comments on this post.
+        expr:
+          kind: path
+          path:
+            - replies
+            - totalItems
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Post status (LIVE, DRAFT, SCHEDULED).
+        expr:
+          kind: path
+          path:
+            - status
+
+  - name: pages
+    description: >-
+      List pages from a blog. Requires a blog_id filter. Returns static pages
+      ordered by publication date (newest first). Many blogs have zero pages.
+    guide: >
+      List static pages from a blog. Many blogs have zero pages — check
+      pages_total_items on the blog first.
+    fetch_limit_default: 25
+    filters:
+      - name: blog_id
+        required: true
+      - name: max_results
+    request:
+      method: GET
+      path: /blogs/{{filter.blog_id}}/pages
+      query:
+        - name: maxResults
+          from: filter
+          key: max_results
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Page ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: blog_id
+        type: Utf8
+        nullable: false
+        description: Blog ID this post belongs to.
+        expr:
+          kind: path
+          path:
+            - blog
+            - id
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 publication date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 last updated date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Page title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Page body content as HTML.
+        expr:
+          kind: path
+          path:
+            - content
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Page URL.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - displayName
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author profile ID.
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author_url
+        type: Utf8
+        nullable: true
+        description: Author profile URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - url
+      - name: author_image_url
+        type: Utf8
+        nullable: true
+        description: Author avatar image URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - image
+            - url
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Page status (LIVE, DRAFT).
+        expr:
+          kind: path
+          path:
+            - status
+
+  - name: comments
+    description: >-
+      List comments on a post. Requires both blog_id and post_id filters.
+      Returns comments ordered by publication date (newest first).
+    guide: >
+      List comments on a specific post. Requires blog_id and post_id.
+      API defaults to 20 comments per page.
+    fetch_limit_default: 20
+    filters:
+      - name: blog_id
+        required: true
+      - name: post_id
+        required: true
+      - name: max_results
+    request:
+      method: GET
+      path: /blogs/{{filter.blog_id}}/posts/{{filter.post_id}}/comments
+      query:
+        - name: maxResults
+          from: filter
+          key: max_results
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Comment ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: blog_id
+        type: Utf8
+        nullable: false
+        description: Blog ID.
+        expr:
+          kind: path
+          path:
+            - blog
+            - id
+      - name: post_id
+        type: Utf8
+        nullable: false
+        description: Post ID this comment belongs to.
+        expr:
+          kind: path
+          path:
+            - post
+            - id
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 publication date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 last updated date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Comment body content as HTML.
+        expr:
+          kind: path
+          path:
+            - content
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - displayName
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author profile ID.
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author_url
+        type: Utf8
+        nullable: true
+        description: Author profile URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - url
+      - name: author_image_url
+        type: Utf8
+        nullable: true
+        description: Author avatar image URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - image
+            - url
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Comment status (LIVE, EMPTIED, PENDING, SPAM).
+        expr:
+          kind: path
+          path:
+            - status
+
+functions:
+  - name: posts_search
+    kind: search
+    description: >-
+      Search posts within a blog by keyword. Requires both blog_id and a
+      search query. Returns posts ordered by relevance to the search term.
+    fetch_limit_default: 25
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: blog_id
+        required: true
+        bind:
+          arg: blog_id
+      - name: query
+        required: true
+        bind:
+          arg: query
+    request:
+      method: GET
+      path: /blogs/{{arg.blog_id}}/posts/search
+      query:
+        - name: q
+          from: arg
+          key: query
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: none
+    columns:
+      - name: blog_id
+        type: Utf8
+        nullable: false
+        description: Blog ID this post belongs to.
+        expr:
+          kind: from_arg
+          key: blog_id
+      - name: query
+        type: Utf8
+        nullable: false
+        description: Echoes the search query used.
+        expr:
+          kind: from_arg
+          key: query
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Post ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: published
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 publication date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: RFC 3339 last updated date.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Post title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Post body content as HTML.
+        expr:
+          kind: path
+          path:
+            - content
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Post URL.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: author_display_name
+        type: Utf8
+        nullable: true
+        description: Author display name.
+        expr:
+          kind: path
+          path:
+            - author
+            - displayName
+      - name: author_id
+        type: Utf8
+        nullable: true
+        description: Author profile ID.
+        expr:
+          kind: path
+          path:
+            - author
+            - id
+      - name: author_url
+        type: Utf8
+        nullable: true
+        description: Author profile URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - url
+      - name: author_image_url
+        type: Utf8
+        nullable: true
+        description: Author avatar image URL.
+        expr:
+          kind: path
+          path:
+            - author
+            - image
+            - url
+      - name: labels
+        type: Json
+        nullable: true
+        description: Labels/tags applied to the post as a JSON array of strings.
+        expr:
+          kind: path
+          path:
+            - labels
+      - name: replies_total_items
+        type: Int64
+        nullable: true
+        description: Total number of comments on this post.
+        expr:
+          kind: path
+          path:
+            - replies
+            - totalItems
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Post status (LIVE, DRAFT, SCHEDULED).
+        expr:
+          kind: path
+          path:
+            - status
