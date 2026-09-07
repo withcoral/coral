@@ -1,0 +1,106 @@
+name: exa
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query AI-powered web search results from Exa. Returns ranked results
+  with titles, URLs, published dates, and authors.
+base_url: https://api.exa.ai
+
+inputs:
+  EXA_API_KEY:
+    kind: secret
+    hint: >-
+      Exa API key from https://dashboard.exa.ai/api-keys.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: x-api-key
+      from: template
+      template: "{{input.EXA_API_KEY}}"
+
+test_queries:
+  - SELECT url, title, published_date FROM exa.search(q => 'Coral SQL') LIMIT 2
+
+functions:
+
+  # --------------------------------------------------------------------------
+  # exa.search — AI-powered web search
+  # POST /search
+  # Array at response.results. No pagination (single response).
+  # --------------------------------------------------------------------------
+  - name: search
+    kind: search
+    description: >-
+      Search the web using Exa's AI-powered search engine. Pass the
+      query as a named argument with `q => '<query>'`. Returns ranked
+      results with titles, URLs, published dates, and authors.
+    fetch_limit_default: 5
+    search_limits:
+      default_top_k: 5
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: type
+        bind:
+          arg: type
+      - name: category
+        bind:
+          arg: category
+    request:
+      method: POST
+      path: /search
+      body:
+        - path: [query]
+          from: arg
+          key: q
+        - path: [type]
+          from: arg
+          key: type
+        - path: [category]
+          from: arg
+          key: category
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+      page_size:
+        default: 10
+        max: 100
+        body_path:
+          - numResults
+    columns:
+      - name: url
+        type: Utf8
+        nullable: false
+        description: URL of the search result.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the search result.
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Unique identifier for the result.
+      - name: published_date
+        type: Utf8
+        nullable: true
+        description: Published date of the page (ISO 8601).
+        expr:
+          kind: path
+          path:
+            - publishedDate
+      - name: author
+        type: Utf8
+        nullable: true
+        description: Author of the page.
