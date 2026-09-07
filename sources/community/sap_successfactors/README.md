@@ -256,7 +256,7 @@ coral sql "
 coral sql "
   SELECT proxy_display_name, principal_display_name, end_date, is_valid
   FROM sap_successfactors.proxy_grants
-  WHERE odata_filter = 'isValid eq true'
+  LIMIT 20
 "
 
 # Time off types available today
