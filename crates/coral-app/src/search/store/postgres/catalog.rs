@@ -1,15 +1,16 @@
 //! Catalog projection and retrieval on the Postgres store.
 //!
-//! Retrieval is BM25 in plain SQL (research memo 11): corpus IDF from the
-//! per-Workspace `catalog_terms` statistics, FTS5's constants and negative-IDF
-//! clamp, and the same 8/6/2/1 field weights the `SQLite` side passes to
-//! `bm25()`. Candidates come from a prefix `tsquery` over the query's words
-//! OR-ed with trigram `ILIKE` patterns (exact substring semantics; the
-//! executor's recheck makes false positives impossible), both restricted to
-//! words below the document-frequency cap — FTS5's own `idf <= 0` clamp made
-//! explicit, applied where it also buys latency. The whole-query phrase boost
-//! leads the order so a whole-phrase match outranks a co-occurrence match;
-//! `doc_id` closes the deterministic total order.
+//! Retrieval is BM25 in plain SQL (research memo 11 + its round-2 addendum):
+//! corpus IDF from the per-Workspace `catalog_terms` statistics, FTS5's `k1`
+//! and negative-IDF clamp, a `b` tuned for short structured documents, and
+//! the same 8/6/2/1 field weights the `SQLite` side passes to `bm25()`.
+//! Every query word scores with its true IDF; only *candidate selection* —
+//! a prefix `tsquery` OR-ed with trigram `ILIKE` patterns (exact substring
+//! semantics; the executor's recheck makes false positives impossible) — is
+//! restricted to words below the document-frequency cap, which is a latency
+//! lever. The whole-query phrase boost leads the order so a whole-phrase
+//! match outranks a co-occurrence match; `doc_id` closes the deterministic
+//! total order.
 
 use std::collections::BTreeSet;
 
@@ -38,19 +39,25 @@ const FIELD_WEIGHT_QUALIFIED_NAME: u8 = 8;
 const FIELD_WEIGHT_TITLE: u8 = 6;
 const FIELD_WEIGHT_DESCRIPTION: u8 = 2;
 const FIELD_WEIGHT_SEARCHABLE_TEXT: u8 = 1;
-/// FTS5's hard-coded BM25 constants (`fts5_aux.c`), kept so both backends
-/// saturate term frequency and normalize length the same way.
+/// FTS5's term-frequency saturation constant (`fts5_aux.c`).
 const BM25_K1: f64 = 1.2;
-const BM25_B: f64 = 0.75;
+/// Length normalization. FTS5 hard-codes 0.75 for prose; catalog documents
+/// are short and structured, and 0.75 makes a column-rich canonical table pay
+/// in its name field for its column count. 0.4 measured best on the 448-query
+/// replay (round-2 sweep, memo 11 addendum).
+const BM25_B: f64 = 0.4;
 /// FTS5 clamps a non-positive IDF to this instead of letting a term that
 /// appears in more than half the corpus push results around.
 const IDF_FLOOR: f64 = 1e-6;
-/// Words in more of the corpus than this share are dropped from candidates
-/// and scoring. Measured (memo 11, design D7): the cap is what keeps the
-/// candidate set selective; without it the same relevance costs 5× the time.
+/// Words in more of the corpus than this share are dropped from *candidate
+/// selection* only — a latency lever, not a relevance rule (memo 11, D7:
+/// uncapped candidates cost 5× for the same relevance). Every word still
+/// scores with its true IDF: at 10% frequency a word carries real signal
+/// (IDF ≈ 2.2) that FTS5's clamp — which only bites above half the corpus —
+/// would keep.
 const DOCUMENT_FREQUENCY_CAP: f64 = 0.05;
-/// When every word is above the cap, keep this many rarest words instead of
-/// searching for nothing.
+/// When every word is above the cap, keep this many rarest words as
+/// candidate keys instead of searching for nothing.
 const RARE_WORD_KEEP: usize = 3;
 
 impl CatalogStore for PostgresSearchStore {
@@ -363,9 +370,11 @@ struct WordStat {
 /// What the statistics lookup resolved the plan's words into.
 #[derive(Debug, Clone, PartialEq)]
 struct ScoringPlan {
+    /// Every query word with its IDF — all of them score.
+    scored: Vec<ScoredWord>,
     /// Words under the document-frequency cap (or the rarest few when nothing
-    /// is), with their IDF.
-    words: Vec<ScoredWord>,
+    /// is): the candidate-selection keys.
+    candidate_words: Vec<String>,
     avgdl: f64,
 }
 
@@ -414,7 +423,8 @@ impl CatalogQueryPlan {
     ) -> Result<Vec<CatalogSearchHit>, PostgresSearchError> {
         let scoring = if self.words.is_empty() {
             ScoringPlan {
-                words: Vec::new(),
+                scored: Vec::new(),
+                candidate_words: Vec::new(),
                 avgdl: 1.0,
             }
         } else {
@@ -424,20 +434,20 @@ impl CatalogQueryPlan {
         // Audited: the only dynamic fragments are `doc_kind_predicate`, fixed
         // literals, and placeholder numbers; every value is a bind.
         let mut query = sqlx::query(sqlx::AssertSqlSafe(self.sql(&scoring, class)));
-        if !scoring.words.is_empty() {
-            query = query.bind(tsquery(&scoring.words));
-            for word in &scoring.words {
+        if !scoring.scored.is_empty() {
+            query = query.bind(tsquery(&scoring.candidate_words));
+            for word in &scoring.scored {
                 query = query.bind(prefix_pattern(&word.word));
                 query = query.bind(word.idf);
             }
-            for word in &scoring.words {
-                query = query.bind(contains_pattern(&word.word));
+            for word in &scoring.candidate_words {
+                query = query.bind(contains_pattern(word));
             }
         }
         for pattern in &self.wordless_patterns {
             query = query.bind(pattern);
         }
-        if !scoring.words.is_empty() {
+        if !scoring.scored.is_empty() {
             query = query.bind(scoring.avgdl);
         }
         let rows = query
@@ -449,18 +459,19 @@ impl CatalogQueryPlan {
     }
 
     fn sql(&self, scoring: &ScoringPlan, class: CatalogDocumentClass) -> String {
-        let word_count = scoring.words.len();
+        let scored_count = scoring.scored.len();
+        let candidate_word_count = scoring.candidate_words.len();
         let mut next = 1_usize;
         let mut take = |count: usize| {
             let start = next;
             next += count;
             start
         };
-        let tsquery = (word_count > 0).then(|| take(1));
-        let values_start = take(word_count * 2);
-        let word_pattern_start = take(word_count);
+        let tsquery = (scored_count > 0).then(|| take(1));
+        let values_start = take(scored_count * 2);
+        let word_pattern_start = take(candidate_word_count);
         let wordless_start = take(self.wordless_patterns.len());
-        let avgdl = (word_count > 0).then(|| take(1));
+        let avgdl = (scored_count > 0).then(|| take(1));
         let phrase = take(1);
         let limit = take(1);
 
@@ -468,7 +479,7 @@ impl CatalogQueryPlan {
         if let Some(tsquery) = tsquery {
             candidates.push(format!("d.tsv @@ to_tsquery('simple', ${tsquery})"));
         }
-        for index in 0..word_count {
+        for index in 0..candidate_word_count {
             candidates.push(format!("d.all_text ILIKE ${}", word_pattern_start + index));
         }
         for index in 0..self.wordless_patterns.len() {
@@ -478,7 +489,7 @@ impl CatalogQueryPlan {
 
         let score = match avgdl {
             Some(avgdl) => {
-                let values = (0..word_count)
+                let values = (0..scored_count)
                     .map(|index| {
                         let pattern = values_start + 2 * index;
                         let idf = pattern + 1;
@@ -572,8 +583,8 @@ async fn fetch_word_stats(
     Ok((stats, total_docs, avgdl))
 }
 
-/// Applies the document-frequency cap and computes each surviving word's IDF
-/// with FTS5's formula and clamp.
+/// Splits words into candidate keys (document-frequency cap applied) and the
+/// scoring set (every word, with FTS5's IDF formula and clamp).
 fn scoring_plan(stats: &[WordStat], total_docs: i64, avgdl: f64) -> ScoringPlan {
     let total = total_docs.max(0);
     let cap = DOCUMENT_FREQUENCY_CAP * precise_f64(total.max(1));
@@ -588,13 +599,14 @@ fn scoring_plan(stats: &[WordStat], total_docs: i64, avgdl: f64) -> ScoringPlan 
         kept = by_rarity;
     }
     ScoringPlan {
-        words: kept
-            .into_iter()
+        scored: stats
+            .iter()
             .map(|stat| ScoredWord {
                 word: stat.word.clone(),
                 idf: inverse_document_frequency(total, stat.ndoc),
             })
             .collect(),
+        candidate_words: kept.into_iter().map(|stat| stat.word.clone()).collect(),
         avgdl: if avgdl > 0.0 { avgdl } else { 1.0 },
     }
 }
@@ -621,10 +633,10 @@ fn precise_f64(value: i64) -> f64 {
 /// runs of alphanumerics and `_`, so the tsquery parser accepts them without
 /// quoting; a word with `_` parses as a prefix phrase, which is stricter, not
 /// broken.
-fn tsquery(words: &[ScoredWord]) -> String {
+fn tsquery(words: &[String]) -> String {
     words
         .iter()
-        .map(|word| format!("{}:*", word.word))
+        .map(|word| format!("{word}:*"))
         .collect::<Vec<_>>()
         .join(" | ")
 }
@@ -711,13 +723,14 @@ pub(super) mod plan_tests {
 
     fn scored(words: &[&str]) -> ScoringPlan {
         ScoringPlan {
-            words: words
+            scored: words
                 .iter()
                 .map(|word| ScoredWord {
                     word: (*word).to_string(),
                     idf: 1.0,
                 })
                 .collect(),
+            candidate_words: words.iter().map(|word| (*word).to_string()).collect(),
             avgdl: 10.0,
         }
     }
@@ -793,11 +806,11 @@ pub(super) mod plan_tests {
     }
 
     #[test]
-    fn the_document_frequency_cap_drops_common_words() {
+    fn the_document_frequency_cap_restricts_candidates_but_not_scoring() {
         let stats = [
             WordStat {
-                word: "github".to_string(),
-                ndoc: 950,
+                word: "issues".to_string(),
+                ndoc: 100,
             },
             WordStat {
                 word: "slack".to_string(),
@@ -807,13 +820,15 @@ pub(super) mod plan_tests {
 
         let plan = scoring_plan(&stats, 1_000, 23.0);
 
-        assert_eq!(
-            plan.words
-                .iter()
-                .map(|word| word.word.as_str())
-                .collect::<Vec<_>>(),
-            vec!["slack"]
-        );
+        assert_eq!(plan.candidate_words, vec!["slack"]);
+        // The common word still scores, with its true IDF, not a clamp.
+        let issues = plan
+            .scored
+            .iter()
+            .find(|word| word.word == "issues")
+            .expect("capped word scores");
+        let expected = ((1_000.0_f64 - 100.0 + 0.5) / 100.5).ln();
+        assert!((issues.idf - expected).abs() < 1e-12);
         assert!((plan.avgdl - 23.0).abs() < f64::EPSILON);
     }
 
@@ -831,13 +846,11 @@ pub(super) mod plan_tests {
         let plan = scoring_plan(&stats, 1_000, 23.0);
 
         assert_eq!(
-            plan.words
-                .iter()
-                .map(|word| word.word.as_str())
-                .collect::<Vec<_>>(),
+            plan.candidate_words,
             vec!["alpha", "bravo", "charlie"],
-            "the rarest words survive, rarest first"
+            "the rarest words survive as candidate keys, rarest first"
         );
+        assert_eq!(plan.scored.len(), 4, "every word still scores");
     }
 
     #[test]
@@ -861,8 +874,9 @@ pub(super) mod plan_tests {
 
         let plan = scoring_plan(&stats, 0, 0.0);
 
-        let word = plan.words.first().expect("the only word survives");
+        let word = plan.scored.first().expect("the only word survives");
         assert!((word.idf - 1e-6).abs() < f64::EPSILON);
+        assert_eq!(plan.candidate_words, vec!["github"]);
         assert!((plan.avgdl - 1.0).abs() < f64::EPSILON);
     }
 }

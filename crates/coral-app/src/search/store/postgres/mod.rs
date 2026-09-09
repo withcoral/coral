@@ -24,7 +24,7 @@ use tokio::runtime::Handle;
 use crate::state::db::{DbError, connect_postgres_pool};
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_POSTGRES_SCHEMA_VERSION: i32 = 2;
+pub(crate) const SEARCH_POSTGRES_SCHEMA_VERSION: i32 = 3;
 
 struct SearchPostgresMigration {
     version: i32,
@@ -43,6 +43,10 @@ const WORKSPACE_MIGRATIONS: &[SearchPostgresMigration] = &[
     SearchPostgresMigration {
         version: 2,
         sql: include_str!("migrations/0002_catalog_ranking_stats.sql"),
+    },
+    SearchPostgresMigration {
+        version: 3,
+        sql: include_str!("migrations/0003_catalog_tsv_split.sql"),
     },
 ];
 
