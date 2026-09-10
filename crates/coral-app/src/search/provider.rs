@@ -304,6 +304,23 @@ impl SearchProviderRegistry {
         }
     }
 
+    /// Registers the catalog provider beside a static status explaining that
+    /// the search backend keeps no observed values, whatever the feature flag
+    /// says.
+    pub(crate) fn local_without_observed_values(
+        catalog: CatalogMetadataProvider,
+        backend_name: &str,
+    ) -> Self {
+        let ordered = vec![
+            SearchProviderRegistration::Provider(Arc::new(catalog)),
+            SearchProviderRegistration::StaticStatus(observed_unavailable_status(backend_name)),
+            SearchProviderRegistration::StaticStatus(native_not_enabled_status()),
+        ];
+        Self {
+            ordered: ordered.into(),
+        }
+    }
+
     pub(crate) fn iter(&self) -> impl Iterator<Item = &SearchProviderRegistration> {
         self.ordered.iter()
     }
@@ -381,6 +398,17 @@ pub(crate) fn provider_error_outcome(provider: SearchProviderKind) -> ProviderSe
             note: "search provider failed without affecting other providers".to_string(),
             coverage: None,
         },
+    }
+}
+
+fn observed_unavailable_status(backend_name: &str) -> ProviderStatus {
+    ProviderStatus {
+        provider: SearchProviderKind::ObservedValues,
+        state: SearchProviderState::NotEnabled,
+        note: format!(
+            "observed value search is not available on the {backend_name} search backend"
+        ),
+        coverage: None,
     }
 }
 
