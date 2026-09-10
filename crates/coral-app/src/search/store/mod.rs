@@ -226,10 +226,6 @@ impl SearchStorage {
     /// Removes every trace of the Workspace's search state. Returns whether
     /// there was any. The `SQLite` sidecar lives inside the Workspace
     /// directory, which Workspace deletion removes as a whole.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into Workspace deletion next in this stack")
-    )]
     pub(crate) async fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -242,13 +238,18 @@ impl SearchStorage {
         }
     }
 
+    /// Whether this backend registers Workspaces in shared storage that
+    /// outlives the Workspace directory, and so needs boot-time pruning.
+    pub(crate) fn has_workspace_registry(&self) -> bool {
+        match &self.backend {
+            SearchStorageBackend::Sqlite(_) => false,
+            SearchStorageBackend::Postgres(_) => true,
+        }
+    }
+
     /// Removes the search state of every registered Workspace that is not in
     /// `live`, and returns their names. The safety net for a deletion whose
     /// best-effort cleanup failed: the next boot finishes it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into the boot sweep next in this stack")
-    )]
     pub(crate) async fn prune_workspaces_except(
         &self,
         live: &BTreeSet<String>,
@@ -263,10 +264,6 @@ impl SearchStorage {
 
     /// Boot-time ledger sweep: migrates every Workspace schema the backend
     /// knows to be behind this binary. `SQLite` sidecars migrate on open.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into the boot sweep next in this stack")
-    )]
     pub(crate) async fn migrate_all(
         &self,
     ) -> Result<Vec<MigratedWorkspaceSchema>, SearchStoreError> {
