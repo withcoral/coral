@@ -605,6 +605,52 @@ async fn a_word_form_the_corpus_lacks_is_rescued_by_its_stem_against_postgres() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run spelling rescue against Postgres"]
+async fn a_spelling_the_corpus_lacks_is_rescued_by_a_similar_lexeme_against_postgres() {
+    let Some(storage) = open_storage().await else {
+        return;
+    };
+    let workspace = unique_workspace("fuzzy");
+
+    let storage_for_test = storage.clone();
+    let workspace_for_test = workspace.clone();
+    blocking(move || {
+        let store = storage_for_test
+            .open_workspace(&workspace_for_test)
+            .expect("open");
+        let catalog = store.catalog();
+        catalog
+            .refresh_projection(&rescue_snapshot())
+            .expect("refresh");
+
+        // The fixture spells `organization`; `organisation` matches no lexeme
+        // exactly or by prefix, and its closest lexeme is the one it meant.
+        let rescued = catalog
+            .search(
+                &["organisation".to_string()],
+                10,
+                CatalogDocumentClass::Entries,
+            )
+            .expect("search")
+            .hits;
+        assert_eq!(
+            rescued.first().map(|hit| hit.doc_id.as_str()),
+            Some("catalog:table:github.organization_members"),
+            "the similar lexeme must reach the table the spelling missed"
+        );
+        // A word nothing resembles still finds nothing.
+        let nothing = catalog
+            .search(&["zzqxv".to_string()], 10, CatalogDocumentClass::Entries)
+            .expect("search")
+            .hits;
+        assert!(nothing.is_empty());
+    })
+    .await;
+
+    delete_workspaces(&storage, &[workspace]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run match semantics against Postgres"]
 async fn match_semantics_follow_the_benchmark_strata_against_postgres() {
     let Some(storage) = open_storage().await else {

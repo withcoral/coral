@@ -68,6 +68,11 @@ const RARE_WORD_KEEP: usize = 3;
 /// is used as a prefix, so an over-short stem widens the reach and never
 /// loses the intended lexeme.
 static STEMMER: LazyLock<Stemmer> = LazyLock::new(|| Stemmer::create(Algorithm::English));
+/// Trigram similarity floor for a rescue lexeme: `pg_trgm`'s default, pinned
+/// in the query so a server setting cannot move it.
+const FUZZY_SIMILARITY_FLOOR: f32 = 0.3;
+/// Most similar lexemes considered per word that reaches nothing.
+const FUZZY_LEXEMES_PER_WORD: i64 = 3;
 
 // Recorded alternatives to the document-frequency cap (2026-09-10; neither
 // is implemented, both were sized against the replay harness):
@@ -545,26 +550,48 @@ impl CatalogQueryPlan {
         if reached_nothing.is_empty() {
             return Ok(Vec::new());
         }
-        let stems = stem_rescues(&reached_nothing, &self.words)
-            .into_iter()
-            .map(|(_, stem)| stem)
-            .collect::<Vec<_>>();
-        if stems.is_empty() {
-            return Ok(Vec::new());
+        let mut rescues = Vec::new();
+        let mut rescued_words = BTreeSet::new();
+        let stems = stem_rescues(&reached_nothing, &self.words);
+        if !stems.is_empty() {
+            // The stem is a prefix, so its document frequency is the number
+            // of documents any lexeme it starts reaches — what its tsquery
+            // branch would admit — not a sum over the lexicon, which counts a
+            // document once per matching lexeme.
+            let stem_words = stems
+                .iter()
+                .map(|(_, stem)| stem.clone())
+                .collect::<Vec<_>>();
+            for (stem, ndoc) in fetch_prefix_document_counts(tx, &stem_words).await? {
+                if ndoc == 0 {
+                    continue;
+                }
+                for (word, _) in stems.iter().filter(|(_, candidate)| *candidate == stem) {
+                    rescued_words.insert(word.clone());
+                }
+                rescues.push(WordStat {
+                    word: stem,
+                    ndoc: ndoc.min(total_docs.max(0)),
+                });
+            }
         }
-        // The stem is a prefix, so its document frequency is the number of
-        // documents any lexeme it starts reaches — what its tsquery branch
-        // would admit — not a sum over the lexicon, which counts a document
-        // once per matching lexeme.
-        Ok(fetch_prefix_document_counts(tx, &stems)
-            .await?
-            .into_iter()
-            .filter(|(_, ndoc)| *ndoc > 0)
-            .map(|(word, ndoc)| WordStat {
-                word,
-                ndoc: ndoc.min(total_docs.max(0)),
-            })
-            .collect())
+        // Nothing starts with the word or its stem; ask the lexicon what it
+        // looks like.
+        let still_nothing = reached_nothing
+            .iter()
+            .filter(|word| !rescued_words.contains(*word))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !still_nothing.is_empty() {
+            for stat in fetch_similar_lexemes(tx, &still_nothing).await? {
+                if !self.words.contains(&stat.word)
+                    && !rescues.iter().any(|rescue| rescue.word == stat.word)
+                {
+                    rescues.push(stat);
+                }
+            }
+        }
+        Ok(rescues)
     }
 
     fn sql(&self, scoring: &ScoringPlan, class: CatalogDocumentClass) -> String {
@@ -772,6 +799,45 @@ fn stem_rescues(reached_nothing: &[String], known_words: &[String]) -> Vec<(Stri
         }
     }
     stems
+}
+
+/// Fuzzy rescue: the lexemes most similar to each word that reaches nothing,
+/// through the lexicon's trigram index, each with its own document
+/// frequency. Spelling variants (`organisation` → `organization`, `colour` →
+/// `color`) and dropped letters sit above the floor; transpositions do not.
+async fn fetch_similar_lexemes(
+    tx: &mut Transaction<'static, Postgres>,
+    words: &[String],
+) -> Result<Vec<WordStat>, PostgresSearchError> {
+    let rows = sqlx::query(
+        "SELECT t.term, t.ndoc
+         FROM unnest($1::text[]) AS w(term)
+         JOIN LATERAL (
+             SELECT term, ndoc
+             FROM catalog_terms
+             WHERE term % w.term AND similarity(term, w.term) >= $2
+             ORDER BY similarity(term, w.term) DESC, term
+             LIMIT $3
+         ) AS t ON true",
+    )
+    .bind(words)
+    .bind(FUZZY_SIMILARITY_FLOOR)
+    .bind(FUZZY_LEXEMES_PER_WORD)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut similar: Vec<WordStat> = Vec::new();
+    for row in &rows {
+        let term: String = row.try_get("term")?;
+        if similar.iter().any(|stat| stat.word == term) {
+            continue;
+        }
+        let ndoc: i32 = row.try_get("ndoc")?;
+        similar.push(WordStat {
+            word: term,
+            ndoc: i64::from(ndoc),
+        });
+    }
+    Ok(similar)
 }
 
 /// Splits words into candidate keys (document-frequency cap applied) and the
