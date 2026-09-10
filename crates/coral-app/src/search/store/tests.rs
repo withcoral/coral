@@ -179,6 +179,109 @@ pub(super) mod contract {
         assert_eq!(entries(&["issue"]), entries(&["issue"]));
     }
 
+    /// A query word present in nearly every document must not outrank the
+    /// query's rare words. Both engines discount it through corpus
+    /// statistics — FTS5's negative-IDF clamp, the Postgres side's IDF floor
+    /// — so the document the rare words name comes first. A ranking without
+    /// corpus statistics (`ts_rank_cd`) fails this. Only the top position
+    /// is asserted: how far a
+    /// common-word-only match ranks (or whether it is retrieved at all)
+    /// legitimately differs by engine.
+    pub(crate) fn assert_rare_terms_outrank_common_noise(store: &SearchStore) {
+        let catalog = store.catalog();
+        catalog
+            .refresh_projection(&noise_snapshot())
+            .expect("refresh");
+
+        let terms = ["github", "slack", "messages"]
+            .iter()
+            .map(|term| (*term).to_string())
+            .collect::<Vec<_>>();
+        let hits = catalog
+            .search(&terms, 10, CatalogDocumentClass::Entries)
+            .expect("search")
+            .hits;
+
+        assert_eq!(
+            hits.first().map(|hit| hit.doc_id.as_str()),
+            Some("table:slack_messages"),
+            "the rare words must beat twelve documents dense in the common word"
+        );
+    }
+
+    /// A query made only of common words must still retrieve. The request
+    /// appends the whole query as a term and the store derives a compact
+    /// variant of it (`firehose events` → `firehoseevents`); nothing in the
+    /// corpus is named that, or starts with it, so the variant must not stand
+    /// in for the real words. Both words are in all twelve event tables and
+    /// in nothing else.
+    pub(crate) fn assert_common_word_queries_still_retrieve(store: &SearchStore) {
+        let catalog = store.catalog();
+        catalog
+            .refresh_projection(&noise_snapshot())
+            .expect("refresh");
+
+        let terms = ["events", "firehose", "firehose events"]
+            .iter()
+            .map(|term| (*term).to_string())
+            .collect::<Vec<_>>();
+        let hits = catalog
+            .search(&terms, 20, CatalogDocumentClass::Entries)
+            .expect("search")
+            .hits;
+
+        assert_eq!(
+            hits.len(),
+            12,
+            "every event table and nothing else must be retrieved"
+        );
+        assert!(
+            hits.first()
+                .is_some_and(|hit| hit.doc_id.starts_with("table:github_noise_")),
+            "an event table must lead, got {:?}",
+            hits.first().map(|hit| hit.doc_id.as_str())
+        );
+    }
+
+    fn noise_snapshot() -> CatalogIndexSnapshot {
+        let table = |doc_id: &str, surface_name: &str, title: &str, description: &str| {
+            CatalogIndexDocument {
+                doc_id: doc_id.to_string(),
+                doc_kind: CatalogIndexDocumentKind::CatalogTable,
+                source_name: "github".to_string(),
+                catalog_name: None,
+                surface_kind: "table".to_string(),
+                surface_name: surface_name.to_string(),
+                field_name: String::new(),
+                field_role: String::new(),
+                qualified_name: format!("github.{surface_name}"),
+                title: title.to_string(),
+                description: description.to_string(),
+                searchable_text: format!("github {surface_name}"),
+            }
+        };
+        let mut documents = (0..12)
+            .map(|index| {
+                table(
+                    &format!("table:github_noise_{index:02}"),
+                    &format!("github_events_{index:02}"),
+                    "github events",
+                    "github events from the github firehose about github activity",
+                )
+            })
+            .collect::<Vec<_>>();
+        documents.push(table(
+            "table:slack_messages",
+            "slack_messages",
+            "slack messages",
+            "Messages posted to Slack channels",
+        ));
+        CatalogIndexSnapshot {
+            fingerprint: "noise-v1".to_string(),
+            documents,
+        }
+    }
+
     fn semantics_snapshot() -> CatalogIndexSnapshot {
         let table = |doc_id: &str, surface_name: &str, title: &str, description: &str| {
             CatalogIndexDocument {
@@ -349,6 +452,26 @@ fn sqlite_store_follows_the_benchmark_match_strata() {
 }
 
 #[test]
+fn sqlite_store_discounts_common_word_noise() {
+    let (_temp, storage) = sqlite_storage();
+    let store = storage
+        .open_workspace(&WorkspaceName::default())
+        .expect("open workspace store");
+
+    contract::assert_rare_terms_outrank_common_noise(&store);
+}
+
+#[test]
+fn sqlite_store_retrieves_common_word_queries() {
+    let (_temp, storage) = sqlite_storage();
+    let store = storage
+        .open_workspace(&WorkspaceName::default())
+        .expect("open workspace store");
+
+    contract::assert_common_word_queries_still_retrieve(&store);
+}
+
+#[test]
 fn open_existing_workspace_never_creates_search_state() {
     let (_temp, storage) = sqlite_storage();
     let workspace = WorkspaceName::default();
@@ -369,6 +492,12 @@ fn open_existing_workspace_never_creates_search_state() {
 }
 
 #[test]
+fn sqlite_storage_keeps_observed_values() {
+    let (_temp, storage) = sqlite_storage();
+    assert!(storage.observed_values().is_some());
+}
+
+#[test]
 fn clear_all_spans_both_data_classes_and_reports_cleanup() {
     let (_temp, storage) = sqlite_storage();
     let store = storage
@@ -381,7 +510,13 @@ fn clear_all_spans_both_data_classes_and_reports_cleanup() {
 
     let cleared = store.clear_source_all("github").expect("clear source all");
     assert_eq!(cleared.catalog.deleted_document_count, 3);
-    assert_eq!(cleared.observed.values, 0);
+    assert_eq!(
+        cleared
+            .observed
+            .expect("sqlite keeps observed values")
+            .values,
+        0
+    );
     let cleared = store.clear_workspace_all().expect("clear workspace all");
     assert_eq!(cleared.catalog.deleted_document_count, 1);
     assert_eq!(

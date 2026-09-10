@@ -128,26 +128,53 @@ impl CatalogDocumentClass {
     }
 }
 
+/// One normalized query term and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NormalizedSearchTerm {
+    pub(crate) text: String,
+    /// Synthesized by removing every non-alphanumeric character from a term
+    /// the caller gave (`deploy_url` → `deployurl`); never typed by the
+    /// caller. Documents index the same variant of each of their names, so
+    /// the only designed match for one is a whole lexeme. A backend that can
+    /// tell whether its corpus holds that lexeme may drop a variant it does
+    /// not; the whole query's variant of a sentence is the common case.
+    pub(crate) compact_variant: bool,
+}
+
 /// Lowercases, trims, and de-duplicates query terms, adding the compact
 /// identifier variant of each term so `deploy_url` and `deployurl` meet.
 pub(crate) fn normalized_search_terms(terms: &[String]) -> Vec<String> {
+    normalized_search_term_variants(terms)
+        .into_iter()
+        .map(|term| term.text)
+        .collect()
+}
+
+/// [`normalized_search_terms`] with each term's provenance kept.
+pub(crate) fn normalized_search_term_variants(terms: &[String]) -> Vec<NormalizedSearchTerm> {
     let mut normalized = Vec::new();
     for term in terms {
         let term = term.trim().to_lowercase();
         if term.is_empty() {
             continue;
         }
-        push_search_term(&mut normalized, term.clone());
+        push_search_term(&mut normalized, term.clone(), false);
         if let Some(compact) = compact_identifier_variant(&term) {
-            push_search_term(&mut normalized, compact);
+            push_search_term(&mut normalized, compact, true);
         }
     }
     normalized
 }
 
-fn push_search_term(terms: &mut Vec<String>, term: String) {
-    if !terms.iter().any(|existing| existing == &term) {
-        terms.push(term);
+fn push_search_term(terms: &mut Vec<NormalizedSearchTerm>, text: String, compact_variant: bool) {
+    match terms.iter_mut().find(|existing| existing.text == text) {
+        // A term the caller typed is never demoted to a variant, whichever
+        // of the two spellings arrived first.
+        Some(existing) => existing.compact_variant &= compact_variant,
+        None => terms.push(NormalizedSearchTerm {
+            text,
+            compact_variant,
+        }),
     }
 }
 
@@ -194,5 +221,67 @@ pub(crate) fn truncate_probe_hits(hits: &mut Vec<CatalogSearchHit>, limit: usize
         true
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NormalizedSearchTerm, normalized_search_term_variants, normalized_search_terms};
+
+    fn terms(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn compact_variants_are_flagged_and_typed_terms_are_not() {
+        let normalized = normalized_search_term_variants(&terms(&["Deploy_URL", "issue labels"]));
+
+        assert_eq!(
+            normalized,
+            vec![
+                NormalizedSearchTerm {
+                    text: "deploy_url".to_string(),
+                    compact_variant: false,
+                },
+                NormalizedSearchTerm {
+                    text: "deployurl".to_string(),
+                    compact_variant: true,
+                },
+                NormalizedSearchTerm {
+                    text: "issue labels".to_string(),
+                    compact_variant: false,
+                },
+                NormalizedSearchTerm {
+                    text: "issuelabels".to_string(),
+                    compact_variant: true,
+                },
+            ]
+        );
+        assert_eq!(
+            normalized_search_terms(&terms(&["Deploy_URL", "issue labels"])),
+            terms(&["deploy_url", "deployurl", "issue labels", "issuelabels"])
+        );
+    }
+
+    #[test]
+    fn a_typed_term_is_never_demoted_to_a_variant() {
+        // The variant arrives first, then the same spelling typed by the caller.
+        let first = normalized_search_term_variants(&terms(&["deploy_url", "deployurl"]));
+        assert_eq!(
+            first
+                .iter()
+                .map(|term| term.compact_variant)
+                .collect::<Vec<_>>(),
+            vec![false, false]
+        );
+        // And the other way round.
+        let second = normalized_search_term_variants(&terms(&["deployurl", "deploy_url"]));
+        assert_eq!(
+            second
+                .iter()
+                .map(|term| term.compact_variant)
+                .collect::<Vec<_>>(),
+            vec![false, false]
+        );
     }
 }
