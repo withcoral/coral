@@ -8,6 +8,11 @@
 use std::collections::BTreeMap;
 use std::fs;
 
+use coral_api::v1::{
+    CreateWorkspaceRequest, DeleteWorkspaceRequest, SearchProvider, SearchProviderState,
+    SearchRequest, Workspace,
+};
+use coral_client::AppClient;
 use coral_client::local::ServerBuilder;
 use coral_engine::{
     CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
@@ -18,6 +23,157 @@ use coral_spec::{
 };
 use sqlx::postgres::PgPoolOptions;
 use tempfile::TempDir;
+use tonic::Request;
+
+#[tokio::test]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run Postgres catalog search end to end"]
+async fn server_serves_catalog_search_from_postgres_and_removes_deleted_workspace_state() {
+    let Some(database_url) = postgres_test_url() else {
+        return;
+    };
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        "[database]\nbackend = \"postgres\"\nurl_env = \"CORAL_TEST_POSTGRES_URL\"\n\n[search]\nbackend = \"postgres\"\n",
+    )
+    .expect("write config");
+    let pool = PgPoolOptions::new()
+        .connect(&database_url)
+        .await
+        .expect("open Postgres database");
+
+    let server = ServerBuilder::new()
+        .with_config_dir(&config_dir)
+        .start()
+        .await
+        .expect("start server with Postgres search config");
+    let registry_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('search_registry.workspaces') IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("probe search registry");
+    assert!(registry_exists, "boot must bootstrap the search registry");
+    assert!(
+        !config_dir.join("workspaces").exists()
+            || !any_sqlite_search_file(&config_dir.join("workspaces")),
+        "no SQLite search sidecar may exist with the Postgres backend"
+    );
+
+    let app = AppClient::connect(server.endpoint_uri())
+        .await
+        .expect("connect client");
+    let workspace_name = format!("usp-e2e-{}", uuid::Uuid::new_v4().simple());
+    let workspace = Workspace {
+        name: workspace_name.clone(),
+    };
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace.clone()),
+        }))
+        .await
+        .expect("create workspace");
+
+    assert_search_reports_postgres_provider_statuses(&app, &workspace).await;
+
+    let surrogate_id = registry_surrogate_id(&pool, &workspace_name)
+        .await
+        .expect("the first search registers the workspace");
+    let schema = format!("search_ws_{surrogate_id}");
+    assert!(
+        postgres_schema_exists(&pool, &schema).await,
+        "schema {schema} must exist after the first search"
+    );
+
+    app.workspace_client()
+        .delete_workspace(Request::new(DeleteWorkspaceRequest {
+            workspace: Some(workspace),
+        }))
+        .await
+        .expect("delete workspace");
+    assert_eq!(
+        registry_surrogate_id(&pool, &workspace_name).await,
+        None,
+        "deletion must remove the registry row"
+    );
+    assert!(
+        !postgres_schema_exists(&pool, &schema).await,
+        "deletion must drop schema {schema}"
+    );
+
+    server.shutdown().await.expect("shutdown server");
+}
+
+/// Catalog search on an empty Workspace answers `Empty`, and observed values
+/// report `not_enabled` naming the backend rather than erroring.
+async fn assert_search_reports_postgres_provider_statuses(app: &AppClient, workspace: &Workspace) {
+    let response = app
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(workspace.clone()),
+            query: "benchmark".to_string(),
+            limit: 0,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+    assert_eq!(response.provider_statuses.len(), 3);
+    let status = |provider: SearchProvider| {
+        response
+            .provider_statuses
+            .iter()
+            .find(|status| status.provider == provider as i32)
+            .unwrap_or_else(|| panic!("missing status for {provider:?}"))
+    };
+    assert_eq!(
+        status(SearchProvider::CatalogMetadata).state,
+        SearchProviderState::Empty as i32,
+        "an empty catalog is served, not errored: {:?}",
+        status(SearchProvider::CatalogMetadata)
+    );
+    let observed = status(SearchProvider::ObservedValues);
+    assert_eq!(observed.state, SearchProviderState::NotEnabled as i32);
+    assert!(
+        observed
+            .note
+            .contains("not available on the postgres search backend"),
+        "unexpected observed note: {}",
+        observed.note
+    );
+}
+
+async fn registry_surrogate_id(pool: &sqlx::PgPool, workspace_name: &str) -> Option<i64> {
+    sqlx::query_scalar(
+        "SELECT surrogate_id FROM search_registry.workspaces WHERE workspace_name = $1",
+    )
+    .bind(workspace_name)
+    .fetch_optional(pool)
+    .await
+    .expect("read registry row")
+}
+
+fn any_sqlite_search_file(root: &std::path::Path) -> bool {
+    fs::read_dir(root).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                any_sqlite_search_file(&path)
+            } else {
+                path.extension()
+                    .is_some_and(|extension| extension == "sqlite3")
+            }
+        })
+    })
+}
+
+async fn postgres_schema_exists(pool: &sqlx::PgPool, schema: &str) -> bool {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)")
+        .bind(schema)
+        .fetch_one(pool)
+        .await
+        .expect("probe schema")
+}
 
 #[tokio::test]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run configured Postgres startup coverage"]

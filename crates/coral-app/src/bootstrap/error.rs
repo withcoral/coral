@@ -11,6 +11,7 @@ use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::credentials::CredentialsError;
+use crate::search::store::SearchConfigError;
 use crate::state::db::DbError;
 
 /// Errors surfaced by the local application layer.
@@ -170,6 +171,18 @@ impl From<DbError> for AppError {
             DbError::TomlDecode(error) => Self::TomlDecode(error),
             DbError::Sqlx(error) => Self::Database(error.to_string()),
             DbError::Migration(error) => Self::Database(error.to_string()),
+        }
+    }
+}
+
+impl From<SearchConfigError> for AppError {
+    fn from(error: SearchConfigError) -> Self {
+        match error {
+            SearchConfigError::Config(detail) => {
+                Self::FailedPrecondition(format!("search configuration is invalid: {detail}"))
+            }
+            SearchConfigError::Io(error) => Self::Io(error),
+            SearchConfigError::TomlDecode(error) => Self::TomlDecode(error),
         }
     }
 }
