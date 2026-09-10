@@ -1,8 +1,8 @@
 use tempfile::{TempDir, tempdir};
 
-use super::{
+use super::{SqliteCatalogIndex, refresh_catalog_documents_after_stale_check};
+use crate::search::catalog::index::{
     CatalogDocumentClass, CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
-    SqliteCatalogIndex, refresh_catalog_documents_after_stale_check,
 };
 use crate::search::sqlite_store::SqliteSearchStore;
 use crate::workspaces::WorkspaceName;

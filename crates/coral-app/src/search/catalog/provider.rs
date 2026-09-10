@@ -7,11 +7,9 @@ use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 use crate::bootstrap::AppError;
 use crate::catalog::model::CatalogResolution;
 use crate::query::manager::QueryManagerError;
+use crate::search::catalog::index::{CatalogDocumentClass, CatalogRefreshResult, CatalogSearchHit};
 use crate::search::catalog::snapshot::{
     CatalogSearchSnapshot, field_role_from_str, surface_kind_from_str,
-};
-use crate::search::catalog::sqlite_index::{
-    CatalogDocumentClass, CatalogRefreshResult, CatalogSearchHit,
 };
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult, SearchClearTarget,
