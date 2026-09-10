@@ -61,6 +61,11 @@ const DOCUMENT_FREQUENCY_CAP: f64 = 0.05;
 /// When every word is above the cap, keep this many rarest words as
 /// candidate keys instead of searching for nothing.
 const RARE_WORD_KEEP: usize = 3;
+/// Trigram similarity floor for a rescue lexeme: `pg_trgm`'s default, pinned
+/// in the query so a server setting cannot move it.
+const FUZZY_SIMILARITY_FLOOR: f32 = 0.3;
+/// Most similar lexemes considered per word that reaches nothing.
+const FUZZY_LEXEMES_PER_WORD: i64 = 3;
 
 // Recorded alternatives to the document-frequency cap (2026-09-10; neither
 // is implemented, both were sized against the replay harness):
@@ -476,7 +481,8 @@ impl CatalogQueryPlan {
             }
         } else {
             let (stats, total_docs, avgdl) = fetch_word_stats(tx, &self.words).await?;
-            scoring_plan(&stats, total_docs, avgdl, &self.variant_words)
+            let rescues = self.rescue_words(tx, &stats).await?;
+            scoring_plan(&stats, total_docs, avgdl, &self.variant_words, &rescues)
         };
         if scoring.scored.is_empty() && self.wordless_patterns.is_empty() {
             // Every word was a compact variant the corpus lacks: nothing is
@@ -508,6 +514,40 @@ impl CatalogQueryPlan {
             .fetch_all(&mut **tx)
             .await?;
         rows.iter().map(hit_from_row).collect()
+    }
+
+    /// Extra scored words for typed words that reach nothing: no exact lexeme
+    /// and no lexeme starting with them. The rung asks the lexicon, never the
+    /// documents, and a rescue word enters the plan with the statistics of
+    /// what it reaches, so it competes on the same terms as a typed word.
+    async fn rescue_words(
+        &self,
+        tx: &mut Transaction<'static, Postgres>,
+        stats: &[WordStat],
+    ) -> Result<Vec<WordStat>, PostgresSearchError> {
+        let unmatched = stats
+            .iter()
+            .filter(|stat| stat.ndoc == 0 && !self.variant_words.contains(&stat.word))
+            .map(|stat| stat.word.clone())
+            .collect::<Vec<_>>();
+        if unmatched.is_empty() {
+            return Ok(Vec::new());
+        }
+        let reached_nothing = fetch_prefix_presence(tx, &unmatched)
+            .await?
+            .into_iter()
+            .filter(|prefix| prefix.lexemes == 0)
+            .map(|prefix| prefix.word)
+            .collect::<Vec<_>>();
+        if reached_nothing.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Nothing starts with the word; ask the lexicon what it looks like.
+        Ok(fetch_similar_lexemes(tx, &reached_nothing)
+            .await?
+            .into_iter()
+            .filter(|stat| !self.words.contains(&stat.word))
+            .collect())
     }
 
     fn sql(&self, scoring: &ScoringPlan, class: CatalogDocumentClass) -> String {
@@ -635,6 +675,85 @@ async fn fetch_word_stats(
     Ok((stats, total_docs, avgdl))
 }
 
+/// What the lexicon holds under a prefix: how many lexemes start with the
+/// word, and the sum of their document frequencies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LexiconPrefix {
+    word: String,
+    ndoc: i64,
+    lexemes: i64,
+}
+
+/// Prefix presence per word, from the lexicon alone (the `text_pattern_ops`
+/// btree on `catalog_terms`), in one statement.
+async fn fetch_prefix_presence(
+    tx: &mut Transaction<'static, Postgres>,
+    words: &[String],
+) -> Result<Vec<LexiconPrefix>, PostgresSearchError> {
+    let patterns = words
+        .iter()
+        .map(|word| prefix_pattern(word))
+        .collect::<Vec<_>>();
+    let rows = sqlx::query(
+        "SELECT w.term, coalesce(sum(t.ndoc), 0)::bigint AS ndoc, count(t.term)::bigint AS lexemes
+         FROM unnest($1::text[], $2::text[]) AS w(term, pattern)
+         LEFT JOIN catalog_terms AS t ON t.term LIKE w.pattern
+         GROUP BY w.term",
+    )
+    .bind(words)
+    .bind(&patterns)
+    .fetch_all(&mut **tx)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(LexiconPrefix {
+                word: row.try_get("term")?,
+                ndoc: row.try_get("ndoc")?,
+                lexemes: row.try_get("lexemes")?,
+            })
+        })
+        .collect()
+}
+
+/// Fuzzy rescue: the lexemes most similar to each word that reaches nothing,
+/// through the lexicon's trigram index, each with its own document
+/// frequency. Spelling variants (`organisation` → `organization`, `colour` →
+/// `color`) and dropped letters sit above the floor; transpositions do not.
+async fn fetch_similar_lexemes(
+    tx: &mut Transaction<'static, Postgres>,
+    words: &[String],
+) -> Result<Vec<WordStat>, PostgresSearchError> {
+    let rows = sqlx::query(
+        "SELECT t.term, t.ndoc
+         FROM unnest($1::text[]) AS w(term)
+         JOIN LATERAL (
+             SELECT term, ndoc
+             FROM catalog_terms
+             WHERE term % w.term AND similarity(term, w.term) >= $2
+             ORDER BY similarity(term, w.term) DESC, term
+             LIMIT $3
+         ) AS t ON true",
+    )
+    .bind(words)
+    .bind(FUZZY_SIMILARITY_FLOOR)
+    .bind(FUZZY_LEXEMES_PER_WORD)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut similar: Vec<WordStat> = Vec::new();
+    for row in &rows {
+        let term: String = row.try_get("term")?;
+        if similar.iter().any(|stat| stat.word == term) {
+            continue;
+        }
+        let ndoc: i32 = row.try_get("ndoc")?;
+        similar.push(WordStat {
+            word: term,
+            ndoc: i64::from(ndoc),
+        });
+    }
+    Ok(similar)
+}
+
 /// Splits words into candidate keys (document-frequency cap applied) and the
 /// scoring set (every word, with FTS5's IDF formula and clamp).
 ///
@@ -643,16 +762,19 @@ async fn fetch_word_stats(
 /// a survivor of the cap — an absent variant of the whole query would
 /// otherwise keep every real word from reaching the rarest-few fallback and
 /// select no candidates at all. A word the caller typed keeps its substring
-/// and prefix reach whatever its statistics say.
+/// and prefix reach whatever its statistics say. Rescue words arrive with
+/// the statistics of what they reach and join before the cap is applied.
 fn scoring_plan(
     stats: &[WordStat],
     total_docs: i64,
     avgdl: f64,
     variant_words: &[String],
+    rescues: &[WordStat],
 ) -> ScoringPlan {
     let stats = stats
         .iter()
         .filter(|stat| stat.ndoc > 0 || !variant_words.contains(&stat.word))
+        .chain(rescues.iter())
         .collect::<Vec<_>>();
     let total = total_docs.max(0);
     let cap = DOCUMENT_FREQUENCY_CAP * precise_f64(total.max(1));
@@ -901,7 +1023,7 @@ pub(super) mod plan_tests {
             },
         ];
 
-        let plan = scoring_plan(&stats, 1_000, 23.0, &[]);
+        let plan = scoring_plan(&stats, 1_000, 23.0, &[], &[]);
 
         assert_eq!(plan.candidate_words, vec!["slack"]);
         // The common word still scores, with its true IDF, not a clamp.
@@ -926,7 +1048,7 @@ pub(super) mod plan_tests {
             })
             .collect::<Vec<_>>();
 
-        let plan = scoring_plan(&stats, 1_000, 23.0, &[]);
+        let plan = scoring_plan(&stats, 1_000, 23.0, &[], &[]);
 
         assert_eq!(
             plan.candidate_words,
@@ -955,7 +1077,7 @@ pub(super) mod plan_tests {
             ndoc: 0,
         }];
 
-        let plan = scoring_plan(&stats, 0, 0.0, &[]);
+        let plan = scoring_plan(&stats, 0, 0.0, &[], &[]);
 
         let word = plan.scored.first().expect("the only word survives");
         assert!((word.idf - 1e-6).abs() < f64::EPSILON);
@@ -995,7 +1117,7 @@ pub(super) mod plan_tests {
             stat("githubevents", 0),
         ];
 
-        let plan = scoring_plan(&stats, 1_000, 23.0, &["githubevents".to_string()]);
+        let plan = scoring_plan(&stats, 1_000, 23.0, &["githubevents".to_string()], &[]);
 
         assert_eq!(
             plan.candidate_words,
@@ -1020,7 +1142,7 @@ pub(super) mod plan_tests {
             stat("requests", 200),
         ];
 
-        let plan = scoring_plan(&stats, 1_000, 23.0, &["pullrequests".to_string()]);
+        let plan = scoring_plan(&stats, 1_000, 23.0, &["pullrequests".to_string()], &[]);
 
         assert_eq!(plan.candidate_words, vec!["pullrequests"]);
         assert_eq!(plan.scored.len(), 3);
@@ -1032,8 +1154,30 @@ pub(super) mod plan_tests {
         // `benchmark_runs`; only variants are subject to the absence rule.
         let stats = [stat("enchmark", 0), stat("github", 970)];
 
-        let plan = scoring_plan(&stats, 1_000, 23.0, &[]);
+        let plan = scoring_plan(&stats, 1_000, 23.0, &[], &[]);
 
         assert_eq!(plan.candidate_words, vec!["enchmark"]);
+    }
+
+    #[test]
+    fn rescue_words_join_the_plan_with_their_own_statistics() {
+        // `documents` reached nothing; a similar lexeme reaches 12 documents.
+        let stats = [stat("documents", 0), stat("github", 970)];
+        let rescues = [stat("document", 12)];
+
+        let plan = scoring_plan(&stats, 1_000, 23.0, &[], &rescues);
+
+        // The typed word keeps its substring key; the rescue joins it.
+        assert_eq!(plan.candidate_words, vec!["documents", "document"]);
+        assert_eq!(
+            plan.scored
+                .iter()
+                .map(|word| word.word.as_str())
+                .collect::<Vec<_>>(),
+            vec!["documents", "github", "document"]
+        );
+        let rescue = plan.scored.last().expect("rescue scores");
+        let expected = ((1_000.0_f64 - 12.0 + 0.5) / 12.5).ln();
+        assert!((rescue.idf - expected).abs() < 1e-12);
     }
 }

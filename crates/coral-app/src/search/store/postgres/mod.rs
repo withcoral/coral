@@ -24,7 +24,7 @@ use tokio::runtime::Handle;
 use crate::state::db::{DbError, connect_postgres_pool};
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_POSTGRES_SCHEMA_VERSION: i32 = 1;
+pub(crate) const SEARCH_POSTGRES_SCHEMA_VERSION: i32 = 2;
 
 struct SearchPostgresMigration {
     version: i32,
@@ -36,10 +36,16 @@ const REGISTRY_BOOTSTRAP_SQL: &str = include_str!("migrations/0001_search_regist
 /// Per-Workspace schema stream, versioned in the registry ledger. Each step
 /// runs in one transaction with its ledger bump, so a partial failure leaves
 /// the schema at its recorded version and the step is never replayed.
-const WORKSPACE_MIGRATIONS: &[SearchPostgresMigration] = &[SearchPostgresMigration {
-    version: 1,
-    sql: include_str!("migrations/0001_catalog_documents.sql"),
-}];
+const WORKSPACE_MIGRATIONS: &[SearchPostgresMigration] = &[
+    SearchPostgresMigration {
+        version: 1,
+        sql: include_str!("migrations/0001_catalog_documents.sql"),
+    },
+    SearchPostgresMigration {
+        version: 2,
+        sql: include_str!("migrations/0002_catalog_terms_lookup_indexes.sql"),
+    },
+];
 
 const SEARCH_POOL_MAX_CONNECTIONS: u32 = 4;
 /// Serializes registry bootstrap across processes; per-Workspace work locks
