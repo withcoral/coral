@@ -561,6 +561,50 @@ async fn common_word_queries_still_retrieve_against_postgres() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run word-form rescue against Postgres"]
+async fn a_word_form_the_corpus_lacks_is_rescued_by_its_stem_against_postgres() {
+    let Some(storage) = open_storage().await else {
+        return;
+    };
+    let workspace = unique_workspace("stem");
+
+    let storage_for_test = storage.clone();
+    let workspace_for_test = workspace.clone();
+    blocking(move || {
+        let store = storage_for_test
+            .open_workspace(&workspace_for_test)
+            .expect("open");
+        let catalog = store.catalog();
+        catalog
+            .refresh_projection(&rescue_snapshot())
+            .expect("refresh");
+
+        // The fixture holds `issue` and `issues` in one table among forty
+        // fillers; the form `issued` reaches neither until its stem `issu`
+        // does. The fillers keep the document-frequency cap above the two
+        // lexemes the stem reaches, as a real corpus does.
+        let rescued = catalog
+            .search(&["issued".to_string()], 10, CatalogDocumentClass::Entries)
+            .expect("search")
+            .hits;
+        assert_eq!(
+            rescued.first().map(|hit| hit.doc_id.as_str()),
+            Some("catalog:table:linear.issue_labels"),
+            "the stem must reach the lexemes the word form missed"
+        );
+        // A word with no usable stem still finds nothing.
+        let nothing = catalog
+            .search(&["zzqxv".to_string()], 10, CatalogDocumentClass::Entries)
+            .expect("search")
+            .hits;
+        assert!(nothing.is_empty());
+    })
+    .await;
+
+    delete_workspaces(&storage, &[workspace]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run match semantics against Postgres"]
 async fn match_semantics_follow_the_benchmark_strata_against_postgres() {
     let Some(storage) = open_storage().await else {
@@ -579,6 +623,60 @@ async fn match_semantics_follow_the_benchmark_strata_against_postgres() {
     .await;
 
     delete_workspaces(&storage, &[workspace]).await;
+}
+
+/// Forty filler tables plus two named tables, so that a rescued word that
+/// reaches one document stays under the 5 % candidate cap as it would in a
+/// real corpus.
+fn rescue_snapshot() -> crate::search::catalog::index::CatalogIndexSnapshot {
+    use crate::search::catalog::index::{
+        CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
+    };
+    let table = |doc_id: &str, source: &str, surface: &str, title: &str, description: &str| {
+        CatalogIndexDocument {
+            doc_id: doc_id.to_string(),
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: source.to_string(),
+            catalog_name: None,
+            surface_kind: "table".to_string(),
+            surface_name: surface.to_string(),
+            field_name: String::new(),
+            field_role: String::new(),
+            qualified_name: format!("{source}.{surface}"),
+            title: title.to_string(),
+            description: description.to_string(),
+            searchable_text: format!("{source} {surface}"),
+        }
+    };
+    let mut documents = (0..40)
+        .map(|index| {
+            table(
+                &format!("catalog:table:fixture.filler_{index:02}"),
+                "fixture",
+                &format!("filler_{index:02}"),
+                "filler",
+                "A filler table",
+            )
+        })
+        .collect::<Vec<_>>();
+    documents.push(table(
+        "catalog:table:linear.issue_labels",
+        "linear",
+        "issue_labels",
+        "issue labels",
+        "Labels attached to issues",
+    ));
+    documents.push(table(
+        "catalog:table:github.organization_members",
+        "github",
+        "organization_members",
+        "organization members",
+        "Members of an organization",
+    ));
+    CatalogIndexSnapshot {
+        fingerprint: "rescue-v1".to_string(),
+        documents,
+    }
 }
 
 async fn test_pool() -> sqlx::PgPool {

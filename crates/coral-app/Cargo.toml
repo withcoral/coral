@@ -38,6 +38,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 sea-query.workspace = true
 sea-query-sqlx.workspace = true
+rust-stemmers.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
