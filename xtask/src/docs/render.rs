@@ -452,7 +452,7 @@ const INDEX_OUTRO: &str = concat!(
     "\n## Don't see what you need?\n\n",
     "The bundled set is growing. If your data source is not listed, ",
     "[write a custom source](/guides/write-a-custom-source), or reach out to us via ",
-    "[Discord](https://discord.gg/h9aun8KpFF) or [GitHub](https://github.com/withcoral/coral/issues).\n",
+    "[Discord](https://withcoral.com/discord) or [GitHub](https://github.com/withcoral/coral/issues).\n",
 );
 
 const COMMUNITY_INTRO: &str = concat!(
