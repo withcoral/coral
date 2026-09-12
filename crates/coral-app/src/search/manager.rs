@@ -1,6 +1,7 @@
 //! App-level Universal Search manager.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use opentelemetry::trace::Status as OtelStatus;
@@ -117,6 +118,7 @@ impl SearchManager {
         let observed_scope_loader = ObservedValuesLiveScopeLoader::new(
             layout.clone(),
             config_store.clone(),
+            Arc::clone(workspace_manager.database()),
             diagnostic_reporter,
         );
         Self {

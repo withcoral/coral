@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::sources::model::InstalledSource;
-use crate::state::ConfigStore;
+use crate::state::db::{CoralDb, DbRepos as _};
 use crate::workspaces::WorkspaceName;
 
 type SourceCredentialMaterial = BTreeMap<String, String>;
@@ -33,7 +33,7 @@ struct SharedSourceCredentialSnapshot {
 #[derive(Clone)]
 pub(crate) struct CredentialRefreshingInputResolver {
     workspace_name: WorkspaceName,
-    config_store: ConfigStore,
+    db: Arc<CoralDb>,
     credential_manager: CredentialManager,
     source_credentials: Arc<SourceCredentialSnapshotByName>,
     delegate: Option<Arc<dyn SourceInputResolver>>,
@@ -42,14 +42,14 @@ pub(crate) struct CredentialRefreshingInputResolver {
 impl CredentialRefreshingInputResolver {
     pub(crate) fn new(
         workspace_name: WorkspaceName,
-        config_store: ConfigStore,
+        db: Arc<CoralDb>,
         credential_manager: CredentialManager,
         source_credentials: BTreeMap<String, SourceCredentialSnapshot>,
         delegate: Option<Arc<dyn SourceInputResolver>>,
     ) -> Self {
         Self {
             workspace_name,
-            config_store,
+            db,
             credential_manager,
             source_credentials: shared_source_credentials(source_credentials),
             delegate,
@@ -152,7 +152,7 @@ impl CredentialRefreshingInputResolver {
             .credential_refresh_lock(&self.workspace_name, &credential_set_id)
             .await
             .map_err(source_input_error)?;
-        if !self.source_config_still_matches_snapshot(&snapshot.source)? {
+        if !self.source_still_matches_snapshot(&snapshot.source).await? {
             return self
                 .credential_manager
                 .refresh_material_for_inputs(source.declared_inputs(), material)
@@ -178,18 +178,23 @@ impl CredentialRefreshingInputResolver {
         Ok(())
     }
 
-    fn source_config_still_matches_snapshot(
+    /// Whether the catalog still holds the source this snapshot was taken from.
+    ///
+    /// The database is awaited directly rather than bridged through a blocking
+    /// thread: this runs on the query hot path, under the credential refresh
+    /// lock, and a bridge would spawn a thread and a runtime per call while
+    /// blocking a tokio worker.
+    async fn source_still_matches_snapshot(
         &self,
         snapshot: &InstalledSource,
     ) -> Result<bool, SourceInputResolverError> {
-        match self
-            .config_store
+        let mut session = self.db.as_ref();
+        let current = session
+            .sources()
             .get_source(&self.workspace_name, &snapshot.name)
-        {
-            Ok(current) => Ok(current == *snapshot),
-            Err(AppError::SourceNotFound(_)) => Ok(false),
-            Err(error) => Err(source_input_error(error)),
-        }
+            .await
+            .map_err(|error| source_input_error(AppError::from(error)))?;
+        Ok(current.as_ref() == Some(snapshot))
     }
 }
 

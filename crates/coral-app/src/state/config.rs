@@ -1,11 +1,12 @@
 //! Persists the installed source catalog in top-level `config.toml`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
-use tracing::{info_span, warn};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
@@ -45,14 +46,6 @@ impl AppConfig {
 
     pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
         self.catalog.workspace_sources(workspace_name)
-    }
-
-    pub(crate) fn get_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Option<InstalledSource> {
-        self.catalog.get_source(workspace_name, source_name)
     }
 
     pub(crate) fn dependent_join_config(
@@ -303,16 +296,6 @@ impl SourceCatalog {
             .cloned()
     }
 
-    pub(crate) fn contains(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> bool {
-        self.0
-            .get(workspace_name)
-            .is_some_and(|sources| sources.contains_key(source_name))
-    }
-
     pub(crate) fn upsert_source(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -557,6 +540,15 @@ impl ConfigStore {
         Ok(())
     }
 
+    /// The `config.toml` this store reads and writes.
+    ///
+    /// Host-local siblings of that file — the mirror ledger — are addressed by
+    /// its path, so a caller that maintains one needs the path this store
+    /// resolved rather than a second guess at where the config directory is.
+    pub(crate) fn config_file(&self) -> &Path {
+        self.layout.config_file()
+    }
+
     pub(crate) fn state_lock_shared(&self) -> Result<FileLock, AppError> {
         FileLock::shared(self.layout.state_lock()).map_err(Into::into)
     }
@@ -574,25 +566,20 @@ impl ConfigStore {
         self.load_unlocked()
     }
 
-    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
-        let _lock = self.state_lock_shared()?;
-        self.load_config_unlocked()
-    }
-
-    /// Loads the source catalog without taking the app state lock.
+    /// Loads the mirrored source catalog without taking the app state lock.
+    ///
+    /// The mirror, not the authoritative catalog: production reads installed
+    /// sources from the database. What this returns is what the file world
+    /// claims, which is the input the boot import reconciles and the baseline
+    /// mirror reconciliation diffs against — plus the delete path's fallback
+    /// for a source an older binary added that no boot has imported yet. A
+    /// reader that wants the installed catalog wants `SourcesRepo`.
     ///
     /// Callers must already hold the state lock in shared or exclusive mode
     /// while using any filesystem-backed source artifacts derived from the
     /// returned catalog.
     pub(crate) fn load_catalog_unlocked(&self) -> Result<SourceCatalog, AppError> {
         self.load_config_unlocked().map(|config| config.catalog)
-    }
-
-    pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
-        let span = info_span!("coral.app.config.load_catalog");
-        let _guard = span.enter();
-        let _lock = self.state_lock_shared()?;
-        self.load_catalog_unlocked()
     }
 
     fn update_config_unlocked<T>(
@@ -605,6 +592,11 @@ impl ConfigStore {
         Ok(result)
     }
 
+    /// Updates the config under the state lock, for the test helpers that take
+    /// no lock of their own. Every production writer takes the lock across the
+    /// wider operation its config write belongs to and calls
+    /// [`Self::update_config_unlocked`] under it.
+    #[cfg(test)]
     fn update_config<T>(
         &self,
         update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
@@ -640,13 +632,18 @@ impl ConfigStore {
     ///
     /// What comes back carries everything the removal took away, so a caller
     /// whose next step fails can hand it to
-    /// [`Self::restore_workspace_config_entries`] rather than leave the file
-    /// disagreeing with the catalog it accompanies.
-    pub(crate) fn remove_workspace_config_entries(
+    /// [`Self::restore_workspace_config_entries_unlocked`] rather than leave
+    /// the file disagreeing with the catalog it accompanies.
+    ///
+    /// Callers must already hold the state lock exclusive. Taking it here
+    /// instead would let a workspace deletion wait for the lock with its
+    /// database transaction already open, inverting the lock-then-transaction
+    /// order every source lifecycle write takes.
+    pub(crate) fn remove_workspace_config_entries_unlocked(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Option<RemovedWorkspaceConfig>, AppError> {
-        self.update_config(|config| {
+        self.update_config_unlocked(|config| {
             let removed = config.workspaces.remove(workspace_name);
             if removed {
                 let sources = config
@@ -675,17 +672,21 @@ impl ConfigStore {
         })
     }
 
-    /// Puts back everything [`Self::remove_workspace_config_entries`] removed.
+    /// Puts back everything
+    /// [`Self::remove_workspace_config_entries_unlocked`] removed.
     ///
     /// The removal is durable the moment it returns while the database
     /// transaction it accompanies is not, so a deletion that fails to commit
     /// needs a genuine inverse here — without one the workspace stays in the
     /// catalog with its sources and functions gone from the file.
-    pub(crate) fn restore_workspace_config_entries(
+    ///
+    /// Callers must already hold the state lock exclusive: this runs on the
+    /// abort path of the removal above, under the same held lock.
+    pub(crate) fn restore_workspace_config_entries_unlocked(
         &self,
         removed: RemovedWorkspaceConfig,
     ) -> Result<(), AppError> {
-        self.update_config(|config| {
+        self.update_config_unlocked(|config| {
             let workspace_name = &removed.deleted.workspace.name;
             config.workspaces.insert(workspace_name.clone());
             for source in removed.deleted.sources {
@@ -698,15 +699,10 @@ impl ConfigStore {
         })
     }
 
-    pub(crate) fn list_workspace_sources(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<Vec<InstalledSource>, AppError> {
-        let config = self.load_config()?;
-        Ok(config.workspace_sources(workspace_name))
-    }
-
-    /// Loads one installed source without taking the app state lock.
+    /// Loads one mirrored source entry without taking the app state lock.
+    ///
+    /// The mirror, not the authoritative catalog — see
+    /// [`Self::load_catalog_unlocked`] for which readers legitimately want it.
     ///
     /// Callers must already hold the state lock while using source artifacts
     /// associated with the returned config entry.
@@ -720,18 +716,14 @@ impl ConfigStore {
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
-    pub(crate) fn get_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<InstalledSource, AppError> {
-        let config = self.load_config()?;
-        config
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
-    }
-
-    /// Upserts one installed source without taking the app state lock.
+    /// Writes one source into the legacy config mirror without taking the app
+    /// state lock.
+    ///
+    /// This is a mirror write, not the commit: the database transaction is what
+    /// makes an install durable, and callers run this *after* it so a
+    /// downgraded binary reads a current catalog. A failure here therefore
+    /// compensates the committed rows rather than being ignored, and the mirror
+    /// ledger is stamped only once this write has returned.
     ///
     /// Callers must already hold the state lock in exclusive mode.
     pub(crate) fn upsert_source_unlocked(
@@ -754,7 +746,13 @@ impl ConfigStore {
         })
     }
 
-    /// Removes one installed source without taking the app state lock.
+    /// Drops one source from the legacy config mirror without taking the app
+    /// state lock.
+    ///
+    /// The counterpart of [`Self::upsert_source_unlocked`], with the same
+    /// after-the-commit ordering. What makes the deletion stick is the
+    /// tombstone row written in the removing transaction; this write only stops
+    /// a downgraded binary from still listing the source.
     ///
     /// Callers must already hold the state lock in exclusive mode.
     pub(crate) fn remove_source_unlocked(
@@ -1576,12 +1574,13 @@ origin = "bundled"
 
         assert!(
             store
-                .list_workspace_sources(&missing_workspace)
-                .expect("list source definitions")
+                .load_catalog_unlocked()
+                .expect("load catalog")
+                .workspace_sources(&missing_workspace)
                 .is_empty()
         );
         assert!(matches!(
-            store.get_source(&missing_workspace, &source_name),
+            store.get_source_unlocked(&missing_workspace, &source_name),
             Err(AppError::SourceNotFound(_))
         ));
         store
@@ -1589,7 +1588,7 @@ origin = "bundled"
             .expect("upsert source definition");
         assert_eq!(
             store
-                .get_source(&missing_workspace, &source_name)
+                .get_source_unlocked(&missing_workspace, &source_name)
                 .expect("get source definition")
                 .name,
             source_name
@@ -1598,7 +1597,7 @@ origin = "bundled"
             .remove_source(&missing_workspace, &source_name)
             .expect("remove source definition");
         assert!(matches!(
-            store.get_source(&missing_workspace, &source_name),
+            store.get_source_unlocked(&missing_workspace, &source_name),
             Err(AppError::SourceNotFound(_))
         ));
         assert!(
@@ -1647,7 +1646,7 @@ origin = "bundled"
             .expect("upsert function");
 
         let removed = store
-            .remove_workspace_config_entries(&workspace_name)
+            .remove_workspace_config_entries_unlocked(&workspace_name)
             .expect("remove workspace config entries")
             .expect("workspace config should be removed");
         let deleted = removed.into_deleted_workspace();
@@ -1657,8 +1656,9 @@ origin = "bundled"
         assert_eq!(deleted.sources[0].name.as_str(), "github");
         assert!(
             store
-                .list_workspace_sources(&deleted.workspace.name)
-                .expect("list source definitions")
+                .load_catalog_unlocked()
+                .expect("load catalog")
+                .workspace_sources(&deleted.workspace.name)
                 .is_empty()
         );
         assert!(
@@ -1692,17 +1692,17 @@ origin = "bundled"
             .upsert_function(&workspace_name, installed_function("review_queue"))
             .expect("upsert function");
         let removed = store
-            .remove_workspace_config_entries(&workspace_name)
+            .remove_workspace_config_entries_unlocked(&workspace_name)
             .expect("remove workspace config entries")
             .expect("workspace config should be removed");
 
         store
-            .restore_workspace_config_entries(removed)
+            .restore_workspace_config_entries_unlocked(removed)
             .expect("restore workspace config entries");
 
         assert_eq!(
             store
-                .load_config()
+                .load_config_unlocked()
                 .expect("load config")
                 .legacy_workspace_records()
                 .into_iter()
@@ -1712,8 +1712,9 @@ origin = "bundled"
         );
         assert_eq!(
             store
-                .list_workspace_sources(&workspace_name)
-                .expect("list source definitions")
+                .load_catalog_unlocked()
+                .expect("load catalog")
+                .workspace_sources(&workspace_name)
                 .into_iter()
                 .map(|source| source.name)
                 .collect::<Vec<_>>(),
@@ -1750,7 +1751,7 @@ origin = "bundled"
                 .expect("create legacy workspace entry");
 
             let removed = store
-                .remove_workspace_config_entries(&workspace_name)
+                .remove_workspace_config_entries_unlocked(&workspace_name)
                 .expect("remove workspace config entries")
                 .unwrap_or_else(|| panic!("'{name}' should be removable"));
 
@@ -1760,7 +1761,7 @@ origin = "bundled"
             );
             assert!(
                 store
-                    .remove_workspace_config_entries(&workspace_name)
+                    .remove_workspace_config_entries_unlocked(&workspace_name)
                     .expect("remove an already removed workspace")
                     .is_none(),
                 "'{name}' must report nothing left to remove the second time"

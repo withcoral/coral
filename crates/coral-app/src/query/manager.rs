@@ -39,6 +39,7 @@ use crate::sources::runtime_package::{
     RuntimeContractFingerprint, query_source_from_installed_manifest,
 };
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
+use crate::state::db::DbRepos as _;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::activity::{
     PendingTaskQuery, TaskActivityRecorder, TaskQueryRelation, TaskQueryStatus,
@@ -575,9 +576,9 @@ impl QueryManager {
                 .config_store
                 .load_config_unlocked()
                 .map_err(QueryManagerError::App)?;
-            let source = config
-                .get_source(workspace_name, source_name)
-                .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+            let source = self
+                .catalog_source(workspace_name, source_name)
+                .await
                 .map_err(QueryManagerError::App)?;
             let (loaded_source, version) = self
                 .load_query_source(workspace_name, &source)
@@ -611,7 +612,8 @@ impl QueryManager {
         self.require_workspace(workspace_name).await?;
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        let sources = self.load_query_sources_from_config(workspace_name, &config);
+        let catalog = self.catalog_sources(workspace_name).await?;
+        let sources = self.load_query_sources_from_catalog(workspace_name, catalog);
         Ok((sources, config))
     }
 
@@ -621,10 +623,40 @@ impl QueryManager {
             .await
     }
 
-    fn load_query_sources_from_config(
+    /// One workspace's installed sources, from the authoritative catalog.
+    ///
+    /// Awaited directly rather than bridged through a blocking thread: every
+    /// caller here already runs on a tokio task, and blocking one on database
+    /// I/O is the starvation class the state-lock waits were moved off.
+    async fn catalog_sources(
         &self,
         workspace_name: &WorkspaceName,
-        config: &AppConfig,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        let mut session = self.workspace_manager.database().as_ref();
+        Ok(session
+            .sources()
+            .list_workspace_sources(workspace_name)
+            .await?)
+    }
+
+    /// One installed source from the authoritative catalog.
+    async fn catalog_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        let mut session = self.workspace_manager.database().as_ref();
+        session
+            .sources()
+            .get_source(workspace_name, source_name)
+            .await?
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
+    }
+
+    fn load_query_sources_from_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        sources: Vec<InstalledSource>,
     ) -> QuerySourceLoad {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
@@ -638,7 +670,7 @@ impl QueryManager {
         let _guard = span.enter();
         let mut loaded_sources = Vec::new();
         let mut failed_source_names = BTreeSet::new();
-        for source in config.workspace_sources(workspace_name) {
+        for source in sources {
             match self.load_query_source(workspace_name, &source) {
                 Ok((loaded_source, _version)) => {
                     self.diagnostic_reporter.clear_source_load_failure(
@@ -805,7 +837,7 @@ impl QueryManager {
             CredentialResolutionMode::Refreshing => {
                 Arc::new(CredentialRefreshingInputResolver::new(
                     workspace_name.clone(),
-                    self.config_store.clone(),
+                    Arc::clone(self.workspace_manager.database()),
                     self.credential_manager.clone(),
                     source_credentials,
                     provider_input_resolver,
@@ -865,7 +897,9 @@ impl QueryManager {
             .await
             .map_err(QueryManagerError::App)?;
         let _lifecycle_snapshot = self.lifecycle_lock.snapshot_async().await;
-        let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
+        let (loaded_sources, config) = self
+            .load_function_validation_sources(workspace_name)
+            .await?;
         self.validate_udf_sql_against_snapshot(workspace_name, artifact, &loaded_sources, &config)
             .await
     }
@@ -934,11 +968,13 @@ impl QueryManager {
         if lifecycle_snapshot.revision() != revision {
             return Ok(None);
         }
-        let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
+        let (loaded_sources, config) = self
+            .load_function_validation_sources(workspace_name)
+            .await?;
         Ok(Some((loaded_sources, config)))
     }
 
-    fn load_function_validation_sources(
+    async fn load_function_validation_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<(Vec<LoadedQuerySource>, AppConfig), QueryManagerError> {
@@ -951,7 +987,11 @@ impl QueryManager {
                 .config_store
                 .load_config_unlocked()
                 .map_err(QueryManagerError::App)?;
-            let source_load = self.load_query_sources_from_config(workspace_name, &config);
+            let catalog = self
+                .catalog_sources(workspace_name)
+                .await
+                .map_err(QueryManagerError::App)?;
+            let source_load = self.load_query_sources_from_catalog(workspace_name, catalog);
             (source_load.loaded, config)
         };
         Ok((loaded_sources, config))
@@ -1469,7 +1509,9 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::identity::Principal;
     use crate::request_context::RequestContext;
-    use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
+    use crate::sources::manager::{
+        ImportSourceCommand, SourceBindings, SourceManager, run_source_db_operation,
+    };
     use crate::sources::model::SourceOrigin;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::task::activity::TaskActivityRecorder;
@@ -1558,21 +1600,44 @@ mod tests {
         }
     }
 
-    fn install_keychain_github_source(config_store: &ConfigStore, workspace_name: &WorkspaceName) {
-        config_store
-            .upsert_source(
-                workspace_name,
-                InstalledSource {
-                    name: SourceName::parse("github").expect("source name"),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: vec!["GITHUB_TOKEN".to_string()],
-                    credential_storage: Some(CredentialStorageKind::Keychain),
-                    credential_revision: uuid::Uuid::default(),
-                    origin: SourceOrigin::Bundled,
-                },
-            )
+    async fn install_keychain_github_source(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+    ) {
+        let source = InstalledSource {
+            name: SourceName::parse("github").expect("source name"),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: vec!["GITHUB_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::Keychain),
+            credential_revision: uuid::Uuid::default(),
+            origin: SourceOrigin::Bundled,
+        };
+        manager
+            .config_store
+            .upsert_source(workspace_name, source.clone())
             .expect("persist source");
+        seed_source_row(manager, workspace_name, &source).await;
+    }
+
+    /// Writes the catalog row the query path enumerates from, for a fixture
+    /// that stages its source files by hand rather than through an install.
+    async fn seed_source_row(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) {
+        let mut tx = manager
+            .workspace_manager
+            .database()
+            .begin()
+            .await
+            .expect("begin source seed");
+        tx.sources()
+            .upsert_source(workspace_name, source, 1)
+            .await
+            .expect("seed source row");
+        tx.commit().await.expect("commit source seed");
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
@@ -3197,6 +3262,7 @@ paths:
         let calls = Arc::new(AtomicUsize::new(0));
         let config_store = fixture.manager.config_store.clone();
         let lifecycle_lock = fixture.manager.lifecycle_lock.clone();
+        let db = Arc::clone(fixture.manager.workspace_manager.database());
         let workspace = workspace_name.clone();
         let source_name = SourceName::parse("function_demo").expect("source name");
         fixture.manager.engine_extensions_providers.push(Arc::new(
@@ -3207,6 +3273,16 @@ paths:
                     config_store
                         .remove_source(&workspace, &source_name)
                         .expect("remove source during function validation");
+                    run_source_db_operation(async {
+                        let mut tx = db.begin().await.expect("begin source removal");
+                        tx.sources()
+                            .remove_source(&workspace, &source_name, 1)
+                            .await
+                            .expect("remove source row");
+                        tx.commit().await.expect("commit source removal");
+                        Ok(())
+                    })
+                    .expect("remove source row during function validation");
                 })),
             },
         ));
@@ -3408,7 +3484,7 @@ tables:
             .expect("import source");
     }
 
-    fn install_missing_v4_materialization_source(
+    async fn install_missing_v4_materialization_source(
         manager: &QueryManager,
         workspace_name: &WorkspaceName,
     ) -> SourceName {
@@ -3427,25 +3503,24 @@ surface:
 ",
         )
         .expect("write manifest");
+        let source = InstalledSource {
+            name: source_name.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: uuid::Uuid::default(),
+            origin: SourceOrigin::Imported,
+        };
         manager
             .config_store
-            .upsert_source(
-                workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    credential_revision: uuid::Uuid::default(),
-                    origin: SourceOrigin::Imported,
-                },
-            )
+            .upsert_source(workspace_name, source.clone())
             .expect("persist source");
+        seed_source_row(manager, workspace_name, &source).await;
         source_name
     }
 
-    fn install_corrupt_parquet_source(
+    async fn install_corrupt_parquet_source(
         manager: &QueryManager,
         workspace_name: &WorkspaceName,
         fake_home: &std::path::Path,
@@ -3477,21 +3552,20 @@ tables:
 "#,
         )
         .expect("write manifest");
+        let source = InstalledSource {
+            name: source_name.clone(),
+            version: Some("0.1.0".to_string()),
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: uuid::Uuid::default(),
+            origin: SourceOrigin::Imported,
+        };
         manager
             .config_store
-            .upsert_source(
-                workspace_name,
-                InstalledSource {
-                    name: source_name.clone(),
-                    version: Some("0.1.0".to_string()),
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    credential_revision: uuid::Uuid::default(),
-                    origin: SourceOrigin::Imported,
-                },
-            )
+            .upsert_source(workspace_name, source.clone())
             .expect("persist source");
+        seed_source_row(manager, workspace_name, &source).await;
         source_name
     }
 
@@ -3501,7 +3575,7 @@ tables:
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = test_workspace();
         let source_name =
-            install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
+            install_missing_v4_materialization_source(&fixture.manager, &workspace_name).await;
 
         let (source_load, _) = fixture
             .manager
@@ -3530,7 +3604,7 @@ tables:
         let workspace_name = test_workspace();
         install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
         let failed_source =
-            install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
+            install_missing_v4_materialization_source(&fixture.manager, &workspace_name).await;
 
         let resolution = fixture
             .manager
@@ -3617,7 +3691,8 @@ tables:
         let workspace_name = test_workspace();
         install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
         let failed_source =
-            install_corrupt_parquet_source(&fixture.manager, &workspace_name, fake_home.path());
+            install_corrupt_parquet_source(&fixture.manager, &workspace_name, fake_home.path())
+                .await;
 
         let resolution = fixture
             .manager
@@ -3645,7 +3720,7 @@ tables:
     async fn load_query_sources_skips_unavailable_keychain_source() {
         let fixture = query_manager_with_unavailable_keychain().await;
         let workspace_name = test_workspace();
-        install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
+        install_keychain_github_source(&fixture.manager, &workspace_name).await;
 
         let (source_load, _) = fixture
             .manager
@@ -3681,7 +3756,7 @@ select 1 as value
             .function_manager
             .install_validated_user_function(&workspace_name, function_sql, &validated)
             .expect("install constant function");
-        install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
+        install_keychain_github_source(&fixture.manager, &workspace_name).await;
 
         let functions = fixture
             .manager

@@ -1,20 +1,24 @@
 //! Live observed-value source-scope loading.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::bootstrap::AppError;
 use crate::search::observed::source_scope::{SourceScopeSeed, source_surface_scopes};
 use crate::search::observed::{ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure};
 use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::manager::run_source_db_operation;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::query_source_from_installed_manifest;
+use crate::state::db::{CoralDb, DbRepos as _};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValuesLiveScopeLoader {
     config_store: ConfigStore,
+    db: Arc<CoralDb>,
     diagnostic_reporter: SourceDiagnosticReporter,
     layout: AppStateLayout,
 }
@@ -29,15 +33,23 @@ impl ObservedValuesLiveScopeLoader {
     pub(crate) fn new(
         layout: AppStateLayout,
         config_store: ConfigStore,
+        db: Arc<CoralDb>,
         diagnostic_reporter: SourceDiagnosticReporter,
     ) -> Self {
         Self {
             config_store,
+            db,
             diagnostic_reporter,
             layout,
         }
     }
 
+    /// Loads the live observed-value scopes of one workspace's sources.
+    ///
+    /// Synchronous, and bridged onto the database accordingly: the caller runs
+    /// this whole load inside the search manager's `spawn_blocking`, because
+    /// rebuilding each runtime package reads manifests and materialized
+    /// artifacts off disk.
     pub(crate) fn load(
         &self,
         workspace_name: &WorkspaceName,
@@ -47,8 +59,13 @@ impl ObservedValuesLiveScopeLoader {
         // a separate cache key would duplicate that dependency graph and risk
         // admitting observations under a stale scope.
         let _state_lock = self.config_store.state_lock_shared()?;
-        let config = self.config_store.load_config_unlocked()?;
-        let sources = config.workspace_sources(workspace_name);
+        let sources = run_source_db_operation(async {
+            let mut session = self.db.as_ref();
+            Ok(session
+                .sources()
+                .list_workspace_sources(workspace_name)
+                .await?)
+        })?;
         Ok(self.load_sources(workspace_name, sources))
     }
 
@@ -112,6 +129,7 @@ impl ObservedValuesLiveScopeLoader {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use tempfile::tempdir;
     use uuid::Uuid;
@@ -121,11 +139,54 @@ mod tests {
     use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
     use crate::sources::SourceName;
     use crate::sources::catalog::resolve_installed_manifest;
+    use crate::sources::manager::run_source_db_operation;
     use crate::sources::materialization::SourceDiagnosticReporter;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::sources::runtime_package::query_source_from_installed_manifest;
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos as _, ResolvedDatabaseConfig, now_unix_nanos_i64,
+    };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
+
+    /// One migrated database holding the workspace a test seeds sources into.
+    fn test_db(layout: &AppStateLayout, workspace: &WorkspaceName) -> Arc<CoralDb> {
+        layout.ensure().expect("ensure layout");
+        let DatabaseConfig::Sqlite { path } =
+            DatabaseConfig::load(layout).expect("database config")
+        else {
+            panic!("the default test database is sqlite")
+        };
+        let workspace = workspace.clone();
+        run_source_db_operation(async move {
+            let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite");
+            db.migrate().await.expect("migrate sqlite");
+            let mut tx = db.begin().await.expect("begin workspace seed");
+            tx.workspaces()
+                .ensure(workspace.as_str(), now_unix_nanos_i64().expect("timestamp"))
+                .await
+                .expect("seed workspace");
+            tx.commit().await.expect("commit workspace seed");
+            Ok(Arc::new(db))
+        })
+        .expect("test database")
+    }
+
+    /// Writes the catalog row the loader now enumerates from.
+    fn seed_source_row(db: &CoralDb, workspace: &WorkspaceName, source: &InstalledSource) {
+        run_source_db_operation(async {
+            let mut tx = db.begin().await.expect("begin source seed");
+            tx.sources()
+                .upsert_source(workspace, source, now_unix_nanos_i64().expect("timestamp"))
+                .await
+                .expect("seed source row");
+            tx.commit().await.expect("commit source seed");
+            Ok(())
+        })
+        .expect("seed source row");
+    }
 
     #[test]
     fn workspace_without_legacy_config_membership_has_empty_live_scope() {
@@ -134,9 +195,11 @@ mod tests {
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("db-only").expect("workspace");
+        let db = test_db(&layout, &workspace);
         let loader = ObservedValuesLiveScopeLoader::new(
             layout,
             config_store,
+            db,
             SourceDiagnosticReporter::default(),
         );
 
@@ -154,10 +217,19 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let source = SourceName::parse("github").expect("source");
-        install_source(&layout, &config_store, &workspace, &source, "/repos/issues");
+        let db = test_db(&layout, &workspace);
+        install_source(
+            &layout,
+            &config_store,
+            &db,
+            &workspace,
+            &source,
+            "/repos/issues",
+        );
         let loader = ObservedValuesLiveScopeLoader::new(
             layout.clone(),
             config_store.clone(),
+            Arc::clone(&db),
             SourceDiagnosticReporter::default(),
         );
 
@@ -165,6 +237,7 @@ mod tests {
         install_source(
             &layout,
             &config_store,
+            &db,
             &workspace,
             &source,
             "/search/issues",
@@ -192,9 +265,11 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let source = SourceName::parse("github").expect("source");
+        let db = test_db(&layout, &workspace);
         install_source(
             &layout,
             &config_store,
+            &db,
             &workspace,
             &source,
             "/search/issues",
@@ -202,11 +277,12 @@ mod tests {
         let loader = ObservedValuesLiveScopeLoader::new(
             layout,
             config_store.clone(),
+            Arc::clone(&db),
             SourceDiagnosticReporter::default(),
         );
 
         let first = loader.load(&workspace).expect("first live scope");
-        set_credential_revision(&config_store, &workspace, &source, Uuid::from_u128(1));
+        set_credential_revision(&config_store, &db, &workspace, &source, Uuid::from_u128(1));
         let second = loader.load(&workspace).expect("second live scope");
 
         assert!(first.failed_sources.is_empty());
@@ -227,9 +303,11 @@ mod tests {
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_revision = Uuid::from_u128(42);
+        let db = test_db(&layout, &workspace);
         let installed_source = install_secured_source(
             &layout,
             &config_store,
+            &db,
             &workspace,
             &source_name,
             credential_revision,
@@ -272,6 +350,7 @@ mod tests {
         let loader = ObservedValuesLiveScopeLoader::new(
             layout,
             config_store,
+            db,
             SourceDiagnosticReporter::default(),
         );
         let live_load = loader.load(&workspace).expect("live scope");
@@ -289,17 +368,20 @@ mod tests {
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let github = SourceName::parse("github").expect("source");
         let broken = SourceName::parse("broken").expect("source");
+        let db = test_db(&layout, &workspace);
         install_source(
             &layout,
             &config_store,
+            &db,
             &workspace,
             &github,
             "/search/issues",
         );
-        install_broken_source(&layout, &config_store, &workspace, &broken);
+        install_broken_source(&layout, &config_store, &db, &workspace, &broken);
         let loader = ObservedValuesLiveScopeLoader::new(
             layout,
             config_store,
+            db,
             SourceDiagnosticReporter::default(),
         );
 
@@ -316,6 +398,7 @@ mod tests {
     fn install_source(
         layout: &AppStateLayout,
         config_store: &ConfigStore,
+        db: &CoralDb,
         workspace: &WorkspaceName,
         source: &SourceName,
         path: &str,
@@ -343,67 +426,70 @@ tables:
             ),
         )
         .expect("write manifest");
+        let installed = InstalledSource {
+            name: source.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: Uuid::default(),
+            origin: SourceOrigin::Imported,
+        };
         config_store
-            .upsert_source(
-                workspace,
-                InstalledSource {
-                    name: source.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    credential_revision: Uuid::default(),
-                    origin: SourceOrigin::Imported,
-                },
-            )
+            .upsert_source(workspace, installed.clone())
             .expect("upsert source");
+        seed_source_row(db, workspace, &installed);
     }
 
     fn install_broken_source(
         layout: &AppStateLayout,
         config_store: &ConfigStore,
+        db: &CoralDb,
         workspace: &WorkspaceName,
         source: &SourceName,
     ) {
         std::fs::create_dir_all(layout.source_dir(workspace, source)).expect("source dir");
         std::fs::write(layout.manifest_file(workspace, source), "name: [").expect("write manifest");
+        let installed = InstalledSource {
+            name: source.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: Uuid::default(),
+            origin: SourceOrigin::Imported,
+        };
         config_store
-            .upsert_source(
-                workspace,
-                InstalledSource {
-                    name: source.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    credential_revision: Uuid::default(),
-                    origin: SourceOrigin::Imported,
-                },
-            )
+            .upsert_source(workspace, installed.clone())
             .expect("upsert source");
+        seed_source_row(db, workspace, &installed);
     }
 
     fn set_credential_revision(
         config_store: &ConfigStore,
+        db: &CoralDb,
         workspace: &WorkspaceName,
         source_name: &SourceName,
         credential_revision: Uuid,
     ) {
         let mut source = config_store
-            .list_workspace_sources(workspace)
-            .expect("list sources")
+            .load_catalog_unlocked()
+            .expect("load mirrored catalog")
+            .workspace_sources(workspace)
             .into_iter()
             .find(|source| &source.name == source_name)
             .expect("installed source");
         source.credential_revision = credential_revision;
         config_store
-            .upsert_source(workspace, source)
+            .upsert_source(workspace, source.clone())
             .expect("update credential revision");
+        seed_source_row(db, workspace, &source);
     }
 
     fn install_secured_source(
         layout: &AppStateLayout,
         config_store: &ConfigStore,
+        db: &CoralDb,
         workspace: &WorkspaceName,
         source: &SourceName,
         credential_revision: Uuid,
@@ -452,6 +538,7 @@ tables:
         config_store
             .upsert_source(workspace, installed.clone())
             .expect("upsert source");
+        seed_source_row(db, workspace, &installed);
         installed
     }
 }

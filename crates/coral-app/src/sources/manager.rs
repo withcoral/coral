@@ -16,6 +16,7 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
+use crate::hash::sha256_hex;
 use crate::search::observed::SearchObservationHandle;
 use crate::search::sqlite_store::SqliteSearchStore;
 use crate::sources::catalog::{
@@ -24,11 +25,17 @@ use crate::sources::catalog::{
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, SourceDiagnosticReporter,
     build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
-    cleanup_materialization_tmp, new_materialization_suffix, replace_or_retire_v4_materialization,
-    restore_materialization_backup,
+    cleanup_materialization_tmp, new_materialization_suffix, read_v4_materialization_record,
+    replace_or_retire_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
+use crate::state::db::{
+    CoralDb, DbRepos as _, MaterializationRecord, SourceManifestRecord, now_unix_nanos_i64,
+};
+#[cfg(test)]
+use crate::state::db::{DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+use crate::state::mirror_ledger::MirrorLedger;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{
@@ -50,7 +57,16 @@ pub(crate) struct SourceManager {
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    db: Option<Arc<CoralDb>>,
     database_sources_enabled: bool,
+    /// Makes the authoritative source transaction fail, so a test can drive the
+    /// recovery that puts the files and the config entry back.
+    #[cfg(test)]
+    db_write_fails: bool,
+    /// Makes the `config.toml` mirror write fail after the transaction has
+    /// committed, so a test can drive the compensation that puts the rows back.
+    #[cfg(test)]
+    config_mirror_fails: bool,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -174,10 +190,17 @@ struct OAuthSourceInstallRequest {
     origin: SourceOrigin,
 }
 
+/// Everything a lifecycle write has to be able to put back.
+///
+/// The two artifact rows are captured before the transaction overwrites them:
+/// once it commits, the previous manifest and materialization are gone from the
+/// database, and the files that mirrored them have already been replaced.
 struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
     credential_material: Option<CredentialMaterialSnapshot>,
+    previous_manifest: Option<SourceManifestRecord>,
+    previous_materialization: Option<MaterializationRecord>,
 }
 
 fn materialization_inputs_from_bindings(
@@ -190,6 +213,117 @@ fn materialization_inputs_from_bindings(
         variables: bindings.variables.clone(),
         secrets,
     }
+}
+
+/// Drives `future` to completion from a synchronous caller, whether or not a
+/// tokio runtime is already running on this thread.
+///
+/// `block_in_place` cannot do this: it panics on the current-thread runtime
+/// `#[tokio::test]` builds by default, which most of this crate's async tests
+/// run on. A fresh current-thread runtime on a borrowed scoped thread is the
+/// one shape that holds under every flavor — the work never touches the
+/// ambient runtime, so the caller only ever waits on the join.
+fn block_on_runtime_aware<F>(future: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    fn drive<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build current-thread runtime")
+            .block_on(future)
+    }
+
+    if tokio::runtime::Handle::try_current().is_err() {
+        return drive(future);
+    }
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| drive(future))
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    })
+}
+
+/// Runs one database operation from a synchronous source-lifecycle step.
+///
+/// Reserved for code that is already blocking — the lifecycle writes that run
+/// under `spawn_blocking`, the observed-value live-scope load that runs under
+/// the search crate's own `spawn_blocking`, and the synchronous test entry
+/// points. It is expensive by construction (a thread and a runtime per call),
+/// and calling it from an async task would block a runtime worker on database
+/// I/O, which is the starvation class the state-lock waits were just moved
+/// off. Async callers await the database directly instead, through the async
+/// twin every bridged read here has;
+/// `async_source_reads_never_cross_the_database_bridge` is the standing guard
+/// that they keep doing so.
+pub(crate) fn run_source_db_operation<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send,
+    F: Future<Output = Result<T, AppError>> + Send,
+{
+    #[cfg(test)]
+    record_source_db_bridge_crossing();
+    block_on_runtime_aware(operation)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Counts the synchronous bridge crossings made on this thread.
+    ///
+    /// A thread-local is what makes the count usable as an assertion: the
+    /// increment happens on the caller's own thread, and a default-flavor
+    /// `#[tokio::test]` drives its future on the test thread, so a test's
+    /// reading is never perturbed by a sibling test.
+    static SOURCE_DB_BRIDGE_CROSSINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_source_db_bridge_crossing() {
+    SOURCE_DB_BRIDGE_CROSSINGS.with(|crossings| crossings.set(crossings.get() + 1));
+}
+
+/// How many times this thread has crossed the synchronous database bridge.
+///
+/// Async paths must never move this number: the bridge spawns a thread and a
+/// runtime per call and blocks the caller until they finish, which on a tokio
+/// worker is the starvation class #2265 removed.
+#[cfg(test)]
+fn source_db_bridge_crossings() -> usize {
+    SOURCE_DB_BRIDGE_CROSSINGS.with(std::cell::Cell::get)
+}
+
+/// Opens, migrates, and seeds the database a test's source manager reads
+/// through.
+///
+/// The file under the test's own layout is the only workable shape: in-memory
+/// `SQLite` is unreachable through `ResolvedDatabaseConfig`, and it is per
+/// connection anyway, so a pooled one would hand each checkout a different
+/// empty schema.
+#[cfg(test)]
+async fn test_database(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+    let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(layout).expect("database config")
+    else {
+        panic!("the default test database is sqlite")
+    };
+    let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+        .await
+        .expect("open sqlite");
+    db.migrate().await.expect("migrate sqlite");
+    run_state_migrations(&db, config_store, layout)
+        .await
+        .expect("run state migrations");
+    // A fresh layout carries no legacy workspaces for the cutover to import,
+    // so the workspace these tests address has to be seeded outright.
+    let mut tx = db.begin().await.expect("begin workspace seed");
+    tx.workspaces()
+        .ensure(WorkspaceName::default().as_str(), 1)
+        .await
+        .expect("seed default workspace");
+    tx.commit().await.expect("commit workspace seed");
+    Arc::new(db)
 }
 
 impl SourceManager {
@@ -214,6 +348,7 @@ impl SourceManager {
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
+        let db = block_on_runtime_aware(test_database(&layout, &config_store));
         Self::with_diagnostic_reporter(
             config_store,
             credential_manager,
@@ -222,6 +357,7 @@ impl SourceManager {
             SourceDiagnosticReporter::default(),
         )
         .with_database_sources_enabled(true)
+        .with_database(db)
     }
 
     pub(crate) fn with_diagnostic_reporter(
@@ -240,8 +376,25 @@ impl SourceManager {
             diagnostic_reporter,
             search_observations: None,
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
+            db: None,
             database_sources_enabled: false,
+            #[cfg(test)]
+            db_write_fails: false,
+            #[cfg(test)]
+            config_mirror_fails: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_failing_database_write(mut self) -> Self {
+        self.db_write_fails = true;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_failing_config_mirror(mut self) -> Self {
+        self.config_mirror_fails = true;
+        self
     }
 
     pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
@@ -254,6 +407,11 @@ impl SourceManager {
         self
     }
 
+    pub(crate) fn with_database(mut self, db: Arc<CoralDb>) -> Self {
+        self.db = Some(db);
+        self
+    }
+
     pub(crate) fn with_search_observation_handle(
         mut self,
         search_observations: SearchObservationHandle,
@@ -262,46 +420,380 @@ impl SourceManager {
         self
     }
 
-    pub(crate) fn list_workspace_sources(
+    /// The database every DB-backed source path reads and writes through.
+    ///
+    /// The server always attaches one, so an absent database means a test
+    /// constructed the manager without one and then reached a DB-backed path.
+    /// That is a wiring defect, not a deployment shape: reporting it keeps the
+    /// gap loud instead of silently degrading to file-only behavior.
+    fn database(&self) -> Result<&Arc<CoralDb>, AppError> {
+        self.db.as_ref().ok_or_else(|| {
+            AppError::Internal("source manager was constructed without a database".to_string())
+        })
+    }
+
+    /// Commits one source and its artifacts as a single transaction.
+    ///
+    /// The three rows move together because they describe one installation: a
+    /// catalog entry whose manifest or materialization belongs to a different
+    /// version of the source is worse than either write failing outright.
+    ///
+    /// `manifest_yaml` is `None` for a bundled source, whose manifest ships with
+    /// the binary rather than being stored, and `materialization` is `None` for
+    /// anything that does not materialize; both cases drop whatever row an
+    /// earlier install of the same name left behind.
+    ///
+    /// Callers hold the state lock, and the transaction nests strictly inside
+    /// it: it opens after the files are staged and commits before the mirror
+    /// write, so it never spans a filesystem write.
+    fn upsert_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        manifest_yaml: Option<&str>,
+        materialization: Option<&MaterializationRecord>,
+    ) -> Result<(), AppError> {
+        #[cfg(test)]
+        if self.db_write_fails {
+            return Err(AppError::Internal(
+                "source database write failed for tests".to_string(),
+            ));
+        }
+        let db = Arc::clone(self.database()?);
+        let workspace_name = workspace_name.clone();
+        let source = source.clone();
+        let manifest_yaml = manifest_yaml.map(str::to_owned);
+        let materialization = materialization.cloned();
+        let now_unix_nanos = now_unix_nanos_i64()?;
+        run_source_db_operation(async move {
+            let source_name = &source.name;
+            let mut tx = db.begin().await?;
+            if tx
+                .workspaces()
+                .get(workspace_name.as_str())
+                .await?
+                .is_none()
+            {
+                return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+            }
+            tx.sources()
+                .upsert_source(&workspace_name, &source, now_unix_nanos)
+                .await?;
+            match manifest_yaml.as_deref() {
+                Some(manifest_yaml) => {
+                    tx.source_manifests()
+                        .upsert(&workspace_name, source_name, manifest_yaml, now_unix_nanos)
+                        .await?;
+                }
+                None => {
+                    tx.source_manifests()
+                        .remove(&workspace_name, source_name)
+                        .await?;
+                }
+            }
+            match materialization.as_ref() {
+                Some(materialization) => {
+                    tx.materializations()
+                        .upsert(
+                            &workspace_name,
+                            source_name,
+                            materialization,
+                            now_unix_nanos,
+                        )
+                        .await?;
+                }
+                None => {
+                    tx.materializations()
+                        .remove(&workspace_name, source_name)
+                        .await?;
+                }
+            }
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
+    /// Removes one source and records the deletion, as a single transaction.
+    ///
+    /// The artifact rows go with it through the schema's cascade, and the
+    /// tombstone the same statement writes is what keeps the deletion from
+    /// being undone by another host's stale config mirror at its next boot.
+    fn remove_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), AppError> {
+        #[cfg(test)]
+        if self.db_write_fails {
+            return Err(AppError::Internal(
+                "source database write failed for tests".to_string(),
+            ));
+        }
+        let db = Arc::clone(self.database()?);
+        let workspace_name = workspace_name.clone();
+        let source_name = source_name.clone();
+        let now_unix_nanos = now_unix_nanos_i64()?;
+        run_source_db_operation(async move {
+            let mut tx = db.begin().await?;
+            tx.sources()
+                .remove_source(&workspace_name, &source_name, now_unix_nanos)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
+    /// Reads the artifact rows a compensation would have to put back.
+    fn load_source_artifact_rows(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(Option<SourceManifestRecord>, Option<MaterializationRecord>), AppError> {
+        let db = Arc::clone(self.database()?);
+        let workspace_name = workspace_name.clone();
+        let source_name = source_name.clone();
+        run_source_db_operation(async move {
+            let mut session = db.as_ref();
+            let manifest = session
+                .source_manifests()
+                .get(&workspace_name, &source_name)
+                .await?;
+            let materialization = session
+                .materializations()
+                .get(&workspace_name, &source_name)
+                .await?;
+            Ok((manifest, materialization))
+        })
+    }
+
+    /// Puts the database back the way a failed mirror write found it.
+    ///
+    /// The direction is what matters. A fresh install's rows have to go away,
+    /// while an update's have to return to the set captured before the
+    /// transaction — removing those would cascade away a source that was
+    /// working a moment ago and tombstone it into the bargain.
+    ///
+    /// Best effort, like the file and config restores it runs beside: what is
+    /// left when it fails is a database ahead of the mirror, which the next
+    /// boot's reconciliation pass is there to close.
+    fn compensate_source_rows_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        previous: Option<&SourceRollbackState>,
+    ) {
+        let restored = match previous {
+            Some(previous) => self.upsert_source_with_state_lock_held(
+                workspace_name,
+                &previous.source,
+                previous
+                    .previous_manifest
+                    .as_ref()
+                    .map(|manifest| manifest.manifest_yaml.as_str()),
+                previous.previous_materialization.as_ref(),
+            ),
+            None => self.remove_source_with_state_lock_held(workspace_name, source_name),
+        };
+        if let Err(error) = restored {
+            warn!("rollback: failed to restore the source's database rows: {error}");
+        }
+    }
+
+    /// Writes the `config.toml` mirror of one persisted source.
+    ///
+    /// A seam rather than a call at the one site that needs it, because nothing
+    /// a test can do to the real file makes this write fail on demand, and the
+    /// compensation that failure drives — putting the database rows back — is
+    /// the part worth pinning.
+    fn mirror_persisted_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<(), AppError> {
+        #[cfg(test)]
+        if self.config_mirror_fails {
+            return Err(AppError::Internal(
+                "source config mirror failed for tests".to_string(),
+            ));
+        }
+        self.config_store
+            .upsert_source_unlocked(workspace_name, source)
+    }
+
+    /// Removes one source from the `config.toml` mirror. A seam for the same
+    /// reason [`Self::mirror_persisted_source_with_state_lock_held`] is.
+    fn mirror_source_removal_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), AppError> {
+        #[cfg(test)]
+        if self.config_mirror_fails {
+            return Err(AppError::Internal(
+                "source config mirror failed for tests".to_string(),
+            ));
+        }
+        self.config_store
+            .remove_source_unlocked(workspace_name, source_name)
+    }
+
+    /// Records the content this host just mirrored, after the writes it records.
+    ///
+    /// Best effort: the ledger only lets a later boot tell content Coral wrote
+    /// from content an operator wrote, and losing that proof costs a warning
+    /// and a preserved file, never a silent overwrite.
+    fn record_source_mirror_in_ledger_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        manifest_yaml: Option<&str>,
+    ) {
+        let config_path = self.layout.config_file();
+        let mut ledger = MirrorLedger::load(config_path);
+        ledger.record_entry(workspace_name, &source.name, source);
+        if let Some(manifest_yaml) = manifest_yaml {
+            ledger.record_manifest(
+                workspace_name,
+                &source.name,
+                &sha256_hex(manifest_yaml.as_bytes()),
+            );
+        }
+        if let Err(error) = ledger.save(config_path) {
+            warn!("source persisted, but failed to record it in the mirror ledger: {error}");
+        }
+    }
+
+    /// Drops this host's record of a source it just removed from the mirror.
+    fn forget_source_in_ledger_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        let config_path = self.layout.config_file();
+        let mut ledger = MirrorLedger::load(config_path);
+        ledger.remove(workspace_name, source_name);
+        if let Err(error) = ledger.save(config_path) {
+            warn!("source deleted, but failed to drop it from the mirror ledger: {error}");
+        }
+    }
+
+    /// Reads one workspace's installed sources from the authoritative catalog.
+    async fn read_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
-        Ok(self
+        let mut session = self.database()?.as_ref();
+        Ok(session
+            .sources()
+            .list_workspace_sources(workspace_name)
+            .await?)
+    }
+
+    /// Reads one installed source from the authoritative catalog, or `None` when
+    /// the workspace has no such row.
+    async fn read_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        let mut session = self.database()?.as_ref();
+        Ok(session
+            .sources()
+            .get_source(workspace_name, source_name)
+            .await?)
+    }
+
+    /// The bridge-backed listing seam, for the synchronous lifecycle steps and
+    /// the synchronous entry points below. Async callers await
+    /// [`Self::read_workspace_sources`] on their own task instead.
+    fn load_workspace_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        run_source_db_operation(self.read_workspace_sources(workspace_name))
+    }
+
+    /// The bridge-backed single-source seam, for the same callers
+    /// [`Self::load_workspace_sources`] serves.
+    fn load_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        run_source_db_operation(self.read_source(workspace_name, source_name))
+    }
+
+    /// Reads the source a lifecycle write is about to overwrite or remove,
+    /// from the rows first and the mirror second.
+    ///
+    /// Each direction covers what the other cannot. The rows carry a source
+    /// this host has no config entry for — one a peer installed against the
+    /// shared database, or one whose mirror write never landed after the
+    /// transaction committed — which the reads already list and which
+    /// therefore has to be deletable, and whose re-import has to compensate as
+    /// an update rather than cascading the existing row set away. The mirror
+    /// carries the opposite case: a source an older binary added since the
+    /// last boot, whose entry exists and whose row does not.
+    fn load_source_for_lifecycle_write_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        if let Some(source) = self.load_source(workspace_name, source_name)? {
+            return Ok(Some(source));
+        }
+        match self
             .config_store
-            .list_workspace_sources(workspace_name)?
+            .get_source_unlocked(workspace_name, source_name)
+        {
+            Ok(source) => Ok(Some(source)),
+            Err(AppError::SourceNotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Restates each row's version from the manifest actually installed on this
+    /// host, which is where a source's version lives.
+    fn with_installed_versions(
+        &self,
+        workspace_name: &WorkspaceName,
+        sources: Vec<InstalledSource>,
+    ) -> Vec<InstalledSource> {
+        sources
             .into_iter()
             .map(|source| self.populate_source_version_or_keep(workspace_name, source))
-            .collect())
+            .collect()
     }
 
-    pub(crate) fn get_source(
+    fn require_source(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
+        source: Option<InstalledSource>,
     ) -> Result<InstalledSource, AppError> {
-        Ok(self.populate_source_version_or_keep(
-            workspace_name,
-            self.config_store.get_source(workspace_name, source_name)?,
-        ))
+        source
+            .map(|source| self.populate_source_version_or_keep(workspace_name, source))
+            .ok_or_else(|| AppError::SourceNotFound(source_name.to_string()))
     }
 
-    pub(crate) fn get_source_info(
+    /// Describes one source: the effective manifest of the installed row when
+    /// there is one, the bundled manifest of the same name otherwise.
+    ///
+    /// The bundled description is never marked installed — `load_bundled_source`
+    /// matches on the very name the catalog read just missed.
+    fn describe_source(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
+        installed: Option<InstalledSource>,
     ) -> Result<CandidateSource, AppError> {
-        match self.config_store.get_source(workspace_name, source_name) {
-            Ok(source) => {
-                return Ok(
-                    resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
-                );
-            }
-            Err(AppError::SourceNotFound(_)) => {}
-            Err(error) => return Err(error),
+        if let Some(source) = installed {
+            return Ok(
+                resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
+            );
         }
-
         match load_bundled_source(source_name) {
-            Ok(bundled) => self.describe_bundled_source(workspace_name, &bundled.manifest_yaml),
+            Ok(bundled) => describe_manifest(&bundled.manifest_yaml, SourceOrigin::Bundled, false),
             Err(AppError::InvalidInput(_)) => {
                 Err(AppError::SourceNotFound(source_name.to_string()))
             }
@@ -309,11 +801,11 @@ impl SourceManager {
         }
     }
 
-    pub(crate) fn discover_sources(
-        &self,
-        workspace_name: &WorkspaceName,
+    /// Lists the bundled catalog against what is installed, carrying over the
+    /// credential storage of the entries that are.
+    fn bundled_candidates(
+        installed_sources: &[InstalledSource],
     ) -> Result<Vec<CandidateSource>, AppError> {
-        let installed_sources = self.config_store.list_workspace_sources(workspace_name)?;
         let installed = installed_sources
             .iter()
             .map(|source| source.name.clone())
@@ -334,6 +826,88 @@ impl SourceManager {
         }
 
         Ok(candidates)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "sync test-harness entry points")
+    )]
+    pub(crate) fn list_workspace_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        let sources = self.load_workspace_sources(workspace_name)?;
+        Ok(self.with_installed_versions(workspace_name, sources))
+    }
+
+    pub(crate) async fn list_workspace_sources_async(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        let sources = self.read_workspace_sources(workspace_name).await?;
+        Ok(self.with_installed_versions(workspace_name, sources))
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "sync test-harness entry points")
+    )]
+    pub(crate) fn get_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        let source = self.load_source(workspace_name, source_name)?;
+        self.require_source(workspace_name, source_name, source)
+    }
+
+    pub(crate) async fn get_source_async(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        let source = self.read_source(workspace_name, source_name).await?;
+        self.require_source(workspace_name, source_name, source)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "sync test-harness entry points")
+    )]
+    pub(crate) fn get_source_info(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<CandidateSource, AppError> {
+        let installed = self.load_source(workspace_name, source_name)?;
+        self.describe_source(workspace_name, source_name, installed)
+    }
+
+    pub(crate) async fn get_source_info_async(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<CandidateSource, AppError> {
+        let installed = self.read_source(workspace_name, source_name).await?;
+        self.describe_source(workspace_name, source_name, installed)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "sync test-harness entry points")
+    )]
+    pub(crate) fn discover_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<CandidateSource>, AppError> {
+        Self::bundled_candidates(&self.load_workspace_sources(workspace_name)?)
+    }
+
+    pub(crate) async fn discover_sources_async(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<CandidateSource>, AppError> {
+        Self::bundled_candidates(&self.read_workspace_sources(workspace_name).await?)
     }
 
     pub(crate) async fn create_bundled_source_async(
@@ -375,7 +949,9 @@ impl SourceManager {
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
-        let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
+        let candidate = self
+            .describe_bundled_source_async(workspace_name, &bundled.manifest_yaml)
+            .await?;
         self.install_source_with_oauth(
             workspace_name.clone(),
             revision,
@@ -438,8 +1014,9 @@ impl SourceManager {
         command: ImportSourceWithCredentialsCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
-        let (manifest_yaml, candidate) =
-            self.prepare_imported_manifest(workspace_name, &command.manifest_yaml)?;
+        let (manifest_yaml, candidate) = self
+            .prepare_imported_manifest_async(workspace_name, &command.manifest_yaml)
+            .await?;
         self.install_source_with_oauth(
             workspace_name.clone(),
             revision,
@@ -524,21 +1101,27 @@ impl SourceManager {
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
         self.validate_source_features(&materialization_manifest_yaml)?;
-        self.validate_runtime_schema_names_available(
+        // This preamble runs on the caller's tokio task, so both catalog reads
+        // await the database directly; the lifecycle closure below re-runs them
+        // through the synchronous seams under its own state lock.
+        self.validate_runtime_schema_names_available_async(
             &workspace_name,
             &candidate.name,
             &materialization_manifest_yaml,
-        )?;
+        )
+        .await?;
         let oauth_input_keys = oauth_credential_retrievals
             .iter()
             .map(|credential| credential.input_key.clone())
             .collect::<BTreeSet<_>>();
-        let stored_material = self.source_stored_material_for_validation(
-            &workspace_name,
-            &candidate,
-            &bindings,
-            &oauth_input_keys,
-        )?;
+        let stored_material = self
+            .source_stored_material_for_validation_async(
+                &workspace_name,
+                &candidate,
+                &bindings,
+                &oauth_input_keys,
+            )
+            .await?;
         let preflight_bindings = Self::validate_oauth_import_preflight(
             &candidate,
             &bindings,
@@ -660,13 +1243,15 @@ impl SourceManager {
             .material_guard(workspace_name, &credential_set_id)?;
         let state_lock = self.config_store.state_lock_exclusive()?;
         let stored = self
-            .config_store
-            .get_source_unlocked(workspace_name, source_name)?;
+            .load_source_for_lifecycle_write_with_state_lock_held(workspace_name, source_name)?
+            .ok_or_else(|| AppError::SourceNotFound(source_name.to_string()))?;
         let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let credential_storage = stored.credential_storage_for_material();
         let credential_material = credential_storage
             .map(|storage| credential_guard.snapshot_material_with_state_lock_held(storage))
             .transpose()?;
+        let (previous_manifest, previous_materialization) =
+            self.load_source_artifact_rows(workspace_name, source_name)?;
         let previous = SourceRollbackState {
             source: stored,
             manifest_yaml: match removed.origin {
@@ -676,48 +1261,34 @@ impl SourceManager {
                 )?),
             },
             credential_material,
+            previous_manifest,
+            previous_materialization,
         };
         let source_dir_backup = fs::DirectoryBackup::move_for_delete(&source_dir, source_name)?;
-        if let Some(credential_storage) = credential_storage
-            && let Err(error) =
+        // The credential material goes first because it is the one part with no
+        // inverse, then the transaction that makes the deletion authoritative,
+        // then the mirror the ledger records once it has landed.
+        let deletion = credential_storage
+            .map(|credential_storage| {
                 credential_guard.remove_material_with_state_lock_held(credential_storage)
-        {
-            let restore_dir_result = source_dir_backup.restore();
-            self.restore_source_rollback_state_with_state_lock_held(
+            })
+            .transpose()
+            .map(|_removed| ())
+            .and_then(|()| self.remove_source_with_state_lock_held(workspace_name, source_name))
+            .and_then(|()| {
+                self.mirror_source_removal_with_state_lock_held(workspace_name, source_name)
+            });
+        if let Err(error) = deletion {
+            return Err(self.abort_source_deletion_with_state_lock_held(
                 workspace_name,
                 source_name,
-                Some(previous),
-                None,
+                previous,
+                &source_dir_backup,
                 &credential_guard,
-            );
-            if let Err(restore_error) = restore_dir_result {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove source credentials for '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.backup_path().display()
-                )));
-            }
-            return Err(error);
+                error,
+            ));
         }
-        if let Err(error) = self
-            .config_store
-            .remove_source_unlocked(workspace_name, source_name)
-        {
-            let restore_dir_result = source_dir_backup.restore();
-            self.restore_source_rollback_state_with_state_lock_held(
-                workspace_name,
-                source_name,
-                Some(previous),
-                None,
-                &credential_guard,
-            );
-            if let Err(restore_error) = restore_dir_result {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.backup_path().display()
-                )));
-            }
-            return Err(error);
-        }
+        self.forget_source_in_ledger_with_state_lock_held(workspace_name, source_name);
         self.pool_registry
             .remove_catalog(workspace_name, source_name.as_str());
         source_dir_backup.commit()?;
@@ -742,24 +1313,52 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         manifest_yaml: &str,
     ) -> Result<(String, CandidateSource), AppError> {
+        let (manifest_yaml, mut candidate) = Self::canonicalize_imported_manifest(manifest_yaml)?;
+        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        Ok((manifest_yaml, candidate))
+    }
+
+    /// [`Self::prepare_imported_manifest`] for an async caller: the same
+    /// canonicalization, with the installed-name lookup awaited directly.
+    async fn prepare_imported_manifest_async(
+        &self,
+        workspace_name: &WorkspaceName,
+        manifest_yaml: &str,
+    ) -> Result<(String, CandidateSource), AppError> {
+        let (manifest_yaml, mut candidate) = Self::canonicalize_imported_manifest(manifest_yaml)?;
+        candidate.installed = self
+            .source_exists_async(workspace_name, &candidate.name)
+            .await?;
+        Ok((manifest_yaml, candidate))
+    }
+
+    /// The catalog-free half of [`Self::prepare_imported_manifest`]: parse,
+    /// canonicalize, describe. Leaves `installed` for the caller to fill in
+    /// through whichever seam its context allows.
+    fn canonicalize_imported_manifest(
+        manifest_yaml: &str,
+    ) -> Result<(String, CandidateSource), AppError> {
         let manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = durable_import_manifest_yaml(manifest_yaml, &manifest)?;
-        let mut candidate =
-            describe_manifest(manifest_yaml.as_str(), SourceOrigin::Imported, false)?;
-        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        let candidate = describe_manifest(manifest_yaml.as_str(), SourceOrigin::Imported, false)?;
         Ok((manifest_yaml, candidate))
     }
 
     /// Describes one user-supplied manifest without installing it. Import applies
     /// the same descriptor canonicalization, so running it here surfaces a relative
     /// file descriptor while the user still has the manifest in front of them.
-    pub(crate) fn describe_source_manifest(
+    ///
+    /// Async because its only catalog touch is the installed-name lookup, which
+    /// the gRPC handler's task awaits directly.
+    pub(crate) async fn describe_source_manifest(
         &self,
         workspace_name: &WorkspaceName,
         manifest_yaml: &str,
     ) -> Result<CandidateSource, AppError> {
-        let (_, candidate) = self.prepare_imported_manifest(workspace_name, manifest_yaml)?;
+        let (_, candidate) = self
+            .prepare_imported_manifest_async(workspace_name, manifest_yaml)
+            .await?;
         Ok(candidate)
     }
 
@@ -770,6 +1369,20 @@ impl SourceManager {
     ) -> Result<CandidateSource, AppError> {
         let mut candidate = describe_manifest(manifest_yaml, SourceOrigin::Bundled, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        Ok(candidate)
+    }
+
+    /// [`Self::describe_bundled_source`] for an async caller, which awaits the
+    /// installed-name lookup instead of crossing the synchronous bridge.
+    async fn describe_bundled_source_async(
+        &self,
+        workspace_name: &WorkspaceName,
+        manifest_yaml: &str,
+    ) -> Result<CandidateSource, AppError> {
+        let mut candidate = describe_manifest(manifest_yaml, SourceOrigin::Bundled, false)?;
+        candidate.installed = self
+            .source_exists_async(workspace_name, &candidate.name)
+            .await?;
         Ok(candidate)
     }
 
@@ -910,10 +1523,32 @@ impl SourceManager {
             },
             origin: request.origin,
         };
-        if let Err(error) = self
-            .config_store
-            .upsert_source_unlocked(workspace_name, stored.clone())
-        {
+        // The commit point. The files are staged, so the transaction is what
+        // decides whether this installation happened; the config mirror below
+        // follows it, and the ledger records the mirror once it has landed.
+        let materialized_dir = self
+            .layout
+            .v4_materialized_dir(workspace_name, &source_name);
+        let commit = read_v4_materialization_record(&materialized_dir)
+            .and_then(|materialization| {
+                self.upsert_source_with_state_lock_held(
+                    workspace_name,
+                    &stored,
+                    request.manifest_yaml,
+                    materialization.as_ref(),
+                )
+            })
+            .and_then(|()| {
+                self.mirror_persisted_source_with_state_lock_held(workspace_name, stored.clone())
+                    .inspect_err(|_mirror_failure| {
+                        self.compensate_source_rows_with_state_lock_held(
+                            workspace_name,
+                            &source_name,
+                            previous.as_ref(),
+                        );
+                    })
+            });
+        if let Err(error) = commit {
             let restore_result = restore_materialization_backup(
                 &self.layout,
                 workspace_name,
@@ -934,6 +1569,11 @@ impl SourceManager {
             }
             return Err(error);
         }
+        self.record_source_mirror_in_ledger_with_state_lock_held(
+            workspace_name,
+            &stored,
+            request.manifest_yaml,
+        );
         cleanup_materialization_backup(materialization_backup);
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
@@ -1047,16 +1687,22 @@ impl SourceManager {
         ensure_database_source_feature_enabled(&manifest, self.database_sources_enabled)
     }
 
-    fn validate_runtime_schema_names_available(
+    /// Rejects `manifest_yaml` when a runtime schema name it declares is
+    /// already claimed by another source in `installed_sources`.
+    ///
+    /// The catalog read is the caller's, so the two wrappers below can reach it
+    /// through whichever seam their context allows.
+    fn check_runtime_schema_names_available(
         &self,
         workspace_name: &WorkspaceName,
         candidate_name: &SourceName,
         manifest_yaml: &str,
+        installed_sources: Vec<InstalledSource>,
     ) -> Result<(), AppError> {
         let candidate_manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let candidate_schema_names = runtime_schema_names(&candidate_manifest);
-        for installed in self.config_store.list_workspace_sources(workspace_name)? {
+        for installed in installed_sources {
             if installed.name == *candidate_name {
                 continue;
             }
@@ -1076,15 +1722,59 @@ impl SourceManager {
         Ok(())
     }
 
+    /// The synchronous schema-name check, for the lifecycle steps that already
+    /// run under `spawn_blocking`.
+    fn validate_runtime_schema_names_available(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate_name: &SourceName,
+        manifest_yaml: &str,
+    ) -> Result<(), AppError> {
+        let installed_sources = self.load_workspace_sources(workspace_name)?;
+        self.check_runtime_schema_names_available(
+            workspace_name,
+            candidate_name,
+            manifest_yaml,
+            installed_sources,
+        )
+    }
+
+    /// The same check for an async caller, which awaits the catalog directly
+    /// rather than parking a runtime worker on the synchronous bridge.
+    async fn validate_runtime_schema_names_available_async(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate_name: &SourceName,
+        manifest_yaml: &str,
+    ) -> Result<(), AppError> {
+        let installed_sources = self.read_workspace_sources(workspace_name).await?;
+        self.check_runtime_schema_names_available(
+            workspace_name,
+            candidate_name,
+            manifest_yaml,
+            installed_sources,
+        )
+    }
+
     fn source_exists(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<bool, AppError> {
+        Ok(self.load_source(workspace_name, source_name)?.is_some())
+    }
+
+    /// The installed-name lookup for an async caller, which awaits the catalog
+    /// directly instead of crossing the synchronous bridge.
+    async fn source_exists_async(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<bool, AppError> {
         Ok(self
-            .config_store
-            .load_catalog()?
-            .contains(workspace_name, source_name))
+            .read_source(workspace_name, source_name)
+            .await?
+            .is_some())
     }
 
     fn read_source_material(
@@ -1109,31 +1799,29 @@ impl SourceManager {
         }
     }
 
-    fn source_stored_material_for_validation(
+    /// Reads whatever stored credential material `candidate`'s validation still
+    /// needs, given the catalog row `installed` its caller already read.
+    fn stored_material_for_validation(
         &self,
         workspace_name: &WorkspaceName,
         candidate: &CandidateSource,
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
+        installed: Option<InstalledSource>,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        let (credential_storage, persisted_secret_keys) = match self
-            .config_store
-            .get_source(workspace_name, &candidate.name)
-        {
-            Ok(source) => (
+        let (credential_storage, persisted_secret_keys) = match installed {
+            Some(source) => (
                 source.credential_storage_for_material(),
                 Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
             ),
-            Err(AppError::SourceNotFound(_))
-                if self
-                    .layout
-                    .secret_file(workspace_name, &candidate.name)
-                    .exists() =>
+            None if self
+                .layout
+                .secret_file(workspace_name, &candidate.name)
+                .exists() =>
             {
                 (Some(CredentialStorageKind::File), None)
             }
-            Err(AppError::SourceNotFound(_)) => (None, Some(BTreeSet::new())),
-            Err(error) => return Err(error),
+            None => (None, Some(BTreeSet::new())),
         };
 
         if !source_needs_stored_material_for_validation(
@@ -1153,6 +1841,44 @@ impl SourceManager {
         }
     }
 
+    /// The synchronous stored-material read, for the lifecycle steps that
+    /// already run under `spawn_blocking`.
+    fn source_stored_material_for_validation(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        filled_secret_keys: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        let installed = self.load_source(workspace_name, &candidate.name)?;
+        self.stored_material_for_validation(
+            workspace_name,
+            candidate,
+            bindings,
+            filled_secret_keys,
+            installed,
+        )
+    }
+
+    /// The same read for an async caller, which awaits the catalog directly
+    /// rather than parking a runtime worker on the synchronous bridge.
+    async fn source_stored_material_for_validation_async(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate: &CandidateSource,
+        bindings: &SourceBindings,
+        filled_secret_keys: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        let installed = self.read_source(workspace_name, &candidate.name).await?;
+        self.stored_material_for_validation(
+            workspace_name,
+            candidate,
+            bindings,
+            filled_secret_keys,
+            installed,
+        )
+    }
+
     fn source_persist_storage_with_state_lock_held(
         &self,
         workspace_name: &WorkspaceName,
@@ -1164,12 +1890,9 @@ impl SourceManager {
                 && input.required
                 && !bindings.secrets.contains_key(&input.key)
         });
-        let existing_storage = match self
-            .config_store
-            .get_source_unlocked(workspace_name, &candidate.name)
-        {
-            Ok(source) => source.credential_storage_for_material(),
-            Err(AppError::SourceNotFound(_)) if needs_stored_material => {
+        let existing_storage = match self.load_source(workspace_name, &candidate.name)? {
+            Some(source) => source.credential_storage_for_material(),
+            None if needs_stored_material => {
                 let legacy_secret_file = self.layout.secret_file(workspace_name, &candidate.name);
                 if legacy_secret_file.is_file() {
                     Some(CredentialStorageKind::File)
@@ -1177,8 +1900,7 @@ impl SourceManager {
                     None
                 }
             }
-            Err(AppError::SourceNotFound(_)) => None,
-            Err(error) => return Err(error),
+            None => None,
         };
         let stored_material = match existing_storage {
             Some(storage) => self.read_source_material(workspace_name, &candidate.name, storage)?,
@@ -1328,13 +2050,10 @@ impl SourceManager {
         source_name: &SourceName,
         credential_material: &CredentialMaterialGuard<'_>,
     ) -> Result<Option<SourceRollbackState>, AppError> {
-        let source = match self
-            .config_store
-            .get_source_unlocked(workspace_name, source_name)
-        {
-            Ok(source) => source,
-            Err(AppError::SourceNotFound(_)) => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(source) =
+            self.load_source_for_lifecycle_write_with_state_lock_held(workspace_name, source_name)?
+        else {
+            return Ok(None);
         };
         let credential_material = source
             .credential_storage_for_material()
@@ -1342,6 +2061,8 @@ impl SourceManager {
                 credential_material.snapshot_material_with_state_lock_held(credential_storage)
             })
             .transpose()?;
+        let (previous_manifest, previous_materialization) =
+            self.load_source_artifact_rows(workspace_name, source_name)?;
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
                 SourceOrigin::Bundled => None,
@@ -1351,7 +2072,47 @@ impl SourceManager {
             },
             source,
             credential_material,
+            previous_manifest,
+            previous_materialization,
         }))
+    }
+
+    /// Undoes a deletion that could not be completed, and reports why.
+    ///
+    /// Every failed step leaves the same three things to put back — the staged
+    /// directory, the database rows, and the config entry with its credential
+    /// material — so one recovery serves all of them. Restoring rows a step
+    /// never got as far as removing rewrites them unchanged, which is cheaper
+    /// than tracking how far the deletion got and cannot get that wrong.
+    fn abort_source_deletion_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        previous: SourceRollbackState,
+        source_dir_backup: &fs::DirectoryBackup,
+        credential_material: &CredentialMaterialGuard<'_>,
+        error: AppError,
+    ) -> AppError {
+        let restore_dir_result = source_dir_backup.restore();
+        self.compensate_source_rows_with_state_lock_held(
+            workspace_name,
+            source_name,
+            Some(&previous),
+        );
+        self.restore_source_rollback_state_with_state_lock_held(
+            workspace_name,
+            source_name,
+            Some(previous),
+            None,
+            credential_material,
+        );
+        match restore_dir_result {
+            Ok(()) => error,
+            Err(restore_error) => AppError::FailedPrecondition(format!(
+                "failed to delete source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                source_dir_backup.backup_path().display()
+            )),
+        }
     }
 
     fn restore_source_rollback_state_with_state_lock_held(
@@ -1795,10 +2556,12 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::net::TcpListener as StdTcpListener;
     use std::path::Path;
+    use std::sync::Arc;
     use std::sync::mpsc as std_mpsc;
     use std::thread;
     use std::time::Duration;
 
+    use sea_query::{Alias, Expr, ExprTrait as _, Query};
     use tempfile::TempDir;
     use tokio::net::{TcpListener as TokioTcpListener, TcpStream as TokioTcpStream};
     use tokio::sync::mpsc;
@@ -1810,8 +2573,9 @@ mod tests {
         ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent,
         PersistSourceRequest, SourceBinding, SourceBindings, SourceManager,
-        SourceOAuthCredentialRetrieval, ValidatedBindings, materialization_inputs_from_bindings,
-        normalize_binding_key, source_needs_stored_material_for_validation,
+        SourceOAuthCredentialRetrieval, ValidatedBindings, block_on_runtime_aware,
+        materialization_inputs_from_bindings, normalize_binding_key, source_db_bridge_crossings,
+        source_needs_stored_material_for_validation,
     };
     use crate::bootstrap::AppError;
     use crate::credentials::{
@@ -1825,6 +2589,10 @@ mod tests {
         FINGERPRINT_FILENAME, MaterializationInputs, PROJECTIONS_FILENAME,
     };
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+    use crate::state::db::{
+        DbRepos as _, DbSession as _, MaterializationRecord, SourceManifestRecord,
+    };
+    use crate::state::mirror_ledger::MirrorLedger;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceName};
     use coral_spec::{
@@ -2105,8 +2873,8 @@ tables:
         (manager, layout)
     }
 
-    #[test]
-    fn describe_source_manifest_reports_credential_methods_in_authored_order() {
+    #[tokio::test]
+    async fn describe_source_manifest_reports_credential_methods_in_authored_order() {
         let temp = TempDir::new().expect("temp dir");
         let (manager, _layout) = test_manager(&temp);
 
@@ -2115,6 +2883,7 @@ tables:
                 &default_workspace(),
                 &manifest_with_oauth_credential_methods(),
             )
+            .await
             .expect("describe manifest");
 
         assert_eq!(candidate.name.as_str(), "oauth_demo");
@@ -2141,8 +2910,8 @@ tables:
         assert_eq!(oauth.flow.kind, ManifestOAuthFlowKind::AuthorizationCode);
     }
 
-    #[test]
-    fn describe_source_manifest_marks_an_installed_name() {
+    #[tokio::test]
+    async fn describe_source_manifest_marks_an_installed_name() {
         let temp = TempDir::new().expect("temp dir");
         let (manager, _layout) = test_manager(&temp);
         let workspace_name = default_workspace();
@@ -2160,12 +2929,64 @@ tables:
 
         let candidate = manager
             .describe_source_manifest(&workspace_name, &manifest_yaml)
+            .await
             .expect("describe manifest");
         assert!(candidate.installed);
     }
 
-    #[test]
-    fn describe_source_manifest_rejects_a_relative_file_descriptor() {
+    /// The standing guard behind the design's "no thread-spawn on the read
+    /// path" verify step. Every catalog read reachable from a tokio task must
+    /// go through the async seams: the synchronous bridge spawns a thread and a
+    /// runtime per call and blocks the caller on the join, which on a runtime
+    /// worker is the starvation class #2265 removed.
+    #[tokio::test]
+    async fn async_source_reads_never_cross_the_database_bridge() {
+        let temp = TempDir::new().expect("temp dir");
+        let (manager, _layout) = test_manager(&temp);
+        let workspace_name = default_workspace();
+        let manifest_yaml = manifest_without_secrets();
+        let candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)
+            .expect("describe candidate");
+
+        // Building the manager is synchronous by design, so only the reads that
+        // follow it are under test.
+        let baseline = source_db_bridge_crossings();
+
+        manager
+            .describe_source_manifest(&workspace_name, &manifest_yaml)
+            .await
+            .expect("describe manifest");
+        manager
+            .describe_bundled_source_async(&workspace_name, &manifest_yaml)
+            .await
+            .expect("describe bundled source");
+        manager
+            .validate_runtime_schema_names_available_async(
+                &workspace_name,
+                &candidate.name,
+                &manifest_yaml,
+            )
+            .await
+            .expect("validate runtime schema names");
+        manager
+            .source_stored_material_for_validation_async(
+                &workspace_name,
+                &candidate,
+                &SourceBindings::default(),
+                &BTreeSet::new(),
+            )
+            .await
+            .expect("read stored material");
+
+        assert_eq!(
+            source_db_bridge_crossings(),
+            baseline,
+            "an async source read crossed the synchronous database bridge"
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_source_manifest_rejects_a_relative_file_descriptor() {
         let temp = TempDir::new().expect("temp dir");
         let (manager, _layout) = test_manager(&temp);
 
@@ -2180,6 +3001,7 @@ surface:
   file: ./openapi.yaml
 ",
             )
+            .await
             .expect_err("relative descriptor must be rejected");
         let AppError::InvalidInput(message) = error else {
             panic!("expected InvalidInput, got {error:?}");
@@ -2190,13 +3012,14 @@ surface:
         );
     }
 
-    #[test]
-    fn describe_source_manifest_rejects_unparseable_yaml() {
+    #[tokio::test]
+    async fn describe_source_manifest_rejects_unparseable_yaml() {
         let temp = TempDir::new().expect("temp dir");
         let (manager, _layout) = test_manager(&temp);
 
         let error = manager
             .describe_source_manifest(&default_workspace(), "name: [unclosed")
+            .await
             .expect_err("invalid yaml must be rejected");
         assert!(matches!(error, AppError::InvalidInput(_)), "got {error:?}");
     }
@@ -2520,7 +3343,7 @@ surface:
         );
         assert!(
             config_store
-                .get_source(&workspace_name, &source_name)
+                .get_source_unlocked(&workspace_name, &source_name)
                 .is_ok(),
             "source config should be preserved when directory staging fails"
         );
@@ -2913,6 +3736,579 @@ surface:
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
+    }
+
+    /// One v4 source installed under its own layout, with the descriptor file
+    /// the test can rewrite to drive an update.
+    struct DualWriteFixture {
+        _temp: TempDir,
+        _descriptor_temp: TempDir,
+        layout: AppStateLayout,
+        manager: SourceManager,
+        openapi_file: std::path::PathBuf,
+        updated_openapi_file: std::path::PathBuf,
+        updated: std::cell::Cell<bool>,
+    }
+
+    impl DualWriteFixture {
+        fn new() -> Self {
+            let temp = TempDir::new().expect("temp dir");
+            let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+            let layout =
+                AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+            layout.ensure().expect("ensure layout");
+            let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+            std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+            let manager = SourceManager::new_for_tests(
+                ConfigStore::new(layout.clone()),
+                CredentialManager::new(CredentialStore::new(layout.clone())),
+                layout.clone(),
+            );
+            Self {
+                _temp: temp,
+                updated_openapi_file: descriptor_temp.path().join("github-openapi-updated.yaml"),
+                _descriptor_temp: descriptor_temp,
+                layout,
+                manager,
+                openapi_file,
+                updated: std::cell::Cell::new(false),
+            }
+        }
+
+        fn source_name() -> SourceName {
+            SourceName::parse("github_v4_test").expect("source name")
+        }
+
+        fn import_with(&self, manager: &SourceManager) -> Result<InstalledSource, AppError> {
+            let descriptor = if self.updated.get() {
+                &self.updated_openapi_file
+            } else {
+                &self.openapi_file
+            };
+            manager.import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_file_descriptor(descriptor),
+                    bindings: SourceBindings::default(),
+                },
+            )
+        }
+
+        fn import(&self) -> InstalledSource {
+            self.import_with(&self.manager).expect("import v4 source")
+        }
+
+        /// Points the fixture at a second descriptor, so the next import of the
+        /// same source name produces both a different manifest — the descriptor
+        /// path is part of it — and a different materialization.
+        fn change_descriptor(&self) {
+            std::fs::write(
+                &self.updated_openapi_file,
+                v4_openapi_fixture_with_metadata(),
+            )
+            .expect("write updated fixture");
+            self.updated.set(true);
+        }
+
+        fn config_entry(&self) -> Option<InstalledSource> {
+            match self
+                .manager
+                .config_store
+                .get_source_unlocked(&default_workspace(), &Self::source_name())
+            {
+                Ok(source) => Some(source),
+                Err(AppError::SourceNotFound(_)) => None,
+                Err(error) => panic!("read config entry: {error}"),
+            }
+        }
+
+        fn db_state(&self) -> DbSourceState {
+            let db = Arc::clone(self.manager.database().expect("database"));
+            let workspace_name = default_workspace();
+            let source_name = Self::source_name();
+            block_on_runtime_aware(async move {
+                let mut session = db.as_ref();
+                DbSourceState {
+                    source: session
+                        .sources()
+                        .get_source(&workspace_name, &source_name)
+                        .await
+                        .expect("read source row"),
+                    manifest: session
+                        .source_manifests()
+                        .get(&workspace_name, &source_name)
+                        .await
+                        .expect("read manifest row"),
+                    materialization: session
+                        .materializations()
+                        .get(&workspace_name, &source_name)
+                        .await
+                        .expect("read materialization row"),
+                    tombstoned: session
+                        .sources()
+                        .is_tombstoned(&workspace_name, &source_name)
+                        .await
+                        .expect("read tombstone"),
+                }
+            })
+        }
+
+        /// Drops the source's database row without recording a deletion — the
+        /// shape a source added by an older binary has, whose config entry
+        /// exists but which this database has never seen.
+        fn forget_database_row(&self) {
+            let db = Arc::clone(self.manager.database().expect("database"));
+            block_on_runtime_aware(async move {
+                let mut session = db.as_ref();
+                let delete = Query::delete()
+                    .from_table(Alias::new("sources"))
+                    .and_where(
+                        Expr::col(Alias::new("workspace_id")).eq(default_workspace().as_str()),
+                    )
+                    .and_where(Expr::col(Alias::new("name")).eq(Self::source_name().as_str()))
+                    .to_owned();
+                session.execute(delete).await.expect("forget source row");
+            });
+        }
+
+        /// Drops the source's `config.toml` entry while its rows stay put —
+        /// the shape a source has when a peer installed it against the shared
+        /// database, or when a crash landed between the transaction and the
+        /// mirror write.
+        fn forget_config_entry(&self) {
+            self.manager
+                .config_store
+                .remove_source(&default_workspace(), &Self::source_name())
+                .expect("forget config entry");
+        }
+
+        fn ledger(&self) -> MirrorLedger {
+            MirrorLedger::load(self.layout.config_file())
+        }
+
+        fn manifest_file_yaml(&self) -> String {
+            std::fs::read_to_string(
+                self.layout
+                    .manifest_file(&default_workspace(), &Self::source_name()),
+            )
+            .expect("read manifest file")
+        }
+    }
+
+    struct DbSourceState {
+        source: Option<InstalledSource>,
+        manifest: Option<SourceManifestRecord>,
+        materialization: Option<MaterializationRecord>,
+        tombstoned: bool,
+    }
+
+    #[test]
+    fn source_install_and_update_dual_write_the_database_and_the_config_mirror() {
+        let fixture = DualWriteFixture::new();
+
+        let installed = fixture.import();
+
+        let state = fixture.db_state();
+        let row = state.source.as_ref().expect("source row after install");
+        assert_eq!(row, &fixture.config_entry().expect("config entry"));
+        assert_eq!(row.name, installed.name);
+        let manifest = state.manifest.as_ref().expect("manifest row after install");
+        assert_eq!(manifest.manifest_yaml, fixture.manifest_file_yaml());
+        let materialization = state
+            .materialization
+            .as_ref()
+            .expect("materialization row after install");
+        assert_eq!(materialization.materialization_version, "v4");
+        assert_eq!(
+            materialization.projections_yaml,
+            std::fs::read_to_string(
+                fixture
+                    .layout
+                    .v4_materialized_dir(&default_workspace(), &DualWriteFixture::source_name())
+                    .join(PROJECTIONS_FILENAME)
+            )
+            .expect("read projections file")
+        );
+        let ledger = fixture.ledger();
+        assert!(ledger.matches_entry(&default_workspace(), &installed.name, row));
+        assert!(ledger.matches_manifest(
+            &default_workspace(),
+            &installed.name,
+            &super::sha256_hex(manifest.manifest_yaml.as_bytes())
+        ));
+
+        fixture.change_descriptor();
+        fixture.import();
+
+        let updated = fixture.db_state();
+        assert_eq!(
+            updated.source.as_ref().expect("source row after update"),
+            &fixture.config_entry().expect("config entry after update")
+        );
+        let updated_manifest = updated.manifest.expect("manifest row after update");
+        assert_eq!(updated_manifest.manifest_yaml, fixture.manifest_file_yaml());
+        assert_ne!(updated_manifest.manifest_yaml, manifest.manifest_yaml);
+        assert_ne!(
+            &updated
+                .materialization
+                .expect("materialization row after update"),
+            materialization,
+            "an update must replace the stored artifacts, not keep the first install's"
+        );
+    }
+
+    #[test]
+    fn deleting_a_source_tombstones_it_and_a_re_add_clears_the_tombstone() {
+        let fixture = DualWriteFixture::new();
+        let installed = fixture.import();
+
+        fixture
+            .manager
+            .delete_source(&default_workspace(), &installed.name)
+            .expect("delete source");
+
+        let deleted = fixture.db_state();
+        assert!(deleted.source.is_none(), "the catalog row must be gone");
+        assert!(deleted.manifest.is_none(), "the manifest row must cascade");
+        assert!(
+            deleted.materialization.is_none(),
+            "the materialization row must cascade"
+        );
+        assert!(deleted.tombstoned, "the deletion must be recorded");
+        assert!(fixture.config_entry().is_none());
+        assert!(
+            !fixture
+                .ledger()
+                .entry_recorded(&default_workspace(), &installed.name),
+            "a deleted source must leave no ledger record behind"
+        );
+
+        fixture.import();
+
+        let readded = fixture.db_state();
+        assert!(readded.source.is_some());
+        assert!(
+            !readded.tombstoned,
+            "re-adding a source must revoke the earlier deletion"
+        );
+        assert!(
+            fixture
+                .ledger()
+                .entry_recorded(&default_workspace(), &installed.name)
+        );
+    }
+
+    /// The read entry points answer from the catalog rows. Forgetting the row
+    /// while the mirror entry stays put is what tells the two apart.
+    #[test]
+    fn catalog_reads_answer_from_the_database_not_the_config_mirror() {
+        let fixture = DualWriteFixture::new();
+        let installed = fixture.import();
+        let workspace = default_workspace();
+        let manager = &fixture.manager;
+
+        assert_eq!(
+            manager
+                .list_workspace_sources(&workspace)
+                .expect("list sources")
+                .into_iter()
+                .map(|source| source.name)
+                .collect::<Vec<_>>(),
+            vec![installed.name.clone()]
+        );
+        assert_eq!(
+            manager
+                .get_source(&workspace, &installed.name)
+                .expect("get source")
+                .name,
+            installed.name
+        );
+        assert!(
+            manager
+                .get_source_info(&workspace, &installed.name)
+                .expect("get source info")
+                .installed
+        );
+
+        fixture.forget_database_row();
+
+        assert!(
+            fixture.config_entry().is_some(),
+            "the mirror entry must survive, or the reads below prove nothing"
+        );
+        assert!(
+            manager
+                .list_workspace_sources(&workspace)
+                .expect("list sources without a row")
+                .is_empty()
+        );
+        assert!(matches!(
+            manager.get_source(&workspace, &installed.name),
+            Err(AppError::SourceNotFound(_))
+        ));
+        assert!(matches!(
+            manager.get_source_info(&workspace, &installed.name),
+            Err(AppError::SourceNotFound(_))
+        ));
+    }
+
+    /// A source an older binary added has a config entry this database has
+    /// never seen. Deleting it still has to work, and still has to record the
+    /// deletion so a peer's boot import does not put it back.
+    #[test]
+    fn a_source_without_a_database_row_deletes_from_its_config_entry() {
+        let fixture = DualWriteFixture::new();
+        let installed = fixture.import();
+        fixture.forget_database_row();
+
+        fixture
+            .manager
+            .delete_source(&default_workspace(), &installed.name)
+            .expect("delete a source the database never saw");
+
+        let deleted = fixture.db_state();
+        assert!(deleted.source.is_none());
+        assert!(deleted.tombstoned, "the deletion must still be recorded");
+        assert!(fixture.config_entry().is_none());
+    }
+
+    /// The same source re-imported is an update, because the rollback state is
+    /// captured from the config entry — so a failed mirror write puts a row
+    /// back rather than removing and tombstoning one.
+    #[test]
+    fn a_failed_mirror_write_on_a_source_without_a_row_compensates_as_an_update() {
+        let fixture = DualWriteFixture::new();
+        fixture.import();
+        fixture.forget_database_row();
+        let failing = fixture.manager.clone().with_failing_config_mirror();
+
+        fixture.change_descriptor();
+        let error = fixture
+            .import_with(&failing)
+            .expect_err("a failed mirror write must fail the update");
+
+        assert!(
+            error.to_string().contains("source config mirror failed"),
+            "unexpected error: {error}"
+        );
+        let after = fixture.db_state();
+        assert!(
+            after.source.is_some(),
+            "the config entry made this an update, so the compensation must restore a row"
+        );
+        assert!(
+            !after.tombstoned,
+            "compensating an update must not tombstone the source"
+        );
+    }
+
+    /// A source with a row and no config entry is one the reads already list,
+    /// so the delete path has to find it too — otherwise the API shows a source
+    /// that can never be deleted or tombstoned.
+    #[test]
+    fn a_source_without_a_config_entry_deletes_from_its_database_row() {
+        let fixture = DualWriteFixture::new();
+        let installed = fixture.import();
+        fixture.forget_config_entry();
+
+        fixture
+            .manager
+            .delete_source(&default_workspace(), &installed.name)
+            .expect("delete a source the config mirror never saw");
+
+        let deleted = fixture.db_state();
+        assert!(deleted.source.is_none());
+        assert!(deleted.tombstoned, "the deletion must still be recorded");
+        assert!(fixture.config_entry().is_none());
+    }
+
+    /// Re-importing over that same source is an update, because the rollback
+    /// state is captured from the row — so a failed mirror write puts the
+    /// previous row set back instead of removing and tombstoning a source that
+    /// was working a moment ago.
+    #[test]
+    fn a_failed_mirror_write_on_a_source_without_a_config_entry_compensates_as_an_update() {
+        let fixture = DualWriteFixture::new();
+        fixture.import();
+        fixture.forget_config_entry();
+        let before = fixture.db_state();
+        let failing = fixture.manager.clone().with_failing_config_mirror();
+
+        fixture.change_descriptor();
+        let error = fixture
+            .import_with(&failing)
+            .expect_err("a failed mirror write must fail the update");
+
+        assert!(
+            error.to_string().contains("source config mirror failed"),
+            "unexpected error: {error}"
+        );
+        let after = fixture.db_state();
+        assert_eq!(
+            after.source.as_ref(),
+            before.source.as_ref(),
+            "the row made this an update, so the compensation must restore it"
+        );
+        assert_eq!(
+            after.manifest.map(|manifest| manifest.manifest_yaml),
+            before.manifest.map(|manifest| manifest.manifest_yaml),
+            "an update's compensation must restore the previous manifest row"
+        );
+        assert_eq!(after.materialization, before.materialization);
+        assert!(
+            !after.tombstoned,
+            "compensating an update must not tombstone the source"
+        );
+    }
+
+    #[test]
+    fn a_failed_source_transaction_leaves_neither_files_nor_config_behind() {
+        let fixture = DualWriteFixture::new();
+        let failing = fixture.manager.clone().with_failing_database_write();
+
+        let error = fixture
+            .import_with(&failing)
+            .expect_err("a failed transaction must fail the install");
+
+        assert!(
+            error.to_string().contains("source database write failed"),
+            "unexpected error: {error}"
+        );
+        assert!(fixture.db_state().source.is_none());
+        assert!(fixture.config_entry().is_none());
+        assert!(
+            !fixture
+                .layout
+                .source_dir(&default_workspace(), &DualWriteFixture::source_name())
+                .exists(),
+            "a failed install must not leave its files behind"
+        );
+    }
+
+    #[test]
+    fn a_failed_transaction_on_an_update_leaves_the_installed_source_untouched() {
+        let fixture = DualWriteFixture::new();
+        fixture.import();
+        let before = fixture.db_state();
+        let manifest_before = fixture.manifest_file_yaml();
+        let failing = fixture.manager.clone().with_failing_database_write();
+
+        fixture.change_descriptor();
+        fixture
+            .import_with(&failing)
+            .expect_err("a failed transaction must fail the update");
+
+        let after = fixture.db_state();
+        assert_eq!(after.source, before.source);
+        assert_eq!(after.manifest, before.manifest);
+        assert_eq!(after.materialization, before.materialization);
+        assert_eq!(fixture.manifest_file_yaml(), manifest_before);
+        assert_eq!(fixture.config_entry(), before.source);
+    }
+
+    #[test]
+    fn a_failed_mirror_write_on_a_fresh_install_removes_the_new_rows() {
+        let fixture = DualWriteFixture::new();
+        let failing = fixture.manager.clone().with_failing_config_mirror();
+
+        fixture
+            .import_with(&failing)
+            .expect_err("a failed mirror write must fail the install");
+
+        let state = fixture.db_state();
+        assert!(
+            state.source.is_none(),
+            "the row the failed install inserted must be removed"
+        );
+        assert!(state.manifest.is_none());
+        assert!(state.materialization.is_none());
+        assert!(fixture.config_entry().is_none());
+    }
+
+    #[test]
+    fn a_failed_mirror_write_on_an_update_restores_the_previous_row_set() {
+        let fixture = DualWriteFixture::new();
+        fixture.import();
+        let before = fixture.db_state();
+        let failing = fixture.manager.clone().with_failing_config_mirror();
+
+        fixture.change_descriptor();
+        fixture
+            .import_with(&failing)
+            .expect_err("a failed mirror write must fail the update");
+
+        let after = fixture.db_state();
+        let restored = after.source.expect("an update must never remove the row");
+        assert_eq!(&restored, before.source.as_ref().expect("source row"));
+        assert!(
+            !after.tombstoned,
+            "compensating an update must not tombstone a working source"
+        );
+        let (restored_manifest, previous_manifest) = (
+            after.manifest.expect("manifest row"),
+            before.manifest.expect("manifest row"),
+        );
+        assert_eq!(
+            restored_manifest.manifest_yaml,
+            previous_manifest.manifest_yaml
+        );
+        assert_eq!(
+            restored_manifest.manifest_hash,
+            previous_manifest.manifest_hash
+        );
+        assert_eq!(after.materialization, before.materialization);
+    }
+
+    #[test]
+    fn a_failed_mirror_write_on_a_delete_restores_the_source_untombstoned() {
+        let fixture = DualWriteFixture::new();
+        let installed = fixture.import();
+        let before = fixture.db_state();
+        let failing = fixture.manager.clone().with_failing_config_mirror();
+
+        failing
+            .delete_source(&default_workspace(), &installed.name)
+            .expect_err("a failed mirror write must fail the delete");
+
+        let after = fixture.db_state();
+        assert_eq!(
+            after.source.as_ref(),
+            before.source.as_ref(),
+            "compensating a delete must put the catalog row back"
+        );
+        let (restored_manifest, previous_manifest) = (
+            after.manifest.expect("manifest row"),
+            before.manifest.expect("manifest row"),
+        );
+        assert_eq!(
+            restored_manifest.manifest_yaml,
+            previous_manifest.manifest_yaml
+        );
+        assert_eq!(
+            restored_manifest.manifest_hash,
+            previous_manifest.manifest_hash
+        );
+        assert_eq!(after.materialization, before.materialization);
+        assert!(
+            !after.tombstoned,
+            "a delete that never landed must leave no tombstone behind"
+        );
+        assert_eq!(
+            fixture.config_entry().as_ref(),
+            before.source.as_ref(),
+            "the config entry must survive a delete that failed"
+        );
+        assert!(
+            fixture.ledger().matches_entry(
+                &default_workspace(),
+                &installed.name,
+                before
+                    .source
+                    .as_ref()
+                    .expect("source row before the delete")
+            ),
+            "a delete that never landed must keep this host's mirror record"
+        );
     }
 
     #[test]
@@ -3765,8 +5161,9 @@ surface:
         );
         assert!(
             config_store
-                .list_workspace_sources(&workspace_name)
-                .expect("list sources")
+                .load_catalog_unlocked()
+                .expect("load mirrored catalog")
+                .workspace_sources(&workspace_name)
                 .is_empty()
         );
         let source_name = SourceName::parse("public_messages").expect("source");
@@ -3855,8 +5252,9 @@ surface:
         fixture.token_server.await.expect("token server");
         assert!(
             config_store
-                .list_workspace_sources(&workspace_name)
-                .expect("list sources")
+                .load_catalog_unlocked()
+                .expect("load mirrored catalog")
+                .workspace_sources(&workspace_name)
                 .is_empty()
         );
         let source_name = SourceName::parse("secured_messages").expect("source");

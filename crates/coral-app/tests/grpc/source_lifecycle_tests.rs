@@ -1569,3 +1569,201 @@ origin = "imported"
         "newly added source should be in config"
     );
 }
+
+#[tokio::test]
+async fn import_source_writes_its_catalog_row_and_manifest() {
+    let harness = GrpcHarness::with_workspace().await;
+    let manifest_yaml = fixture_manifest_with_inputs_yaml();
+
+    harness
+        .import_source(
+            manifest_yaml.clone(),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "secret-token".to_string(),
+            }],
+        )
+        .await;
+
+    let entry = harness
+        .catalog_entry("secured_messages")
+        .await
+        .expect("the import should leave a catalog row");
+    assert_eq!(entry.version.as_deref(), Some("0.1.0"));
+    assert_eq!(entry.origin_kind, "imported");
+    assert_eq!(entry.credential_storage.as_deref(), Some("file"));
+    assert_eq!(
+        entry.variables,
+        vec![("API_BASE".to_string(), "https://example.com".to_string())]
+    );
+    // Only the key: the secret's value belongs to the credential store the
+    // `credential_storage` route names, never to the catalog.
+    assert_eq!(entry.secret_keys, vec!["API_TOKEN".to_string()]);
+    assert_eq!(entry.manifest_yaml.as_deref(), Some(manifest_yaml.as_str()));
+    assert!(harness.tombstoned_sources().await.is_empty());
+}
+
+#[tokio::test]
+async fn installed_sources_are_listed_from_their_catalog_row() {
+    let harness = GrpcHarness::with_workspace().await;
+    harness
+        .import_source(
+            fixture_manifest_with_inputs_yaml(),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "secret-token".to_string(),
+            }],
+        )
+        .await;
+
+    harness
+        .rewrite_catalog_variable("secured_messages", "API_BASE", "https://rewritten.example")
+        .await;
+
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].variables[0].value, "https://rewritten.example");
+
+    let fetched = harness
+        .source_client()
+        .get_source(Request::new(GetSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("get source")
+        .into_inner()
+        .source
+        .expect("get source response");
+    assert_eq!(fetched.variables[0].value, "https://rewritten.example");
+
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(
+        config_raw.contains("https://example.com"),
+        "the config mirror still holds the imported value: {config_raw}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_the_catalog_no_longer_holds_is_not_installed() {
+    let harness = GrpcHarness::with_workspace().await;
+    harness
+        .import_source(
+            fixture_manifest_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    harness.forget_catalog_row("local_messages").await;
+
+    assert!(harness.list_sources().await.is_empty());
+    for error in [
+        harness
+            .source_client()
+            .get_source(Request::new(GetSourceRequest {
+                workspace: Some(default_workspace()),
+                name: "local_messages".to_string(),
+            }))
+            .await
+            .expect_err("get should not answer for a forgotten source"),
+        harness
+            .source_client()
+            .get_source_info(Request::new(GetSourceInfoRequest {
+                workspace: Some(default_workspace()),
+                name: "local_messages".to_string(),
+            }))
+            .await
+            .expect_err("info should not answer for a forgotten source"),
+    ] {
+        assert_eq!(error.code(), tonic::Code::NotFound);
+    }
+
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(
+        config_raw.contains("[workspaces.default.sources.local_messages]"),
+        "the config mirror is untouched, so the listing came from the catalog: {config_raw}"
+    );
+}
+
+#[tokio::test]
+async fn delete_source_clears_its_catalog_rows_and_records_a_tombstone() {
+    let harness = GrpcHarness::with_workspace().await;
+    harness
+        .import_source(
+            fixture_manifest_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    assert_eq!(
+        harness.artifact_source_names().await,
+        vec!["local_messages".to_string()]
+    );
+
+    harness
+        .source_client()
+        .delete_source(Request::new(DeleteSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "local_messages".to_string(),
+        }))
+        .await
+        .expect("delete source");
+
+    assert!(harness.catalog_entry("local_messages").await.is_none());
+    assert!(
+        harness.artifact_source_names().await.is_empty(),
+        "deleting a source should take its artifact rows with it"
+    );
+    assert_eq!(
+        harness.tombstoned_sources().await,
+        vec!["local_messages".to_string()],
+        "the deletion is recorded so a peer host does not re-add it"
+    );
+}
+
+#[tokio::test]
+async fn reimporting_a_deleted_source_clears_its_tombstone() {
+    let harness = GrpcHarness::with_workspace().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+    harness
+        .import_source(manifest_yaml.clone(), Vec::new(), Vec::new())
+        .await;
+    harness
+        .source_client()
+        .delete_source(Request::new(DeleteSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "local_messages".to_string(),
+        }))
+        .await
+        .expect("delete source");
+    assert_eq!(harness.tombstoned_sources().await.len(), 1);
+
+    harness
+        .import_source(
+            manifest_yaml.replace("0.1.0", "0.2.0"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let entry = harness
+        .catalog_entry("local_messages")
+        .await
+        .expect("the re-import should leave a catalog row");
+    assert_eq!(entry.version.as_deref(), Some("0.2.0"));
+    assert!(
+        harness.tombstoned_sources().await.is_empty(),
+        "re-adding a source revokes the earlier deletion"
+    );
+}

@@ -270,6 +270,140 @@ impl GrpcHarness {
         )
         .expect("query rows")
     }
+
+    /// Everything the source catalog holds for one source of the default
+    /// workspace, or `None` when it holds no row for that name.
+    pub(crate) async fn catalog_entry(&self, source_name: &str) -> Option<CatalogEntry> {
+        let workspace = default_workspace().name;
+        let pool = open_app_database(&self.config_dir).await;
+        let source = sqlx::query_as::<_, (Option<String>, String, Option<String>)>(
+            "SELECT version, origin_kind, credential_storage FROM sources \
+             WHERE workspace_id = ? AND name = ?",
+        )
+        .bind(&workspace)
+        .bind(source_name)
+        .fetch_optional(&pool)
+        .await
+        .expect("read the catalog row");
+        let entry = match source {
+            Some((version, origin_kind, credential_storage)) => Some(CatalogEntry {
+                version,
+                origin_kind,
+                credential_storage,
+                variables: sqlx::query_as::<_, (String, String)>(
+                    "SELECT key, value FROM source_variables \
+                     WHERE workspace_id = ? AND source_name = ? ORDER BY key",
+                )
+                .bind(&workspace)
+                .bind(source_name)
+                .fetch_all(&pool)
+                .await
+                .expect("read the catalog variables"),
+                secret_keys: sqlx::query_scalar::<_, String>(
+                    "SELECT key FROM source_secret_keys \
+                     WHERE workspace_id = ? AND source_name = ? ORDER BY key",
+                )
+                .bind(&workspace)
+                .bind(source_name)
+                .fetch_all(&pool)
+                .await
+                .expect("read the catalog secret keys"),
+                manifest_yaml: sqlx::query_scalar::<_, String>(
+                    "SELECT manifest_yaml FROM source_manifests \
+                     WHERE workspace_id = ? AND source_name = ?",
+                )
+                .bind(&workspace)
+                .bind(source_name)
+                .fetch_optional(&pool)
+                .await
+                .expect("read the stored manifest"),
+            }),
+            None => None,
+        };
+        pool.close().await;
+        entry
+    }
+
+    /// The source names the artifact tables still hold rows for, whether or not
+    /// the catalog still lists those sources. A deletion that leaves a name
+    /// here left an artifact orphaned.
+    pub(crate) async fn artifact_source_names(&self) -> Vec<String> {
+        let pool = open_app_database(&self.config_dir).await;
+        let names = sqlx::query_scalar::<_, String>(
+            "SELECT source_name FROM source_manifests \
+             UNION SELECT source_name FROM materializations ORDER BY source_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read the artifact rows");
+        pool.close().await;
+        names
+    }
+
+    /// The sources this deployment recorded a deletion for.
+    pub(crate) async fn tombstoned_sources(&self) -> Vec<String> {
+        let pool = open_app_database(&self.config_dir).await;
+        let names = sqlx::query_scalar::<_, String>(
+            "SELECT source_name FROM source_tombstones ORDER BY source_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read the deletion records");
+        pool.close().await;
+        names
+    }
+
+    /// Rewrites one configured variable in the catalog behind the running
+    /// server's back, leaving `config.toml` and the installed files alone.
+    ///
+    /// Nothing an operator does produces this state; it is how a test tells a
+    /// database-backed read apart from one still served by the config mirror,
+    /// which would keep reporting the value the import wrote. The version is
+    /// not usable for this: listings repopulate it from the manifest file.
+    pub(crate) async fn rewrite_catalog_variable(&self, source_name: &str, key: &str, value: &str) {
+        let pool = open_app_database(&self.config_dir).await;
+        let updated = sqlx::query(
+            "UPDATE source_variables SET value = ? \
+             WHERE workspace_id = ? AND source_name = ? AND key = ?",
+        )
+        .bind(value)
+        .bind(default_workspace().name)
+        .bind(source_name)
+        .bind(key)
+        .execute(&pool)
+        .await
+        .expect("rewrite the catalog variable")
+        .rows_affected();
+        pool.close().await;
+        assert_eq!(updated, 1, "{source_name} should configure {key} once");
+    }
+
+    /// Drops one catalog row behind the running server's back, the way a peer
+    /// host's deletion reaches a database this server never re-read.
+    pub(crate) async fn forget_catalog_row(&self, source_name: &str) {
+        let pool = open_app_database(&self.config_dir).await;
+        let removed = sqlx::query("DELETE FROM sources WHERE workspace_id = ? AND name = ?")
+            .bind(default_workspace().name)
+            .bind(source_name)
+            .execute(&pool)
+            .await
+            .expect("drop the catalog row")
+            .rows_affected();
+        pool.close().await;
+        assert_eq!(removed, 1, "{source_name} should have one catalog row");
+    }
+}
+
+/// What the source catalog holds for one installed source, across the parent
+/// row, its two child sets, and its stored manifest.
+#[derive(Debug)]
+pub(crate) struct CatalogEntry {
+    pub(crate) version: Option<String>,
+    pub(crate) origin_kind: String,
+    pub(crate) credential_storage: Option<String>,
+    pub(crate) variables: Vec<(String, String)>,
+    pub(crate) secret_keys: Vec<String>,
+    pub(crate) manifest_yaml: Option<String>,
 }
 
 /// The configuration an unauthenticated deployment reads: no `[auth]` at all,
@@ -808,13 +942,19 @@ impl SharedDeployment {
     }
 
     async fn app_database(&self) -> sqlx::SqlitePool {
-        SqlitePoolOptions::new()
-            .connect_with(
-                SqliteConnectOptions::new().filename(self.install.config_dir().join("coral.db")),
-            )
-            .await
-            .expect("open the app database")
+        open_app_database(self.install.config_dir()).await
     }
+}
+
+/// Opens the `SQLite` database an install persists its app state in.
+///
+/// Tests read it to see what a deployment actually recorded, rather than only
+/// what an RPC chose to report back.
+async fn open_app_database(config_dir: &Path) -> sqlx::SqlitePool {
+    SqlitePoolOptions::new()
+        .connect_with(SqliteConnectOptions::new().filename(config_dir.join("coral.db")))
+        .await
+        .expect("open the app database")
 }
 
 fn span_names_workspace(line: &str, workspace_name: &str) -> bool {
