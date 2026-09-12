@@ -134,6 +134,13 @@ pub(crate) enum OpenApiToolsError {
         root: PathBuf,
     },
 
+    /// A local file reference is a symlink (rejected).
+    #[error("local file ref `{reference}` is a symlink; openapi-hydrate rejects symlinked refs")]
+    LocalFileSymlinkRejected {
+        /// Ref that pointed at a symlink.
+        reference: String,
+    },
+
     /// Final dereferencing failed.
     #[error("failed to dereference OpenAPI document: {message}")]
     DereferenceFailure {
@@ -800,11 +807,8 @@ fn reject_symlink_target(path: &Path, location: &str) -> Result<(), OpenApiTools
         source,
     })?;
     if metadata.file_type().is_symlink() {
-        return Err(OpenApiToolsError::LocalFileConfinementViolation {
+        return Err(OpenApiToolsError::LocalFileSymlinkRejected {
             reference: location.to_owned(),
-            root: path
-                .parent()
-                .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
         });
     }
     Ok(())
