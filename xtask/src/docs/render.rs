@@ -444,7 +444,7 @@ const INDEX_UPGRADING: &str = concat!(
     "\n## Upgrading bundled sources\n\n",
     "To update bundled sources, upgrade the Coral binary. Coral resolves each bundled manifest ",
     "from the current binary at validate or query time, so spec fixes and newly required inputs ",
-    "are picked up automatically, you don't need to remove and re-add the source. Your configured ",
+    "are picked up automatically; you don't need to remove and re-add the source. Your configured ",
     "variables and secrets stay in local state across upgrades.\n",
 );
 
