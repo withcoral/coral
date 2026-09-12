@@ -42,7 +42,7 @@ struct RemovedAuthServerSettings {
     removed_auth: Option<toml::Value>,
 }
 
-/// One fail-closed snapshot of the configuration used to prepare `coral serve`.
+/// One fail-closed snapshot of the configuration used to prepare `coral server`.
 pub(crate) struct LoadedServerConfig {
     config_path: PathBuf,
     raw: Zeroizing<String>,
@@ -73,7 +73,7 @@ impl LoadedServerConfig {
         reject_removed_auth(settings.removed_auth.as_ref())
     }
 
-    /// Resolves the settings `coral serve`'s companions are built from.
+    /// Resolves the settings `coral server`'s companions are built from.
     ///
     /// This returns validated configuration and resolved key material only. The
     /// caller constructs the services and owns their lifecycle, so resolving
@@ -346,11 +346,11 @@ impl McpHttpServeConfig {
     }
 }
 
-/// Validated settings for the companions `coral serve` composes beside gRPC.
+/// Validated settings for the companions `coral server` composes beside gRPC.
 ///
 /// Nothing here is live. The gRPC server's bootstrap resolves configuration; the
 /// call site turns these settings into services and owns their lifecycle, so a
-/// server builder never constructs a transport it does not run. `coral serve`
+/// server builder never constructs a transport it does not run. `coral server`
 /// composes them in `coral-cli`'s `serve::compose_session_policies`.
 pub struct ServeSettings {
     pub(super) mcp_http: Option<McpHttpServeConfig>,
