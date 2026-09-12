@@ -461,7 +461,7 @@ paths:
 
     assert!(matches!(
         error,
-        OpenApiToolsError::LocalFileConfinementViolation { .. }
+        OpenApiToolsError::LocalFileSymlinkRejected { .. }
     ));
 }
 
