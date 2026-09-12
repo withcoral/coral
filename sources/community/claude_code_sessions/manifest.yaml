@@ -1,0 +1,108 @@
+name: claude_code_sessions
+version: 0.1.0
+dsl_version: 3
+backend: file
+description: >-
+  Claude Code session context sharing — query prompt history and
+  project memories through SQL. Share decisions, preferences, and
+  learnings across sessions, collaborators, and agents.
+
+test_queries:
+  - SELECT display, project, "sessionId" FROM claude_code_sessions.history LIMIT 3
+  - SELECT name, type, description, project FROM claude_code_sessions.memories LIMIT 3
+
+tables:
+
+  # --------------------------------------------------------------------------
+  # claude_code_sessions.history — Claude Code prompt history
+  # Reads directly from ~/.claude/history.jsonl (no converter needed).
+  # --------------------------------------------------------------------------
+  - name: history
+    description: >-
+      Claude Code prompt history. Each row is a user prompt sent to
+      Claude Code, with the project path, session ID, and timestamp.
+      Data is written by Claude Code at ~/.claude/history.jsonl.
+    guide: |
+      No required filters. Start with:
+        SELECT display, project, "sessionId", timestamp
+        FROM claude_code_sessions.history LIMIT 20
+      Search prompts by keyword:
+        SELECT display, project
+        FROM claude_code_sessions.history
+        WHERE display LIKE '%coral%'
+      Find sessions for a project:
+        SELECT DISTINCT "sessionId", project
+        FROM claude_code_sessions.history
+        WHERE project LIKE '%terminal-3%'
+    format: jsonl
+    source:
+      location: file://~/.claude/history.jsonl
+    columns:
+      - name: display
+        type: Utf8
+        nullable: true
+        description: User prompt text sent to Claude Code.
+      - name: timestamp
+        type: Int64
+        nullable: true
+        description: Unix timestamp in milliseconds when the prompt was sent.
+      - name: project
+        type: Utf8
+        nullable: true
+        description: Absolute path to the project directory.
+      - name: sessionId
+        type: Utf8
+        nullable: true
+        description: UUID of the Claude Code session.
+
+  # --------------------------------------------------------------------------
+  # claude_code_sessions.memories — Project memories and context
+  # Reads from ~/.coral/claude_code_sessions/memories.jsonl (converter needed).
+  # --------------------------------------------------------------------------
+  - name: memories
+    description: >-
+      Claude Code project memories — decisions, preferences, context,
+      and learnings stored across sessions. Share this table to
+      transfer project knowledge to collaborators or other agents.
+    guide: |
+      Run the converter first:
+        python3 sources/community/claude_code_sessions/scripts/memories-to-jsonl.py
+      Then query:
+        SELECT name, type, description, project
+        FROM claude_code_sessions.memories
+      Search by type (user, project, feedback, reference):
+        SELECT name, description, body
+        FROM claude_code_sessions.memories
+        WHERE type = 'project'
+      Search by keyword:
+        SELECT name, description
+        FROM claude_code_sessions.memories
+        WHERE body LIKE '%coral%'
+    format: jsonl
+    source:
+      location: file://~/.coral/claude_code_sessions/memories.jsonl
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Slug identifier for the memory.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: One-line summary of the memory.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Memory type (user, project, feedback, reference).
+      - name: project
+        type: Utf8
+        nullable: true
+        description: Project directory path slug.
+      - name: origin_session_id
+        type: Utf8
+        nullable: true
+        description: Session that created this memory.
+      - name: body
+        type: Utf8
+        nullable: true
+        description: Full memory content (markdown).
