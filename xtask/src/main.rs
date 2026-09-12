@@ -11,7 +11,7 @@
 //!   - `perf-check` runs command-level performance regression checks.
 //!   - `benchmark` runs developer benchmarks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
-//!   - `release-macos-sign-notarize` signs and notarizes macOS release
+//!   - `release-macos-sign-notarize` signs, packages, and notarizes macOS release
 //!     artifacts.
 //!   - `release-desktop-macos-package` packages, signs, notarizes, and verifies
 //!     the prepared macOS desktop app.
