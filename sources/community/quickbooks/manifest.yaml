@@ -1,0 +1,4811 @@
+name: quickbooks
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query customers, vendors, items, the chart of accounts, invoices, bills,
+  payments, other transactions, and financial reports from QuickBooks Online.
+base_url: "{{input.QUICKBOOKS_BASE_URL}}/v3/company/{{input.QUICKBOOKS_REALM_ID}}"
+
+inputs:
+  QUICKBOOKS_REALM_ID:
+    kind: variable
+    hint: |
+      QuickBooks company ID (realm ID).
+
+      Find it in QuickBooks under Settings > Additional info, or in the
+      `realmId` query parameter Intuit returns after you authorize an app.
+  QUICKBOOKS_BASE_URL:
+    kind: variable
+    default: https://quickbooks.api.intuit.com
+    hint: |
+      QuickBooks Online Accounting API host.
+
+      Default (production companies):
+      https://quickbooks.api.intuit.com
+
+      Sandbox companies:
+      https://sandbox-quickbooks.api.intuit.com
+  QUICKBOOKS_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      OAuth 2.0 access token for the company in QUICKBOOKS_REALM_ID with the
+      `com.intuit.quickbooks.accounting` scope.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with QuickBooks
+          description: Authorize Coral in your browser with your own Intuit app.
+          hint: |
+            Create an app at https://developer.intuit.com with the Accounting
+            scope. Under Keys & credentials, add the redirect URI
+            `http://localhost:53682/oauth/callback`, then enter the app's
+            Client ID and Client Secret below. Intuit only accepts localhost
+            redirect URIs on Development keys, so this method works for
+            sandbox companies. Coral refreshes the one-hour access token.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: disabled
+            redirect_uri: http://localhost:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://appcenter.intuit.com/connect/oauth2
+              token_url: https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer
+            client:
+              id:
+                input: QUICKBOOKS_OAUTH_CLIENT_ID
+              secret:
+                input: QUICKBOOKS_OAUTH_CLIENT_SECRET
+                transport: basic_auth
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - com.intuit.quickbooks.accounting
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing QuickBooks OAuth access token.
+          hint: |
+            Paste an access token from your own OAuth flow or the Intuit
+            OAuth 2.0 Playground. It expires after one hour and Coral
+            cannot refresh a pasted token.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: QUICKBOOKS_ACCESS_TOKEN
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, company_name, country FROM quickbooks.company_info LIMIT 1
+  - SELECT id, name, classification FROM quickbooks.accounts LIMIT 1
+
+# Entity tables page with STARTPOSITION inside the query statement. Offset mode also
+# sends a startposition URL parameter, which QuickBooks ignores. page_size is unset
+# because QuickBooks can return a short page mid-stream; paging ends on an empty page.
+tables:
+  - name: company_info
+    description: Company profile of the connected QuickBooks company
+    guide: >-
+      Returns one row describing the connected company: legal name, address, fiscal year
+      start, and country. Use it as a cheap connectivity check.
+    request:
+      method: GET
+      path: /companyinfo/{{input.QUICKBOOKS_REALM_ID}}
+      query:
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [CompanyInfo]
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the company
+        expr: {kind: path, path: [Id]}
+      - name: company_name
+        type: Utf8
+        nullable: true
+        description: Company name shown in QuickBooks
+        expr: {kind: path, path: [CompanyName]}
+      - name: legal_name
+        type: Utf8
+        nullable: true
+        description: Legal business name
+        expr: {kind: path, path: [LegalName]}
+      - name: country
+        type: Utf8
+        nullable: true
+        description: Country code of the company
+        expr: {kind: path, path: [Country]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Company email address
+        expr: {kind: path, path: [Email, Address]}
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: Company phone number
+        expr: {kind: path, path: [PrimaryPhone, FreeFormNumber]}
+      - name: website
+        type: Utf8
+        nullable: true
+        description: Company website
+        expr: {kind: path, path: [WebAddr, URI]}
+      - name: company_start_date
+        type: Utf8
+        nullable: true
+        description: "Date the company started using QuickBooks, as YYYY-MM-DD"
+        expr: {kind: path, path: [CompanyStartDate]}
+      - name: fiscal_year_start_month
+        type: Utf8
+        nullable: true
+        description: "First month of the fiscal year, such as January"
+        expr: {kind: path, path: [FiscalYearStartMonth]}
+      - name: default_time_zone
+        type: Utf8
+        nullable: true
+        description: Default time zone of the company
+        expr: {kind: path, path: [DefaultTimeZone]}
+      - name: supported_languages
+        type: Utf8
+        nullable: true
+        description: Languages supported by the company file
+        expr: {kind: path, path: [SupportedLanguages]}
+      - name: company_addr
+        type: Json
+        nullable: true
+        description: Company address as a JSON object
+        expr: {kind: path, path: [CompanyAddr]}
+      - name: legal_addr
+        type: Json
+        nullable: true
+        description: Legal address as a JSON object
+        expr: {kind: path, path: [LegalAddr]}
+      - name: name_value
+        type: Json
+        nullable: true
+        description: >-
+          Extra company attributes as a JSON array of {Name, Value}, including
+          subscription and industry details
+        expr: {kind: path, path: [NameValue]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: accounts
+    description: "Chart of accounts, including inactive accounts"
+    guide: >-
+      One row per account in the chart of accounts. `classification` is Asset,
+      Liability, Equity, Revenue, or Expense. `current_balance` excludes sub-accounts;
+      `current_balance_with_sub_accounts` includes them. Inactive accounts are included;
+      filter on `active` to exclude them. The `updated_since` filter is sent to
+      QuickBooks; use it with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Account WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Account]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the account
+        expr: {kind: path, path: [Id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Account name
+        expr: {kind: path, path: [Name]}
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: "Account name including parent accounts, separated by colons"
+        expr: {kind: path, path: [FullyQualifiedName]}
+      - name: acct_num
+        type: Utf8
+        nullable: true
+        description: User-defined account number
+        expr: {kind: path, path: [AcctNum]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Account description
+        expr: {kind: path, path: [Description]}
+      - name: classification
+        type: Utf8
+        nullable: true
+        description: "Asset, Liability, Equity, Revenue, or Expense"
+        expr: {kind: path, path: [Classification]}
+      - name: account_type
+        type: Utf8
+        nullable: true
+        description: "Account type, such as Bank, Accounts Receivable, Income, or Expense"
+        expr: {kind: path, path: [AccountType]}
+      - name: account_sub_type
+        type: Utf8
+        nullable: true
+        description: Detail type of the account
+        expr: {kind: path, path: [AccountSubType]}
+      - name: sub_account
+        type: Boolean
+        nullable: true
+        description: Whether the account is a sub-account
+        expr: {kind: path, path: [SubAccount]}
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: ID of the parent account when this is a sub-account
+        expr: {kind: path, path: [ParentRef, value]}
+      - name: current_balance
+        type: Float64
+        nullable: true
+        description: "Balance of this account, excluding sub-accounts"
+        expr: {kind: path, path: [CurrentBalance]}
+      - name: current_balance_with_sub_accounts
+        type: Float64
+        nullable: true
+        description: Balance of this account including its sub-accounts
+        expr: {kind: path, path: [CurrentBalanceWithSubAccounts]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the account
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the account is active; inactive accounts are deleted in the QuickBooks UI
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: customers
+    description: "Customers, sub-customers, and projects, including inactive ones"
+    guide: >-
+      One row per customer. Sub-customers and projects are also rows; use `parent_id`,
+      `job`, and `is_project` to tell them apart. `balance` is the open A/R balance for
+      this customer only; `balance_with_jobs` includes sub-customers. Inactive customers
+      are included so historical transactions still join; filter on `active` to exclude
+      them. Join `id` to `customer_id` on transaction tables. The `updated_since` filter
+      is sent to QuickBooks; use it with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Customer WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Customer]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the customer
+        expr: {kind: path, path: [Id]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: "Name shown in QuickBooks; unique across customers, vendors, and employees"
+        expr: {kind: path, path: [DisplayName]}
+      - name: company_name
+        type: Utf8
+        nullable: true
+        description: Company name
+        expr: {kind: path, path: [CompanyName]}
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: "Name including parent customers, separated by colons"
+        expr: {kind: path, path: [FullyQualifiedName]}
+      - name: print_on_check_name
+        type: Utf8
+        nullable: true
+        description: Name printed on checks
+        expr: {kind: path, path: [PrintOnCheckName]}
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: First name
+        expr: {kind: path, path: [GivenName]}
+      - name: middle_name
+        type: Utf8
+        nullable: true
+        description: Middle name
+        expr: {kind: path, path: [MiddleName]}
+      - name: family_name
+        type: Utf8
+        nullable: true
+        description: Last name
+        expr: {kind: path, path: [FamilyName]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: "Title, such as Mr or Dr"
+        expr: {kind: path, path: [Title]}
+      - name: suffix
+        type: Utf8
+        nullable: true
+        description: "Name suffix, such as Jr"
+        expr: {kind: path, path: [Suffix]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Primary email address
+        expr: {kind: path, path: [PrimaryEmailAddr, Address]}
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: Primary phone number
+        expr: {kind: path, path: [PrimaryPhone, FreeFormNumber]}
+      - name: mobile
+        type: Utf8
+        nullable: true
+        description: Mobile phone number
+        expr: {kind: path, path: [Mobile, FreeFormNumber]}
+      - name: fax
+        type: Utf8
+        nullable: true
+        description: Fax number
+        expr: {kind: path, path: [Fax, FreeFormNumber]}
+      - name: website
+        type: Utf8
+        nullable: true
+        description: Website URL
+        expr: {kind: path, path: [WebAddr, URI]}
+      - name: bill_addr
+        type: Json
+        nullable: true
+        description: Billing address as a JSON object
+        expr: {kind: path, path: [BillAddr]}
+      - name: ship_addr
+        type: Json
+        nullable: true
+        description: Shipping address as a JSON object
+        expr: {kind: path, path: [ShipAddr]}
+      - name: balance
+        type: Float64
+        nullable: true
+        description: "Open accounts receivable balance, excluding sub-customers"
+        expr: {kind: path, path: [Balance]}
+      - name: balance_with_jobs
+        type: Float64
+        nullable: true
+        description: Open accounts receivable balance including sub-customers
+        expr: {kind: path, path: [BalanceWithJobs]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the customer
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: taxable
+        type: Boolean
+        nullable: true
+        description: Whether transactions for this customer are taxable
+        expr: {kind: path, path: [Taxable]}
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: ID of the parent customer for sub-customers and projects
+        expr: {kind: path, path: [ParentRef, value]}
+      - name: level
+        type: Int64
+        nullable: true
+        description: Depth in the customer hierarchy; 0 is a top-level customer
+        expr: {kind: path, path: [Level]}
+      - name: job
+        type: Boolean
+        nullable: true
+        description: Whether this is a sub-customer (job)
+        expr: {kind: path, path: [Job]}
+      - name: bill_with_parent
+        type: Boolean
+        nullable: true
+        description: Whether this sub-customer is billed through its parent
+        expr: {kind: path, path: [BillWithParent]}
+      - name: is_project
+        type: Boolean
+        nullable: true
+        description: Whether this customer record is a project
+        expr: {kind: path, path: [IsProject]}
+      - name: sales_term_id
+        type: Utf8
+        nullable: true
+        description: "ID of the default sales term; joins to `terms.id`"
+        expr: {kind: path, path: [SalesTermRef, value]}
+      - name: payment_method_id
+        type: Utf8
+        nullable: true
+        description: "ID of the default payment method; joins to `payment_methods.id`"
+        expr: {kind: path, path: [PaymentMethodRef, value]}
+      - name: preferred_delivery_method
+        type: Utf8
+        nullable: true
+        description: "Preferred invoice delivery method: Print, Email, or None"
+        expr: {kind: path, path: [PreferredDeliveryMethod]}
+      - name: resale_num
+        type: Utf8
+        nullable: true
+        description: Resale number for tax exemption
+        expr: {kind: path, path: [ResaleNum]}
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: Free-form notes about the customer
+        expr: {kind: path, path: [Notes]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the customer is active; inactive customers are deleted in the QuickBooks UI
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: vendors
+    description: "Vendors, including inactive ones"
+    guide: >-
+      One row per vendor. `balance` is the open accounts payable balance. Inactive
+      vendors are included so historical bills still join; filter on `active` to exclude
+      them. Join `id` to `vendor_id` on bills, purchase orders, bill payments, and
+      vendor credits. The `updated_since` filter is sent to QuickBooks; use it with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Vendor WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Vendor]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the vendor
+        expr: {kind: path, path: [Id]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: "Name shown in QuickBooks; unique across customers, vendors, and employees"
+        expr: {kind: path, path: [DisplayName]}
+      - name: company_name
+        type: Utf8
+        nullable: true
+        description: Company name
+        expr: {kind: path, path: [CompanyName]}
+      - name: print_on_check_name
+        type: Utf8
+        nullable: true
+        description: Name printed on checks
+        expr: {kind: path, path: [PrintOnCheckName]}
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: First name
+        expr: {kind: path, path: [GivenName]}
+      - name: middle_name
+        type: Utf8
+        nullable: true
+        description: Middle name
+        expr: {kind: path, path: [MiddleName]}
+      - name: family_name
+        type: Utf8
+        nullable: true
+        description: Last name
+        expr: {kind: path, path: [FamilyName]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: "Title, such as Mr or Dr"
+        expr: {kind: path, path: [Title]}
+      - name: suffix
+        type: Utf8
+        nullable: true
+        description: "Name suffix, such as Jr"
+        expr: {kind: path, path: [Suffix]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Primary email address
+        expr: {kind: path, path: [PrimaryEmailAddr, Address]}
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: Primary phone number
+        expr: {kind: path, path: [PrimaryPhone, FreeFormNumber]}
+      - name: mobile
+        type: Utf8
+        nullable: true
+        description: Mobile phone number
+        expr: {kind: path, path: [Mobile, FreeFormNumber]}
+      - name: fax
+        type: Utf8
+        nullable: true
+        description: Fax number
+        expr: {kind: path, path: [Fax, FreeFormNumber]}
+      - name: website
+        type: Utf8
+        nullable: true
+        description: Website URL
+        expr: {kind: path, path: [WebAddr, URI]}
+      - name: bill_addr
+        type: Json
+        nullable: true
+        description: Billing address as a JSON object
+        expr: {kind: path, path: [BillAddr]}
+      - name: acct_num
+        type: Utf8
+        nullable: true
+        description: Account number the vendor uses for this company
+        expr: {kind: path, path: [AcctNum]}
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Open accounts payable balance
+        expr: {kind: path, path: [Balance]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the vendor
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: vendor_1099
+        type: Boolean
+        nullable: true
+        description: Whether the vendor is tracked for 1099 reporting
+        expr: {kind: path, path: [Vendor1099]}
+      - name: term_id
+        type: Utf8
+        nullable: true
+        description: "ID of the default payment term; joins to `terms.id`"
+        expr: {kind: path, path: [TermRef, value]}
+      - name: bill_rate
+        type: Float64
+        nullable: true
+        description: Hourly billing rate
+        expr: {kind: path, path: [BillRate]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the vendor is active; inactive vendors are deleted in the QuickBooks UI
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: employees
+    description: "Employees, including inactive ones"
+    guide: >-
+      One row per employee record in QuickBooks. Payroll data such as pay rates and SSNs
+      is not exposed by the Accounting API. Inactive employees are included; filter on
+      `active` to exclude them. The `updated_since` filter is sent to QuickBooks; use it
+      with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Employee WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Employee]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the employee
+        expr: {kind: path, path: [Id]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Name shown in QuickBooks
+        expr: {kind: path, path: [DisplayName]}
+      - name: print_on_check_name
+        type: Utf8
+        nullable: true
+        description: Name printed on checks
+        expr: {kind: path, path: [PrintOnCheckName]}
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: First name
+        expr: {kind: path, path: [GivenName]}
+      - name: middle_name
+        type: Utf8
+        nullable: true
+        description: Middle name
+        expr: {kind: path, path: [MiddleName]}
+      - name: family_name
+        type: Utf8
+        nullable: true
+        description: Last name
+        expr: {kind: path, path: [FamilyName]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: "Title, such as Mr or Dr"
+        expr: {kind: path, path: [Title]}
+      - name: suffix
+        type: Utf8
+        nullable: true
+        description: "Name suffix, such as Jr"
+        expr: {kind: path, path: [Suffix]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Primary email address
+        expr: {kind: path, path: [PrimaryEmailAddr, Address]}
+      - name: phone
+        type: Utf8
+        nullable: true
+        description: Primary phone number
+        expr: {kind: path, path: [PrimaryPhone, FreeFormNumber]}
+      - name: mobile
+        type: Utf8
+        nullable: true
+        description: Mobile phone number
+        expr: {kind: path, path: [Mobile, FreeFormNumber]}
+      - name: employee_number
+        type: Utf8
+        nullable: true
+        description: Employee number
+        expr: {kind: path, path: [EmployeeNumber]}
+      - name: hired_date
+        type: Utf8
+        nullable: true
+        description: Hire date as YYYY-MM-DD
+        expr: {kind: path, path: [HiredDate]}
+      - name: released_date
+        type: Utf8
+        nullable: true
+        description: Release date as YYYY-MM-DD
+        expr: {kind: path, path: [ReleasedDate]}
+      - name: billable_time
+        type: Boolean
+        nullable: true
+        description: "Whether the employee's time is billable by default"
+        expr: {kind: path, path: [BillableTime]}
+      - name: bill_rate
+        type: Float64
+        nullable: true
+        description: Hourly billing rate
+        expr: {kind: path, path: [BillRate]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the employee is active
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: items
+    description: "Products and services, including inactive ones"
+    guide: >-
+      One row per product or service. `type` is Inventory, NonInventory, Service, Group,
+      or Category. Quantity fields are only set for inventory items. Inactive items are
+      included; filter on `active` to exclude them. The `updated_since` filter is sent
+      to QuickBooks; use it with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Item WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Item]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the item
+        expr: {kind: path, path: [Id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Item name
+        expr: {kind: path, path: [Name]}
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: "Item name including parent categories, separated by colons"
+        expr: {kind: path, path: [FullyQualifiedName]}
+      - name: sku
+        type: Utf8
+        nullable: true
+        description: Stock keeping unit
+        expr: {kind: path, path: [Sku]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Inventory, NonInventory, Service, Group, or Category"
+        expr: {kind: path, path: [Type]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Sales description
+        expr: {kind: path, path: [Description]}
+      - name: purchase_desc
+        type: Utf8
+        nullable: true
+        description: Purchase description
+        expr: {kind: path, path: [PurchaseDesc]}
+      - name: unit_price
+        type: Float64
+        nullable: true
+        description: Sales price per unit
+        expr: {kind: path, path: [UnitPrice]}
+      - name: purchase_cost
+        type: Float64
+        nullable: true
+        description: Purchase cost per unit
+        expr: {kind: path, path: [PurchaseCost]}
+      - name: taxable
+        type: Boolean
+        nullable: true
+        description: Whether the item is taxable
+        expr: {kind: path, path: [Taxable]}
+      - name: track_qty_on_hand
+        type: Boolean
+        nullable: true
+        description: Whether QuickBooks tracks quantity on hand for this item
+        expr: {kind: path, path: [TrackQtyOnHand]}
+      - name: qty_on_hand
+        type: Float64
+        nullable: true
+        description: Current quantity on hand for inventory items
+        expr: {kind: path, path: [QtyOnHand]}
+      - name: reorder_point
+        type: Float64
+        nullable: true
+        description: Quantity at which to reorder
+        expr: {kind: path, path: [ReorderPoint]}
+      - name: inv_start_date
+        type: Utf8
+        nullable: true
+        description: "Date inventory tracking started, as YYYY-MM-DD"
+        expr: {kind: path, path: [InvStartDate]}
+      - name: income_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the income account
+        expr: {kind: path, path: [IncomeAccountRef, value]}
+      - name: income_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the income account
+        expr: {kind: path, path: [IncomeAccountRef, name]}
+      - name: expense_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the expense account (COGS for inventory items)
+        expr: {kind: path, path: [ExpenseAccountRef, value]}
+      - name: expense_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the expense account (COGS for inventory items)
+        expr: {kind: path, path: [ExpenseAccountRef, name]}
+      - name: asset_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the inventory asset account
+        expr: {kind: path, path: [AssetAccountRef, value]}
+      - name: asset_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the inventory asset account
+        expr: {kind: path, path: [AssetAccountRef, name]}
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: ID of the parent category
+        expr: {kind: path, path: [ParentRef, value]}
+      - name: sub_item
+        type: Boolean
+        nullable: true
+        description: Whether the item is nested under a category
+        expr: {kind: path, path: [SubItem]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the item is active
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: classes
+    description: "Classes used to segment transactions, including inactive ones"
+    guide: >-
+      One row per class. Classes are only available when class tracking is turned on;
+      otherwise this table is empty. The `updated_since` filter is sent to QuickBooks;
+      use it with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Class WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Class]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the class
+        expr: {kind: path, path: [Id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Class name
+        expr: {kind: path, path: [Name]}
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: "Class name including parent classes, separated by colons"
+        expr: {kind: path, path: [FullyQualifiedName]}
+      - name: sub_class
+        type: Boolean
+        nullable: true
+        description: Whether the class is nested under another class
+        expr: {kind: path, path: [SubClass]}
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: ID of the parent class
+        expr: {kind: path, path: [ParentRef, value]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the class is active
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: departments
+    description: "Locations (departments), including inactive ones"
+    guide: >-
+      One row per location. QuickBooks calls these locations in the UI and Department in
+      the API. Only available when location tracking is turned on; otherwise this table
+      is empty. The `updated_since` filter is sent to QuickBooks; use it with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Department WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Department]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the location
+        expr: {kind: path, path: [Id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Location name
+        expr: {kind: path, path: [Name]}
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: "Location name including parent locations, separated by colons"
+        expr: {kind: path, path: [FullyQualifiedName]}
+      - name: sub_department
+        type: Boolean
+        nullable: true
+        description: Whether the location is nested under another location
+        expr: {kind: path, path: [SubDepartment]}
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: ID of the parent location
+        expr: {kind: path, path: [ParentRef, value]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the location is active
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: terms
+    description: "Payment terms, including inactive ones"
+    guide: >-
+      One row per payment term, such as Net 30. `type` is STANDARD (due after a number
+      of days) or DATE_DRIVEN (due on a day of the month). The `updated_since` filter is
+      sent to QuickBooks; use it with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Term WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Term]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the term
+        expr: {kind: path, path: [Id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Term name
+        expr: {kind: path, path: [Name]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: STANDARD or DATE_DRIVEN
+        expr: {kind: path, path: [Type]}
+      - name: due_days
+        type: Int64
+        nullable: true
+        description: "Days until payment is due, for STANDARD terms"
+        expr: {kind: path, path: [DueDays]}
+      - name: discount_days
+        type: Int64
+        nullable: true
+        description: "Days within which a discount applies, for STANDARD terms"
+        expr: {kind: path, path: [DiscountDays]}
+      - name: discount_percent
+        type: Float64
+        nullable: true
+        description: Early payment discount percentage
+        expr: {kind: path, path: [DiscountPercent]}
+      - name: day_of_month_due
+        type: Int64
+        nullable: true
+        description: "Day of the month payment is due, for DATE_DRIVEN terms"
+        expr: {kind: path, path: [DayOfMonthDue]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the term is active
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: payment_methods
+    description: "Payment methods, including inactive ones"
+    guide: >-
+      One row per payment method, such as Cash, Check, or Visa. `type` is CREDIT_CARD or
+      NON_CREDIT_CARD. The `updated_since` filter is sent to QuickBooks; use it with
+      `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM PaymentMethod WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, PaymentMethod]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the payment method
+        expr: {kind: path, path: [Id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Payment method name
+        expr: {kind: path, path: [Name]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: CREDIT_CARD or NON_CREDIT_CARD
+        expr: {kind: path, path: [Type]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the payment method is active
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: tax_codes
+    description: Sales tax codes
+    guide: >-
+      One row per tax code, including the built-in TAX and NON codes that line items
+      reference. QuickBooks drops those built-in codes from any filtered query, so this
+      table takes no filters and returns active codes only. Rate details are JSON; join
+      the TaxRateRef values inside them to `tax_rates.id`.
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: "SELECT * FROM TaxCode ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000"
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, TaxCode]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the tax code
+        expr: {kind: path, path: [Id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tax code name
+        expr: {kind: path, path: [Name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Tax code description
+        expr: {kind: path, path: [Description]}
+      - name: taxable
+        type: Boolean
+        nullable: true
+        description: Whether the code applies tax
+        expr: {kind: path, path: [Taxable]}
+      - name: tax_group
+        type: Boolean
+        nullable: true
+        description: Whether the code combines several tax rates
+        expr: {kind: path, path: [TaxGroup]}
+      - name: sales_tax_rate_list
+        type: Json
+        nullable: true
+        description: Sales tax rates applied by this code as a JSON object
+        expr: {kind: path, path: [SalesTaxRateList]}
+      - name: purchase_tax_rate_list
+        type: Json
+        nullable: true
+        description: Purchase tax rates applied by this code as a JSON object
+        expr: {kind: path, path: [PurchaseTaxRateList]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the tax code is active
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: tax_rates
+    description: "Sales tax rates, including inactive ones"
+    guide: >-
+      One row per tax rate. `rate_value` is a percentage, for example 8.5. The
+      `updated_since` filter is sent to QuickBooks; use it with `=`.
+    filters:
+      - name: updated_since
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM TaxRate WHERE Active IN (true, false) AND
+            MetaData.LastUpdatedTime >= '{{filter.updated_since|1970-01-01T00:00:00Z}}'
+            ORDERBY Id STARTPOSITION {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, TaxRate]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the tax rate
+        expr: {kind: path, path: [Id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tax rate name
+        expr: {kind: path, path: [Name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Tax rate description
+        expr: {kind: path, path: [Description]}
+      - name: rate_value
+        type: Float64
+        nullable: true
+        description: Rate as a percentage
+        expr: {kind: path, path: [RateValue]}
+      - name: agency_id
+        type: Utf8
+        nullable: true
+        description: ID of the tax agency that collects this rate
+        expr: {kind: path, path: [AgencyRef, value]}
+      - name: special_tax_type
+        type: Utf8
+        nullable: true
+        description: "Special tax type, when applicable"
+        expr: {kind: path, path: [SpecialTaxType]}
+      - name: active
+        type: Boolean
+        nullable: true
+        description: Whether the tax rate is active
+        expr: {kind: path, path: [Active]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: invoices
+    description: Invoices sent to customers
+    guide: >-
+      One row per invoice. Open invoices have `balance` > 0; overdue invoices also have
+      `due_date` before today. Line items are JSON in `lines`; use
+      `unnest(json_get_array(lines))` to get one row per line. Payments that settled an
+      invoice appear in `linked_txns` and in `payments.lines`. The `txn_date_from`,
+      `txn_date_to`, and `updated_since` filters are sent to QuickBooks; use them with
+      `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Invoice WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Invoice]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the invoice
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the invoice as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the invoice (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: due_date
+        type: Utf8
+        nullable: true
+        description: "Date the invoice is due, as YYYY-MM-DD"
+        expr: {kind: path, path: [DueDate]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: ID of the customer
+        expr: {kind: path, path: [CustomerRef, value]}
+      - name: customer_name
+        type: Utf8
+        nullable: true
+        description: Display name of the customer
+        expr: {kind: path, path: [CustomerRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: "Total amount of the invoice, including tax"
+        expr: {kind: path, path: [TotalAmt]}
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Amount still owed on the invoice; 0 means fully paid or applied
+        expr: {kind: path, path: [Balance]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: home_total_amt
+        type: Float64
+        nullable: true
+        description: Total amount in the home currency (multicurrency companies only)
+        expr: {kind: path, path: [HomeTotalAmt]}
+      - name: total_tax
+        type: Float64
+        nullable: true
+        description: Total sales tax on the transaction
+        expr: {kind: path, path: [TxnTaxDetail, TotalTax]}
+      - name: sales_term_id
+        type: Utf8
+        nullable: true
+        description: ID of the sales term
+        expr: {kind: path, path: [SalesTermRef, value]}
+      - name: deposit
+        type: Float64
+        nullable: true
+        description: Deposit amount already received against the invoice
+        expr: {kind: path, path: [Deposit]}
+      - name: ship_date
+        type: Utf8
+        nullable: true
+        description: Ship date as YYYY-MM-DD
+        expr: {kind: path, path: [ShipDate]}
+      - name: tracking_num
+        type: Utf8
+        nullable: true
+        description: Shipping tracking number
+        expr: {kind: path, path: [TrackingNum]}
+      - name: allow_online_payment
+        type: Boolean
+        nullable: true
+        description: Whether the customer can pay online
+        expr: {kind: path, path: [AllowOnlinePayment]}
+      - name: home_balance
+        type: Float64
+        nullable: true
+        description: Open balance in the home currency (multicurrency companies only)
+        expr: {kind: path, path: [HomeBalance]}
+      - name: customer_memo
+        type: Utf8
+        nullable: true
+        description: Message shown to the customer on the invoice
+        expr: {kind: path, path: [CustomerMemo, value]}
+      - name: bill_email
+        type: Utf8
+        nullable: true
+        description: Email address the document is sent to
+        expr: {kind: path, path: [BillEmail, Address]}
+      - name: email_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToSend, or EmailSent"
+        expr: {kind: path, path: [EmailStatus]}
+      - name: print_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToPrint, or PrintComplete"
+        expr: {kind: path, path: [PrintStatus]}
+      - name: class_id
+        type: Utf8
+        nullable: true
+        description: ID of the class
+        expr: {kind: path, path: [ClassRef, value]}
+      - name: class_name
+        type: Utf8
+        nullable: true
+        description: Display name of the class
+        expr: {kind: path, path: [ClassRef, name]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: bill_addr
+        type: Json
+        nullable: true
+        description: "Billing address as a JSON object (Line1-Line5, City, CountrySubDivisionCode, PostalCode, Country)"
+        expr: {kind: path, path: [BillAddr]}
+      - name: ship_addr
+        type: Json
+        nullable: true
+        description: >-
+          Shipping address as a JSON object (Line1-Line5, City, CountrySubDivisionCode,
+          PostalCode, Country)
+        expr: {kind: path, path: [ShipAddr]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the invoice as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: linked_txns
+        type: Json
+        nullable: true
+        description: "Transactions linked to this one as a JSON array of {TxnId, TxnType}"
+        expr: {kind: path, path: [LinkedTxn]}
+      - name: custom_fields
+        type: Json
+        nullable: true
+        description: "Custom field values as a JSON array of {DefinitionId, Name, Type, StringValue}"
+        expr: {kind: path, path: [CustomField]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the invoice
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: estimates
+    description: Estimates (quotes) sent to customers
+    guide: >-
+      One row per estimate. `txn_status` is Pending, Accepted, Closed, or Rejected. An
+      estimate converted to an invoice lists that invoice in `linked_txns`. The
+      `txn_date_from`, `txn_date_to`, and `updated_since` filters are sent to
+      QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Estimate WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Estimate]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the estimate
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the estimate as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the estimate (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: ID of the customer
+        expr: {kind: path, path: [CustomerRef, value]}
+      - name: customer_name
+        type: Utf8
+        nullable: true
+        description: Display name of the customer
+        expr: {kind: path, path: [CustomerRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: "Total amount of the estimate, including tax"
+        expr: {kind: path, path: [TotalAmt]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: home_total_amt
+        type: Float64
+        nullable: true
+        description: Total amount in the home currency (multicurrency companies only)
+        expr: {kind: path, path: [HomeTotalAmt]}
+      - name: total_tax
+        type: Float64
+        nullable: true
+        description: Total sales tax on the transaction
+        expr: {kind: path, path: [TxnTaxDetail, TotalTax]}
+      - name: txn_status
+        type: Utf8
+        nullable: true
+        description: "Pending, Accepted, Closed, or Rejected"
+        expr: {kind: path, path: [TxnStatus]}
+      - name: expiration_date
+        type: Utf8
+        nullable: true
+        description: "Date the estimate expires, as YYYY-MM-DD"
+        expr: {kind: path, path: [ExpirationDate]}
+      - name: accepted_by
+        type: Utf8
+        nullable: true
+        description: Name of the person who accepted the estimate
+        expr: {kind: path, path: [AcceptedBy]}
+      - name: accepted_date
+        type: Utf8
+        nullable: true
+        description: "Date the estimate was accepted, as YYYY-MM-DD"
+        expr: {kind: path, path: [AcceptedDate]}
+      - name: customer_memo
+        type: Utf8
+        nullable: true
+        description: Message shown to the customer on the estimate
+        expr: {kind: path, path: [CustomerMemo, value]}
+      - name: bill_email
+        type: Utf8
+        nullable: true
+        description: Email address the document is sent to
+        expr: {kind: path, path: [BillEmail, Address]}
+      - name: email_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToSend, or EmailSent"
+        expr: {kind: path, path: [EmailStatus]}
+      - name: print_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToPrint, or PrintComplete"
+        expr: {kind: path, path: [PrintStatus]}
+      - name: class_id
+        type: Utf8
+        nullable: true
+        description: ID of the class
+        expr: {kind: path, path: [ClassRef, value]}
+      - name: class_name
+        type: Utf8
+        nullable: true
+        description: Display name of the class
+        expr: {kind: path, path: [ClassRef, name]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: bill_addr
+        type: Json
+        nullable: true
+        description: "Billing address as a JSON object (Line1-Line5, City, CountrySubDivisionCode, PostalCode, Country)"
+        expr: {kind: path, path: [BillAddr]}
+      - name: ship_addr
+        type: Json
+        nullable: true
+        description: >-
+          Shipping address as a JSON object (Line1-Line5, City, CountrySubDivisionCode,
+          PostalCode, Country)
+        expr: {kind: path, path: [ShipAddr]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the estimate as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: linked_txns
+        type: Json
+        nullable: true
+        description: "Transactions linked to this one as a JSON array of {TxnId, TxnType}"
+        expr: {kind: path, path: [LinkedTxn]}
+      - name: custom_fields
+        type: Json
+        nullable: true
+        description: "Custom field values as a JSON array of {DefinitionId, Name, Type, StringValue}"
+        expr: {kind: path, path: [CustomField]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the estimate
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: sales_receipts
+    description: Sales receipts for sales paid in full at the time of sale
+    guide: >-
+      One row per sales receipt. Unlike invoices, sales receipts are paid when created,
+      so there is no open balance to collect. The `txn_date_from`, `txn_date_to`, and
+      `updated_since` filters are sent to QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM SalesReceipt WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, SalesReceipt]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the sales receipt
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the sales receipt as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the sales receipt (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: ID of the customer
+        expr: {kind: path, path: [CustomerRef, value]}
+      - name: customer_name
+        type: Utf8
+        nullable: true
+        description: Display name of the customer
+        expr: {kind: path, path: [CustomerRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: "Total amount of the sales receipt, including tax"
+        expr: {kind: path, path: [TotalAmt]}
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Amount still owed on the sales receipt; 0 means fully paid or applied
+        expr: {kind: path, path: [Balance]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: home_total_amt
+        type: Float64
+        nullable: true
+        description: Total amount in the home currency (multicurrency companies only)
+        expr: {kind: path, path: [HomeTotalAmt]}
+      - name: total_tax
+        type: Float64
+        nullable: true
+        description: Total sales tax on the transaction
+        expr: {kind: path, path: [TxnTaxDetail, TotalTax]}
+      - name: deposit_to_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the account the payment was deposited to
+        expr: {kind: path, path: [DepositToAccountRef, value]}
+      - name: deposit_to_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the account the payment was deposited to
+        expr: {kind: path, path: [DepositToAccountRef, name]}
+      - name: payment_method_id
+        type: Utf8
+        nullable: true
+        description: "ID of the payment method; joins to `payment_methods.id`"
+        expr: {kind: path, path: [PaymentMethodRef, value]}
+      - name: payment_ref_num
+        type: Utf8
+        nullable: true
+        description: "Payment reference, such as a check number"
+        expr: {kind: path, path: [PaymentRefNum]}
+      - name: customer_memo
+        type: Utf8
+        nullable: true
+        description: Message shown to the customer on the sales receipt
+        expr: {kind: path, path: [CustomerMemo, value]}
+      - name: bill_email
+        type: Utf8
+        nullable: true
+        description: Email address the document is sent to
+        expr: {kind: path, path: [BillEmail, Address]}
+      - name: email_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToSend, or EmailSent"
+        expr: {kind: path, path: [EmailStatus]}
+      - name: print_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToPrint, or PrintComplete"
+        expr: {kind: path, path: [PrintStatus]}
+      - name: class_id
+        type: Utf8
+        nullable: true
+        description: ID of the class
+        expr: {kind: path, path: [ClassRef, value]}
+      - name: class_name
+        type: Utf8
+        nullable: true
+        description: Display name of the class
+        expr: {kind: path, path: [ClassRef, name]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: bill_addr
+        type: Json
+        nullable: true
+        description: "Billing address as a JSON object (Line1-Line5, City, CountrySubDivisionCode, PostalCode, Country)"
+        expr: {kind: path, path: [BillAddr]}
+      - name: ship_addr
+        type: Json
+        nullable: true
+        description: >-
+          Shipping address as a JSON object (Line1-Line5, City, CountrySubDivisionCode,
+          PostalCode, Country)
+        expr: {kind: path, path: [ShipAddr]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the sales receipt as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: linked_txns
+        type: Json
+        nullable: true
+        description: "Transactions linked to this one as a JSON array of {TxnId, TxnType}"
+        expr: {kind: path, path: [LinkedTxn]}
+      - name: custom_fields
+        type: Json
+        nullable: true
+        description: "Custom field values as a JSON array of {DefinitionId, Name, Type, StringValue}"
+        expr: {kind: path, path: [CustomField]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the sales receipt
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: credit_memos
+    description: Credit memos issued to customers
+    guide: >-
+      One row per credit memo. `remaining_credit` is the amount not yet applied to
+      invoices. The `txn_date_from`, `txn_date_to`, and `updated_since` filters are sent
+      to QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM CreditMemo WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, CreditMemo]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the credit memo
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the credit memo as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the credit memo (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: ID of the customer
+        expr: {kind: path, path: [CustomerRef, value]}
+      - name: customer_name
+        type: Utf8
+        nullable: true
+        description: Display name of the customer
+        expr: {kind: path, path: [CustomerRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: "Total amount of the credit memo, including tax"
+        expr: {kind: path, path: [TotalAmt]}
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Amount still owed on the credit memo; 0 means fully paid or applied
+        expr: {kind: path, path: [Balance]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: home_total_amt
+        type: Float64
+        nullable: true
+        description: Total amount in the home currency (multicurrency companies only)
+        expr: {kind: path, path: [HomeTotalAmt]}
+      - name: total_tax
+        type: Float64
+        nullable: true
+        description: Total sales tax on the transaction
+        expr: {kind: path, path: [TxnTaxDetail, TotalTax]}
+      - name: remaining_credit
+        type: Float64
+        nullable: true
+        description: Credit not yet applied to invoices
+        expr: {kind: path, path: [RemainingCredit]}
+      - name: customer_memo
+        type: Utf8
+        nullable: true
+        description: Message shown to the customer on the credit memo
+        expr: {kind: path, path: [CustomerMemo, value]}
+      - name: bill_email
+        type: Utf8
+        nullable: true
+        description: Email address the document is sent to
+        expr: {kind: path, path: [BillEmail, Address]}
+      - name: email_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToSend, or EmailSent"
+        expr: {kind: path, path: [EmailStatus]}
+      - name: print_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToPrint, or PrintComplete"
+        expr: {kind: path, path: [PrintStatus]}
+      - name: class_id
+        type: Utf8
+        nullable: true
+        description: ID of the class
+        expr: {kind: path, path: [ClassRef, value]}
+      - name: class_name
+        type: Utf8
+        nullable: true
+        description: Display name of the class
+        expr: {kind: path, path: [ClassRef, name]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: bill_addr
+        type: Json
+        nullable: true
+        description: "Billing address as a JSON object (Line1-Line5, City, CountrySubDivisionCode, PostalCode, Country)"
+        expr: {kind: path, path: [BillAddr]}
+      - name: ship_addr
+        type: Json
+        nullable: true
+        description: >-
+          Shipping address as a JSON object (Line1-Line5, City, CountrySubDivisionCode,
+          PostalCode, Country)
+        expr: {kind: path, path: [ShipAddr]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the credit memo as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: custom_fields
+        type: Json
+        nullable: true
+        description: "Custom field values as a JSON array of {DefinitionId, Name, Type, StringValue}"
+        expr: {kind: path, path: [CustomField]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the credit memo
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: refund_receipts
+    description: Refunds paid to customers
+    guide: >-
+      One row per refund receipt. The `txn_date_from`, `txn_date_to`, and
+      `updated_since` filters are sent to QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM RefundReceipt WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, RefundReceipt]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the refund receipt
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the refund receipt as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the refund receipt (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: ID of the customer
+        expr: {kind: path, path: [CustomerRef, value]}
+      - name: customer_name
+        type: Utf8
+        nullable: true
+        description: Display name of the customer
+        expr: {kind: path, path: [CustomerRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: "Total amount of the refund receipt, including tax"
+        expr: {kind: path, path: [TotalAmt]}
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Amount still owed on the refund receipt; 0 means fully paid or applied
+        expr: {kind: path, path: [Balance]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: home_total_amt
+        type: Float64
+        nullable: true
+        description: Total amount in the home currency (multicurrency companies only)
+        expr: {kind: path, path: [HomeTotalAmt]}
+      - name: total_tax
+        type: Float64
+        nullable: true
+        description: Total sales tax on the transaction
+        expr: {kind: path, path: [TxnTaxDetail, TotalTax]}
+      - name: deposit_to_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the account the refund was paid from
+        expr: {kind: path, path: [DepositToAccountRef, value]}
+      - name: deposit_to_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the account the refund was paid from
+        expr: {kind: path, path: [DepositToAccountRef, name]}
+      - name: payment_method_id
+        type: Utf8
+        nullable: true
+        description: "ID of the payment method; joins to `payment_methods.id`"
+        expr: {kind: path, path: [PaymentMethodRef, value]}
+      - name: payment_ref_num
+        type: Utf8
+        nullable: true
+        description: "Payment reference, such as a check number"
+        expr: {kind: path, path: [PaymentRefNum]}
+      - name: customer_memo
+        type: Utf8
+        nullable: true
+        description: Message shown to the customer on the refund receipt
+        expr: {kind: path, path: [CustomerMemo, value]}
+      - name: bill_email
+        type: Utf8
+        nullable: true
+        description: Email address the document is sent to
+        expr: {kind: path, path: [BillEmail, Address]}
+      - name: print_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToPrint, or PrintComplete"
+        expr: {kind: path, path: [PrintStatus]}
+      - name: class_id
+        type: Utf8
+        nullable: true
+        description: ID of the class
+        expr: {kind: path, path: [ClassRef, value]}
+      - name: class_name
+        type: Utf8
+        nullable: true
+        description: Display name of the class
+        expr: {kind: path, path: [ClassRef, name]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: bill_addr
+        type: Json
+        nullable: true
+        description: "Billing address as a JSON object (Line1-Line5, City, CountrySubDivisionCode, PostalCode, Country)"
+        expr: {kind: path, path: [BillAddr]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the refund receipt as a JSON array; each element has
+          Description, Amount, DetailType, and a detail object named after its
+          DetailType
+        expr: {kind: path, path: [Line]}
+      - name: custom_fields
+        type: Json
+        nullable: true
+        description: "Custom field values as a JSON array of {DefinitionId, Name, Type, StringValue}"
+        expr: {kind: path, path: [CustomField]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the refund receipt
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: payments
+    description: Payments received from customers
+    guide: >-
+      One row per customer payment. `lines` holds the invoices and credit memos the
+      payment was applied to; each element's LinkedTxn array has TxnId and TxnType.
+      `unapplied_amt` is the part not yet applied to any invoice. The `txn_date_from`,
+      `txn_date_to`, and `updated_since` filters are sent to QuickBooks; use them with
+      `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Payment WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Payment]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the payment
+        expr: {kind: path, path: [Id]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the payment (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: ID of the customer
+        expr: {kind: path, path: [CustomerRef, value]}
+      - name: customer_name
+        type: Utf8
+        nullable: true
+        description: Display name of the customer
+        expr: {kind: path, path: [CustomerRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: Total amount received
+        expr: {kind: path, path: [TotalAmt]}
+      - name: unapplied_amt
+        type: Float64
+        nullable: true
+        description: Amount not yet applied to invoices
+        expr: {kind: path, path: [UnappliedAmt]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: payment_ref_num
+        type: Utf8
+        nullable: true
+        description: "Payment reference, such as a check number"
+        expr: {kind: path, path: [PaymentRefNum]}
+      - name: payment_method_id
+        type: Utf8
+        nullable: true
+        description: "ID of the payment method; joins to `payment_methods.id`"
+        expr: {kind: path, path: [PaymentMethodRef, value]}
+      - name: deposit_to_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the account the payment was deposited to
+        expr: {kind: path, path: [DepositToAccountRef, value]}
+      - name: process_payment
+        type: Boolean
+        nullable: true
+        description: Whether QuickBooks Payments processed the payment
+        expr: {kind: path, path: [ProcessPayment]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the payment as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: linked_txns
+        type: Json
+        nullable: true
+        description: "Transactions linked to this one as a JSON array of {TxnId, TxnType}"
+        expr: {kind: path, path: [LinkedTxn]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the payment
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: deposits
+    description: Bank deposits
+    guide: >-
+      One row per deposit. `lines` holds the deposited payments and other funds.
+      Undeposited customer payments are not deposits until grouped here. The
+      `txn_date_from`, `txn_date_to`, and `updated_since` filters are sent to
+      QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Deposit WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Deposit]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the deposit
+        expr: {kind: path, path: [Id]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the deposit (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: deposit_to_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the bank account
+        expr: {kind: path, path: [DepositToAccountRef, value]}
+      - name: deposit_to_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the bank account
+        expr: {kind: path, path: [DepositToAccountRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: Total deposited amount
+        expr: {kind: path, path: [TotalAmt]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: cash_back
+        type: Json
+        nullable: true
+        description: Cash back details as a JSON object
+        expr: {kind: path, path: [CashBack]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the deposit as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the deposit
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: bills
+    description: Bills received from vendors
+    guide: >-
+      One row per bill (accounts payable). Unpaid bills have `balance` > 0. Line items
+      are JSON in `lines`; each element's detail holds the expense account or item and
+      optional customer for billable expenses. The `txn_date_from`, `txn_date_to`, and
+      `updated_since` filters are sent to QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Bill WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Bill]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the bill
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the bill as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the bill (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: due_date
+        type: Utf8
+        nullable: true
+        description: "Date the bill is due, as YYYY-MM-DD"
+        expr: {kind: path, path: [DueDate]}
+      - name: vendor_id
+        type: Utf8
+        nullable: true
+        description: ID of the vendor
+        expr: {kind: path, path: [VendorRef, value]}
+      - name: vendor_name
+        type: Utf8
+        nullable: true
+        description: Display name of the vendor
+        expr: {kind: path, path: [VendorRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: Total amount of the bill
+        expr: {kind: path, path: [TotalAmt]}
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Amount still owed; 0 means fully paid
+        expr: {kind: path, path: [Balance]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: home_balance
+        type: Float64
+        nullable: true
+        description: Open balance in the home currency (multicurrency companies only)
+        expr: {kind: path, path: [HomeBalance]}
+      - name: ap_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the accounts payable account
+        expr: {kind: path, path: [APAccountRef, value]}
+      - name: ap_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the accounts payable account
+        expr: {kind: path, path: [APAccountRef, name]}
+      - name: sales_term_id
+        type: Utf8
+        nullable: true
+        description: "ID of the payment term; joins to `terms.id`"
+        expr: {kind: path, path: [SalesTermRef, value]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: vendor_addr
+        type: Json
+        nullable: true
+        description: "Vendor address as a JSON object (Line1-Line5, City, CountrySubDivisionCode, PostalCode, Country)"
+        expr: {kind: path, path: [VendorAddr]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the bill as a JSON array; each element has Description, Amount,
+          DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: linked_txns
+        type: Json
+        nullable: true
+        description: "Transactions linked to this one as a JSON array of {TxnId, TxnType}"
+        expr: {kind: path, path: [LinkedTxn]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the bill
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: bill_payments
+    description: Payments made to vendors against bills
+    guide: >-
+      One row per bill payment. `pay_type` is Check or CreditCard; the paying account is
+      in `bank_account_id` or `credit_card_account_id`. `lines` holds the bills that
+      were paid. The `txn_date_from`, `txn_date_to`, and `updated_since` filters are
+      sent to QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM BillPayment WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, BillPayment]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the bill payment
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the bill payment as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the bill payment (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: vendor_id
+        type: Utf8
+        nullable: true
+        description: ID of the vendor
+        expr: {kind: path, path: [VendorRef, value]}
+      - name: vendor_name
+        type: Utf8
+        nullable: true
+        description: Display name of the vendor
+        expr: {kind: path, path: [VendorRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: Total amount paid
+        expr: {kind: path, path: [TotalAmt]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: pay_type
+        type: Utf8
+        nullable: true
+        description: Check or CreditCard
+        expr: {kind: path, path: [PayType]}
+      - name: bank_account_id
+        type: Utf8
+        nullable: true
+        description: "ID of the bank account used, for check payments"
+        expr: {kind: path, path: [CheckPayment, BankAccountRef, value]}
+      - name: bank_account_name
+        type: Utf8
+        nullable: true
+        description: "Name of the bank account used, for check payments"
+        expr: {kind: path, path: [CheckPayment, BankAccountRef, name]}
+      - name: credit_card_account_id
+        type: Utf8
+        nullable: true
+        description: "ID of the credit card account used, for credit card payments"
+        expr: {kind: path, path: [CreditCardPayment, CCAccountRef, value]}
+      - name: credit_card_account_name
+        type: Utf8
+        nullable: true
+        description: "Name of the credit card account used, for credit card payments"
+        expr: {kind: path, path: [CreditCardPayment, CCAccountRef, name]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the bill payment as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the bill payment
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: purchases
+    description: "Expenses, checks, and credit card charges"
+    guide: >-
+      One row per purchase. `payment_type` is Cash, Check, or CreditCard; `credit` is
+      true for credit card refunds. The payee can be a vendor, customer, or employee:
+      check `entity_type`. Line items are JSON in `lines`. The `txn_date_from`,
+      `txn_date_to`, and `updated_since` filters are sent to QuickBooks; use them with
+      `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Purchase WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Purchase]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the purchase
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the purchase as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the purchase (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: payment_type
+        type: Utf8
+        nullable: true
+        description: "Cash, Check, or CreditCard"
+        expr: {kind: path, path: [PaymentType]}
+      - name: credit
+        type: Boolean
+        nullable: true
+        description: Whether this is a credit card credit (refund) rather than a charge
+        expr: {kind: path, path: [Credit]}
+      - name: entity_id
+        type: Utf8
+        nullable: true
+        description: ID of the payee
+        expr: {kind: path, path: [EntityRef, value]}
+      - name: entity_name
+        type: Utf8
+        nullable: true
+        description: Name of the payee
+        expr: {kind: path, path: [EntityRef, name]}
+      - name: entity_type
+        type: Utf8
+        nullable: true
+        description: "Payee type: Vendor, Customer, or Employee"
+        expr: {kind: path, path: [EntityRef, type]}
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: ID of the bank or credit card account the purchase was paid from
+        expr: {kind: path, path: [AccountRef, value]}
+      - name: account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the bank or credit card account the purchase was paid from
+        expr: {kind: path, path: [AccountRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: Total amount of the purchase
+        expr: {kind: path, path: [TotalAmt]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: print_status
+        type: Utf8
+        nullable: true
+        description: "Check print status: NotSet, NeedToPrint, or PrintComplete"
+        expr: {kind: path, path: [PrintStatus]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: remit_to_addr
+        type: Json
+        nullable: true
+        description: >-
+          Remit-to address as a JSON object (Line1-Line5, City, CountrySubDivisionCode,
+          PostalCode, Country)
+        expr: {kind: path, path: [RemitToAddr]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the purchase as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the purchase
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: purchase_orders
+    description: Purchase orders sent to vendors
+    guide: >-
+      One row per purchase order. `po_status` is Open or Closed. A purchase order
+      converted to a bill lists that bill in `linked_txns`. The `txn_date_from`,
+      `txn_date_to`, and `updated_since` filters are sent to QuickBooks; use them with
+      `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM PurchaseOrder WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, PurchaseOrder]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the purchase order
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the purchase order as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the purchase order (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: po_status
+        type: Utf8
+        nullable: true
+        description: Open or Closed
+        expr: {kind: path, path: [POStatus]}
+      - name: vendor_id
+        type: Utf8
+        nullable: true
+        description: ID of the vendor
+        expr: {kind: path, path: [VendorRef, value]}
+      - name: vendor_name
+        type: Utf8
+        nullable: true
+        description: Display name of the vendor
+        expr: {kind: path, path: [VendorRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: Total amount of the purchase order
+        expr: {kind: path, path: [TotalAmt]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: ap_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the accounts payable account
+        expr: {kind: path, path: [APAccountRef, value]}
+      - name: po_email
+        type: Utf8
+        nullable: true
+        description: Email address the purchase order is sent to
+        expr: {kind: path, path: [POEmail, Address]}
+      - name: email_status
+        type: Utf8
+        nullable: true
+        description: "NotSet, NeedToSend, or EmailSent"
+        expr: {kind: path, path: [EmailStatus]}
+      - name: memo
+        type: Utf8
+        nullable: true
+        description: Message shown to the vendor
+        expr: {kind: path, path: [Memo]}
+      - name: vendor_addr
+        type: Json
+        nullable: true
+        description: "Vendor address as a JSON object (Line1-Line5, City, CountrySubDivisionCode, PostalCode, Country)"
+        expr: {kind: path, path: [VendorAddr]}
+      - name: ship_addr
+        type: Json
+        nullable: true
+        description: >-
+          Shipping address as a JSON object (Line1-Line5, City, CountrySubDivisionCode,
+          PostalCode, Country)
+        expr: {kind: path, path: [ShipAddr]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the purchase order as a JSON array; each element has
+          Description, Amount, DetailType, and a detail object named after its
+          DetailType
+        expr: {kind: path, path: [Line]}
+      - name: linked_txns
+        type: Json
+        nullable: true
+        description: "Transactions linked to this one as a JSON array of {TxnId, TxnType}"
+        expr: {kind: path, path: [LinkedTxn]}
+      - name: custom_fields
+        type: Json
+        nullable: true
+        description: "Custom field values as a JSON array of {DefinitionId, Name, Type, StringValue}"
+        expr: {kind: path, path: [CustomField]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the purchase order
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: vendor_credits
+    description: Credits received from vendors
+    guide: >-
+      One row per vendor credit. `balance` is the credit not yet applied to bills. The
+      `txn_date_from`, `txn_date_to`, and `updated_since` filters are sent to
+      QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM VendorCredit WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, VendorCredit]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the vendor credit
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the vendor credit as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the vendor credit (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: vendor_id
+        type: Utf8
+        nullable: true
+        description: ID of the vendor
+        expr: {kind: path, path: [VendorRef, value]}
+      - name: vendor_name
+        type: Utf8
+        nullable: true
+        description: Display name of the vendor
+        expr: {kind: path, path: [VendorRef, name]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: Total amount of the credit
+        expr: {kind: path, path: [TotalAmt]}
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Credit not yet applied to bills
+        expr: {kind: path, path: [Balance]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: ap_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the accounts payable account
+        expr: {kind: path, path: [APAccountRef, value]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the vendor credit as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: linked_txns
+        type: Json
+        nullable: true
+        description: "Transactions linked to this one as a JSON array of {TxnId, TxnType}"
+        expr: {kind: path, path: [LinkedTxn]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the vendor credit
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: journal_entries
+    description: Manual journal entries
+    guide: >-
+      One row per journal entry. Each element of `lines` has JournalEntryLineDetail with
+      PostingType (Debit or Credit), AccountRef, and optional Entity, ClassRef, and
+      DepartmentRef. The `txn_date_from`, `txn_date_to`, and `updated_since` filters are
+      sent to QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM JournalEntry WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, JournalEntry]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the journal entry
+        expr: {kind: path, path: [Id]}
+      - name: doc_number
+        type: Utf8
+        nullable: true
+        description: Reference number of the journal entry as shown in QuickBooks
+        expr: {kind: path, path: [DocNumber]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the journal entry (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: total_amt
+        type: Float64
+        nullable: true
+        description: Total of the debit side
+        expr: {kind: path, path: [TotalAmt]}
+      - name: adjustment
+        type: Boolean
+        nullable: true
+        description: Whether this is an adjusting entry
+        expr: {kind: path, path: [Adjustment]}
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code of the transaction
+        expr: {kind: path, path: [CurrencyRef, value]}
+      - name: exchange_rate
+        type: Float64
+        nullable: true
+        description: Exchange rate to the home currency (multicurrency companies only)
+        expr: {kind: path, path: [ExchangeRate]}
+      - name: lines
+        type: Json
+        nullable: true
+        description: >-
+          Line items of the journal entry as a JSON array; each element has Description,
+          Amount, DetailType, and a detail object named after its DetailType
+        expr: {kind: path, path: [Line]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the journal entry
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: transfers
+    description: Transfers between balance sheet accounts
+    guide: >-
+      One row per transfer, for example moving cash between two bank accounts. The
+      `txn_date_from`, `txn_date_to`, and `updated_since` filters are sent to
+      QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM Transfer WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, Transfer]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the transfer
+        expr: {kind: path, path: [Id]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the transfer (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: from_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the account the money left
+        expr: {kind: path, path: [FromAccountRef, value]}
+      - name: from_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the account the money left
+        expr: {kind: path, path: [FromAccountRef, name]}
+      - name: to_account_id
+        type: Utf8
+        nullable: true
+        description: ID of the account the money went to
+        expr: {kind: path, path: [ToAccountRef, value]}
+      - name: to_account_name
+        type: Utf8
+        nullable: true
+        description: Display name of the account the money went to
+        expr: {kind: path, path: [ToAccountRef, name]}
+      - name: amount
+        type: Float64
+        nullable: true
+        description: Amount transferred
+        expr: {kind: path, path: [Amount]}
+      - name: private_note
+        type: Utf8
+        nullable: true
+        description: Internal memo on the transfer
+        expr: {kind: path, path: [PrivateNote]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: time_activities
+    description: Time tracked by employees and vendors
+    guide: >-
+      One row per time entry. Duration is either `hours` plus `minutes` or a
+      `start_time`/`end_time` pair. `billable_status` is Billable, NotBillable, or
+      HasBeenBilled. The `txn_date_from`, `txn_date_to`, and `updated_since` filters are
+      sent to QuickBooks; use them with `=`.
+    filters:
+      - name: updated_since
+      - name: txn_date_from
+      - name: txn_date_to
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: query
+          from: template
+          template: >-
+            SELECT * FROM TimeActivity WHERE MetaData.LastUpdatedTime >=
+            '{{filter.updated_since|1970-01-01T00:00:00Z}}' AND TxnDate >=
+            '{{filter.txn_date_from|1900-01-01}}' AND TxnDate <=
+            '{{filter.txn_date_to|9999-12-31}}' ORDERBY Id STARTPOSITION
+            {{state.offset}} MAXRESULTS 1000
+        - name: minorversion
+          from: literal
+          value: "75"
+    response:
+      rows_path: [QueryResponse, TimeActivity]
+    pagination:
+      mode: offset
+      offset_param: startposition
+      offset_start: 1
+      offset_step: 1000
+    columns:
+      - name: updated_since
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional filter: records updated at or after this RFC 3339 timestamp, such as
+          '2026-01-01T00:00:00Z'
+        expr: {kind: from_filter, key: updated_since}
+      - name: txn_date_from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or after this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_from}
+      - name: txn_date_to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional filter: transactions dated on or before this YYYY-MM-DD date"
+        expr: {kind: from_filter, key: txn_date_to}
+      - name: id
+        type: Utf8
+        nullable: false
+        description: QuickBooks ID of the time entry
+        expr: {kind: path, path: [Id]}
+      - name: txn_date
+        type: Utf8
+        nullable: true
+        description: Date of the time entry (YYYY-MM-DD)
+        expr: {kind: path, path: [TxnDate]}
+      - name: name_of
+        type: Utf8
+        nullable: true
+        description: Whether the time is for an Employee or a Vendor
+        expr: {kind: path, path: [NameOf]}
+      - name: employee_id
+        type: Utf8
+        nullable: true
+        description: ID of the employee
+        expr: {kind: path, path: [EmployeeRef, value]}
+      - name: employee_name
+        type: Utf8
+        nullable: true
+        description: Display name of the employee
+        expr: {kind: path, path: [EmployeeRef, name]}
+      - name: vendor_id
+        type: Utf8
+        nullable: true
+        description: ID of the vendor
+        expr: {kind: path, path: [VendorRef, value]}
+      - name: vendor_name
+        type: Utf8
+        nullable: true
+        description: Display name of the vendor
+        expr: {kind: path, path: [VendorRef, name]}
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        description: ID of the customer the time was spent on
+        expr: {kind: path, path: [CustomerRef, value]}
+      - name: customer_name
+        type: Utf8
+        nullable: true
+        description: Display name of the customer the time was spent on
+        expr: {kind: path, path: [CustomerRef, name]}
+      - name: item_id
+        type: Utf8
+        nullable: true
+        description: ID of the service item
+        expr: {kind: path, path: [ItemRef, value]}
+      - name: item_name
+        type: Utf8
+        nullable: true
+        description: Display name of the service item
+        expr: {kind: path, path: [ItemRef, name]}
+      - name: billable_status
+        type: Utf8
+        nullable: true
+        description: "Billable, NotBillable, or HasBeenBilled"
+        expr: {kind: path, path: [BillableStatus]}
+      - name: taxable
+        type: Boolean
+        nullable: true
+        description: Whether billed time is taxable
+        expr: {kind: path, path: [Taxable]}
+      - name: hourly_rate
+        type: Float64
+        nullable: true
+        description: Billing rate per hour
+        expr: {kind: path, path: [HourlyRate]}
+      - name: cost_rate
+        type: Float64
+        nullable: true
+        description: Cost rate per hour
+        expr: {kind: path, path: [CostRate]}
+      - name: hours
+        type: Int64
+        nullable: true
+        description: Hours worked
+        expr: {kind: path, path: [Hours]}
+      - name: minutes
+        type: Int64
+        nullable: true
+        description: "Minutes worked, in addition to hours"
+        expr: {kind: path, path: [Minutes]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: "Start time, when the entry was recorded with start and end times"
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [StartTime]}
+      - name: end_time
+        type: Timestamp
+        nullable: true
+        description: "End time, when the entry was recorded with start and end times"
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [EndTime]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the work
+        expr: {kind: path, path: [Description]}
+      - name: class_id
+        type: Utf8
+        nullable: true
+        description: ID of the class
+        expr: {kind: path, path: [ClassRef, value]}
+      - name: class_name
+        type: Utf8
+        nullable: true
+        description: Display name of the class
+        expr: {kind: path, path: [ClassRef, name]}
+      - name: department_id
+        type: Utf8
+        nullable: true
+        description: ID of the location
+        expr: {kind: path, path: [DepartmentRef, value]}
+      - name: department_name
+        type: Utf8
+        nullable: true
+        description: Display name of the location
+        expr: {kind: path, path: [DepartmentRef, name]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the record was created in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, CreateTime]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the record was last updated in QuickBooks
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [MetaData, LastUpdatedTime]}
+
+  - name: profit_and_loss
+    description: "Profit and loss (income statement) report, one row per top-level report row"
+    guide: >-
+      Runs the QuickBooks ProfitAndLoss report. Top-level sections include Income, COGS,
+      GrossProfit, Expenses, NetOperatingIncome, OtherIncome, OtherExpenses,
+      NetOtherIncome, and NetIncome; sections with no activity are omitted. Section rows
+      fill `group`, `section`, `summary_label`, and `summary_value`, with nested rows as
+      JSON in `rows`. Data rows fill `name`, `entity_id`, and `col_data`. Values are
+      strings as QuickBooks returns them, so CAST them to DOUBLE for math.
+      `summary_value` is the first value column, which is the total when the report has
+      a single Total column. Use report filters with `=`. QuickBooks truncates very
+      large reports, so keep date ranges short.
+    filters:
+      - name: start_date
+      - name: end_date
+      - name: date_macro
+      - name: accounting_method
+      - name: summarize_column_by
+    request:
+      method: GET
+      path: /reports/ProfitAndLoss
+      query:
+        - name: minorversion
+          from: literal
+          value: "75"
+        - name: start_date
+          from: filter
+          key: start_date
+        - name: end_date
+          from: filter
+          key: end_date
+        - name: date_macro
+          from: filter
+          key: date_macro
+        - name: accounting_method
+          from: filter
+          key: accounting_method
+        - name: summarize_column_by
+          from: filter
+          key: summarize_column_by
+    response:
+      rows_path: [Rows, Row]
+    pagination:
+      mode: none
+    columns:
+      - name: start_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional report start date (YYYY-MM-DD)
+        expr: {kind: from_filter, key: start_date}
+      - name: end_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional report end date (YYYY-MM-DD)
+        expr: {kind: from_filter, key: end_date}
+      - name: date_macro
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional named date range, such as 'Last Month' or 'This Fiscal Year'; ignored
+          when start_date and end_date are set
+        expr: {kind: from_filter, key: date_macro}
+      - name: accounting_method
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional accounting method, Cash or Accrual; defaults to the company preference"
+        expr: {kind: from_filter, key: accounting_method}
+      - name: summarize_column_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional column breakdown: Total, Month, Week, Days, Quarter, Year, Customers,
+          Vendors, Classes, Departments, Employees, or ProductsAndServices
+        expr: {kind: from_filter, key: summarize_column_by}
+      - name: group
+        type: Utf8
+        nullable: true
+        description: "Stable section identifier, such as Income, NetIncome, or GrandTotal"
+        expr: {kind: path, path: [group]}
+      - name: section
+        type: Utf8
+        nullable: true
+        description: "Section heading as shown in QuickBooks, such as Income; empty for summary-only sections"
+        expr: {kind: path, path: [Header, ColData, "0", value]}
+      - name: summary_label
+        type: Utf8
+        nullable: true
+        description: "Label of the section summary, such as Total Income or Net Income"
+        expr: {kind: path, path: [Summary, ColData, "0", value]}
+      - name: summary_value
+        type: Utf8
+        nullable: true
+        description: "First value in the section summary, as a string; the section total for single-column reports"
+        expr: {kind: path, path: [Summary, ColData, "1", value]}
+      - name: summary
+        type: Json
+        nullable: true
+        description: "All section summary cells as a JSON array of {value}, in the order of the report columns"
+        expr: {kind: path, path: [Summary, ColData]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: "Row label of a Data row, such as the account, customer, or vendor name"
+        expr: {kind: path, path: [ColData, "0", value]}
+      - name: entity_id
+        type: Utf8
+        nullable: true
+        description: "QuickBooks ID of the account, customer, or vendor on a Data row, when QuickBooks provides one"
+        expr: {kind: path, path: [ColData, "0", id]}
+      - name: col_data
+        type: Json
+        nullable: true
+        description: "All cells of a Data row as a JSON array of {value, id}, in the order of the report columns"
+        expr: {kind: path, path: [ColData]}
+      - name: rows
+        type: Json
+        nullable: true
+        description: "Nested rows of a section as a JSON array, with the same Section and Data shape"
+        expr: {kind: path, path: [Rows, Row]}
+
+  - name: balance_sheet
+    description: "Balance sheet report, one row per top-level report row"
+    guide: >-
+      Runs the QuickBooks BalanceSheet report. Top-level sections are TotalAssets and
+      TotalLiabilitiesAndEquity. The balance sheet is as of `end_date`. Section rows
+      fill `group`, `section`, `summary_label`, and `summary_value`, with nested rows as
+      JSON in `rows`. Data rows fill `name`, `entity_id`, and `col_data`. Values are
+      strings as QuickBooks returns them, so CAST them to DOUBLE for math.
+      `summary_value` is the first value column, which is the total when the report has
+      a single Total column. Use report filters with `=`. QuickBooks truncates very
+      large reports, so keep date ranges short.
+    filters:
+      - name: start_date
+      - name: end_date
+      - name: date_macro
+      - name: accounting_method
+      - name: summarize_column_by
+    request:
+      method: GET
+      path: /reports/BalanceSheet
+      query:
+        - name: minorversion
+          from: literal
+          value: "75"
+        - name: start_date
+          from: filter
+          key: start_date
+        - name: end_date
+          from: filter
+          key: end_date
+        - name: date_macro
+          from: filter
+          key: date_macro
+        - name: accounting_method
+          from: filter
+          key: accounting_method
+        - name: summarize_column_by
+          from: filter
+          key: summarize_column_by
+    response:
+      rows_path: [Rows, Row]
+    pagination:
+      mode: none
+    columns:
+      - name: start_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional report start date (YYYY-MM-DD)
+        expr: {kind: from_filter, key: start_date}
+      - name: end_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional report end date (YYYY-MM-DD)
+        expr: {kind: from_filter, key: end_date}
+      - name: date_macro
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional named date range, such as 'Last Month' or 'This Fiscal Year'; ignored
+          when start_date and end_date are set
+        expr: {kind: from_filter, key: date_macro}
+      - name: accounting_method
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional accounting method, Cash or Accrual; defaults to the company preference"
+        expr: {kind: from_filter, key: accounting_method}
+      - name: summarize_column_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional column breakdown: Total, Month, Week, Days, Quarter, Year, Customers,
+          Vendors, Classes, Departments, Employees, or ProductsAndServices
+        expr: {kind: from_filter, key: summarize_column_by}
+      - name: group
+        type: Utf8
+        nullable: true
+        description: "Stable section identifier, such as Income, NetIncome, or GrandTotal"
+        expr: {kind: path, path: [group]}
+      - name: section
+        type: Utf8
+        nullable: true
+        description: "Section heading as shown in QuickBooks, such as Income; empty for summary-only sections"
+        expr: {kind: path, path: [Header, ColData, "0", value]}
+      - name: summary_label
+        type: Utf8
+        nullable: true
+        description: "Label of the section summary, such as Total Income or Net Income"
+        expr: {kind: path, path: [Summary, ColData, "0", value]}
+      - name: summary_value
+        type: Utf8
+        nullable: true
+        description: "First value in the section summary, as a string; the section total for single-column reports"
+        expr: {kind: path, path: [Summary, ColData, "1", value]}
+      - name: summary
+        type: Json
+        nullable: true
+        description: "All section summary cells as a JSON array of {value}, in the order of the report columns"
+        expr: {kind: path, path: [Summary, ColData]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: "Row label of a Data row, such as the account, customer, or vendor name"
+        expr: {kind: path, path: [ColData, "0", value]}
+      - name: entity_id
+        type: Utf8
+        nullable: true
+        description: "QuickBooks ID of the account, customer, or vendor on a Data row, when QuickBooks provides one"
+        expr: {kind: path, path: [ColData, "0", id]}
+      - name: col_data
+        type: Json
+        nullable: true
+        description: "All cells of a Data row as a JSON array of {value, id}, in the order of the report columns"
+        expr: {kind: path, path: [ColData]}
+      - name: rows
+        type: Json
+        nullable: true
+        description: "Nested rows of a section as a JSON array, with the same Section and Data shape"
+        expr: {kind: path, path: [Rows, Row]}
+
+  - name: cash_flow
+    description: "Statement of cash flows report, one row per top-level report row"
+    guide: >-
+      Runs the QuickBooks CashFlow report. Top-level sections include
+      OperatingActivities, InvestingActivities, FinancingActivities, CashIncrease,
+      BeginningCash, and EndingCash. Section rows fill `group`, `section`,
+      `summary_label`, and `summary_value`, with nested rows as JSON in `rows`. Data
+      rows fill `name`, `entity_id`, and `col_data`. Values are strings as QuickBooks
+      returns them, so CAST them to DOUBLE for math. `summary_value` is the first value
+      column, which is the total when the report has a single Total column. Use report
+      filters with `=`. QuickBooks truncates very large reports, so keep date ranges
+      short.
+    filters:
+      - name: start_date
+      - name: end_date
+      - name: date_macro
+      - name: summarize_column_by
+    request:
+      method: GET
+      path: /reports/CashFlow
+      query:
+        - name: minorversion
+          from: literal
+          value: "75"
+        - name: start_date
+          from: filter
+          key: start_date
+        - name: end_date
+          from: filter
+          key: end_date
+        - name: date_macro
+          from: filter
+          key: date_macro
+        - name: summarize_column_by
+          from: filter
+          key: summarize_column_by
+    response:
+      rows_path: [Rows, Row]
+    pagination:
+      mode: none
+    columns:
+      - name: start_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional report start date (YYYY-MM-DD)
+        expr: {kind: from_filter, key: start_date}
+      - name: end_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional report end date (YYYY-MM-DD)
+        expr: {kind: from_filter, key: end_date}
+      - name: date_macro
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional named date range, such as 'Last Month' or 'This Fiscal Year'; ignored
+          when start_date and end_date are set
+        expr: {kind: from_filter, key: date_macro}
+      - name: summarize_column_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional column breakdown: Total, Month, Week, Days, Quarter, Year, Customers,
+          Vendors, Classes, Departments, Employees, or ProductsAndServices
+        expr: {kind: from_filter, key: summarize_column_by}
+      - name: group
+        type: Utf8
+        nullable: true
+        description: "Stable section identifier, such as Income, NetIncome, or GrandTotal"
+        expr: {kind: path, path: [group]}
+      - name: section
+        type: Utf8
+        nullable: true
+        description: "Section heading as shown in QuickBooks, such as Income; empty for summary-only sections"
+        expr: {kind: path, path: [Header, ColData, "0", value]}
+      - name: summary_label
+        type: Utf8
+        nullable: true
+        description: "Label of the section summary, such as Total Income or Net Income"
+        expr: {kind: path, path: [Summary, ColData, "0", value]}
+      - name: summary_value
+        type: Utf8
+        nullable: true
+        description: "First value in the section summary, as a string; the section total for single-column reports"
+        expr: {kind: path, path: [Summary, ColData, "1", value]}
+      - name: summary
+        type: Json
+        nullable: true
+        description: "All section summary cells as a JSON array of {value}, in the order of the report columns"
+        expr: {kind: path, path: [Summary, ColData]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: "Row label of a Data row, such as the account, customer, or vendor name"
+        expr: {kind: path, path: [ColData, "0", value]}
+      - name: entity_id
+        type: Utf8
+        nullable: true
+        description: "QuickBooks ID of the account, customer, or vendor on a Data row, when QuickBooks provides one"
+        expr: {kind: path, path: [ColData, "0", id]}
+      - name: col_data
+        type: Json
+        nullable: true
+        description: "All cells of a Data row as a JSON array of {value, id}, in the order of the report columns"
+        expr: {kind: path, path: [ColData]}
+      - name: rows
+        type: Json
+        nullable: true
+        description: "Nested rows of a section as a JSON array, with the same Section and Data shape"
+        expr: {kind: path, path: [Rows, Row]}
+
+  - name: trial_balance
+    description: "Trial balance report, one row per top-level report row"
+    guide: >-
+      Runs the QuickBooks TrialBalance report. Each account is a Data row whose
+      `col_data` is [account, debit, credit]; the GrandTotal section row holds the debit
+      and credit totals in `summary`. Section rows fill `group`, `section`,
+      `summary_label`, and `summary_value`, with nested rows as JSON in `rows`. Data
+      rows fill `name`, `entity_id`, and `col_data`. Values are strings as QuickBooks
+      returns them, so CAST them to DOUBLE for math. `summary_value` is the first value
+      column, which is the total when the report has a single Total column. Use report
+      filters with `=`. QuickBooks truncates very large reports, so keep date ranges
+      short.
+    filters:
+      - name: start_date
+      - name: end_date
+      - name: date_macro
+      - name: accounting_method
+      - name: summarize_column_by
+    request:
+      method: GET
+      path: /reports/TrialBalance
+      query:
+        - name: minorversion
+          from: literal
+          value: "75"
+        - name: start_date
+          from: filter
+          key: start_date
+        - name: end_date
+          from: filter
+          key: end_date
+        - name: date_macro
+          from: filter
+          key: date_macro
+        - name: accounting_method
+          from: filter
+          key: accounting_method
+        - name: summarize_column_by
+          from: filter
+          key: summarize_column_by
+    response:
+      rows_path: [Rows, Row]
+    pagination:
+      mode: none
+    columns:
+      - name: start_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional report start date (YYYY-MM-DD)
+        expr: {kind: from_filter, key: start_date}
+      - name: end_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional report end date (YYYY-MM-DD)
+        expr: {kind: from_filter, key: end_date}
+      - name: date_macro
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional named date range, such as 'Last Month' or 'This Fiscal Year'; ignored
+          when start_date and end_date are set
+        expr: {kind: from_filter, key: date_macro}
+      - name: accounting_method
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional accounting method, Cash or Accrual; defaults to the company preference"
+        expr: {kind: from_filter, key: accounting_method}
+      - name: summarize_column_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Optional column breakdown: Total, Month, Week, Days, Quarter, Year, Customers,
+          Vendors, Classes, Departments, Employees, or ProductsAndServices
+        expr: {kind: from_filter, key: summarize_column_by}
+      - name: group
+        type: Utf8
+        nullable: true
+        description: "Stable section identifier, such as Income, NetIncome, or GrandTotal"
+        expr: {kind: path, path: [group]}
+      - name: section
+        type: Utf8
+        nullable: true
+        description: "Section heading as shown in QuickBooks, such as Income; empty for summary-only sections"
+        expr: {kind: path, path: [Header, ColData, "0", value]}
+      - name: summary_label
+        type: Utf8
+        nullable: true
+        description: "Label of the section summary, such as Total Income or Net Income"
+        expr: {kind: path, path: [Summary, ColData, "0", value]}
+      - name: summary_value
+        type: Utf8
+        nullable: true
+        description: "First value in the section summary, as a string; the section total for single-column reports"
+        expr: {kind: path, path: [Summary, ColData, "1", value]}
+      - name: summary
+        type: Json
+        nullable: true
+        description: "All section summary cells as a JSON array of {value}, in the order of the report columns"
+        expr: {kind: path, path: [Summary, ColData]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: "Row label of a Data row, such as the account, customer, or vendor name"
+        expr: {kind: path, path: [ColData, "0", value]}
+      - name: entity_id
+        type: Utf8
+        nullable: true
+        description: "QuickBooks ID of the account, customer, or vendor on a Data row, when QuickBooks provides one"
+        expr: {kind: path, path: [ColData, "0", id]}
+      - name: col_data
+        type: Json
+        nullable: true
+        description: "All cells of a Data row as a JSON array of {value, id}, in the order of the report columns"
+        expr: {kind: path, path: [ColData]}
+      - name: rows
+        type: Json
+        nullable: true
+        description: "Nested rows of a section as a JSON array, with the same Section and Data shape"
+        expr: {kind: path, path: [Rows, Row]}
+
+  - name: aged_receivables
+    description: "Accounts receivable aging summary report, one row per top-level report row"
+    guide: >-
+      Runs the QuickBooks AgedReceivables report. Each customer with an open balance is
+      a Data row whose `col_data` is [customer, Current, aging buckets..., Total]; the
+      GrandTotal section row holds the bucket totals in `summary`. Section rows fill
+      `group`, `section`, `summary_label`, and `summary_value`, with nested rows as JSON
+      in `rows`. Data rows fill `name`, `entity_id`, and `col_data`. Values are strings
+      as QuickBooks returns them, so CAST them to DOUBLE for math. `summary_value` is
+      the first value column, which is the total when the report has a single Total
+      column. Use report filters with `=`. QuickBooks truncates very large reports, so
+      keep date ranges short.
+    filters:
+      - name: report_date
+      - name: aging_period
+        type: Int64
+      - name: num_periods
+        type: Int64
+    request:
+      method: GET
+      path: /reports/AgedReceivables
+      query:
+        - name: minorversion
+          from: literal
+          value: "75"
+        - name: report_date
+          from: filter
+          key: report_date
+        - name: aging_period
+          from: filter
+          key: aging_period
+        - name: num_periods
+          from: filter
+          key: num_periods
+    response:
+      rows_path: [Rows, Row]
+    pagination:
+      mode: none
+    columns:
+      - name: report_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional as-of date (YYYY-MM-DD); defaults to today
+        expr: {kind: from_filter, key: report_date}
+      - name: aging_period
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional days in each aging bucket; defaults to 30
+        expr: {kind: from_filter, key: aging_period}
+      - name: num_periods
+        type: Int64
+        nullable: true
+        virtual: true
+        description: "Optional number of aging buckets before the final 'and over' bucket; defaults to 4"
+        expr: {kind: from_filter, key: num_periods}
+      - name: group
+        type: Utf8
+        nullable: true
+        description: "Stable section identifier, such as Income, NetIncome, or GrandTotal"
+        expr: {kind: path, path: [group]}
+      - name: section
+        type: Utf8
+        nullable: true
+        description: "Section heading as shown in QuickBooks, such as Income; empty for summary-only sections"
+        expr: {kind: path, path: [Header, ColData, "0", value]}
+      - name: summary_label
+        type: Utf8
+        nullable: true
+        description: "Label of the section summary, such as Total Income or Net Income"
+        expr: {kind: path, path: [Summary, ColData, "0", value]}
+      - name: summary_value
+        type: Utf8
+        nullable: true
+        description: "First value in the section summary, as a string; the section total for single-column reports"
+        expr: {kind: path, path: [Summary, ColData, "1", value]}
+      - name: summary
+        type: Json
+        nullable: true
+        description: "All section summary cells as a JSON array of {value}, in the order of the report columns"
+        expr: {kind: path, path: [Summary, ColData]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: "Row label of a Data row, such as the account, customer, or vendor name"
+        expr: {kind: path, path: [ColData, "0", value]}
+      - name: entity_id
+        type: Utf8
+        nullable: true
+        description: "QuickBooks ID of the account, customer, or vendor on a Data row, when QuickBooks provides one"
+        expr: {kind: path, path: [ColData, "0", id]}
+      - name: col_data
+        type: Json
+        nullable: true
+        description: "All cells of a Data row as a JSON array of {value, id}, in the order of the report columns"
+        expr: {kind: path, path: [ColData]}
+      - name: rows
+        type: Json
+        nullable: true
+        description: "Nested rows of a section as a JSON array, with the same Section and Data shape"
+        expr: {kind: path, path: [Rows, Row]}
+
+  - name: aged_payables
+    description: "Accounts payable aging summary report, one row per top-level report row"
+    guide: >-
+      Runs the QuickBooks AgedPayables report. Each vendor with an open balance is a
+      Data row whose `col_data` is [vendor, Current, aging buckets..., Total]; the
+      GrandTotal section row holds the bucket totals in `summary`. Section rows fill
+      `group`, `section`, `summary_label`, and `summary_value`, with nested rows as JSON
+      in `rows`. Data rows fill `name`, `entity_id`, and `col_data`. Values are strings
+      as QuickBooks returns them, so CAST them to DOUBLE for math. `summary_value` is
+      the first value column, which is the total when the report has a single Total
+      column. Use report filters with `=`. QuickBooks truncates very large reports, so
+      keep date ranges short.
+    filters:
+      - name: report_date
+      - name: aging_period
+        type: Int64
+      - name: num_periods
+        type: Int64
+    request:
+      method: GET
+      path: /reports/AgedPayables
+      query:
+        - name: minorversion
+          from: literal
+          value: "75"
+        - name: report_date
+          from: filter
+          key: report_date
+        - name: aging_period
+          from: filter
+          key: aging_period
+        - name: num_periods
+          from: filter
+          key: num_periods
+    response:
+      rows_path: [Rows, Row]
+    pagination:
+      mode: none
+    columns:
+      - name: report_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional as-of date (YYYY-MM-DD); defaults to today
+        expr: {kind: from_filter, key: report_date}
+      - name: aging_period
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional days in each aging bucket; defaults to 30
+        expr: {kind: from_filter, key: aging_period}
+      - name: num_periods
+        type: Int64
+        nullable: true
+        virtual: true
+        description: "Optional number of aging buckets before the final 'and over' bucket; defaults to 4"
+        expr: {kind: from_filter, key: num_periods}
+      - name: group
+        type: Utf8
+        nullable: true
+        description: "Stable section identifier, such as Income, NetIncome, or GrandTotal"
+        expr: {kind: path, path: [group]}
+      - name: section
+        type: Utf8
+        nullable: true
+        description: "Section heading as shown in QuickBooks, such as Income; empty for summary-only sections"
+        expr: {kind: path, path: [Header, ColData, "0", value]}
+      - name: summary_label
+        type: Utf8
+        nullable: true
+        description: "Label of the section summary, such as Total Income or Net Income"
+        expr: {kind: path, path: [Summary, ColData, "0", value]}
+      - name: summary_value
+        type: Utf8
+        nullable: true
+        description: "First value in the section summary, as a string; the section total for single-column reports"
+        expr: {kind: path, path: [Summary, ColData, "1", value]}
+      - name: summary
+        type: Json
+        nullable: true
+        description: "All section summary cells as a JSON array of {value}, in the order of the report columns"
+        expr: {kind: path, path: [Summary, ColData]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: "Row label of a Data row, such as the account, customer, or vendor name"
+        expr: {kind: path, path: [ColData, "0", value]}
+      - name: entity_id
+        type: Utf8
+        nullable: true
+        description: "QuickBooks ID of the account, customer, or vendor on a Data row, when QuickBooks provides one"
+        expr: {kind: path, path: [ColData, "0", id]}
+      - name: col_data
+        type: Json
+        nullable: true
+        description: "All cells of a Data row as a JSON array of {value, id}, in the order of the report columns"
+        expr: {kind: path, path: [ColData]}
+      - name: rows
+        type: Json
+        nullable: true
+        description: "Nested rows of a section as a JSON array, with the same Section and Data shape"
+        expr: {kind: path, path: [Rows, Row]}
