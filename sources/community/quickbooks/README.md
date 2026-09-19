@@ -97,9 +97,9 @@ transactions, addresses, and custom fields are JSON columns. `txn_date` and
 `due_date` are `YYYY-MM-DD` strings; `created_at` and `updated_at` are UTC
 timestamps.
 
-**Optional filters:** `updated_since` on every table above except
-`company_info` and `tax_codes`, plus `txn_date_from` and `txn_date_to` on
-transaction tables. Coral sends these to QuickBooks, so they cut both API
+**Optional filters:** `updated_since` on every list and transaction table
+except `company_info` and `tax_codes`, plus `txn_date_from` and `txn_date_to`
+on transaction tables. Coral sends these to QuickBooks, so they cut both API
 calls and rows transferred. Use them with `=`. Other predicates run in Coral
 after the rows are fetched.
 
