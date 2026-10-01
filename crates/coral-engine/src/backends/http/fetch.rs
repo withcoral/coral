@@ -9,8 +9,8 @@ use crate::backends::http::ProviderQueryError;
 use crate::backends::http::client::HttpSourceClient;
 use crate::backends::http::error::{pagination_error, provider_error};
 use crate::backends::http::pagination::{
-    PageState, apply_pagination_body_fields, apply_pagination_query_pairs, page_is_exhausted,
-    pagination_state_values, resolve_page_size,
+    PageAdvance, PageAdvanceContext, advance_pagination_state, apply_pagination_body_fields,
+    apply_pagination_query_pairs, initial_page_state, pagination_state_values, resolve_page_size,
 };
 use crate::backends::http::request::{build_query_pairs, build_request_body};
 use crate::backends::http::target::HttpFetchTarget;
@@ -19,7 +19,7 @@ use crate::backends::http::url::{join_url, normalize_base_url};
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
 use crate::backends::shared::template::{RenderContext, render_template};
-use coral_spec::ValidatedPaginationMode;
+use coral_spec::HttpMethod;
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
 
@@ -28,6 +28,12 @@ struct FetchLimits {
     effective_limit: Option<usize>,
     page_size_limit: Option<usize>,
     max_search_calls: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FetchCompleteness {
+    Default,
+    Complete,
 }
 
 #[expect(
@@ -39,10 +45,12 @@ pub(super) async fn fetch_rows(
     target: &HttpFetchTarget,
     filter_values: &HashMap<String, String>,
     arg_values: &HashMap<String, String>,
-    sql_limit: Option<usize>,
+    row_limit: Option<usize>,
+    page_hint: Option<usize>,
+    completeness: FetchCompleteness,
 ) -> Result<Vec<Value>> {
     let mut all_rows = Vec::new();
-    let limits = resolve_fetch_limits(target, sql_limit);
+    let limits = resolve_fetch_limits(target, row_limit, page_hint, completeness);
     let pagination = target
         .pagination()
         .validated(&client.source_schema, target.name())
@@ -59,17 +67,10 @@ pub(super) async fn fetch_rows(
 
     let active_request = target.resolved_request();
 
-    let mut state = PageState {
-        page: target.pagination().page_start,
-        offset: match &pagination.mode {
-            ValidatedPaginationMode::Offset(offset) => offset.start,
-            _ => target.pagination().offset_start,
-        },
-        ..PageState::default()
-    };
+    let mut state = initial_page_state(&pagination);
 
     let mut page_count = 0usize;
-    let max_pages = target.pagination().max_pages.unwrap_or(DEFAULT_MAX_PAGES);
+    let max_pages = pagination.max_pages.unwrap_or(DEFAULT_MAX_PAGES);
 
     loop {
         page_count += 1;
@@ -93,27 +94,31 @@ pub(super) async fn fetch_rows(
         );
         let base_url = render_template(&client.base_url, &render_context)?;
         let base_url = normalize_base_url(&base_url);
-        let following_link_header = matches!(
-            pagination.mode,
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
-        ) && state.next_url.is_some();
+        // Resolved once, then both decisions read that one binding: a mode
+        // that advances by URL must both request that URL and skip rebuilding
+        // the request Coral would otherwise have made. Deriving "are we
+        // following?" from the URL itself rather than re-testing the mode
+        // means the two can never disagree — and a new mode that forgets to
+        // answer `follows_response_next_url` stops after page one at both
+        // sites together, not at one of them.
+        let next_url = state
+            .next_url
+            .clone()
+            .filter(|_| pagination.mode.follows_response_next_url());
+        let following_next_url = next_url.is_some();
 
-        let url = if matches!(
-            pagination.mode,
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
-        ) && let Some(next) = state.next_url.clone()
-        {
+        let url = if let Some(next) = next_url {
             next
         } else {
             let rendered_path = render_template(&active_request.path, &render_context)?;
             join_url(&base_url, &rendered_path)?
         };
 
-        let (query_pairs, body) = if following_link_header {
+        let (query_pairs, body) = if following_next_url {
             (Vec::new(), None)
         } else {
             let mut query_pairs = build_query_pairs(active_request, &render_context)?;
-            apply_pagination_query_pairs(&mut query_pairs, target, &pagination, &state, page_size)
+            apply_pagination_query_pairs(&mut query_pairs, &pagination, &state, page_size)
                 .map_err(|error| {
                     pagination_error(
                         &client.source_schema,
@@ -128,7 +133,6 @@ pub(super) async fn fetch_rows(
             apply_pagination_body_fields(
                 &mut body,
                 &active_request.body,
-                target,
                 &pagination,
                 &state,
                 page_size,
@@ -152,10 +156,13 @@ pub(super) async fn fetch_rows(
                 auth: &client.auth,
                 request_headers: &client.request_headers,
                 request_authenticators: &client.request_authenticators,
+                request_identity_http_authenticator: client
+                    .request_identity_http_authenticator
+                    .as_ref(),
+                trace_context: client.trace_context.as_ref(),
                 table_headers: &active_request.headers,
                 table_name: target.name(),
                 method: active_request.method,
-                base_url: &base_url,
                 url: &url,
                 query_pairs: &query_pairs,
                 body: body.as_ref(),
@@ -165,14 +172,14 @@ pub(super) async fn fetch_rows(
                 body_capture: client.body_capture,
                 render_context,
                 allow_404_empty: target.response().allow_404_empty,
-                link_header_require_results: pagination.link_header_require_results,
             },
         )
         .await?;
 
-        let Some((payload, next_url)) = request else {
+        let Some(response) = request else {
             break;
         };
+        let payload = response.payload;
 
         if !target.response().ok_path.is_empty() {
             let ok = get_path_value(&payload, &target.response().ok_path)
@@ -219,69 +226,74 @@ pub(super) async fn fetch_rows(
             break;
         }
 
-        match &pagination.mode {
-            ValidatedPaginationMode::None => break,
-            ValidatedPaginationMode::CursorQuery | ValidatedPaginationMode::CursorBody => {
-                let next_cursor =
-                    get_path_value(&payload, &target.pagination().response_cursor_path)
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(ToOwned::to_owned);
-                match next_cursor {
-                    Some(cursor) => state.cursor = Some(cursor),
-                    None => break,
-                }
-            }
-            ValidatedPaginationMode::Page => {
-                if page_is_exhausted(rows_on_page, page_size) {
-                    break;
-                }
-                state.page = state.page.saturating_add(target.pagination().page_step);
-            }
-            ValidatedPaginationMode::Offset(offset) => {
-                if page_is_exhausted(rows_on_page, page_size) {
-                    break;
-                }
-                let step = offset
-                    .resolve_step(page_size, &client.source_schema, target.name())
-                    .map_err(|error| {
-                        provider_error(ProviderQueryError::Pagination {
-                            source_schema: client.source_schema.clone(),
-                            table: target.name().to_string(),
-                            method: None,
-                            url: None,
-                            detail: error.to_string(),
-                        })
-                    })?;
-                state.offset = state.offset.saturating_add(step);
-            }
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto => match next_url {
-                Some(next) => state.next_url = Some(next),
-                None => break,
+        let page_advance = advance_pagination_state(
+            &mut state,
+            &pagination,
+            PageAdvanceContext {
+                payload: &payload,
+                response_headers: &response.headers,
+                request_url: &url,
+                rows_on_page,
+                page_size,
+                source_schema: &client.source_schema,
+                table_name: target.name(),
             },
+        )
+        .map_err(|error| {
+            pagination_error(
+                &client.source_schema,
+                target.name(),
+                Some(http_method_label(active_request.method)),
+                Some(&url),
+                &error,
+            )
+        })?;
+        if page_advance == PageAdvance::Stop {
+            break;
         }
     }
 
     Ok(all_rows)
 }
 
-fn resolve_fetch_limits(target: &HttpFetchTarget, sql_limit: Option<usize>) -> FetchLimits {
+fn http_method_label(method: HttpMethod) -> &'static str {
+    match method {
+        HttpMethod::GET => "GET",
+        HttpMethod::POST => "POST",
+    }
+}
+
+fn resolve_fetch_limits(
+    target: &HttpFetchTarget,
+    row_limit: Option<usize>,
+    page_hint: Option<usize>,
+    completeness: FetchCompleteness,
+) -> FetchLimits {
     let Some(search_limits) = target.search_limits() else {
         return FetchLimits {
-            effective_limit: sql_limit.or(target.fetch_limit_default()),
-            page_size_limit: sql_limit,
+            effective_limit: row_limit,
+            page_size_limit: page_hint,
             max_search_calls: None,
         };
     };
 
-    let requested_top_k = sql_limit.unwrap_or(search_limits.default_top_k);
+    let default_top_k = match completeness {
+        FetchCompleteness::Default => search_limits.default_top_k,
+        FetchCompleteness::Complete => search_limits.max_top_k,
+    };
+    let requested_top_k = page_hint.unwrap_or(default_top_k);
+    let requested_top_k = row_limit.map_or(requested_top_k, |limit| requested_top_k.min(limit));
     let max_candidates = search_limits
         .max_top_k
         .saturating_mul(search_limits.max_calls_per_query);
+    let effective_limit = match (row_limit, completeness) {
+        (Some(limit), _) => Some(limit),
+        (None, FetchCompleteness::Default) => Some(requested_top_k),
+        (None, FetchCompleteness::Complete) => Some(max_candidates),
+    };
 
     FetchLimits {
-        effective_limit: Some(requested_top_k.min(max_candidates)),
+        effective_limit: effective_limit.map(|limit| limit.min(max_candidates)),
         page_size_limit: Some(requested_top_k.min(search_limits.max_top_k)),
         max_search_calls: Some(search_limits.max_calls_per_query),
     }

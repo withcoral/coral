@@ -1,0 +1,388 @@
+use serde::{Deserialize, Serialize};
+
+use crate::CollectionEncoding;
+use crate::v4::diagnostics::Diagnostic;
+use crate::v4::ir::mcp::McpExecutionAttachment;
+use crate::v4::ir::rest::RestExecutionAttachment;
+use crate::v4::manifest::SurfaceType;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticIr {
+    pub artifact_schema_version: u32,
+    pub source_name: String,
+    pub surface_type: SurfaceType,
+    pub importer_version: String,
+    pub operations: Vec<IrOperation>,
+    pub types: Vec<IrType>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperation {
+    pub id: String,
+    pub method_name: String,
+    pub description: String,
+    pub deprecated: bool,
+    pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub naming: Option<IrOperationNaming>,
+    pub inputs: Vec<IrOperationInput>,
+    pub output: IrOperationOutput,
+    /// Name of the rows this operation yields. Seeds the projection
+    /// name; when unset the namer falls back to the operation id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_name: Option<String>,
+    pub execution: IrExecutionAttachment,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperationNaming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperationInput {
+    pub name: String,
+    pub location: IrInputLocation,
+    pub required: bool,
+    pub data_type: IrScalarType,
+    /// Set when this input takes a list of values rather than one, and how
+    /// that list is encoded onto the wire.
+    ///
+    /// `data_type` is [`IrScalarType::Json`] whenever this is set. Keeping the
+    /// list out of `data_type` means every match on the scalar vocabulary —
+    /// pagination inference, operation-metadata policy — excludes lists by
+    /// construction rather than by remembering to guard.
+    ///
+    /// This is the import-side type only. Projections deliberately do not
+    /// lower it through [`IrScalarType::lower`]: the SQL binding type is
+    /// `Utf8`, so a caller may pass either JSON array text or a bare single
+    /// value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_encoding: Option<CollectionEncoding>,
+    pub default_value: Option<String>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperationOutput {
+    pub cardinality: OutputCardinality,
+    pub type_ref: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputCardinality {
+    None,
+    Singleton,
+    List,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrType {
+    pub id: String,
+    pub shape: IrTypeShape,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+pub enum IrTypeShape {
+    Scalar(IrScalarType),
+    Object { fields: Vec<IrField> },
+    List { item_type_ref: String },
+    Map { value_type_ref: String },
+    Enum { values: Vec<String> },
+    Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrField {
+    pub name: String,
+    pub type_ref: String,
+    pub required: bool,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IrScalarType {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    Id,
+    Timestamp,
+    Json,
+}
+
+impl IrScalarType {
+    /// Lowers this import-side scalar into the normalized manifest vocabulary.
+    ///
+    /// This is the single v4-to-runtime type bridge. It is deliberately
+    /// lossy: `Id` collapses into `Utf8` because the runtime does not
+    /// distinguish identifiers from other strings.
+    #[must_use]
+    pub fn lower(self) -> crate::ManifestDataType {
+        match self {
+            Self::String | Self::Id => crate::ManifestDataType::Utf8,
+            Self::Integer => crate::ManifestDataType::Int64,
+            Self::Number => crate::ManifestDataType::Float64,
+            Self::Boolean => crate::ManifestDataType::Boolean,
+            Self::Timestamp => crate::ManifestDataType::Timestamp,
+            Self::Json => crate::ManifestDataType::Json,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum IrInputLocation {
+    Path,
+    Query,
+    Header,
+    Cookie,
+    Body,
+    ToolArg,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpMethod {
+    Get,
+    Head,
+    Options,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Trace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+pub enum IrExecutionAttachment {
+    Rest(Box<RestExecutionAttachment>),
+    Mcp(McpExecutionAttachment),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
+        IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
+        SemanticIr,
+    };
+    use crate::v4::diagnostics::Diagnostic;
+    use crate::v4::ir::mcp::McpExecutionAttachment;
+    use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
+    use crate::v4::manifest::SurfaceType;
+    use crate::v4::{MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
+
+    #[test]
+    fn semantic_ir_yaml_uses_editor_friendly_enum_shapes() {
+        let ir = SemanticIr {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "demo".to_string(),
+            surface_type: SurfaceType::OpenApi,
+            importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+            operations: vec![IrOperation {
+                id: "list_issues".to_string(),
+                method_name: "GET".to_string(),
+                description: String::new(),
+                deprecated: false,
+                read_only: true,
+                naming: Some(IrOperationNaming {
+                    group: Some("issues".to_string()),
+                    operation: Some("list".to_string()),
+                }),
+                inputs: Vec::new(),
+                output: IrOperationOutput {
+                    cardinality: OutputCardinality::List,
+                    type_ref: "issue".to_string(),
+                },
+                entity_name: None,
+                execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
+                    method: HttpMethod::Get,
+                    path_template: "/issues".to_string(),
+                    parameters: Vec::new(),
+                    request_body: None,
+                    response: RestResponseAttachment {
+                        status_code: 200,
+                        media_type: "application/json".to_string(),
+                        response: crate::ResponseSpec::default(),
+                    },
+                })),
+                diagnostics: Vec::new(),
+            }],
+            types: vec![
+                IrType {
+                    id: "issue".to_string(),
+                    shape: IrTypeShape::Object { fields: Vec::new() },
+                    description: String::new(),
+                },
+                IrType {
+                    id: "issue_id".to_string(),
+                    shape: IrTypeShape::Scalar(IrScalarType::String),
+                    description: String::new(),
+                },
+            ],
+            diagnostics: vec![Diagnostic::new("diagnostic", None)],
+        };
+
+        let yaml = serde_yaml::to_string(&ir).expect("serialize semantic IR");
+        assert!(
+            !yaml.contains('!'),
+            "semantic IR should not use YAML local tags: {yaml}"
+        );
+        assert!(yaml.contains("type: rest"), "missing rest tag: {yaml}");
+        assert!(yaml.contains("type: object"), "missing object tag: {yaml}");
+        assert!(yaml.contains("type: scalar"), "missing scalar tag: {yaml}");
+
+        serde_yaml::from_str::<SemanticIr>(&yaml).expect("semantic IR should round-trip");
+    }
+
+    #[test]
+    fn mcp_execution_attachment_uses_current_artifact_schema() {
+        let ir = SemanticIr {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "demo".to_string(),
+            surface_type: SurfaceType::Mcp,
+            importer_version: MCP_IMPORTER_VERSION.to_string(),
+            operations: vec![IrOperation {
+                id: "list_items".to_string(),
+                method_name: "list_items".to_string(),
+                description: String::new(),
+                deprecated: false,
+                read_only: true,
+                naming: None,
+                inputs: vec![IrOperationInput {
+                    name: "cursor".to_string(),
+                    location: IrInputLocation::ToolArg,
+                    required: false,
+                    data_type: IrScalarType::String,
+                    collection_encoding: None,
+                    default_value: None,
+                    description: String::new(),
+                }],
+                output: IrOperationOutput {
+                    cardinality: OutputCardinality::List,
+                    type_ref: "item".to_string(),
+                },
+                entity_name: None,
+                execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
+                    tool_name: "list_items".to_string(),
+                }),
+                diagnostics: Vec::new(),
+            }],
+            types: vec![IrType {
+                id: "item".to_string(),
+                shape: IrTypeShape::Object { fields: Vec::new() },
+                description: String::new(),
+            }],
+            diagnostics: Vec::new(),
+        };
+
+        let yaml = serde_yaml::to_string(&ir).expect("serialize MCP semantic IR");
+        assert!(
+            yaml.contains(&format!(
+                "artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}"
+            )),
+            "MCP execution variants require the current artifact schema: {yaml}"
+        );
+        assert!(
+            yaml.contains("surface_type: mcp"),
+            "missing MCP surface: {yaml}"
+        );
+        assert!(
+            yaml.contains("type: mcp"),
+            "missing MCP execution tag: {yaml}"
+        );
+        assert!(
+            yaml.contains("location: tool_arg"),
+            "missing tool arg input: {yaml}"
+        );
+        assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
+
+        serde_yaml::from_str::<SemanticIr>(&yaml).expect("MCP semantic IR should round-trip");
+    }
+
+    #[test]
+    fn semantic_ir_yaml_rejects_legacy_local_tags() {
+        let legacy_yaml = format!(
+            r#"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+surface_type: open_api
+importer_version: {OPENAPI_IMPORTER_VERSION}
+operations: []
+types:
+  - id: issue
+    shape: !Object
+      fields: []
+    description: ""
+diagnostics: []
+"#
+        );
+
+        let error = serde_yaml::from_str::<SemanticIr>(&legacy_yaml)
+            .expect_err("semantic IR should reject legacy local tags");
+        assert!(
+            error.to_string().contains("shape") || error.to_string().contains("type"),
+            "unexpected legacy local tag error: {error}"
+        );
+    }
+
+    #[test]
+    fn semantic_ir_ignores_unknown_future_fields() {
+        let raw = format!(
+            r"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+surface_type: open_api
+importer_version: {OPENAPI_IMPORTER_VERSION}
+operations: []
+types: []
+diagnostics: []
+future_generator_metadata:
+  revision: 2
+"
+        );
+
+        let ir: SemanticIr =
+            serde_yaml::from_str(&raw).expect("unknown future fields should be advisory");
+
+        assert_eq!(ir.source_name, "demo");
+    }
+
+    #[test]
+    fn input_location_serialization_preserves_artifact_shape() {
+        let input = IrOperationInput {
+            name: "owner".to_string(),
+            location: IrInputLocation::Path,
+            required: true,
+            data_type: IrScalarType::String,
+            collection_encoding: None,
+            default_value: None,
+            description: String::new(),
+        };
+
+        let yaml = serde_yaml::to_string(&input).expect("serialize input");
+        assert!(
+            yaml.contains("location: path"),
+            "unexpected serialized input: {yaml}"
+        );
+        assert!(
+            !yaml.contains("OpenApi"),
+            "Rust type names must not leak into artifacts: {yaml}"
+        );
+
+        let decoded: IrOperationInput = serde_yaml::from_str(&yaml).expect("deserialize input");
+        assert_eq!(decoded.location, IrInputLocation::Path);
+    }
+}

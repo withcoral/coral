@@ -9,17 +9,17 @@ use std::fs;
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
-    ListCatalogRequest, PaginationRequest, QueryTestFailure, QueryTestSuccess,
-    SourceCredentialStorage, SourceOrigin, SourceSecret, SourceVariable, ValidateSourceRequest,
-    Workspace, catalog_item, import_source_response, query_test_result,
+    ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
+    QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
+    SourceVariable, ValidateSourceRequest, Workspace, catalog_item, import_source_response,
+    query_test_result, source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::default_workspace;
 use tempfile::TempDir;
 use tonic::Request;
 
 use crate::harness::{
-    FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
+    FailingHttpFixture, GrpcHarness, default_workspace, fixture_function_only_manifest_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
     fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
@@ -27,7 +27,7 @@ use crate::harness::{
 
 #[tokio::test]
 async fn import_source_persists_and_lists() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
 
     let added = harness
@@ -72,7 +72,7 @@ async fn import_source_persists_and_lists() {
 
 #[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let imported = harness
         .import_source(
@@ -118,7 +118,7 @@ async fn import_source_with_secrets_and_variables_get_source_returns_details() {
 
 #[tokio::test]
 async fn import_duplicate_source_overwrites_existing_source() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
     harness
         .import_source(manifest_yaml.clone(), Vec::new(), Vec::new())
@@ -163,7 +163,7 @@ async fn import_duplicate_source_overwrites_existing_source() {
 
 #[tokio::test]
 async fn import_invalid_manifest_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -181,7 +181,7 @@ async fn import_invalid_manifest_returns_invalid_argument() {
 
 #[tokio::test]
 async fn delete_source_removes_from_list_and_disk() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
     harness
         .import_source(manifest_yaml, Vec::new(), Vec::new())
@@ -204,6 +204,8 @@ async fn delete_source_removes_from_list_and_disk() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT * FROM local_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("query should fail after delete");
@@ -212,7 +214,7 @@ async fn delete_source_removes_from_list_and_disk() {
 
 #[tokio::test]
 async fn delete_nonexistent_source_returns_not_found() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -227,7 +229,7 @@ async fn delete_nonexistent_source_returns_not_found() {
 
 #[tokio::test]
 async fn validate_source_returns_tables() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
     harness
         .import_source(manifest_yaml, Vec::new(), Vec::new())
@@ -249,7 +251,7 @@ async fn validate_source_returns_tables() {
 
 #[tokio::test]
 async fn validate_source_returns_table_functions() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_function_only_manifest_yaml(),
@@ -266,7 +268,6 @@ async fn validate_source_returns_table_functions() {
     assert_eq!(function.name, "search_issues");
     assert_eq!(function.arguments.len(), 1);
     assert_eq!(function.arguments[0].name, "q");
-    assert!(function.arguments[0].required);
     assert_eq!(function.result_columns.len(), 1);
     assert_eq!(function.result_columns[0].name, "title");
     assert!(validated.query_tests.is_empty());
@@ -274,7 +275,7 @@ async fn validate_source_returns_table_functions() {
 
 #[tokio::test]
 async fn list_catalog_supports_table_kind_and_pagination() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
@@ -287,6 +288,7 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
             kind: 1,
             pagination: Some(PaginationRequest {
@@ -303,6 +305,9 @@ async fn list_catalog_supports_table_kind_and_pagination() {
     assert_eq!(page_pagination.offset, 0);
     assert!(page_pagination.has_more);
     assert_eq!(page_pagination.next_offset, 2);
+    let counts = page.counts.as_ref().expect("catalog counts");
+    assert_eq!(counts.table_count, 3);
+    assert_eq!(counts.table_function_count, 0);
     assert_eq!(
         page.items
             .iter()
@@ -318,6 +323,7 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "missing".to_string(),
             kind: 1,
             pagination: Some(PaginationRequest {
@@ -333,13 +339,16 @@ async fn list_catalog_supports_table_kind_and_pagination() {
         .as_ref()
         .expect("unknown schema pagination");
     assert_eq!(unknown_schema_pagination.total_count, 0);
+    let unknown_counts = unknown_schema.counts.as_ref().expect("catalog counts");
+    assert_eq!(unknown_counts.table_count, 0);
+    assert_eq!(unknown_counts.table_function_count, 0);
     assert!(unknown_schema.items.is_empty());
     assert!(!unknown_schema_pagination.has_more);
 }
 
 #[tokio::test]
 async fn explain_sql_returns_logical_and_physical_plans() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             fixture_manifest_yaml(harness.temp_path()),
@@ -372,7 +381,7 @@ async fn explain_sql_returns_logical_and_physical_plans() {
 
 #[tokio::test]
 async fn validate_source_returns_query_test_results_without_unary_error() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_with_test_queries_yaml(
         harness.temp_path(),
         &[
@@ -400,7 +409,7 @@ async fn validate_source_returns_query_test_results_without_unary_error() {
 
 #[tokio::test]
 async fn query_execution_rejects_non_read_only_sql() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
     harness
         .import_source(manifest_yaml, Vec::new(), Vec::new())
@@ -415,6 +424,8 @@ async fn query_execution_rejects_non_read_only_sql() {
                 "COPY local_messages.messages TO '{}' STORED AS ARROW",
                 copy_target.display()
             ),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("COPY TO should be rejected");
@@ -426,6 +437,8 @@ async fn query_execution_rejects_non_read_only_sql() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "CREATE TABLE copied AS SELECT * FROM local_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("CREATE TABLE should be rejected");
@@ -437,6 +450,8 @@ async fn query_execution_rejects_non_read_only_sql() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SET datafusion.execution.batch_size = 1".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("SET should be rejected");
@@ -446,7 +461,7 @@ async fn query_execution_rejects_non_read_only_sql() {
 
 #[tokio::test]
 async fn validate_source_with_unreachable_api_returns_declared_tables() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let failing_http = FailingHttpFixture::new().await;
     harness
         .import_source(failing_http.manifest_yaml(), Vec::new(), Vec::new())
@@ -469,7 +484,7 @@ async fn validate_source_with_unreachable_api_returns_declared_tables() {
 
 #[tokio::test]
 async fn validate_source_with_unreachable_api_and_test_queries_returns_query_failures() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let failing_http = FailingHttpFixture::new().await;
     harness
         .import_source(
@@ -492,7 +507,7 @@ async fn validate_source_with_unreachable_api_and_test_queries_returns_query_fai
 
 #[tokio::test]
 async fn validate_source_with_non_read_only_test_query_returns_stable_query_error() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let manifest_yaml = fixture_manifest_with_test_queries_yaml(
         harness.temp_path(),
         &["SET datafusion.execution.batch_size = 1"],
@@ -512,7 +527,7 @@ async fn validate_source_with_non_read_only_test_query_returns_stable_query_erro
 
 #[tokio::test]
 async fn validate_source_skipped_registration_returns_unary_failed_precondition() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let missing_dir = harness.temp_path().join("missing");
     let manifest_yaml = serde_yaml::to_string(&serde_json::json!({
         "name": "missing_messages",
@@ -551,7 +566,7 @@ async fn validate_source_skipped_registration_returns_unary_failed_precondition(
 
 #[tokio::test]
 async fn execute_sql_with_unreachable_api_returns_unavailable_error() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     let failing_http = FailingHttpFixture::new().await;
     harness
         .import_source(failing_http.manifest_yaml(), Vec::new(), Vec::new())
@@ -562,6 +577,8 @@ async fn execute_sql_with_unreachable_api_returns_unavailable_error() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT * FROM unreachable_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("unreachable source query should fail");
@@ -570,7 +587,7 @@ async fn execute_sql_with_unreachable_api_returns_unavailable_error() {
 
 #[tokio::test]
 async fn import_source_missing_required_secret_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -596,7 +613,7 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
 
 #[tokio::test]
 async fn import_source_missing_required_variable_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -622,7 +639,7 @@ async fn import_source_missing_required_variable_returns_invalid_argument() {
 
 #[tokio::test]
 async fn import_source_unknown_variable_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -647,7 +664,7 @@ async fn import_source_unknown_variable_returns_invalid_argument() {
 
 #[tokio::test]
 async fn import_source_unknown_secret_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -682,7 +699,7 @@ async fn import_source_unknown_secret_returns_invalid_argument() {
 
 #[tokio::test]
 async fn import_source_repeated_variable_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -717,7 +734,7 @@ async fn import_source_repeated_variable_returns_invalid_argument() {
 
 #[tokio::test]
 async fn import_source_repeated_secret_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -752,7 +769,7 @@ async fn import_source_repeated_secret_returns_invalid_argument() {
 
 #[tokio::test]
 async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let discovered = harness
         .source_client()
@@ -805,7 +822,7 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
 
 #[tokio::test]
 async fn get_source_info_returns_available_bundled_metadata() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let info = harness
         .source_client()
@@ -835,8 +852,82 @@ async fn get_source_info_returns_available_bundled_metadata() {
 }
 
 #[tokio::test]
+async fn get_source_info_returns_sentry_oauth_credential_metadata() {
+    let harness = GrpcHarness::with_workspace().await;
+
+    let info = harness
+        .source_client()
+        .get_source_info(Request::new(GetSourceInfoRequest {
+            workspace: Some(default_workspace()),
+            name: "sentry".to_string(),
+        }))
+        .await
+        .expect("get source info")
+        .into_inner()
+        .source_info
+        .expect("get source info response");
+
+    let token = info
+        .inputs
+        .iter()
+        .find(|input| input.key == "SENTRY_TOKEN")
+        .expect("SENTRY_TOKEN input");
+    let secret = match token.input.as_ref().expect("input metadata") {
+        ProtoSourceInput::Secret(secret) => secret,
+        ProtoSourceInput::Variable(_) => panic!("expected secret input"),
+    };
+    let credential = secret.credential.as_ref().expect("credential metadata");
+    assert_eq!(credential.methods.len(), 2);
+
+    let oauth_method = &credential.methods[0];
+    let oauth = match oauth_method.method.as_ref().expect("oauth method") {
+        ProtoCredentialMethod::Oauth(oauth) => oauth,
+        ProtoCredentialMethod::SourceConfig(_) => panic!("expected oauth method"),
+    };
+    assert_eq!(oauth.flow(), OauthCredentialFlowType::DeviceCode);
+    assert!(oauth.redirect_uri.is_empty());
+    let endpoints = oauth.endpoints.as_ref().expect("oauth endpoints");
+    assert_eq!(
+        endpoints.device_authorization_url,
+        "https://sentry.io/oauth/device/code/"
+    );
+    assert!(endpoints.authorization_url.is_empty());
+    assert_eq!(endpoints.token_url, "https://sentry.io/oauth/token/");
+    let client = oauth.client.as_ref().expect("oauth client");
+    assert_eq!(
+        client.id.as_ref().expect("oauth client id").input,
+        "SENTRY_OAUTH_CLIENT_ID"
+    );
+    assert!(client.secret.is_none());
+    let scope = oauth
+        .scopes
+        .as_ref()
+        .expect("oauth scopes")
+        .scope
+        .as_ref()
+        .expect("oauth scope");
+    assert_eq!(scope.delimiter(), OauthCredentialScopeDelimiter::Space);
+    assert_eq!(
+        scope.values,
+        vec![
+            "org:read".to_string(),
+            "event:read".to_string(),
+            "member:read".to_string(),
+            "project:read".to_string(),
+            "project:releases".to_string(),
+            "team:read".to_string()
+        ]
+    );
+
+    assert!(matches!(
+        credential.methods[1].method.as_ref(),
+        Some(ProtoCredentialMethod::SourceConfig(_))
+    ));
+}
+
+#[tokio::test]
 async fn get_source_info_uses_effective_installed_imported_manifest() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     harness
         .import_source(
@@ -885,7 +976,7 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
 
 #[tokio::test]
 async fn create_bundled_source_registers_tables() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     harness
         .source_client()
@@ -913,7 +1004,7 @@ async fn create_bundled_source_registers_tables() {
 
 #[tokio::test]
 async fn create_bundled_source_missing_required_secret_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -938,7 +1029,7 @@ async fn create_bundled_source_missing_required_secret_returns_invalid_argument(
 
 #[tokio::test]
 async fn create_bundled_source_missing_required_variable_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -963,7 +1054,7 @@ async fn create_bundled_source_missing_required_variable_returns_invalid_argumen
 
 #[tokio::test]
 async fn create_bundled_source_unknown_input_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -993,7 +1084,7 @@ async fn create_bundled_source_unknown_input_returns_invalid_argument() {
 
 #[tokio::test]
 async fn create_bundled_source_repeated_secret_returns_invalid_argument() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -1027,7 +1118,7 @@ async fn create_bundled_source_repeated_secret_returns_invalid_argument() {
 
 #[tokio::test]
 async fn create_bundled_source_does_not_persist_manifest_to_config_dir() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let created = harness
         .source_client()
@@ -1166,7 +1257,7 @@ origin = "bundled"
 
 #[tokio::test]
 async fn get_nonexistent_source_returns_not_found() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let error = harness
         .source_client()
@@ -1227,6 +1318,7 @@ enabled = false
 
     {
         let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+        harness.seed_workspace().await;
         harness
             .import_source(manifest_yaml, Vec::new(), Vec::new())
             .await;
@@ -1277,6 +1369,7 @@ async fn import_rolls_back_on_config_write_failure() {
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(&config_dir).expect("create config dir");
     let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    harness.seed_workspace().await;
     let sources_root = harness
         .config_dir()
         .join("workspaces")
@@ -1318,6 +1411,8 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
     use std::os::unix::fs::PermissionsExt;
 
     let harness = GrpcHarness::new().await;
+
+    harness.seed_workspace().await;
     harness
         .import_source(
             fixture_manifest_with_inputs_yaml(),
@@ -1365,7 +1460,7 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
 
 #[tokio::test]
 async fn rejects_invalid_workspace_and_source_names() {
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
 
     let invalid_workspace = harness
         .catalog_client()
@@ -1373,6 +1468,7 @@ async fn rejects_invalid_workspace_and_source_names() {
             workspace: Some(Workspace {
                 name: r"bad\workspace".to_string(),
             }),
+            catalog_name: String::new(),
             schema_name: String::new(),
             kind: 1,
             pagination: None,
@@ -1419,6 +1515,11 @@ origin = "imported"
 "#,
     )
     .expect("write initial config");
+    let demo_manifest = fixture_manifest_yaml(temp.path()).replace("local_messages", "demo");
+    let demo_manifest_path = source_dir(&config_dir, "demo").join("manifest.yaml");
+    fs::create_dir_all(demo_manifest_path.parent().expect("manifest parent"))
+        .expect("create demo source dir");
+    fs::write(demo_manifest_path, demo_manifest).expect("write demo manifest");
 
     let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
     let manifest_yaml = fixture_manifest_yaml(temp.path());

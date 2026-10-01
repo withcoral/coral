@@ -215,7 +215,9 @@ tables:
     guide: >
       Requires log_group_name or log_group_identifier. Optional start_time and
       end_time are Unix epoch milliseconds. Use filter_pattern for CloudWatch
-      Logs filter syntax and log_stream_name_prefix to narrow streams.
+      Logs filter syntax. Use log_stream_name_prefix or log_stream_names to
+      narrow streams, but not both. log_stream_names must be a JSON array of
+      strings. Use start_from_head=false to request newest events first.
     fetch_limit_default: 1000
     request:
       method: POST
@@ -234,6 +236,9 @@ tables:
         - path: [logStreamNamePrefix]
           from: filter
           key: log_stream_name_prefix
+        - path: [logStreamNames]
+          from: filter_string_array
+          key: log_stream_names
         - path: [filterPattern]
           from: filter
           key: filter_pattern
@@ -243,9 +248,16 @@ tables:
         - path: [endTime]
           from: filter_int
           key: end_time
+        - path: [startFromHead]
+          from: filter_bool
+          key: start_from_head
+        - path: [unmask]
+          from: filter_bool
+          key: unmask
         - path: [limit]
-          from: literal
-          value: 1000
+          from: filter_int
+          key: limit
+          default: 1000
     response:
       rows_path: [events]
     pagination:
@@ -285,16 +297,84 @@ tables:
         virtual: true
         description: Log group name filter.
         expr: {kind: from_filter, key: log_group_name}
+      - name: log_group_identifier
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Log group name or ARN filter.
+        expr: {kind: from_filter, key: log_group_identifier}
+      - name: log_stream_name_prefix
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Log stream name prefix filter.
+        expr: {kind: from_filter, key: log_stream_name_prefix}
+      - name: log_stream_names
+        type: Json
+        nullable: true
+        virtual: true
+        description: Log stream names filter as a JSON array of strings.
+        expr: {kind: from_filter, key: log_stream_names}
       - name: filter_pattern
         type: Utf8
         nullable: true
         virtual: true
         description: CloudWatch Logs filter pattern.
         expr: {kind: from_filter, key: filter_pattern}
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Start of the time range as Unix epoch milliseconds.
+        expr: {kind: from_filter, key: start_time}
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: End of the time range as Unix epoch milliseconds.
+        expr: {kind: from_filter, key: end_time}
+      - name: start_from_head
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Return earliest events first when true, latest events first when false.
+        expr: {kind: from_filter, key: start_from_head}
+      - name: unmask
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Display unmasked log event fields when true.
+        expr: {kind: from_filter, key: unmask}
+      - name: limit
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Maximum number of events to request per CloudWatch call.
+        expr: {kind: from_filter, key: limit}
     filters:
       - name: log_group_name
+        description: Log group name to search.
       - name: log_group_identifier
+        description: Log group name or ARN to search.
       - name: log_stream_name_prefix
+        description: Return only events from log streams with this name prefix.
+      - name: log_stream_names
+        type: Json
+        description: JSON array of up to 100 log stream names to search. Do not combine with log_stream_name_prefix.
       - name: filter_pattern
+        description: CloudWatch Logs filter pattern.
       - name: start_time
+        type: Int64
+        description: Start of the time range as Unix epoch milliseconds.
       - name: end_time
+        type: Int64
+        description: End of the time range as Unix epoch milliseconds.
+      - name: start_from_head
+        type: Boolean
+        description: Return earliest events first when true, latest events first when false.
+      - name: unmask
+        type: Boolean
+        description: Display unmasked log event fields when true.
+      - name: limit
+        type: Int64
+        description: Maximum number of events to request per CloudWatch call.

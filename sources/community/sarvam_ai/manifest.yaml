@@ -1,0 +1,397 @@
+name: sarvam_ai
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query Sarvam AI language detection, translation, and bounded chat-completion responses through SQL.
+base_url: https://api.sarvam.ai
+inputs:
+  SARVAM_AI_API_KEY:
+    kind: secret
+    hint: |
+      Sarvam AI API key.
+
+      Create or copy an API key from:
+      https://dashboard.sarvam.ai/
+
+      The key is sent in the api-subscription-key header.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: api-subscription-key
+      from: template
+      template: "{{input.SARVAM_AI_API_KEY}}"
+test_queries:
+  - SELECT language_code, script_code FROM sarvam_ai.language_detection WHERE input = 'Hello, how are you?' LIMIT 1
+tables:
+  - name: language_detection
+    description: Identify the language and script of one text input using POST /text-lid.
+    filters:
+      - name: input
+        required: true
+    request:
+      method: POST
+      path: /text-lid
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - input
+          from: filter
+          key: input
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: input
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Text supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: input
+      - name: request_id
+        type: Utf8
+        nullable: true
+        description: Sarvam request identifier.
+      - name: language_code
+        type: Utf8
+        nullable: true
+        description: Detected language code, such as en-IN or hi-IN.
+      - name: script_code
+        type: Utf8
+        nullable: true
+        description: Detected script code, such as Latn or Deva.
+
+  - name: translations
+    description: Translate one text input using POST /translate with explicit source and target language filters.
+    filters:
+      - name: input
+        required: true
+      - name: source_language_code
+        required: true
+      - name: target_language_code
+        required: true
+      - name: model
+        required: true
+    request:
+      method: POST
+      path: /translate
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - input
+          from: filter
+          key: input
+        - path:
+            - source_language_code
+          from: filter
+          key: source_language_code
+        - path:
+            - target_language_code
+          from: filter
+          key: target_language_code
+        - path:
+            - model
+          from: filter
+          key: model
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: input
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Text supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: input
+      - name: source_language_code
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Source language code supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: source_language_code
+      - name: target_language_code
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Target language code supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: target_language_code
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Translation model supplied in SQL filter, such as sarvam-translate:v1.
+        expr:
+          kind: from_filter
+          key: model
+      - name: request_id
+        type: Utf8
+        nullable: true
+        description: Sarvam request identifier.
+      - name: translated_text
+        type: Utf8
+        nullable: true
+        description: Translated text returned by Sarvam.
+      - name: returned_source_language_code
+        type: Utf8
+        nullable: true
+        description: Source language code returned by Sarvam.
+        expr:
+          kind: path
+          path:
+            - source_language_code
+
+  - name: chat_completions
+    description: Run one non-streaming, single-turn Sarvam AI chat completion with a required positive max_tokens bound.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: max_tokens
+        required: true
+    request:
+      method: POST
+      path: /v1/chat/completions
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - messages
+            - "0"
+            - role
+          from: literal
+          value: user
+        - path:
+            - messages
+            - "0"
+            - content
+          from: filter
+          key: prompt
+        - path:
+            - max_tokens
+          from: filter_int
+          key: max_tokens
+        - path:
+            - stream
+          from: literal
+          value: false
+        - path:
+            - n
+          from: literal
+          value: 1
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: max_tokens
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Positive max_tokens value supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: max_tokens
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Sarvam chat completion identifier.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Unix timestamp for the chat completion.
+      - name: returned_model
+        type: Utf8
+        nullable: true
+        description: Model returned by Sarvam for the request.
+        expr:
+          kind: path
+          path:
+            - model
+      - name: service_tier
+        type: Utf8
+        nullable: true
+        description: Service tier returned by Sarvam, when present.
+      - name: system_fingerprint
+        type: Utf8
+        nullable: true
+        description: Backend system fingerprint returned by Sarvam, when present.
+      - name: choices
+        type: Json
+        nullable: true
+        description: Raw choices array returned by Sarvam.
+      - name: index
+        type: Int64
+        nullable: true
+        description: First choice index.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - index
+      - name: finish_reason
+        type: Utf8
+        nullable: true
+        description: Finish reason for the first choice.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - finish_reason
+      - name: message_role
+        type: Utf8
+        nullable: true
+        description: Assistant message role for the first choice.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - role
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Assistant message content for the first choice.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - content
+      - name: reasoning_content
+        type: Utf8
+        nullable: true
+        description: Reasoning content returned with the first choice, when present.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - reasoning_content
+      - name: refusal
+        type: Utf8
+        nullable: true
+        description: Refusal text returned with the first choice, when present.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - refusal
+      - name: tool_calls
+        type: Json
+        nullable: true
+        description: Tool calls returned with the first choice, when present.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - tool_calls
+      - name: logprobs
+        type: Json
+        nullable: true
+        description: Logprob metadata for the first choice, when present.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - logprobs
+      - name: usage
+        type: Json
+        nullable: true
+        description: Raw token usage object returned by Sarvam.
+      - name: prompt_tokens
+        type: Int64
+        nullable: true
+        description: Prompt token count returned by Sarvam.
+        expr:
+          kind: path
+          path:
+            - usage
+            - prompt_tokens
+      - name: completion_tokens
+        type: Int64
+        nullable: true
+        description: Completion token count returned by Sarvam.
+        expr:
+          kind: path
+          path:
+            - usage
+            - completion_tokens
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total token count returned by Sarvam.
+        expr:
+          kind: path
+          path:
+            - usage
+            - total_tokens
+      - name: prompt_tokens_details
+        type: Json
+        nullable: true
+        description: Prompt-token details returned by Sarvam, when present.
+        expr:
+          kind: path
+          path:
+            - usage
+            - prompt_tokens_details
+      - name: completion_tokens_details
+        type: Json
+        nullable: true
+        description: Completion-token details returned by Sarvam, when present.
+        expr:
+          kind: path
+          path:
+            - usage
+            - completion_tokens_details

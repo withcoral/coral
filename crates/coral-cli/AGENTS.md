@@ -7,6 +7,7 @@
 ## Owns
 
 - argument parsing and command routing
+- server orchestration used only by CLI commands
 - interactive prompting for source install/import from `coral-spec`
 - terminal rendering
 
@@ -20,6 +21,19 @@
 ## Invariants
 
 - Keep the CLI thin over `coral-client` and app/query internals.
+- Keep server orchestration internal to this crate while CLI commands are its
+  only consumers (see the root `AGENTS.md` for when it may move to a shared
+  crate).
+- Sibling host binaries compose Coral through `CoralExtensions` and
+  `run_from_env_with_extensions`. Keep argument parsing, command routing,
+  transport startup, shutdown, and the compatible `run_from_env` default in
+  this crate.
+- Forward host engine providers to every local `ServerBuilder` after the OSS
+  providers. Resolve the optional `McpSurfaceProvider` once, only for MCP stdio
+  or an enabled MCP HTTP runtime; help and unrelated commands must not require
+  it.
+- Server and transport lifecycles remain in their owning components (`coral-app`
+  for gRPC, `coral-mcp::http` for MCP HTTP).
 - Keep CLI-owned process environment access purpose-specific and locally
   justified with a targeted Clippy allow. Fixed CLI env contracts may live in
   `src/env.rs`, but avoid generic helpers that let arbitrary command code read
@@ -28,7 +42,9 @@
   handling here.
 - Keep install/import user-friendly, but move reusable behavior inward instead
   of duplicating app or MCP logic.
-- Treat CLI commands, flags, output, and workflows as documented surfaces; when
-  they change, update the relevant docs under `docs/` in the same change.
+- Treat CLI commands, flags, output, and workflows as public surfaces. Update
+  `docs/` when a change affects a reader-facing contract or important
+  operational knowledge, choose the best existing docs location, and make the
+  amount of space match the feature's user-facing weight and visibility.
 - Prefer improving prompts and terminal presentation here rather than pushing
   user-facing formatting concerns into `coral-app` or `coral-engine`.

@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::ListTracesRequest;
 use coral_api::v1::trace_service_client::TraceServiceClient;
+use coral_api::v1::{ListTracesRequest, TraceView};
 use coral_client::local::ServerBuilder;
 use serde_json::json;
 use tempfile::TempDir;
@@ -122,6 +122,8 @@ async fn list_trace_ids(endpoint_uri: &str) -> Vec<String> {
         .list_traces(Request::new(ListTracesRequest {
             page_size: 10,
             page_token: String::new(),
+            workspace: None,
+            view: TraceView::Unspecified as i32,
         }))
         .await
         .expect("list traces")

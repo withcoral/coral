@@ -1,11 +1,14 @@
 //! Workspace-scoped catalog discovery operations.
 
-use std::collections::BTreeSet;
-
-use coral_engine::{ColumnInfo, TableFunctionInfo, TableInfo};
+use coral_engine::{
+    CatalogInfo, ColumnInfo, DescribeCatalogSurfaceInfo, TableFunctionInfo, TableInfo,
+    normalize_catalog_name,
+};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
+use crate::catalog::model::CatalogResolution;
+use crate::query::QueryAttribution;
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::workspaces::WorkspaceName;
 
@@ -15,7 +18,6 @@ const DEFAULT_COLUMN_LIMIT: u32 = 50;
 const MAX_COLUMN_LIMIT: u32 = 200;
 const MAX_METADATA_PATTERN_BYTES: usize = 256;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1 << 20;
-const MISSING_TABLE_SUGGESTION_LIMIT: usize = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Pagination {
@@ -31,6 +33,18 @@ pub(crate) struct Page<T> {
     pub(crate) offset: u32,
     pub(crate) has_more: bool,
     pub(crate) next_offset: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CatalogCounts {
+    pub(crate) table_count: u32,
+    pub(crate) table_function_count: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CatalogPage {
+    pub(crate) items: Page<CatalogItem>,
+    pub(crate) counts: CatalogCounts,
 }
 
 #[derive(Clone, Debug)]
@@ -53,7 +67,11 @@ pub(crate) struct CatalogSearchResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CatalogMetadataField {
+    CatalogName,
     SchemaName,
+    /// The composite `catalog.schema` reference of a database table, when a
+    /// match spans the catalog/schema boundary rather than either part alone.
+    QualifiedSchema,
     TableName,
     FunctionName,
     Name,
@@ -67,7 +85,9 @@ pub(crate) enum CatalogMetadataField {
 impl CatalogMetadataField {
     pub(crate) fn as_proto_name(self) -> &'static str {
         match self {
+            Self::CatalogName => "catalog_name",
             Self::SchemaName => "schema_name",
+            Self::QualifiedSchema => "qualified_schema",
             Self::TableName => "table_name",
             Self::FunctionName => "function_name",
             Self::Name => "name",
@@ -81,16 +101,31 @@ impl CatalogMetadataField {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum DescribeTableResult {
-    Found(TableInfo),
-    Missing(MissingTableContext),
+pub(crate) enum DescribeCatalogSurfaceResult {
+    Table(TableInfo),
+    TableFunction(TableFunctionInfo),
+    Missing,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct MissingTableContext {
-    pub(crate) suggestions: Vec<TableInfo>,
-    pub(crate) available_schemas: Vec<String>,
-    pub(crate) same_schema_tables: Vec<TableInfo>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CatalogSurfaceRef<'a> {
+    pub(crate) catalog: Option<&'a str>,
+    pub(crate) schema: &'a str,
+    pub(crate) surface: &'a str,
+}
+
+impl<'a> CatalogSurfaceRef<'a> {
+    pub(crate) fn new(
+        catalog_name: Option<&'a str>,
+        schema_name: &'a str,
+        surface_name: &'a str,
+    ) -> Self {
+        Self {
+            catalog: catalog_name,
+            schema: schema_name,
+            surface: surface_name,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -117,14 +152,32 @@ impl ColumnMetadataField {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "explicit SQL qualifier names keep catalog, schema, and table semantics unambiguous"
+)]
 pub(crate) struct CatalogTableRef<'a> {
+    pub(crate) catalog_name: Option<&'a str>,
     pub(crate) schema_name: &'a str,
     pub(crate) table_name: &'a str,
 }
 
 impl<'a> CatalogTableRef<'a> {
-    pub(crate) fn new(schema_name: &'a str, table_name: &'a str) -> Self {
+    /// Builds a table reference with the catalog reduced to its meaning:
+    /// `catalog_name` is `None` exactly when the table is addressed as two
+    /// parts. Blank and whitespace-only catalogs are absent, and the
+    /// default-catalog sentinel names schema-backed tables, so callers do not
+    /// have to trim before constructing one.
+    pub(crate) fn new(
+        catalog_name: Option<&'a str>,
+        schema_name: &'a str,
+        table_name: &'a str,
+    ) -> Self {
+        let catalog_name = catalog_name
+            .map(str::trim)
+            .filter(|catalog_name| !catalog_name.is_empty());
         Self {
+            catalog_name: normalize_catalog_name(catalog_name),
             schema_name,
             table_name,
         }
@@ -136,6 +189,15 @@ pub(crate) struct ListColumnsQuery<'a> {
     pub(crate) pattern: Option<&'a str>,
     pub(crate) ignore_case: bool,
     pub(crate) required_only: bool,
+    pub(crate) pagination: Pagination,
+}
+
+pub(crate) struct SearchCatalogQuery<'a> {
+    pub(crate) pattern: &'a str,
+    pub(crate) catalog_name: Option<&'a str>,
+    pub(crate) schema_name: Option<&'a str>,
+    pub(crate) kind: Option<CatalogItemKind>,
+    pub(crate) ignore_case: bool,
     pub(crate) pagination: Pagination,
 }
 
@@ -154,57 +216,136 @@ impl CatalogDiscovery {
     pub(crate) async fn list_catalog(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_name: Option<&str>,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
         pagination: Pagination,
-    ) -> Result<Page<CatalogItem>, QueryManagerError> {
-        let items = self
-            .catalog_items(workspace_name, schema_name, kind)
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogPage, QueryManagerError> {
+        let catalog = self
+            .catalog_info(workspace_name, catalog_name, schema_name, attribution)
             .await?;
-        Ok(page_items(items, pagination))
+        let counts = catalog_counts(&catalog);
+        let items = catalog_items(catalog, kind);
+        Ok(CatalogPage {
+            items: page_items(items, pagination),
+            counts,
+        })
     }
 
     async fn catalog_items(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_name: Option<&str>,
         schema_name: Option<&str>,
         kind: Option<CatalogItemKind>,
+        attribution: &QueryAttribution,
     ) -> Result<Vec<CatalogItem>, QueryManagerError> {
         let catalog = self
-            .queries
-            .list_catalog(workspace_name, schema_name)
+            .catalog_info(workspace_name, catalog_name, schema_name, attribution)
             .await?;
-        let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
-        if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
-            items.extend(catalog.tables.into_iter().map(|mut table| {
-                table.columns.clear();
-                CatalogItem::Table(table)
-            }));
-        }
-        if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
-            items.extend(
-                catalog
-                    .table_functions
-                    .into_iter()
-                    .map(CatalogItem::TableFunction),
-            );
-        }
-        items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
-        Ok(items)
+        Ok(catalog_items(catalog, kind))
     }
 
+    pub(crate) async fn catalog_info(
+        &self,
+        workspace_name: &WorkspaceName,
+        catalog_name: Option<&str>,
+        schema_name: Option<&str>,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogInfo, QueryManagerError> {
+        // Pass the filter through untouched. `None` here means "every catalog",
+        // so normalizing `datafusion` to `None` would widen an exact-match
+        // request into a wildcard, contradicting both the proto contract and
+        // `describe_catalog_surface`, which resolves the same value to two-part tables.
+        // The engine normalizes the sentinel on the value side instead.
+        self.queries
+            .list_catalog(workspace_name, catalog_name, schema_name, attribution)
+            .await
+    }
+
+    pub(crate) async fn resolve_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogResolution, QueryManagerError> {
+        self.queries
+            .resolve_catalog(workspace_name, None, None, attribution)
+            .await
+    }
+
+    pub(crate) async fn describe_catalog_surface(
+        &self,
+        workspace_name: &WorkspaceName,
+        surface_ref: CatalogSurfaceRef<'_>,
+        attribution: &QueryAttribution,
+    ) -> Result<DescribeCatalogSurfaceResult, QueryManagerError> {
+        let result = self
+            .queries
+            .describe_catalog_surface(
+                workspace_name,
+                surface_ref.catalog,
+                surface_ref.schema,
+                surface_ref.surface,
+                attribution,
+            )
+            .await?;
+        match result {
+            DescribeCatalogSurfaceInfo::Table(table) => {
+                Ok(DescribeCatalogSurfaceResult::Table(table))
+            }
+            DescribeCatalogSurfaceInfo::TableFunction(table_function) => {
+                Ok(DescribeCatalogSurfaceResult::TableFunction(table_function))
+            }
+            DescribeCatalogSurfaceInfo::Missing => Ok(DescribeCatalogSurfaceResult::Missing),
+        }
+    }
+}
+
+fn catalog_items(catalog: CatalogInfo, kind: Option<CatalogItemKind>) -> Vec<CatalogItem> {
+    let mut items = Vec::with_capacity(catalog.tables.len() + catalog.table_functions.len());
+    if kind.is_none_or(|kind| kind == CatalogItemKind::Table) {
+        items.extend(catalog.tables.into_iter().map(|mut table| {
+            table.columns.clear();
+            CatalogItem::Table(table)
+        }));
+    }
+    if kind.is_none_or(|kind| kind == CatalogItemKind::TableFunction) {
+        items.extend(
+            catalog
+                .table_functions
+                .into_iter()
+                .map(CatalogItem::TableFunction),
+        );
+    }
+    items.sort_by(|left, right| catalog_item_sort_key(left).cmp(&catalog_item_sort_key(right)));
+    items
+}
+
+fn catalog_counts(catalog: &CatalogInfo) -> CatalogCounts {
+    CatalogCounts {
+        table_count: u32::try_from(catalog.tables.len()).unwrap_or(u32::MAX),
+        table_function_count: u32::try_from(catalog.table_functions.len()).unwrap_or(u32::MAX),
+    }
+}
+
+impl CatalogDiscovery {
     pub(crate) async fn search_catalog(
         &self,
         workspace_name: &WorkspaceName,
-        pattern: &str,
-        schema_name: Option<&str>,
-        kind: Option<CatalogItemKind>,
-        ignore_case: bool,
-        pagination: Pagination,
+        query: SearchCatalogQuery<'_>,
+        attribution: &QueryAttribution,
     ) -> Result<Page<CatalogSearchResult>, QueryManagerError> {
-        let regex = compile_metadata_regex(pattern, ignore_case).map_err(QueryManagerError::App)?;
+        let regex = compile_metadata_regex(query.pattern, query.ignore_case)
+            .map_err(QueryManagerError::App)?;
         let matches = self
-            .catalog_items(workspace_name, schema_name, kind)
+            .catalog_items(
+                workspace_name,
+                query.catalog_name,
+                query.schema_name,
+                query.kind,
+                attribution,
+            )
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -215,74 +356,42 @@ impl CatalogDiscovery {
                 })
             })
             .collect();
-        Ok(page_items(matches, pagination))
-    }
-
-    pub(crate) async fn describe_table(
-        &self,
-        workspace_name: &WorkspaceName,
-        table_ref: CatalogTableRef<'_>,
-    ) -> Result<DescribeTableResult, QueryManagerError> {
-        let exact = self
-            .queries
-            .list_tables(
-                workspace_name,
-                Some(table_ref.schema_name),
-                Some(table_ref.table_name),
-            )
-            .await?
-            .into_iter()
-            .find(|table| {
-                table.schema_name == table_ref.schema_name
-                    && table.table_name == table_ref.table_name
-            });
-        if let Some(table) = exact {
-            return Ok(DescribeTableResult::Found(table));
-        }
-
-        let mut all_tables = self.queries.list_tables(workspace_name, None, None).await?;
-        for table in &mut all_tables {
-            table.columns.clear();
-        }
-        let available_schemas = all_tables
-            .iter()
-            .map(|table| table.schema_name.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let same_schema_tables = all_tables
-            .iter()
-            .filter(|table| table.schema_name == table_ref.schema_name)
-            .take(MISSING_TABLE_SUGGESTION_LIMIT)
-            .cloned()
-            .collect::<Vec<_>>();
-        let suggestions = missing_table_suggestions(&all_tables, table_ref, &same_schema_tables);
-        Ok(DescribeTableResult::Missing(MissingTableContext {
-            suggestions,
-            available_schemas,
-            same_schema_tables,
-        }))
+        Ok(page_items(matches, query.pagination))
     }
 
     pub(crate) async fn list_columns(
         &self,
         workspace_name: &WorkspaceName,
         query: ListColumnsQuery<'_>,
+        attribution: &QueryAttribution,
     ) -> Result<Option<Page<ColumnSearchResult>>, QueryManagerError> {
-        let table = self
+        let mut matches = self
             .queries
             .list_tables(
                 workspace_name,
+                query.table_ref.catalog_name,
                 Some(query.table_ref.schema_name),
                 Some(query.table_ref.table_name),
+                attribution,
             )
             .await?
             .into_iter()
-            .find(|table| {
-                table.schema_name == query.table_ref.schema_name
-                    && table.table_name == query.table_ref.table_name
-            });
-        let Some(table) = table else {
+            .filter(|table| table_matches_ref(table, query.table_ref))
+            .collect::<Vec<_>>();
+        // An omitted catalog is a wildcard; refuse to guess when the same
+        // schema.table pair exists in more than one catalog.
+        if matches.len() > 1 {
+            let candidates = matches
+                .iter()
+                .map(|table| format!("`{}`", table_addressable_name(table)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(QueryManagerError::App(AppError::InvalidInput(format!(
+                "table reference `{}.{}` is ambiguous; qualify the catalog: {candidates}",
+                query.table_ref.schema_name, query.table_ref.table_name
+            ))));
+        }
+        let Some(table) = matches.pop() else {
             return Ok(None);
         };
 
@@ -313,10 +422,16 @@ impl CatalogDiscovery {
     }
 }
 
-fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &'static str) {
+fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &str, &'static str) {
     match item {
-        CatalogItem::Table(table) => (&table.schema_name, &table.table_name, "table"),
+        CatalogItem::Table(table) => (
+            table.catalog_name.as_deref().unwrap_or_default(),
+            &table.schema_name,
+            &table.table_name,
+            "table",
+        ),
         CatalogItem::TableFunction(function) => (
+            "",
             &function.schema_name,
             &function.function_name,
             "table_function",
@@ -383,21 +498,39 @@ fn catalog_item_matched_fields(item: &CatalogItem, regex: &Regex) -> Vec<Catalog
 }
 
 fn table_matched_fields(table: &TableInfo, regex: &Regex) -> Vec<CatalogMetadataField> {
-    let name = format!("{}.{}", table.schema_name, table.table_name);
-    let candidates = [
-        (CatalogMetadataField::SchemaName, table.schema_name.as_str()),
-        (CatalogMetadataField::TableName, table.table_name.as_str()),
-        (CatalogMetadataField::Name, name.as_str()),
-        (
-            CatalogMetadataField::Description,
-            table.description.as_str(),
-        ),
-        (CatalogMetadataField::Guide, table.guide.as_str()),
-    ];
-    let mut matches = candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field))
-        .collect::<Vec<_>>();
+    let addressable_schema = table_addressable_schema_name(table);
+    let name = table_addressable_name(table);
+    let mut matches = Vec::new();
+    let catalog_matched = table
+        .catalog_name
+        .as_deref()
+        .is_some_and(|catalog_name| regex.is_match(catalog_name));
+    let schema_matched = regex.is_match(&table.schema_name);
+    if catalog_matched {
+        matches.push(CatalogMetadataField::CatalogName);
+    }
+    if schema_matched {
+        matches.push(CatalogMetadataField::SchemaName);
+    }
+    if !catalog_matched
+        && !schema_matched
+        && addressable_schema != table.schema_name
+        && regex.is_match(&addressable_schema)
+    {
+        matches.push(CatalogMetadataField::QualifiedSchema);
+    }
+    if regex.is_match(&table.table_name) {
+        matches.push(CatalogMetadataField::TableName);
+    }
+    if regex.is_match(&name) {
+        matches.push(CatalogMetadataField::Name);
+    }
+    if regex.is_match(&table.description) {
+        matches.push(CatalogMetadataField::Description);
+    }
+    if regex.is_match(&table.guide) {
+        matches.push(CatalogMetadataField::Guide);
+    }
     if table
         .required_filters
         .iter()
@@ -427,6 +560,7 @@ fn table_function_matched_fields(
             CatalogMetadataField::Description,
             function.description.as_str(),
         ),
+        (CatalogMetadataField::Guide, function.guide.as_str()),
     ];
     let mut matches = candidates
         .into_iter()
@@ -462,46 +596,38 @@ fn column_matched_fields(column: &ColumnInfo, regex: &Regex) -> Vec<ColumnMetada
         .collect()
 }
 
-fn missing_table_suggestions(
-    all_tables: &[TableInfo],
-    table_ref: CatalogTableRef<'_>,
-    same_schema_tables: &[TableInfo],
-) -> Vec<TableInfo> {
-    let suggestion_schema = (!same_schema_tables.is_empty()).then_some(table_ref.schema_name);
-    let mut suggestions = all_tables
-        .iter()
-        .filter(|table| suggestion_schema.is_none_or(|schema| table.schema_name == schema))
-        .filter(|table| table_metadata_contains_literal(table, table_ref.table_name))
-        .take(MISSING_TABLE_SUGGESTION_LIMIT)
-        .cloned()
-        .collect::<Vec<_>>();
-    if suggestions.is_empty() {
-        suggestions.extend_from_slice(same_schema_tables);
+fn table_addressable_schema_name(table: &TableInfo) -> String {
+    match table.catalog_name.as_deref() {
+        Some(catalog_name) => format!("{catalog_name}.{}", table.schema_name),
+        None => table.schema_name.clone(),
     }
-    suggestions
 }
 
-fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
-    let literal = literal.trim();
-    if literal.is_empty() {
-        return false;
+fn table_addressable_name(table: &TableInfo) -> String {
+    format!(
+        "{}.{}",
+        table_addressable_schema_name(table),
+        table.table_name
+    )
+}
+
+fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
+    table.table_name == table_ref.table_name && table_qualifier_matches(table, table_ref)
+}
+
+/// An omitted catalog is a wildcard, matching the engine's catalog-filter
+/// semantics and `describe_table`'s behavior; a supplied catalog is strict.
+/// Callers that resolve a single table reject wildcard matches spanning more
+/// than one catalog instead of guessing. Catalog and schema must be supplied
+/// separately; schema values are otherwise matched literally.
+fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
+    match table_ref.catalog_name {
+        Some(catalog_name) => {
+            table.catalog_name.as_deref() == Some(catalog_name)
+                && table.schema_name == table_ref.schema_name
+        }
+        None => table.schema_name == table_ref.schema_name,
     }
-    let literal = literal.to_lowercase();
-    let name = format!("{}.{}", table.schema_name, table.table_name);
-    let candidates = [
-        table.schema_name.as_str(),
-        table.table_name.as_str(),
-        name.as_str(),
-        table.description.as_str(),
-        table.guide.as_str(),
-    ];
-    candidates
-        .into_iter()
-        .any(|value| value.to_lowercase().contains(&literal))
-        || table
-            .required_filters
-            .iter()
-            .any(|filter| filter.to_lowercase().contains(&literal))
 }
 
 pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
@@ -532,18 +658,31 @@ pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CatalogMetadataField, compile_metadata_regex, table_matched_fields};
+    use super::{
+        CatalogMetadataField, CatalogSurfaceRef, CatalogTableRef, compile_metadata_regex,
+        table_matched_fields, table_matches_ref,
+    };
     use coral_engine::TableInfo;
 
     fn table(required_filters: Vec<String>) -> TableInfo {
         TableInfo {
+            catalog_name: None,
             schema_name: "github".to_string(),
             table_name: "Pull.Requests".to_string(),
             description: "Pull request table".to_string(),
             guide: "Query pull requests.".to_string(),
+            require_guide_read: false,
             columns: Vec::new(),
             required_filters,
         }
+    }
+
+    fn database_table(schema_name: &str, table_name: &str) -> TableInfo {
+        let mut table = table(Vec::new());
+        table.catalog_name = Some("coral_db".to_string());
+        table.schema_name = schema_name.to_string();
+        table.table_name = table_name.to_string();
+        table
     }
 
     #[test]
@@ -562,5 +701,76 @@ mod tests {
     #[test]
     fn empty_metadata_pattern_is_invalid() {
         compile_metadata_regex(" ", true).expect_err("empty pattern should fail");
+    }
+
+    #[test]
+    fn database_catalog_and_schema_match_catalog_discovery_metadata() {
+        let main = database_table("main", "users");
+        let analytics = database_table("analytics", "events");
+        let tables = [main, analytics];
+        let main_table = tables.first().expect("main table");
+
+        assert!(table_matches_ref(
+            main_table,
+            CatalogTableRef::new(Some("coral_db"), "main", "users")
+        ));
+        assert!(!table_matches_ref(
+            main_table,
+            CatalogTableRef::new(Some("coral_db"), "analytics", "users")
+        ));
+        assert!(
+            table_matches_ref(main_table, CatalogTableRef::new(None, "main", "users")),
+            "an omitted catalog is a wildcard, matching describe_table"
+        );
+        assert!(
+            !table_matches_ref(
+                main_table,
+                CatalogTableRef::new(None, "coral_db.main", "users")
+            ),
+            "a compound schema must not be reinterpreted as catalog.schema"
+        );
+        assert!(!table_matches_ref(
+            main_table,
+            CatalogTableRef::new(Some("other_db"), "main", "users")
+        ));
+        assert!(
+            !table_matches_ref(
+                main_table,
+                CatalogTableRef::new(Some("coral_db"), "coral_db.main", "users")
+            ),
+            "an explicit catalog keeps the schema comparison strict"
+        );
+        assert_eq!(
+            table_matched_fields(
+                main_table,
+                &regex::Regex::new("^coral_db\\.main\\.users$").expect("regex")
+            ),
+            vec![CatalogMetadataField::Name]
+        );
+        assert_eq!(
+            table_matched_fields(main_table, &regex::Regex::new("^main$").expect("regex")),
+            vec![CatalogMetadataField::SchemaName]
+        );
+        assert_eq!(
+            table_matched_fields(
+                main_table,
+                &regex::Regex::new("^coral_db\\.main$").expect("regex")
+            ),
+            vec![CatalogMetadataField::QualifiedSchema]
+        );
+        assert_eq!(
+            table_matched_fields(main_table, &regex::Regex::new("db\\.ma").expect("regex")),
+            vec![
+                CatalogMetadataField::QualifiedSchema,
+                CatalogMetadataField::Name
+            ]
+        );
+        assert_eq!(
+            table_matched_fields(main_table, &regex::Regex::new("^coral_db$").expect("regex")),
+            vec![CatalogMetadataField::CatalogName]
+        );
+
+        let surface_ref = CatalogSurfaceRef::new(Some(" coral_db "), "main", "users");
+        assert_eq!(surface_ref.catalog, Some(" coral_db "));
     }
 }

@@ -9,6 +9,7 @@ registration, and query execution.
 
 - backend-specific source adapters
 - query runtime assembly and system catalog registration
+- generic runtime component compilation and composite source registration
 - transport-neutral query results and errors
 
 ## Does Not Own
@@ -16,6 +17,8 @@ registration, and query execution.
 - app bootstrap or local transport wiring
 - source-spec parsing, validation, or input discovery
 - source CRUD, config persistence, or secret storage policy
+- DSL v4 authored-manifest semantics, materialized artifact loading,
+  fingerprint validation, semantic IR interpretation, or projection generation
 - Arrow IPC codecs or result rendering
 - CLI or MCP presentation concerns
 
@@ -27,6 +30,18 @@ registration, and query execution.
   validated source-spec types and backend-specific spec structs from there.
 - Runtime code should work with compiled sources and generic metadata, not app
   policy or transport concerns.
+- Runtime components are the app-to-engine package boundary. Do not add a
+  backend that reaches back into DSL v4 materialization or authored-manifest
+  types when `coral-app` can assemble existing backend-ready component specs.
+- Installed-function inputs are executable Coral SQL definitions. Do not add
+  placeholder variants for languages that `DataFusion` cannot execute.
+- Reuse database connection pools only through an explicit
+  `DatabasePoolRegistry` supplied by the caller and key its pool map directly
+  by the workspace-local, unique SQL catalog name. Keep pool implementation in
+  this crate; do not introduce process-global or cross-workspace pool state.
+- Keep `mod.rs` files as slender module boundaries: declare and re-export named
+  sibling modules there, and keep substantive implementation in those sibling
+  files.
 - Keep this crate transport-neutral. Arrow IPC, CLI formatting, and MCP-facing
   shaping belong outside `coral-engine`.
 

@@ -55,6 +55,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - auth
    - variables and secrets
    - credential retrieval methods for secrets, including OAuth when the provider supports browser-based setup
+   - if authoring a separate `kind: identity` manifest, identity setup inputs and OAuth method config
    - tables
    - table functions for source-scoped parameterized endpoints
    - filters
@@ -70,7 +71,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - repo sources or already-named sources: `coral source test <name>`
 6. Inspect the exposed shape:
    - inspect `coral.tables` for visible tables, descriptions, guides, and required filters; keep metadata queries bounded with `LIMIT`/`OFFSET`
-   - inspect `coral.table_functions` for source-scoped functions, arguments, result columns, kind, and search limits
+   - inspect `coral.table_functions` for source-scoped functions, descriptions, guides, arguments, result columns, kind, and search limits
    - inspect `coral.columns` for canonical column metadata, including `is_virtual` and `is_required_filter`; filter by one table or page large column sets
    - inspect `coral.filters` for normalized table filter names, types, modes, required flags, and descriptions
    - inspect `coral.inputs` to verify variables, secrets, defaults, hints, and required flags
@@ -85,15 +86,22 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Use source variables for non-secret configuration.
 - Use source secrets for credentials.
 - For OAuth-backed services, model setup with `inputs.<TOKEN>.credential.methods[]` using `type: oauth`; keep the runtime `auth` or request header pointing at the same secret input.
-- OAuth credential methods support device-code flow and authorization-code flow. For authorization-code flow, set `flow.type: authorization_code`, set `flow.pkce` explicitly to `required` or `disabled`, use a loopback `http://127.0.0.1` or `http://localhost` redirect URI, choose `redirect_uri_port_mode: random` for provider apps that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI. The CLI also accepts the final loopback redirect URL pasted into the terminal when the browser cannot reach the machine running Coral, so do not reject authorization-code OAuth solely because users may run Coral over SSH, in a VM, or in another split-browser environment. For device-code flow, declare `flow.type: device_code`, `endpoints.device_authorization_url`, `endpoints.token_url`, and a public client ID; omit redirect URI fields and do not declare a client secret.
-- OAuth endpoint URLs may template declared `kind: variable` inputs with `{{input.KEY}}` for non-secret endpoint components such as tenant IDs or domains. Do not reference secret inputs, filters, function arguments, state, or inline defaults from OAuth endpoint URLs.
+- OAuth credential methods support device-code, authorization-code, and client-credentials flow. For authorization-code flow, set `flow.type: authorization_code`, set `flow.pkce` explicitly to `required` or `disabled`, use a loopback `http://127.0.0.1` or `http://localhost` redirect URI, choose `redirect_uri_port_mode: random` for provider apps or Dynamic Client Registration endpoints that allow variable localhost ports, and choose `fixed` only when users can register the exact non-zero redirect URI. The CLI also accepts the final loopback redirect URL pasted into the terminal when the browser cannot reach the machine running Coral, so do not reject authorization-code OAuth solely because users may run Coral over SSH, in a VM, or in another split-browser environment. For device-code flow, declare `flow.type: device_code`, `endpoints.device_authorization_url`, `endpoints.token_url`, and either a public client ID or `client.dynamic_registration`; omit redirect URI fields and do not declare a static client secret. For client-credentials flow, declare `flow.type: client_credentials`, `endpoints.token_url`, `client.id.input`, `client.secret.input`, and `client.secret.transport`; omit redirect URI fields, authorization endpoints, device authorization endpoints, PKCE, and Dynamic Client Registration.
+- When an authorization-code or device-code provider supports OAuth Dynamic Client Registration, prefer `client.dynamic_registration.registration_url` over hard-coding a shared public client ID. Coral always registers a native client; source specs cannot configure a `web` Dynamic Client Registration application type. Set `token_endpoint_auth_method` to `none`, `client_secret_basic`, or `client_secret_post` to match the registered client type. Set `request_refresh_token_grant: true` only when the provider supports registering clients for refresh-token grants. For OAuth-protected Streamable HTTP MCP servers, set `oauth.resource` to the MCP server URL when the provider requires resource indicators.
+- OAuth URL fields may template declared `kind: variable` inputs with `{{input.KEY}}` for non-secret endpoint components such as tenant IDs or domains. This includes `endpoints.*`, `resource`, and `client.dynamic_registration.registration_url`. Do not reference secret inputs, filters, function arguments, state, or inline defaults from OAuth URLs.
 - If a provider also supports manually pasted tokens, include a `type: source_config` fallback after the OAuth method. When the provider's token endpoint requires client authentication with a client secret, prompt for both OAuth client values: declare `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`).
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
-- For short-lived OAuth access tokens, make sure the OAuth method can obtain refresh tokens when the provider supports them, and document any scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire unless the source has another supported long-lived credential path.
-- Keep table names stable and SQL-friendly.
+- In a `kind: identity` manifest, put provider `issuer`, identity `type`, setup inputs, OAuth URLs, client IDs, and client secrets on the identity spec itself. Identity OAuth `client.id` may use `default`, a variable `input`, or both; `client.secret.input` must reference a declared secret input. OAuth URL templates may reference only declared variable inputs. Identity inputs must not declare source credential methods.
+- Each credential method accepts optional `label`, `description`, and `hint` fields, surfaced during interactive install and in the generated source docs. When an input offers more than one method, put the how-to-get-it guidance in each method's `hint` (rendered next to that method's fields) instead of in one long input-level `hint`, and scope each hint to the inputs that method collects.
+- For short-lived OAuth access tokens, make sure authorization-code or device-code methods can obtain refresh tokens when the provider supports them, and document any scopes, consent prompts, or client settings required for refresh-token issuance. Client-credentials methods re-mint access tokens from stored client metadata when the provider returns usable `expires_in` metadata; without it, users must reconnect after the token expires. If another OAuth method will not issue refresh tokens, call out that users must reconnect when access tokens expire unless the source has another supported long-lived credential path.
+- Keep table and table-function names stable, SQL-friendly, and unique within
+  the source's case-insensitive relation namespace. Prefer plain `snake_case`
+  table names. Table-function names must start with an ASCII letter or
+  underscore and then use only ASCII letters, numbers, or underscores.
 - Mark filters as required only when the API truly requires them.
 - Use default table functions for parameterized non-retrieval operations, such as scoped child collections, time-range logs, metrics queries, or detail operations that do not map cleanly to a stable table.
 - Use `kind: search` table functions for provider endpoints that accept query text and return ranked candidates.
+- Set a table-function arg `type` when the provider argument is not string-shaped; omitted arg types default to `Utf8`.
 - Do not model provider search as a table filter. Use `mode: contains` only for ordinary provider-side substring filters. Provider-ranked retrieval belongs in a `kind: search` function.
 - Include `search_limits` on every `kind: search` function and expose stable result identifiers for follow-up detail queries.
 - Prefer explicit pagination when the API shape is known.
@@ -138,10 +146,10 @@ Specific guidance:
   - include least-privilege scope guidance
 - For OAuth methods:
   - use a user-facing `label` such as `Connect with GitHub`
-  - describe the browser-based setup in `description`
-  - list required OAuth scopes in the secret hint or method description
-  - mention whether users need to register a fixed loopback redirect URI or provide their own OAuth client ID/secret
-  - for authorization-code flow, note that users can paste the final localhost redirect URL into the terminal if their browser cannot reach Coral's loopback listener directly
+  - keep `description` to a short one-line blurb; put the setup detail in the method's `hint`
+  - in the method's `hint`, list the required OAuth scopes and explain whether users must register a fixed loopback redirect URI or provide their own OAuth client ID/secret; when the method collects `client.id.input`/`client.secret.input`, say where to obtain those values
+  - for authorization-code flow, note in the method's `hint` that users can paste the final localhost redirect URL into the terminal if their browser cannot reach Coral's loopback listener directly
+  - when a secret offers multiple methods, scope each method's `hint` to the inputs that method collects instead of writing one broad input-level hint that mixes guidance for every method
 - For derived secrets (for example Basic auth blobs):
   - include a short shell example (for example a Base64 command)
 - Prefer stable documentation links.
@@ -160,12 +168,19 @@ Use this loop during authoring:
 coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
 coral source test my_source
-coral sql "SELECT schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' ORDER BY schema_name, table_name LIMIT 50 OFFSET 0"
+coral sql "SELECT catalog_name, schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY catalog_name, schema_name, table_name LIMIT 50 OFFSET 0"
 coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
-coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
-coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
-coral sql "SELECT key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' ORDER BY key"
+coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
+coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
+coral sql "SELECT catalog_name, key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY key"
 ```
+
+Each `WHERE` clause matches on both qualifiers because a source is addressed
+either by schema or by catalog. Schema-addressed sources carry the source name in
+`schema_name` and leave `catalog_name` empty; database sources put the source name
+in `catalog_name`, and their `coral.inputs` rows have an empty `schema_name`.
+Filtering on `schema_name` alone returns zero rows for a database source without
+reporting an error, which reads as "this source declares nothing".
 
 For repo sources or already-named sources, add `test_queries` for a basic smoke/connection check and run:
 
@@ -213,12 +228,15 @@ For an OAuth-backed HTTP source, add the retrieval method to that same secret in
 inputs:
   FOOBAR_API_TOKEN:
     kind: secret
-    hint: Access token for the Foobar API. Use OAuth setup or paste a token with read access.
+    hint: Connect with Foobar OAuth or paste a token with read access.
     credential:
       methods:
         - type: oauth
           label: Connect with Foobar
           description: Open a browser and authorize Coral to read Foobar data.
+          hint: |
+            Signs you in through Foobar and requests the `read` scope. To
+            use your own app, set FOOBAR_OAUTH_CLIENT_ID to its Client ID.
           oauth:
             flow:
               type: authorization_code
@@ -238,6 +256,7 @@ inputs:
                   - read
         - type: source_config
           label: Paste token
+          hint: Paste a Foobar API token with read access to the data you query.
 auth:
   type: HeaderAuth
   headers:

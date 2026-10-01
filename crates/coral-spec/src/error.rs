@@ -13,6 +13,13 @@ pub enum ManifestError {
         #[source]
         source: serde_yaml::Error,
     },
+    /// The source-spec YAML could not be serialized.
+    #[error("failed to serialize manifest yaml: {source}")]
+    SerializeYaml {
+        /// The underlying YAML serialization error.
+        #[source]
+        source: serde_yaml::Error,
+    },
     /// A structured source-spec value could not be deserialized.
     #[error("failed to deserialize manifest: {source}")]
     Deserialize {
@@ -28,6 +35,10 @@ pub enum ManifestError {
 impl ManifestError {
     pub(crate) fn parse_yaml(source: serde_yaml::Error) -> Self {
         Self::ParseYaml { source }
+    }
+
+    pub(crate) fn serialize_yaml(source: serde_yaml::Error) -> Self {
+        Self::SerializeYaml { source }
     }
 
     pub(crate) fn deserialize(source: serde_json::Error) -> Self {

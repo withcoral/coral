@@ -1,0 +1,119 @@
+name: cisa_kev
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query vulnerabilities and catalog metadata from the CISA Known Exploited
+  Vulnerabilities (KEV) catalog.
+base_url: https://www.cisa.gov
+test_queries:
+  - SELECT * FROM cisa_kev.vulnerabilities LIMIT 1
+  - SELECT catalog_version, date_released, count FROM cisa_kev.catalog LIMIT 1
+tables:
+  - name: catalog
+    description: >-
+      Single-row feed metadata for the CISA Known Exploited Vulnerabilities
+      catalog. Use this to check feed freshness before joining with vulnerability rows.
+    guide: >-
+      Start with `SELECT catalog_version, date_released, count FROM
+      cisa_kev.catalog`. The table returns one row with the top-level feed
+      metadata fields from the JSON document.
+    request:
+      method: GET
+      path: /sites/default/files/feeds/known_exploited_vulnerabilities.json
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: catalog_version
+        type: Utf8
+        description: CISA catalog version string.
+        nullable: false
+        expr: {kind: path, path: [catalogVersion]}
+      - name: date_released
+        type: Utf8
+        description: Date the catalog feed was released.
+        nullable: false
+        expr: {kind: path, path: [dateReleased]}
+      - name: count
+        type: Int64
+        description: Number of vulnerability rows in the feed.
+        nullable: false
+        expr: {kind: path, path: [count]}
+
+  - name: vulnerabilities
+    description: >-
+      All entries in the CISA Known Exploited Vulnerabilities catalog. Each row
+      is one CVE that CISA has confirmed as actively exploited.
+    guide: >-
+      Use this table for row-level vulnerability analysis. Join to
+      cisa_kev.catalog when you want to verify which feed snapshot the rows
+      came from.
+    request:
+      method: GET
+      path: /sites/default/files/feeds/known_exploited_vulnerabilities.json
+    response:
+      rows_path:
+        - vulnerabilities
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: cve_id
+        type: Utf8
+        description: CVE identifier (e.g. CVE-2021-44228).
+        nullable: true
+        expr: {kind: path, path: [cveID]}
+      - name: vendor_project
+        type: Utf8
+        description: Vendor or project name associated with the vulnerability.
+        nullable: true
+        expr: {kind: path, path: [vendorProject]}
+      - name: product
+        type: Utf8
+        description: Affected product name.
+        nullable: true
+        expr: {kind: path, path: [product]}
+      - name: vulnerability_name
+        type: Utf8
+        description: Short human-readable name for the vulnerability.
+        nullable: true
+        expr: {kind: path, path: [vulnerabilityName]}
+      - name: date_added
+        type: Utf8
+        description: Date the CVE was added to the KEV catalog (YYYY-MM-DD).
+        nullable: true
+        expr: {kind: path, path: [dateAdded]}
+      - name: short_description
+        type: Utf8
+        description: Brief description of the vulnerability.
+        nullable: true
+        expr: {kind: path, path: [shortDescription]}
+      - name: required_action
+        type: Utf8
+        description: Remediation action required by CISA.
+        nullable: true
+        expr: {kind: path, path: [requiredAction]}
+      - name: due_date
+        type: Utf8
+        description: Federal agency remediation due date (YYYY-MM-DD).
+        nullable: true
+        expr: {kind: path, path: [dueDate]}
+      - name: known_ransomware_campaign_use
+        type: Utf8
+        description: >-
+          Whether the vulnerability has been used in known ransomware campaigns.
+          Values are typically "Known" or "Unknown".
+        nullable: true
+        expr: {kind: path, path: [knownRansomwareCampaignUse]}
+      - name: notes
+        type: Utf8
+        description: Additional references and notes from CISA.
+        nullable: true
+        expr: {kind: path, path: [notes]}
+      - name: cwes
+        type: Json
+        description: Array of CWE identifiers associated with the vulnerability.
+        nullable: true
+        expr: {kind: path, path: [cwes]}

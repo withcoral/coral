@@ -1,10 +1,15 @@
 use super::*;
+use crate::backends::shared::source_observation::{
+    source_observation_publishers, test_support::RecordingSourceObservationPublisher,
+};
 use crate::runtime::catalog;
 use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     QuerySource, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    SourceObservationPublisher, SourceObservationSurfaceKind,
 };
+use datafusion::arrow::array::StringArray;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -41,6 +46,31 @@ impl McpToolCaller for FakeMcpCaller {
                 { "title": format!("{query} two"), "url": "https://example.com/2" }
             ]
         }))
+    }
+}
+
+#[derive(Debug)]
+struct SchemaValidatingMcpCaller;
+
+#[async_trait]
+impl McpToolCaller for SchemaValidatingMcpCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        _tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        let include_archived = arguments
+            .get("include_archived")
+            .cloned()
+            .unwrap_or(Value::Null);
+        serde_json::from_value::<bool>(include_archived.clone()).map_err(|error| {
+            DataFusionError::Plan(format!(
+                "MCP tool expected boolean argument include_archived, got \
+                 {include_archived}: {error}"
+            ))
+        })?;
+        Ok(json!({ "items": [] }))
     }
 }
 
@@ -110,6 +140,76 @@ impl McpToolCaller for FakePaginatedMcpTableCaller {
     }
 }
 
+/// Returns offset-paginated pages and records each MCP tool call.
+#[derive(Debug)]
+struct FakeOffsetPaginatedMcpTableCaller {
+    calls: Mutex<Vec<(String, JsonObject)>>,
+}
+
+#[async_trait]
+impl McpToolCaller for FakeOffsetPaginatedMcpTableCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((tool_name.to_string(), arguments.clone()));
+        let offset = arguments
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let limit = arguments
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        match (offset, limit) {
+            (0, 2) => Ok(json!({
+                "issues": [
+                    { "id": "1", "title": "Bug A", "state": "open" },
+                    { "id": "2", "title": "Bug B", "state": "open" }
+                ]
+            })),
+            (2, 1) => Ok(json!({
+                "issues": [
+                    { "id": "3", "title": "Bug C", "state": "closed" }
+                ]
+            })),
+            other => panic!("unexpected offset pagination call: {other:?}"),
+        }
+    }
+}
+
+/// Repeats the same next cursor forever unless the fetch plan stops it.
+#[derive(Debug)]
+struct FakeRepeatedCursorMcpTableCaller {
+    calls: Mutex<Vec<(String, JsonObject)>>,
+}
+
+#[async_trait]
+impl McpToolCaller for FakeRepeatedCursorMcpTableCaller {
+    async fn call_tool(
+        &self,
+        _relation: &str,
+        tool_name: &str,
+        arguments: JsonObject,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push((tool_name.to_string(), arguments));
+        Ok(json!({
+            "issues": [
+                { "id": "1", "title": "Bug A", "state": "open" }
+            ],
+            "meta": { "nextCursor": "same-cursor" }
+        }))
+    }
+}
+
 #[derive(Debug)]
 struct RotatingInputResolver {
     calls: Arc<AtomicUsize>,
@@ -141,6 +241,8 @@ fn mcp_manifest() -> coral_spec::ValidatedSourceManifest {
         },
         "functions": [{
             "name": "search",
+            "guide": "Use search for exact issue lookup.",
+            "require_guide_read": true,
             "tool": "search_tool",
             "args": [{
                 "name": "query",
@@ -175,23 +277,32 @@ fn mcp_typed_args_manifest() -> coral_spec::ValidatedSourceManifest {
             "args": [
                 {
                     "name": "query",
+                    "type": "Utf8",
                     "required": true,
                     "bind": { "arg": "query" }
                 },
                 {
                     "name": "limit",
+                    "type": "Int64",
                     "required": true,
                     "bind": { "arg": "limit" }
                 },
                 {
                     "name": "include_archived",
+                    "type": "Boolean",
                     "required": true,
                     "bind": { "arg": "include_archived" }
                 },
                 {
                     "name": "threshold",
+                    "type": "Float64",
                     "required": true,
                     "bind": { "arg": "threshold" }
+                },
+                {
+                    "name": "workflow_runs_filter",
+                    "type": "Json",
+                    "bind": { "arg": "workflow_runs_filter" }
                 }
             ],
             "response": {
@@ -213,11 +324,64 @@ fn compile_sources(
     compile_sources_with_inputs(manifest, caller, BTreeMap::new(), None)
 }
 
+fn compile_sources_with_mcp_manifest(
+    source_manifest: coral_spec::ValidatedSourceManifest,
+    mcp_manifest: coral_spec::backends::mcp::McpSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+) -> Vec<CompiledQuerySource> {
+    let source = QuerySource::new(source_manifest, BTreeMap::new(), BTreeMap::new());
+    let source_input_resolution = SourceInputResolutionContext::from_query_source(&source);
+    let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
+        &mcp_manifest.declared_inputs,
+        source_input_resolution.secrets(),
+        source_input_resolution.variables(),
+    ));
+    let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
+    let compiled = compile_source_with_caller(
+        mcp_manifest,
+        source_input_resolution,
+        source_inputs,
+        caller,
+        source_observation_publishers(&[]),
+    );
+    vec![CompiledQuerySource { source, compiled }]
+}
+
+fn compile_sources_with_observation_publishers(
+    manifest: coral_spec::ValidatedSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+    publishers: &[Arc<dyn SourceObservationPublisher>],
+) -> Vec<CompiledQuerySource> {
+    compile_sources_with_inputs_and_observation_publishers(
+        manifest,
+        caller,
+        BTreeMap::new(),
+        None,
+        publishers,
+    )
+}
+
 fn compile_sources_with_inputs(
     manifest: coral_spec::ValidatedSourceManifest,
     caller: Arc<dyn McpToolCaller>,
     secrets: BTreeMap<String, String>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+) -> Vec<CompiledQuerySource> {
+    compile_sources_with_inputs_and_observation_publishers(
+        manifest,
+        caller,
+        secrets,
+        source_input_resolver,
+        &[],
+    )
+}
+
+fn compile_sources_with_inputs_and_observation_publishers(
+    manifest: coral_spec::ValidatedSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+    secrets: BTreeMap<String, String>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    publishers: &[Arc<dyn SourceObservationPublisher>],
 ) -> Vec<CompiledQuerySource> {
     let mcp_manifest = manifest.as_mcp().expect("mcp manifest").clone();
     let variables = BTreeMap::new();
@@ -236,8 +400,13 @@ fn compile_sources_with_inputs(
         )),
         None => Arc::new(McpSourceInputs::static_inputs(resolved_inputs)),
     };
-    let compiled =
-        compile_source_with_caller(mcp_manifest, source_input_resolution, source_inputs, caller);
+    let compiled = compile_source_with_caller(
+        mcp_manifest,
+        source_input_resolution,
+        source_inputs,
+        caller,
+        source_observation_publishers(publishers),
+    );
     vec![CompiledQuerySource { source, compiled }]
 }
 
@@ -274,7 +443,7 @@ async fn executes_mcp_table_function_with_bound_args() {
 }
 
 #[tokio::test]
-async fn mcp_table_function_preserves_json_scalar_arg_types() {
+async fn mcp_table_function_declared_arg_types_keep_existing_call_behavior() {
     let ctx = SessionContext::new();
     let caller = Arc::new(FakeMcpCaller {
         calls: Mutex::new(Vec::new()),
@@ -290,7 +459,7 @@ async fn mcp_table_function_preserves_json_scalar_arg_types() {
              query => 'issue', \
              limit => 10, \
              include_archived => true, \
-             threshold => 0.75)",
+             threshold => 1)",
         )
         .await
         .expect("typed function query should plan")
@@ -308,7 +477,65 @@ async fn mcp_table_function_preserves_json_scalar_arg_types() {
     );
     assert_eq!(call.1.get("limit"), Some(&Value::from(10)));
     assert_eq!(call.1.get("include_archived"), Some(&Value::Bool(true)));
-    assert_eq!(call.1.get("threshold"), Some(&json!(0.75)));
+    assert_eq!(call.1.get("threshold"), Some(&json!(1.0)));
+}
+
+#[tokio::test]
+async fn mcp_table_function_coerces_compatible_string_to_declared_boolean() {
+    let ctx = SessionContext::new();
+    register_test_sources(
+        &ctx,
+        compile_sources(
+            mcp_typed_args_manifest(),
+            Arc::new(SchemaValidatingMcpCaller),
+        ),
+    );
+
+    ctx.sql(
+        "SELECT title FROM test_mcp.typed_search(\
+         query => 'issue', \
+         limit => 10, \
+         include_archived => 'true', \
+         threshold => 0.75)",
+    )
+    .await
+    .expect("typed function query should plan")
+    .collect()
+    .await
+    .expect("MCP tool should receive include_archived as a JSON boolean");
+}
+
+#[tokio::test]
+async fn mcp_table_function_parses_declared_json_object_argument() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_typed_args_manifest(), caller.clone()),
+    );
+
+    ctx.sql(
+        "SELECT title FROM test_mcp.typed_search(\
+         query => 'issue', \
+         limit => 10, \
+         include_archived => true, \
+         threshold => 0.75, \
+         workflow_runs_filter => '{\"status\":\"completed\"}')",
+    )
+    .await
+    .expect("typed function query should plan")
+    .collect()
+    .await
+    .expect("MCP tool should receive workflow_runs_filter as a JSON object");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    let call = calls.first().expect("one MCP call should be recorded");
+    assert_eq!(
+        call.1.get("workflow_runs_filter"),
+        Some(&json!({ "status": "completed" }))
+    );
 }
 
 #[tokio::test]
@@ -340,20 +567,29 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    ctx.register_relation_planner(Arc::new(source_functions))
+    source_functions
+        .install(ctx)
         .expect("source function planner should register");
 }
 
 fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
-    catalog::register(ctx, &registration.active_sources).expect("catalog should register");
+    catalog::register(
+        ctx,
+        &registration.active_sources,
+        &registration.column_fetchers,
+        &[],
+        catalog::CatalogColumnFetchFailures::default(),
+    )
+    .expect("catalog should register");
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    ctx.register_relation_planner(Arc::new(source_functions))
+    source_functions
+        .install(ctx)
         .expect("source function planner should register");
 }
 
@@ -367,6 +603,8 @@ fn mcp_table_manifest() -> coral_spec::ValidatedSourceManifest {
         "tables": [{
             "name": "issues",
             "description": "Open issues",
+            "guide": "Use search for issue lookup.",
+            "require_guide_read": true,
             "tool": "list_issues",
             "tool_args": {
                 "owner": { "from": "literal", "value": "acme" }
@@ -654,6 +892,72 @@ async fn applies_projection_and_limit_to_mcp_table_scan() {
     let schema = batches.first().expect("at least one batch").schema();
     assert_eq!(schema.fields().len(), 1);
     assert_eq!(schema.field(0).name(), "title");
+}
+
+#[tokio::test]
+async fn source_scan_observation_sees_full_mcp_batch_before_projection() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+    register_test_sources(
+        &ctx,
+        compile_sources_with_observation_publishers(
+            mcp_table_manifest(),
+            caller,
+            &[publisher.clone() as Arc<dyn SourceObservationPublisher>],
+        ),
+    );
+
+    let batches = ctx
+        .sql("SELECT title FROM test_mcp.issues WHERE id = '2'")
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| Bug B"));
+    assert!(!rendered.contains("| Bug A"));
+    assert!(!rendered.contains("| Bug C"));
+    assert_eq!(
+        batches
+            .first()
+            .expect("projected result batch")
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        ["title"]
+    );
+
+    let observations = publisher.observations();
+    let issue_scan = observations
+        .iter()
+        .find(|observation| {
+            observation.source_name == "test_mcp" && observation.surface_name == "issues"
+        })
+        .expect("issues scan should be observed");
+
+    assert_eq!(issue_scan.surface_kind, SourceObservationSurfaceKind::Table);
+    assert_eq!(issue_scan.column_names, ["id", "title", "state"]);
+    assert_eq!(issue_scan.row_count, 3);
+
+    let observed_ids = issue_scan
+        .batch
+        .column_by_name("id")
+        .expect("id column")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("id string array")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(observed_ids, [Some("1"), Some("2"), Some("3")]);
 }
 
 /// Returns the ClickHouse-style success/error union and records each MCP
@@ -1036,6 +1340,7 @@ async fn stdio_env_resolves_source_inputs_for_each_tool_call() {
         source_name: mcp_manifest.common.name.clone(),
         server: mcp_manifest.server,
         source_inputs,
+        body_capture: super::trace::McpBodyCapture::default(),
     };
 
     let first = caller
@@ -1144,6 +1449,78 @@ async fn limit_binding_omits_arg_when_no_limit_set() {
     );
 }
 
+fn mcp_table_with_generated_offset_pagination_manifest() -> (
+    coral_spec::ValidatedSourceManifest,
+    coral_spec::backends::mcp::McpSourceManifest,
+) {
+    let source_manifest = coral_spec::parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "test_mcp",
+        "version": "0.1.0",
+        "backend": "mcp",
+        "server": { "transport": "stdio", "command": "unused" },
+        "tables": [{
+            "name": "issues",
+            "description": "issues with generated offset pagination",
+            "tool": "list_issues",
+            "response": { "rows_path": ["issues"] },
+            "columns": [
+                { "name": "id", "type": "Utf8" },
+                { "name": "title", "type": "Utf8" },
+                { "name": "state", "type": "Utf8" }
+            ]
+        }]
+    }))
+    .expect("offset pagination manifest should parse");
+    let mut mcp_manifest = source_manifest.as_mcp().expect("mcp manifest").clone();
+    let table = mcp_manifest.tables.first_mut().expect("table");
+    table.offset_pagination = Some(coral_spec::backends::mcp::McpOffsetPaginationSpec {
+        limit_arg: "limit".to_string(),
+        default_limit: 2,
+        max_limit: 2,
+        offset_arg: "offset".to_string(),
+        offset_start: 0,
+        max_pages: Some(5),
+    });
+    (source_manifest, mcp_manifest)
+}
+
+#[tokio::test]
+async fn generated_offset_pagination_pushes_limit_and_offset_pages() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeOffsetPaginatedMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let (source_manifest, mcp_manifest) = mcp_table_with_generated_offset_pagination_manifest();
+    register_test_sources(
+        &ctx,
+        compile_sources_with_mcp_manifest(source_manifest, mcp_manifest, caller.clone()),
+    );
+
+    let batches = ctx
+        .sql("SELECT id FROM test_mcp.issues LIMIT 3")
+        .await
+        .expect("offset pagination query should plan")
+        .collect()
+        .await
+        .expect("offset pagination query should execute");
+
+    let total_rows: usize = batches
+        .iter()
+        .map(datafusion::arrow::array::RecordBatch::num_rows)
+        .sum();
+    assert_eq!(total_rows, 3);
+
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 2);
+    let first_call = calls.first().expect("first call");
+    let second_call = calls.get(1).expect("second call");
+    assert_eq!(first_call.1.get("limit"), Some(&Value::from(2_u64)));
+    assert_eq!(first_call.1.get("offset"), Some(&Value::from(0_u64)));
+    assert_eq!(second_call.1.get("limit"), Some(&Value::from(1_u64)));
+    assert_eq!(second_call.1.get("offset"), Some(&Value::from(2_u64)));
+}
+
 #[tokio::test]
 async fn mcp_table_tool_args_resolve_source_inputs_for_each_tool_call() {
     let ctx = SessionContext::new();
@@ -1250,6 +1627,38 @@ async fn cursor_pagination_stops_when_sql_limit_is_satisfied() {
 
     let calls = caller.calls.lock().expect("calls lock");
     assert_eq!(calls.len(), 1);
+}
+
+#[tokio::test]
+async fn cursor_pagination_fails_on_repeated_response_cursor() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeRepeatedCursorMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources(
+        &ctx,
+        compile_sources(mcp_table_with_cursor_pagination_manifest(), caller.clone()),
+    );
+
+    let error = ctx
+        .sql("SELECT id FROM test_mcp.issues")
+        .await
+        .expect("pagination query should plan")
+        .collect()
+        .await
+        .expect_err("repeated cursor should fail");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("returned repeated cursor 'same-cursor'"),
+        "unexpected error: {message}"
+    );
+    let calls = caller.calls.lock().expect("calls lock");
+    assert_eq!(
+        calls.len(),
+        2,
+        "repeated cursor should fail before exhausting max_pages"
+    );
 }
 
 fn mcp_table_with_pagination_and_limit_binding_manifest() -> coral_spec::ValidatedSourceManifest {

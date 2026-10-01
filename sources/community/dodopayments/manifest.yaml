@@ -1,0 +1,1054 @@
+name: dodopayments
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Dodo Payments transactions, customers, subscriptions, refunds,
+  disputes, and payouts through Coral SQL. Read-only access to payment and
+  billing data for SaaS and AI products using Dodo Payments.
+base_url: '{{input.DODO_BASE_URL}}'
+inputs:
+  DODO_API_KEY:
+    kind: secret
+    hint: |
+      Dodo Payments API key. Get it from Developer → API Keys in the
+      Dodo Payments dashboard.
+
+      Keys prefixed with dodo_test_ are for test mode;
+      dodo_live_ are for live mode.
+
+      Generate a key with "Enable write access" unchecked for read-only
+      access (recommended for Coral).
+
+      See https://docs.dodopayments.com/api-reference/introduction
+  DODO_BASE_URL:
+    kind: variable
+    default: 'https://live.dodopayments.com'
+    hint: |
+      Dodo Payments API base URL.
+      Use https://test.dodopayments.com for sandbox/test mode.
+      Use https://live.dodopayments.com for live mode.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: 'Bearer {{input.DODO_API_KEY}}'
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT payment_id, status, total_amount, currency, refund_status, dispute_status FROM dodopayments.payments LIMIT 5
+  - SELECT customer_id, name, email FROM dodopayments.customers LIMIT 5
+  - SELECT refund_id, payment_id, status, amount, is_partial FROM dodopayments.refunds LIMIT 5
+  - SELECT dispute_id, payment_id, dispute_status, amount, dispute_stage FROM dodopayments.disputes LIMIT 5
+  - SELECT payout_id, status, amount, currency, fee, refunds, chargebacks FROM dodopayments.payouts LIMIT 5
+  - SELECT subscription_id, customer_id, status FROM dodopayments.subscriptions LIMIT 5
+
+tables:
+  - name: payments
+    description: >-
+      Payments processed through Dodo Payments. Includes one-time payments
+      and subscription renewals. Join to customers via customer_id or
+      customer_email.
+    fetch_limit_default: 100
+    filters:
+      - name: created_at_gte
+        required: false
+      - name: created_at_lte
+        required: false
+      - name: status
+        required: false
+      - name: customer_id
+        required: false
+      - name: subscription_id
+        required: false
+      - name: brand_id
+        required: false
+      - name: product_id
+        required: false
+    request:
+      method: GET
+      path: /payments
+      query:
+        - name: created_at_gte
+          from: filter
+          key: created_at_gte
+        - name: created_at_lte
+          from: filter
+          key: created_at_lte
+        - name: status
+          from: filter
+          key: status
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: subscription_id
+          from: filter
+          key: subscription_id
+        - name: brand_id
+          from: filter
+          key: brand_id
+        - name: product_id
+          from: filter
+          key: product_id
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page_number
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: payment_id
+        type: Utf8
+        nullable: false
+        description: Unique payment identifier.
+        expr:
+          kind: path
+          path: [payment_id]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Payment intent status.
+        expr:
+          kind: path
+          path: [status]
+      - name: total_amount
+        type: Int64
+        nullable: false
+        description: Total amount in currency's smallest unit (e.g. cents for USD).
+        expr:
+          kind: path
+          path: [total_amount]
+      - name: currency
+        type: Utf8
+        nullable: false
+        description: ISO 4217 currency code.
+        expr:
+          kind: path
+          path: [currency]
+      - name: customer_id
+        type: Utf8
+        nullable: false
+        description: Customer identifier.
+        expr:
+          kind: path
+          path: [customer, customer_id]
+      - name: customer_name
+        type: Utf8
+        nullable: false
+        description: Customer name.
+        expr:
+          kind: path
+          path: [customer, name]
+      - name: customer_email
+        type: Utf8
+        nullable: false
+        description: Customer email (primary join key for cross-source queries).
+        expr:
+          kind: path
+          path: [customer, email]
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Payment creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+      - name: subscription_id
+        type: Utf8
+        nullable: true
+        description: Subscription ID if this is a subscription payment.
+        expr:
+          kind: path
+          path: [subscription_id]
+      - name: invoice_id
+        type: Utf8
+        nullable: true
+        description: Invoice identifier (India-specific if available).
+        expr:
+          kind: path
+          path: [invoice_id]
+      - name: invoice_url
+        type: Utf8
+        nullable: true
+        description: URL to download the invoice PDF for this payment.
+        expr:
+          kind: path
+          path: [invoice_url]
+      - name: payment_provider
+        type: Utf8
+        nullable: false
+        description: Processor — stripe, adyen, or dodo.
+        expr:
+          kind: path
+          path: [payment_provider]
+      - name: payment_method
+        type: Utf8
+        nullable: true
+        description: Payment method e.g. card, bank_transfer.
+        expr:
+          kind: path
+          path: [payment_method]
+      - name: payment_method_type
+        type: Utf8
+        nullable: true
+        description: Specific type e.g. visa, mastercard.
+        expr:
+          kind: path
+          path: [payment_method_type]
+      - name: card_last_four
+        type: Utf8
+        nullable: true
+        description: Last four digits of the card.
+        expr:
+          kind: path
+          path: [card_last_four]
+      - name: card_network
+        type: Utf8
+        nullable: true
+        description: Card network e.g. VISA, MASTERCARD.
+        expr:
+          kind: path
+          path: [card_network]
+      - name: brand_id
+        type: Utf8
+        nullable: false
+        description: Brand identifier this payment belongs to.
+        expr:
+          kind: path
+          path: [brand_id]
+      - name: digital_products_delivered
+        type: Boolean
+        nullable: false
+        description: Whether digital products have been delivered.
+        expr:
+          kind: path
+          path: [digital_products_delivered]
+      - name: has_license_key
+        type: Boolean
+        nullable: false
+        description: Whether this payment includes a license key.
+        expr:
+          kind: path
+          path: [has_license_key]
+      - name: refund_status
+        type: Utf8
+        nullable: true
+        description: partial, full, or null if no refunds.
+        expr:
+          kind: path
+          path: [refund_status]
+      - name: dispute_status
+        type: Utf8
+        nullable: true
+        description: >-
+          Most recent dispute status for this payment, or null if no disputes
+          exist.
+        expr:
+          kind: path
+          path: [dispute_status]
+      - name: metadata
+        type: Json
+        nullable: false
+        description: Additional metadata as a JSON object.
+        expr:
+          kind: path
+          path: [metadata]
+
+  - name: customers
+    description: >-
+      Customers in your Dodo Payments account. Join to payments and
+      subscriptions via customer_id. Join to refunds and disputes through
+      payments.payment_id; those tables expose customer_id only as a query
+      filter, not as a response column.
+    fetch_limit_default: 100
+    filters:
+      - name: email
+        required: false
+      - name: name
+        required: false
+      - name: created_at_gte
+        required: false
+      - name: created_at_lte
+        required: false
+    request:
+      method: GET
+      path: /customers
+      query:
+        - name: email
+          from: filter
+          key: email
+        - name: name
+          from: filter
+          key: name
+        - name: created_at_gte
+          from: filter
+          key: created_at_gte
+        - name: created_at_lte
+          from: filter
+          key: created_at_lte
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page_number
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: customer_id
+        type: Utf8
+        nullable: false
+        description: Unique customer identifier.
+        expr:
+          kind: path
+          path: [customer_id]
+      - name: business_id
+        type: Utf8
+        nullable: false
+        description: Business identifier.
+        expr:
+          kind: path
+          path: [business_id]
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Customer full name.
+        expr:
+          kind: path
+          path: [name]
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Customer email address.
+        expr:
+          kind: path
+          path: [email]
+      - name: phone_number
+        type: Utf8
+        nullable: true
+        description: Customer phone number.
+        expr:
+          kind: path
+          path: [phone_number]
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Additional metadata as a JSON object.
+        expr:
+          kind: path
+          path: [metadata]
+
+  - name: refunds
+    description: >-
+      Refunds issued for payments. Join to payments via payment_id. Filter by
+      customer_id through the API, but list rows do not include customer_id.
+    fetch_limit_default: 100
+    filters:
+      - name: created_at_gte
+        required: false
+      - name: created_at_lte
+        required: false
+      - name: status
+        required: false
+      - name: subscription_id
+        required: false
+      - name: customer_id
+        required: false
+    request:
+      method: GET
+      path: /refunds
+      query:
+        - name: created_at_gte
+          from: filter
+          key: created_at_gte
+        - name: created_at_lte
+          from: filter
+          key: created_at_lte
+        - name: status
+          from: filter
+          key: status
+        - name: subscription_id
+          from: filter
+          key: subscription_id
+        - name: customer_id
+          from: filter
+          key: customer_id
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page_number
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: refund_id
+        type: Utf8
+        nullable: false
+        description: Unique refund identifier.
+        expr:
+          kind: path
+          path: [refund_id]
+      - name: payment_id
+        type: Utf8
+        nullable: false
+        description: Associated payment identifier.
+        expr:
+          kind: path
+          path: [payment_id]
+      - name: business_id
+        type: Utf8
+        nullable: false
+        description: Business identifier.
+        expr:
+          kind: path
+          path: [business_id]
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Refund status.
+        expr:
+          kind: path
+          path: [status]
+      - name: amount
+        type: Int64
+        nullable: true
+        description: Refunded amount in currency's smallest unit.
+        expr:
+          kind: path
+          path: [amount]
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: ISO 4217 currency code.
+        expr:
+          kind: path
+          path: [currency]
+      - name: is_partial
+        type: Boolean
+        nullable: false
+        description: Whether this is a partial refund.
+        expr:
+          kind: path
+          path: [is_partial]
+      - name: reason
+        type: Utf8
+        nullable: true
+        description: Reason provided for the refund.
+        expr:
+          kind: path
+          path: [reason]
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Refund creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+      - name: subscription_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter-only. Echoes the subscription_id query param; not returned on
+          list rows.
+        expr:
+          kind: from_filter
+          key: subscription_id
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter-only. Echoes the customer_id query param; not returned on list
+          rows. Join through payments.payment_id for customer context.
+        expr:
+          kind: from_filter
+          key: customer_id
+
+  - name: disputes
+    description: >-
+      Payment disputes (chargebacks). Join to payments via payment_id. Filter
+      by customer_id through the API, but list rows do not include
+      customer_id.
+    fetch_limit_default: 100
+    filters:
+      - name: created_at_gte
+        required: false
+      - name: created_at_lte
+        required: false
+      - name: dispute_status
+        required: false
+      - name: dispute_stage
+        required: false
+      - name: customer_id
+        required: false
+    request:
+      method: GET
+      path: /disputes
+      query:
+        - name: created_at_gte
+          from: filter
+          key: created_at_gte
+        - name: created_at_lte
+          from: filter
+          key: created_at_lte
+        - name: dispute_status
+          from: filter
+          key: dispute_status
+        - name: dispute_stage
+          from: filter
+          key: dispute_stage
+        - name: customer_id
+          from: filter
+          key: customer_id
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page_number
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: dispute_id
+        type: Utf8
+        nullable: false
+        description: Unique dispute identifier.
+        expr:
+          kind: path
+          path: [dispute_id]
+      - name: payment_id
+        type: Utf8
+        nullable: false
+        description: Associated payment identifier.
+        expr:
+          kind: path
+          path: [payment_id]
+      - name: business_id
+        type: Utf8
+        nullable: false
+        description: Business identifier.
+        expr:
+          kind: path
+          path: [business_id]
+      - name: amount
+        type: Utf8
+        nullable: false
+        description: Disputed amount as a string for precision.
+        expr:
+          kind: path
+          path: [amount]
+      - name: currency
+        type: Utf8
+        nullable: false
+        description: ISO 4217 currency code.
+        expr:
+          kind: path
+          path: [currency]
+      - name: dispute_status
+        type: Utf8
+        nullable: false
+        description: Current dispute status.
+        expr:
+          kind: path
+          path: [dispute_status]
+      - name: dispute_stage
+        type: Utf8
+        nullable: false
+        description: Current dispute stage.
+        expr:
+          kind: path
+          path: [dispute_stage]
+      - name: is_resolved_by_rdr
+        type: Boolean
+        nullable: true
+        description: Whether resolved by Rapid Dispute Resolution.
+        expr:
+          kind: path
+          path: [is_resolved_by_rdr]
+      - name: payment_provider
+        type: Utf8
+        nullable: false
+        description: Processor — stripe, adyen, or dodo.
+        expr:
+          kind: path
+          path: [payment_provider]
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Dispute creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+      - name: customer_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter-only. Echoes the customer_id query param; not returned on list
+          rows. Join through payments.payment_id for customer context.
+        expr:
+          kind: from_filter
+          key: customer_id
+
+  - name: payouts
+    description: >-
+      Settlement payouts to your connected bank account.
+    fetch_limit_default: 100
+    filters:
+      - name: created_at_gte
+        required: false
+      - name: created_at_lte
+        required: false
+    request:
+      method: GET
+      path: /payouts
+      query:
+        - name: created_at_gte
+          from: filter
+          key: created_at_gte
+        - name: created_at_lte
+          from: filter
+          key: created_at_lte
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page_number
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: payout_id
+        type: Utf8
+        nullable: false
+        description: Unique payout identifier.
+        expr:
+          kind: path
+          path: [payout_id]
+      - name: business_id
+        type: Utf8
+        nullable: false
+        description: Business identifier.
+        expr:
+          kind: path
+          path: [business_id]
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Payout status — not_initiated, in_progress, on_hold, failed, success.
+        expr:
+          kind: path
+          path: [status]
+      - name: amount
+        type: Int64
+        nullable: false
+        description: Total payout amount in currency's smallest unit.
+        expr:
+          kind: path
+          path: [amount]
+      - name: currency
+        type: Utf8
+        nullable: false
+        description: ISO 4217 currency code.
+        expr:
+          kind: path
+          path: [currency]
+      - name: payment_method
+        type: Utf8
+        nullable: false
+        description: Payment method used for payout.
+        expr:
+          kind: path
+          path: [payment_method]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Payout recipient name or purpose.
+        expr:
+          kind: path
+          path: [name]
+      - name: remarks
+        type: Utf8
+        nullable: true
+        description: Additional remarks.
+        expr:
+          kind: path
+          path: [remarks]
+      - name: fee
+        type: Int64
+        nullable: false
+        description: Processing fee.
+        expr:
+          kind: path
+          path: [fee]
+      - name: tax
+        type: Int64
+        nullable: false
+        description: >-
+          Tax applied to the payout (deprecated; prefer v3 payout breakup
+          endpoints).
+        expr:
+          kind: path
+          path: [tax]
+      - name: refunds
+        type: Int64
+        nullable: false
+        description: >-
+          Total value of refunds associated with the payout (deprecated;
+          prefer v3 payout breakup endpoints).
+        expr:
+          kind: path
+          path: [refunds]
+      - name: chargebacks
+        type: Int64
+        nullable: false
+        description: >-
+          Total value of chargebacks associated with the payout (deprecated;
+          prefer v3 payout breakup endpoints).
+        expr:
+          kind: path
+          path: [chargebacks]
+      - name: payout_document_url
+        type: Utf8
+        nullable: true
+        description: URL to download payout document.
+        expr:
+          kind: path
+          path: [payout_document_url]
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+      - name: updated_at
+        type: Utf8
+        nullable: false
+        description: Last update timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [updated_at]
+
+  - name: subscriptions
+    description: >-
+      Active and historical subscriptions. Join to customers via customer_id
+      and to payments via subscription_id.
+    fetch_limit_default: 100
+    filters:
+      - name: status
+        required: false
+      - name: customer_id
+        required: false
+      - name: product_id
+        required: false
+      - name: brand_id
+        required: false
+      - name: created_at_gte
+        required: false
+      - name: created_at_lte
+        required: false
+    request:
+      method: GET
+      path: /subscriptions
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: customer_id
+          from: filter
+          key: customer_id
+        - name: product_id
+          from: filter
+          key: product_id
+        - name: brand_id
+          from: filter
+          key: brand_id
+        - name: created_at_gte
+          from: filter
+          key: created_at_gte
+        - name: created_at_lte
+          from: filter
+          key: created_at_lte
+    response:
+      rows_path: [items]
+    pagination:
+      mode: page
+      page_param: page_number
+      page_start: 0
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: page_size
+    columns:
+      - name: subscription_id
+        type: Utf8
+        nullable: false
+        description: Unique subscription identifier.
+        expr:
+          kind: path
+          path: [subscription_id]
+      - name: customer_id
+        type: Utf8
+        nullable: false
+        description: Customer identifier.
+        expr:
+          kind: path
+          path: [customer, customer_id]
+      - name: customer_name
+        type: Utf8
+        nullable: false
+        description: Customer name.
+        expr:
+          kind: path
+          path: [customer, name]
+      - name: customer_email
+        type: Utf8
+        nullable: false
+        description: Customer email.
+        expr:
+          kind: path
+          path: [customer, email]
+      - name: product_id
+        type: Utf8
+        nullable: false
+        description: Product identifier.
+        expr:
+          kind: path
+          path: [product_id]
+      - name: product_name
+        type: Utf8
+        nullable: true
+        description: Product name when returned by the list endpoint.
+        expr:
+          kind: path
+          path: [product_name]
+      - name: brand_id
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter-only. Echoes the brand_id query param; not returned on list
+          rows.
+        expr:
+          kind: from_filter
+          key: brand_id
+      - name: status
+        type: Utf8
+        nullable: false
+        description: Subscription status.
+        expr:
+          kind: path
+          path: [status]
+      - name: quantity
+        type: Int64
+        nullable: false
+        description: Number of units.
+        expr:
+          kind: path
+          path: [quantity]
+      - name: recurring_pre_tax_amount
+        type: Int64
+        nullable: false
+        description: Recurring charge before tax (smallest currency unit).
+        expr:
+          kind: path
+          path: [recurring_pre_tax_amount]
+      - name: currency
+        type: Utf8
+        nullable: false
+        description: ISO 4217 currency code.
+        expr:
+          kind: path
+          path: [currency]
+      - name: tax_inclusive
+        type: Boolean
+        nullable: false
+        description: Whether amount is tax inclusive.
+        expr:
+          kind: path
+          path: [tax_inclusive]
+      - name: trial_period_days
+        type: Int64
+        nullable: false
+        description: Trial period in days (0 if none).
+        expr:
+          kind: path
+          path: [trial_period_days]
+      - name: subscription_period_interval
+        type: Utf8
+        nullable: false
+        description: Billing interval — Day, Week, Month, Year.
+        expr:
+          kind: path
+          path: [subscription_period_interval]
+      - name: subscription_period_count
+        type: Int64
+        nullable: false
+        description: Number of intervals in subscription period.
+        expr:
+          kind: path
+          path: [subscription_period_count]
+      - name: payment_frequency_interval
+        type: Utf8
+        nullable: false
+        description: Payment interval — Day, Week, Month, Year.
+        expr:
+          kind: path
+          path: [payment_frequency_interval]
+      - name: payment_frequency_count
+        type: Int64
+        nullable: false
+        description: Number of intervals in payment frequency.
+        expr:
+          kind: path
+          path: [payment_frequency_count]
+      - name: next_billing_date
+        type: Utf8
+        nullable: false
+        description: Next scheduled billing timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [next_billing_date]
+      - name: previous_billing_date
+        type: Utf8
+        nullable: false
+        description: Previous billing timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [previous_billing_date]
+      - name: cancel_at_next_billing_date
+        type: Boolean
+        nullable: false
+        description: Whether subscription cancels at next billing.
+        expr:
+          kind: path
+          path: [cancel_at_next_billing_date]
+      - name: on_demand
+        type: Boolean
+        nullable: false
+        description: Whether this is an on-demand subscription.
+        expr:
+          kind: path
+          path: [on_demand]
+      - name: customer_business_name
+        type: Utf8
+        nullable: true
+        description: Business name of the customer.
+        expr:
+          kind: path
+          path: [customer_business_name]
+      - name: payment_method_id
+        type: Utf8
+        nullable: true
+        description: Payment method identifier.
+        expr:
+          kind: path
+          path: [payment_method_id]
+      - name: tax_id
+        type: Utf8
+        nullable: true
+        description: Tax identifier.
+        expr:
+          kind: path
+          path: [tax_id]
+      - name: discounts
+        type: Json
+        nullable: false
+        description: Applied discounts as a JSON array.
+        expr:
+          kind: path
+          path: [discounts]
+      - name: metadata
+        type: Json
+        nullable: false
+        description: Additional metadata as a JSON object.
+        expr:
+          kind: path
+          path: [metadata]
+      - name: created_at
+        type: Utf8
+        nullable: false
+        description: Creation timestamp (ISO 8601).
+        expr:
+          kind: path
+          path: [created_at]
+      - name: cancelled_at
+        type: Utf8
+        nullable: true
+        description: Cancellation timestamp if cancelled.
+        expr:
+          kind: path
+          path: [cancelled_at]
+      - name: scheduled_change
+        type: Json
+        nullable: true
+        description: Scheduled subscription change as a JSON object.
+        expr:
+          kind: path
+          path: [scheduled_change]
+      - name: billing_country
+        type: Utf8
+        nullable: false
+        description: Billing address country.
+        expr:
+          kind: path
+          path: [billing, country]
+      - name: billing_city
+        type: Utf8
+        nullable: true
+        description: Billing address city.
+        expr:
+          kind: path
+          path: [billing, city]
+      - name: billing_state
+        type: Utf8
+        nullable: true
+        description: Billing address state.
+        expr:
+          kind: path
+          path: [billing, state]
+      - name: billing_street
+        type: Utf8
+        nullable: true
+        description: Billing address street.
+        expr:
+          kind: path
+          path: [billing, street]
+      - name: billing_zipcode
+        type: Utf8
+        nullable: true
+        description: Billing address zipcode.
+        expr:
+          kind: path
+          path: [billing, zipcode]

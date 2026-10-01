@@ -1,0 +1,550 @@
+dsl_version: 3
+name: argocd
+version: 1.1.0
+description: >-
+  Query ArgoCD applications, projects, clusters, and repositories to
+  understand GitOps deployment state across your fleet.
+backend: http
+base_url: "{{input.ARGOCD_SERVER}}"
+inputs:
+  ARGOCD_SERVER:
+    kind: variable
+    hint: |
+      Base URL of your ArgoCD API server, including scheme and port if
+      non-standard. Examples: `https://argocd.example.com`,
+      `http://localhost:8080`. Do not include a trailing slash.
+
+      HTTPS requires a valid TLS certificate — self-signed certs will cause
+      connection failures. If your server uses a self-signed cert, run
+      argocd-server with `--insecure` and use an `http://` URL instead.
+  ARGOCD_TOKEN:
+    kind: secret
+    hint: |
+      JWT bearer token for ArgoCD API access. Two options:
+
+      Option A (recommended) — Project automation token. Scoped to one
+      project, configurable expiry, immediately revocable. Generate with:
+      `argocd proj role create-token <project> <role>`
+
+      Option B — Admin session token, expires after 24 hours. Obtain with:
+      `curl -k -X POST $ARGOCD_SERVER/api/v1/session -H 'Content-Type: application/json' -d '{"username":"admin","password":"<pw>"}'`
+
+      Use Option A for long-lived installs. Project tokens inherit only
+      explicitly assigned policies — add permissions via
+      `argocd proj role add-policy`. See the README for the full list.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.ARGOCD_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - SELECT * FROM argocd.applications LIMIT 1
+  - SELECT * FROM argocd.applications WHERE project = 'default' LIMIT 1
+tables:
+  - name: applications
+    description: ArgoCD applications with sync status, health, source or sources, and destination
+    guide: |
+      The primary table. Returns all applications visible to the configured
+      token. Filter on `project`, `health_status`, `sync_status`, or `dest_server`
+      using SQL WHERE clauses.
+
+      Key values for `health_status`: Healthy, Degraded, Progressing,
+      Suspended, Missing, Unknown.
+      Key values for `sync_status`: Synced, OutOfSync, Unknown.
+      Key values for `operation_phase`: Succeeded, Failed, Running,
+      Terminating, Error.
+
+      The `project` query parameter is pushed to the API and reduces the
+      payload on large fleets — especially important when using a
+      project-scoped automation token. All other WHERE filters (`health_status`,
+      `sync_status`, `dest_server`, etc.) apply locally after the full list
+      is fetched.
+
+      ArgoCD supports two source modes that are mutually exclusive:
+      - Single-source apps use `spec.source` — the `source__repo_url`,
+        `source__target_revision`, `source__path`, and `source__chart`
+        columns are populated; `sources` is null.
+      - Multi-source apps (ArgoCD v2.6+) use `spec.sources[]` — all
+        `source__*` columns are null; inspect the `sources` JSON column
+        for the full array of source definitions.
+    fetch_limit_default: 200
+    filters:
+      - name: project
+        required: false
+    request:
+      method: GET
+      path: /api/v1/applications
+      query:
+        - name: project
+          from: filter
+          key: project
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: project
+        type: Utf8
+        nullable: true
+        description: Project filter — when set, only applications in this project are returned (pushed to the API)
+        expr:
+          kind: from_filter
+          key: project
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Application name
+        expr:
+          kind: path
+          path:
+            - metadata
+            - name
+      - name: namespace
+        type: Utf8
+        nullable: true
+        description: ArgoCD namespace the application is managed in
+        expr:
+          kind: path
+          path:
+            - metadata
+            - namespace
+      - name: spec__project
+        type: Utf8
+        nullable: true
+        description: ArgoCD project this application belongs to
+        expr:
+          kind: path
+          path:
+            - spec
+            - project
+      - name: source__repo_url
+        type: Utf8
+        nullable: true
+        description: "Git repository URL (single-source apps only; null for multi-source apps — see sources column)"
+        expr:
+          kind: path
+          path:
+            - spec
+            - source
+            - repoURL
+      - name: source__target_revision
+        type: Utf8
+        nullable: true
+        description: "Target branch, tag, or commit SHA (single-source apps only)"
+        expr:
+          kind: path
+          path:
+            - spec
+            - source
+            - targetRevision
+      - name: source__path
+        type: Utf8
+        nullable: true
+        description: "Path within the repo for Git sources (single-source apps only)"
+        expr:
+          kind: path
+          path:
+            - spec
+            - source
+            - path
+      - name: source__chart
+        type: Utf8
+        nullable: true
+        description: "Helm chart name for Helm sources (single-source apps only)"
+        expr:
+          kind: path
+          path:
+            - spec
+            - source
+            - chart
+      - name: sources
+        type: Json
+        nullable: true
+        description: "Full sources array for multi-source apps (ArgoCD v2.6+); null for single-source apps — use source__* columns instead"
+        expr:
+          kind: path
+          path:
+            - spec
+            - sources
+      - name: dest_server
+        type: Utf8
+        nullable: true
+        description: Target Kubernetes cluster API URL
+        expr:
+          kind: path
+          path:
+            - spec
+            - destination
+            - server
+      - name: dest_namespace
+        type: Utf8
+        nullable: true
+        description: Target Kubernetes namespace
+        expr:
+          kind: path
+          path:
+            - spec
+            - destination
+            - namespace
+      - name: dest_name
+        type: Utf8
+        nullable: true
+        description: Target cluster name (alternative to dest_server)
+        expr:
+          kind: path
+          path:
+            - spec
+            - destination
+            - name
+      - name: health_status
+        type: Utf8
+        nullable: true
+        description: "Application health: Healthy, Degraded, Progressing, Suspended, Missing, or Unknown"
+        expr:
+          kind: path
+          path:
+            - status
+            - health
+            - status
+      - name: health_message
+        type: Utf8
+        nullable: true
+        description: Human-readable message explaining the current health status
+        expr:
+          kind: path
+          path:
+            - status
+            - health
+            - message
+      - name: sync_status
+        type: Utf8
+        nullable: true
+        description: "Sync state: Synced, OutOfSync, or Unknown"
+        expr:
+          kind: path
+          path:
+            - status
+            - sync
+            - status
+      - name: sync_revision
+        type: Utf8
+        nullable: true
+        description: "Git revision currently deployed (single-source apps only; null for multi-source apps — see sync_revisions)"
+        expr:
+          kind: path
+          path:
+            - status
+            - sync
+            - revision
+      - name: sync_revisions
+        type: Json
+        nullable: true
+        description: "Deployed revisions for multi-source apps (ArgoCD v2.6+); null for single-source apps — see sync_revision instead"
+        expr:
+          kind: path
+          path:
+            - status
+            - sync
+            - revisions
+      - name: operation_phase
+        type: Utf8
+        nullable: true
+        description: "Last sync operation result: Succeeded, Failed, Running, Terminating, or Error"
+        expr:
+          kind: path
+          path:
+            - status
+            - operationState
+            - phase
+      - name: operation_started_at
+        type: Timestamp
+        nullable: true
+        description: Time the last sync operation started
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - status
+              - operationState
+              - startedAt
+      - name: operation_finished_at
+        type: Timestamp
+        nullable: true
+        description: Time the last sync operation completed
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - status
+              - operationState
+              - finishedAt
+      - name: reconciled_at
+        type: Timestamp
+        nullable: true
+        description: Time ArgoCD last reconciled the application state
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - status
+              - reconciledAt
+      - name: summary__images
+        type: Json
+        nullable: true
+        description: List of container image tags currently deployed
+        expr:
+          kind: path
+          path:
+            - status
+            - summary
+            - images
+
+  - name: projects
+    description: ArgoCD projects with source repo and destination restrictions
+    guide: |
+      Returns all ArgoCD projects visible to the configured token. Projects
+      group applications and define RBAC boundaries, allowed source repos,
+      and permitted destination clusters and namespaces. Requires
+      `projects, get, *` permission on the token.
+
+      `source_repos` and `destinations` are JSON arrays — use JSON functions
+      or inspect them as text to check allowed values.
+    request:
+      method: GET
+      path: /api/v1/projects
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project name
+        expr:
+          kind: path
+          path:
+            - metadata
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description
+        expr:
+          kind: path
+          path:
+            - spec
+            - description
+      - name: source_repos
+        type: Json
+        nullable: true
+        description: Allowed Git repository URLs; '*' means all repos are permitted
+        expr:
+          kind: path
+          path:
+            - spec
+            - sourceRepos
+      - name: destinations
+        type: Json
+        nullable: true
+        description: Allowed destination clusters and namespaces as a JSON array
+        expr:
+          kind: path
+          path:
+            - spec
+            - destinations
+      - name: cluster_resource_whitelist
+        type: Json
+        nullable: true
+        description: Cluster-scoped resource kinds the project may deploy
+        expr:
+          kind: path
+          path:
+            - spec
+            - clusterResourceWhitelist
+      - name: namespace_resource_blacklist
+        type: Json
+        nullable: true
+        description: Namespace-scoped resource kinds the project is forbidden from deploying
+        expr:
+          kind: path
+          path:
+            - spec
+            - namespaceResourceBlacklist
+
+  - name: clusters
+    description: Kubernetes clusters registered with ArgoCD
+    guide: |
+      Returns all clusters registered as deployment targets. Requires
+      `clusters, get, *` permission on the token. The `connection_status`
+      column shows whether ArgoCD can currently reach each cluster. The
+      in-cluster server (`https://kubernetes.default.svc`) is always present.
+
+      Use `server` values from this table to filter `argocd.applications`
+      by `dest_server`.
+    request:
+      method: GET
+      path: /api/v1/clusters
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Cluster display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: server
+        type: Utf8
+        nullable: false
+        description: Kubernetes API server URL — use as dest_server filter in argocd.applications
+        expr:
+          kind: path
+          path:
+            - server
+      - name: server_version
+        type: Utf8
+        nullable: true
+        description: Kubernetes server version
+        expr:
+          kind: path
+          path:
+            - info
+            - serverVersion
+      - name: connection_status
+        type: Utf8
+        nullable: true
+        description: "ArgoCD connectivity status: Successful or Failed"
+        expr:
+          kind: path
+          path:
+            - connectionState
+            - status
+      - name: connection_message
+        type: Utf8
+        nullable: true
+        description: Connection error message when connection_status is Failed
+        expr:
+          kind: path
+          path:
+            - connectionState
+            - message
+      - name: applications_count
+        type: Int64
+        nullable: true
+        description: Number of applications targeting this cluster
+        expr:
+          kind: path
+          path:
+            - info
+            - applicationsCount
+      - name: namespaces
+        type: Json
+        nullable: true
+        description: Namespaces ArgoCD is allowed to deploy into on this cluster
+        expr:
+          kind: path
+          path:
+            - namespaces
+
+  - name: repositories
+    description: Git and Helm repositories configured in ArgoCD
+    guide: |
+      Returns all source repositories configured in ArgoCD. Requires
+      `repositories, get, *` permission on the token. A `Successful`
+      `connection_status` means ArgoCD can currently reach and authenticate
+      to the repo. Use `repo` values to cross-reference with
+      `argocd.applications` `source__repo_url`.
+    request:
+      method: GET
+      path: /api/v1/repositories
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: repo
+        type: Utf8
+        nullable: false
+        description: Repository URL
+        expr:
+          kind: path
+          path:
+            - repo
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Optional repository display name
+        expr:
+          kind: path
+          path:
+            - name
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Repository type: git or helm"
+        expr:
+          kind: path
+          path:
+            - type
+      - name: project
+        type: Utf8
+        nullable: true
+        description: ArgoCD project this repository is scoped to; empty means available to all projects
+        expr:
+          kind: path
+          path:
+            - project
+      - name: connection_status
+        type: Utf8
+        nullable: true
+        description: "Connectivity status: Successful or Failed"
+        expr:
+          kind: path
+          path:
+            - connectionState
+            - status
+      - name: connection_message
+        type: Utf8
+        nullable: true
+        description: Connection error message when connection_status is Failed
+        expr:
+          kind: path
+          path:
+            - connectionState
+            - message
+      - name: inherited_creds
+        type: Boolean
+        nullable: true
+        description: Whether this repo inherits credentials from a credential template
+        expr:
+          kind: path
+          path:
+            - inheritedCreds

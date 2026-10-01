@@ -1,0 +1,431 @@
+name: cohere_ai
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query Cohere model metadata and run bounded chat-completion and embedding checks through SQL.
+base_url: https://api.cohere.com
+inputs:
+  COHERE_API_KEY:
+    kind: secret
+    hint: |
+      Cohere API key.
+
+      Create or copy an API key from:
+      https://dashboard.cohere.com/api-keys
+
+      The key is sent as a Bearer token to Cohere's API.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.COHERE_API_KEY}}"
+test_queries:
+  - SELECT name, endpoints, context_length FROM cohere_ai.models LIMIT 5
+tables:
+  - name: models
+    description: Cohere models available to the API key from GET /v1/models.
+    fetch_limit_default: 100
+    filters:
+      - name: endpoint
+      - name: default_only
+    request:
+      method: GET
+      path: /v1/models
+      query:
+        - name: endpoint
+          from: filter
+          key: endpoint
+        - name: default_only
+          from: filter_bool
+          key: default_only
+    response:
+      rows_path:
+        - models
+    pagination:
+      mode: cursor_query
+      cursor_param: page_token
+      response_cursor_path:
+        - next_page_token
+      page_size:
+        default: 100
+        max: 1000
+        query_param: page_size
+    columns:
+      - name: endpoint
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Cohere endpoint filter supplied in SQL, such as chat or embed.
+        expr:
+          kind: from_filter
+          key: endpoint
+      - name: default_only
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional Cohere default_only filter supplied in SQL.
+        expr:
+          kind: from_filter
+          key: default_only
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Cohere model name used in API requests.
+      - name: is_deprecated
+        type: Boolean
+        nullable: true
+        description: Whether Cohere marks the model as deprecated.
+      - name: endpoints
+        type: Utf8
+        nullable: true
+        description: Comma-separated endpoint names supported by the model.
+        expr:
+          kind: join_array
+          path:
+            - endpoints
+          separator: ", "
+      - name: finetuned
+        type: Boolean
+        nullable: true
+        description: Whether the row represents a fine-tuned model.
+      - name: context_length
+        type: Int64
+        nullable: true
+        description: Model context length when returned by Cohere.
+      - name: tokenizer_url
+        type: Utf8
+        nullable: true
+        description: URL for the model tokenizer metadata when returned.
+      - name: default_endpoints
+        type: Utf8
+        nullable: true
+        description: Comma-separated default endpoints for the model.
+        expr:
+          kind: join_array
+          path:
+            - default_endpoints
+          separator: ", "
+      - name: features
+        type: Utf8
+        nullable: true
+        description: Comma-separated feature flags returned for the model.
+        expr:
+          kind: join_array
+          path:
+            - features
+          separator: ", "
+      - name: sampling_defaults
+        type: Json
+        nullable: true
+        description: Model sampling defaults when returned by Cohere.
+
+  - name: chat_completions
+    description: Run one non-streaming, single-turn Cohere Chat API request with a required positive max_tokens bound.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: max_tokens
+        required: true
+    request:
+      method: POST
+      path: /v2/chat
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - messages
+            - "0"
+            - role
+          from: literal
+          value: user
+        - path:
+            - messages
+            - "0"
+            - content
+          from: filter
+          key: prompt
+        - path:
+            - max_tokens
+          from: filter_int
+          key: max_tokens
+        - path:
+            - stream
+          from: literal
+          value: false
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: max_tokens
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Positive max_tokens value supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: max_tokens
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Cohere response ID.
+      - name: finish_reason
+        type: Utf8
+        nullable: true
+        description: Cohere finish reason for the chat request.
+      - name: message
+        type: Json
+        nullable: true
+        description: Raw assistant message object.
+      - name: message_role
+        type: Utf8
+        nullable: true
+        description: Assistant message role.
+        expr:
+          kind: path
+          path:
+            - message
+            - role
+      - name: content_type
+        type: Utf8
+        nullable: true
+        description: First assistant content item type.
+        expr:
+          kind: path
+          path:
+            - message
+            - content
+            - "0"
+            - type
+      - name: content
+        type: Utf8
+        nullable: true
+        description: First assistant text content item.
+        expr:
+          kind: path
+          path:
+            - message
+            - content
+            - "0"
+            - text
+      - name: tool_calls
+        type: Json
+        nullable: true
+        description: Assistant tool-call metadata when Cohere returns it.
+        expr:
+          kind: path
+          path:
+            - message
+            - tool_calls
+      - name: usage
+        type: Json
+        nullable: true
+        description: Raw usage object returned by Cohere.
+      - name: billed_input_tokens
+        type: Int64
+        nullable: true
+        description: Billed input token count.
+        expr:
+          kind: path
+          path:
+            - usage
+            - billed_units
+            - input_tokens
+      - name: billed_output_tokens
+        type: Int64
+        nullable: true
+        description: Billed output token count.
+        expr:
+          kind: path
+          path:
+            - usage
+            - billed_units
+            - output_tokens
+      - name: input_tokens
+        type: Int64
+        nullable: true
+        description: Total input token count when returned.
+        expr:
+          kind: path
+          path:
+            - usage
+            - tokens
+            - input_tokens
+      - name: output_tokens
+        type: Int64
+        nullable: true
+        description: Total output token count when returned.
+        expr:
+          kind: path
+          path:
+            - usage
+            - tokens
+            - output_tokens
+      - name: cached_tokens
+        type: Int64
+        nullable: true
+        description: Cached token count when returned.
+        expr:
+          kind: path
+          path:
+            - usage
+            - cached_tokens
+      - name: logprobs
+        type: Json
+        nullable: true
+        description: Log probability metadata when requested and returned.
+
+  - name: embeddings
+    description: Generate one Cohere text embedding vector with required model, input, and text input_type filters.
+    filters:
+      - name: model
+        required: true
+      - name: input
+        required: true
+      - name: input_type
+        required: true
+    request:
+      method: POST
+      path: /v2/embed
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - texts
+            - "0"
+          from: filter
+          key: input
+        - path:
+            - input_type
+          from: filter
+          key: input_type
+        - path:
+            - embedding_types
+            - "0"
+          from: literal
+          value: float
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: input
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Input text supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: input
+      - name: input_type
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Cohere text input_type supplied in SQL filter, such as search_query or search_document.
+        expr:
+          kind: from_filter
+          key: input_type
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Cohere embedding response ID.
+      - name: texts
+        type: Json
+        nullable: true
+        description: Text array echoed by Cohere.
+      - name: returned_text
+        type: Utf8
+        nullable: true
+        description: First text value echoed by Cohere.
+        expr:
+          kind: path
+          path:
+            - texts
+            - "0"
+      - name: embeddings
+        type: Json
+        nullable: true
+        description: Raw embeddings object returned by Cohere.
+      - name: float_embedding
+        type: Json
+        nullable: true
+        description: First float embedding vector.
+        expr:
+          kind: path
+          path:
+            - embeddings
+            - float
+            - "0"
+      - name: meta
+        type: Json
+        nullable: true
+        description: Raw meta object returned by Cohere.
+      - name: api_version
+        type: Utf8
+        nullable: true
+        description: Cohere API version metadata.
+        expr:
+          kind: path
+          path:
+            - meta
+            - api_version
+            - version
+      - name: billed_input_tokens
+        type: Int64
+        nullable: true
+        description: Billed input token count.
+        expr:
+          kind: path
+          path:
+            - meta
+            - billed_units
+            - input_tokens
+      - name: billed_image_tokens
+        type: Int64
+        nullable: true
+        description: Billed image token count when returned.
+        expr:
+          kind: path
+          path:
+            - meta
+            - billed_units
+            - image_tokens

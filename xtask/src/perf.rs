@@ -11,6 +11,12 @@ use serde_json::Value;
 
 const DEFAULT_SQL: &str = "select * from coral.tables";
 
+/// The workspace this check creates and measures against.
+///
+/// A fresh state directory owns no workspace, so the harness has to create the
+/// one it benchmarks and name it on every command that follows.
+const WORKSPACE: &str = "perf";
+
 #[derive(Debug, clap::Args)]
 pub(crate) struct Args {
     /// Path to the release Coral binary to benchmark.
@@ -38,39 +44,38 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
     validate_args(args)?;
     require_command("hyperfine")?;
 
-    let coral_bin = absolute_path(&args.coral_bin)?;
-    ensure_executable(&coral_bin)?;
-
+    let coral_bin = resolve_coral_bin(&args.coral_bin)?;
     let temp_dir = TempDir::create("coral-tables-perf")?;
-    let config_dir = temp_dir.path().join("coral-config");
-    fs::create_dir_all(&config_dir)
-        .with_context(|| format!("creating {}", config_dir.display()))?;
-    fs::write(
-        config_dir.join("config.toml"),
-        "[credentials]\nstorage = \"file\"\n",
-    )
-    .with_context(|| format!("writing {}", config_dir.join("config.toml").display()))?;
-
-    install_github_source(&coral_bin, &config_dir, &args.github_token)?;
-    run_coral_sql(&coral_bin, &config_dir)?;
+    let config_dir = prepare_config_dir(temp_dir.path())?;
+    provision_measured_workspace(&coral_bin, &config_dir, &args.github_token)?;
 
     let result_json = temp_dir.path().join("hyperfine.json");
     run_hyperfine(args, &coral_bin, &config_dir, &result_json)?;
-
     let result = load_hyperfine_result(&result_json)?;
+
+    Ok(report_measurement(&result, args.max_mean_seconds))
+}
+
+/// Prints the measurement and answers whether it stayed within the threshold.
+fn report_measurement(result: &HyperfineResult, max_mean_seconds: f64) -> bool {
     println!(
         "coral.tables mean: {:.3}s (stddev {:.3}s, threshold {:.3}s)",
-        result.mean, result.stddev, args.max_mean_seconds
+        result.mean, result.stddev, max_mean_seconds
     );
-    if result.mean > args.max_mean_seconds {
+    if is_regression(result.mean, max_mean_seconds) {
         eprintln!(
             "Performance regression: mean {:.3}s exceeds {:.3}s",
-            result.mean, args.max_mean_seconds
+            result.mean, max_mean_seconds
         );
-        return Ok(false);
+        return false;
     }
+    true
+}
 
-    Ok(true)
+/// The pass/fail rule this check exists to apply: a mean at the threshold still
+/// passes, and only one above it counts as a regression.
+fn is_regression(mean: f64, max_mean_seconds: f64) -> bool {
+    mean > max_mean_seconds
 }
 
 fn validate_args(args: &Args) -> Result<()> {
@@ -96,6 +101,14 @@ fn require_command(command: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolves the binary under test to an absolute path and refuses anything that
+/// is not a file we can hand to hyperfine.
+fn resolve_coral_bin(coral_bin: &Path) -> Result<PathBuf> {
+    let coral_bin = absolute_path(coral_bin)?;
+    ensure_executable(&coral_bin)?;
+    Ok(coral_bin)
+}
+
 fn absolute_path(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
@@ -113,16 +126,77 @@ fn ensure_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn install_github_source(coral_bin: &Path, config_dir: &Path, github_token: &str) -> Result<()> {
-    let output = Command::new(coral_bin)
-        .args(["source", "add", "github"])
+/// Lays out a throwaway config directory so the check never reads or writes the
+/// developer's own Coral state.
+fn prepare_config_dir(temp_dir: &Path) -> Result<PathBuf> {
+    let config_dir = temp_dir.join("coral-config");
+    fs::create_dir_all(&config_dir)
+        .with_context(|| format!("creating {}", config_dir.display()))?;
+    fs::write(
+        config_dir.join("config.toml"),
+        "[credentials]\nstorage = \"file\"\n",
+    )
+    .with_context(|| format!("writing {}", config_dir.join("config.toml").display()))?;
+    Ok(config_dir)
+}
+
+/// Brings the fresh state directory to the state the benchmark measures: the
+/// workspace exists, carries the github source, and has answered the query once
+/// so the timed runs are not paying for first-run work.
+fn provision_measured_workspace(
+    coral_bin: &Path,
+    config_dir: &Path,
+    github_token: &str,
+) -> Result<()> {
+    create_workspace(coral_bin, config_dir)?;
+    install_github_source(coral_bin, config_dir, github_token)?;
+    run_coral_sql(coral_bin, config_dir)
+}
+
+/// Builds a `coral` invocation pinned to this check's config directory and
+/// workspace, so every command targets the workspace the check provisions.
+fn coral_command(coral_bin: &Path, config_dir: &Path) -> Command {
+    let mut command = Command::new(coral_bin);
+    command
         .env("CORAL_CONFIG_DIR", config_dir)
+        .env("CORAL_WORKSPACE", WORKSPACE);
+    command
+}
+
+/// Builds the invocation that provisions the workspace the check measures.
+///
+/// Separate from running it so a test can read back the workspace this check
+/// creates and the environment it carries, which is the pairing a fresh state
+/// directory depends on and the one that broke when provisioning became
+/// explicit.
+fn workspace_create_command(coral_bin: &Path, config_dir: &Path) -> Command {
+    let mut command = coral_command(coral_bin, config_dir);
+    command.args(["workspace", "create", WORKSPACE]);
+    command
+}
+
+fn create_workspace(coral_bin: &Path, config_dir: &Path) -> Result<()> {
+    let output = workspace_create_command(coral_bin, config_dir)
+        .output()
+        .with_context(|| format!("running {} workspace create", coral_bin.display()))?;
+
+    if !output.status.success() {
+        print!("{}", command_log(&output));
+        bail!("failed to create the {WORKSPACE} workspace");
+    }
+
+    println!("Created the {WORKSPACE} workspace.");
+    Ok(())
+}
+
+fn install_github_source(coral_bin: &Path, config_dir: &Path, github_token: &str) -> Result<()> {
+    let output = coral_command(coral_bin, config_dir)
+        .args(["source", "add", "github"])
         .env("GITHUB_TOKEN", github_token)
         .output()
         .with_context(|| format!("running {} source add github", coral_bin.display()))?;
 
-    let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
-    log.push_str(&String::from_utf8_lossy(&output.stderr));
+    let log = command_log(&output);
 
     if !output.status.success() {
         print!("{log}");
@@ -134,10 +208,15 @@ fn install_github_source(coral_bin: &Path, config_dir: &Path, github_token: &str
     Ok(())
 }
 
+fn command_log(output: &std::process::Output) -> String {
+    let mut log = String::from_utf8_lossy(&output.stdout).into_owned();
+    log.push_str(&String::from_utf8_lossy(&output.stderr));
+    log
+}
+
 fn run_coral_sql(coral_bin: &Path, config_dir: &Path) -> Result<()> {
-    let status = Command::new(coral_bin)
+    let status = coral_command(coral_bin, config_dir)
         .args(["sql", DEFAULT_SQL])
-        .env("CORAL_CONFIG_DIR", config_dir)
         .stdout(Stdio::null())
         .status()
         .with_context(|| format!("running {} sql", coral_bin.display()))?;
@@ -175,6 +254,7 @@ fn run_hyperfine(
             &command,
         ])
         .env("CORAL_CONFIG_DIR", config_dir)
+        .env("CORAL_WORKSPACE", WORKSPACE)
         .status()
         .context("running hyperfine")?;
     if !status.success() {
@@ -275,7 +355,89 @@ impl Drop for TempDir {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_quote;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    use super::{
+        HyperfineResult, WORKSPACE, coral_command, is_regression, report_measurement, shell_quote,
+        workspace_create_command,
+    };
+
+    fn env_of(command: &std::process::Command, key: &str) -> Option<String> {
+        command.get_envs().find_map(|(name, value)| {
+            (name == OsStr::new(key)).then(|| {
+                value
+                    .expect("the check sets this variable rather than clearing it")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+    }
+
+    /// Every command the check runs has to name the workspace it provisions.
+    /// A fresh state directory has none, so an invocation that carries no
+    /// selection reaches the server as the legacy `default` and is refused.
+    #[test]
+    fn every_invocation_carries_the_provisioned_workspace() {
+        let command = coral_command(Path::new("/tmp/coral"), Path::new("/tmp/coral-config"));
+
+        assert_eq!(
+            env_of(&command, "CORAL_WORKSPACE").as_deref(),
+            Some(WORKSPACE)
+        );
+        assert_eq!(
+            env_of(&command, "CORAL_CONFIG_DIR").as_deref(),
+            Some("/tmp/coral-config")
+        );
+    }
+
+    /// The workspace the check measures is the one it creates, so the create
+    /// argv and the selection every later command carries must name the same
+    /// workspace.
+    #[test]
+    fn the_check_creates_the_workspace_it_selects() {
+        let command = workspace_create_command(Path::new("/tmp/coral"), Path::new("/tmp/cfg"));
+
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["workspace", "create", WORKSPACE]);
+        assert_eq!(
+            env_of(&command, "CORAL_WORKSPACE").as_deref(),
+            Some(WORKSPACE),
+            "the workspace created and the workspace selected must be the same one"
+        );
+    }
+
+    #[test]
+    fn a_mean_under_the_threshold_is_not_a_regression() {
+        assert!(!is_regression(0.5, 0.75));
+    }
+
+    #[test]
+    fn a_mean_at_the_threshold_is_not_a_regression() {
+        assert!(!is_regression(0.75, 0.75));
+    }
+
+    #[test]
+    fn a_mean_above_the_threshold_is_a_regression() {
+        assert!(is_regression(0.751, 0.75));
+    }
+
+    #[test]
+    fn the_check_passes_only_while_the_mean_stays_within_the_threshold() {
+        let within = HyperfineResult {
+            mean: 0.5,
+            stddev: 0.01,
+        };
+        let over = HyperfineResult {
+            mean: 1.5,
+            stddev: 0.01,
+        };
+        assert!(report_measurement(&within, 0.75));
+        assert!(!report_measurement(&over, 0.75));
+    }
 
     #[test]
     fn shell_quote_leaves_safe_paths_unquoted() {

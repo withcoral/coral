@@ -1,0 +1,35 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "coral",
+  "version": "0.3.0",
+  "description": "Query APIs, databases, files, and internal systems through one read-only SQL interface for AI agents.",
+  "author": {
+    "name": "Coral",
+    "email": "legal@withcoral.com",
+    "url": "https://withcoral.com/"
+  },
+  "homepage": "https://withcoral.com",
+  "repository": "https://github.com/withcoral/coral",
+  "license": "Apache-2.0",
+  "keywords": ["coral", "sql"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Coral",
+        "shortDescription": "Query connected data with SQL",
+        "longDescription": "Give Codex accurate, token-efficient access to APIs, databases, files, and internal systems through one read-only SQL interface. Query and join sources across code, issues, incidents, observability, and team communication while Coral handles authentication, pagination, rate limits, schema mapping, and caching.",
+        "developerName": "Coral",
+        "category": "Engineering",
+        "capabilities": ["Interactive", "Read"],
+        "websiteURL": "https://withcoral.com/",
+        "privacyPolicyURL": "https://withcoral.com/privacy",
+        "termsOfServiceURL": "https://withcoral.com/terms",
+        "defaultPrompt": ["Use Coral to check related issues, pull requests, alerts, incidents, and team discussions before making this change."],
+        "brandColor": "#398125",
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png",
+        "screenshots": []
+      }
+    }
+  }
+}

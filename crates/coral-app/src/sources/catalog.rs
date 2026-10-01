@@ -21,6 +21,7 @@ pub(crate) struct BundledSourceManifest {
 pub(crate) struct InstalledSourceManifest {
     pub(crate) source_spec: ValidatedSourceManifest,
     pub(crate) candidate: CandidateSource,
+    pub(crate) manifest_yaml: String,
 }
 
 pub(crate) fn list_bundled_sources(
@@ -70,8 +71,7 @@ pub(crate) fn resolve_installed_manifest(
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
     };
-    let source_spec = parse_source_manifest_yaml(&manifest_yaml)
-        .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+    let source_spec = parse_installed_source_manifest(&source.name, &manifest_yaml)?;
     let mut candidate = candidate_from_manifest(&source_spec, source.origin, false)?;
     if candidate.name != source.name {
         return Err(AppError::FailedPrecondition(format!(
@@ -84,7 +84,32 @@ pub(crate) fn resolve_installed_manifest(
     Ok(InstalledSourceManifest {
         source_spec,
         candidate,
+        manifest_yaml,
     })
+}
+
+fn parse_installed_source_manifest(
+    source_name: &SourceName,
+    manifest_yaml: &str,
+) -> Result<ValidatedSourceManifest, AppError> {
+    parse_source_manifest_yaml(manifest_yaml).map_err(|error| {
+        if is_legacy_plural_v4_manifest(manifest_yaml) {
+            AppError::IncompatibleInstalledV4Manifest {
+                source_name: source_name.to_string(),
+                detail: "the manifest uses the removed plural 'surfaces' field".to_string(),
+            }
+        } else {
+            AppError::InvalidInput(error.to_string())
+        }
+    })
+}
+
+fn is_legacy_plural_v4_manifest(manifest_yaml: &str) -> bool {
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(manifest_yaml) else {
+        return false;
+    };
+    value.get("dsl_version").and_then(serde_yaml::Value::as_u64) == Some(4)
+        && value.get("surfaces").is_some()
 }
 
 pub(crate) fn describe_manifest(
@@ -105,7 +130,7 @@ fn candidate_from_manifest(
     Ok(CandidateSource {
         name: SourceName::parse(manifest.schema_name())?,
         description: manifest.description().to_string(),
-        version: manifest.source_version().to_string(),
+        version: manifest.source_version().map(ToString::to_string),
         inputs: manifest.declared_inputs().to_vec(),
         installed,
         origin,
@@ -124,7 +149,11 @@ mod tests {
 
     use coral_spec::ManifestInputKind;
 
-    use super::{describe_manifest, list_bundled_sources, load_bundled_source};
+    use super::{
+        describe_manifest, list_bundled_sources, load_bundled_source,
+        parse_installed_source_manifest,
+    };
+    use crate::bootstrap::AppError;
     use crate::sources::SourceName;
     use crate::sources::model::SourceOrigin;
 
@@ -142,7 +171,7 @@ mod tests {
                 .iter()
                 .any(|source| source.name == SourceName::parse("stripe").expect("source"))
         );
-        assert!(sources.iter().all(|source| !source.version.is_empty()));
+        assert!(sources.iter().all(|source| source.version.is_some()));
     }
 
     #[test]
@@ -150,6 +179,40 @@ mod tests {
         let hn = SourceName::parse("hn").expect("source");
         let error = load_bundled_source(&hn).expect_err("community source should not be bundled");
         assert!(error.to_string().contains("unknown bundled source 'hn'"));
+    }
+
+    #[test]
+    fn core_v4_preview_sources_are_not_bundled() {
+        let github_v4 = SourceName::parse("github_v4").expect("source");
+
+        let error = load_bundled_source(&github_v4).expect_err("v4 source should not be bundled");
+        assert!(error.to_string().contains("unknown bundled source"));
+    }
+
+    #[test]
+    fn installed_plural_v4_manifest_reports_re_add_guidance() {
+        let manifest = r"
+name: legacy_v4
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+";
+
+        let error = parse_installed_source_manifest(
+            &SourceName::parse("legacy_v4").expect("source"),
+            manifest,
+        )
+        .expect_err("plural v4 manifest should be incompatible");
+        let message = error.to_string();
+
+        assert!(
+            matches!(error, AppError::IncompatibleInstalledV4Manifest { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(message.contains("removed plural 'surfaces' field"));
+        assert!(message.contains("Re-add the source with a current manifest"));
     }
 
     #[test]

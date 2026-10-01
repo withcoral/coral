@@ -1,0 +1,5 @@
+{"hostname":"rhel-control","interface":"eth0","ipv4_address":"192.0.2.10","ipv6_addresses":[],"macaddress":"02:00:00:00:00:10","mtu":1500,"active":true,"type":"ether"}
+{"hostname":"alpine-api","interface":"eth0","ipv4_address":"192.0.2.11","ipv6_addresses":[],"macaddress":"02:00:00:00:00:11","mtu":1500,"active":true,"type":"ether"}
+{"hostname":"arch-observe","interface":"eth0","ipv4_address":"192.0.2.12","ipv6_addresses":[],"macaddress":"02:00:00:00:00:12","mtu":1500,"active":true,"type":"ether"}
+{"hostname":"suse-auth","interface":"eth0","ipv4_address":"192.0.2.13","ipv6_addresses":[],"macaddress":"02:00:00:00:00:13","mtu":1500,"active":true,"type":"ether"}
+{"hostname":"debian-db","interface":"eth0","ipv4_address":"192.0.2.14","ipv6_addresses":[],"macaddress":"02:00:00:00:00:14","mtu":1500,"active":true,"type":"ether"}

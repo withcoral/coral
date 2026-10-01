@@ -1,0 +1,415 @@
+name: iggy
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Apache Iggy message streaming server — streams, topics, consumer groups,
+  users, connected clients, and server statistics via the HTTP API.
+
+inputs:
+  IGGY_URL:
+    kind: variable
+    default: "http://localhost:3000"
+    hint: |
+      Base URL of your Iggy HTTP API.
+      Default is http://localhost:3000 for a local instance.
+      Change this if your server runs on a different host or port.
+  IGGY_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Iggy JWT access token. Iggy's PAT cannot be used directly as a Bearer token —
+      it must first be exchanged for a JWT via POST /personal-access-tokens/login.
+
+      Option A — exchange a Personal Access Token:
+        curl -s -X POST http://localhost:3000/personal-access-tokens/login \
+          -H "Content-Type: application/json" \
+          -d '{"token":"<your-PAT>"}' | jq -r '.access_token.token'
+
+      Option B — login with username/password:
+        curl -s -X POST http://localhost:3000/users/login \
+          -H "Content-Type: application/json" \
+          -d '{"username":"iggy","password":"iggy"}' | jq -r '.access_token.token'
+
+      Note: JWT tokens expire (default 1 hour). Re-run the exchange command
+      to refresh. For persistent access, create a long-lived PAT and exchange it
+      each time: iggy -u iggy -p iggy pat create coral 365d
+
+base_url: "{{input.IGGY_URL}}"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.IGGY_ACCESS_TOKEN}}"
+
+test_queries:
+  - SELECT id, name, topics_count, messages_count FROM iggy.streams LIMIT 10
+  - SELECT streams_count, topics_count, messages_count, clients_count, iggy_server_version FROM iggy.stats
+
+tables:
+  - name: streams
+    description: All streams on the Iggy server.
+    guide: >
+      Returns one row per stream. A stream is the top-level namespace for
+      topics — similar to a Kafka cluster namespace. Start here to get
+      stream IDs for use in the topics and consumer_groups tables.
+      id is the numeric identifier required by topics and consumer_groups.
+    request:
+      method: GET
+      path: /streams
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique numeric stream ID. Use as the stream_id filter in topics and consumer_groups.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Stream name.
+        expr: {kind: path, path: [name]}
+      - name: topics_count
+        type: Int64
+        nullable: true
+        description: Number of topics in this stream.
+        expr: {kind: path, path: [topics_count]}
+      - name: messages_count
+        type: Int64
+        nullable: true
+        description: Total number of messages across all topics in this stream.
+        expr: {kind: path, path: [messages_count]}
+      - name: size
+        type: Int64
+        nullable: true
+        description: Total size of all messages in this stream in bytes.
+        expr: {kind: path, path: [size]}
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp in microseconds since epoch.
+        expr: {kind: path, path: [created_at]}
+
+  - name: topics
+    description: Topics within a specific stream.
+    guide: >
+      Requires stream_id filter — use the id from iggy.streams.
+      Returns one row per topic. Topics are partitioned message queues within
+      a stream. Use the id column as the topic_id filter in consumer_groups.
+      compression_algorithm is "none" or "gzip".
+      Requires read permission on the stream.
+    filters:
+      - name: stream_id
+        required: true
+    request:
+      method: GET
+      path: /streams/{{filter.stream_id}}/topics
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique numeric topic ID within the stream. Use as topic_id in consumer_groups.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Topic name.
+        expr: {kind: path, path: [name]}
+      - name: partitions_count
+        type: Int64
+        nullable: true
+        description: Number of partitions in this topic.
+        expr: {kind: path, path: [partitions_count]}
+      - name: messages_count
+        type: Int64
+        nullable: true
+        description: Total number of messages stored in this topic.
+        expr: {kind: path, path: [messages_count]}
+      - name: size
+        type: Int64
+        nullable: true
+        description: Total size of all messages in bytes.
+        expr: {kind: path, path: [size]}
+      - name: compression_algorithm
+        type: Utf8
+        nullable: true
+        description: Compression algorithm — "none" or "gzip".
+        expr: {kind: path, path: [compression_algorithm]}
+      - name: replication_factor
+        type: Int64
+        nullable: true
+        description: Number of replicas for fault tolerance.
+        expr: {kind: path, path: [replication_factor]}
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Creation timestamp in microseconds since epoch.
+        expr: {kind: path, path: [created_at]}
+      - name: stream_id
+        type: Utf8
+        nullable: true
+        description: Stream ID (echoes the stream_id filter).
+        expr: {kind: from_filter, key: stream_id}
+        virtual: true
+
+  - name: consumer_groups
+    description: Consumer groups for a specific topic.
+    guide: >
+      Requires both stream_id and topic_id filters.
+      Use stream_id from iggy.streams and topic_id from iggy.topics.
+      Returns one row per consumer group. Consumer groups coordinate message
+      consumption across multiple clients. members_count shows how many
+      active consumers are in the group.
+      Requires read permission on the stream and topic.
+    filters:
+      - name: stream_id
+        required: true
+      - name: topic_id
+        required: true
+    request:
+      method: GET
+      path: /streams/{{filter.stream_id}}/topics/{{filter.topic_id}}/consumer-groups
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Consumer group ID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Consumer group name.
+        expr: {kind: path, path: [name]}
+      - name: partitions_count
+        type: Int64
+        nullable: true
+        description: Number of partitions assigned to this group.
+        expr: {kind: path, path: [partitions_count]}
+      - name: members_count
+        type: Int64
+        nullable: true
+        description: Number of active members in this consumer group.
+        expr: {kind: path, path: [members_count]}
+      - name: stream_id
+        type: Utf8
+        nullable: true
+        description: Stream ID (echoes the stream_id filter).
+        expr: {kind: from_filter, key: stream_id}
+        virtual: true
+      - name: topic_id
+        type: Utf8
+        nullable: true
+        description: Topic ID (echoes the topic_id filter).
+        expr: {kind: from_filter, key: topic_id}
+        virtual: true
+
+  - name: users
+    description: Users registered on the Iggy server.
+    guide: >
+      Returns one row per user. Requires read_users global permission
+      (root bypasses). status is "active" or "inactive".
+      id can be used to correlate with the user_id field in iggy.clients.
+    request:
+      method: GET
+      path: /users
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique numeric user ID. Matches user_id in iggy.clients.
+        expr: {kind: path, path: [id]}
+      - name: username
+        type: Utf8
+        nullable: false
+        description: Username.
+        expr: {kind: path, path: [username]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: User status — "active" or "inactive".
+        expr: {kind: path, path: [status]}
+      - name: created_at
+        type: Int64
+        nullable: true
+        description: Account creation timestamp in microseconds since epoch.
+        expr: {kind: path, path: [created_at]}
+
+  - name: clients
+    description: Clients currently connected to the Iggy server.
+    guide: >
+      Returns one row per connected client. transport is one of "http",
+      "tcp", or "quic". address is the client IP and port.
+      user_id links to iggy.users (null for unauthenticated clients).
+      Requires read_servers global permission (root bypasses).
+    request:
+      method: GET
+      path: /clients
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: client_id
+        type: Int64
+        nullable: false
+        description: Unique numeric client ID assigned by the server.
+        expr: {kind: path, path: [client_id]}
+      - name: user_id
+        type: Int64
+        nullable: true
+        description: ID of the authenticated user (null if unauthenticated). Matches id in iggy.users.
+        expr: {kind: path, path: [user_id]}
+      - name: address
+        type: Utf8
+        nullable: true
+        description: Client IP address and port (e.g. 192.168.1.1:54321).
+        expr: {kind: path, path: [address]}
+      - name: transport
+        type: Utf8
+        nullable: true
+        description: Connection transport — "http", "tcp", or "quic".
+        expr: {kind: path, path: [transport]}
+      - name: consumer_groups_count
+        type: Int64
+        nullable: true
+        description: Number of consumer groups this client has joined.
+        expr: {kind: path, path: [consumer_groups_count]}
+
+  - name: stats
+    description: Server-wide statistics. Returns a single row.
+    guide: >
+      Returns one row with server-wide counters and health metrics.
+      Use for capacity planning, monitoring, and health checks.
+      Timestamps (start_time) are microseconds since epoch.
+      run_time is server uptime in microseconds.
+      cpu_usage is the percentage for the Iggy process only.
+      Requires read_servers global permission (root bypasses) and a
+      valid JWT - /stats is not a public endpoint.
+    request:
+      method: GET
+      path: /stats
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: process_id
+        type: Int64
+        nullable: true
+        description: OS process ID of the Iggy server.
+        expr: {kind: path, path: [process_id]}
+      - name: streams_count
+        type: Int64
+        nullable: true
+        description: Total number of streams.
+        expr: {kind: path, path: [streams_count]}
+      - name: topics_count
+        type: Int64
+        nullable: true
+        description: Total number of topics across all streams.
+        expr: {kind: path, path: [topics_count]}
+      - name: partitions_count
+        type: Int64
+        nullable: true
+        description: Total number of partitions.
+        expr: {kind: path, path: [partitions_count]}
+      - name: messages_count
+        type: Int64
+        nullable: true
+        description: Total number of messages stored across all topics.
+        expr: {kind: path, path: [messages_count]}
+      - name: clients_count
+        type: Int64
+        nullable: true
+        description: Number of currently connected clients.
+        expr: {kind: path, path: [clients_count]}
+      - name: consumer_groups_count
+        type: Int64
+        nullable: true
+        description: Total number of consumer groups.
+        expr: {kind: path, path: [consumer_groups_count]}
+      - name: cpu_usage
+        type: Float64
+        nullable: true
+        description: CPU usage percentage for the Iggy server process.
+        expr: {kind: path, path: [cpu_usage]}
+      - name: memory_usage
+        type: Int64
+        nullable: true
+        description: Memory used by the Iggy process in bytes.
+        expr: {kind: path, path: [memory_usage]}
+      - name: total_memory
+        type: Int64
+        nullable: true
+        description: Total system memory in bytes.
+        expr: {kind: path, path: [total_memory]}
+      - name: messages_size_bytes
+        type: Int64
+        nullable: true
+        description: Total size of all stored messages in bytes.
+        expr: {kind: path, path: [messages_size_bytes]}
+      - name: read_bytes
+        type: Int64
+        nullable: true
+        description: Total bytes read since server start.
+        expr: {kind: path, path: [read_bytes]}
+      - name: written_bytes
+        type: Int64
+        nullable: true
+        description: Total bytes written since server start.
+        expr: {kind: path, path: [written_bytes]}
+      - name: free_disk_space
+        type: Int64
+        nullable: true
+        description: Available disk space in bytes.
+        expr: {kind: path, path: [free_disk_space]}
+      - name: total_disk_space
+        type: Int64
+        nullable: true
+        description: Total disk space in bytes.
+        expr: {kind: path, path: [total_disk_space]}
+      - name: hostname
+        type: Utf8
+        nullable: true
+        description: Server hostname.
+        expr: {kind: path, path: [hostname]}
+      - name: os_name
+        type: Utf8
+        nullable: true
+        description: Operating system name.
+        expr: {kind: path, path: [os_name]}
+      - name: iggy_server_version
+        type: Utf8
+        nullable: true
+        description: Iggy server version string (e.g. "0.9.0").
+        expr: {kind: path, path: [iggy_server_version]}
+      - name: run_time
+        type: Int64
+        nullable: true
+        description: Server uptime in microseconds.
+        expr: {kind: path, path: [run_time]}
+      - name: start_time
+        type: Int64
+        nullable: true
+        description: Server start timestamp in microseconds since epoch.
+        expr: {kind: path, path: [start_time]}

@@ -16,14 +16,14 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use url::Url;
 
-use crate::common::parse_manifest_data_type;
 use crate::inputs::{
     collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
 };
 use crate::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec, ParsedTemplate,
-    Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace, TemplatePart,
-    validate_columns, validate_table_names, validate_test_queries,
+    ColumnSpec, DeclaredRelation, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec,
+    ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
+    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_required_guide,
+    validate_source_name, validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -140,6 +140,8 @@ struct RawFileTableSpec {
     #[serde(default)]
     guide: String,
     #[serde(default)]
+    require_guide_read: bool,
+    #[serde(default)]
     filters: Vec<FilterSpec>,
     #[serde(default)]
     fetch_limit_default: Option<usize>,
@@ -198,6 +200,8 @@ pub struct FileSourceSpec {
     #[serde(default)]
     pub partitions: Vec<PartitionColumnSpec>,
     #[serde(default)]
+    pub metadata: Vec<FileMetadataColumnSpec>,
+    #[serde(default)]
     pub object_store: Option<FileObjectStoreSpec>,
 }
 
@@ -226,6 +230,21 @@ impl FileSourceSpec {
                     "{schema}.{table} partition '{}' uses path.kind={}, which is currently supported only for backend=file formats jsonl and json; parquet and csv use DataFusion hive partitioning",
                     partition.name,
                     partition.path.kind()
+                )));
+            }
+        }
+        let mut seen_metadata = HashSet::new();
+        for metadata in &self.metadata {
+            if !seen_metadata.insert(metadata.name.clone()) {
+                return Err(ManifestError::validation(format!(
+                    "{schema}.{table} has duplicate metadata column '{}'",
+                    metadata.name
+                )));
+            }
+            if metadata.kind == FileMetadataKind::LineNumber && format != FileFormat::Jsonl {
+                return Err(ManifestError::validation(format!(
+                    "{schema}.{table} metadata column '{}' uses kind=line_number, which is only supported for backend=file format jsonl",
+                    metadata.name
                 )));
             }
         }
@@ -396,16 +415,18 @@ pub enum FilePartitionDataType {
 impl FilePartitionDataType {
     #[must_use]
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Utf8 => "Utf8",
-            Self::Int64 => "Int64",
-            Self::Boolean => "Boolean",
-            Self::Float64 => "Float64",
-            Self::Json => "Json",
-        }
+        ManifestDataType::from(self).as_manifest_str()
     }
+}
 
-    fn from_manifest(data_type: ManifestDataType) -> Result<Self> {
+/// Narrows a manifest scalar to the partition-legal subset.
+///
+/// Fails exactly when the scalar cannot be a file path partition value —
+/// today only `Timestamp`.
+impl TryFrom<ManifestDataType> for FilePartitionDataType {
+    type Error = ManifestError;
+
+    fn try_from(data_type: ManifestDataType) -> Result<Self> {
         match data_type {
             ManifestDataType::Utf8 => Ok(Self::Utf8),
             ManifestDataType::Int64 => Ok(Self::Int64),
@@ -419,14 +440,26 @@ impl FilePartitionDataType {
     }
 }
 
+/// Every partition type is a manifest scalar type.
+impl From<FilePartitionDataType> for ManifestDataType {
+    fn from(data_type: FilePartitionDataType) -> Self {
+        match data_type {
+            FilePartitionDataType::Utf8 => Self::Utf8,
+            FilePartitionDataType::Int64 => Self::Int64,
+            FilePartitionDataType::Boolean => Self::Boolean,
+            FilePartitionDataType::Float64 => Self::Float64,
+            FilePartitionDataType::Json => Self::Json,
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for FilePartitionDataType {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        let data_type = parse_manifest_data_type(&value).map_err(serde::de::Error::custom)?;
-        Self::from_manifest(data_type).map_err(serde::de::Error::custom)
+        let data_type = ManifestDataType::deserialize(deserializer)?;
+        Self::try_from(data_type).map_err(serde::de::Error::custom)
     }
 }
 
@@ -458,6 +491,40 @@ impl PartitionPathSpec {
         match self {
             Self::Hive => "hive",
             Self::Segment { .. } => "segment",
+        }
+    }
+}
+
+/// One declared metadata column derived from the scanned file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileMetadataColumnSpec {
+    pub name: String,
+    pub kind: FileMetadataKind,
+}
+
+/// Metadata values the file backend can add to each scanned row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileMetadataKind {
+    /// Path to the scanned file, relative to `source.location`.
+    RelativePath,
+    /// File name of the scanned file, including its final extension.
+    FileName,
+    /// File stem of the scanned file, without its final extension.
+    FileStem,
+    /// One-based line number within the scanned JSONL file.
+    LineNumber,
+}
+
+impl FileMetadataKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RelativePath => "relative_path",
+            Self::FileName => "file_name",
+            Self::FileStem => "file_stem",
+            Self::LineNumber => "line_number",
         }
     }
 }
@@ -513,6 +580,11 @@ impl FileFormatOptions {
 
 impl RawFileTableSpec {
     fn into_validated(self, schema: &str) -> Result<FileTableSpec> {
+        validate_required_guide(
+            &format!("table '{schema}.{}'", self.name),
+            &self.guide,
+            self.require_guide_read,
+        )?;
         let format = FileFormat::parse(&self.format, schema, &self.name)?;
         if format.requires_declared_columns() && self.columns.is_empty() {
             return Err(ManifestError::validation(format!(
@@ -531,7 +603,7 @@ impl RawFileTableSpec {
             &self.filters,
             &self.columns,
         )?;
-        validate_partition_column_overlap(schema, &self.name, &self.source, &self.columns)?;
+        validate_derived_column_overlap(schema, &self.name, &self.source, &self.columns)?;
         self.format_options
             .validate_for_format(format, schema, &self.name)?;
 
@@ -540,6 +612,7 @@ impl RawFileTableSpec {
                 self.name,
                 self.description,
                 self.guide,
+                self.require_guide_read,
                 self.filters,
                 self.fetch_limit_default,
                 None,
@@ -560,6 +633,13 @@ fn validate_native_file_table_features(
     filters: &[FilterSpec],
     columns: &[ColumnSpec],
 ) -> Result<()> {
+    if let Some(filter) = filters.iter().find(|filter| filter.lookup_key) {
+        return Err(ManifestError::validation(format!(
+            "{schema}.{table} filter '{}': backend=file does not support lookup_key filters",
+            filter.name
+        )));
+    }
+
     if !filters.is_empty() {
         return Err(ManifestError::validation(format!(
             "{schema}.{table} uses backend=file and does not support declared filters; use SQL WHERE predicates instead"
@@ -584,7 +664,7 @@ fn validate_native_file_table_features(
     Ok(())
 }
 
-fn validate_partition_column_overlap(
+fn validate_derived_column_overlap(
     schema: &str,
     table: &str,
     source: &FileSourceSpec,
@@ -601,6 +681,30 @@ fn validate_partition_column_overlap(
             return Err(ManifestError::validation(format!(
                 "{schema}.{table} column '{}' duplicates a partition column",
                 col.name
+            )));
+        }
+    }
+
+    let metadata_names = source
+        .metadata
+        .iter()
+        .map(|metadata| metadata.name.as_str())
+        .collect::<HashSet<_>>();
+
+    for col in columns {
+        if metadata_names.contains(col.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} column '{}' duplicates a metadata column",
+                col.name
+            )));
+        }
+    }
+
+    for metadata in &source.metadata {
+        if partition_names.contains(metadata.name.as_str()) {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} metadata column '{}' duplicates a partition column",
+                metadata.name
             )));
         }
     }
@@ -623,8 +727,14 @@ impl FileSourceManifest {
             inputs: _inputs,
             tables,
         } = raw;
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
-        validate_table_names(&name, tables.iter().map(|table| table.name.as_str()))?;
+        validate_declared_relation_namespace(
+            &name,
+            tables
+                .iter()
+                .map(|table| DeclaredRelation::table(table.name.as_str())),
+        )?;
         let common =
             SourceManifestCommon::new(dsl_version, name, version, description, test_queries);
         let tables = tables
@@ -641,7 +751,7 @@ impl FileSourceManifest {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileFormat, FileSourceManifest};
+    use super::{FileFormat, FilePartitionDataType, FileSourceManifest};
     use crate::ManifestInputKind;
     use serde_json::json;
 
@@ -910,6 +1020,184 @@ mod tests {
     }
 
     #[test]
+    fn jsonl_file_manifest_accepts_metadata_columns() {
+        let manifest = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "logs",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "messages",
+                "description": "JSONL messages",
+                "format": "jsonl",
+                "source": {
+                    "location": "file:///tmp/logs/",
+                    "metadata": [
+                        { "name": "session_path", "kind": "relative_path" },
+                        { "name": "session_name", "kind": "file_name" },
+                        { "name": "session_file", "kind": "file_stem" },
+                        { "name": "event_index", "kind": "line_number" }
+                    ]
+                },
+                "columns": [{ "name": "kind", "type": "Utf8" }],
+            }],
+        }))
+        .expect("jsonl metadata manifest should parse");
+
+        let metadata = &manifest
+            .tables
+            .first()
+            .expect("manifest should include the JSONL table")
+            .source
+            .metadata;
+        let parsed_metadata = metadata
+            .iter()
+            .map(|metadata| (metadata.name.as_str(), metadata.kind.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            parsed_metadata,
+            vec![
+                ("session_path", "relative_path"),
+                ("session_name", "file_name"),
+                ("session_file", "file_stem"),
+                ("event_index", "line_number"),
+            ]
+        );
+    }
+
+    #[test]
+    fn file_manifest_rejects_duplicate_metadata_column_names() {
+        let error = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "logs",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "messages",
+                "description": "JSONL messages",
+                "format": "jsonl",
+                "source": {
+                    "location": "file:///tmp/logs/",
+                    "metadata": [
+                        { "name": "session_file", "kind": "file_name" },
+                        { "name": "session_file", "kind": "file_stem" }
+                    ]
+                },
+                "columns": [{ "name": "kind", "type": "Utf8" }],
+            }],
+        }))
+        .expect_err("duplicate metadata column names should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate metadata column 'session_file'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn file_manifest_rejects_metadata_payload_column_overlap() {
+        let error = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "logs",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "messages",
+                "description": "JSONL messages",
+                "format": "jsonl",
+                "source": {
+                    "location": "file:///tmp/logs/",
+                    "metadata": [{ "name": "kind", "kind": "relative_path" }]
+                },
+                "columns": [{ "name": "kind", "type": "Utf8" }],
+            }],
+        }))
+        .expect_err("metadata and payload columns should not overlap");
+
+        assert!(error.to_string().contains("duplicates a metadata column"));
+    }
+
+    #[test]
+    fn file_manifest_rejects_metadata_partition_column_overlap() {
+        let error = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "logs",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "messages",
+                "description": "JSONL messages",
+                "format": "jsonl",
+                "source": {
+                    "location": "file:///tmp/logs/",
+                    "partitions": [{
+                        "name": "event_index",
+                        "type": "Int64",
+                        "path": { "kind": "segment", "index": 0 }
+                    }],
+                    "metadata": [{ "name": "event_index", "kind": "line_number" }]
+                },
+                "columns": [{ "name": "kind", "type": "Utf8" }],
+            }],
+        }))
+        .expect_err("metadata and partition columns should not overlap");
+
+        assert!(
+            error
+                .to_string()
+                .contains("metadata column 'event_index' duplicates a partition column"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn file_manifest_accepts_file_scoped_metadata_for_non_jsonl_tables() {
+        FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "warehouse",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "events",
+                "description": "Warehouse events",
+                "format": "parquet",
+                "source": {
+                    "location": "file:///tmp/warehouse/",
+                    "metadata": [{ "name": "path", "kind": "relative_path" }]
+                },
+                "columns": [],
+            }],
+        }))
+        .expect("parquet file-scoped metadata columns should parse");
+    }
+
+    #[test]
+    fn file_manifest_rejects_line_number_metadata_for_non_jsonl_tables() {
+        let error = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "warehouse",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "events",
+                "description": "Warehouse events",
+                "format": "parquet",
+                "source": {
+                    "location": "file:///tmp/warehouse/",
+                    "metadata": [{ "name": "event_index", "kind": "line_number" }]
+                },
+                "columns": [],
+            }],
+        }))
+        .expect_err("parquet line_number metadata should fail");
+
+        assert!(error.to_string().contains("kind=line_number"));
+        assert!(error.to_string().contains("format jsonl"));
+    }
+
+    #[test]
     fn listing_file_manifest_rejects_segment_partitions() {
         let error = FileSourceManifest::parse_manifest_value(json!({
             "dsl_version": 3,
@@ -1052,5 +1340,34 @@ mod tests {
         .expect_err("non-csv option should fail");
 
         assert!(error.to_string().contains("only supported for format=csv"));
+    }
+
+    #[test]
+    fn partition_data_type_is_the_partition_legal_subset() {
+        use crate::ManifestDataType;
+
+        for data_type in ManifestDataType::ALL {
+            match FilePartitionDataType::try_from(data_type) {
+                Ok(partition_type) => assert_eq!(
+                    ManifestDataType::from(partition_type),
+                    data_type,
+                    "partition subset must round trip through the upcast"
+                ),
+                Err(error) => {
+                    assert_eq!(
+                        data_type,
+                        ManifestDataType::Timestamp,
+                        "Timestamp is the only partition-illegal scalar; if a new \
+                         variant is deliberately rejected, extend this assertion"
+                    );
+                    assert!(
+                        error.to_string().contains(
+                            "type=Timestamp is not supported for backend=file path partitions"
+                        ),
+                        "unexpected error: {error}"
+                    );
+                }
+            }
+        }
     }
 }

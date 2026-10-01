@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_spec::ResponseSpec;
 use coral_spec::ValueSourceSpec;
-use coral_spec::backends::mcp::McpPaginationSpec;
+use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
 use datafusion::error::{DataFusionError, Result};
 use rmcp::model::JsonObject;
 use serde_json::Value;
@@ -30,6 +30,7 @@ pub(super) struct McpFetchPlan {
     pub(super) source_tool_args: Arc<BTreeMap<String, ValueSourceSpec>>,
     pub(super) response: ResponseSpec,
     pub(super) pagination: Option<McpPaginationSpec>,
+    pub(super) offset_pagination: Option<McpOffsetPaginationSpec>,
     pub(super) limit: Option<usize>,
 }
 
@@ -38,14 +39,30 @@ impl RowFetcher for McpFetchPlan {
     async fn fetch(&self) -> Result<Vec<Value>> {
         let mut all_rows = Vec::new();
         let mut next_cursor: Option<Value> = None;
+        let mut next_offset = self
+            .offset_pagination
+            .as_ref()
+            .map(|pagination| pagination.offset_start);
+        let mut seen_cursors = BTreeSet::new();
         let mut page_count = 0usize;
         let max_pages = self
             .pagination
             .as_ref()
             .and_then(|pagination| pagination.max_pages)
+            .or_else(|| {
+                self.offset_pagination
+                    .as_ref()
+                    .and_then(|pagination| pagination.max_pages)
+            })
             .unwrap_or(DEFAULT_MCP_MAX_PAGES);
 
         loop {
+            let offset_page_limit =
+                offset_page_limit(self.offset_pagination.as_ref(), self.limit, all_rows.len());
+            if offset_page_limit == Some(0) {
+                break;
+            }
+
             page_count += 1;
             if page_count > max_pages {
                 return Err(DataFusionError::External(Box::new(
@@ -58,7 +75,9 @@ impl RowFetcher for McpFetchPlan {
                 )));
             }
 
-            let arguments = self.arguments_for_cursor(next_cursor.as_ref()).await?;
+            let arguments = self
+                .arguments_for_page(next_cursor.as_ref(), next_offset, offset_page_limit)
+                .await?;
             let payload = self
                 .backend
                 .call_tool(&self.relation, &self.tool_name, arguments)
@@ -74,6 +93,7 @@ impl RowFetcher for McpFetchPlan {
                 )));
             }
             let mut rows = extract_rows(&self.response, &payload);
+            let rows_on_page = rows.len();
             all_rows.append(&mut rows);
             if let Some(limit) = self.limit
                 && all_rows.len() >= limit
@@ -82,20 +102,49 @@ impl RowFetcher for McpFetchPlan {
                 break;
             }
 
-            let Some(pagination) = &self.pagination else {
-                break;
-            };
-            match next_page_cursor(pagination, &payload) {
-                Some(cursor) => next_cursor = Some(cursor),
-                None => break,
+            if let Some(pagination) = &self.pagination {
+                match next_page_cursor(pagination, &payload) {
+                    Some(cursor) => {
+                        let cursor_key = cursor_identity(&cursor);
+                        if !seen_cursors.insert(cursor_key.clone()) {
+                            return Err(DataFusionError::External(Box::new(
+                                McpProviderQueryError::Pagination {
+                                    source_schema: self.source_schema.clone(),
+                                    relation: self.relation.clone(),
+                                    tool: self.tool_name.clone(),
+                                    detail: format!("returned repeated cursor {cursor_key}"),
+                                },
+                            )));
+                        }
+                        next_cursor = Some(cursor);
+                    }
+                    None => break,
+                }
+                continue;
             }
+            if let Some(current_offset) = next_offset {
+                let Some(page_limit) = offset_page_limit else {
+                    break;
+                };
+                if rows_on_page == 0 || rows_on_page < page_limit {
+                    break;
+                }
+                next_offset = Some(current_offset.saturating_add(rows_on_page));
+                continue;
+            }
+            break;
         }
         Ok(all_rows)
     }
 }
 
 impl McpFetchPlan {
-    async fn arguments_for_cursor(&self, cursor: Option<&Value>) -> Result<JsonObject> {
+    async fn arguments_for_page(
+        &self,
+        cursor: Option<&Value>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<JsonObject> {
         let mut arguments = JsonObject::new();
         if !self.source_tool_args.is_empty() {
             let source_inputs = self.source_inputs.as_ref().ok_or_else(|| {
@@ -116,7 +165,35 @@ impl McpFetchPlan {
         if let Some((pagination, cursor)) = self.pagination.as_ref().zip(cursor) {
             arguments.insert(pagination.cursor_arg.clone(), cursor.clone());
         }
+        if let Some(pagination) = &self.offset_pagination
+            && let (Some(offset), Some(limit)) = (offset, limit)
+        {
+            arguments.insert(pagination.limit_arg.clone(), Value::from(limit));
+            arguments.insert(pagination.offset_arg.clone(), Value::from(offset));
+        }
         Ok(arguments)
+    }
+}
+
+fn offset_page_limit(
+    pagination: Option<&McpOffsetPaginationSpec>,
+    total_limit: Option<usize>,
+    rows_so_far: usize,
+) -> Option<usize> {
+    let pagination = pagination?;
+    match total_limit {
+        Some(total_limit) => {
+            let remaining = total_limit.saturating_sub(rows_so_far);
+            Some(remaining.min(pagination.max_limit))
+        }
+        None => Some(pagination.default_limit.min(pagination.max_limit)),
+    }
+}
+
+fn cursor_identity(cursor: &Value) -> String {
+    match cursor {
+        Value::String(text) => format!("'{text}'"),
+        other => other.to_string(),
     }
 }
 

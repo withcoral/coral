@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Read as _, Write, stdin, stdout};
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
@@ -15,10 +16,12 @@ use coral_api::v1::{
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
     SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, create_bundled_source_with_o_auth_response,
-    import_source_response, query_test_result, source_input_spec::Input as ProtoSourceInput,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
+use coral_client::{AppClient, DecodedStatusError, decode_status_error};
+use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
@@ -28,17 +31,20 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use dialoguer::console::style;
 use dialoguer::{Input, Password, Select, theme::ColorfulTheme};
+use serde_yaml::Value as YamlValue;
 use tonic::Request;
 use url::{Host, Url};
 
 const MAX_TABLES_PER_SCHEMA: usize = 9;
 
-/// How many tables to show per schema when pretty-printing validation results.
+/// How many tables or table functions to show per schema when pretty-printing
+/// validation results.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TableDisplayLimit {
-    /// Show every table the source exposes.
+    /// Show every table and table function the source exposes.
     All,
-    /// Show at most this many tables per schema, with a summary for the rest.
+    /// Show at most this many items of each kind per schema, with a summary for
+    /// the rest.
     Max(usize),
 }
 
@@ -67,22 +73,28 @@ impl TableDisplayLimit {
     pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
 }
 
-pub(crate) async fn discover_sources(app: &AppClient) -> Result<Vec<SourceInfo>, anyhow::Error> {
+pub(crate) async fn discover_sources(
+    app: &AppClient,
+    workspace: &Workspace,
+) -> Result<Vec<SourceInfo>, anyhow::Error> {
     Ok(app
         .source_client()
         .discover_sources(Request::new(DiscoverSourcesRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
         }))
         .await?
         .into_inner()
         .sources)
 }
 
-pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow::Error> {
+pub(crate) async fn list_sources(
+    app: &AppClient,
+    workspace: &Workspace,
+) -> Result<Vec<Source>, anyhow::Error> {
     Ok(app
         .source_client()
         .list_sources(Request::new(ListSourcesRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
         }))
         .await?
         .into_inner()
@@ -91,6 +103,7 @@ pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow:
 
 pub(crate) async fn add_bundled_source(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
@@ -98,7 +111,7 @@ pub(crate) async fn add_bundled_source(
     let response = app
         .source_client()
         .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables,
             secrets,
@@ -112,6 +125,7 @@ pub(crate) async fn add_bundled_source(
 
 pub(crate) async fn import_source(
     app: &AppClient,
+    workspace: &Workspace,
     manifest_yaml: String,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
@@ -119,7 +133,7 @@ pub(crate) async fn import_source(
     let mut responses = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             manifest_yaml,
             variables,
             secrets,
@@ -172,16 +186,17 @@ impl CredentialPromptMode {
 
 pub(crate) async fn add_bundled_source_with_credentials(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     inputs: CollectedSourceInputs,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return add_bundled_source(app, name, inputs.variables, inputs.secrets).await;
+        return add_bundled_source(app, workspace, name, inputs.variables, inputs.secrets).await;
     }
     let response = app
         .source_client()
         .create_bundled_source_with_o_auth(Request::new(CreateBundledSourceWithOAuthRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables: inputs.variables,
             secrets: inputs.secrets,
@@ -193,16 +208,24 @@ pub(crate) async fn add_bundled_source_with_credentials(
 
 pub(crate) async fn import_source_with_credentials(
     app: &AppClient,
+    workspace: &Workspace,
     manifest_yaml: String,
     inputs: CollectedSourceInputs,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return import_source(app, manifest_yaml, inputs.variables, inputs.secrets).await;
+        return import_source(
+            app,
+            workspace,
+            manifest_yaml,
+            inputs.variables,
+            inputs.secrets,
+        )
+        .await;
     }
     let response = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             manifest_yaml,
             variables: inputs.variables,
             secrets: inputs.secrets,
@@ -277,6 +300,9 @@ enum CredentialStreamEvent {
         authorization_url: String,
         user_code: String,
     },
+    OAuthCallbackReceived {
+        input_key: String,
+    },
     OAuthCompleted,
 }
 
@@ -293,6 +319,11 @@ impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStrea
                 authorization_url: authorization.authorization_url,
                 user_code: authorization.user_code,
             },
+            create_bundled_source_with_o_auth_response::Event::OauthCallbackReceived(callback) => {
+                Self::OAuthCallbackReceived {
+                    input_key: callback.input_key,
+                }
+            }
             create_bundled_source_with_o_auth_response::Event::OauthCompleted(_) => {
                 Self::OAuthCompleted
             }
@@ -309,6 +340,11 @@ impl From<import_source_response::Event> for CredentialStreamEvent {
                     input_key: authorization.input_key,
                     authorization_url: authorization.authorization_url,
                     user_code: authorization.user_code,
+                }
+            }
+            import_source_response::Event::OauthCallbackReceived(callback) => {
+                Self::OAuthCallbackReceived {
+                    input_key: callback.input_key,
                 }
             }
             import_source_response::Event::OauthCompleted(_) => Self::OAuthCompleted,
@@ -344,12 +380,39 @@ fn handle_credential_stream_event(
             }
             None
         }
+        Some(CredentialStreamEvent::OAuthCallbackReceived { input_key }) => {
+            let label = oauth_labels
+                .get(&input_key)
+                .map_or(input_key.as_str(), String::as_str);
+            redirect_prompt.cancel_and_join();
+            redirect_prompt.callback_received_at = Some(Instant::now());
+            println!(
+                "{}",
+                style(format!(
+                    "Authorization received for {label}. Exchanging authorization code for token..."
+                ))
+                .dim()
+            );
+            None
+        }
         Some(CredentialStreamEvent::Source(source)) => {
             redirect_prompt.cancel_and_join();
             Some(source)
         }
         Some(CredentialStreamEvent::OAuthCompleted) => {
             redirect_prompt.cancel_and_join();
+            let elapsed = redirect_prompt
+                .callback_received_at
+                .take()
+                .map(|started| format!(" in {:.1}s", started.elapsed().as_secs_f64()))
+                .unwrap_or_default();
+            println!(
+                "{}",
+                style(format!(
+                    "OAuth token received{elapsed}. Installing source..."
+                ))
+                .dim()
+            );
             None
         }
         None => None,
@@ -358,19 +421,21 @@ fn handle_credential_stream_event(
 
 pub(crate) async fn validate_source(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
 ) -> Result<ValidateSourceResponse, anyhow::Error> {
-    Ok(validate_source_request(app, source_name_arg(Some(name))?).await?)
+    Ok(validate_source_request(app, workspace, source_name_arg(Some(name))?).await?)
 }
 
 async fn validate_source_request(
     app: &AppClient,
+    workspace: &Workspace,
     name: String,
 ) -> Result<ValidateSourceResponse, tonic::Status> {
     Ok(app
         .source_client()
         .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name,
         }))
         .await?
@@ -382,18 +447,111 @@ pub(crate) fn load_validated_manifest_file(
 ) -> Result<(String, ValidatedSourceManifest), anyhow::Error> {
     let manifest_yaml = std::fs::read_to_string(file)?;
     let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
+    let manifest_dir = manifest_file_parent_dir(file)?;
+    let manifest_yaml =
+        durable_manifest_file_yaml(&manifest_yaml, &manifest, manifest_dir.as_path())?;
+    let manifest = parse_source_manifest_yaml(manifest_yaml.as_str())?;
     Ok((manifest_yaml, manifest))
+}
+
+fn manifest_file_parent_dir(file: &Path) -> Result<PathBuf, anyhow::Error> {
+    let parent = file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    parent.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize manifest directory '{}'",
+            parent.display()
+        )
+    })
+}
+
+fn durable_manifest_file_yaml(
+    manifest_yaml: &str,
+    manifest: &ValidatedSourceManifest,
+    manifest_dir: &Path,
+) -> Result<String, anyhow::Error> {
+    let Some(v4) = manifest.as_v4() else {
+        return Ok(manifest_yaml.to_string());
+    };
+    let SurfaceDescriptor::File { file } = &v4.surface.descriptor else {
+        return Ok(manifest_yaml.to_string());
+    };
+    let canonical = canonicalize_manifest_descriptor(file, manifest_dir)?;
+    if canonical == *file {
+        return Ok(manifest_yaml.to_string());
+    }
+
+    let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
+    let surface_key = YamlValue::String("surface".to_string());
+    let file_key = YamlValue::String("file".to_string());
+    let surface = value
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.get_mut(&surface_key))
+        .and_then(YamlValue::as_mapping_mut)
+        .ok_or_else(|| anyhow::anyhow!("DSL v4 manifest is missing surface"))?;
+    surface.insert(file_key, YamlValue::String(canonical.display().to_string()));
+    serde_yaml::to_string(&value).map_err(Into::into)
+}
+
+fn canonicalize_manifest_descriptor(
+    file: &Path,
+    manifest_dir: &Path,
+) -> Result<PathBuf, anyhow::Error> {
+    let (candidate, relative_base) = if file.is_absolute() {
+        (file.to_path_buf(), None)
+    } else {
+        (manifest_dir.join(file), Some(manifest_dir))
+    };
+    let metadata = std::fs::symlink_metadata(&candidate).with_context(|| {
+        format!(
+            "failed to inspect OpenAPI descriptor '{}' resolved from manifest directory '{}'",
+            file.display(),
+            manifest_dir.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "OpenAPI descriptor '{}' must not be a symlink",
+            file.display()
+        );
+    }
+    if !metadata.file_type().is_file() {
+        bail!(
+            "OpenAPI descriptor '{}' must be a regular file",
+            file.display()
+        );
+    }
+    let canonical = candidate.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize OpenAPI descriptor '{}' resolved from manifest directory '{}'",
+            file.display(),
+            manifest_dir.display()
+        )
+    })?;
+    if let Some(base) = relative_base
+        && !canonical.starts_with(base)
+    {
+        bail!(
+            "relative OpenAPI descriptor '{}' resolves outside manifest directory '{}'",
+            file.display(),
+            base.display()
+        );
+    }
+    Ok(canonical)
 }
 
 pub(crate) async fn print_source_info(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     verbose: bool,
 ) -> Result<(), anyhow::Error> {
     let response = app
         .source_client()
         .get_source_info(Request::new(GetSourceInfoRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: source_name_arg(Some(name))?,
         }))
         .await?
@@ -421,7 +579,9 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
             source_credential_storage_label(source.credential_storage)
         );
     }
-    println!("  Version:     {}", source.version);
+    if !source.version.is_empty() {
+        println!("  Version:     {}", source.version);
+    }
     if !source.description.is_empty() {
         println!("  Description: {}", source.description);
     }
@@ -459,10 +619,22 @@ fn print_source_info_response(source: &SourceInfo, verbose: bool) {
     }
 }
 
-pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
+pub(crate) fn display_version(version: &str) -> String {
+    if version.is_empty() {
+        "-".to_string()
+    } else {
+        version.to_string()
+    }
+}
+
+pub(crate) async fn delete_source(
+    app: &AppClient,
+    workspace: &Workspace,
+    name: &str,
+) -> Result<(), anyhow::Error> {
     app.source_client()
         .delete_source(Request::new(DeleteSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: source_name_arg(Some(name))?,
         }))
         .await?;
@@ -657,10 +829,11 @@ pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
 
 pub(crate) async fn validate_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
-    let response = validate_source(app, source_name).await?;
+    let response = validate_source(app, workspace, source_name).await?;
     print_validation_pretty(&response, limit)?;
     match validation_follow_up(&response, ValidationSeverityMode::WarnOnly) {
         ValidationFollowUp::None => Ok(()),
@@ -674,10 +847,12 @@ pub(crate) async fn validate_and_print(
 
 pub(crate) async fn validate_and_warn(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
-    if let Err(err) = validate_and_print(app, source_name, limit).await {
+    println!("{}", style("Validating source...").dim());
+    if let Err(err) = validate_and_print(app, workspace, source_name, limit).await {
         eprintln!("Warning: validation failed: {err}");
     }
     Ok(())
@@ -685,15 +860,16 @@ pub(crate) async fn validate_and_warn(
 
 pub(crate) async fn test_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
     severity_mode: ValidationSeverityMode,
 ) -> Result<(), crate::CliError> {
     let normalized = source_name_arg(Some(source_name))?;
-    let response = match validate_source_request(app, normalized.clone()).await {
+    let response = match validate_source_request(app, workspace, normalized.clone()).await {
         Ok(response) => response,
         Err(status) if is_source_missing_status(&status) => {
-            return source_test_not_found_error(app, &normalized, status).await;
+            return source_test_not_found_error(app, workspace, &normalized, status).await;
         }
         Err(status) => return Err(anyhow::Error::from(status).into()),
     };
@@ -711,11 +887,12 @@ pub(crate) async fn test_and_print(
 
 async fn source_test_not_found_error(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     original_status: tonic::Status,
 ) -> Result<(), crate::CliError> {
     // Discovery failure must not mask the original validation error.
-    let Ok(available) = discover_sources(app).await else {
+    let Ok(available) = discover_sources(app, workspace).await else {
         return Err(anyhow::Error::from(original_status).into());
     };
     if available
@@ -734,10 +911,11 @@ async fn source_test_not_found_error(
 
 pub(crate) async fn remove_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
 ) -> Result<(), crate::CliError> {
     let normalized = source_name_arg(Some(source_name))?;
-    match delete_source(app, &normalized).await {
+    match delete_source(app, workspace, &normalized).await {
         Ok(()) => {
             println!("Removed source {normalized}");
             Ok(())
@@ -791,50 +969,23 @@ pub(crate) fn print_validation_pretty(
         source_credential_storage_label(source.credential_storage)
     );
 
-    // Group tables by schema, sorted.
-    let mut by_schema: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for table in &response.tables {
-        by_schema
-            .entry(&table.schema_name)
-            .or_default()
-            .push(&table.name);
-    }
-    for tables in by_schema.values_mut() {
-        tables.sort_unstable();
-    }
-
-    for (schema, tables) in &by_schema {
-        let count = tables.len();
-        println!();
-        println!(
-            "    {}",
-            style(format!(
-                "{schema} ({count} {})",
-                if count == 1 { "table" } else { "tables" }
-            ))
-            .bold()
-        );
-
-        let show_count = match limit {
-            TableDisplayLimit::All => tables.len(),
-            TableDisplayLimit::Max(max) => tables.len().min(max),
-        };
-        let remaining = tables.len() - show_count;
-
-        for (i, table) in tables.iter().take(show_count).enumerate() {
-            let is_last = i == show_count - 1 && remaining == 0;
-            let branch = if is_last { "└─" } else { "├─" };
-            println!("    {} {}", style(branch).dim(), table);
-        }
-
-        if remaining > 0 {
-            println!(
-                "    {} {}",
-                style("└─").dim(),
-                style(format!("... and {remaining} more")).dim()
-            );
-        }
-    }
+    print_source_items(
+        &source.name,
+        response.tables.iter().map(|table| table.name.as_str()),
+        "table",
+        "tables",
+        limit,
+    );
+    print_source_items(
+        &source.name,
+        response
+            .table_functions
+            .iter()
+            .map(|function| function.name.as_str()),
+        "table function",
+        "table functions",
+        limit,
+    );
 
     let query_test_counts = query_test_counts(response);
     if query_test_counts.declared > 0 {
@@ -880,6 +1031,51 @@ pub(crate) fn print_validation_pretty(
     Ok(())
 }
 
+fn print_source_items<'a>(
+    source_name: &str,
+    items: impl IntoIterator<Item = &'a str>,
+    singular: &str,
+    plural: &str,
+    limit: TableDisplayLimit,
+) {
+    let mut names = items.into_iter().collect::<Vec<_>>();
+    if names.is_empty() {
+        return;
+    }
+    names.sort_unstable();
+
+    let count = names.len();
+    println!();
+    println!(
+        "    {}",
+        style(format!(
+            "{source_name} ({count} {})",
+            if count == 1 { singular } else { plural }
+        ))
+        .bold()
+    );
+
+    let show_count = match limit {
+        TableDisplayLimit::All => names.len(),
+        TableDisplayLimit::Max(max) => names.len().min(max),
+    };
+    let remaining = names.len() - show_count;
+
+    for (i, name) in names.iter().take(show_count).enumerate() {
+        let is_last = i == show_count - 1 && remaining == 0;
+        let branch = if is_last { "└─" } else { "├─" };
+        println!("    {} {name}", style(branch).dim());
+    }
+
+    if remaining > 0 {
+        println!(
+            "    {} {}",
+            style("└─").dim(),
+            style(format!("... and {remaining} more")).dim()
+        );
+    }
+}
+
 fn validation_follow_up(
     response: &ValidateSourceResponse,
     severity_mode: ValidationSeverityMode,
@@ -922,7 +1118,7 @@ fn query_test_counts(response: &ValidateSourceResponse) -> QueryTestCounts {
 
 fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    print_input_hint(input);
+    print_prompt_hint(resolve_prompt_hint(input, None));
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
@@ -941,9 +1137,12 @@ fn prompt_variable(input: &ManifestInputSpec) -> Result<Option<SourceVariable>, 
     }))
 }
 
-fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyhow::Error> {
+fn prompt_secret(
+    input: &ManifestInputSpec,
+    method: Option<&ManifestCredentialMethod>,
+) -> Result<Option<SourceSecret>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    print_input_hint(input);
+    print_prompt_hint(resolve_prompt_hint(input, method));
     let prompt = if input.default_value.is_empty() {
         input.key.clone()
     } else {
@@ -964,6 +1163,7 @@ fn prompt_secret(input: &ManifestInputSpec) -> Result<Option<SourceSecret>, anyh
 
 fn prompt_source_config_secret(
     input: &ManifestInputSpec,
+    method: Option<&ManifestCredentialMethod>,
 ) -> Result<Option<SourceSecret>, anyhow::Error> {
     let env_value = read_source_input_env(&input.key).unwrap_or_default();
     if !env_value.is_empty() {
@@ -972,7 +1172,7 @@ fn prompt_source_config_secret(
             value: env_value,
         }));
     }
-    prompt_secret(input)
+    prompt_secret(input, method)
 }
 
 enum SecretInputOutcome {
@@ -989,7 +1189,7 @@ fn prompt_secret_with_methods(
 ) -> Result<SecretInputOutcome, anyhow::Error> {
     let Some(credential) = input.credential.as_ref() else {
         return Ok(SecretInputOutcome::SourceConfig(
-            prompt_source_config_secret(input)?,
+            prompt_source_config_secret(input, None)?,
         ));
     };
     let Some(selected) = select_credential_method(input, credential, prefer_skip)? else {
@@ -999,14 +1199,20 @@ fn prompt_secret_with_methods(
         .methods
         .get(selected)
         .ok_or_else(|| anyhow::anyhow!("credential method index {selected} is out of range"))?;
+    // Inside a credential-method flow the selected method's hint is the
+    // guidance shown; the input-level hint is reserved for inspection
+    // surfaces and is not reprinted here.
     match method.kind {
         ManifestCredentialMethodKind::SourceConfig => Ok(SecretInputOutcome::SourceConfig(
-            prompt_source_config_secret(input)?,
+            prompt_source_config_secret(input, Some(method))?,
         )),
-        ManifestCredentialMethodKind::OAuth => Ok(SecretInputOutcome::OAuth {
-            credential: collect_oauth_credential_method(input, selected, method)?,
-            label: credential_method_label(method),
-        }),
+        ManifestCredentialMethodKind::OAuth => {
+            print_prompt_hint(resolve_prompt_hint(input, Some(method)));
+            Ok(SecretInputOutcome::OAuth {
+                credential: collect_oauth_credential_method(input, selected, method)?,
+                label: credential_method_label(method),
+            })
+        }
     }
 }
 
@@ -1076,6 +1282,7 @@ fn oauth_error(action: &str, error: &tonic::Status) -> anyhow::Error {
 struct OAuthRedirectPastePrompt {
     cancel: Option<Arc<AtomicBool>>,
     handle: Option<JoinHandle<()>>,
+    callback_received_at: Option<Instant>,
 }
 
 impl OAuthRedirectPastePrompt {
@@ -1083,6 +1290,7 @@ impl OAuthRedirectPastePrompt {
         Self {
             cancel: Some(cancel),
             handle: Some(handle),
+            callback_received_at: None,
         }
     }
 
@@ -1417,15 +1625,23 @@ fn prompt_oauth_credential_inputs(
     oauth: &ManifestOAuthCredentialSpec,
 ) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
     let mut values = Vec::new();
+    let mut prompted_client_id = None;
     if let Some(input_key) = oauth.client.id.input.as_deref()
-        && let Some(value) = prompt_oauth_client_id(input_key, oauth.client.id.default.as_deref())?
+        && let Some(value) = prompt_oauth_client_id(
+            input_key,
+            oauth.client.id.default.as_deref(),
+            oauth_client_id_allows_empty(oauth),
+        )?
     {
+        prompted_client_id = Some(value.clone());
         values.push(OAuthCredentialInput {
             key: input_key.to_string(),
             value,
         });
     }
-    if let Some(secret) = oauth.client.secret.as_ref() {
+    if oauth_client_secret_required_after_client_id_prompt(oauth, prompted_client_id.as_deref())
+        && let Some(secret) = oauth.client.secret.as_ref()
+    {
         let value = prompt_oauth_client_secret(&secret.input)?;
         values.push(OAuthCredentialInput {
             key: secret.input.clone(),
@@ -1435,12 +1651,35 @@ fn prompt_oauth_credential_inputs(
     Ok(values)
 }
 
+fn oauth_client_id_allows_empty(oauth: &ManifestOAuthCredentialSpec) -> bool {
+    oauth.client.dynamic_registration.is_some()
+}
+
+fn oauth_client_secret_required_after_client_id_prompt(
+    oauth: &ManifestOAuthCredentialSpec,
+    prompted_client_id: Option<&str>,
+) -> bool {
+    oauth.client.secret.is_some()
+        && (prompted_client_id.is_some_and(oauth_client_id_value_present)
+            || oauth
+                .client
+                .id
+                .default
+                .as_deref()
+                .is_some_and(oauth_client_id_value_present))
+}
+
+fn oauth_client_id_value_present(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
 fn prompt_oauth_client_id(
     input_key: &str,
     default: Option<&str>,
+    allow_dynamic_registration: bool,
 ) -> Result<Option<String>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    let prompt = if default.is_some_and(|value| !value.is_empty()) {
+    let prompt = if default.is_some_and(oauth_client_id_value_present) {
         format!("{input_key} [source default]")
     } else {
         input_key.to_string()
@@ -1449,10 +1688,23 @@ fn prompt_oauth_client_id(
         .with_prompt(prompt)
         .allow_empty(true)
         .interact_text()?;
+    resolve_oauth_client_id_prompt_value(input_key, &value, default, allow_dynamic_registration)
+}
+
+fn resolve_oauth_client_id_prompt_value(
+    input_key: &str,
+    value: &str,
+    default: Option<&str>,
+    allow_dynamic_registration: bool,
+) -> Result<Option<String>, anyhow::Error> {
+    let value = value.trim().to_string();
     if !value.is_empty() {
         return Ok(Some(value));
     }
-    if default.is_some_and(|value| !value.is_empty()) {
+    if default.is_some_and(oauth_client_id_value_present) {
+        return Ok(None);
+    }
+    if allow_dynamic_registration {
         return Ok(None);
     }
     Err(anyhow::anyhow!(
@@ -1474,10 +1726,28 @@ fn prompt_oauth_client_secret(input_key: &str) -> Result<String, anyhow::Error> 
     Ok(value)
 }
 
-fn print_input_hint(input: &ManifestInputSpec) {
-    if let Some(hint) = input.hint.as_deref()
-        && !hint.is_empty()
-    {
+/// Resolve the single hint to show while interactively collecting `input`.
+///
+/// Inside a credential-method flow (`method` is `Some`) the selected method's
+/// hint takes precedence, so the input-level hint — kept concise for
+/// inspection surfaces (`coral source info --verbose`, `coral.inputs`) and the
+/// generated docs — is not reprinted alongside it. When the selected method
+/// has no hint we fall back to the input-level hint rather than show nothing:
+/// a dormant safety net for multi-method secrets that have not authored
+/// per-method hints. For variables and plain secrets (`method` is `None`) the
+/// input-level hint is used directly. Returning a single value makes it
+/// impossible to print both the input-level and method-level hints together.
+fn resolve_prompt_hint<'a>(
+    input: &'a ManifestInputSpec,
+    method: Option<&'a ManifestCredentialMethod>,
+) -> Option<&'a str> {
+    let trimmed = |hint: Option<&'a str>| hint.map(str::trim).filter(|hint| !hint.is_empty());
+    trimmed(method.and_then(|method| method.hint.as_deref()))
+        .or_else(|| trimmed(input.hint.as_deref()))
+}
+
+fn print_prompt_hint(hint: Option<&str>) {
+    if let Some(hint) = hint {
         println!("  {}", style(hint).dim());
     }
 }
@@ -1509,7 +1779,11 @@ mod tests {
     use coral_api::v1::ValidateSourceResponse;
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
-        ManifestInputKind, ManifestInputSpec,
+        ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec,
+        ManifestOAuthClientSecretSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
+        ManifestOAuthCredentialSpec, ManifestOAuthDynamicClientRegistrationAuthMethod,
+        ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
+        ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -1522,9 +1796,29 @@ mod tests {
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, render_redirect_prompt_key_echo, shell_quote_arg, source_name_arg,
-        submit_oauth_redirect_url, validate_oauth_redirect_url, validation_follow_up,
+        finalize_input_value, oauth_client_id_allows_empty,
+        oauth_client_secret_required_after_client_id_prompt, render_redirect_prompt_key_echo,
+        resolve_oauth_client_id_prompt_value, resolve_prompt_hint, shell_quote_arg,
+        source_name_arg, submit_oauth_redirect_url, validate_oauth_redirect_url,
+        validation_follow_up,
     };
+
+    fn test_oauth_spec(client: ManifestOAuthClientSpec) -> ManifestOAuthCredentialSpec {
+        ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                pkce: ManifestOAuthPkceMode::Required,
+            },
+            resource: None,
+            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: Some("https://provider.example.com/oauth/authorize".to_string()),
+            device_authorization_url: None,
+            token_url: "https://provider.example.com/oauth/token".to_string(),
+            client,
+            scopes: None,
+        }
+    }
 
     #[test]
     fn collect_inputs_reads_variables_and_secrets_from_lookup() {
@@ -1574,6 +1868,7 @@ mod tests {
                     kind: ManifestCredentialMethodKind::SourceConfig,
                     label: Some("Paste token".to_string()),
                     description: None,
+                    hint: None,
                     oauth: None,
                 }],
             }),
@@ -1581,6 +1876,79 @@ mod tests {
 
         assert!(CredentialPromptMode::EnvFirst.reads_env_before_prompt(&input));
         assert!(!CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&input));
+    }
+
+    fn secret_with_method(
+        input_hint: Option<&str>,
+        method_hint: Option<&str>,
+    ) -> (ManifestInputSpec, ManifestCredentialMethod) {
+        let method = ManifestCredentialMethod {
+            kind: ManifestCredentialMethodKind::SourceConfig,
+            label: Some("Paste token".to_string()),
+            description: None,
+            hint: method_hint.map(ToString::to_string),
+            oauth: None,
+        };
+        let input = ManifestInputSpec {
+            key: "GITHUB_TOKEN".to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: input_hint.map(ToString::to_string),
+            credential: Some(ManifestCredentialSpec {
+                methods: vec![method.clone()],
+            }),
+        };
+        (input, method)
+    }
+
+    #[test]
+    fn prompt_hint_uses_input_hint_outside_a_credential_method_flow() {
+        let (input, _) = secret_with_method(Some("Input-level summary."), Some("Method guidance."));
+        assert_eq!(
+            resolve_prompt_hint(&input, None),
+            Some("Input-level summary.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_uses_only_the_method_hint_inside_a_credential_method_flow() {
+        // Once a method is selected, the method hint is the guidance and the
+        // input-level hint is never reprinted (the source_config/"Paste token"
+        // path must not show both).
+        let (input, method) =
+            secret_with_method(Some("Input-level summary."), Some("Method guidance."));
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Method guidance.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_falls_back_to_input_hint_when_method_has_no_hint() {
+        // Dormant safety net: a multi-method secret whose selected method has
+        // no hint still shows the input-level hint rather than nothing.
+        let (input, method) = secret_with_method(Some("Input-level summary."), None);
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Input-level summary.")
+        );
+    }
+
+    #[test]
+    fn prompt_hint_shows_nothing_when_neither_method_nor_input_has_a_hint() {
+        let (input, method) = secret_with_method(None, None);
+        assert_eq!(resolve_prompt_hint(&input, Some(&method)), None);
+    }
+
+    #[test]
+    fn prompt_hint_trims_and_drops_blank_hints() {
+        let (input, method) = secret_with_method(Some("   "), Some("  Method guidance.  "));
+        assert_eq!(resolve_prompt_hint(&input, None), None);
+        assert_eq!(
+            resolve_prompt_hint(&input, Some(&method)),
+            Some("Method guidance.")
+        );
     }
 
     #[test]
@@ -1604,6 +1972,136 @@ mod tests {
 
         assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&variable));
         assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&plain_secret));
+    }
+
+    #[test]
+    fn dynamic_registration_allows_empty_client_id_even_with_static_secret() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(oauth_client_id_allows_empty(&oauth));
+    }
+
+    #[test]
+    fn static_oauth_client_id_cannot_be_empty_without_dynamic_registration() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: None,
+            dynamic_registration: None,
+        });
+
+        assert!(!oauth_client_id_allows_empty(&oauth));
+    }
+
+    #[test]
+    fn dynamic_registration_fallback_skips_static_client_secret_prompt() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(!oauth_client_secret_required_after_client_id_prompt(
+            &oauth, None
+        ));
+    }
+
+    #[test]
+    fn dynamic_registration_treats_blank_client_id_prompt_as_absent() {
+        assert_eq!(
+            resolve_oauth_client_id_prompt_value("OAUTH_CLIENT_ID", "   ", None, true)
+                .expect("dynamic registration should allow blank client id"),
+            None
+        );
+
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(!oauth_client_secret_required_after_client_id_prompt(
+            &oauth,
+            Some("   ")
+        ));
+    }
+
+    #[test]
+    fn client_id_prompt_value_is_trimmed_before_static_path() {
+        assert_eq!(
+            resolve_oauth_client_id_prompt_value(
+                "OAUTH_CLIENT_ID",
+                "  static-client  ",
+                None,
+                true,
+            )
+            .expect("non-empty client id should be accepted"),
+            Some("static-client".to_string())
+        );
+    }
+
+    #[test]
+    fn static_client_path_requires_client_secret_prompt() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(oauth_client_secret_required_after_client_id_prompt(
+            &oauth,
+            Some("static-client")
+        ));
     }
 
     #[test]

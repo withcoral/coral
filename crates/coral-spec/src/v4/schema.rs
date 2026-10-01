@@ -1,0 +1,1046 @@
+//! Generated JSON Schema for authored DSL v4 source manifests.
+
+use std::collections::BTreeMap;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::backends::http::RateLimitSpec;
+use crate::backends::mcp::McpServerSpec;
+use crate::{
+    AuthSpec, HeaderSpec, ManifestOAuthClientSecretSpec,
+    ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthPkceMode,
+    ManifestOAuthRedirectUriPortMode, ManifestOAuthScopesSpec,
+};
+
+const NON_WHITESPACE_PATTERN: &str = "[^\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]";
+const TRIMMED_IDENTIFIER_PATTERN: &str = "^[\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]*[A-Za-z_][A-Za-z0-9_]*[\u{0009}-\u{000d}\u{0020}\u{0085}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}]*$";
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(title = "Coral DSL v4 Source Manifest")]
+struct V4SourceManifestSchema {
+    #[schemars(extend("const" = 4))]
+    dsl_version: u32,
+    #[schemars(length(min = 1), pattern(r"^[a-z][a-z0-9_]*$"))]
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
+    inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(inner(length(min = 1)))]
+    test_queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    identity_requirements: Option<IdentityRequirementsSchema>,
+    surface: V4SurfaceSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum V4SurfaceSchema {
+    Openapi(V4OpenApiSurfaceSchema),
+    Mcp(V4McpSurfaceSchema),
+    Database(V4DatabaseSurfaceSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("oneOf" = [{ "required": ["url"] }, { "required": ["file"] }]))]
+struct V4OpenApiSurfaceSchema {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, pattern(r"^https://"))]
+    url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
+    file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
+    base_url: Option<String>,
+    #[serde(default)]
+    auth: AuthSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    request_headers: Vec<HeaderSpec>,
+    #[serde(default)]
+    rate_limit: RateLimitSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4McpSurfaceSchema {
+    server: McpServerSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4DatabaseSurfaceSchema {
+    Postgres(V4PostgresDatabaseSurfaceSchema),
+    MySql(V4MySqlDatabaseSurfaceSchema),
+    Sqlite(V4SqliteDatabaseSurfaceSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4PostgresDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
+    #[schemars(extend("const" = "postgres"))]
+    provider: String,
+    connection: V4PostgresConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4MySqlDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
+    #[schemars(extend("const" = "mysql"))]
+    provider: String,
+    connection: V4MySqlConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4SqliteDatabaseSurfaceSchema {
+    #[serde(rename = "type")]
+    #[schemars(extend("const" = "database"))]
+    surface_type: String,
+    #[schemars(extend("const" = "sqlite"))]
+    provider: String,
+    connection: V4SqliteConnectionSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4PostgresConnectionSchema {
+    host: String,
+    port: String,
+    database: String,
+    user: String,
+    password: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sslmode: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4MySqlConnectionSchema {
+    host: String,
+    port: String,
+    database: String,
+    user: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4SqliteConnectionSchema {
+    path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct IdentityRequirementsSchema {
+    #[schemars(length(min = 1))]
+    accepts: Vec<AcceptedIdentityRequirementSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AcceptedIdentityRequirementSchema {
+    #[schemars(length(min = 1), pattern(NON_WHITESPACE_PATTERN))]
+    id: String,
+    #[schemars(
+        length(min = 1),
+        inner(
+            length(min = 1),
+            pattern(TRIMMED_IDENTIFIER_PATTERN)
+        ),
+        extend("uniqueItems" = true)
+    )]
+    identity_specs: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    audience: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum V4InputSpecSchema {
+    Variable {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+    },
+    Secret {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(required)]
+        credential: Option<V4CredentialSpecSchema>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4CredentialSpecSchema {
+    #[schemars(length(min = 1))]
+    methods: Vec<V4CredentialMethodSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum V4CredentialMethodSchema {
+    SourceConfig {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+    },
+    Oauth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+        oauth: Box<V4OAuthCredentialMethodSchema>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OAuthCredentialMethodSchema {
+    AuthorizationCode(Box<V4AuthorizationCodeOAuthCredentialMethodSchema>),
+    DeviceCode(Box<V4DeviceCodeOAuthCredentialMethodSchema>),
+    ClientCredentials(Box<V4ClientCredentialsOAuthCredentialMethodSchema>),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4AuthorizationCodeOAuthCredentialMethodSchema {
+    flow: V4AuthorizationCodeOAuthFlowSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
+    resource: Option<String>,
+    #[serde(rename = "redirect_uri")]
+    #[schemars(length(min = 1))]
+    redirect: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    redirect_uri_port_mode: Option<ManifestOAuthRedirectUriPortMode>,
+    endpoints: V4AuthorizationCodeOAuthEndpointsSchema,
+    client: V4OAuthClientSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    scopes: Option<ManifestOAuthScopesSpec>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4DeviceCodeOAuthCredentialMethodSchema {
+    flow: V4DeviceCodeOAuthFlowSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
+    resource: Option<String>,
+    endpoints: V4DeviceCodeOAuthEndpointsSchema,
+    client: V4DeviceCodeOAuthClientSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    scopes: Option<ManifestOAuthScopesSpec>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4ClientCredentialsOAuthCredentialMethodSchema {
+    flow: V4ClientCredentialsOAuthFlowSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
+    resource: Option<String>,
+    endpoints: V4ClientCredentialsOAuthEndpointsSchema,
+    client: V4OAuthConfidentialClientSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
+    scopes: Option<ManifestOAuthScopesSpec>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4AuthorizationCodeOAuthFlowSchema {
+    #[serde(rename = "type")]
+    flow_type: V4AuthorizationCodeOAuthFlowTypeSchema,
+    pkce: ManifestOAuthPkceMode,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4AuthorizationCodeOAuthFlowTypeSchema {
+    AuthorizationCode,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4DeviceCodeOAuthFlowSchema {
+    #[serde(rename = "type")]
+    flow_type: V4DeviceCodeOAuthFlowTypeSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pkce: Option<V4OAuthDisabledPkceModeSchema>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4DeviceCodeOAuthFlowTypeSchema {
+    DeviceCode,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4ClientCredentialsOAuthFlowSchema {
+    #[serde(rename = "type")]
+    flow_type: V4ClientCredentialsOAuthFlowTypeSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4ClientCredentialsOAuthFlowTypeSchema {
+    ClientCredentials,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum V4OAuthDisabledPkceModeSchema {
+    Disabled,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4AuthorizationCodeOAuthEndpointsSchema {
+    #[serde(rename = "authorization_url")]
+    #[schemars(length(min = 1))]
+    authorization: String,
+    #[serde(rename = "token_url")]
+    #[schemars(length(min = 1))]
+    token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4DeviceCodeOAuthEndpointsSchema {
+    #[serde(rename = "token_url")]
+    #[schemars(length(min = 1))]
+    token: String,
+    #[serde(rename = "device_authorization_url")]
+    #[schemars(length(min = 1))]
+    device_authorization: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4ClientCredentialsOAuthEndpointsSchema {
+    #[serde(rename = "token_url")]
+    #[schemars(length(min = 1))]
+    token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OAuthClientSchema {
+    Public(Box<V4OAuthPublicClientSchema>),
+    Confidential(Box<V4OAuthConfidentialClientSchema>),
+    Dynamic(Box<V4OAuthDynamicClientSchema>),
+    PublicDynamic(Box<V4OAuthPublicDynamicClientSchema>),
+    ConfidentialDynamic(Box<V4OAuthConfidentialDynamicClientSchema>),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4DeviceCodeOAuthClientSchema {
+    Public(Box<V4OAuthPublicClientSchema>),
+    Dynamic(Box<V4OAuthDynamicClientSchema>),
+    PublicDynamic(Box<V4OAuthPublicDynamicClientSchema>),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthPublicClientSchema {
+    id: V4OAuthClientIdSchema,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthConfidentialClientSchema {
+    id: V4OAuthClientIdWithInputSchema,
+    secret: ManifestOAuthClientSecretSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthDynamicClientSchema {
+    dynamic_registration: ManifestOAuthDynamicClientRegistrationSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthPublicDynamicClientSchema {
+    id: V4OAuthClientIdSchema,
+    dynamic_registration: ManifestOAuthDynamicClientRegistrationSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthConfidentialDynamicClientSchema {
+    id: V4OAuthClientIdWithInputSchema,
+    secret: ManifestOAuthClientSecretSpec,
+    dynamic_registration: ManifestOAuthDynamicClientRegistrationSpec,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OAuthClientIdSchema {
+    DefaultAndInput(V4OAuthClientIdDefaultAndInputSchema),
+    Default(V4OAuthClientIdDefaultSchema),
+    Input(V4OAuthClientIdInputSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum V4OAuthClientIdWithInputSchema {
+    DefaultAndInput(V4OAuthClientIdDefaultAndInputSchema),
+    Input(V4OAuthClientIdInputSchema),
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthClientIdDefaultAndInputSchema {
+    #[schemars(length(min = 1))]
+    default: String,
+    #[schemars(length(min = 1))]
+    input: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthClientIdDefaultSchema {
+    #[schemars(length(min = 1))]
+    default: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct V4OAuthClientIdInputSchema {
+    #[schemars(length(min = 1))]
+    input: String,
+}
+
+/// Generate the JSON Schema for authored DSL v4 source manifests.
+///
+/// # Panics
+///
+/// Panics only if the schema produced by `schemars` cannot be serialized to
+/// JSON, which would indicate an invalid schema type definition in this crate.
+pub fn generated_v4_source_manifest_schema() -> Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(V4SourceManifestSchema))
+        .expect("generated DSL v4 schema must serialize");
+    post_process_schema(&mut schema);
+    schema
+}
+
+fn post_process_schema(schema: &mut Value) {
+    let Some(root) = schema.as_object_mut() else {
+        return;
+    };
+    root.insert(
+        "$id".to_string(),
+        Value::String("https://coral.local/source_manifest_v4.schema.json".to_string()),
+    );
+    root.entry("$schema".to_string()).or_insert_with(|| {
+        Value::String("https://json-schema.org/draft/2020-12/schema".to_string())
+    });
+
+    let Some(defs) = root.get_mut("$defs").and_then(Value::as_object_mut) else {
+        return;
+    };
+    post_process_flattened_value_source_defs(defs);
+}
+
+fn post_process_flattened_value_source_defs(defs: &mut serde_json::Map<String, Value>) {
+    compose_flattened_value_source_def(
+        defs,
+        "McpEnvSpec",
+        &json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            },
+            "required": ["name"]
+        }),
+    );
+    compose_flattened_value_source_def(
+        defs,
+        "McpHttpAuthSpec",
+        &json!({
+            "type": "object",
+            "properties": {
+                "type": { "type": "string", "const": "bearer" }
+            },
+            "required": ["type"]
+        }),
+    );
+}
+
+fn compose_flattened_value_source_def(
+    defs: &mut serde_json::Map<String, Value>,
+    name: &str,
+    required_properties: &Value,
+) {
+    let Some(definition) = defs.get_mut(name) else {
+        return;
+    };
+    let description = definition
+        .get("description")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut replacement = json!({
+        "allOf": [
+            { "$ref": "#/$defs/ValueSourceSpec" },
+            required_properties.clone()
+        ]
+    });
+    if !description.is_null()
+        && let Some(object) = replacement.as_object_mut()
+    {
+        object.insert("description".to_string(), description);
+    }
+    *definition = replacement;
+}
+
+#[cfg(test)]
+mod tests {
+    use jsonschema::Validator;
+    use serde_json::Value as JsonValue;
+
+    use super::generated_v4_source_manifest_schema;
+    use crate::parse_source_manifest_yaml;
+
+    fn validator() -> Validator {
+        jsonschema::validator_for(&generated_v4_source_manifest_schema()).expect("schema compiles")
+    }
+
+    fn manifest_json(raw: &str) -> JsonValue {
+        serde_yaml::from_str(raw).expect("yaml parses as json value")
+    }
+
+    fn validation_errors(validator: &Validator, manifest: &JsonValue) -> Vec<String> {
+        validator
+            .iter_errors(manifest)
+            .map(|error| error.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn generated_schema_accepts_every_preview_v4_manifest_and_parser_agrees() {
+        let validator = validator();
+        let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sources/v4");
+        let mut parsed_sources = Vec::new();
+        for entry in std::fs::read_dir(&source_root).expect("preview v4 source directory") {
+            let entry = entry.expect("preview v4 source entry");
+            let manifest_path = entry.path().join("manifest.yaml");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let source = entry.file_name().to_string_lossy().into_owned();
+            let raw = std::fs::read_to_string(&manifest_path).expect("v4 fixture");
+            let manifest = manifest_json(&raw);
+            let errors = validation_errors(&validator, &manifest);
+            assert!(
+                errors.is_empty(),
+                "generated schema should accept {source} v4 fixture: {errors:?}"
+            );
+            let parsed = parse_source_manifest_yaml(&raw).expect("parser accepts v4 fixture");
+            parsed_sources.push((
+                source,
+                parsed
+                    .as_v4()
+                    .expect("preview manifest should use DSL v4")
+                    .common
+                    .name
+                    .clone(),
+            ));
+        }
+
+        parsed_sources.sort();
+        assert!(
+            parsed_sources.len() >= 2,
+            "expected multiple preview v4 manifests"
+        );
+        assert!(parsed_sources.contains(&("github".to_string(), "github_v4".to_string())));
+        assert!(parsed_sources.contains(&("github_mcp".to_string(), "github_mcp_v4".to_string())));
+        assert_ne!("github_v4", "github_mcp_v4");
+    }
+
+    #[test]
+    fn generated_schema_accepts_mcp_surface() {
+        let raw = r"
+name: demo
+dsl_version: 4
+inputs:
+  MCP_TOKEN:
+    kind: secret
+surface:
+    type: mcp
+    server:
+      transport: streamable_http
+      url: https://mcp.example.com/mcp
+      auth:
+        type: bearer
+        from: input
+        key: MCP_TOKEN
+";
+
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept MCP surface: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts MCP surface");
+    }
+
+    #[test]
+    fn generated_schema_accepts_database_surface() {
+        let raw = r#"
+name: coral_db
+dsl_version: 4
+inputs:
+  DB_PASSWORD:
+    kind: secret
+surface:
+  type: database
+  provider: postgres
+  connection:
+    host: localhost
+    port: "5432"
+    database: coral
+    user: coral_reader
+    password: "{{input.DB_PASSWORD}}"
+"#;
+
+        let errors = validation_errors(&validator(), &manifest_json(raw));
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept database surface: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts database surface");
+    }
+
+    #[test]
+    fn generated_schema_accepts_flattened_mcp_value_sources() {
+        let raw = r"
+name: demo
+dsl_version: 4
+inputs:
+  MCP_TOKEN:
+    kind: secret
+surface:
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+      env:
+        - name: MCP_TOKEN
+          from: input
+          key: MCP_TOKEN
+";
+
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept flattened MCP value sources: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts flattened MCP value sources");
+    }
+
+    #[test]
+    fn generated_schema_accepts_identity_requirements_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+identity_requirements:
+  accepts:
+    - id: github_rest_read
+      identity_specs: [github_oauth, github_pat]
+      audience: {host: github.com, port: 443}
+surface:
+  type: openapi
+  url: https://example.com/openapi.yaml
+";
+
+        let validator = validator();
+        let errors = validation_errors(&validator, &manifest_json(raw));
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept identity requirements: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts identity requirements");
+    }
+
+    #[test]
+    fn generated_schema_rejects_invalid_identity_requirement_shapes() {
+        let invalid_fields = [
+            "identity_requirements: null\n",
+            "identity_requirements: {accepts: []}\n",
+            "identity_requirements:\n  accepts:\n    - id: \"\"\n      identity_specs: [github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: \"   \"\n      identity_specs: [github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: []\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [\"\"]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [\"   \"]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github-oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github_oauth, github_oauth]\n",
+            "identity_requirements:\n  accepts:\n    - id: github_rest_read\n      identity_specs: [github_oauth]\n      issuer: github\n",
+        ];
+
+        let validator = validator();
+        for manifest_fields in invalid_fields {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\n{manifest_fields}surface:\n  type: openapi\n  url: https://example.com/openapi.yaml\n"
+            );
+            assert!(
+                !validator.is_valid(&manifest_json(&raw)),
+                "generated schema should reject: {manifest_fields}"
+            );
+            parse_source_manifest_yaml(&raw)
+                .expect_err("parser should reject invalid identity requirements");
+        }
+    }
+
+    #[test]
+    fn generated_schema_rejects_surface_scoped_identity_requirements() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  url: https://example.com/openapi.yaml
+  identity_requirements:
+    accepts:
+      - {id: github_rest_read, identity_specs: [github_oauth]}
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "generated schema should reject surface-scoped identity requirements"
+        );
+        parse_source_manifest_yaml(raw)
+            .expect_err("parser should reject surface-scoped identity requirements");
+    }
+
+    #[test]
+    fn generated_schema_accepts_oauth_top_level_input_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+inputs:
+  TENANT_ID:
+    kind: variable
+    default: organizations
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          description: Use OAuth.
+          hint: Authorize in your browser.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://login.example.com/{{input.TENANT_ID}}/oauth/authorize
+              token_url: https://login.example.com/{{input.TENANT_ID}}/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://login.example.com/{{input.TENANT_ID}}/oauth/register
+                client_name: Coral Demo
+                token_endpoint_auth_method: none
+                request_refresh_token_grant: true
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read
+        - type: source_config
+          label: Paste token
+surface:
+    type: openapi
+    url: https://example.com/openapi.yaml
+    base_url: https://api.example.com
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: bearer
+          key: API_TOKEN
+";
+
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept v4 OAuth top-level input: {errors:?}"
+        );
+        parse_source_manifest_yaml(raw).expect("parser accepts v4 OAuth top-level input");
+    }
+
+    #[test]
+    fn generated_schema_rejects_unknown_oauth_top_level_input_field() {
+        let raw = r"
+name: demo
+dsl_version: 4
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            endpoints:
+              authorization_url: https://login.example.com/oauth/authorize
+              token_url: https://login.example.com/oauth/token
+            client:
+              id:
+                default: demo-client
+            unsupported: true
+surface:
+    type: openapi
+    url: https://example.com/openapi.yaml
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "generated schema should reject unknown OAuth fields"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser should reject unknown OAuth fields");
+    }
+
+    #[test]
+    fn generated_schema_rejects_client_credentials_pkce() {
+        let raw = r"
+name: demo
+dsl_version: 4
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: client_credentials
+              pkce: disabled
+            endpoints:
+              token_url: https://login.example.com/oauth/token
+            client:
+              id:
+                input: OAUTH_CLIENT_ID
+              secret:
+                input: OAUTH_CLIENT_SECRET
+                transport: basic_auth
+surface:
+  type: openapi
+  url: https://example.com/openapi.yaml
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "generated schema should reject PKCE for client credentials"
+        );
+        parse_source_manifest_yaml(raw)
+            .expect_err("parser should reject PKCE for client credentials");
+    }
+
+    #[test]
+    fn generated_schema_rejects_explicit_null_oauth_optionals_and_parser_agrees() {
+        let credential_null = r"
+name: demo
+dsl_version: 4
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential: null
+surface:
+    type: openapi
+    url: https://example.com/openapi.yaml
+";
+        let oauth_manifest = |oauth_extra: &str, registration_extra: &str| {
+            format!(
+                r"
+name: demo
+dsl_version: 4
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+{oauth_extra}            endpoints:
+              authorization_url: https://login.example.com/oauth/authorize
+              token_url: https://login.example.com/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://login.example.com/oauth/register
+{registration_extra}
+surface:
+    type: openapi
+    url: https://example.com/openapi.yaml
+"
+            )
+        };
+        let invalid = [
+            ("credential", credential_null.to_string()),
+            (
+                "resource",
+                oauth_manifest("            resource: null\n", ""),
+            ),
+            (
+                "redirect_uri_port_mode",
+                oauth_manifest("            redirect_uri_port_mode: null\n", ""),
+            ),
+            ("scopes", oauth_manifest("            scopes: null\n", "")),
+            (
+                "client_name",
+                oauth_manifest("", "                client_name: null\n"),
+            ),
+        ];
+
+        let validator = validator();
+        for (field, raw) in invalid {
+            assert!(
+                !validator.is_valid(&manifest_json(&raw)),
+                "generated schema should reject explicit null for {field}"
+            );
+            parse_source_manifest_yaml(&raw)
+                .expect_err("parser should reject explicit null for OAuth optional field");
+        }
+    }
+
+    #[test]
+    fn generated_schema_rejects_v3_only_fields_and_removed_snapshot_fields() {
+        let invalid = [
+            "version: 1.0.0\n",
+            "backend: http\n",
+            "tables: []\n",
+            "auth: {type: HeaderAuth}\n",
+            "functions: []\n",
+        ];
+        for field in invalid {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\n{field}surface:\n    type: openapi\n    url: https://example.com/openapi.yaml\n"
+            );
+            assert!(
+                !validator().is_valid(&manifest_json(&raw)),
+                "field should be rejected: {field}"
+            );
+        }
+
+        let raw = "name: demo\ndsl_version: 4\nsurface:\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n";
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "surface sha256 should be rejected"
+        );
+    }
+
+    #[test]
+    fn generated_schema_rejects_explicit_null_surface_fields() {
+        let invalid_surfaces = [
+            "    url: null\n",
+            "    file: null\n",
+            "    url: https://example.com/openapi.yaml\n    base_url: null\n",
+            "    url: https://example.com/openapi.yaml\n    auth: null\n",
+            "    url: https://example.com/openapi.yaml\n    rate_limit: null\n",
+        ];
+        for surface_fields in invalid_surfaces {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\nsurface:\n    type: openapi\n{surface_fields}"
+            );
+            assert!(
+                !validator().is_valid(&manifest_json(&raw)),
+                "explicit null should be rejected: {surface_fields}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_schema_rejects_plural_surfaces_and_parser_agrees() {
+        let raw = "name: demo\ndsl_version: 4\nsurfaces: []\n";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "plural surfaces should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser should reject plural surfaces");
+    }
+
+    #[test]
+    fn generated_schema_rejects_surface_id_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surface:
+    id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "surface id should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser should reject surface id");
+    }
+
+    #[test]
+    fn generated_schema_rejects_namespace_suffix_and_parser_agrees() {
+        let raw = r"
+name: demo
+dsl_version: 4
+surface:
+    namespace_suffix: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+";
+
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "namespace_suffix should be rejected by generated schema"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser should reject namespace_suffix");
+    }
+}

@@ -12,21 +12,22 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, SourceSecret, SourceVariable, import_source_response,
+    ExecuteSqlRequest, ImportSourceRequest, SearchRequest, SourceSecret, SourceVariable,
+    import_source_response,
 };
-use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
+use coral_client::{batches_to_json_rows, decode_execute_sql_response};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::Notify;
 use tonic::{Code, Request};
 
-use crate::harness::{GrpcHarness, fixture_manifest_yaml, source_dir};
+use crate::harness::{GrpcHarness, default_workspace, fixture_manifest_yaml, source_dir};
 
 #[tokio::test]
 async fn query_refreshes_expired_oauth_access_token_at_request_time() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -84,7 +85,7 @@ async fn query_refreshes_expired_oauth_access_token_at_request_time() {
 #[tokio::test]
 async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -133,7 +134,7 @@ async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
 #[tokio::test]
 async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -156,9 +157,13 @@ async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
     );
 
     let tables = harness.list_tables().await;
+    let refreshed_tables = tables
+        .iter()
+        .filter(|table| table.schema_name == "refreshed_messages")
+        .collect::<Vec<_>>();
 
-    assert_eq!(tables.len(), 1);
-    assert_eq!(tables[0].name, "messages");
+    assert_eq!(refreshed_tables.len(), 1);
+    assert_eq!(refreshed_tables[0].name, "messages");
     assert!(
         fixture.token_forms().is_empty(),
         "passive catalog discovery should not call the token endpoint"
@@ -168,9 +173,59 @@ async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
 }
 
 #[tokio::test]
+async fn search_catalog_does_not_refresh_expired_oauth_access_token() {
+    let fixture = RefreshingHttpFixture::new().await;
+    let harness = GrpcHarness::with_workspace().await;
+    harness
+        .import_source(
+            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: fixture.base_url.clone(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "expired-token".to_string(),
+            }],
+        )
+        .await;
+
+    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
+    seed_expired_api_token_material(
+        &secret_path,
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    );
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "messages".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert!(response.results.iter().any(|result| {
+        result
+            .surface
+            .as_ref()
+            .is_some_and(|entry| entry.name == "messages")
+    }));
+    assert!(
+        fixture.token_forms().is_empty(),
+        "catalog search should not call the token endpoint"
+    );
+    let material = fs::read_to_string(secret_path).expect("read material");
+    assert!(material.contains("API_TOKEN=expired-token"), "{material}");
+}
+
+#[tokio::test]
 async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -197,6 +252,8 @@ async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("query should surface refresh failure");
@@ -213,7 +270,7 @@ async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
 #[tokio::test]
 async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnect() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -236,6 +293,8 @@ async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnec
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("query should ask the user to reconnect");
@@ -254,7 +313,7 @@ async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnec
 #[tokio::test]
 async fn concurrent_queries_share_one_expired_oauth_refresh() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -304,6 +363,7 @@ async fn concurrent_servers_share_one_expired_oauth_refresh() {
     let config_root = TempDir::new().expect("config root");
     let config_dir = config_root.path().join("coral-config");
     let first_harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    first_harness.seed_workspace().await;
     first_harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -351,7 +411,7 @@ async fn concurrent_servers_share_one_expired_oauth_refresh() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_credential_replacement_waits_for_in_flight_refresh() {
     let fixture = RefreshingHttpFixture::new_blocked_token_response().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -379,6 +439,8 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: "SELECT id FROM refreshed_messages.messages".to_string(),
+                guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect("execute sql")
@@ -446,7 +508,7 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
 #[tokio::test]
 async fn successful_refresh_is_persisted_before_later_oauth_input_failure() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
+    let harness = GrpcHarness::with_workspace().await;
     harness
         .import_source(
             two_oauth_inputs_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -500,6 +562,8 @@ SECOND_TOKEN=expired-secondary-token
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT id FROM multi_oauth_messages.messages".to_string(),
+            guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("second OAuth refresh should fail query");

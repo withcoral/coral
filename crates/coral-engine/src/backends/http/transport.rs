@@ -6,16 +6,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
+use opentelemetry::Context as OtelContext;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use tracing::Instrument as _;
 use tracing::field;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
-use crate::backends::http::auth::resolve_auth_headers;
-use crate::backends::http::error::{pagination_error, provider_error};
-use crate::backends::http::pagination::extract_next_link_url;
+use crate::backends::http::auth::{
+    ensure_identity_headers_use_credential_safe_transport, resolve_auth_headers,
+};
+use crate::backends::http::error::provider_error;
 use crate::backends::http::rate_limit::{RateLimitDecision, check_rate_limit};
 use crate::backends::http::request::RequestBody;
 use crate::backends::http::response::{ResponseDecodeContext, decode_response_body};
@@ -25,6 +27,10 @@ use crate::backends::http::trace::{
     trace_reqwest_error, trace_reqwest_error_type,
 };
 use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
+use crate::{
+    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator,
+    RequestIdentityHttpAuthenticatorError,
+};
 use coral_spec::backends::http::RateLimitSpec;
 use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat};
 
@@ -34,10 +40,12 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) auth: &'a AuthSpec,
     pub(super) request_headers: &'a [HeaderSpec],
     pub(super) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(super) request_identity_http_authenticator:
+        Option<&'a BoundRequestIdentityHttpAuthenticator>,
+    pub(super) trace_context: Option<&'a OtelContext>,
     pub(super) table_headers: &'a [HeaderSpec],
     pub(super) table_name: &'a str,
     pub(super) method: HttpMethod,
-    pub(super) base_url: &'a str,
     pub(super) url: &'a str,
     pub(super) query_pairs: &'a [(String, String)],
     pub(super) body: Option<&'a RequestBody>,
@@ -47,7 +55,12 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) body_capture: HttpBodyCapture,
     pub(super) render_context: RenderContext<'a>,
     pub(super) allow_404_empty: bool,
-    pub(super) link_header_require_results: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct DecodedHttpResponse {
+    pub(super) payload: Value,
+    pub(super) headers: HeaderMap,
 }
 
 #[expect(
@@ -58,9 +71,9 @@ pub(super) async fn execute_request(
     http: &reqwest::Client,
     request_timeout: Duration,
     request: OutgoingHttpRequest<'_>,
-) -> Result<Option<(Value, Option<String>)>> {
+) -> Result<Option<DecodedHttpResponse>> {
     enum ResponseOutcome {
-        Done(Result<Option<(Value, Option<String>)>>),
+        Done(Result<Option<DecodedHttpResponse>>),
         Retry(Duration),
     }
 
@@ -68,10 +81,11 @@ pub(super) async fn execute_request(
         auth,
         request_headers,
         request_authenticators,
+        request_identity_http_authenticator,
+        trace_context,
         table_headers,
         table_name,
         method,
-        base_url,
         url,
         query_pairs,
         body,
@@ -81,10 +95,10 @@ pub(super) async fn execute_request(
         body_capture,
         render_context,
         allow_404_empty,
-        link_header_require_results,
     } = request;
     let mut server_error_retries = 0usize;
     let mut throttle_retries = 0usize;
+    let mut decode_retries = 0usize;
     loop {
         let method_label = http_method_label(method);
         let mut request = build_http_request(http, method, url);
@@ -119,7 +133,7 @@ pub(super) async fn execute_request(
         let logged_url = build_logged_url(url, query_pairs);
 
         let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let attempt = server_error_retries + throttle_retries + 1;
+        let attempt = server_error_retries + throttle_retries + decode_retries + 1;
         let traced_url = sanitize_trace_url(&logged_url);
         let trace_endpoint = trace_http_endpoint(&traced_url);
         let request_span = tracing::info_span!(
@@ -153,6 +167,9 @@ pub(super) async fn execute_request(
             server.port = field::Empty,
             url.full = %traced_url,
         );
+        if let Some(trace_context) = trace_context {
+            drop(request_span.set_parent(trace_context.clone()));
+        }
         record_trace_http_endpoint(&request_span, &trace_endpoint);
         if attempt > 1 {
             request_span.record(
@@ -181,7 +198,7 @@ pub(super) async fn execute_request(
         }
 
         body_capture.record_request(&request_span, request_id, body);
-        let built = match resolve_auth_headers(
+        let mut built = match resolve_auth_headers(
             auth,
             request,
             request_authenticators,
@@ -193,6 +210,33 @@ pub(super) async fn execute_request(
                 return Err(error);
             }
         };
+        if let Some(authenticator) = request_identity_http_authenticator {
+            let identity_headers = match authenticator(&built, render_context.resolved_inputs).await
+            {
+                Ok(headers) => headers,
+                Err(error) => {
+                    let error =
+                        identity_http_authenticator_error(source_schema, table_name, &error);
+                    record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                    return Err(error);
+                }
+            };
+            if !identity_headers.is_empty()
+                && let Err(error) =
+                    ensure_identity_headers_use_credential_safe_transport(built.url())
+            {
+                record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                return Err(error);
+            }
+            for (name, value) in identity_headers {
+                if built.headers().contains_key(&name) {
+                    let error = identity_header_conflict_error(source_schema, table_name, &name);
+                    record_http_processing_error(&request_span, "REQUEST_SETUP", &error);
+                    return Err(error);
+                }
+                built.headers_mut().insert(name, value);
+            }
+        }
         let response = match http.execute(built).instrument(request_span.clone()).await {
             Ok(response) => response,
             Err(error) => {
@@ -292,24 +336,9 @@ pub(super) async fn execute_request(
                 ))));
             }
 
-            let next_url =
-                extract_next_link_url(response.headers(), base_url, link_header_require_results)
-                    .map_err(|error| {
-                        record_http_processing_error(&request_span, "PAGINATION", &error);
-                        pagination_error(
-                            source_schema,
-                            table_name,
-                            Some(method_label),
-                            Some(&logged_url),
-                            &error,
-                        )
-                    });
-            let next_url = match next_url {
-                Ok(next_url) => next_url,
-                Err(error) => break 'response ResponseOutcome::Done(Err(error)),
-            };
+            let response_headers = response.headers().clone();
 
-            let payload = decode_response_body(
+            match decode_response_body(
                 response,
                 response_format,
                 ResponseDecodeContext {
@@ -324,11 +353,41 @@ pub(super) async fn execute_request(
             )
             .instrument(request_span.clone())
             .await
-            .inspect_err(|error| {
-                record_http_processing_error(&request_span, "DECODE", error);
-            })
-            .map(|payload| Some((payload, next_url)));
-            ResponseOutcome::Done(payload)
+            {
+                Ok(payload) => ResponseOutcome::Done(Ok(Some(DecodedHttpResponse {
+                    payload,
+                    headers: response_headers,
+                }))),
+                Err(mut error) => {
+                    // `Decode { retryable }` marks a transient (truncated/EOF) body. Only
+                    // idempotent GET requests may be retried or surfaced as retryable.
+                    let is_get = matches!(method, HttpMethod::GET);
+                    let retry = is_get
+                        && matches!(
+                            error,
+                            ProviderQueryError::Decode {
+                                retryable: true,
+                                ..
+                            }
+                        );
+                    if retry && decode_retries < 2 {
+                        record_http_processing_error(
+                            &request_span,
+                            "DECODE_RETRY",
+                            provider_error(error),
+                        );
+                        decode_retries += 1;
+                        ResponseOutcome::Retry(Duration::from_secs(2))
+                    } else {
+                        if let ProviderQueryError::Decode { retryable, .. } = &mut error {
+                            *retryable &= is_get;
+                        }
+                        let error = provider_error(error);
+                        record_http_processing_error(&request_span, "DECODE", &error);
+                        ResponseOutcome::Done(Err(error))
+                    }
+                }
+            }
         };
 
         drop(request_span);
@@ -339,6 +398,40 @@ pub(super) async fn execute_request(
             }
         }
     }
+}
+
+fn identity_http_authenticator_error(
+    source_schema: &str,
+    table_name: &str,
+    error: &RequestIdentityHttpAuthenticatorError,
+) -> DataFusionError {
+    let detail = format!(
+        "request identity HTTP authenticator failed for source '{source_schema}' table '{table_name}': {error}"
+    );
+    let error = match error {
+        RequestIdentityHttpAuthenticatorError::InvalidInput(_) => {
+            RequestIdentityHttpAuthenticatorError::invalid_input(detail)
+        }
+        RequestIdentityHttpAuthenticatorError::FailedPrecondition(_) => {
+            RequestIdentityHttpAuthenticatorError::failed_precondition(detail)
+        }
+    };
+    DataFusionError::External(Box::new(error))
+}
+
+fn identity_header_conflict_error(
+    source_schema: &str,
+    table_name: &str,
+    name: &HeaderName,
+) -> DataFusionError {
+    DataFusionError::External(Box::new(
+        RequestIdentityHttpAuthenticatorError::failed_precondition(format!(
+            "request identity HTTP authenticator attempted to overwrite header '{}' for source '{}' table '{}'",
+            name.as_str(),
+            source_schema,
+            table_name
+        )),
+    ))
 }
 
 fn request_error(
@@ -413,9 +506,12 @@ fn build_logged_url(url: &str, query_pairs: &[(String, String)]) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use datafusion::error::DataFusionError;
+    use reqwest::header::{AUTHORIZATION, HeaderValue};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
@@ -423,8 +519,9 @@ mod tests {
     use crate::backends::http::ProviderQueryError;
     use crate::backends::http::trace::HttpBodyCapture;
     use crate::backends::shared::template::RenderContext;
+    use crate::{BoundRequestIdentityHttpAuthenticator, RequestIdentityHttpAuthenticatorError};
     use coral_spec::backends::http::RateLimitSpec;
-    use coral_spec::{AuthSpec, HttpMethod, ResponseBodyFormat};
+    use coral_spec::{AuthSpec, HeaderSpec, HttpMethod, ResponseBodyFormat, ValueSourceSpec};
 
     async fn spawn_hanging_http_server() -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -435,6 +532,40 @@ mod tests {
             let (socket, _) = listener.accept().await.expect("accept hanging request");
             let _socket = socket;
             std::future::pending::<()>().await;
+        });
+
+        (format!("http://{addr}"), task)
+    }
+
+    async fn spawn_header_recorder(response_body: &'static str) -> (String, JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind header recorder");
+        let addr = listener.local_addr().expect("local addr");
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut buffer = vec![0_u8; 8192];
+            let mut request = Vec::new();
+            loop {
+                let read = socket.read(&mut buffer).await.expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend(buffer.iter().take(read).copied());
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            String::from_utf8_lossy(&request).into_owned()
         });
 
         (format!("http://{addr}"), task)
@@ -463,10 +594,11 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: None,
+                trace_context: None,
                 table_headers: &[],
                 table_name: "items",
                 method: HttpMethod::GET,
-                base_url: &base_url,
                 url: &url,
                 query_pairs: &query_pairs,
                 body: None,
@@ -476,7 +608,6 @@ mod tests {
                 body_capture: HttpBodyCapture::default(),
                 render_context,
                 allow_404_empty: false,
-                link_header_require_results: false,
             },
         )
         .await
@@ -513,5 +644,189 @@ mod tests {
             other => panic!("expected external provider error, got {other:?}"),
         }
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn request_identity_headers_cannot_overwrite_existing_headers() {
+        let request_timeout = Duration::from_secs(1);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let base_url = "https://api.example.test";
+        let url = format!("{base_url}/items");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let request_headers = vec![HeaderSpec {
+            name: "Authorization".to_string(),
+            value: ValueSourceSpec::Literal {
+                value: serde_json::Value::String("manifest-token".to_string()),
+            },
+        }];
+        let identity_authenticator: BoundRequestIdentityHttpAuthenticator =
+            Arc::new(|_request, _resolved_inputs| {
+                Box::pin(async {
+                    Ok::<Vec<_>, RequestIdentityHttpAuthenticatorError>(vec![(
+                        AUTHORIZATION,
+                        HeaderValue::from_static("identity-token"),
+                    )])
+                })
+            });
+
+        let error = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &request_headers,
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: Some(&identity_authenticator),
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+        )
+        .await
+        .expect_err("identity headers must not overwrite existing headers");
+
+        let DataFusionError::External(inner) = error else {
+            panic!("expected external identity error, got {error:?}");
+        };
+        let identity_error = inner
+            .downcast_ref::<RequestIdentityHttpAuthenticatorError>()
+            .expect("identity conflict should use identity authenticator error");
+        assert!(
+            identity_error
+                .to_string()
+                .contains("attempted to overwrite header 'authorization'"),
+            "{identity_error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_identity_headers_require_safe_transport() {
+        let request_timeout = Duration::from_secs(1);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let base_url = "http://api.example.test";
+        let url = format!("{base_url}/items");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let identity_authenticator: BoundRequestIdentityHttpAuthenticator =
+            Arc::new(|_request, _resolved_inputs| {
+                Box::pin(async {
+                    Ok::<Vec<_>, RequestIdentityHttpAuthenticatorError>(vec![(
+                        AUTHORIZATION,
+                        HeaderValue::from_static("identity-token"),
+                    )])
+                })
+            });
+
+        let error = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: Some(&identity_authenticator),
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+        )
+        .await
+        .expect_err("identity headers must not use unsafe transport");
+
+        let error = error.to_string();
+        assert!(error.contains("request identity HTTP headers require https"));
+        assert!(error.contains(base_url));
+        assert!(!error.contains("identity-token"));
+    }
+
+    #[tokio::test]
+    async fn request_identity_headers_are_injected() {
+        let (base_url, task) = spawn_header_recorder(r#"{"ok":true}"#).await;
+        let request_timeout = Duration::from_secs(1);
+        let http = reqwest::Client::builder()
+            .timeout(request_timeout)
+            .build()
+            .expect("build test client");
+        let url = format!("{base_url}/items");
+        let filters = HashMap::new();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let render_context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+        let identity_authenticator: BoundRequestIdentityHttpAuthenticator =
+            Arc::new(|_request, _resolved_inputs| {
+                Box::pin(async {
+                    Ok::<Vec<_>, RequestIdentityHttpAuthenticatorError>(vec![(
+                        reqwest::header::HeaderName::from_static("x-identity-token"),
+                        HeaderValue::from_static("identity-token"),
+                    )])
+                })
+            });
+
+        let response = execute_request(
+            &http,
+            request_timeout,
+            TestOutgoingHttpRequest {
+                auth: &AuthSpec::default(),
+                request_headers: &[],
+                request_authenticators: &HashMap::new(),
+                request_identity_http_authenticator: Some(&identity_authenticator),
+                trace_context: None,
+                table_headers: &[],
+                table_name: "items",
+                method: HttpMethod::GET,
+                url: &url,
+                query_pairs: &[],
+                body: None,
+                response_format: ResponseBodyFormat::default(),
+                source_schema: "demo",
+                rate_limit: &RateLimitSpec::default(),
+                body_capture: HttpBodyCapture::default(),
+                render_context,
+                allow_404_empty: false,
+            },
+        )
+        .await
+        .expect("identity-authenticated request should succeed");
+
+        assert!(response.is_some());
+        let raw_request = task.await.expect("header recorder should finish");
+        assert!(
+            raw_request.contains("\r\nx-identity-token: identity-token\r\n"),
+            "{raw_request}"
+        );
     }
 }

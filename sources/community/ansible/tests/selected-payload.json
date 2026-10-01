@@ -1,0 +1,102 @@
+{
+  "inventory_hostname": "selected-host",
+  "ansible_facts": {
+    "hostname": "selected-host",
+    "nodename": "selected-host",
+    "fqdn": "selected-host.example.invalid",
+    "distribution": "Debian",
+    "distribution_version": "12",
+    "distribution_major_version": "12",
+    "os_family": "Debian",
+    "kernel": "6.1.0",
+    "architecture": "x86_64",
+    "system": "Linux",
+    "service_mgr": "systemd",
+    "pkg_mgr": "apt",
+    "processor_vcpus": 2,
+    "processor_cores": 2,
+    "memtotal_mb": 2048,
+    "uptime_seconds": 1234,
+    "virtualization_type": "kvm",
+    "virtualization_role": "guest",
+    "python": {
+      "executable": "/usr/bin/python3",
+      "version": {
+        "string": "3.11.2"
+      }
+    },
+    "mounts": [
+      {
+        "mount": "/",
+        "device": "/dev/vda1",
+        "fstype": "ext4",
+        "size_total": 21474836480,
+        "size_available": 10737418240,
+        "options": [
+          "rw",
+          "relatime"
+        ]
+      }
+    ],
+    "interfaces": [
+      "eth0"
+    ],
+    "eth0": {
+      "ipv4": {
+        "address": "192.0.2.20"
+      },
+      "ipv6": [
+        {
+          "address": "2001:db8::20"
+        }
+      ],
+      "macaddress": "02:00:00:00:00:20",
+      "mtu": 1500,
+      "active": true,
+      "type": "ether"
+    },
+    "selinux": {
+      "status": "disabled",
+      "mode": "disabled",
+      "type": "none"
+    },
+    "apparmor": {
+      "status": "enabled"
+    },
+    "fips": false,
+    "services": {
+      "sshd.service": {
+        "name": "sshd.service",
+        "source": "systemd",
+        "state": "running",
+        "status": "enabled"
+      }
+    },
+    "packages": {
+      "python3": [
+        {
+          "name": "python3",
+          "version": "3.11.2",
+          "source": "apt"
+        }
+      ],
+      "ufw": [
+        {
+          "name": "ufw",
+          "version": "0.36.2",
+          "source": "apt"
+        }
+      ]
+    }
+  },
+  "coral_roles": [
+    {
+      "role": "ssh_server",
+      "environment": "test",
+      "source_file": "tests/selected-payload.json",
+      "expected_service": "sshd.service",
+      "ignored_extra": "not exported"
+    }
+  ],
+  "coral_expected_services": []
+}

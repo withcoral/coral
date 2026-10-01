@@ -31,7 +31,8 @@ message PaginationResponse {
 message Column {
   // The column name as exposed by the query engine.
   string name = 1;
-  // The DataFusion/Arrow data type rendered as text.
+  // The column data type rendered as text: DataFusion/Arrow form for static
+  // sources, the provider-native type name for database catalogs.
   string data_type = 2;
   // Whether the column can contain null values.
   bool nullable = 3;
@@ -47,7 +48,7 @@ message Column {
 
 // A query-visible table in one workspace.
 message Table {
-  // Workspace whose source set makes this table visible.
+  // Workspace whose query catalog makes this table visible.
   Workspace workspace = 1;
   // The schema name used for SQL qualification.
   string schema_name = 2;
@@ -61,13 +62,17 @@ message Table {
   repeated string required_filters = 6;
   // User-facing query guidance.
   string guide = 7;
+  // SQL catalog containing the schema. Empty for two-part tables; otherwise
+  // the table is addressed as catalog_name.schema_name.name.
+  string catalog_name = 8;
 }
 
 // Table metadata without full column definitions.
 message TableSummary {
   // Workspace that scopes this table.
   Workspace workspace = 1;
-  // Source schema that owns the table.
+  // SQL schema that contains the table, including source schemas and the Coral
+  // system catalog schema.
   string schema_name = 2;
   // Table name within the schema.
   string name = 3;
@@ -77,9 +82,12 @@ message TableSummary {
   repeated string required_filters = 5;
   // User-facing query guidance.
   string guide = 6;
+  // SQL catalog containing the schema. Empty for two-part tables; otherwise
+  // the table is addressed as catalog_name.schema_name.name.
+  string catalog_name = 7;
 }
 
-// An argument accepted by a source-scoped table function.
+// An argument accepted by a query-visible table function.
 message TableFunctionArgument {
   // Argument name as used in a named SQL function call.
   string name = 1;
@@ -87,9 +95,11 @@ message TableFunctionArgument {
   bool required = 2;
   // Allowed values, if the source declares an enum-like value set.
   repeated string values = 3;
+  // Argument type in manifest spelling, matching result column types.
+  string data_type = 4;
 }
 
-// A result column returned by a source-scoped table function.
+// A result column returned by a query-visible table function.
 message TableFunctionResultColumn {
   // Column name returned by the table function.
   string name = 1;
@@ -101,9 +111,29 @@ message TableFunctionResultColumn {
   string description = 4;
 }
 
-// A source-scoped table function in one workspace.
+// Query-visible table-function semantic class.
+enum TableFunctionKind {
+  // Unknown function role.
+  TABLE_FUNCTION_KIND_UNSPECIFIED = 0;
+  // Generic row-returning provider operation.
+  TABLE_FUNCTION_KIND_TABLE = 1;
+  // Provider-native retrieval/search operation that returns ranked candidates.
+  TABLE_FUNCTION_KIND_SEARCH = 2;
+}
+
+// Bounded retrieval settings for search-like provider surfaces.
+message SearchLimits {
+  // Default candidate count used when the SQL call does not specify a limit.
+  uint32 default_top_k = 1;
+  // Maximum candidate count for one provider search call.
+  uint32 max_top_k = 2;
+  // Maximum number of provider search calls a single query may make.
+  uint32 max_calls_per_query = 3;
+}
+
+// A query-visible table function in one workspace.
 message TableFunction {
-  // Workspace whose source set makes this function visible.
+  // Workspace whose query catalog makes this function visible.
   Workspace workspace = 1;
   // The schema name used for SQL qualification.
   string schema_name = 2;
@@ -115,13 +145,19 @@ message TableFunction {
   repeated TableFunctionArgument arguments = 5;
   // Columns returned by the function.
   repeated TableFunctionResultColumn result_columns = 6;
+  // Function role. Search marks provider-native retrieval.
+  TableFunctionKind kind = 7;
+  // Provider search limit metadata, when declared by the source.
+  SearchLimits search_limits = 8;
+  // User-facing query guidance.
+  string guide = 9;
 }
 
 // Catalog item kind filter for unified discovery.
 enum CatalogItemKind {
   // Return every currently supported catalog item kind.
   CATALOG_ITEM_KIND_UNSPECIFIED = 0;
-  // Ordinary query-visible tables.
+  // Ordinary query-visible tables, including Coral system catalog tables.
   CATALOG_ITEM_KIND_TABLE = 1;
   // Query-visible table functions.
   CATALOG_ITEM_KIND_TABLE_FUNCTION = 2;
@@ -138,16 +174,27 @@ message CatalogItem {
   }
 }
 
+// Per-kind catalog counts after workspace/schema filtering and before item-kind
+// filtering or pagination.
+message CatalogCounts {
+  // Query-visible table count.
+  uint32 table_count = 1;
+  // Query-visible table function count.
+  uint32 table_function_count = 2;
+}
+
 // Lists queryable catalog items in one workspace.
 message ListCatalogRequest {
   // Workspace whose current queryable catalog should be listed.
   Workspace workspace = 1;
-  // Optional exact schema/source name.
+  // Optional exact SQL schema name.
   string schema_name = 2;
   // Optional item kind. Unspecified lists every currently supported kind.
   CatalogItemKind kind = 3;
   // Optional page request. Missing or zero limit keeps the unbounded behavior.
   PaginationRequest pagination = 4;
+  // Optional exact SQL catalog name. Empty matches tables in every catalog.
+  string catalog_name = 5;
 }
 
 // Returns queryable catalog items in one workspace.
@@ -156,6 +203,8 @@ message ListCatalogResponse {
   repeated CatalogItem items = 1;
   // Page metadata for the catalog list.
   PaginationResponse pagination = 2;
+  // Per-kind counts for the current workspace/schema catalog snapshot.
+  CatalogCounts counts = 3;
 }
 
 // Searches queryable catalog metadata.
@@ -166,12 +215,14 @@ message SearchCatalogRequest {
   string pattern = 2;
   // Whether regex matching should ignore case.
   bool ignore_case = 3;
-  // Optional exact schema/source name.
+  // Optional exact SQL schema name.
   string schema_name = 4;
   // Optional item kind. Unspecified searches every currently supported kind.
   CatalogItemKind kind = 5;
   // Optional page request. Missing or zero limit applies the search default.
   PaginationRequest pagination = 6;
+  // Optional exact SQL catalog name. Empty searches tables in every catalog.
+  string catalog_name = 7;
 }
 
 // One catalog search match.
@@ -190,33 +241,39 @@ message SearchCatalogResponse {
   PaginationResponse pagination = 2;
 }
 
-// Fetches one query-visible table.
-message DescribeTableRequest {
-  // Workspace whose current query-visible tables should be inspected.
+// Identifies one query-visible table or table function.
+message DescribeCatalogSurfaceRequest {
+  // Workspace whose current query-visible catalog should be inspected.
   Workspace workspace = 1;
-  // Exact schema/source name.
+  // Exact SQL schema name.
   string schema_name = 2;
-  // Exact table name.
-  string table_name = 3;
+  // Exact table or table-function name.
+  string surface_name = 3;
+  // Optional SQL catalog. When set, only tables can match.
+  string catalog_name = 4;
 }
 
-// Returns one table, or app-owned missing-table discovery context.
-message DescribeTableResponse {
-  // The exact table when found.
-  Table table = 1;
-  // Suggested nearby tables when the exact table is missing.
-  repeated TableSummary suggestions = 2;
-  // Query-visible schemas available in this workspace.
-  repeated string available_schemas = 3;
-  // Tables in the requested schema, capped for user-facing missing-table help.
-  repeated TableSummary same_schema_tables = 4;
+// Indicates that no catalog surface matched the exact target.
+message MissingCatalogSurface {}
+
+// Returns the resolved catalog surface or a missing result.
+message DescribeCatalogSurfaceResponse {
+  // Exact resolution state or missing result.
+  oneof result {
+    // Exact table match.
+    Table table = 1;
+    // Exact table-function match.
+    TableFunction table_function = 2;
+    // No surface matched the requested name.
+    MissingCatalogSurface missing = 4;
+  }
 }
 
 // Lists and filters columns for one query-visible table.
 message ListColumnsRequest {
   // Workspace whose current query-visible tables should be inspected.
   Workspace workspace = 1;
-  // Exact schema/source name.
+  // Exact SQL schema name.
   string schema_name = 2;
   // Exact table name.
   string table_name = 3;
@@ -228,6 +285,8 @@ message ListColumnsRequest {
   bool required_only = 6;
   // Optional page request. Missing or zero limit applies the column-list default.
   PaginationRequest pagination = 7;
+  // SQL catalog containing the schema. Empty for two-part tables.
+  string catalog_name = 8;
 }
 
 // One column search match.
@@ -246,14 +305,15 @@ message ListColumnsResponse {
   PaginationResponse pagination = 2;
 }
 
-// Catalog discovery APIs.
+// Catalog discovery APIs over query-visible source-backed items and Coral
+// system catalog metadata.
 service CatalogService {
   // Lists queryable catalog items for one workspace.
   rpc ListCatalog(ListCatalogRequest) returns (ListCatalogResponse);
   // Searches queryable catalog metadata.
   rpc SearchCatalog(SearchCatalogRequest) returns (SearchCatalogResponse);
-  // Fetches one query-visible table.
-  rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
+  // Resolves one query-visible table or table function.
+  rpc DescribeCatalogSurface(DescribeCatalogSurfaceRequest) returns (DescribeCatalogSurfaceResponse);
   // Lists and filters columns for one query-visible table.
   rpc ListColumns(ListColumnsRequest) returns (ListColumnsResponse);
 }

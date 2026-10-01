@@ -1,11 +1,14 @@
 //! Typed query-visible catalog metadata.
 
+use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
+
 /// Describes one queryable column.
 #[derive(Debug, Clone)]
 pub struct ColumnInfo {
     /// Column name.
     pub name: String,
-    /// Data type rendered in `Arrow`/`DataFusion` string form.
+    /// Data type rendered as text: `Arrow`/`DataFusion` string form for
+    /// static sources, the provider-native type name for database catalogs.
     pub data_type: String,
     /// Whether the column can contain null values.
     pub nullable: bool,
@@ -22,6 +25,8 @@ pub struct ColumnInfo {
 /// Describes one queryable table.
 #[derive(Debug, Clone)]
 pub struct TableInfo {
+    /// `SQL` catalog name. Absent for two-part table references.
+    pub catalog_name: Option<String>,
     /// `SQL` schema name.
     pub schema_name: String,
     /// Table name within the schema.
@@ -30,6 +35,8 @@ pub struct TableInfo {
     pub description: String,
     /// User-facing query guidance.
     pub guide: String,
+    /// Whether MCP SQL must surface the guide before first use in a task.
+    pub require_guide_read: bool,
     /// Exposed columns for the table.
     pub columns: Vec<ColumnInfo>,
     /// Required filter names for the table.
@@ -45,18 +52,31 @@ pub struct CatalogInfo {
     pub table_functions: Vec<TableFunctionInfo>,
 }
 
-/// Describes one argument accepted by a source-scoped table function.
+/// Result of resolving one catalog surface from one runtime snapshot.
+#[derive(Debug, Clone)]
+pub enum DescribeCatalogSurfaceInfo {
+    /// One table matched.
+    Table(TableInfo),
+    /// One table function matched.
+    TableFunction(TableFunctionInfo),
+    /// No exact match.
+    Missing,
+}
+
+/// Describes one argument accepted by a table function.
 #[derive(Debug, Clone)]
 pub struct TableFunctionArgumentInfo {
     /// Argument name as used in a named SQL function call.
     pub name: String,
+    /// Argument type in manifest spelling, matching result column types.
+    pub data_type: String,
     /// Whether callers must provide this argument.
     pub required: bool,
     /// Allowed values, if the source declares an enum-like value set.
     pub values: Vec<String>,
 }
 
-/// Describes one result column returned by a source-scoped table function.
+/// Describes one result column returned by a table function.
 #[derive(Debug, Clone)]
 pub struct TableFunctionResultColumnInfo {
     /// Column name returned by the table function.
@@ -69,7 +89,7 @@ pub struct TableFunctionResultColumnInfo {
     pub description: String,
 }
 
-/// Describes one source-scoped table function.
+/// Describes one table function.
 #[derive(Debug, Clone)]
 pub struct TableFunctionInfo {
     /// `SQL` schema name.
@@ -78,8 +98,16 @@ pub struct TableFunctionInfo {
     pub function_name: String,
     /// User-facing table function description.
     pub description: String,
+    /// User-facing query guidance.
+    pub guide: String,
+    /// Whether MCP SQL must surface the guide before first use in a task.
+    pub require_guide_read: bool,
     /// Accepted function arguments.
     pub arguments: Vec<TableFunctionArgumentInfo>,
     /// Columns returned by the function.
     pub result_columns: Vec<TableFunctionResultColumnInfo>,
+    /// Function role. Search functions perform provider-native retrieval.
+    pub kind: SourceTableFunctionKind,
+    /// Provider search limit metadata, when declared by the source.
+    pub search_limits: Option<SearchLimitsSpec>,
 }

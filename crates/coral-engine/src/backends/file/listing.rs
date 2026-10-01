@@ -433,6 +433,7 @@ mod tests {
                 .expect("location template should parse"),
             glob: None,
             partitions: vec![],
+            metadata: vec![],
             object_store: Some(FileObjectStoreSpec::S3 {
                 region: Some(
                     ParsedTemplate::parse("{{input.AWS_REGION}}")
@@ -457,6 +458,7 @@ mod tests {
                 .expect("location template should parse"),
             glob: None,
             partitions: vec![],
+            metadata: vec![],
             object_store: Some(FileObjectStoreSpec::S3 {
                 region: None,
                 auth: S3AuthSpec::AccessKey {

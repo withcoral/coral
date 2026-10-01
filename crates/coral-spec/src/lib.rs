@@ -5,6 +5,7 @@
 //! It is responsible for:
 //!
 //! - parsing raw `YAML` or structured source-spec values
+//! - parsing raw `YAML` or structured identity-spec values
 //! - validating source-spec shape and source-level invariants
 //! - extracting interactive install-time inputs such as variables and secrets
 //! - exposing normalized backend-specific source-spec models to sibling crates
@@ -31,6 +32,8 @@
 //!   for the declared interactive inputs
 //! - [`ManifestInputSpec`] describes one install-time input (variable or secret)
 //!   surfaced via [`ValidatedSourceManifest::declared_inputs`]
+//! - [`parse_identity_manifest_yaml`] parses identity specs that describe how
+//!   an app-owned identity is instantiated and injected into HTTP requests
 //!
 //! # Crate Relationships
 //!
@@ -77,34 +80,52 @@
     reason = "These manifest builders and accessors are internal crate APIs, not end-user APIs."
 )]
 pub mod backends;
+mod bundle;
 mod common;
 mod error;
+mod identities;
 mod inputs;
 mod loader;
 mod parser;
 mod schema;
 mod template;
+mod udf;
+pub mod v4;
 mod validate;
 
+pub use backends::database::{
+    DatabaseConnectionSpec, DatabaseProvider, DatabaseSourceManifest, MySqlConnectionSpec,
+    PostgresConnectionSpec, SqliteConnectionSpec,
+};
 pub use backends::http::{AuthSpec, BasicAuthSpec, CustomAuthSpec, HeaderAuthSpec};
 pub use backends::mcp::{
-    McpEnvSpec, McpLimitBinding, McpServerSpec, McpSourceManifest, McpTableFilterBinding,
-    McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
+    McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
+    McpTableFilterBinding, McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
 };
-pub(crate) use common::validate_test_queries;
+pub use bundle::{IdentityManifestDocument, ManifestBundle, parse_manifest_bundle_yaml};
 pub use common::{
-    BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,
-    FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode,
-    PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec, ResponseBodyFormat,
-    ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
-    SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
-    TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+    BodyFieldSpec, BodySpec, CollectionEncoding, ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY,
+    DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec, HttpMethod,
+    ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
+    RequestRouteSpec, RequestSpec, ResponseBodyFormat, ResponseSpec, RowStrategy, SearchLimitsSpec,
+    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
+    TableCommon, TableFunctionArgSpec, TimestampInput, ValidatedPagination,
+    ValidatedPaginationMode, ValueSourceSpec,
+};
+pub(crate) use common::{
+    validate_reserved_source_schema_name, validate_source_name, validate_test_queries,
 };
 pub use error::{ManifestError, Result};
+pub use identities::{
+    IDENTITY_SPEC_VERSION, IdentityManifest, IdentityOAuthMethodSpec, IdentityOAuthSpec,
+    IdentitySpecConfig, IdentitySpecType, generated_identity_manifest_schema,
+    parse_identity_manifest_value, parse_identity_manifest_yaml, validate_identity_spec_name,
+};
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
     ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
+    ManifestOAuthDynamicClientRegistrationAuthMethod, ManifestOAuthDynamicClientRegistrationSpec,
     ManifestOAuthEndpointUrls, ManifestOAuthFlowKind, ManifestOAuthFlowSpec, ManifestOAuthPkceMode,
     ManifestOAuthRedirectBindPort, ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter,
     ManifestOAuthScopeSpec, ManifestOAuthScopesSpec, resolve_inputs,
@@ -114,9 +135,14 @@ pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
+pub use udf::{
+    FunctionCoralSqlImplementationSpec, FunctionDeclaredArgument, FunctionDeclaredResultColumn,
+    FunctionDeclaredSignature, FunctionImplementationSpec, FunctionLanguage, FunctionSpec,
+    FunctionTypeScriptImplementationSpec, parse_function_artifact,
+};
 pub(crate) use validate::{
-    DetailHintDeclaringSurface, DetailHintTargetTable, validate_columns,
-    validate_detail_hint_references, validate_filters_and_column_exprs, validate_http_function,
-    validate_http_function_names, validate_http_table, validate_identifier, validate_table_names,
-    validate_unique_values,
+    DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
+    validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,
+    validate_filters_and_column_exprs, validate_http_function, validate_http_table,
+    validate_identifier, validate_required_guide, validate_unique_values,
 };

@@ -3,6 +3,7 @@ syntax = "proto3";
 package coral.v1;
 
 import "coral/v1/resources.proto";
+import "coral/v1/task.proto";
 
 // Executes one SQL statement against the sources registered in one workspace.
 message ExecuteSqlRequest {
@@ -10,6 +11,11 @@ message ExecuteSqlRequest {
   Workspace workspace = 1;
   // One read-only SQL statement.
   string sql = 2;
+  // Caller-scoped guide versions already shown for this task. Presence opts
+  // this request into required-guide enforcement.
+  QueryGuideReadContext guide_read_context = 3;
+  // Task and operation intent to record when this statement executes.
+  TaskAttribution task_attribution = 4;
 }
 
 // Fully materialized query result encoded as Arrow IPC bytes.
@@ -18,6 +24,9 @@ message ExecuteSqlResponse {
   bytes arrow_ipc_stream = 1;
   // Total row count returned by the query.
   int64 row_count = 2;
+  // Guidance required before this query may execute. When present, Coral did
+  // not physically plan or execute the query and the result fields are empty.
+  QueryGuideRequired guide_required = 3;
 }
 
 // Explains one SQL statement by producing query-engine plan renderings without
@@ -37,6 +46,30 @@ message QueryPlan {
   string optimized_logical_plan = 2;
   // Physical execution plan after physical optimization.
   string physical_plan = 3;
+}
+
+// Guide metadata for one referenced query resource.
+message QueryGuide {
+  // SQL schema containing the resource.
+  string schema_name = 1;
+  // Table or table function name within the schema.
+  string resource_name = 2;
+  // Guidance that MCP SQL must surface.
+  string guide = 3;
+  // Opaque identity for this resource and its current guide contents.
+  string guide_id = 4;
+}
+
+// Optional caller context enabling required-guide enforcement.
+message QueryGuideReadContext {
+  // Resource guide identities already shown in the caller's current task.
+  repeated string shown_guide_ids = 1;
+}
+
+// Guidance returned instead of physically executing one SQL statement.
+message QueryGuideRequired {
+  // Referenced resource guides the caller has not yet shown.
+  repeated QueryGuide guides = 1;
 }
 
 // SQL explanation response.

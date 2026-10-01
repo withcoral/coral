@@ -5,6 +5,10 @@ fn main() {
     let mut config = tonic_prost_build::Config::new();
     config.protoc_executable(protoc);
     config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
+    config.type_attribute(
+        ".coral.v1.SearchProviderCoverage",
+        "#[expect(clippy::struct_excessive_bools, reason = \"generated coverage DTO intentionally carries independent booleans\")]",
+    );
     // Keep the generated oneof enum small enough for workspace clippy.
     config.boxed(".coral.v1.SourceCredentialMethod.method.oauth");
 
@@ -16,10 +20,17 @@ fn main() {
             &[
                 "proto/coral/v1/catalog.proto",
                 "proto/coral/v1/resources.proto",
+                "proto/coral/v1/workspaces.proto",
+                "proto/coral/v1/task.proto",
                 "proto/coral/v1/feedback.proto",
+                "proto/coral/v1/features.proto",
                 "proto/coral/v1/sources.proto",
                 "proto/coral/v1/query.proto",
+                "proto/coral/v1/search.proto",
+                "proto/coral/v1/functions.proto",
                 "proto/coral/v1/traces.proto",
+                "proto/coral/v1/gui_onboarding.proto",
+                "proto/coral/v1/users.proto",
             ],
             &["proto"],
         )
