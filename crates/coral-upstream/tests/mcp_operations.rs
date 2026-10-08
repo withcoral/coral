@@ -448,12 +448,107 @@ async fn expired_sessions_protocol_errors_and_oversized_results_never_repeat_the
     }
 }
 
+/// What the peer's `tools/list` says about the called tool once `tools/call`
+/// is refused with JSON-RPC `-32602`.
+#[derive(Clone, Copy, Debug)]
+enum ToolListing {
+    Lists,
+    ListsOnSecondPage,
+    Omits,
+    Fails,
+}
+
+async fn mount_tool_listing(server: &MockServer, listing: ToolListing) {
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "tools/list"})))
+        .respond_with(move |request: &Request| {
+            let request: Value = request.body_json().expect("tools/list");
+            let tools = |names: &[&str]| -> Vec<Value> {
+                names
+                    .iter()
+                    .map(|name| json!({"name": name, "inputSchema": {"type": "object"}}))
+                    .collect()
+            };
+            let result = match listing {
+                ToolListing::Fails => return ResponseTemplate::new(500),
+                ToolListing::Lists => json!({"tools": tools(&["other", "mixed"])}),
+                ToolListing::ListsOnSecondPage
+                    if request["params"]["cursor"] == json!("page-2") =>
+                {
+                    json!({"tools": tools(&["mixed"])})
+                }
+                ToolListing::ListsOnSecondPage => {
+                    json!({"tools": tools(&["other"]), "nextCursor": "page-2"})
+                }
+                ToolListing::Omits => json!({"tools": tools(&["other"])}),
+            };
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+        })
+        .mount(server)
+        .await;
+}
+
+async fn requests_for(server: &MockServer, method: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("requests")
+        .iter()
+        .filter(|request| {
+            request
+                .body_json::<Value>()
+                .is_ok_and(|value| value["method"] == method)
+        })
+        .count()
+}
+
 #[tokio::test]
 async fn json_rpc_errors_are_typed_rejections_that_never_repeat_the_call() {
-    for (code, sse, expected) in [
-        (-32602, false, McpRejection::InvalidParams),
-        (-32602, true, McpRejection::InvalidParams),
-        (-32603, false, McpRejection::Other(-32603)),
+    for (code, sse, listing, expected, listings) in [
+        (
+            -32602,
+            false,
+            ToolListing::Lists,
+            McpRejection::InvalidParams,
+            1,
+        ),
+        (
+            -32602,
+            true,
+            ToolListing::Lists,
+            McpRejection::InvalidParams,
+            1,
+        ),
+        (
+            -32602,
+            false,
+            ToolListing::ListsOnSecondPage,
+            McpRejection::InvalidParams,
+            2,
+        ),
+        (
+            -32602,
+            false,
+            ToolListing::Omits,
+            McpRejection::UnknownTool,
+            1,
+        ),
+        // An unreadable listing keeps the peer's own answer.
+        (
+            -32602,
+            false,
+            ToolListing::Fails,
+            McpRejection::InvalidParams,
+            1,
+        ),
+        (
+            -32603,
+            false,
+            ToolListing::Lists,
+            McpRejection::Other(-32603),
+            0,
+        ),
     ] {
         let server = server_with_response(
             move |request: &Request| {
@@ -472,30 +567,29 @@ async fn json_rpc_errors_are_typed_rejections_that_never_repeat_the_call() {
             true,
         )
         .await;
+        mount_tool_listing(&server, listing).await;
         let error = call_once(&server, 4096)
             .await
             .expect_err("a JSON-RPC error is an answer, not a result");
         assert!(
             matches!(error, coral_upstream::Error::McpRejected(rejection) if rejection == expected),
-            "{error:?}"
+            "{listing:?}: {error:?}"
         );
         assert!(
             !error.to_string().contains("canary"),
             "the peer's error payload never leaves the Adapter: {error}"
         );
         server.verify().await;
-        let calls = server
-            .received_requests()
-            .await
-            .expect("requests")
-            .iter()
-            .filter(|request| {
-                request
-                    .body_json::<Value>()
-                    .is_ok_and(|value| value["method"] == "tools/call")
-            })
-            .count();
-        assert_eq!(calls, 1, "a rejection is never retried");
+        assert_eq!(
+            requests_for(&server, "tools/call").await,
+            1,
+            "{listing:?}: a rejection is never retried"
+        );
+        assert_eq!(
+            requests_for(&server, "tools/list").await,
+            listings,
+            "{listing:?}: only a -32602 on tools/call reads the listing"
+        );
     }
 }
 

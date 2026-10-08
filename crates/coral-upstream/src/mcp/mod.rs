@@ -15,20 +15,22 @@ pub use resources::McpResources;
 pub use transport::McpRejection;
 
 use coral_catalog::AuthenticationConfiguration;
+use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 
 use coral_catalog::{
     ExecutionBinding, MaterializedOperation, McpExecutionBinding, McpInvocationMethod,
     OperationAvailability,
 };
-use rmcp::ServiceExt as _;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ClientConfig, ReadResourceRequestParams,
     ReadResourceResponse,
 };
+use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::common::client_side_sse::NeverRetry;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::{RoleClient, ServiceExt as _};
 use serde_json::{Value, json};
 
 use crate::Error;
@@ -211,6 +213,27 @@ impl McpOutcome {
     }
 }
 
+/// Whether the peer currently lists a tool by this name.
+async fn lists_tool(
+    client: &RunningService<RoleClient, ClientConfig>,
+    captured: &Mutex<Option<transport::Captured>>,
+    name: &str,
+) -> Result<bool, Error> {
+    let mut listed = false;
+    discovery::visit_tool_pages(client, captured, |tools| {
+        listed = tools
+            .iter()
+            .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name));
+        if listed {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .await?;
+    Ok(listed)
+}
+
 fn request_failure(captured: &Mutex<Option<transport::Captured>>) -> Error {
     match captured
         .lock()
@@ -284,19 +307,27 @@ impl McpUpstream {
         // The SDK's multi-round convenience API can repeat a tool call. Never use it here.
         let required_content = match dispatch.binding.invocation_method() {
             McpInvocationMethod::CallTool => {
-                let response = client
+                let tool_name = dispatch.binding.tool_name().ok_or(Error::McpResult)?;
+                let call = client
                     .call_tool_once(
-                        CallToolRequestParams::new(
-                            dispatch
-                                .binding
-                                .tool_name()
-                                .ok_or(Error::McpResult)?
-                                .to_string(),
-                        )
-                        .with_arguments(dispatch.arguments),
+                        CallToolRequestParams::new(tool_name.to_string())
+                            .with_arguments(dispatch.arguments),
                     )
-                    .await
-                    .map_err(|_request| request_error())?;
+                    .await;
+                let response = match call {
+                    Ok(response) => response,
+                    Err(_request) => {
+                        let error = request_error();
+                        // MCP answers an unknown tool with the same code as invalid
+                        // arguments. A listing that cannot be read keeps the peer's answer.
+                        if matches!(error, Error::McpRejected(McpRejection::InvalidParams))
+                            && matches!(lists_tool(&client, &captured, tool_name).await, Ok(false))
+                        {
+                            return Err(Error::McpRejected(McpRejection::UnknownTool));
+                        }
+                        return Err(error);
+                    }
+                };
                 if !matches!(response, CallToolResponse::Complete(_)) {
                     return Err(Error::McpResult);
                 }

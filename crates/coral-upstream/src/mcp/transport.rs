@@ -46,9 +46,13 @@ impl Captured {
 /// standard code is typed; the peer's message and data never leave the Adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpRejection {
-    /// JSON-RPC `-32602`: the peer refused the request parameters, which MCP
-    /// uses for an unknown or malformed tool argument.
+    /// JSON-RPC `-32602`: the peer refused the request parameters. For a tool
+    /// the peer still lists, that is an unknown or malformed argument.
     InvalidParams,
+    /// JSON-RPC `-32602` for a tool the peer no longer lists. MCP answers an
+    /// unknown tool and invalid arguments with one code, so the Adapter reads
+    /// the listing before it blames the arguments.
+    UnknownTool,
     /// Any other JSON-RPC error code.
     Other(i64),
 }
@@ -69,6 +73,7 @@ impl std::fmt::Display for McpRejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidParams => write!(formatter, "invalid params ({})", Self::INVALID_PARAMS),
+            Self::UnknownTool => write!(formatter, "unlisted tool ({})", Self::INVALID_PARAMS),
             Self::Other(code) => write!(formatter, "JSON-RPC error {code}"),
         }
     }

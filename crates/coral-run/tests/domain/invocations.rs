@@ -331,11 +331,16 @@ async fn known_incomplete_response_is_a_durable_coral_failure() {
 async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
     use crate::invocation::UpstreamSendError;
     type SendFailure = fn() -> UpstreamSendError;
-    let cases: [(SendFailure, &str, &str); 3] = [
+    let cases: [(SendFailure, &str, &str); 4] = [
         (
             || UpstreamSendError::Rejected(coral_upstream::McpRejection::InvalidParams),
             "invalid_input",
             "Operation arguments are invalid",
+        ),
+        (
+            || UpstreamSendError::Rejected(coral_upstream::McpRejection::UnknownTool),
+            "operation_unavailable",
+            "Operation is unavailable",
         ),
         (
             || UpstreamSendError::Rejected(coral_upstream::McpRejection::Other(-32603)),

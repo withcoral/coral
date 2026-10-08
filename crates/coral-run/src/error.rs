@@ -74,11 +74,14 @@ coral_failures! {
 
 impl CoralFailure {
     /// An invalid-params rejection is the Operation contract refusing the
-    /// arguments; every other protocol error is the peer refusing the request.
+    /// arguments, a tool the peer no longer lists leaves the cataloged Operation
+    /// nothing to invoke, and every other protocol error is the peer refusing
+    /// the request.
     #[must_use]
     pub(crate) const fn from_mcp_rejection(rejection: coral_upstream::McpRejection) -> Self {
         match rejection {
             coral_upstream::McpRejection::InvalidParams => Self::InvalidInput,
+            coral_upstream::McpRejection::UnknownTool => Self::OperationUnavailable,
             coral_upstream::McpRejection::Other(_) => Self::UpstreamRejected,
         }
     }
