@@ -853,6 +853,47 @@ fn oauth_scopes(prepared: &coral_catalog::PreparedProviderCatalog) -> Vec<String
 }
 
 #[test]
+fn operations_share_one_oauth_grant_up_to_the_scope_limit() {
+    // The scheme declares 101 scopes; each Operation asks for 60 of them.
+    let declared = (0..=100)
+        .map(|index| format!("s{index}: s{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let oauth = format!(
+        r#"{{ type: oauth2, flows: {{ authorizationCode: {{ authorizationUrl: "https://auth.example.test/authorize", tokenUrl: "https://auth.example.test/token", scopes: {{ {declared} }} }} }} }}"#
+    );
+    let scope_list = |range: std::ops::RangeInclusive<usize>| {
+        range
+            .map(|index| format!("s{index}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for (case, admin_scopes, union_size) in [
+        ("union within the limit", scope_list(40..=99), Some(100)),
+        ("union over the limit", scope_list(41..=100), None),
+    ] {
+        let document = OpenApiDocument::parse(&two_scheme_document(
+            (&oauth, &scope_list(0..=59)),
+            (&oauth, &admin_scopes),
+        ))
+        .expect("overlapping scope fixture");
+        match materialize(
+            DestinationPolicy::default(),
+            &ProviderSetupInput::from(document),
+            &[],
+        ) {
+            MaterializationOutcome::Ready(prepared) => {
+                assert_eq!(Some(oauth_scopes(&prepared).len()), union_size, "{case}");
+            }
+            MaterializationOutcome::Rejected(diagnostic) => {
+                assert!(union_size.is_none(), "{case}: {}", diagnostic.message());
+                assert_eq!(diagnostic.code(), "invalid_credential_contract", "{case}");
+            }
+        }
+    }
+}
+
+#[test]
 fn operations_agree_on_credential_contracts_not_security_scheme_names() {
     let bearer = "{ type: http, scheme: bearer }";
     let api_key = "{ type: apiKey, in: header, name: X-Admin-Key }";

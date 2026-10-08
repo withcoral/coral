@@ -1334,6 +1334,10 @@ fn union_oauth_scopes(
         return Ok(None);
     };
     scopes.append(other_scopes);
+    // Each list is already normalized, so only the union counts against the
+    // scope limit.
+    scopes.sort();
+    scopes.dedup();
     *scopes = super::authentication::scopes(scopes)?;
     other_scopes.clone_from(scopes);
     Ok((merged == other).then_some(merged))
