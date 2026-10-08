@@ -20,6 +20,7 @@ type TransportError = StreamableHttpError<Error>;
 
 pub(super) enum Captured {
     Result(Value),
+    Rejected(McpRejection),
     InputTooLarge,
     DestinationRejected,
     ResultTooLarge,
@@ -31,11 +32,44 @@ impl Captured {
     pub(super) fn into_result(self) -> Result<Value, Error> {
         match self {
             Self::Result(value) => Ok(value),
+            Self::Rejected(rejection) => Err(Error::McpRejected(rejection)),
             Self::DestinationRejected => Err(Error::DestinationRejected),
             Self::InputTooLarge => Err(Error::InputTooLarge),
             Self::ResultTooLarge => Err(Error::ResultTooLarge),
             Self::Unauthorized(challenge) => Err(Error::McpUnauthorized(challenge)),
             Self::AuthenticationUnsupported => Err(Error::McpAuthenticationUnsupported),
+        }
+    }
+}
+
+/// The JSON-RPC error an MCP peer returned for the Operation request. Only the
+/// standard code is typed; the peer's message and data never leave the Adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpRejection {
+    /// JSON-RPC `-32602`: the peer refused the request parameters, which MCP
+    /// uses for an unknown or malformed tool argument.
+    InvalidParams,
+    /// Any other JSON-RPC error code.
+    Other(i64),
+}
+
+impl McpRejection {
+    const INVALID_PARAMS: i64 = -32602;
+
+    const fn from_code(code: i64) -> Self {
+        if code == Self::INVALID_PARAMS {
+            Self::InvalidParams
+        } else {
+            Self::Other(code)
+        }
+    }
+}
+
+impl std::fmt::Display for McpRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidParams => write!(formatter, "invalid params ({})", Self::INVALID_PARAMS),
+            Self::Other(code) => write!(formatter, "JSON-RPC error {code}"),
         }
     }
 }
@@ -277,37 +311,63 @@ fn capture(
     request: Option<&(String, Value)>,
     message: &mut Value,
 ) -> Result<(), Error> {
-    if let Some((method, id)) = request
-        && message.get("id") == Some(id)
-        && message.get("result").is_some()
+    let Some((method, id)) = request else {
+        return Ok(());
+    };
+    if message.get("id") != Some(id) {
+        return Ok(());
+    }
+    if message.get("result").is_none() {
+        return capture_rejection(slot, method, message);
+    }
+    if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(Error::McpResult);
+    }
+    let result = message.get_mut("result").ok_or(Error::McpResult)?;
+    *slot.lock().map_err(|_poisoned| Error::McpResult)? = Some(Captured::Result(result.clone()));
+    // Decode by the outstanding method. Otherwise the SDK's untagged
+    // ServerResult can mistake a tool extension named `tools` for discovery.
+    // Only the internal SDK envelope is narrowed; Programs get the raw copy.
+    // Publication supports the 2025 protocols. Newer SDK fields such as
+    // resultType and ttlMs must remain uninterpreted provider extensions.
+    *result = match method.as_str() {
+        "tools/call" => serde_json::from_value::<CallToolResult>(protocol_fields(
+            result,
+            &["content", "structuredContent", "isError", "_meta"],
+        ))
+        .and_then(serde_json::to_value),
+        "resources/read" => serde_json::from_value::<ReadResourceResult>(protocol_fields(
+            result,
+            &["contents", "_meta"],
+        ))
+        .and_then(serde_json::to_value),
+        // Discovery keeps the raw result; the SDK decodes its own copy.
+        "initialize" | "tools/list" => Ok(result.clone()),
+        _ => return Err(Error::McpResult),
+    }
+    .map_err(|_invalid_result| Error::McpResult)?;
+    Ok(())
+}
+
+/// A JSON-RPC error is the peer's complete answer to the Operation request, not
+/// a missing result. A refused `initialize` is still no session at all.
+fn capture_rejection(
+    slot: &Mutex<Option<Captured>>,
+    method: &str,
+    message: &Value,
+) -> Result<(), Error> {
+    if !matches!(method, "tools/call" | "resources/read")
+        || message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
     {
-        if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-            return Err(Error::McpResult);
-        }
-        let result = message.get_mut("result").ok_or(Error::McpResult)?;
+        return Ok(());
+    }
+    if let Some(code) = message
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_i64)
+    {
         *slot.lock().map_err(|_poisoned| Error::McpResult)? =
-            Some(Captured::Result(result.clone()));
-        // Decode by the outstanding method. Otherwise the SDK's untagged
-        // ServerResult can mistake a tool extension named `tools` for discovery.
-        // Only the internal SDK envelope is narrowed; Programs get the raw copy.
-        // Publication supports the 2025 protocols. Newer SDK fields such as
-        // resultType and ttlMs must remain uninterpreted provider extensions.
-        *result = match method.as_str() {
-            "tools/call" => serde_json::from_value::<CallToolResult>(protocol_fields(
-                result,
-                &["content", "structuredContent", "isError", "_meta"],
-            ))
-            .and_then(serde_json::to_value),
-            "resources/read" => serde_json::from_value::<ReadResourceResult>(protocol_fields(
-                result,
-                &["contents", "_meta"],
-            ))
-            .and_then(serde_json::to_value),
-            // Discovery keeps the raw result; the SDK decodes its own copy.
-            "initialize" | "tools/list" => Ok(result.clone()),
-            _ => return Err(Error::McpResult),
-        }
-        .map_err(|_invalid_result| Error::McpResult)?;
+            Some(Captured::Rejected(McpRejection::from_code(code)));
     }
     Ok(())
 }

@@ -12,6 +12,7 @@ pub use authorization::{
 };
 pub use discovery::{BearerChallenge, discover_mcp};
 pub use resources::McpResources;
+pub use transport::McpRejection;
 
 use coral_catalog::AuthenticationConfiguration;
 use std::sync::{Arc, Mutex};
@@ -224,6 +225,7 @@ fn request_failure(captured: &Mutex<Option<transport::Captured>>) -> Error {
         Some(transport::Captured::Unauthorized(challenge)) => {
             Error::McpUnauthorized(challenge.clone())
         }
+        Some(transport::Captured::Rejected(rejection)) => Error::McpRejected(*rejection),
         _ => Error::McpRequest,
     }
 }
