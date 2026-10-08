@@ -1256,9 +1256,10 @@ pub(super) fn validate_credential_contract(
             operation.object.get("security").or(root.get("security")),
             security_schemes,
         )?;
-        match &selected {
-            Some(previous) if !same_contracts(previous, &slots) => {
-                return Err(diagnostic(
+        selected = Some(match selected {
+            None => slots.clone(),
+            Some(previous) => shared_contracts(&previous, &slots)?.ok_or_else(|| {
+                diagnostic(
                     "credentials_not_supported",
                     "the Provider's Operations require different credential contracts",
                 )
@@ -1266,18 +1267,76 @@ pub(super) fn validate_credential_contract(
                     "{}: {} differs from {}",
                     operation.pointer,
                     scheme_names(&slots),
-                    scheme_names(previous)
-                )));
-            }
-            Some(_) => {}
-            None => selected = Some(slots.clone()),
-        }
+                    scheme_names(&previous)
+                ))
+            })?,
+        });
         by_operation.insert(operation.key, slots);
     }
+    let shared = selected.unwrap_or_default();
+    // Every Operation retains the shared contract under its own scheme name,
+    // so one account grant covers every scope the Operations ask for.
+    for slots in by_operation.values_mut() {
+        for (slot, shared) in slots.iter_mut().zip(&shared) {
+            *slot = crate::HttpCredentialSlot::new(
+                slot.scheme_name().to_owned(),
+                shared.contract().clone(),
+            );
+        }
+    }
     Ok(CredentialSelection {
-        shared: selected.unwrap_or_default(),
+        shared,
         by_operation,
     })
+}
+
+/// The one contract both Operations can share: their common contract, or one
+/// OAuth contract requesting every scope when they differ only in scopes.
+fn shared_contracts(
+    previous: &[crate::HttpCredentialSlot],
+    next: &[crate::HttpCredentialSlot],
+) -> Result<Option<Vec<crate::HttpCredentialSlot>>, CatalogDiagnostic> {
+    if same_contracts(previous, next) {
+        return Ok(Some(previous.to_vec()));
+    }
+    let ([previous], [next]) = (previous, next) else {
+        return Ok(None);
+    };
+    let Some(merged) = union_oauth_scopes(
+        previous.contract().authentication(),
+        next.contract().authentication(),
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(vec![crate::HttpCredentialSlot::new(
+        previous.scheme_name().to_owned(),
+        merged.into(),
+    )]))
+}
+
+/// One authorization-code contract requesting both scope sets, when the two
+/// agree on everything but the scopes.
+fn union_oauth_scopes(
+    left: &AuthenticationConfiguration,
+    right: &AuthenticationConfiguration,
+) -> Result<Option<AuthenticationConfiguration>, CatalogDiagnostic> {
+    let mut merged = left.clone();
+    let mut other = right.clone();
+    let (
+        AuthenticationConfiguration::OAuthAuthorizationCode { scopes, .. },
+        AuthenticationConfiguration::OAuthAuthorizationCode {
+            scopes: other_scopes,
+            ..
+        },
+    ) = (&mut merged, &mut other)
+    else {
+        return Ok(None);
+    };
+    scopes.append(other_scopes);
+    *scopes = super::authentication::scopes(scopes)?;
+    other_scopes.clone_from(scopes);
+    Ok((merged == other).then_some(merged))
 }
 
 fn same_contracts(left: &[crate::HttpCredentialSlot], right: &[crate::HttpCredentialSlot]) -> bool {

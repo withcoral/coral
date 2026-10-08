@@ -17,9 +17,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use coral_catalog::{
-    CatalogDiagnostic, ExecutionBinding, HttpExecutionBinding, HttpParameterLocation,
-    HttpParameterStyle, HttpResponseStatus, MaterializationOutcome, MaterializedOperation,
-    OpenApiDocument, OperationAvailability, ProviderSetupInput, materialize,
+    AuthenticationConfiguration, CatalogDiagnostic, ExecutionBinding, HttpExecutionBinding,
+    HttpParameterLocation, HttpParameterStyle, HttpResponseStatus, MaterializationOutcome,
+    MaterializedOperation, OpenApiDocument, OperationAvailability, ProviderSetupInput, materialize,
 };
 use coral_v8::{DiagnosticCategory, ProgramCompiler};
 use serde_json::Value;
@@ -815,31 +815,13 @@ components:
     assert_eq!(diagnostic.code(), "credentials_not_supported");
 }
 
-#[test]
-fn operations_agree_on_credential_contracts_not_security_scheme_names() {
-    let bearer = "{ type: http, scheme: bearer }";
-    let oauth = r#"{ type: oauth2, flows: { authorizationCode: { authorizationUrl: "https://auth.example.test/authorize", tokenUrl: "https://auth.example.test/token", scopes: { read: r, admin: a } } } }"#;
-    for (case, user_scheme, user_scopes, admin_scheme, admin_scopes, shared) in [
-        ("identical bearer schemes", bearer, "", bearer, "", true),
-        (
-            "bearer and API key",
-            bearer,
-            "",
-            "{ type: apiKey, in: header, name: X-Admin-Key }",
-            "",
-            false,
-        ),
-        (
-            "one OAuth scheme, different scopes",
-            oauth,
-            "read",
-            oauth,
-            "admin",
-            false,
-        ),
-    ] {
-        let source = format!(
-            r#"openapi: 3.1.0
+/// A document whose `/probe` Operation uses `UserAuth` through the root
+/// security and whose `/admin/probe` Operation names `AdminAuth` itself.
+fn two_scheme_document(user: (&str, &str), admin: (&str, &str)) -> String {
+    let (user_scheme, user_scopes) = user;
+    let (admin_scheme, admin_scopes) = admin;
+    format!(
+        r#"openapi: 3.1.0
 info: {{ title: Two credential schemes, version: "1" }}
 servers: [{{ url: https://api.example.test }}]
 security:
@@ -860,14 +842,71 @@ components:
     UserAuth: {user_scheme}
     AdminAuth: {admin_scheme}
 "#
-        );
-        let document = OpenApiDocument::parse(&source).expect("credential fixture");
+    )
+}
+
+fn oauth_scopes(prepared: &coral_catalog::PreparedProviderCatalog) -> Vec<String> {
+    match prepared.credential_contract().authentication() {
+        AuthenticationConfiguration::OAuthAuthorizationCode { scopes, .. } => scopes.clone(),
+        _ => Vec::new(),
+    }
+}
+
+#[test]
+fn operations_agree_on_credential_contracts_not_security_scheme_names() {
+    let bearer = "{ type: http, scheme: bearer }";
+    let api_key = "{ type: apiKey, in: header, name: X-Admin-Key }";
+    let oauth = r#"{ type: oauth2, flows: { authorizationCode: { authorizationUrl: "https://auth.example.test/authorize", tokenUrl: "https://auth.example.test/token", scopes: { read: r, admin: a } } } }"#;
+    let other_oauth = r#"{ type: oauth2, flows: { authorizationCode: { authorizationUrl: "https://other.example.test/authorize", tokenUrl: "https://other.example.test/token", scopes: { read: r, admin: a } } } }"#;
+    // The scopes the one shared contract requests; `None` means the
+    // Operations need separate credentials.
+    let cases = [
+        (
+            "identical bearer schemes",
+            (bearer, ""),
+            (bearer, ""),
+            Some(&[][..]),
+        ),
+        ("bearer and API key", (bearer, ""), (api_key, ""), None),
+        (
+            "one OAuth scheme, different scopes",
+            (oauth, "read"),
+            (oauth, "admin"),
+            Some(&["admin", "read"][..]),
+        ),
+        (
+            "one OAuth scheme, overlapping scopes",
+            (oauth, "read, admin"),
+            (oauth, "admin"),
+            Some(&["admin", "read"][..]),
+        ),
+        (
+            "one OAuth scheme, one Operation without scopes",
+            (oauth, "read"),
+            (oauth, ""),
+            Some(&["read"][..]),
+        ),
+        (
+            "two OAuth authorization servers, same scopes",
+            (oauth, "read"),
+            (other_oauth, "read"),
+            None,
+        ),
+    ];
+    for (case, user, admin, shared) in cases {
+        let document =
+            OpenApiDocument::parse(&two_scheme_document(user, admin)).expect("credential fixture");
         match materialize(
             DestinationPolicy::default(),
             &ProviderSetupInput::from(document),
             &[],
         ) {
-            MaterializationOutcome::Ready(prepared) if shared => {
+            MaterializationOutcome::Ready(prepared) if shared.is_some() => {
+                assert_eq!(
+                    oauth_scopes(&prepared),
+                    shared.unwrap_or_default(),
+                    "{case}"
+                );
                 for operation in prepared.operations() {
                     assert_eq!(operation.availability(), OperationAvailability::Available);
                     let binding = http_binding(operation);
@@ -883,7 +922,7 @@ components:
                     assert_eq!(slot.scheme_name(), own_scheme, "{case}");
                 }
             }
-            MaterializationOutcome::Rejected(diagnostic) if !shared => {
+            MaterializationOutcome::Rejected(diagnostic) if shared.is_none() => {
                 assert_eq!(diagnostic.code(), "credentials_not_supported", "{case}");
                 assert_eq!(
                     diagnostic.message(),
