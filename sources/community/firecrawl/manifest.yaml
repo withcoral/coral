@@ -1,0 +1,254 @@
+name: firecrawl
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query web content, search results, and site URL maps from Firecrawl.
+  Scrape any URL for clean markdown, search the web for ranked results,
+  and discover all URLs on a website.
+base_url: https://api.firecrawl.dev/v2
+
+inputs:
+  FIRECRAWL_API_KEY:
+    kind: secret
+    hint: >-
+      Firecrawl API key from https://www.firecrawl.dev/app/api-keys.
+      Keys start with `fc-`.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: FIRECRAWL_API_KEY
+
+test_queries:
+  - SELECT url, title, description FROM firecrawl.search(q => 'Coral SQL') LIMIT 2
+
+functions:
+
+  # --------------------------------------------------------------------------
+  # firecrawl.scrape — Scrape a single URL
+  # POST /scrape
+  # Single object response at `data`. Returns markdown + page metadata.
+  # --------------------------------------------------------------------------
+  - name: scrape
+    kind: table
+    description: >-
+      Scrape a single URL and return its content as clean markdown with
+      page metadata. Pass the URL as a named argument with
+      `url => '<url>'`.
+    args:
+      - name: url
+        required: true
+        bind:
+          arg: url
+    request:
+      method: POST
+      path: /scrape
+      body:
+        - path: [url]
+          from: arg
+          key: url
+    response: {}
+    pagination:
+      mode: none
+    columns:
+      - name: markdown
+        type: Utf8
+        nullable: true
+        description: Page content converted to clean markdown.
+        expr:
+          kind: path
+          path:
+            - data
+            - markdown
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Page title from HTML metadata.
+        expr:
+          kind: path
+          path:
+            - data
+            - metadata
+            - title
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Page description from HTML metadata.
+        expr:
+          kind: path
+          path:
+            - data
+            - metadata
+            - description
+      - name: source_url
+        type: Utf8
+        nullable: true
+        description: Original URL that was requested.
+        expr:
+          kind: path
+          path:
+            - data
+            - metadata
+            - sourceURL
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Final URL of the page after redirects.
+        expr:
+          kind: path
+          path:
+            - data
+            - metadata
+            - url
+      - name: status_code
+        type: Int64
+        nullable: true
+        description: HTTP status code of the page.
+        expr:
+          kind: path
+          path:
+            - data
+            - metadata
+            - statusCode
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Language of the page from HTML metadata.
+        expr:
+          kind: path
+          path:
+            - data
+            - metadata
+            - language
+
+  # --------------------------------------------------------------------------
+  # firecrawl.search — Search the web
+  # POST /search
+  # Array at response.data.web. No pagination (single response).
+  # --------------------------------------------------------------------------
+  - name: search
+    kind: search
+    description: >-
+      Search the web using Firecrawl. Pass the query as a named argument
+      with `q => '<query>'`. Returns ranked web results with titles,
+      URLs, and description snippets.
+    fetch_limit_default: 5
+    search_limits:
+      default_top_k: 5
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: tbs
+        bind:
+          arg: tbs
+      - name: country
+        bind:
+          arg: country
+    request:
+      method: POST
+      path: /search
+      body:
+        - path: [query]
+          from: arg
+          key: q
+        - path: [tbs]
+          from: arg
+          key: tbs
+        - path: [country]
+          from: arg
+          key: country
+    response:
+      rows_path:
+        - data
+        - web
+    pagination:
+      mode: none
+      page_size:
+        default: 10
+        max: 100
+        body_path:
+          - limit
+    columns:
+      - name: url
+        type: Utf8
+        nullable: false
+        description: URL of the search result.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the search result.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description snippet of the search result.
+
+  # --------------------------------------------------------------------------
+  # firecrawl.map — Discover URLs on a website
+  # POST /map
+  # Array at response.links. No pagination (single response).
+  # --------------------------------------------------------------------------
+  - name: map
+    kind: table
+    description: >-
+      Discover all URLs on a website. Pass the base URL as a named
+      argument with `url => '<url>'`. Returns discovered pages with
+      titles and descriptions when available.
+    fetch_limit_default: 100
+    args:
+      - name: url
+        required: true
+        bind:
+          arg: url
+      - name: search
+        bind:
+          arg: search
+      - name: include_subdomains
+        bind:
+          arg: include_subdomains
+    request:
+      method: POST
+      path: /map
+      body:
+        - path: [url]
+          from: arg
+          key: url
+        - path: [search]
+          from: arg
+          key: search
+        - path: [includeSubdomains]
+          from: arg
+          key: include_subdomains
+    response:
+      rows_path:
+        - links
+    pagination:
+      mode: none
+      page_size:
+        default: 100
+        max: 100000
+        body_path:
+          - limit
+    columns:
+      - name: url
+        type: Utf8
+        nullable: false
+        description: Discovered URL on the website.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the page, if available.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the page, if available.

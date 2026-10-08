@@ -1,0 +1,37 @@
+// The desktop IPC bridge contract is owned by the Electron shared types; Coral UI
+// re-exports them (type-only, erased at build) so the renderer and preload can
+// never drift. Only the coral-ui-side runtime helpers live here.
+import type {
+  CoralDesktopApi,
+  DesktopUpdateState,
+  McpClientDescriptor,
+  McpClientId,
+  McpLaunchConfig,
+} from '../../../desktop/src/shared/types'
+
+export type {
+  CoralDesktopApi,
+  DesktopUpdateState,
+  McpClientDescriptor,
+  McpClientId,
+  McpLaunchConfig,
+}
+
+declare global {
+  interface Window {
+    coralDesktop?: CoralDesktopApi
+  }
+}
+
+export function isCoralDesktopBuild(): boolean {
+  return import.meta.env.CORAL_DESKTOP_APP
+}
+
+export function coralDesktopApi(): CoralDesktopApi | null {
+  if (typeof window === 'undefined') return null
+  return window.coralDesktop ?? null
+}
+
+export function desktopErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}

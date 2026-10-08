@@ -3,6 +3,8 @@
     reason = "Integration test crates share this harness, but each target only uses a subset of the helpers."
 )]
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -13,24 +15,46 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
+use coral_api::v1::function_service_server::{FunctionService, FunctionServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
+use coral_api::v1::search_service_server::{SearchService, SearchServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
+use coral_api::v1::task_service_server::{TaskService, TaskServiceServer};
+use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
-    CatalogItem, CatalogSearchResult, Column, ColumnSearchResult, CreateBundledSourceRequest,
-    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    Source, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response,
-    source_input_spec::Input as ProtoSourceInput,
+    AddFunctionRequest, AddFunctionResponse, AddWorkspaceMemberRequest, AddWorkspaceMemberResponse,
+    CatalogClearResult, CatalogCounts, CatalogItem, CatalogRebuildResult, CatalogSearchResult,
+    ClearSearchDataRequest, ClearSearchDataResponse, Column, ColumnSearchResult,
+    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    DeleteFunctionRequest, DeleteFunctionResponse, DeleteSourceRequest, DeleteSourceResponse,
+    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeCatalogSurfaceRequest,
+    DescribeCatalogSurfaceResponse, DescribeSourceManifestRequest, DescribeSourceManifestResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, DrainSearchQueueRequest,
+    DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse, ExecuteSqlRequest,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
+    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest,
+    ListSourcesResponse, ListWorkspaceMembersRequest, ListWorkspaceMembersResponse,
+    ListWorkspacesRequest, ListWorkspacesResponse, MissingCatalogSurface, ObservedDrainResult,
+    ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
+    RebuildSearchIndexRequest, RebuildSearchIndexResponse, RemoveWorkspaceMemberRequest,
+    RemoveWorkspaceMemberResponse, SearchCatalogRequest, SearchCatalogResponse, SearchField,
+    SearchMaintenanceResult, SearchMaintenanceState, SearchProvider, SearchProviderCoverage,
+    SearchProviderState, SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchStorageCleanupResult, SearchSurfaceRef, SearchTableShape, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
+    StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
+    TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    WorkspaceMembership, WorkspaceRole, catalog_item, create_bundled_source_with_o_auth_response,
+    describe_catalog_surface_response, import_source_response, search_maintenance_result,
+    search_result, source_input_spec::Input as ProtoSourceInput,
 };
-use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
+use coral_api::{
+    CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
+};
+use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -40,10 +64,42 @@ use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
+/// The ordinary workspace every fixture selects explicitly.
+///
+/// The CLI no longer substitutes a name for the caller who gives none: without
+/// a selector it resolves the caller's sole membership, and this mock lists
+/// none by default, so an unselected fixture would fail workspace selection
+/// before reaching the RPC it means to exercise. Fixtures therefore select this
+/// name through the ordinary `CORAL_WORKSPACE` selector (see
+/// [`MockServer::cmd`]), which is also the path a real user takes.
+pub(crate) const TEST_WORKSPACE: &str = "analytics";
+
 fn workspace() -> Workspace {
     Workspace {
-        name: "default".to_string(),
+        name: TEST_WORKSPACE.to_string(),
     }
+}
+
+/// One caller-relative membership, the shape the workspace listing now carries.
+pub(crate) fn membership(name: &str, role: WorkspaceRole) -> WorkspaceMembership {
+    WorkspaceMembership {
+        workspace: Some(Workspace {
+            name: name.to_string(),
+        }),
+        role: role.into(),
+    }
+}
+
+pub(crate) fn assert_test_workspace(workspace: Option<&Workspace>) {
+    assert_workspace_name(workspace, TEST_WORKSPACE);
+}
+
+pub(crate) fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
+    assert_eq!(
+        workspace.map(|workspace| workspace.name.as_str()),
+        Some(expected),
+        "expected workspace {expected:?}, got {workspace:?}"
+    );
 }
 
 fn mock_source() -> Source {
@@ -54,6 +110,7 @@ fn mock_source() -> Source {
         secrets: Vec::new(),
         variables: Vec::new(),
         origin: SourceOrigin::Bundled as i32,
+        credential_storage: SourceCredentialStorage::File as i32,
     }
 }
 
@@ -61,6 +118,7 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: schema_name.to_string(),
+        catalog_name: String::new(),
         name: name.to_string(),
         description: String::new(),
         guide: String::new(),
@@ -73,6 +131,7 @@ fn mock_visible_table() -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: "local_messages".to_string(),
+        catalog_name: String::new(),
         name: "messages".to_string(),
         description: "Fixture messages".to_string(),
         guide: "Query fixture messages.".to_string(),
@@ -126,6 +185,7 @@ fn table_summary(table: &Table) -> TableSummary {
     TableSummary {
         workspace: table.workspace.clone(),
         schema_name: table.schema_name.clone(),
+        catalog_name: table.catalog_name.clone(),
         name: table.name.clone(),
         description: table.description.clone(),
         required_filters: table.required_filters.clone(),
@@ -206,6 +266,25 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
         return mock_coral_tables_response();
     }
 
+    if sql.contains("'first'") || sql.contains("'second'") {
+        let label = if sql.contains("'first'") {
+            "first"
+        } else {
+            "second"
+        };
+        let schema = Schema::new(vec![Field::new("label", DataType::Utf8, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(StringArray::from(vec![label]))],
+        )
+        .expect("build label batch");
+        return ExecuteSqlResponse {
+            arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
+            row_count: 1,
+            guide_required: None,
+        };
+    }
+
     let (schema, batch, row_count) = if sql.contains("local_messages.messages") {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let batch = RecordBatch::try_new(
@@ -227,6 +306,7 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
         row_count,
+        guide_required: None,
     }
 }
 
@@ -265,6 +345,7 @@ fn mock_coral_tables_response() -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
         row_count: 3,
+        guide_required: None,
     }
 }
 
@@ -285,6 +366,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 }],
                 installed: true,
                 origin: SourceOrigin::Bundled as i32,
+                credential_storage: SourceCredentialStorage::File as i32,
             },
             SourceInfo {
                 name: "slack".to_string(),
@@ -293,6 +375,7 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
                 inputs: Vec::new(),
                 installed: false,
                 origin: SourceOrigin::Bundled as i32,
+                credential_storage: SourceCredentialStorage::Unspecified as i32,
             },
         ],
     }
@@ -305,8 +388,187 @@ fn mock_validate_response() -> ValidateSourceResponse {
             mock_table("github", "issues"),
             mock_table("github", "pull_requests"),
         ],
-        table_functions: Vec::new(),
+        table_functions: vec![TableFunction {
+            workspace: Some(workspace()),
+            schema_name: "github".to_string(),
+            name: "search_issues".to_string(),
+            description: "Search issues".to_string(),
+            guide: "Prefer this function for issue lookup.".to_string(),
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: 0,
+            search_limits: None,
+        }],
         query_tests: Vec::new(),
+    }
+}
+
+fn mock_search_response() -> SearchResponse {
+    let table = mock_visible_table();
+    SearchResponse {
+        results: vec![SearchResult {
+            surface: Some(SearchSurfaceRef {
+                catalog_name: table.catalog_name.clone(),
+                schema_name: table.schema_name.clone(),
+                name: table.name.clone(),
+            }),
+            description: table.description.clone(),
+            guide: table.guide.clone(),
+            shape: Some(search_result::Shape::Table(SearchTableShape {
+                fields: vec![
+                    SearchField {
+                        name: "owner".to_string(),
+                        data_type: "Utf8".to_string(),
+                        required: true,
+                    },
+                    SearchField {
+                        name: "text".to_string(),
+                        data_type: "Utf8".to_string(),
+                        required: false,
+                    },
+                ],
+            })),
+            matching_values: Vec::new(),
+            omitted_matching_field_count: 1,
+            providers: vec![SearchProvider::CatalogMetadata as i32],
+        }],
+        provider_statuses: vec![
+            mock_provider_status(
+                SearchProvider::CatalogMetadata,
+                SearchProviderState::ResultsFound,
+                "Catalog metadata returned 2 search hints",
+                Some(SearchProviderCoverage {
+                    eligible_units: 3,
+                    searched_units: 3,
+                    failed_units: 0,
+                    returned_count: 2,
+                    has_more: false,
+                    budget_exhausted: false,
+                    timed_out: false,
+                    stale_index: false,
+                }),
+            ),
+            mock_provider_status(
+                SearchProvider::ObservedValues,
+                SearchProviderState::NotEnabled,
+                "Observed-value provider is not enabled",
+                None,
+            ),
+            mock_provider_status(
+                SearchProvider::NativeFanout,
+                SearchProviderState::Skipped,
+                "Native fanout is not eligible for this request",
+                None,
+            ),
+        ],
+        truncation: Some(SearchResultTruncation {
+            truncated: false,
+            returned_count: 1,
+            max_results: 10,
+            note: String::new(),
+        }),
+    }
+}
+
+fn mock_rebuild_search_index_response() -> RebuildSearchIndexResponse {
+    RebuildSearchIndexResponse {
+        results: vec![
+            SearchMaintenanceResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                state: SearchMaintenanceState::Completed as i32,
+                note: "force rebuilt catalog search projection".to_string(),
+                detail: Some(search_maintenance_result::Detail::CatalogRebuild(
+                    CatalogRebuildResult {
+                        old_document_count: 2,
+                        new_document_count: 3,
+                        projection_changed: false,
+                        rebuild_performed: true,
+                    },
+                )),
+            },
+            SearchMaintenanceResult {
+                provider: SearchProvider::ObservedValues as i32,
+                state: SearchMaintenanceState::Partial as i32,
+                note: "attempted 3 observed-value queue job(s), then rebuilt observed-value FTS projection from 4 row(s); 1 failed job(s) left for retry".to_string(),
+                detail: Some(search_maintenance_result::Detail::ObservedRebuild(
+                    ObservedRebuildResult {
+                        canonical_rows_scanned: 4,
+                        fts_rows_rebuilt: 3,
+                        drain: Some(ObservedDrainResult {
+                            queue_jobs_processed: 2,
+                            stale_jobs_skipped: 0,
+                            failed_jobs: 1,
+                            canonical_rows_upserted: 2,
+                            fts_rows_written: 2,
+                            remaining_queue_depth: 1,
+                            budget_exhausted: false,
+                            stale_rows_purged: 0,
+                            evicted_rows: 0,
+                            storage_limit_reached: false,
+                            storage_jobs_dropped: 0,
+                        }),
+                    },
+                )),
+            },
+        ],
+    }
+}
+
+fn mock_drain_search_queue_response() -> DrainSearchQueueResponse {
+    DrainSearchQueueResponse {
+        results: vec![SearchMaintenanceResult {
+            provider: SearchProvider::ObservedValues as i32,
+            state: SearchMaintenanceState::Partial as i32,
+            note: "drained 2 observed-value queue job(s); 1 queued observation job(s) omitted to preserve storage headroom".to_string(),
+            detail: Some(search_maintenance_result::Detail::ObservedDrain(
+                ObservedDrainResult {
+                    queue_jobs_processed: 2,
+                    stale_jobs_skipped: 0,
+                    failed_jobs: 0,
+                    canonical_rows_upserted: 2,
+                    fts_rows_written: 2,
+                    remaining_queue_depth: 0,
+                    budget_exhausted: false,
+                    stale_rows_purged: 0,
+                    evicted_rows: 0,
+                    storage_limit_reached: false,
+                    storage_jobs_dropped: 1,
+                },
+            )),
+        }],
+    }
+}
+
+fn mock_clear_search_data_response() -> ClearSearchDataResponse {
+    ClearSearchDataResponse {
+        results: vec![SearchMaintenanceResult {
+            provider: SearchProvider::CatalogMetadata as i32,
+            state: SearchMaintenanceState::Completed as i32,
+            note: "cleared catalog search projection".to_string(),
+            detail: Some(search_maintenance_result::Detail::CatalogClear(
+                CatalogClearResult {
+                    deleted_document_count: 3,
+                },
+            )),
+        }],
+        storage_cleanup: Some(SearchStorageCleanupResult {
+            state: SearchMaintenanceState::Completed as i32,
+            note: "local search storage cleanup completed".to_string(),
+        }),
+    }
+}
+
+fn mock_provider_status(
+    provider: SearchProvider,
+    state: SearchProviderState,
+    note: &str,
+    coverage: Option<SearchProviderCoverage>,
+) -> coral_api::v1::SearchProviderStatus {
+    coral_api::v1::SearchProviderStatus {
+        provider: provider as i32,
+        state: state as i32,
+        note: note.to_string(),
+        coverage,
     }
 }
 
@@ -326,6 +588,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             }],
             installed: true,
             origin: SourceOrigin::Bundled as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
         }),
         "slack" => Ok(SourceInfo {
             name: "slack".to_string(),
@@ -334,6 +597,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             inputs: Vec::new(),
             installed: false,
             origin: SourceOrigin::Bundled as i32,
+            credential_storage: SourceCredentialStorage::Unspecified as i32,
         }),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
@@ -342,6 +606,16 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             inputs: Vec::new(),
             installed: true,
             origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
+        }),
+        "versionless" => Ok(SourceInfo {
+            name: "versionless".to_string(),
+            description: String::new(),
+            version: String::new(),
+            inputs: Vec::new(),
+            installed: true,
+            origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::File as i32,
         }),
         _ => Err(Status::not_found(format!("unknown source '{name}'"))),
     }
@@ -422,16 +696,28 @@ impl<T> MockResult<T> {
 #[derive(Clone)]
 pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
+    search: MockResult<SearchResponse>,
+    rebuild_search_index: MockResult<RebuildSearchIndexResponse>,
+    drain_search_queue: MockResult<DrainSearchQueueResponse>,
+    clear_search_data: MockResult<ClearSearchDataResponse>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
     list_sources: MockResult<ListSourcesResponse>,
+    list_workspaces: MockResult<ListWorkspacesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
     delete_source: MockResult<()>,
+    add_function: MockResult<AddFunctionResponse>,
+    list_functions: MockResult<ListFunctionsResponse>,
+    delete_function: MockResult<()>,
 }
 
 impl Default for MockServerConfig {
     fn default() -> Self {
         Self {
             execute_sql_override: None,
+            search: MockResult::ok(mock_search_response()),
+            rebuild_search_index: MockResult::ok(mock_rebuild_search_index_response()),
+            drain_search_queue: MockResult::ok(mock_drain_search_queue_response()),
+            clear_search_data: MockResult::ok(mock_clear_search_data_response()),
             discover_sources: MockResult::ok(mock_discover_response()),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![
@@ -442,6 +728,7 @@ impl Default for MockServerConfig {
                         secrets: Vec::new(),
                         variables: Vec::new(),
                         origin: SourceOrigin::Bundled as i32,
+                        credential_storage: SourceCredentialStorage::File as i32,
                     },
                     Source {
                         workspace: Some(workspace()),
@@ -450,16 +737,37 @@ impl Default for MockServerConfig {
                         secrets: Vec::new(),
                         variables: Vec::new(),
                         origin: SourceOrigin::Imported as i32,
+                        credential_storage: SourceCredentialStorage::File as i32,
                     },
                 ],
             }),
+            // Fresh state: the caller holds no membership until a test says so.
+            list_workspaces: MockResult::ok(ListWorkspacesResponse {
+                memberships: Vec::new(),
+            }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
+            add_function: MockResult::ok(AddFunctionResponse {
+                function: None,
+                replaced: false,
+            }),
+            list_functions: MockResult::ok(ListFunctionsResponse {
+                functions: Vec::new(),
+            }),
+            delete_function: MockResult::ok(()),
         }
     }
 }
 
 impl MockServerConfig {
+    pub(crate) fn with_rebuild_search_index(
+        mut self,
+        response: RebuildSearchIndexResponse,
+    ) -> Self {
+        self.rebuild_search_index = MockResult::ok(response);
+        self
+    }
+
     pub(crate) fn with_discover_sources(mut self, response: DiscoverSourcesResponse) -> Self {
         self.discover_sources = MockResult::ok(response);
         self
@@ -470,8 +778,23 @@ impl MockServerConfig {
         self
     }
 
+    pub(crate) fn with_list_workspaces(mut self, response: ListWorkspacesResponse) -> Self {
+        self.list_workspaces = MockResult::ok(response);
+        self
+    }
+
     pub(crate) fn with_execute_sql(mut self, response: ExecuteSqlResponse) -> Self {
         self.execute_sql_override = Some(MockResult::ok(response));
+        self
+    }
+
+    pub(crate) fn with_add_function(mut self, response: AddFunctionResponse) -> Self {
+        self.add_function = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_list_functions(mut self, response: ListFunctionsResponse) -> Self {
+        self.list_functions = MockResult::ok(response);
         self
     }
 
@@ -524,9 +847,13 @@ impl MockServerConfig {
 }
 
 fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
-    let items = mock_visible_tables()
+    let tables = mock_visible_tables()
         .into_iter()
         .filter(|table| request.schema_name.is_empty() || table.schema_name == request.schema_name)
+        .collect::<Vec<_>>();
+    let table_count = u32::try_from(tables.len()).unwrap_or(u32::MAX);
+    let items = tables
+        .into_iter()
         .filter(|_| request.kind == 0 || request.kind == 1)
         .map(|table| CatalogItem {
             item: Some(catalog_item::Item::Table(table_summary(&table))),
@@ -542,15 +869,24 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
     ListCatalogResponse {
         items,
         pagination: Some(pagination),
+        counts: Some(CatalogCounts {
+            table_count,
+            table_function_count: 0,
+        }),
     }
 }
 
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
+    execute_sql_task_ids: Mutex<Vec<Option<String>>>,
+    search: Mutex<Vec<SearchRequest>>,
+    rebuild_search_index: Mutex<Vec<RebuildSearchIndexRequest>>,
+    drain_search_queue: Mutex<Vec<DrainSearchQueueRequest>>,
+    clear_search_data: Mutex<Vec<ClearSearchDataRequest>>,
     list_catalog: Mutex<Vec<ListCatalogRequest>>,
     search_catalog: Mutex<Vec<SearchCatalogRequest>>,
-    describe_table: Mutex<Vec<DescribeTableRequest>>,
+    describe_catalog_surface: Mutex<Vec<DescribeCatalogSurfaceRequest>>,
     list_columns: Mutex<Vec<ListColumnsRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
@@ -561,6 +897,14 @@ struct Captured {
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
+    add_function: Mutex<Vec<AddFunctionRequest>>,
+    list_functions: Mutex<Vec<ListFunctionsRequest>>,
+    remove_function: Mutex<Vec<DeleteFunctionRequest>>,
+    list_workspaces: Mutex<Vec<ListWorkspacesRequest>>,
+    create_workspace: Mutex<Vec<CreateWorkspaceRequest>>,
+    delete_workspace: Mutex<Vec<DeleteWorkspaceRequest>>,
+    start_task: Mutex<Vec<StartTaskRequest>>,
+    end_task: Mutex<Vec<EndTaskRequest>>,
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -579,6 +923,74 @@ pub(crate) fn encode_arrow_ipc_stream(
 }
 
 #[derive(Clone)]
+struct MockSearchService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl SearchService for MockSearchService {
+    async fn search(
+        &self,
+        request: Request<SearchRequest>,
+    ) -> Result<Response<SearchResponse>, Status> {
+        self.captured
+            .search
+            .lock()
+            .expect("search capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.search.clone().into_tonic_result()?,
+        ))
+    }
+
+    async fn rebuild_search_index(
+        &self,
+        request: Request<RebuildSearchIndexRequest>,
+    ) -> Result<Response<RebuildSearchIndexResponse>, Status> {
+        self.captured
+            .rebuild_search_index
+            .lock()
+            .expect("rebuild search index capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config
+                .rebuild_search_index
+                .clone()
+                .into_tonic_result()?,
+        ))
+    }
+
+    async fn drain_search_queue(
+        &self,
+        request: Request<DrainSearchQueueRequest>,
+    ) -> Result<Response<DrainSearchQueueResponse>, Status> {
+        self.captured
+            .drain_search_queue
+            .lock()
+            .expect("drain search queue capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.drain_search_queue.clone().into_tonic_result()?,
+        ))
+    }
+
+    async fn clear_search_data(
+        &self,
+        request: Request<ClearSearchDataRequest>,
+    ) -> Result<Response<ClearSearchDataResponse>, Status> {
+        self.captured
+            .clear_search_data
+            .lock()
+            .expect("clear search data capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.clear_search_data.clone().into_tonic_result()?,
+        ))
+    }
+}
+
+#[derive(Clone)]
 struct MockQueryService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
@@ -590,6 +1002,16 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
+        let task_id = request
+            .metadata()
+            .get(CORAL_TASK_ID_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        self.captured
+            .execute_sql_task_ids
+            .lock()
+            .expect("execute_sql task ID capture")
+            .push(task_id);
         let request = request.into_inner();
         self.captured
             .execute_sql
@@ -690,38 +1112,28 @@ impl CatalogService for MockCatalogService {
         }))
     }
 
-    async fn describe_table(
+    async fn describe_catalog_surface(
         &self,
-        request: Request<DescribeTableRequest>,
-    ) -> Result<Response<DescribeTableResponse>, Status> {
+        request: Request<DescribeCatalogSurfaceRequest>,
+    ) -> Result<Response<DescribeCatalogSurfaceResponse>, Status> {
         let request = request.into_inner();
         self.captured
-            .describe_table
+            .describe_catalog_surface
             .lock()
-            .expect("describe_table capture")
+            .expect("describe_catalog_surface capture")
             .push(request.clone());
         let table = mock_visible_tables().into_iter().find(|table| {
-            table.schema_name == request.schema_name && table.name == request.table_name
+            table.schema_name == request.schema_name && table.name == request.surface_name
         });
         if let Some(table) = table {
-            return Ok(Response::new(DescribeTableResponse {
-                table: Some(table),
-                suggestions: Vec::new(),
-                available_schemas: Vec::new(),
-                same_schema_tables: Vec::new(),
+            return Ok(Response::new(DescribeCatalogSurfaceResponse {
+                result: Some(describe_catalog_surface_response::Result::Table(table)),
             }));
         }
-        let same_schema_tables = mock_visible_tables()
-            .into_iter()
-            .filter(|table| table.schema_name == request.schema_name)
-            .take(10)
-            .map(|table| table_summary(&table))
-            .collect();
-        Ok(Response::new(DescribeTableResponse {
-            table: None,
-            suggestions: Vec::new(),
-            available_schemas: vec!["local_messages".to_string()],
-            same_schema_tables,
+        Ok(Response::new(DescribeCatalogSurfaceResponse {
+            result: Some(describe_catalog_surface_response::Result::Missing(
+                MissingCatalogSurface {},
+            )),
         }))
     }
 
@@ -787,6 +1199,63 @@ impl CatalogService for MockCatalogService {
 struct MockSourceService {
     config: Arc<MockServerConfig>,
     captured: Arc<Captured>,
+}
+
+#[derive(Clone)]
+struct MockFunctionService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl FunctionService for MockFunctionService {
+    async fn add_function(
+        &self,
+        request: Request<AddFunctionRequest>,
+    ) -> Result<Response<AddFunctionResponse>, Status> {
+        self.captured
+            .add_function
+            .lock()
+            .expect("add_function capture")
+            .push(request.into_inner());
+        self.config
+            .add_function
+            .clone()
+            .into_tonic_result()
+            .map(Response::new)
+    }
+
+    async fn list_functions(
+        &self,
+        request: Request<ListFunctionsRequest>,
+    ) -> Result<Response<ListFunctionsResponse>, Status> {
+        self.captured
+            .list_functions
+            .lock()
+            .expect("list_functions capture")
+            .push(request.into_inner());
+        self.config
+            .list_functions
+            .clone()
+            .into_tonic_result()
+            .map(Response::new)
+    }
+
+    async fn delete_function(
+        &self,
+        request: Request<DeleteFunctionRequest>,
+    ) -> Result<Response<DeleteFunctionResponse>, Status> {
+        self.captured
+            .remove_function
+            .lock()
+            .expect("remove_function capture")
+            .push(request.into_inner());
+        self.config
+            .delete_function
+            .clone()
+            .into_tonic_result()
+            .map(|()| Response::new(DeleteFunctionResponse {}))
+    }
 }
 
 type MockBundledSourceStream =
@@ -928,6 +1397,17 @@ impl SourceService for MockSourceService {
         Ok(Response::new(DeleteSourceResponse {}))
     }
 
+    /// Only the web UI inspects a manifest before installing it, so the CLI
+    /// harness carries no canned answer for this call.
+    async fn describe_source_manifest(
+        &self,
+        _request: Request<DescribeSourceManifestRequest>,
+    ) -> Result<Response<DescribeSourceManifestResponse>, Status> {
+        Err(Status::unimplemented(
+            "describe_source_manifest is not used by the CLI",
+        ))
+    }
+
     async fn validate_source(
         &self,
         request: Request<ValidateSourceRequest>,
@@ -943,8 +1423,169 @@ impl SourceService for MockSourceService {
     }
 }
 
+#[derive(Clone)]
+struct MockWorkspaceService {
+    config: Arc<MockServerConfig>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl WorkspaceService for MockWorkspaceService {
+    async fn list_workspaces(
+        &self,
+        request: Request<ListWorkspacesRequest>,
+    ) -> Result<Response<ListWorkspacesResponse>, Status> {
+        self.captured
+            .list_workspaces
+            .lock()
+            .expect("list_workspaces capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.list_workspaces.clone().into_tonic_result()?,
+        ))
+    }
+
+    async fn create_workspace(
+        &self,
+        request: Request<CreateWorkspaceRequest>,
+    ) -> Result<Response<CreateWorkspaceResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .create_workspace
+            .lock()
+            .expect("create_workspace capture")
+            .push(request.clone());
+        Ok(Response::new(CreateWorkspaceResponse {
+            workspace: request.workspace,
+        }))
+    }
+
+    async fn delete_workspace(
+        &self,
+        request: Request<DeleteWorkspaceRequest>,
+    ) -> Result<Response<DeleteWorkspaceResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .delete_workspace
+            .lock()
+            .expect("delete_workspace capture")
+            .push(request.clone());
+        Ok(Response::new(DeleteWorkspaceResponse {
+            workspace: request.workspace,
+        }))
+    }
+
+    // The CLI has no membership commands, so these exist only to satisfy the
+    // published service contract.
+    async fn list_workspace_members(
+        &self,
+        _request: Request<ListWorkspaceMembersRequest>,
+    ) -> Result<Response<ListWorkspaceMembersResponse>, Status> {
+        Err(Status::unimplemented("ListWorkspaceMembers"))
+    }
+
+    async fn add_workspace_member(
+        &self,
+        _request: Request<AddWorkspaceMemberRequest>,
+    ) -> Result<Response<AddWorkspaceMemberResponse>, Status> {
+        Err(Status::unimplemented("AddWorkspaceMember"))
+    }
+
+    async fn remove_workspace_member(
+        &self,
+        _request: Request<RemoveWorkspaceMemberRequest>,
+    ) -> Result<Response<RemoveWorkspaceMemberResponse>, Status> {
+        Err(Status::unimplemented("RemoveWorkspaceMember"))
+    }
+}
+
+#[derive(Default)]
+struct MockTaskState {
+    next_id: u64,
+    tasks: HashMap<(String, String), Option<TaskStatus>>,
+}
+
+#[derive(Clone, Default)]
+struct MockTaskService {
+    state: Arc<Mutex<MockTaskState>>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl TaskService for MockTaskService {
+    async fn start_task(
+        &self,
+        request: Request<StartTaskRequest>,
+    ) -> Result<Response<StartTaskResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .start_task
+            .lock()
+            .expect("start_task capture")
+            .push(request.clone());
+        let workspace = request
+            .workspace
+            .ok_or_else(|| Status::invalid_argument("workspace is required"))?;
+        if workspace.name.trim().is_empty() {
+            return Err(Status::invalid_argument("workspace name is required"));
+        }
+        if request.intent.trim().is_empty() {
+            return Err(Status::invalid_argument("task intent is required"));
+        }
+
+        let mut state = self.state.lock().expect("task state");
+        state.next_id = state.next_id.checked_add(1).expect("task id counter");
+        let task_id = format!("00000000-0000-4000-8000-{:012x}", state.next_id);
+        state.tasks.insert((workspace.name, task_id.clone()), None);
+
+        Ok(Response::new(StartTaskResponse {
+            task: Some(ProtoTask { task_id }),
+        }))
+    }
+
+    async fn end_task(
+        &self,
+        request: Request<EndTaskRequest>,
+    ) -> Result<Response<EndTaskResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .end_task
+            .lock()
+            .expect("end_task capture")
+            .push(request.clone());
+        let workspace = request
+            .workspace
+            .ok_or_else(|| Status::invalid_argument("workspace is required"))?;
+        let task_status = TaskStatus::try_from(request.task_status)
+            .map_err(|_error| Status::invalid_argument("unknown task status"))?;
+        if task_status == TaskStatus::Unspecified {
+            return Err(Status::invalid_argument(
+                "task status must be success or failure",
+            ));
+        }
+
+        let mut state = self.state.lock().expect("task state");
+        let status = state
+            .tasks
+            .get_mut(&(workspace.name, request.task_id.clone()))
+            .ok_or_else(|| Status::not_found("task was not found"))?;
+        if status.is_some() {
+            return Err(Status::failed_precondition("task has already ended"));
+        }
+        *status = Some(task_status);
+
+        Ok(Response::new(EndTaskResponse {
+            task_end: Some(ProtoTaskEnd {
+                task_id: request.task_id,
+                task_status: task_status as i32,
+            }),
+        }))
+    }
+}
+
 pub(crate) struct MockServer {
     endpoint_uri: String,
+    config_dir: TempDir,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), tonic::transport::Error>>,
     captured: Arc<Captured>,
@@ -964,9 +1605,16 @@ impl MockServer {
         let config = Arc::new(config);
         let captured = Arc::new(Captured::default());
         let query_captured = Arc::clone(&captured);
+        let search_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
+        let function_captured = Arc::clone(&captured);
+        let workspace_captured = Arc::clone(&captured);
+        let task_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
+        let search_config = Arc::clone(&config);
+        let source_config = Arc::clone(&config);
+        let workspace_config = Arc::clone(&config);
         let task = tokio::spawn(async move {
             Server::builder()
                 .add_service(CatalogServiceServer::new(MockCatalogService {
@@ -976,9 +1624,25 @@ impl MockServer {
                     config: query_config,
                     captured: query_captured,
                 }))
+                .add_service(SearchServiceServer::new(MockSearchService {
+                    config: search_config,
+                    captured: search_captured,
+                }))
                 .add_service(SourceServiceServer::new(MockSourceService {
-                    config,
+                    config: source_config,
                     captured: source_captured,
+                }))
+                .add_service(WorkspaceServiceServer::new(MockWorkspaceService {
+                    config: workspace_config,
+                    captured: workspace_captured,
+                }))
+                .add_service(FunctionServiceServer::new(MockFunctionService {
+                    config: Arc::clone(&config),
+                    captured: function_captured,
+                }))
+                .add_service(TaskServiceServer::new(MockTaskService {
+                    captured: task_captured,
+                    ..MockTaskService::default()
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     drop(shutdown_rx.await);
@@ -987,6 +1651,7 @@ impl MockServer {
         });
         Self {
             endpoint_uri,
+            config_dir: TempDir::new().expect("mock server config dir"),
             shutdown_tx: Some(shutdown_tx),
             task,
             captured,
@@ -1002,10 +1667,22 @@ impl MockServer {
         .await
     }
 
+    /// Builds a `coral` invocation that explicitly targets [`TEST_WORKSPACE`].
+    ///
+    /// The selection is a plain `CORAL_WORKSPACE` value, so `--workspace` still
+    /// overrides it and the precedence tests keep working. Selecting it here
+    /// keeps every other fixture off the resolver fallback, so removing that
+    /// fallback stays a change to the resolver and its own test.
     pub(crate) fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
+        cmd.env("CORAL_CONFIG_DIR", self.config_dir.path());
+        cmd.env("CORAL_WORKSPACE", TEST_WORKSPACE);
         cmd
+    }
+
+    pub(crate) fn config_dir(&self) -> &Path {
+        self.config_dir.path()
     }
 
     pub(crate) fn execute_sql_requests(&self) -> Vec<ExecuteSqlRequest> {
@@ -1013,6 +1690,42 @@ impl MockServer {
             .execute_sql
             .lock()
             .expect("execute_sql capture")
+            .clone()
+    }
+
+    pub(crate) fn execute_sql_task_ids(&self) -> Vec<Option<String>> {
+        self.captured
+            .execute_sql_task_ids
+            .lock()
+            .expect("execute_sql task ID capture")
+            .clone()
+    }
+
+    pub(crate) fn search_requests(&self) -> Vec<SearchRequest> {
+        self.captured.search.lock().expect("search capture").clone()
+    }
+
+    pub(crate) fn rebuild_search_index_requests(&self) -> Vec<RebuildSearchIndexRequest> {
+        self.captured
+            .rebuild_search_index
+            .lock()
+            .expect("rebuild search index capture")
+            .clone()
+    }
+
+    pub(crate) fn drain_search_queue_requests(&self) -> Vec<DrainSearchQueueRequest> {
+        self.captured
+            .drain_search_queue
+            .lock()
+            .expect("drain search queue capture")
+            .clone()
+    }
+
+    pub(crate) fn clear_search_data_requests(&self) -> Vec<ClearSearchDataRequest> {
+        self.captured
+            .clear_search_data
+            .lock()
+            .expect("clear search data capture")
             .clone()
     }
 
@@ -1048,11 +1761,11 @@ impl MockServer {
             .clone()
     }
 
-    pub(crate) fn describe_table_requests(&self) -> Vec<DescribeTableRequest> {
+    pub(crate) fn describe_catalog_surface_requests(&self) -> Vec<DescribeCatalogSurfaceRequest> {
         self.captured
-            .describe_table
+            .describe_catalog_surface
             .lock()
-            .expect("describe_table capture")
+            .expect("describe_catalog_surface capture")
             .clone()
     }
 
@@ -1080,11 +1793,83 @@ impl MockServer {
             .clone()
     }
 
+    pub(crate) fn list_functions_requests(&self) -> Vec<ListFunctionsRequest> {
+        self.captured
+            .list_functions
+            .lock()
+            .expect("list_functions capture")
+            .clone()
+    }
+
+    pub(crate) fn add_function_requests(&self) -> Vec<AddFunctionRequest> {
+        self.captured
+            .add_function
+            .lock()
+            .expect("add_function capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_function_requests(&self) -> Vec<DeleteFunctionRequest> {
+        self.captured
+            .remove_function
+            .lock()
+            .expect("remove_function capture")
+            .clone()
+    }
+
     pub(crate) fn delete_source_requests(&self) -> Vec<DeleteSourceRequest> {
         self.captured
             .delete_source
             .lock()
             .expect("delete_source capture")
+            .clone()
+    }
+
+    pub(crate) fn import_source_requests(&self) -> Vec<ImportSourceRequest> {
+        self.captured
+            .import_source
+            .lock()
+            .expect("import_source capture")
+            .clone()
+    }
+
+    pub(crate) fn list_workspaces_requests(&self) -> Vec<ListWorkspacesRequest> {
+        self.captured
+            .list_workspaces
+            .lock()
+            .expect("list_workspaces capture")
+            .clone()
+    }
+
+    pub(crate) fn create_workspace_requests(&self) -> Vec<CreateWorkspaceRequest> {
+        self.captured
+            .create_workspace
+            .lock()
+            .expect("create_workspace capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_workspace_requests(&self) -> Vec<DeleteWorkspaceRequest> {
+        self.captured
+            .delete_workspace
+            .lock()
+            .expect("delete_workspace capture")
+            .clone()
+    }
+
+    pub(crate) fn start_task_requests(&self) -> Vec<StartTaskRequest> {
+        self.captured
+            .start_task
+            .lock()
+            .expect("start_task capture")
+            .clone()
+    }
+
+    pub(crate) fn end_task_requests(&self) -> Vec<EndTaskRequest> {
+        self.captured
+            .end_task
+            .lock()
+            .expect("end_task capture")
             .clone()
     }
 

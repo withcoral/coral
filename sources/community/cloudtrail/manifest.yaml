@@ -1,0 +1,596 @@
+dsl_version: 3
+name: cloudtrail
+version: 0.1.0
+backend: http
+description: >-
+  Query AWS CloudTrail management event history via LookupEvents. Covers the
+  last 90 days of management (control-plane) events — API calls that create,
+  modify, or delete resources — across all services in the queried region.
+  Data events (S3 object reads/writes, Lambda invocations) and network
+  activity events are not available through LookupEvents; those require a
+  Trail with the appropriate event selectors. Useful for correlating
+  infrastructure changes with code commits and cost spikes.
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: us-east-1
+    hint: |
+      AWS region for CloudTrail API requests. CloudTrail is regional — each
+      region maintains its own independent event history, so this source
+      queries one region per workspace. Set it to the region where your
+      resources are deployed. To switch regions, change AWS_REGION and re-add
+      the source; because the source name is fixed as `cloudtrail`, re-adding
+      replaces the existing source rather than creating a second regional copy.
+      Global-service events for IAM and CloudFront are recorded in us-east-1,
+      so use us-east-1 to find identity, access-key, policy, or CloudFront
+      changes. AWS STS events depend on the endpoint: global-endpoint
+      (sts.amazonaws.com) calls land in us-east-1, while regional-endpoint
+      calls are recorded in that region.
+      Common values: us-east-1, us-west-2, eu-west-1, eu-central-1,
+      ap-southeast-1, ap-northeast-1.
+  AWS_ENDPOINT_SUFFIX:
+    kind: variable
+    default: amazonaws.com
+    hint: |
+      AWS endpoint DNS suffix. Keep `amazonaws.com` for standard AWS
+      regions. Use the appropriate suffix for GovCloud or China regions.
+  AWS_ACCESS_KEY_ID:
+    kind: secret
+    hint: |
+      AWS access key ID with `cloudtrail:LookupEvents` read permission.
+      This is a read-only permission that does not grant access to log content
+      stored in S3 — only the 90-day management event history.
+  AWS_SECRET_ACCESS_KEY:
+    kind: secret
+    hint: |
+      AWS secret access key paired with `AWS_ACCESS_KEY_ID`.
+      Coral does not read your AWS CLI profile, AWS SSO cache, or
+      `AWS_PROFILE` at query time for this source.
+base_url: https://cloudtrail.{{input.AWS_REGION}}.{{input.AWS_ENDPOINT_SUFFIX}}
+auth:
+  type: CustomAuth
+  authenticator: aws_sigv4
+  service: cloudtrail
+  region: "{{input.AWS_REGION}}"
+  access_key_id: "{{input.AWS_ACCESS_KEY_ID}}"
+  secret_access_key: "{{input.AWS_SECRET_ACCESS_KEY}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: Content-Type
+    from: literal
+    value: application/x-amz-json-1.1
+  - name: X-Amz-Target
+    from: literal
+    value: com.amazonaws.cloudtrail.v20131101.CloudTrail_20131101.LookupEvents
+test_queries:
+  - >-
+    SELECT event_name, username, event_time FROM cloudtrail.management_events
+    WHERE start_time = CAST(EXTRACT(EPOCH FROM NOW() - INTERVAL '7 days') AS BIGINT)
+    AND end_time = CAST(EXTRACT(EPOCH FROM NOW()) AS BIGINT) LIMIT 5
+  - >-
+    SELECT event_name, resource_name, event_time FROM cloudtrail.ec2_events
+    WHERE start_time = CAST(EXTRACT(EPOCH FROM NOW() - INTERVAL '7 days') AS BIGINT)
+    AND end_time = CAST(EXTRACT(EPOCH FROM NOW()) AS BIGINT) LIMIT 5
+tables:
+  - name: management_events
+    description: >-
+      Write management events returned by LookupEvents with ReadOnly=false,
+      across all services. AWS classifies these broadly: most are resource
+      create/modify/delete calls, but the set also includes non-mutating write
+      events such as ConsoleLogin and GetSigninToken.
+    guide: >
+      start_time and end_time are optional Unix epoch seconds. When omitted,
+      AWS defaults to the earliest available event within the last 90 days for
+      start_time and the current time for end_time. LookupEvents retains 90
+      days of history. ReadOnly is hardcoded to false, so AWS returns its set
+      of write events — mostly resource mutations, but also non-mutating writes
+      such as ConsoleLogin and GetSigninToken. Supply explicit start_time and
+      end_time on every query —
+      omitting them causes the effective window to vary between the initial
+      request and each NextToken page, which can invalidate pagination or
+      silently shift the result window. Rate limit is 2 requests per second
+      per account per region, and CloudTrail returns ThrottlingException as
+      HTTP 400 (not 429), which Coral does not auto-retry. To stay well under
+      the limit, pagination is capped at 500 events (10 pages x 50 results);
+      narrow the time window (for example query day-by-day) if your account
+      exceeds this in the requested period. Use json_get_json(cloudtrail_event,
+      'requestParameters') to inspect what changed.
+    request:
+      method: POST
+      path: /
+      body:
+        - path: [LookupAttributes, "0", AttributeKey]
+          from: literal
+          value: ReadOnly
+        - path: [LookupAttributes, "0", AttributeValue]
+          from: literal
+          value: "false"
+        - path: [StartTime]
+          from: filter_int
+          key: start_time
+        - path: [EndTime]
+          from: filter_int
+          key: end_time
+        - path: [MaxResults]
+          from: literal
+          value: 50
+    response:
+      rows_path: [Events]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 10
+    columns:
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: >-
+          Start time filter (Unix epoch seconds). Supply an explicit value;
+          omitting it can cause the effective window to shift between pages.
+        expr: {kind: from_filter, key: start_time}
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: End time filter (Unix epoch seconds). When omitted, AWS uses the current time. Supply an explicit value for stable pagination.
+        expr: {kind: from_filter, key: end_time}
+      - name: event_id
+        type: Utf8
+        nullable: true
+        description: Unique CloudTrail event ID.
+        expr: {kind: path, path: [EventId]}
+      - name: event_name
+        type: Utf8
+        nullable: true
+        description: AWS API operation name, e.g. 'CreateBucket', 'CreateFunction', 'RunInstances'.
+        expr: {kind: path, path: [EventName]}
+      - name: event_time
+        type: Timestamp
+        nullable: true
+        description: When the API call was made (UTC).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [EventTime]}
+      - name: event_source
+        type: Utf8
+        nullable: true
+        description: >-
+          AWS service that received the call, e.g. 'lambda.amazonaws.com',
+          'cloudformation.amazonaws.com', 'ec2.amazonaws.com'.
+        expr: {kind: path, path: [EventSource]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: IAM entity that made the call — username, role name, or 'root'.
+        expr: {kind: path, path: [Username]}
+      - name: access_key_id
+        type: Utf8
+        nullable: true
+        description: Access key ID used for the call.
+        expr: {kind: path, path: [AccessKeyId]}
+      - name: resource_type
+        type: Utf8
+        nullable: true
+        description: >-
+          AWS resource type of the first resource in the event's Resources
+          array, e.g. 'AWS::Lambda::Function', 'AWS::CloudFormation::Stack'.
+          See cloudtrail_event for events that reference several resources.
+        expr: {kind: path, path: [Resources, "0", ResourceType]}
+      - name: resource_name
+        type: Utf8
+        nullable: true
+        description: >-
+          Name or ARN of the first resource in the event's Resources array.
+          See cloudtrail_event for the full list when an event touches several
+          resources.
+        expr: {kind: path, path: [Resources, "0", ResourceName]}
+      - name: cloudtrail_event
+        type: Json
+        nullable: true
+        description: Full CloudTrail event JSON. Use json_get_json(cloudtrail_event, 'requestParameters') to inspect what changed.
+        expr: {kind: path, path: [CloudTrailEvent]}
+    filters:
+      - name: start_time
+        description: Event window start as Unix epoch seconds. Supply explicit values for stable pagination.
+      - name: end_time
+        description: Event window end as Unix epoch seconds. Supply explicit values for stable pagination.
+
+  - name: lambda_events
+    description: Lambda function events returned by LookupEvents, scoped to 'lambda.amazonaws.com'. Includes both read and write operations.
+    guide: >
+      start_time and end_time are optional Unix epoch seconds. When omitted,
+      AWS defaults to the earliest available event within the last 90 days for
+      start_time and the current time for end_time. Supply explicit values on
+      every query — omitting them causes the effective window to vary between
+      the initial request and each NextToken page, which can invalidate
+      pagination or silently shift the result window. Returns all Lambda API
+      calls — including read-only ones such as GetFunction and ListFunctions.
+      The LookupEvents API accepts only one LookupAttribute per request, so
+      ReadOnly=false cannot be combined with the EventSource filter. The
+      EventSource filter is applied server-side; any further filtering by
+      event_name or read_only happens client-side after Coral receives the
+      results. The 500-event cap (10 pages x 50) may be reached before all
+      target mutations are fetched — narrow the time window to stay under the
+      cap. CloudTrail returns ThrottlingException as HTTP 400 (not 429), which
+      Coral does not auto-retry, so keep windows small. To restrict to write
+      operations, add WHERE
+      event_name IN ('CreateFunction', 'UpdateFunctionCode',
+      'UpdateFunctionConfiguration', 'DeleteFunction') or WHERE
+      read_only = 'false' in your query. Use json_get_json(cloudtrail_event,
+      'requestParameters') to see what configuration changed.
+    request:
+      method: POST
+      path: /
+      body:
+        - path: [LookupAttributes, "0", AttributeKey]
+          from: literal
+          value: EventSource
+        - path: [LookupAttributes, "0", AttributeValue]
+          from: literal
+          value: lambda.amazonaws.com
+        - path: [StartTime]
+          from: filter_int
+          key: start_time
+        - path: [EndTime]
+          from: filter_int
+          key: end_time
+        - path: [MaxResults]
+          from: literal
+          value: 50
+    response:
+      rows_path: [Events]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 10
+    columns:
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: >-
+          Start time filter (Unix epoch seconds). Supply an explicit value;
+          omitting it can cause the effective window to shift between pages.
+        expr: {kind: from_filter, key: start_time}
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: End time filter (Unix epoch seconds). When omitted, AWS uses the current time. Supply an explicit value for stable pagination.
+        expr: {kind: from_filter, key: end_time}
+      - name: event_id
+        type: Utf8
+        nullable: true
+        description: Unique CloudTrail event ID.
+        expr: {kind: path, path: [EventId]}
+      - name: event_name
+        type: Utf8
+        nullable: true
+        description: >-
+          Lambda API operation name, e.g. 'UpdateFunctionConfiguration',
+          'UpdateFunctionCode', 'CreateFunction', 'DeleteFunction',
+          'GetFunction'. Includes read and write operations — filter by
+          event_name to restrict to mutations.
+        expr: {kind: path, path: [EventName]}
+      - name: event_time
+        type: Timestamp
+        nullable: true
+        description: When the Lambda API call was made (UTC).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [EventTime]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: IAM entity that made the call. Role names reveal CI/CD pipeline names.
+        expr: {kind: path, path: [Username]}
+      - name: access_key_id
+        type: Utf8
+        nullable: true
+        description: Access key ID used for the call.
+        expr: {kind: path, path: [AccessKeyId]}
+      - name: resource_name
+        type: Utf8
+        nullable: true
+        description: Lambda function name or ARN.
+        expr: {kind: path, path: [Resources, "0", ResourceName]}
+      - name: event_source
+        type: Utf8
+        nullable: true
+        description: AWS service that received the call. Always 'lambda.amazonaws.com' for this table.
+        expr: {kind: path, path: [EventSource]}
+      - name: resource_type
+        type: Utf8
+        nullable: true
+        description: AWS resource type, e.g. 'AWS::Lambda::Function'.
+        expr: {kind: path, path: [Resources, "0", ResourceType]}
+      - name: read_only
+        type: Utf8
+        nullable: true
+        description: >-
+          Whether the event is a read or write operation. 'true' = read-only,
+          'false' = write. Null when the service does not classify the event.
+        expr: {kind: path, path: [ReadOnly]}
+      - name: cloudtrail_event
+        type: Json
+        nullable: true
+        description: >-
+          Full CloudTrail event JSON. Use json_get_json(cloudtrail_event,
+          'requestParameters') to inspect configuration changes.
+        expr: {kind: path, path: [CloudTrailEvent]}
+    filters:
+      - name: start_time
+        description: Event window start as Unix epoch seconds. Supply explicit values for stable pagination.
+      - name: end_time
+        description: Event window end as Unix epoch seconds. Supply explicit values for stable pagination.
+
+  - name: cloudformation_events
+    description: CloudFormation events returned by LookupEvents, scoped to 'cloudformation.amazonaws.com'. Includes both read and write operations.
+    guide: >
+      start_time and end_time are optional Unix epoch seconds. When omitted,
+      AWS defaults to the earliest available event within the last 90 days for
+      start_time and the current time for end_time. Supply explicit values on
+      every query — omitting them causes the effective window to vary between
+      the initial request and each NextToken page, which can invalidate
+      pagination or silently shift the result window. Returns all
+      CloudFormation API calls including read-only ones. The LookupEvents API
+      accepts only one LookupAttribute per request, so ReadOnly=false cannot
+      be combined with the EventSource filter. The EventSource filter is
+      applied server-side; any further filtering by event_name or read_only
+      happens client-side after Coral receives the results. The 500-event cap
+      (10 pages x 50) may be reached before all
+      target mutations are fetched — narrow the time window to stay under the
+      cap. CloudTrail returns ThrottlingException as HTTP 400 (not 429), which
+      Coral does not auto-retry, so keep windows small. To restrict to
+      deployments, add WHERE event_name IN ('CreateStack',
+      'UpdateStack', 'DeleteStack', 'ExecuteChangeSet') or WHERE
+      read_only = 'false' in your query. Check
+      json_get_str(cloudtrail_event, 'requestParameters', 'clientRequestToken')
+      — CI/CD pipelines that set this to the commit SHA give you a direct
+      foreign key to the triggering PR without a time-window join.
+    request:
+      method: POST
+      path: /
+      body:
+        - path: [LookupAttributes, "0", AttributeKey]
+          from: literal
+          value: EventSource
+        - path: [LookupAttributes, "0", AttributeValue]
+          from: literal
+          value: cloudformation.amazonaws.com
+        - path: [StartTime]
+          from: filter_int
+          key: start_time
+        - path: [EndTime]
+          from: filter_int
+          key: end_time
+        - path: [MaxResults]
+          from: literal
+          value: 50
+    response:
+      rows_path: [Events]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 10
+    columns:
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: >-
+          Start time filter (Unix epoch seconds). Supply an explicit value;
+          omitting it can cause the effective window to shift between pages.
+        expr: {kind: from_filter, key: start_time}
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: End time filter (Unix epoch seconds). When omitted, AWS uses the current time. Supply an explicit value for stable pagination.
+        expr: {kind: from_filter, key: end_time}
+      - name: event_id
+        type: Utf8
+        nullable: true
+        description: Unique CloudTrail event ID.
+        expr: {kind: path, path: [EventId]}
+      - name: event_name
+        type: Utf8
+        nullable: true
+        description: >-
+          CloudFormation API operation, e.g. 'UpdateStack', 'CreateStack',
+          'ExecuteChangeSet', 'DeleteStack', 'DescribeStacks'. Includes read
+          and write operations — filter by event_name to restrict to mutations.
+        expr: {kind: path, path: [EventName]}
+      - name: event_time
+        type: Timestamp
+        nullable: true
+        description: When the CloudFormation operation was initiated (UTC).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [EventTime]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: IAM entity that triggered the operation. For GitHub Actions this is the assumed role name.
+        expr: {kind: path, path: [Username]}
+      - name: access_key_id
+        type: Utf8
+        nullable: true
+        description: Access key ID used for the operation.
+        expr: {kind: path, path: [AccessKeyId]}
+      - name: resource_name
+        type: Utf8
+        nullable: true
+        description: CloudFormation stack name.
+        expr: {kind: path, path: [Resources, "0", ResourceName]}
+      - name: event_source
+        type: Utf8
+        nullable: true
+        description: AWS service that received the call. Always 'cloudformation.amazonaws.com' for this table.
+        expr: {kind: path, path: [EventSource]}
+      - name: resource_type
+        type: Utf8
+        nullable: true
+        description: AWS resource type, e.g. 'AWS::CloudFormation::Stack'.
+        expr: {kind: path, path: [Resources, "0", ResourceType]}
+      - name: read_only
+        type: Utf8
+        nullable: true
+        description: >-
+          Whether the event is a read or write operation. 'true' = read-only,
+          'false' = write. Null when the service does not classify the event.
+        expr: {kind: path, path: [ReadOnly]}
+      - name: cloudtrail_event
+        type: Json
+        nullable: true
+        description: >-
+          Full CloudTrail event JSON. Inspect
+          json_get_str(cloudtrail_event, 'requestParameters',
+          'clientRequestToken') for a CI/CD commit SHA or PR foreign key.
+        expr: {kind: path, path: [CloudTrailEvent]}
+    filters:
+      - name: start_time
+        description: Event window start as Unix epoch seconds. Supply explicit values for stable pagination.
+      - name: end_time
+        description: Event window end as Unix epoch seconds. Supply explicit values for stable pagination.
+
+  - name: ec2_events
+    description: EC2 events returned by LookupEvents, scoped to 'ec2.amazonaws.com'. Includes both read and write operations.
+    guide: >
+      start_time and end_time are optional Unix epoch seconds. When omitted,
+      AWS defaults to the earliest available event within the last 90 days for
+      start_time and the current time for end_time. Supply explicit values on
+      every query — omitting them causes the effective window to vary between
+      the initial request and each NextToken page, which can invalidate
+      pagination or silently shift the result window. Returns all EC2 API
+      calls including read-only ones such as DescribeInstances. The
+      LookupEvents API accepts only one LookupAttribute per request, so
+      ReadOnly=false cannot be combined with the EventSource filter. The
+      EventSource filter is applied server-side; any further filtering by
+      event_name or read_only happens client-side after Coral receives the
+      results. The 500-event cap (10 pages x 50) may be reached before all
+      target mutations are fetched — narrow the time window to stay under the
+      cap. CloudTrail returns ThrottlingException as HTTP 400 (not 429), which
+      Coral does not auto-retry, so keep windows small. To restrict to instance
+      lifecycle changes,
+      add WHERE event_name IN ('RunInstances', 'TerminateInstances',
+      'StartInstances', 'StopInstances', 'ModifyInstanceAttribute') or WHERE
+      read_only = 'false' in your query. Only management (control-plane)
+      events are available here — data events require a Trail with data event
+      logging enabled and are not returned by LookupEvents.
+    request:
+      method: POST
+      path: /
+      body:
+        - path: [LookupAttributes, "0", AttributeKey]
+          from: literal
+          value: EventSource
+        - path: [LookupAttributes, "0", AttributeValue]
+          from: literal
+          value: ec2.amazonaws.com
+        - path: [StartTime]
+          from: filter_int
+          key: start_time
+        - path: [EndTime]
+          from: filter_int
+          key: end_time
+        - path: [MaxResults]
+          from: literal
+          value: 50
+    response:
+      rows_path: [Events]
+    pagination:
+      mode: cursor_body
+      cursor_body_path: [NextToken]
+      response_cursor_path: [NextToken]
+      max_pages: 10
+    columns:
+      - name: start_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: >-
+          Start time filter (Unix epoch seconds). Supply an explicit value;
+          omitting it can cause the effective window to shift between pages.
+        expr: {kind: from_filter, key: start_time}
+      - name: end_time
+        type: Int64
+        nullable: true
+        virtual: true
+        description: End time filter (Unix epoch seconds). When omitted, AWS uses the current time. Supply an explicit value for stable pagination.
+        expr: {kind: from_filter, key: end_time}
+      - name: event_id
+        type: Utf8
+        nullable: true
+        description: Unique CloudTrail event ID.
+        expr: {kind: path, path: [EventId]}
+      - name: event_name
+        type: Utf8
+        nullable: true
+        description: >-
+          EC2 API operation name, e.g. 'RunInstances', 'TerminateInstances',
+          'ModifyInstanceAttribute', 'DescribeInstances'. Includes read and
+          write operations — filter by event_name to restrict to mutations.
+        expr: {kind: path, path: [EventName]}
+      - name: event_time
+        type: Timestamp
+        nullable: true
+        description: When the EC2 API call was made (UTC).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [EventTime]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: IAM entity that made the call. Distinguishes automated deployments from manual console changes.
+        expr: {kind: path, path: [Username]}
+      - name: access_key_id
+        type: Utf8
+        nullable: true
+        description: Access key ID used for the call.
+        expr: {kind: path, path: [AccessKeyId]}
+      - name: resource_name
+        type: Utf8
+        nullable: true
+        description: EC2 instance ID (e.g. 'i-0abc123') or resource identifier.
+        expr: {kind: path, path: [Resources, "0", ResourceName]}
+      - name: event_source
+        type: Utf8
+        nullable: true
+        description: AWS service that received the call. Always 'ec2.amazonaws.com' for this table.
+        expr: {kind: path, path: [EventSource]}
+      - name: resource_type
+        type: Utf8
+        nullable: true
+        description: >-
+          AWS resource type, e.g. 'AWS::EC2::Instance', 'AWS::EC2::Volume'.
+        expr: {kind: path, path: [Resources, "0", ResourceType]}
+      - name: read_only
+        type: Utf8
+        nullable: true
+        description: >-
+          Whether the event is a read or write operation. 'true' = read-only,
+          'false' = write. Null when the service does not classify the event.
+        expr: {kind: path, path: [ReadOnly]}
+      - name: cloudtrail_event
+        type: Json
+        nullable: true
+        description: >-
+          Full CloudTrail event JSON. Use json_get_json(cloudtrail_event,
+          'requestParameters') to inspect launch parameters for RunInstances.
+        expr: {kind: path, path: [CloudTrailEvent]}
+    filters:
+      - name: start_time
+        description: Event window start as Unix epoch seconds. Supply explicit values for stable pagination.
+      - name: end_time
+        description: Event window end as Unix epoch seconds. Supply explicit values for stable pagination.

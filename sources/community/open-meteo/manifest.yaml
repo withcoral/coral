@@ -1,0 +1,204 @@
+name: open_meteo
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch weather forecasts from the free Open-Meteo API.
+base_url: https://api.open-meteo.com/v1
+
+test_queries:
+  - >
+    SELECT latitude, longitude, timezone, current_valid_at, current_interval_seconds, current_temperature_2m
+    FROM open_meteo.forecast
+    WHERE latitude = 52.52 AND longitude = 13.41 AND current = 'temperature_2m,wind_speed_10m'
+    LIMIT 1
+
+tables:
+  - name: forecast
+    description: Current weather, hourly, and daily forecasts for a specific coordinate.
+    guide: |
+      Required filters: `latitude` and `longitude`.
+      Optional filters: `current`, `hourly`, `daily`, `timezone`, `temperature_unit`, `wind_speed_unit`, `precipitation_unit`, etc.
+      Projection is not pushed down to the API, so specify requested variables in the `current`, `hourly`, or `daily` filters.
+      See Open-Meteo docs for variable lists and WMO weather codes (https://open-meteo.com/en/docs).
+      WMO weather code reference: 0 = Clear, 1-3 = Partly cloudy, 45-48 = Fog, 51-55 = Drizzle,
+      61-65 = Rain, 71-75 = Snow, 80-82 = Rain showers, 85-86 = Snow showers, 95 = Thunderstorm.
+    filters:
+      - name: latitude
+        required: true
+      - name: longitude
+        required: true
+      - name: current
+      - name: hourly
+      - name: daily
+      - name: timezone
+      - name: forecast_days
+      - name: temperature_unit
+      - name: wind_speed_unit
+      - name: precipitation_unit
+      - name: past_days
+    request:
+      method: GET
+      path: /forecast
+      query:
+        - name: latitude
+          from: filter
+          key: latitude
+        - name: longitude
+          from: filter
+          key: longitude
+        - name: current
+          from: filter
+          key: current
+        - name: hourly
+          from: filter
+          key: hourly
+        - name: daily
+          from: filter
+          key: daily
+        - name: timezone
+          from: filter
+          key: timezone
+        - name: forecast_days
+          from: filter
+          key: forecast_days
+        - name: temperature_unit
+          from: filter
+          key: temperature_unit
+        - name: wind_speed_unit
+          from: filter
+          key: wind_speed_unit
+        - name: precipitation_unit
+          from: filter
+          key: precipitation_unit
+        - name: past_days
+          from: filter
+          key: past_days
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: latitude
+        type: Float64
+        virtual: true
+        description: Requested latitude.
+        expr: {kind: from_filter, key: latitude}
+      - name: longitude
+        type: Float64
+        virtual: true
+        description: Requested longitude.
+        expr: {kind: from_filter, key: longitude}
+      - name: current
+        type: Utf8
+        virtual: true
+        description: Requested current variables.
+        expr: {kind: from_filter, key: current}
+      - name: hourly_variables
+        type: Utf8
+        virtual: true
+        description: Requested hourly variables.
+        expr: {kind: from_filter, key: hourly}
+      - name: daily_variables
+        type: Utf8
+        virtual: true
+        description: Requested daily variables.
+        expr: {kind: from_filter, key: daily}
+      - name: timezone_filter
+        type: Utf8
+        virtual: true
+        description: Requested timezone.
+        expr: {kind: from_filter, key: timezone}
+      - name: forecast_days
+        type: Int64
+        virtual: true
+        description: Requested forecast days.
+        expr: {kind: from_filter, key: forecast_days}
+      - name: past_days
+        type: Int64
+        virtual: true
+        description: Requested past days.
+        expr: {kind: from_filter, key: past_days}
+      - name: temperature_unit
+        type: Utf8
+        virtual: true
+        description: Temperature unit (celsius or fahrenheit). Default is celsius.
+        expr: {kind: from_filter, key: temperature_unit}
+      - name: wind_speed_unit
+        type: Utf8
+        virtual: true
+        description: Wind speed unit (kmh, ms, mph, or kn). Default is kmh.
+        expr: {kind: from_filter, key: wind_speed_unit}
+      - name: precipitation_unit
+        type: Utf8
+        virtual: true
+        description: Precipitation unit (mm or inch). Default is mm.
+        expr: {kind: from_filter, key: precipitation_unit}
+      - name: response_latitude
+        type: Float64
+        description: Actual latitude of the forecast grid cell.
+        expr: {kind: path, path: [latitude]}
+      - name: response_longitude
+        type: Float64
+        description: Actual longitude of the forecast grid cell.
+        expr: {kind: path, path: [longitude]}
+      - name: timezone
+        type: Utf8
+        description: Response timezone.
+        expr: {kind: path, path: [timezone]}
+      - name: timezone_abbreviation
+        type: Utf8
+        description: Timezone abbreviation (e.g. GMT, CEST).
+        expr: {kind: path, path: [timezone_abbreviation]}
+      - name: utc_offset_seconds
+        type: Int64
+        description: UTC offset in seconds for the response timezone.
+        expr: {kind: path, path: [utc_offset_seconds]}
+      - name: elevation
+        type: Float64
+        description: Elevation in meters.
+        expr: {kind: path, path: [elevation]}
+      - name: current_valid_at
+        type: Utf8
+        description: Current weather validity timestamp (model-derived).
+        expr: {kind: path, path: [current, time]}
+      - name: current_interval_seconds
+        type: Int64
+        description: Current weather data validity interval in seconds.
+        expr: {kind: path, path: [current, interval]}
+      - name: current_temperature_2m
+        type: Float64
+        description: Current air temperature at 2 meters.
+        expr: {kind: path, path: [current, temperature_2m]}
+      - name: current_wind_speed_10m
+        type: Float64
+        description: Current wind speed at 10 meters.
+        expr: {kind: path, path: [current, wind_speed_10m]}
+      - name: current_weather_code
+        type: Int64
+        description: >-
+          Current WMO weather interpretation code. Reference:
+          0 = Clear, 1-3 = Partly cloudy, 45-48 = Fog, 51-55 = Drizzle,
+          61-65 = Rain, 71-75 = Snow, 80-82 = Rain showers, 95 = Thunderstorm.
+        expr: {kind: path, path: [current, weather_code]}
+      - name: current_units
+        type: Json
+        description: Units metadata for current weather variables (e.g. °C, km/h, mm).
+        expr: {kind: path, path: [current_units]}
+      - name: current_weather
+        type: Json
+        description: Full current weather object including all requested variables.
+        expr: {kind: path, path: [current]}
+      - name: hourly
+        type: Json
+        description: Unstructured hourly forecast data.
+        expr: {kind: path, path: [hourly]}
+      - name: daily
+        type: Json
+        description: Unstructured daily forecast data.
+        expr: {kind: path, path: [daily]}
+      - name: raw
+        type: Json
+        description: >-
+          Full raw Open-Meteo API response. Use as an escape hatch to access
+          fields not mapped to dedicated columns (e.g. hourly_units, daily_units).
+        expr: {kind: current_row}

@@ -1,92 +1,58 @@
 name: Bug report
-description: Something in Coral is broken or not behaving as documented.
-title: "bug: <short description>"
+description: Report defects, including regressions, crashes, and behavior bugs.
+title: "[Bug]: "
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to file a bug. Please fill in as much as you can — the more detail, the faster we can help.
+    - type: markdown
+      attributes:
+          value: |
+              Keep this report concise, reproducible, and grounded in observed evidence. If you do not know an answer, write `Unknown`.
 
-        For security vulnerabilities, please **do not** file a public issue. See [SECURITY.md](https://github.com/withcoral/coral/blob/main/SECURITY.md).
+              For security vulnerabilities, please **do not** file a public issue. See [SECURITY.md](https://github.com/withcoral/coral/blob/main/SECURITY.md).
 
-  - type: textarea
-    id: summary
-    attributes:
-      label: What happened?
-      description: A clear description of the bug. Include any error messages verbatim.
-    validations:
-      required: true
+    - type: textarea
+      id: summary
+      attributes:
+          label: What happened?
+          description: A short description of the observed failure. Include exact error messages when available.
+      validations:
+          required: true
 
-  - type: textarea
-    id: expected
-    attributes:
-      label: What did you expect to happen?
-    validations:
-      required: true
+    - type: textarea
+      id: repro
+      attributes:
+          label: Steps to reproduce
+          description: Minimal commands, config, source spec, or workflow needed to reproduce.
+          placeholder: |
+              1. `coral source add --file my-source.yaml`
+              2. `coral query "select * from my_source.foo"`
+              3. ...
+      validations:
+          required: true
 
-  - type: textarea
-    id: repro
-    attributes:
-      label: Steps to reproduce
-      description: Minimal commands, config, or source spec needed to reproduce. Paste shell output in fenced code blocks.
-      placeholder: |
-        1. `coral source add --file my-source.yaml`
-        2. `coral query "select * from my_source.foo"`
-        3. ...
-    validations:
-      required: true
+    - type: textarea
+      id: expected
+      attributes:
+          label: Expected behavior
+          description: What should have happened instead? Cite docs, prior behavior, or a known-good version if relevant.
+      validations:
+          required: true
 
-  - type: input
-    id: version
-    attributes:
-      label: Coral version
-      description: Output of `coral --version`. If building from source, include the commit SHA.
-      placeholder: "coral 0.x.y (commit abc1234)"
-    validations:
-      required: true
+    - type: textarea
+      id: environment
+      attributes:
+          label: Environment
+          description: Coral version, install method, operating system, and any relevant source/MCP/config context.
+          placeholder: |
+              Coral: `coral --version`
+              Install: Homebrew / script / cargo / source build
+              OS: macOS 26.5.1 / Ubuntu 24.04 / Windows 11
+      validations:
+          required: true
 
-  - type: dropdown
-    id: os
-    attributes:
-      label: Operating system
-      options:
-        - macOS (Apple Silicon)
-        - macOS (Intel)
-        - Linux (x86_64)
-        - Linux (aarch64)
-        - Windows
-        - Other (describe below)
-    validations:
-      required: true
-
-  - type: dropdown
-    id: area
-    attributes:
-      label: Which area is affected?
-      description: Best guess is fine.
-      options:
-        - CLI (`coral` commands)
-        - Source spec / source authoring
-        - Bundled source (specify which in the description)
-        - Query engine
-        - MCP adapter
-        - Docs / examples
-        - Build / install
-        - Other / not sure
-    validations:
-      required: true
-
-  - type: textarea
-    id: logs
-    attributes:
-      label: Logs or output
-      description: |
-        Relevant logs. Re-running with `RUST_LOG=debug` or `RUST_BACKTRACE=1` is often useful.
-      render: shell
-
-  - type: textarea
-    id: extra
-    attributes:
-      label: Anything else?
-      description: Source spec snippets, screenshots, related issues, workarounds you've tried.
+    - type: textarea
+      id: logs
+      attributes:
+          label: Logs, output, or evidence
+          description: Paste redacted logs, command output, screenshots, traces, or links that support the report. `RUST_LOG=debug` or `RUST_BACKTRACE=1` may help for crashes.
+          render: shell

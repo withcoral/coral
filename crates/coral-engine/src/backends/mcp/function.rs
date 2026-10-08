@@ -1,25 +1,25 @@
-use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use coral_spec::ResponseSpec;
-use coral_spec::backends::mcp::{McpPaginationSpec, McpTableFunctionSpec};
+use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpTableFunctionSpec};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::scalar::ScalarValue;
 use serde_json::Value;
 
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
+use crate::SourceObservationSurfaceKind;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::source_observation::SourceObservationPublishers;
+use crate::backends::{BoundSourceFunctionArg, SourceFunctionProviderFactory};
 
 #[derive(Clone)]
 pub(super) struct McpSourceTableFunction {
@@ -35,8 +35,10 @@ struct McpFunctionState {
     schema: SchemaRef,
     response: ResponseSpec,
     pagination: Option<McpPaginationSpec>,
+    offset_pagination: Option<McpOffsetPaginationSpec>,
     columns: Arc<[coral_spec::ColumnSpec]>,
     fetch_limit_default: Option<usize>,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 impl std::fmt::Debug for McpSourceTableFunction {
@@ -64,6 +66,7 @@ impl McpSourceTableFunction {
         backend: McpSourceClient,
         source_schema: String,
         function: McpTableFunctionSpec,
+        source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
         let schema = schema_from_columns(function.columns(), &source_schema, function.name())?;
         let function_name = function.name().to_string();
@@ -72,6 +75,7 @@ impl McpSourceTableFunction {
         let columns = function.common.columns.clone();
         let fetch_limit_default = function.fetch_limit_default();
         let pagination = function.pagination.clone();
+        let offset_pagination = function.offset_pagination.clone();
         Ok(Self {
             spec: Arc::new(function),
             state: Arc::new(McpFunctionState {
@@ -82,15 +86,21 @@ impl McpSourceTableFunction {
                 schema,
                 response,
                 pagination,
+                offset_pagination,
                 columns: Arc::from(columns),
                 fetch_limit_default,
+                source_observation_publishers,
             }),
         })
     }
 }
 
-impl TableFunctionImpl for McpSourceTableFunction {
-    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+impl SourceFunctionProviderFactory for McpSourceTableFunction {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.state.schema)
+    }
+
+    fn provider_for_args(&self, args: &[BoundSourceFunctionArg]) -> Result<Arc<dyn TableProvider>> {
         let arg_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
         Ok(Arc::new(McpFunctionCallTableProvider {
             state: Arc::clone(&self.state),
@@ -116,10 +126,6 @@ impl std::fmt::Debug for McpFunctionCallTableProvider {
 
 #[async_trait]
 impl TableProvider for McpFunctionCallTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.state.schema.clone()
     }
@@ -156,8 +162,11 @@ impl TableProvider for McpFunctionCallTableProvider {
             relation: self.state.function_name.clone(),
             tool_name: self.state.tool_name.clone(),
             arguments,
+            source_inputs: None,
+            source_tool_args: Arc::new(BTreeMap::default()),
             response: self.state.response.clone(),
             pagination: self.state.pagination.clone(),
+            offset_pagination: self.state.offset_pagination.clone(),
             limit: limit.or(self.state.fetch_limit_default),
         });
         let arg_strings: Arc<HashMap<String, String>> =
@@ -177,7 +186,11 @@ impl TableProvider for McpFunctionCallTableProvider {
             fetcher,
             converter,
             projection.cloned(),
-        )?;
+        )?
+        .with_source_observation(
+            SourceObservationSurfaceKind::Function,
+            Arc::clone(&self.state.source_observation_publishers),
+        );
         Ok(Arc::new(exec))
     }
 }
@@ -190,7 +203,7 @@ struct FunctionCallContext<'a> {
 fn bind_function_args(
     source_schema: &str,
     function: &McpTableFunctionSpec,
-    args: &[Expr],
+    args: &[BoundSourceFunctionArg],
 ) -> Result<HashMap<String, Value>> {
     let context = FunctionCallContext {
         source_schema,
@@ -202,15 +215,19 @@ fn bind_function_args(
     let mut arg_values = HashMap::with_capacity(function.args().len());
 
     for (index, spec) in function.args().iter().enumerate() {
-        let Some(value) = resolve_call_arg_literal(&context, spec.name.as_str(), args.get(index))?
-        else {
+        let Some(value) = args.get(index).and_then(Option::as_ref) else {
             if spec.required {
                 required_missing.push(spec.name.as_str());
             }
             continue;
         };
-        ensure_call_arg_allowed_value(&context, spec.name.as_str(), &value, &spec.values)?;
-        arg_values.insert(spec.bind.arg.clone(), value);
+        ensure_call_arg_allowed_value(
+            &context,
+            spec.name.as_str(),
+            &value.source_text,
+            &spec.values,
+        )?;
+        arg_values.insert(spec.bind.arg.clone(), value.value.clone());
     }
 
     if !required_missing.is_empty() {
@@ -240,44 +257,6 @@ fn ensure_no_extra_args(
     Ok(())
 }
 
-fn resolve_call_arg_literal(
-    context: &FunctionCallContext<'_>,
-    arg_name: &str,
-    expr: Option<&Expr>,
-) -> Result<Option<Value>> {
-    let Some(expr) = expr else {
-        return Ok(None);
-    };
-    if is_null_literal(expr) {
-        return Ok(None);
-    }
-    let Some(value) = literal_to_json_value(expr) else {
-        return Err(DataFusionError::Plan(format!(
-            "{}.{} argument '{}' must be a literal",
-            context.source_schema, context.function_name, arg_name
-        )));
-    };
-    Ok(Some(value))
-}
-
-fn is_null_literal(expr: &Expr) -> bool {
-    match expr {
-        Expr::Literal(value, _) => value.is_null(),
-        Expr::Cast(cast) => is_null_literal(cast.expr.as_ref()),
-        Expr::TryCast(cast) => is_null_literal(cast.expr.as_ref()),
-        _ => false,
-    }
-}
-
-fn literal_to_json_value(expr: &Expr) -> Option<Value> {
-    match expr {
-        Expr::Literal(value, _) => scalar_value_to_json(value),
-        Expr::Cast(cast) => literal_to_json_value(cast.expr.as_ref()),
-        Expr::TryCast(cast) => literal_to_json_value(cast.expr.as_ref()),
-        _ => None,
-    }
-}
-
 /// Renders the typed function call args as the `String` map `convert_items`
 /// expects when resolving `expr.kind: from_arg`. Strings pass through as-is;
 /// other JSON scalars are stringified so a column reading `from_arg` sees the
@@ -295,42 +274,13 @@ fn arg_values_as_strings(arg_values: &HashMap<String, Value>) -> HashMap<String,
         .collect()
 }
 
-fn scalar_value_to_json(value: &ScalarValue) -> Option<Value> {
-    match value {
-        ScalarValue::Utf8(Some(value))
-        | ScalarValue::LargeUtf8(Some(value))
-        | ScalarValue::Utf8View(Some(value)) => Some(Value::String(value.clone())),
-        ScalarValue::Boolean(Some(value)) => Some(Value::Bool(*value)),
-        ScalarValue::Int8(Some(value)) => Some(Value::from(*value)),
-        ScalarValue::Int16(Some(value)) => Some(Value::from(*value)),
-        ScalarValue::Int32(Some(value)) => Some(Value::from(*value)),
-        ScalarValue::Int64(Some(value)) => Some(Value::from(*value)),
-        ScalarValue::UInt8(Some(value)) => Some(Value::from(*value)),
-        ScalarValue::UInt16(Some(value)) => Some(Value::from(*value)),
-        ScalarValue::UInt32(Some(value)) => Some(Value::from(*value)),
-        ScalarValue::UInt64(Some(value)) => Some(Value::from(*value)),
-        ScalarValue::Float32(Some(value)) => {
-            serde_json::Number::from_f64(f64::from(*value)).map(Value::Number)
-        }
-        ScalarValue::Float64(Some(value)) => {
-            serde_json::Number::from_f64(*value).map(Value::Number)
-        }
-        _ => None,
-    }
-}
-
 fn ensure_call_arg_allowed_value(
     context: &FunctionCallContext<'_>,
     arg: &str,
-    value: &Value,
+    value: &str,
     allowed_values: &[String],
 ) -> Result<()> {
-    let comparable_value = value_for_allowed_value_check(value);
-    if !allowed_values.is_empty()
-        && !allowed_values
-            .iter()
-            .any(|allowed| allowed == comparable_value.as_str())
-    {
+    if !allowed_values.is_empty() && !allowed_values.iter().any(|allowed| allowed == value) {
         return Err(DataFusionError::Plan(format!(
             "{}.{} argument '{arg}' has invalid value '{value}'; expected one of: {}",
             context.source_schema,
@@ -341,9 +291,19 @@ fn ensure_call_arg_allowed_value(
     Ok(())
 }
 
-fn value_for_allowed_value_check(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        other => other.to_string(),
+#[cfg(test)]
+mod tests {
+    use crate::backends::shared::scalar::timestamp_to_rfc3339;
+    use datafusion::scalar::ScalarValue;
+
+    #[test]
+    fn timestamp_scalar_serializes_as_json_string() {
+        let timestamp =
+            ScalarValue::TimestampMicrosecond(Some(1_704_067_200_000_000), Some("+00:00".into()));
+
+        assert_eq!(
+            timestamp_to_rfc3339(&timestamp),
+            Some("2024-01-01T00:00:00Z".to_string())
+        );
     }
 }

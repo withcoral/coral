@@ -1,0 +1,460 @@
+name: bitbucket
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query repositories, pull requests, and pipelines from Bitbucket Cloud
+  via the Bitbucket Cloud REST API v2.0. Authenticate with OAuth
+  authorization-code.
+base_url: https://api.bitbucket.org/2.0
+
+inputs:
+  BITBUCKET_TOKEN:
+    kind: secret
+    hint: |
+      Bitbucket OAuth access token. Click "Connect with Bitbucket" to
+      authorize through the browser — Coral will handle the OAuth flow
+      and store the token automatically.
+
+      To use OAuth, first create an OAuth consumer in your Bitbucket
+      workspace: Settings → OAuth consumers → Add consumer.
+      Set the Redirect URL to: http://127.0.0.1:53682/oauth/callback
+      Grant the following permissions:
+        - Repositories: Read
+        - Pull requests: Read
+        - Pipelines: Read
+      Copy the Key into BITBUCKET_CLIENT_ID and the Secret into
+      BITBUCKET_CLIENT_SECRET before running source add.
+
+      Note: this source sends Authorization: Bearer and works with OAuth
+      access tokens and Bitbucket repository access tokens (both Bearer).
+      Bitbucket App passwords use HTTP Basic auth and are not compatible.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Bitbucket
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: disabled
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://bitbucket.org/site/oauth2/authorize
+              token_url: https://bitbucket.org/site/oauth2/access_token
+            client:
+              id:
+                input: BITBUCKET_CLIENT_ID
+              secret:
+                input: BITBUCKET_CLIENT_SECRET
+                transport: basic_auth
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repository
+                  - pullrequest
+                  - pipeline
+
+  BITBUCKET_CLIENT_ID:
+    kind: variable
+    hint: |
+      OAuth Consumer Key from Bitbucket workspace Settings → OAuth consumers.
+      This is a non-secret app identifier, not a password.
+
+  BITBUCKET_CLIENT_SECRET:
+    kind: secret
+    hint: |
+      OAuth Consumer Secret from the same Bitbucket OAuth consumer.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.BITBUCKET_TOKEN}}
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # repositories — repos owned by a workspace
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: repositories
+    description: >-
+      Repositories owned by a Bitbucket workspace. Each row is one
+      repository. Use slug as the repo_slug filter for pull_requests
+      and pipelines.
+    guide: |
+      Requires `workspace`. `slug` is the URL-safe repo identifier to
+      pass as `repo_slug` in `pull_requests` and `pipelines`. Use
+      `is_private` for compliance reports verifying repository visibility.
+      Join with `jira.issues` or `github.pulls` for cross-source
+      engineering metrics.
+    filters:
+      - name: workspace
+        required: true
+    request:
+      method: GET
+      path: /repositories/{{filter.workspace}}
+    response:
+      rows_path:
+        - values
+    pagination:
+      mode: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: pagelen
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: >-
+          URL-safe repository identifier. Pass this as repo_slug when
+          querying pull_requests or pipelines.
+        expr:
+          kind: path
+          path:
+            - slug
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the repository.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Repository description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Primary programming language detected by Bitbucket.
+        expr:
+          kind: path
+          path:
+            - language
+      - name: size
+        type: Int64
+        nullable: true
+        description: Repository size in bytes.
+        expr:
+          kind: path
+          path:
+            - size
+      - name: is_private
+        type: Boolean
+        nullable: true
+        description: True when the repository is private.
+        expr:
+          kind: path
+          path:
+            - is_private
+      - name: created_on
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the repository was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_on
+      - name: updated_on
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the last push or settings change.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_on
+      - name: workspace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Workspace slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: workspace
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # pull_requests — PRs in a repository
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: pull_requests
+    description: >-
+      Pull requests in a Bitbucket repository. Each row is one pull
+      request. Use the state filter to narrow to OPEN, MERGED, DECLINED,
+      or SUPERSEDED pull requests.
+    guide: |
+      Requires `workspace` and `repo_slug`. Optional `state` filter pushes
+      down to the API (`?state=OPEN`, `?state=MERGED`, etc.). Use
+      `created_on` and `updated_on` for PR cycle-time and flow-metric
+      queries. Join `bitbucket.repositories` on `workspace` and
+      `repo_slug = slug`. Join with `jira.issues` via branch name or PR
+      title conventions for cross-source sprint analytics.
+    filters:
+      - name: workspace
+        required: true
+      - name: repo_slug
+        required: true
+      - name: state
+        required: false
+    request:
+      method: GET
+      path: /repositories/{{filter.workspace}}/{{filter.repo_slug}}/pullrequests
+      query:
+        - name: state
+          from: filter
+          key: state
+    response:
+      rows_path:
+        - values
+    pagination:
+      mode: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: pagelen
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Pull request number within the repository.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Pull request title.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Pull request description as raw markup text (summary.raw in the API response).
+        expr:
+          kind: path
+          path:
+            - summary
+            - raw
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Lifecycle state: OPEN, MERGED, DECLINED, or SUPERSEDED."
+        expr:
+          kind: path
+          path:
+            - state
+      - name: author_nickname
+        type: Utf8
+        nullable: true
+        description: Bitbucket account nickname of the pull request author.
+        expr:
+          kind: path
+          path:
+            - author
+            - nickname
+      - name: source_branch
+        type: Utf8
+        nullable: true
+        description: Name of the source (head) branch.
+        expr:
+          kind: path
+          path:
+            - source
+            - branch
+            - name
+      - name: destination_branch
+        type: Utf8
+        nullable: true
+        description: Name of the destination (base) branch.
+        expr:
+          kind: path
+          path:
+            - destination
+            - branch
+            - name
+      - name: created_on
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the pull request was opened.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_on
+      - name: updated_on
+        type: Timestamp
+        nullable: true
+        description: Timestamp of the last update.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_on
+      - name: state_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: State filter passed to the API; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: state
+      - name: workspace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Workspace slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: workspace
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: repo_slug
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # pipelines — CI/CD pipeline runs for a repository
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: pipelines
+    description: >-
+      CI/CD pipeline runs for a Bitbucket repository. Each row is one
+      pipeline run. Use state_name and state_result_name to filter by
+      run status locally.
+    guide: |
+      Requires `workspace` and `repo_slug`. `state_name` holds the
+      top-level state (for example COMPLETED or IN_PROGRESS).
+      `state_result_name` holds the result within a completed run
+      (for example SUCCESSFUL or FAILED). Filter on these columns locally.
+      Join with `bitbucket.pull_requests` on `workspace` and `repo_slug`
+      for deployment-alongside-PR analytics, or with `jira.issues` for
+      release-tracking dashboards.
+    filters:
+      - name: workspace
+        required: true
+      - name: repo_slug
+        required: true
+    request:
+      method: GET
+      path: /repositories/{{filter.workspace}}/{{filter.repo_slug}}/pipelines
+    response:
+      rows_path:
+        - values
+    pagination:
+      mode: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: pagelen
+      page_param: page
+      page_start: 1
+      page_step: 1
+    columns:
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Globally unique pipeline run identifier.
+        expr:
+          kind: path
+          path:
+            - uuid
+      - name: build_number
+        type: Int64
+        nullable: false
+        description: Sequential build number within the repository.
+        expr:
+          kind: path
+          path:
+            - build_number
+      - name: state_name
+        type: Utf8
+        nullable: true
+        description: "Top-level pipeline state, for example COMPLETED or IN_PROGRESS."
+        expr:
+          kind: path
+          path:
+            - state
+            - name
+      - name: state_result_name
+        type: Utf8
+        nullable: true
+        description: "Result within a completed run, for example SUCCESSFUL or FAILED."
+        expr:
+          kind: path
+          path:
+            - state
+            - result
+            - name
+      - name: creator_nickname
+        type: Utf8
+        nullable: true
+        description: Bitbucket account nickname of the user who triggered the run.
+        expr:
+          kind: path
+          path:
+            - creator
+            - nickname
+      - name: created_on
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the pipeline run was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_on
+      - name: completed_on
+        type: Timestamp
+        nullable: true
+        description: Timestamp when the pipeline run completed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed_on
+      - name: workspace
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Workspace slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: workspace
+      - name: repo_slug
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Repository slug passed as the filter; echoed onto every row.
+        expr:
+          kind: from_filter
+          key: repo_slug

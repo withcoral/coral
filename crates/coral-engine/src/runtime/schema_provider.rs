@@ -1,6 +1,5 @@
 //! Static schema provider used for the source metadata schema.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,10 +24,6 @@ impl StaticSchemaProvider {
 
 #[async_trait]
 impl SchemaProvider for StaticSchemaProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn table_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.tables.keys().cloned().collect();
         names.sort();

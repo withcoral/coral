@@ -1,0 +1,503 @@
+name: google_tasks
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query task lists and tasks from the Google Tasks API. Supports fetching
+  all your personal and shared task lists, and allows deep filtering of tasks
+  by due dates, completion status, assignment, and visibility.
+base_url: "https://tasks.googleapis.com"
+
+inputs:
+  GOOGLE_TASKS_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Google Tasks OAuth 2.0 access token. Use "Connect Google Tasks" to
+      authenticate interactively, or paste an existing access token issued
+      with the https://www.googleapis.com/auth/tasks.readonly scope.
+
+      For interactive setup, enable the Google Tasks API in a Google Cloud
+      project and create an OAuth 2.0 client of type "Desktop app", then
+      enter its Client ID and Client Secret when prompted. See
+      https://support.google.com/cloud/answer/6158849.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect Google Tasks
+          description: >-
+            Use Google OAuth to retrieve a Tasks access token.
+            Requests read-only access with the
+            https://www.googleapis.com/auth/tasks.readonly scope.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: "https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent"
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GOOGLE_TASKS_OAUTH_CLIENT_ID
+              secret:
+                input: GOOGLE_TASKS_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/tasks.readonly
+        - type: source_config
+          label: Paste access token
+          description: Paste an existing Google Tasks OAuth access token.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.GOOGLE_TASKS_ACCESS_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, title, updated FROM google_tasks.task_lists LIMIT 5
+
+tables:
+  # ------------------------------------------------------------------
+  # google_tasks.task_lists — all task lists accessible to the user
+  # GET /tasks/v1/users/@me/lists
+  # Pagination: pageToken cursor, maxResults query param (max 1000).
+  # ------------------------------------------------------------------
+  - name: task_lists
+    description: >-
+      Personal and shared task lists belonging to the authenticated user.
+      Use the `id` from this table as the `tasklist_id` filter when querying
+      the `tasks` table.
+    guide: |
+      Entry-point table. Returns all task lists visible to the authenticated
+      user. Obtain the `id` from here to query specific items in the `tasks`
+      table.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /tasks/v1/users/@me/lists
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 1000
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the task list.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Title of the task list.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Last modification time of the task list (RFC 3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: self_link
+        type: Utf8
+        nullable: true
+        description: URL pointing to this task list.
+        expr:
+          kind: path
+          path:
+            - selfLink
+
+  # ------------------------------------------------------------------
+  # google_tasks.tasks — task items inside a list
+  # GET /tasks/v1/lists/{tasklist}/tasks
+  # Required filter: tasklist_id (PATH param).
+  # Optional filters pushed to API as query params.
+  # ------------------------------------------------------------------
+  - name: tasks
+    description: >-
+      Individual task items contained within a designated task list.
+      Requires `tasklist_id` (from `google_tasks.task_lists.id`).
+      Optionally filter by `show_completed`, `show_hidden`, `show_assigned`,
+      `due_min`, `due_max`, `completed_min`, `completed_max`, or `updated_min`.
+    guide: |
+      Requires `tasklist_id` — obtain it from `google_tasks.task_lists`.
+
+      **Completed Tasks:** Google Tasks API returns completed tasks by
+      default (`showCompleted` defaults to true). However, tasks completed
+      in first-party Google clients (web UI, mobile app) become *hidden*
+      and are only visible when `show_hidden = true` is also set. To get
+      a full completion history, use both `show_completed = true` and
+      `show_hidden = true`.
+
+      **Assigned Tasks:** Tasks assigned from Google Docs or Google Chat
+      are not returned by default. Pass `show_assigned = true` to include
+      them. These tasks carry `assignment_info` with their origin surface,
+      link, and Drive/Space metadata.
+
+      **Dates:** Filters like `due_min`, `due_max`, `completed_min`, and
+      `completed_max` accept RFC 3339 formatted timestamps
+      (e.g., `2024-01-01T00:00:00Z`).
+
+      **Rate limits:** Google Tasks enforces a courtesy rate limit of
+      50,000 queries per day. Use `LIMIT` and date-range filters to keep
+      queries bounded on large task lists.
+    fetch_limit_default: 100
+    filters:
+      - name: tasklist_id
+        required: true
+      - name: show_completed
+        required: false
+      - name: show_deleted
+        required: false
+      - name: show_hidden
+        required: false
+      - name: show_assigned
+        required: false
+      - name: due_min
+        required: false
+      - name: due_max
+        required: false
+      - name: completed_min
+        required: false
+      - name: completed_max
+        required: false
+      - name: updated_min
+        required: false
+    request:
+      method: GET
+      path: /tasks/v1/lists/{{filter.tasklist_id}}/tasks
+      query:
+        - name: showCompleted
+          from: filter
+          key: show_completed
+        - name: showDeleted
+          from: filter
+          key: show_deleted
+        - name: showHidden
+          from: filter
+          key: show_hidden
+        - name: showAssigned
+          from: filter
+          key: show_assigned
+        - name: dueMin
+          from: filter
+          key: due_min
+        - name: dueMax
+          from: filter
+          key: due_max
+        - name: completedMin
+          from: filter
+          key: completed_min
+        - name: completedMax
+          from: filter
+          key: completed_max
+        - name: updatedMin
+          from: filter
+          key: updated_min
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 100
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique identifier for the task item.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: tasklist_id
+        type: Utf8
+        nullable: false
+        description: The task list this task belongs to (echoes the required filter).
+        expr:
+          kind: from_filter
+          key: tasklist_id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the task item.
+        expr:
+          kind: path
+          path:
+            - title
+      - name: status
+        type: Utf8
+        nullable: false
+        description: >-
+          Current status of the task: `needsAction` or `completed`.
+        expr:
+          kind: path
+          path:
+            - status
+      - name: due
+        type: Timestamp
+        nullable: true
+        description: Due date of the task (RFC 3339, midnight UTC).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - due
+      - name: completed
+        type: Timestamp
+        nullable: true
+        description: Completion timestamp of the task (RFC 3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - completed
+      - name: notes
+        type: Utf8
+        nullable: true
+        description: Notes or description appended to the task.
+        expr:
+          kind: path
+          path:
+            - notes
+      - name: parent
+        type: Utf8
+        nullable: true
+        description: Parent task identifier if this is a subtask.
+        expr:
+          kind: path
+          path:
+            - parent
+      - name: position
+        type: Utf8
+        nullable: true
+        description: Position of the task among its sibling tasks.
+        expr:
+          kind: path
+          path:
+            - position
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether the task has been deleted (only present when show_deleted is true).
+        expr:
+          kind: path
+          path:
+            - deleted
+      - name: hidden
+        type: Boolean
+        nullable: true
+        description: Whether the task is hidden (only present when show_hidden is true).
+        expr:
+          kind: path
+          path:
+            - hidden
+      - name: updated
+        type: Timestamp
+        nullable: true
+        description: Last modification timestamp of the task (RFC 3339).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: self_link
+        type: Utf8
+        nullable: true
+        description: URL pointing to this task resource.
+        expr:
+          kind: path
+          path:
+            - selfLink
+      - name: web_view_link
+        type: Utf8
+        nullable: true
+        description: Link to the task in the Google Tasks web UI.
+        expr:
+          kind: path
+          path:
+            - webViewLink
+      - name: assignment_surface_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Origin surface for assigned tasks: DOCUMENT (Google Docs) or
+          SPACE (Google Chat). Null for non-assigned tasks.
+        expr:
+          kind: path
+          path:
+            - assignmentInfo
+            - surfaceType
+      - name: assignment_link_to_task
+        type: Utf8
+        nullable: true
+        description: >-
+          Absolute link to the assigned task in its origin surface
+          (the specific document or chat space).
+        expr:
+          kind: path
+          path:
+            - assignmentInfo
+            - linkToTask
+      - name: assignment_drive_file_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Drive file ID of the document where the task was assigned.
+          Present when assignment_surface_type is DOCUMENT.
+        expr:
+          kind: path
+          path:
+            - assignmentInfo
+            - driveResourceInfo
+            - driveFileId
+      - name: assignment_space
+        type: Utf8
+        nullable: true
+        description: >-
+          Chat space identifier (spaces/{space}) where the task was assigned.
+          Present when assignment_surface_type is SPACE.
+        expr:
+          kind: path
+          path:
+            - assignmentInfo
+            - spaceInfo
+            - space
+      - name: assignment_info
+        type: Json
+        nullable: true
+        description: >-
+          Full raw assignmentInfo object. Contains surfaceType, linkToTask,
+          driveResourceInfo, and spaceInfo for tasks assigned from Google
+          Docs or Google Chat.
+        expr:
+          kind: path
+          path:
+            - assignmentInfo
+      - name: links
+        type: Json
+        nullable: true
+        description: JSON array of links to related web pages (e.g. emails in Gmail).
+        expr:
+          kind: path
+          path:
+            - links
+      # Virtual columns that echo pushdown filter values so that
+      # WHERE clauses on these names pass query planning.
+      - name: show_completed
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: >-
+          Echoes the show_completed filter. Google returns completed tasks
+          by default (true). Set false to exclude them.
+        expr:
+          kind: from_filter
+          key: show_completed
+      - name: show_deleted
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Echoes the show_deleted filter. Set true to include deleted tasks.
+        expr:
+          kind: from_filter
+          key: show_deleted
+      - name: show_hidden
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: >-
+          Echoes the show_hidden filter. Set true to include hidden tasks
+          (tasks completed in Google first-party clients).
+        expr:
+          kind: from_filter
+          key: show_hidden
+      - name: show_assigned
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: >-
+          Echoes the show_assigned filter. Set true to include tasks
+          assigned from Google Docs or Google Chat.
+        expr:
+          kind: from_filter
+          key: show_assigned
+      - name: due_min
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the due_min filter (RFC 3339). Lower bound for task due date.
+        expr:
+          kind: from_filter
+          key: due_min
+      - name: due_max
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the due_max filter (RFC 3339). Upper bound for task due date.
+        expr:
+          kind: from_filter
+          key: due_max
+      - name: completed_min
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the completed_min filter (RFC 3339). Lower bound for completion date.
+        expr:
+          kind: from_filter
+          key: completed_min
+      - name: completed_max
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the completed_max filter (RFC 3339). Upper bound for completion date.
+        expr:
+          kind: from_filter
+          key: completed_max
+      - name: updated_min
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the updated_min filter (RFC 3339). Lower bound for last modification date.
+        expr:
+          kind: from_filter
+          key: updated_min

@@ -1,0 +1,166 @@
+---
+title: "Observe Coral with OpenTelemetry"
+description: "Export Coral traces, logs, and metrics to any OTLP-compatible backend."
+---
+
+Coral can emit traces, logs, and metrics over OTLP/HTTP to any compatible backend (Grafana, Honeycomb, OpenObserve, Jaeger, Datadog Agent, etc.). External export is **off by default** and activates when you set an `[otel]` section with an endpoint in your `config.toml`. Local trace inspection is enabled by default and does not require an OTLP endpoint.
+
+## Enable telemetry
+
+Add an `[otel]` section to `config.toml` in Coral's [local state directory](/getting-started/installation#local-state):
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+```
+
+Coral picks up the new settings on the next invocation, and spans, logs, and metrics start flowing on the following query.
+
+The `endpoint` is the OTLP/HTTP base URL. Coral automatically appends `/v1/traces`, `/v1/logs`, and `/v1/metrics` for each signal, so you do not need to set those paths yourself. If you point at a URL that already includes one of those suffixes, Coral strips it before re-appending the right one per signal.
+
+## Trace History
+
+Coral keeps a local trace history for the UI by default. Local traces include query, source-loading, HTTP, and DataFusion spans. They also include DataFusion optimizer-rule spans so the trace view can show the planning work that happened for a query. This local filter is separate from `trace_filter`, which only controls OTLP span export.
+
+By default, Coral retains seven days of local spans. To change that window:
+
+```toml
+[trace_history]
+retention_days = 14
+```
+
+To disable trace history:
+
+```toml
+[trace_history]
+enabled = false
+```
+
+HTTP and MCP request and response body previews are not recorded by default. To enable local body recording:
+
+```toml
+[trace_history]
+record_http_bodies = true
+```
+
+The same flag enables HTTP body previews under the `coral.http.body` target and MCP tool-call argument and result previews under the `coral.mcp.body` target. Recorded body previews are capped by `http_body_max_bytes` bytes per body (`65536` by default). Body previews can contain sensitive data; keep them disabled unless the local debugging value is worth that exposure. Body preview spans are never exported to OTLP, even if a broad `[otel].trace_filter` would otherwise match `coral.http.body` or `coral.mcp.body`.
+
+## Configuration reference
+
+External OpenTelemetry export settings live under `[otel]` in `config.toml`. Coral-owned trace history settings live under `[trace_history]`. There are no environment variable overrides except for [`CORAL_TRACE_PARENT`](#distributed-tracing).
+
+### `[otel]`
+
+| Key                            | Type    | Default                                                                | Description                                                                       |
+| ------------------------------ | ------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `endpoint`                     | string  | unset                                                                  | OTLP/HTTP base URL. When unset, no signals are exported to an external collector. |
+| `headers`                      | string  | unset                                                                  | Comma-separated `key=value` pairs sent on every OTLP request (e.g. auth headers). |
+| `log_filter`                   | string  | `coral_app=info,coral_engine=info`                                     | `tracing-subscriber` filter applied to logs (OTLP and stderr).                    |
+| `trace_filter`                 | string  | `coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=off,coral.http.body=off,coral.mcp.body=off` | `tracing-subscriber` filter applied to OTLP spans.                                |
+| `service_name`                 | string  | `coral`                                                                | Value of the `service.name` resource attribute on every signal.                   |
+
+### `[trace_history]`
+
+| Key                   | Type    | Default | Description                                                                       |
+| --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
+| `enabled`             | boolean | `true`  | Enables trace history without requiring an OTLP collector.                        |
+| `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
+| `record_http_bodies`  | boolean | `false` | Records HTTP request and response bodies, and MCP tool-call argument and result payloads, in local traces when local tracing is enabled. |
+| `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace. Applies to both HTTP body previews and MCP tool-call payload previews. |
+
+Example with auth headers and a hosted endpoint:
+
+```toml
+[otel]
+endpoint = "https://otlp.example.com"
+headers = "x-api-key=secret, x-tenant=acme"
+service_name = "coral-laptop"
+trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace"
+```
+
+## What gets emitted
+
+### Traces
+
+Coral emits five families of trace spans, all exported with the W3C Trace Context propagator.
+
+#### Adjusting what gets exported
+
+`[otel].trace_filter` uses [`tracing-subscriber`'s `Targets`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/targets/struct.Targets.html) syntax. Enable noisy targets when you want them (`coral_engine::datafusion` covers physical-plan and optimizer-rule spans, off by default to keep export volume low), and disable any you do not (`coral_engine::http` silences the HTTP backend):
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+trace_filter = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace,coral_engine::http=off"
+```
+
+If the filter fails to parse, Coral logs a warning and falls back to the default. Changing `[otel].trace_filter` does not reduce local trace capture — the local trace UI uses a fixed filter so debugging evidence stays available regardless of export policy.
+
+For request/response body previews, see [Trace History](#trace-history) above.
+
+#### CLI root span
+
+Each CLI query produces a `coral.cli` root span exported as an OpenTelemetry `client` span. The root span includes CLI process attributes such as `process.executable.name`, `process.pid`, and `process.exit.code`; Coral does not collect raw `process.command_args` by default.
+
+#### MCP server spans (Coral as the MCP server)
+
+When Coral runs over MCP — the `coral mcp-stdio` entry point handling tool calls from an agent — each MCP tool or resource request produces a `coral.mcp.*` server span before the request calls into the local Coral app. The MCP adapter then emits `grpc.client.*` client spans for its local gRPC calls, which parent the app's gRPC server handler spans.
+
+#### gRPC handler spans
+
+Inbound Coral gRPC handler spans are exported as OpenTelemetry `server` spans with `rpc.system.name`, `rpc.method`, and `rpc.response.status_code`.
+
+#### HTTP source-call spans (Coral as the HTTP client)
+
+HTTP source calls are exported as OpenTelemetry `client` spans with upstream dependency attributes including `peer.service`, `server.address`, `server.port`, `http.host`, `net.peer.name`, `http.request.method`, `http.request.resend_count` on retries, `http.response.status_code`, low-cardinality `error.type` on failures, and sanitized `url.full`. Coral also injects W3C Trace Context headers into outbound source requests, so an instrumented upstream API can emit a related `server` span in the same trace.
+
+Service-map tools that require paired client/server spans (such as HyperDX) need the upstream service to emit its own server span; tools that support virtual peer nodes can draw edges directly from Coral's HTTP client spans.
+
+#### MCP source-call spans (Coral as the MCP client)
+
+MCP-backed source calls (the `mcp` backend reaching out to a remote tool server) are exported as OpenTelemetry `client` spans with operation name set to the called tool. Attributes include `coral.source`, `coral.mcp.relation`, `coral.mcp.tool`, `coral.mcp.transport` (`stdio` or `streamable_http`), `coral.mcp.request_id`, and a stable `error.type` label drawn from the [MCP error reasons](/reference/source-spec-reference#mcp-error-reasons).
+
+Streamable HTTP calls additionally carry `url.full`, `server.address`, `server.port`, `peer.service`, `http.host`, and `net.peer.name`, and Coral injects W3C Trace Context headers into the HTTP request so an instrumented MCP server can continue the trace. Stdio calls carry `coral.mcp.command` and `coral.mcp.args.count`; trace-context propagation is not yet wired for stdio.
+
+These spans live under the `coral_engine::mcp` target — not to be confused with the `coral.mcp.*` server spans above, which come from Coral acting as the MCP server.
+
+### Logs
+
+Tracing events are bridged into OTLP logs via `opentelemetry-appender-tracing`. The `log_filter` setting controls which events are exported. Events also render to stderr when Coral is launched as `coral mcp-stdio`, so MCP clients can surface diagnostics; other commands keep stderr clean and rely on OTLP.
+
+### Metrics
+
+Three query instruments are exported on a 5-second periodic reader:
+
+| Metric                   | Kind      | Unit        | Attributes                                      | Description                                            |
+| ------------------------ | --------- | ----------- | ----------------------------------------------- | ------------------------------------------------------ |
+| `coral.query.count`      | Counter   | `{queries}` | `status=ok\|error`, `operation=execute_sql\|explain_sql` | Total SQL execution and explain operations requested.  |
+| `coral.query.duration`   | Histogram | `s`         | `status=ok\|error`, `operation=execute_sql\|explain_sql` | SQL execution and explain latency in seconds.          |
+| `coral.query.rows`       | Histogram | `{rows}`    | `status=ok`, `operation=execute_sql`            | Rows returned per successful SQL execution.            |
+
+## Distributed tracing
+
+Coral honors the `CORAL_TRACE_PARENT` environment variable. Set it to a [W3C `traceparent`](https://www.w3.org/TR/trace-context/#traceparent-header) string and Coral's root span attaches to that parent trace. This is the recommended way to link Coral CLI/MCP invocations to spans created by an upstream caller (for example, an AI agent that runs `coral sql` as a tool call).
+
+```shellscript
+CORAL_TRACE_PARENT="00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" \
+  coral sql "SELECT 1"
+```
+
+`CORAL_TRACE_PARENT` is the only environment variable that affects telemetry; everything else is configured through `config.toml`.
+
+## Verify the setup
+
+Run any query and confirm signals reach your backend:
+
+```shellscript
+coral sql "SELECT 1"
+```
+
+You should see:
+
+- a `coral.cli` trace with at least one child span
+- a `coral.query.count` counter increment with `status=ok`
+- a `coral.query.duration` histogram observation
+
+If nothing arrives, check that the OTLP collector is listening on `endpoint`/`v1/{traces,logs,metrics}` over HTTP, that any required `headers` are correct, and that the trace and log filters are not excluding your targets.

@@ -1,0 +1,587 @@
+name: ollama
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query local Ollama model inventory and run bounded prompt/chat checks through SQL.
+base_url: "{{input.OLLAMA_BASE_URL}}"
+inputs:
+  OLLAMA_BASE_URL:
+    kind: variable
+    default: http://localhost:11434/api
+    hint: |
+      Ollama API base URL.
+
+      Local Ollama serves the API at:
+      http://localhost:11434/api
+
+      Direct https://ollama.com/api access requires API-key authentication and
+      is intentionally out of scope for this first local API version.
+test_queries:
+  - SELECT version FROM ollama.version LIMIT 1
+  - SELECT name, model, size FROM ollama.models LIMIT 5
+tables:
+  - name: version
+    description: Ollama server version from GET /version.
+    request:
+      method: GET
+      path: /version
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: version
+        type: Utf8
+        nullable: false
+        description: Ollama server version.
+
+  - name: models
+    description: Locally available Ollama models from GET /tags.
+    request:
+      method: GET
+      path: /tags
+    response:
+      rows_path:
+        - models
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Local model tag, such as llama3.1:8b.
+      - name: model
+        type: Utf8
+        nullable: true
+        description: Model identifier returned by Ollama.
+      - name: remote_model
+        type: Utf8
+        nullable: true
+        description: Remote model name when this row represents an Ollama cloud model.
+      - name: remote_host
+        type: Utf8
+        nullable: true
+        description: Remote host when this row represents an Ollama cloud model.
+      - name: modified_at
+        type: Timestamp
+        nullable: true
+        description: Last modified timestamp for the local model.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified_at
+      - name: size
+        type: Int64
+        nullable: true
+        description: Model size in bytes.
+      - name: digest
+        type: Utf8
+        nullable: true
+        description: Model digest.
+      - name: format
+        type: Utf8
+        nullable: true
+        description: Model file format.
+        expr:
+          kind: path
+          path:
+            - details
+            - format
+      - name: family
+        type: Utf8
+        nullable: true
+        description: Primary model family.
+        expr:
+          kind: path
+          path:
+            - details
+            - family
+      - name: families
+        type: Utf8
+        nullable: true
+        description: Comma-separated model families.
+        expr:
+          kind: join_array
+          path:
+            - details
+            - families
+          separator: ", "
+      - name: parameter_size
+        type: Utf8
+        nullable: true
+        description: Human-readable parameter size.
+        expr:
+          kind: path
+          path:
+            - details
+            - parameter_size
+      - name: quantization_level
+        type: Utf8
+        nullable: true
+        description: Quantization level.
+        expr:
+          kind: path
+          path:
+            - details
+            - quantization_level
+
+  - name: running_models
+    description: Models currently loaded in Ollama memory from GET /ps.
+    request:
+      method: GET
+      path: /ps
+    response:
+      rows_path:
+        - models
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Running model tag.
+      - name: model
+        type: Utf8
+        nullable: true
+        description: Model identifier returned by Ollama.
+      - name: size
+        type: Int64
+        nullable: true
+        description: Model size in bytes.
+      - name: size_vram
+        type: Int64
+        nullable: true
+        description: VRAM used by the loaded model in bytes.
+      - name: digest
+        type: Utf8
+        nullable: true
+        description: Model digest.
+      - name: expires_at
+        type: Timestamp
+        nullable: true
+        description: When Ollama may unload the model.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - expires_at
+      - name: context_length
+        type: Int64
+        nullable: true
+        description: Loaded model context length.
+      - name: format
+        type: Utf8
+        nullable: true
+        description: Model file format.
+        expr:
+          kind: path
+          path:
+            - details
+            - format
+      - name: family
+        type: Utf8
+        nullable: true
+        description: Primary model family.
+        expr:
+          kind: path
+          path:
+            - details
+            - family
+      - name: parameter_size
+        type: Utf8
+        nullable: true
+        description: Human-readable parameter size.
+        expr:
+          kind: path
+          path:
+            - details
+            - parameter_size
+      - name: quantization_level
+        type: Utf8
+        nullable: true
+        description: Quantization level.
+        expr:
+          kind: path
+          path:
+            - details
+            - quantization_level
+
+  - name: model_details
+    description: Metadata for one installed Ollama model from POST /show.
+    filters:
+      - name: model
+        required: true
+      - name: verbose
+        required: false
+    request:
+      method: POST
+      path: /show
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - verbose
+          from: filter_bool
+          key: verbose
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: modified_at
+        type: Timestamp
+        nullable: true
+        description: Last modified timestamp for the model.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - modified_at
+      - name: parameters
+        type: Utf8
+        nullable: true
+        description: Model parameter settings serialized as text.
+      - name: template
+        type: Utf8
+        nullable: true
+        description: Prompt template used by the model.
+      - name: license
+        type: Utf8
+        nullable: true
+        description: Model license text.
+      - name: capabilities
+        type: Utf8
+        nullable: true
+        description: Comma-separated model capabilities.
+        expr:
+          kind: join_array
+          path:
+            - capabilities
+          separator: ", "
+      - name: format
+        type: Utf8
+        nullable: true
+        description: Model file format.
+        expr:
+          kind: path
+          path:
+            - details
+            - format
+      - name: family
+        type: Utf8
+        nullable: true
+        description: Primary model family.
+        expr:
+          kind: path
+          path:
+            - details
+            - family
+      - name: parameter_size
+        type: Utf8
+        nullable: true
+        description: Human-readable parameter size.
+        expr:
+          kind: path
+          path:
+            - details
+            - parameter_size
+      - name: quantization_level
+        type: Utf8
+        nullable: true
+        description: Quantization level.
+        expr:
+          kind: path
+          path:
+            - details
+            - quantization_level
+      - name: model_info
+        type: Json
+        nullable: true
+        description: Additional model metadata.
+
+  - name: generate
+    description: Run one non-streaming Ollama generation request through POST /generate.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: system
+        required: false
+      - name: num_predict
+        required: true
+      - name: keep_alive
+        required: false
+    request:
+      method: POST
+      path: /generate
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - prompt
+          from: filter
+          key: prompt
+        - path:
+            - stream
+          from: literal
+          value: false
+        - path:
+            - system
+          from: filter
+          key: system
+        - path:
+            - keep_alive
+          from: filter
+          key: keep_alive
+        - path:
+            - options
+            - num_predict
+          from: filter_int
+          key: num_predict
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        description: Model used for the generation.
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: system
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: System prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: system
+      - name: num_predict
+        type: Int64
+        nullable: true
+        virtual: true
+        description: num_predict option supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: num_predict
+      - name: response
+        type: Utf8
+        nullable: true
+        description: Generated response text.
+      - name: thinking
+        type: Utf8
+        nullable: true
+        description: Model thinking output when returned.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Response creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: done
+        type: Boolean
+        nullable: true
+        description: Whether generation finished.
+      - name: done_reason
+        type: Utf8
+        nullable: true
+        description: Reason generation stopped.
+      - name: total_duration
+        type: Int64
+        nullable: true
+        description: Total duration in nanoseconds.
+      - name: load_duration
+        type: Int64
+        nullable: true
+        description: Model load duration in nanoseconds.
+      - name: prompt_eval_count
+        type: Int64
+        nullable: true
+        description: Number of input tokens evaluated.
+      - name: prompt_eval_duration
+        type: Int64
+        nullable: true
+        description: Prompt evaluation duration in nanoseconds.
+      - name: eval_count
+        type: Int64
+        nullable: true
+        description: Number of output tokens generated.
+      - name: eval_duration
+        type: Int64
+        nullable: true
+        description: Token generation duration in nanoseconds.
+
+  - name: chat
+    description: Run one non-streaming Ollama chat request through POST /chat.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: num_predict
+        required: true
+      - name: keep_alive
+        required: false
+    request:
+      method: POST
+      path: /chat
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - messages
+            - "0"
+            - role
+          from: literal
+          value: user
+        - path:
+            - messages
+            - "0"
+            - content
+          from: filter
+          key: prompt
+        - path:
+            - stream
+          from: literal
+          value: false
+        - path:
+            - keep_alive
+          from: filter
+          key: keep_alive
+        - path:
+            - options
+            - num_predict
+          from: filter_int
+          key: num_predict
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        description: Model used for chat.
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: User prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: num_predict
+        type: Int64
+        nullable: true
+        virtual: true
+        description: num_predict option supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: num_predict
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Assistant response content.
+        expr:
+          kind: path
+          path:
+            - message
+            - content
+      - name: thinking
+        type: Utf8
+        nullable: true
+        description: Assistant thinking output when returned.
+        expr:
+          kind: path
+          path:
+            - message
+            - thinking
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Response creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: done
+        type: Boolean
+        nullable: true
+        description: Whether chat generation finished.
+      - name: done_reason
+        type: Utf8
+        nullable: true
+        description: Reason chat generation stopped.
+      - name: total_duration
+        type: Int64
+        nullable: true
+        description: Total duration in nanoseconds.
+      - name: load_duration
+        type: Int64
+        nullable: true
+        description: Model load duration in nanoseconds.
+      - name: prompt_eval_count
+        type: Int64
+        nullable: true
+        description: Number of input tokens evaluated.
+      - name: prompt_eval_duration
+        type: Int64
+        nullable: true
+        description: Prompt evaluation duration in nanoseconds.
+      - name: eval_count
+        type: Int64
+        nullable: true
+        description: Number of output tokens generated.
+      - name: eval_duration
+        type: Int64
+        nullable: true
+        description: Token generation duration in nanoseconds.

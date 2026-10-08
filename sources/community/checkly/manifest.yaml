@@ -1,0 +1,863 @@
+dsl_version: 3
+name: checkly
+version: 0.1.0
+backend: http
+description: >-
+  Query synthetic monitoring checks, check results, alert channels, and
+  dashboards from Checkly. Covers your full monitoring configuration —
+  API and browser check inventory, recent pass/fail run history,
+  notification routing, and status page dashboards.
+base_url: https://api.checklyhq.com
+
+inputs:
+  CHECKLY_API_KEY:
+    kind: secret
+    hint: |
+      Checkly API key. Generate one from:
+        User Settings  → API Keys → Create API key  (personal key)
+        Account Settings → API Keys → Create API key (service key for CI/CD)
+      This source only performs read-only GET requests. Any Checkly API key
+      is sufficient — Checkly does not provide scoped or read-only key variants.
+      Docs: https://developers.checklyhq.com/docs/authentication
+  CHECKLY_ACCOUNT_ID:
+    kind: secret
+    hint: |
+      Checkly Account ID. Find it in:
+        Account Settings → General → Account ID
+      Required by the Checkly API to scope every request to your account.
+      Docs: https://developers.checklyhq.com/docs/authentication
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.CHECKLY_API_KEY}}
+    - name: X-Checkly-Account
+      from: input
+      key: CHECKLY_ACCOUNT_ID
+
+test_queries:
+  - SELECT id, name, check_type, activated FROM checkly.checks LIMIT 5
+  - SELECT id, type, send_failure FROM checkly.alert_channels LIMIT 5
+  - SELECT id, custom_url, is_private FROM checkly.dashboards LIMIT 5
+
+tables:
+  # ────────────────────────────────────────────────────────────────────────
+  # checkly.checks — all synthetic monitoring checks in the account
+  # GET /v1/checks
+  # Response: root JSON array
+  # Pagination: mode: page, page + limit query params
+  # Scoped to the authenticated account by the X-Checkly-Account header.
+  # ────────────────────────────────────────────────────────────────────────
+  - name: checks
+    description: >-
+      All API and browser synthetic monitoring checks configured in the
+      authenticated Checkly account. Each row is one check. Includes the
+      check type, run frequency, active locations, tags, alert thresholds,
+      and enabled state. Use check IDs from this table to query
+      checkly.check_results for recent run outcomes.
+    guide: |
+      Start with `SELECT id, name, check_type, frequency, activated FROM checkly.checks`.
+      `check_type` is one of: API, BROWSER, HEARTBEAT, DNS, TCP, MULTI_STEP, PLAYWRIGHT, AGENTIC, ICMP, URL.
+      `frequency` is the run interval in minutes (e.g. 1, 5, 10, 30, 60).
+      `activated = false` means the check is paused and not running.
+      `muted = true` means alerts are suppressed even when the check fails.
+      `locations` is a JSON array of region strings (e.g. ["us-east-1", "eu-central-1"]).
+      `tags` is a JSON array of string labels.
+      Use `id` values to join against checkly.check_results.check_id.
+      Use pushdown filters (such as `tag`, `check_type`, `search`, and `status`) to filter checks upstream.
+    filters:
+      - name: tag
+        required: false
+      - name: check_type
+        required: false
+      - name: search
+        required: false
+      - name: status
+        required: false
+    request:
+      method: GET
+      path: /v1/checks
+      query:
+        - name: tag
+          from: filter
+          key: tag
+        - name: checkType
+          from: filter
+          key: check_type
+        - name: search
+          from: filter
+          key: search
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique check UUID.
+        expr:
+          kind: path
+          path:
+            - id
+
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Human-readable check name as configured in the Checkly dashboard.
+        expr:
+          kind: path
+          path:
+            - name
+
+      - name: check_type
+        type: Utf8
+        nullable: false
+        description: >-
+          Type of synthetic check. Current values: API, BROWSER, HEARTBEAT,
+          DNS, TCP, MULTI_STEP, PLAYWRIGHT, AGENTIC, ICMP, URL.
+        expr:
+          kind: path
+          path:
+            - checkType
+
+      - name: frequency
+        type: Int64
+        nullable: true
+        description: >-
+          Check run interval in minutes (e.g. 1, 5, 10, 30, 60).
+          Higher-frequency plans allow sub-minute checks.
+        expr:
+          kind: path
+          path:
+            - frequency
+
+      - name: activated
+        type: Boolean
+        nullable: false
+        description: >-
+          Whether the check is currently active (running on its schedule).
+          False means the check is paused.
+        expr:
+          kind: path
+          path:
+            - activated
+
+      - name: muted
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether alerts are muted for this check. When true, failures do
+          not trigger notifications even though the check still runs.
+        expr:
+          kind: path
+          path:
+            - muted
+
+      - name: should_fail
+        type: Boolean
+        nullable: true
+        description: >-
+          When true, the check is expected to fail (inverted pass/fail).
+          Useful for testing that an endpoint correctly returns an error.
+        expr:
+          kind: path
+          path:
+            - shouldFail
+
+      - name: double_check
+        type: Boolean
+        nullable: true
+        description: >-
+          When true, Checkly retries the check from a second location before
+          triggering an alert, reducing false-positive notifications.
+        expr:
+          kind: path
+          path:
+            - doubleCheck
+
+      - name: ssl_check
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether Checkly monitors the SSL certificate expiry for this check.
+          Alerts when the certificate is close to expiring.
+        expr:
+          kind: path
+          path:
+            - sslCheck
+
+      - name: degraded_response_time
+        type: Int64
+        nullable: true
+        description: >-
+          Response time threshold in milliseconds above which the check is
+          considered degraded (but not failed).
+        expr:
+          kind: path
+          path:
+            - degradedResponseTime
+
+      - name: max_response_time
+        type: Int64
+        nullable: true
+        description: >-
+          Response time threshold in milliseconds above which the check is
+          considered failed regardless of HTTP status code.
+        expr:
+          kind: path
+          path:
+            - maxResponseTime
+
+      - name: group_id
+        type: Int64
+        nullable: true
+        description: >-
+          ID of the check group this check belongs to. Null if the check
+          is not part of a group.
+        expr:
+          kind: path
+          path:
+            - groupId
+
+      - name: runtime_id
+        type: Utf8
+        nullable: true
+        description: >-
+          Identifier of the runtime environment (e.g. Node.js version) used
+          to execute this check.
+        expr:
+          kind: path
+          path:
+            - runtimeId
+
+      - name: locations
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of AWS region identifiers where this check runs
+          (e.g. ["us-east-1", "eu-central-1", "ap-southeast-1"]).
+        expr:
+          kind: path
+          path:
+            - locations
+
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of string tags assigned to this check for grouping
+          and filtering in the Checkly dashboard.
+        expr:
+          kind: path
+          path:
+            - tags
+
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when this check was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when this check was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+
+      - name: tag
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter checks by a specific tag. Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: tag
+
+      - name: search
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Search checks by name or tag. Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: search
+
+      - name: status
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter checks by their current status (e.g. failing, passing).
+          Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: status
+
+  # ────────────────────────────────────────────────────────────────────────
+  # checkly.check_results — recent run results for a specific check
+  # GET /v2/check-results/{checkId}   ← NOTE: v2, not v1 (v1 is deprecated)
+  # Response: { length, entries: [...], nextId } — cursor-based
+  # Pagination: mode: cursor_query, cursor sent via nextId query param
+  # Requires: check_id filter (get IDs from checkly.checks)
+  # Raw results are retained for 30 days.
+  # ────────────────────────────────────────────────────────────────────────
+  - name: check_results
+    description: >-
+      Recent run results for a specific Checkly check. Each row is one
+      check execution: pass or fail, run location, response time, and
+      timestamps. Requires a check_id filter — get check IDs from the
+      checkly.checks table. Raw result data is retained for 30 days.
+    guide: |
+      Always specify check_id: `SELECT * FROM checkly.check_results WHERE check_id = '<id>'`.
+      Get check IDs from `SELECT id, name FROM checkly.checks`.
+      `has_failures = true` means assertions failed or a timeout occurred.
+      `has_errors = true` means a Checkly backend error occurred (not a check failure).
+      `result_type` is FINAL (completed run) or ATTEMPT (intermediate retry).
+      Filter to `WHERE result_type = 'FINAL'` to exclude retry attempts.
+      Use `WHERE has_failures = true` to filter for only failing runs.
+      `response_time` is in milliseconds.
+      `from` and `to` filters accept UNIX timestamps in seconds (not milliseconds).
+      Use `location` (e.g., 'us-east-1') and `check_type` (e.g., 'API') pushdown filters to limit response.
+      Results older than 30 days are not available.
+    filters:
+      - name: check_id
+        required: true
+      - name: result_type
+        required: false
+      - name: has_failures
+        required: false
+      - name: from
+        required: false
+      - name: to
+        required: false
+      - name: location
+        required: false
+      - name: check_type
+        required: false
+    request:
+      method: GET
+      path: /v2/check-results/{{filter.check_id}}
+      query:
+        - name: resultType
+          from: filter
+          key: result_type
+        - name: hasFailures
+          from: filter
+          key: has_failures
+        - name: from
+          from: filter
+          key: from
+        - name: to
+          from: filter
+          key: to
+        - name: location
+          from: filter
+          key: location
+        - name: checkType
+          from: filter
+          key: check_type
+    response:
+      rows_path: [entries]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: nextId
+      response_cursor_path: [nextId]
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: check_id
+        type: Utf8
+        nullable: false
+        description: >-
+          ID of the check this result belongs to. Echoes the required
+          check_id filter used in the request.
+        expr:
+          kind: path
+          path:
+            - checkId
+
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique result ID for this individual check run.
+        expr:
+          kind: path
+          path:
+            - id
+
+      - name: check_run_id
+        type: Int64
+        nullable: true
+        description: >-
+          Monotonically increasing run ID. Useful for ordering results
+          when timestamps have the same precision.
+        expr:
+          kind: path
+          path:
+            - checkRunId
+
+      - name: result_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Whether this is a FINAL result (the completed run outcome) or
+          an ATTEMPT (an intermediate retry). Filter to FINAL for clean
+          per-run pass/fail counts.
+        expr:
+          kind: path
+          path:
+            - resultType
+
+      - name: has_failures
+        type: Boolean
+        nullable: true
+        description: >-
+          True if any assertion failed, a timeout occurred, or the
+          response did not match the configured expectations.
+        expr:
+          kind: path
+          path:
+            - hasFailures
+
+      - name: has_errors
+        type: Boolean
+        nullable: true
+        description: >-
+          True if a Checkly platform error occurred during execution
+          (distinct from a check assertion failure).
+        expr:
+          kind: path
+          path:
+            - hasErrors
+
+      - name: run_location
+        type: Utf8
+        nullable: true
+        description: >-
+          AWS region where this check run was executed
+          (e.g. us-east-1, eu-west-1, ap-southeast-1).
+        expr:
+          kind: path
+          path:
+            - runLocation
+
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when this check run began.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - startedAt
+
+      - name: stopped_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when this check run completed.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - stoppedAt
+
+      - name: response_time
+        type: Int64
+        nullable: true
+        description: >-
+          Time in milliseconds it took to execute the check. For API
+          checks this is the HTTP response time. Compare against
+          checkly.checks.max_response_time to see threshold breaches.
+        expr:
+          kind: path
+          path:
+            - responseTime
+
+      - name: result_type_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Echoes the result_type filter applied to this query (FINAL or ATTEMPT).
+          Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: result_type
+
+      - name: has_failures_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Echoes the has_failures filter applied to this query (true or false).
+          Applied as a query parameter — not returned in the response.
+        expr:
+          kind: from_filter
+          key: has_failures
+
+      - name: from
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Lower time bound for check results (UNIX timestamp in seconds).
+          Applied server-side as the `from` query parameter.
+          Use quoted syntax in SQL: WHERE "from" = '1716768000'.
+        expr:
+          kind: from_filter
+          key: from
+
+      - name: to
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Upper time bound for check results (UNIX timestamp in seconds).
+          Applied server-side as the `to` query parameter.
+          Use quoted syntax in SQL: WHERE "to" = '1716854400'.
+        expr:
+          kind: from_filter
+          key: to
+
+      - name: location
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter check results by execution location (e.g. 'us-east-1').
+          Pushed upstream as the `location` query parameter.
+        expr:
+          kind: from_filter
+          key: location
+
+      - name: check_type
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter check results by check type (e.g. 'API', 'BROWSER').
+          Pushed upstream as the `checkType` query parameter.
+        expr:
+          kind: from_filter
+          key: check_type
+
+  # ────────────────────────────────────────────────────────────────────────
+  # checkly.alert_channels — notification channels for check failures
+  # GET /v1/alert-channels
+  # Response: root JSON array
+  # Pagination: mode: page, page + limit query params
+  # Scoped to the authenticated account by the X-Checkly-Account header.
+  # ────────────────────────────────────────────────────────────────────────
+  - name: alert_channels
+    description: >-
+      All alert notification channels configured in the Checkly account.
+      Each row is one channel. Includes the channel type (Slack, Email,
+      PagerDuty, etc.), its routing configuration, and which notification
+      events are enabled. Use this table to audit notification coverage
+      and verify that critical checks route to the right channels.
+    guide: |
+      Start with `SELECT id, type, send_failure, send_recovery FROM checkly.alert_channels`.
+      `type` is one of: EMAIL, SLACK, SLACK_APP, WEBHOOK, SMS, PAGERDUTY, OPSGENIE, CALL.
+      `send_failure = true` means this channel is notified when a check fails.
+      `send_recovery = true` means this channel is notified when a check recovers.
+      `send_degraded = true` means this channel is notified when response time
+      exceeds the degraded threshold (but the check has not fully failed).
+      `id` is an integer (not a UUID) — a signed 64-bit integer.
+    request:
+      method: GET
+      path: /v1/alert-channels
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: >-
+          Unique alert channel ID. Note: this is an integer, not a UUID.
+        expr:
+          kind: path
+          path:
+            - id
+
+      - name: type
+        type: Utf8
+        nullable: false
+        description: >-
+          Alert channel type: EMAIL, SLACK, SLACK_APP, WEBHOOK, SMS,
+          PAGERDUTY, OPSGENIE, or CALL.
+        expr:
+          kind: path
+          path:
+            - type
+
+      - name: send_recovery
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether this channel sends a notification when a failing check
+          recovers back to a passing state.
+        expr:
+          kind: path
+          path:
+            - sendRecovery
+
+      - name: send_failure
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether this channel sends a notification when a check fails
+          (assertion failure, timeout, or error).
+        expr:
+          kind: path
+          path:
+            - sendFailure
+
+      - name: send_degraded
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether this channel sends a notification when a check becomes
+          degraded (response time exceeds the degraded threshold but
+          the check has not fully failed).
+        expr:
+          kind: path
+          path:
+            - sendDegraded
+
+      - name: ssl_expiry
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether this channel sends SSL certificate expiry warnings.
+        expr:
+          kind: path
+          path:
+            - sslExpiry
+
+      - name: ssl_expiry_threshold
+        type: Int64
+        nullable: true
+        description: >-
+          Number of days before SSL certificate expiry to send a warning
+          via this channel (e.g. 30 means warn 30 days before expiry).
+        expr:
+          kind: path
+          path:
+            - sslExpiryThreshold
+
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when this alert channel was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when this alert channel was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+
+  # ────────────────────────────────────────────────────────────────────────
+  # checkly.dashboards — public and private status page dashboards
+  # GET /v1/dashboards
+  # Response: root JSON array
+  # Pagination: mode: page, page + limit query params
+  # Scoped to the authenticated account by the X-Checkly-Account header.
+  # ────────────────────────────────────────────────────────────────────────
+  - name: dashboards
+    description: >-
+      Public and private status page dashboards configured in the Checkly
+      account. Each row is one dashboard. Dashboards display the status of
+      selected checks (filtered by tags) to end users or internal teams.
+      Use this table to inventory your status pages and audit which checks
+      are exposed publicly.
+    guide: |
+      Start with `SELECT id, custom_url, custom_domain, is_private FROM checkly.dashboards`.
+      `custom_url` is the Checkly-hosted subdomain (e.g. mycompany.checklyhq.com).
+      `custom_domain` is the user's CNAME target (e.g. status.mycompany.com).
+      `is_private = true` means the dashboard requires login — Team/Enterprise plans only.
+      `tags` is a JSON array of tag strings used to filter which checks appear
+      on this dashboard. Checks must have matching tags to be shown.
+      `paginate = true` means checks cycle automatically at `pagination_rate` seconds.
+    request:
+      method: GET
+      path: /v1/dashboards
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: >-
+          Unique dashboard ID. Checkly documents this as a numeric identifier.
+        expr:
+          kind: path
+          path:
+            - id
+
+      - name: custom_url
+        type: Utf8
+        nullable: true
+        description: >-
+          Checkly-hosted subdomain for this dashboard
+          (e.g. mycompany → https://mycompany.checklyhq.com).
+        expr:
+          kind: path
+          path:
+            - customUrl
+
+      - name: custom_domain
+        type: Utf8
+        nullable: true
+        description: >-
+          Custom user domain pointing to this dashboard via CNAME
+          (e.g. status.mycompany.com). Null if no custom domain is configured.
+        expr:
+          kind: path
+          path:
+            - customDomain
+
+      - name: is_private
+        type: Boolean
+        nullable: false
+        description: >-
+          Whether this dashboard is private (requires authentication to view).
+          Private dashboards are available on Team and Enterprise plans only.
+        expr:
+          kind: path
+          path:
+            - isPrivate
+
+      - name: paginate
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether checks on this dashboard automatically paginate/cycle
+          through pages at the configured pagination_rate interval.
+        expr:
+          kind: path
+          path:
+            - paginate
+
+      - name: pagination_rate
+        type: Int64
+        nullable: true
+        description: >-
+          Seconds between automatic page transitions when paginate is true.
+          Common values: 30, 60, 300.
+        expr:
+          kind: path
+          path:
+            - paginationRate
+
+      - name: checks_per_page
+        type: Int64
+        nullable: true
+        description: >-
+          Number of checks displayed per dashboard page (1–20).
+        expr:
+          kind: path
+          path:
+            - checksPerPage
+
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of tag strings used to filter which checks appear on
+          this dashboard. Only checks carrying these tags are shown.
+        expr:
+          kind: path
+          path:
+            - tags
+
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when this dashboard was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 timestamp when this dashboard was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at

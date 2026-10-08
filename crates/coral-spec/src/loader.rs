@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn load_manifests_accepts_parquet_backend_manifest() {
+    fn load_manifests_accepts_parquet_file_manifest() {
         let root = unique_temp_dir("coral-loader-parquet");
         let source_dir = root.join("otel_metrics");
         fs::create_dir_all(&source_dir).expect("create source dir");
@@ -131,10 +131,11 @@ mod tests {
 name: otel_metrics
 version: 0.1.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: metrics
     description: Metrics exported as parquet
+    format: parquet
     source:
       location: file:///tmp/coral-otel-metrics/
       glob: "**/*.parquet"
@@ -155,7 +156,7 @@ tables:
     }
 
     #[test]
-    fn load_manifests_accepts_jsonl_backend_manifest() {
+    fn load_manifests_accepts_jsonl_file_manifest() {
         let root = unique_temp_dir("coral-loader-jsonl");
         let source_dir = root.join("claude");
         fs::create_dir_all(&source_dir).expect("create source dir");
@@ -165,10 +166,11 @@ tables:
 name: claude
 version: 0.1.0
 dsl_version: 3
-backend: jsonl
+backend: file
 tables:
   - name: messages
     description: Claude Code conversation messages
+    format: jsonl
     source:
       location: file:///tmp/claude-jsonl/
       glob: "**/*.jsonl"
@@ -185,7 +187,7 @@ tables:
         assert_eq!(manifests.len(), 1);
         let manifest = manifests.first().expect("jsonl manifest");
         assert_eq!(manifest.schema_name(), "claude");
-        assert_eq!(manifest.backend(), crate::SourceBackend::Jsonl);
+        assert_eq!(manifest.backend(), crate::SourceBackend::File);
 
         drop(fs::remove_dir_all(&root));
     }
@@ -203,10 +205,11 @@ tables:
 name: good_plugin
 version: 0.1.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: data
     description: Some data
+    format: parquet
     source:
       location: file:///tmp/good/
       glob: "**/*.parquet"
@@ -250,10 +253,11 @@ tables:
 name: my_plugin
 version: 0.1.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: data
     description: Some data
+    format: parquet
     source:
       location: file:///tmp/my/
       glob: "**/*.parquet"
@@ -284,10 +288,11 @@ tables:
 name: dual
 version: 0.1.0
 dsl_version: 3
-backend: parquet
+backend: file
 tables:
   - name: data
     description: Some data
+    format: parquet
     source:
       location: file:///tmp/dual/
       glob: "**/*.parquet"

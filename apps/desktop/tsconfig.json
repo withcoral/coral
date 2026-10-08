@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "isolatedModules": true,
+    // electron-builder.config.ts is loaded, not compiled: node's type stripping
+    // runs it in the config test and needs the extension on the relative import
+    // of the shared app id. Harmless under noEmit.
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node", "electron"],
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": [
+    "electron-builder.config.ts",
+    "electron.vite.config.ts",
+    "src/**/*.ts"
+  ]
+}

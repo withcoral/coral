@@ -1,21 +1,25 @@
-//! `MCP` stdio server for Coral.
+//! `MCP` server adapters for Coral.
 //!
 //! This crate adapts the local Coral client from `coral-client` to the
-//! official Rust `MCP` SDK on stdio.
+//! official Rust `MCP` SDK over stdio and Streamable HTTP.
 //!
 //! # Primary Entry Points
 //!
 //! - [`run_stdio_with_client`] serves `MCP` messages on stdio using an
 //!   existing [`coral_client::AppClient`], typically bootstrapped by
 //!   `coral-cli`.
+//! - [`http::start_auth_disabled`] serves the same MCP surface over
+//!   Streamable HTTP, loopback-only unless configuration routed operator
+//!   consent through [`http::McpHttpConfig::allow_unauthenticated_non_loopback`].
 //!
-//! The exposed MCP surface is intentionally small:
+//! The default MCP surface is intentionally small:
 //!
-//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally `feedback`
+//! - tools: `start_task`, `sql`, `search`, paginated `list_catalog`,
+//!   `describe`, `list_columns`, `end_task`, and optionally `feedback`
 //! - resources: `coral://guide`, `coral://tables`
 //!
-//! Protocol lifecycle, initialization, and stdio transport behavior should stay
-//! inside the SDK integration rather than being reimplemented locally.
+//! Protocol lifecycle and initialization should stay inside the SDK integration
+//! rather than being reimplemented locally.
 
 #![allow(
     unused_crate_dependencies,
@@ -23,6 +27,9 @@
 )]
 
 mod error;
+mod extensions;
+mod guide_block;
+pub mod http;
 mod server;
 mod surface;
 mod telemetry;
@@ -34,28 +41,105 @@ use coral_client::AppClient;
 use rmcp::ServiceExt;
 
 pub use error::McpError;
-pub(crate) use server::CoralMcpServer;
+pub(crate) use extensions::McpToolRouter;
+pub use extensions::{
+    McpSurface, McpSurfaceError, McpSurfaceProvider, McpSurfaceProviderError, McpToolContext,
+    McpToolRoute,
+};
+pub(crate) use server::CoralMcpServerFactory;
+pub use server::CoralToolset;
 
-/// Optional MCP surface features.
+/// A successful SQL query example for MCP initialize instructions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpQueryExample {
+    sql: String,
+    sources: Vec<String>,
+    row_count: Option<u64>,
+}
+
+impl McpQueryExample {
+    /// Creates a query example from SQL text.
+    #[must_use]
+    pub fn new(sql: impl Into<String>) -> Self {
+        Self {
+            sql: sql.into(),
+            sources: Vec::new(),
+            row_count: None,
+        }
+    }
+
+    /// Adds installed source names used by this query.
+    #[must_use]
+    pub fn with_sources(mut self, sources: impl IntoIterator<Item = String>) -> Self {
+        self.sources = sources
+            .into_iter()
+            .map(|source| source.trim().to_string())
+            .filter(|source| !source.is_empty())
+            .collect();
+        self.sources.sort_unstable();
+        self.sources.dedup();
+        self
+    }
+
+    /// Adds the number of rows returned by this query.
+    #[must_use]
+    pub fn with_row_count(mut self, row_count: u64) -> Self {
+        self.row_count = Some(row_count);
+        self
+    }
+
+    /// SQL text for this query example.
+    #[must_use]
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    /// Installed source names used by this query.
+    #[must_use]
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+
+    /// Number of rows returned by this query, when known.
+    #[must_use]
+    pub fn row_count(&self) -> Option<u64> {
+        self.row_count
+    }
+}
+
+/// MCP runtime options.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
+    /// Advertise observed-value search behavior across MCP discovery surfaces.
+    pub observed_values_search_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
+    /// Installed source names to include in MCP initialize instructions.
+    pub source_names: Vec<String>,
+    /// Successful SQL examples to include in MCP initialize instructions.
+    pub query_examples: Vec<McpQueryExample>,
+    /// Workspace scoped to this MCP server instance.
+    pub workspace: Option<coral_api::v1::Workspace>,
+    /// Static public MCP tool surface and initialize instructions.
+    pub surface: McpSurface,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.
 ///
 /// # Errors
 ///
-/// Returns [`McpError`] if the stdio server cannot complete its `MCP`
-/// lifecycle.
+/// Returns [`McpError`] if `options` names no workspace, or if the stdio server
+/// cannot complete its `MCP` lifecycle. Stdio's launcher resolves the workspace
+/// before it gets here, so the missing one is reported as the failed
+/// precondition it is rather than served against an invented name.
 pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
-    let server = Box::pin(
-        CoralMcpServer::new(&app, options).serve((tokio::io::stdin(), tokio::io::stdout())),
-    )
-    .await?;
+    options.surface.validate(options.feedback_enabled)?;
+    let handler = CoralMcpServerFactory::new(app, options)
+        .map_err(|error| tonic::Status::failed_precondition(error.to_string()))?
+        .create();
+    let server = Box::pin(handler.serve((tokio::io::stdin(), tokio::io::stdout()))).await?;
     let _ = server.waiting().await?;
     Ok(())
 }

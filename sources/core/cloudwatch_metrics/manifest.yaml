@@ -48,10 +48,11 @@ tables:
   - name: metrics
     description: CloudWatch metric identities returned by ListMetrics.
     guide: >
-      Optional filters: namespace, metric_name, and recently_active. Set
-      recently_active to PT3H to request metrics active in the past three
-      hours. CloudWatch returns only metrics that reported data in the past
-      two weeks.
+      Optional filters: namespace, metric_name, dimension_name,
+      dimension_value, dimension2_name, dimension2_value, dimension3_name,
+      dimension3_value, and recently_active. Set recently_active to PT3H to
+      request metrics active in the past three hours. CloudWatch returns only
+      metrics that reported data in the past two weeks.
     request:
       method: POST
       path: /
@@ -75,6 +76,24 @@ tables:
         - path: [OwningAccount]
           from: filter
           key: owning_account
+        - path: [Dimensions, "0", Name]
+          from: filter
+          key: dimension_name
+        - path: [Dimensions, "0", Value]
+          from: filter
+          key: dimension_value
+        - path: [Dimensions, "1", Name]
+          from: filter
+          key: dimension2_name
+        - path: [Dimensions, "1", Value]
+          from: filter
+          key: dimension2_value
+        - path: [Dimensions, "2", Name]
+          from: filter
+          key: dimension3_name
+        - path: [Dimensions, "2", Value]
+          from: filter
+          key: dimension3_value
     response:
       rows_path: [Metrics]
     pagination:
@@ -98,6 +117,42 @@ tables:
         nullable: true
         description: Metric dimensions as JSON objects.
         expr: {kind: join_array, path: [Dimensions]}
+      - name: dimension_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: First ListMetrics dimension name filter.
+        expr: {kind: from_filter, key: dimension_name}
+      - name: dimension_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: First ListMetrics dimension value filter.
+        expr: {kind: from_filter, key: dimension_value}
+      - name: dimension2_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Second ListMetrics dimension name filter.
+        expr: {kind: from_filter, key: dimension2_name}
+      - name: dimension2_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Second ListMetrics dimension value filter.
+        expr: {kind: from_filter, key: dimension2_value}
+      - name: dimension3_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Third ListMetrics dimension name filter.
+        expr: {kind: from_filter, key: dimension3_name}
+      - name: dimension3_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Third ListMetrics dimension value filter.
+        expr: {kind: from_filter, key: dimension3_value}
       - name: recently_active
         type: Utf8
         nullable: true
@@ -119,6 +174,12 @@ tables:
     filters:
       - name: namespace
       - name: metric_name
+      - name: dimension_name
+      - name: dimension_value
+      - name: dimension2_name
+      - name: dimension2_value
+      - name: dimension3_name
+      - name: dimension3_value
       - name: recently_active
       - name: include_linked_accounts
       - name: owning_account
@@ -146,10 +207,10 @@ tables:
           from: filter
           key: metric_name
         - path: [StartTime]
-          from: filter
+          from: filter_int
           key: start_time
         - path: [EndTime]
-          from: filter
+          from: filter_int
           key: end_time
         - path: [Period]
           from: filter_int
@@ -209,17 +270,23 @@ tables:
         description: Metric name filter.
         expr: {kind: from_filter, key: metric_name}
       - name: start_time
-        type: Utf8
+        type: Int64
         nullable: true
         virtual: true
-        description: CloudWatch start time filter.
+        description: CloudWatch start time filter as Unix epoch seconds.
         expr: {kind: from_filter, key: start_time}
       - name: end_time
-        type: Utf8
+        type: Int64
         nullable: true
         virtual: true
-        description: CloudWatch end time filter.
+        description: CloudWatch end time filter as Unix epoch seconds.
         expr: {kind: from_filter, key: end_time}
+      - name: period
+        type: Int64
+        nullable: true
+        virtual: true
+        description: CloudWatch period filter in seconds.
+        expr: {kind: from_filter, key: period}
       - name: timestamp
         type: Timestamp
         nullable: true
@@ -258,6 +325,11 @@ tables:
         nullable: true
         description: Datapoint unit.
         expr: {kind: path, path: [Unit]}
+      - name: extended_statistics
+        type: Json
+        nullable: true
+        description: Percentile statistics returned by CloudWatch.
+        expr: {kind: path, path: [ExtendedStatistics]}
       - name: dimension_name
         type: Utf8
         nullable: true
@@ -270,16 +342,46 @@ tables:
         virtual: true
         description: First dimension value filter.
         expr: {kind: from_filter, key: dimension_value}
+      - name: dimension2_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Second dimension name filter.
+        expr: {kind: from_filter, key: dimension2_name}
+      - name: dimension2_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Second dimension value filter.
+        expr: {kind: from_filter, key: dimension2_value}
+      - name: dimension3_name
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Third dimension name filter.
+        expr: {kind: from_filter, key: dimension3_name}
+      - name: dimension3_value
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Third dimension value filter.
+        expr: {kind: from_filter, key: dimension3_value}
     filters:
       - name: namespace
         required: true
       - name: metric_name
         required: true
       - name: start_time
+        type: Int64
         required: true
+        description: CloudWatch start time filter as Unix epoch seconds.
       - name: end_time
+        type: Int64
         required: true
+        description: CloudWatch end time filter as Unix epoch seconds.
       - name: period
+        type: Int64
+        description: CloudWatch period filter in seconds.
       - name: unit
       - name: dimension_name
       - name: dimension_value
@@ -302,6 +404,9 @@ tables:
           from: literal
           value: GraniteServiceVersion20100801.DescribeAlarms
       body:
+        - path: [AlarmNames]
+          from: filter_string_array
+          key: alarm_names
         - path: [AlarmNamePrefix]
           from: filter
           key: alarm_name_prefix
@@ -325,6 +430,24 @@ tables:
       response_cursor_path: [NextToken]
       max_pages: 100
     columns:
+      - name: alarm_names
+        type: Json
+        nullable: true
+        virtual: true
+        description: Alarm names filter as a JSON array of strings.
+        expr: {kind: from_filter, key: alarm_names}
+      - name: alarm_name_prefix
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Alarm name prefix filter.
+        expr: {kind: from_filter, key: alarm_name_prefix}
+      - name: action_prefix
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Alarm action ARN prefix filter.
+        expr: {kind: from_filter, key: action_prefix}
       - name: alarm_name
         type: Utf8
         nullable: false
@@ -335,6 +458,19 @@ tables:
         nullable: true
         description: Alarm ARN.
         expr: {kind: path, path: [AlarmArn]}
+      - name: alarm_description
+        type: Utf8
+        nullable: true
+        description: Alarm description.
+        expr: {kind: path, path: [AlarmDescription]}
+      - name: alarm_configuration_updated_timestamp
+        type: Timestamp
+        nullable: true
+        description: Last alarm configuration update timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [AlarmConfigurationUpdatedTimestamp]}
       - name: state_value
         type: Utf8
         nullable: true
@@ -345,6 +481,11 @@ tables:
         nullable: true
         description: Human-readable state reason.
         expr: {kind: path, path: [StateReason]}
+      - name: state_reason_data
+        type: Utf8
+        nullable: true
+        description: Machine-readable alarm state reason data.
+        expr: {kind: path, path: [StateReasonData]}
       - name: metric_name
         type: Utf8
         nullable: true
@@ -360,6 +501,16 @@ tables:
         nullable: true
         description: Alarm metric dimensions as JSON objects.
         expr: {kind: join_array, path: [Dimensions]}
+      - name: statistic
+        type: Utf8
+        nullable: true
+        description: Statistic watched by the alarm.
+        expr: {kind: path, path: [Statistic]}
+      - name: extended_statistic
+        type: Utf8
+        nullable: true
+        description: Extended statistic watched by the alarm.
+        expr: {kind: path, path: [ExtendedStatistic]}
       - name: comparison_operator
         type: Utf8
         nullable: true
@@ -375,21 +526,66 @@ tables:
         nullable: true
         description: Evaluation period in seconds.
         expr: {kind: path, path: [Period]}
+      - name: unit
+        type: Utf8
+        nullable: true
+        description: Metric unit watched by the alarm.
+        expr: {kind: path, path: [Unit]}
       - name: evaluation_periods
         type: Int64
         nullable: true
         description: Number of periods evaluated.
         expr: {kind: path, path: [EvaluationPeriods]}
+      - name: datapoints_to_alarm
+        type: Int64
+        nullable: true
+        description: Number of datapoints that must breach to trigger alarm state.
+        expr: {kind: path, path: [DatapointsToAlarm]}
       - name: actions_enabled
         type: Boolean
         nullable: true
         description: Whether actions are enabled.
         expr: {kind: path, path: [ActionsEnabled]}
+      - name: ok_actions
+        type: Utf8
+        nullable: true
+        description: OK action ARNs.
+        expr: {kind: join_array, path: [OKActions]}
       - name: alarm_actions
         type: Utf8
         nullable: true
         description: Alarm action ARNs.
         expr: {kind: join_array, path: [AlarmActions]}
+      - name: insufficient_data_actions
+        type: Utf8
+        nullable: true
+        description: Insufficient-data action ARNs.
+        expr: {kind: join_array, path: [InsufficientDataActions]}
+      - name: treat_missing_data
+        type: Utf8
+        nullable: true
+        description: Missing data treatment.
+        expr: {kind: path, path: [TreatMissingData]}
+      - name: evaluate_low_sample_count_percentile
+        type: Utf8
+        nullable: true
+        description: Low sample count percentile evaluation behavior.
+        expr: {kind: path, path: [EvaluateLowSampleCountPercentile]}
+      - name: metrics
+        type: Json
+        nullable: true
+        description: Metric math queries used by the alarm.
+        expr: {kind: path, path: [Metrics]}
+      - name: threshold_metric_id
+        type: Utf8
+        nullable: true
+        description: Metric math query ID used as the alarm threshold.
+        expr: {kind: path, path: [ThresholdMetricId]}
+      - name: evaluation_state
+        type: Utf8
+        nullable: true
+        description: Alarm evaluation state.
+        expr: {kind: path, path: [EvaluationState]}
       - name: state_updated_timestamp
         type: Timestamp
         nullable: true
@@ -398,10 +594,34 @@ tables:
           kind: format_timestamp
           input: seconds
           expr: {kind: path, path: [StateUpdatedTimestamp]}
+      - name: state_transitioned_timestamp
+        type: Timestamp
+        nullable: true
+        description: Last alarm state transition timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [StateTransitionedTimestamp]}
+      - name: evaluation_criteria
+        type: Json
+        nullable: true
+        description: Evaluation criteria details.
+        expr: {kind: path, path: [EvaluationCriteria]}
+      - name: evaluation_interval
+        type: Int64
+        nullable: true
+        description: Evaluation interval in seconds.
+        expr: {kind: path, path: [EvaluationInterval]}
     filters:
+      - name: alarm_names
+        type: Json
+        description: JSON array of up to 100 alarm names. Do not combine with alarm_name_prefix.
       - name: alarm_name_prefix
+        description: Alarm name prefix. Do not combine with alarm_names.
       - name: action_prefix
+        description: Alarm action ARN prefix.
       - name: state_value
+        description: Alarm state to return.
 
   - name: composite_alarms
     description: CloudWatch composite alarms returned by DescribeAlarms.
@@ -417,6 +637,9 @@ tables:
           from: literal
           value: GraniteServiceVersion20100801.DescribeAlarms
       body:
+        - path: [AlarmNames]
+          from: filter_string_array
+          key: alarm_names
         - path: [AlarmNamePrefix]
           from: filter
           key: alarm_name_prefix
@@ -440,6 +663,24 @@ tables:
       response_cursor_path: [NextToken]
       max_pages: 100
     columns:
+      - name: alarm_names
+        type: Json
+        nullable: true
+        virtual: true
+        description: Alarm names filter as a JSON array of strings.
+        expr: {kind: from_filter, key: alarm_names}
+      - name: alarm_name_prefix
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Alarm name prefix filter.
+        expr: {kind: from_filter, key: alarm_name_prefix}
+      - name: action_prefix
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Alarm action ARN prefix filter.
+        expr: {kind: from_filter, key: action_prefix}
       - name: alarm_name
         type: Utf8
         nullable: false
@@ -450,6 +691,19 @@ tables:
         nullable: true
         description: Alarm ARN.
         expr: {kind: path, path: [AlarmArn]}
+      - name: alarm_description
+        type: Utf8
+        nullable: true
+        description: Alarm description.
+        expr: {kind: path, path: [AlarmDescription]}
+      - name: alarm_configuration_updated_timestamp
+        type: Timestamp
+        nullable: true
+        description: Last alarm configuration update timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [AlarmConfigurationUpdatedTimestamp]}
       - name: alarm_rule
         type: Utf8
         nullable: true
@@ -465,16 +719,31 @@ tables:
         nullable: true
         description: Human-readable state reason.
         expr: {kind: path, path: [StateReason]}
+      - name: state_reason_data
+        type: Utf8
+        nullable: true
+        description: Machine-readable alarm state reason data.
+        expr: {kind: path, path: [StateReasonData]}
       - name: actions_enabled
         type: Boolean
         nullable: true
         description: Whether actions are enabled.
         expr: {kind: path, path: [ActionsEnabled]}
+      - name: ok_actions
+        type: Utf8
+        nullable: true
+        description: OK action ARNs.
+        expr: {kind: join_array, path: [OKActions]}
       - name: alarm_actions
         type: Utf8
         nullable: true
         description: Alarm action ARNs.
         expr: {kind: join_array, path: [AlarmActions]}
+      - name: insufficient_data_actions
+        type: Utf8
+        nullable: true
+        description: Insufficient-data action ARNs.
+        expr: {kind: join_array, path: [InsufficientDataActions]}
       - name: state_updated_timestamp
         type: Timestamp
         nullable: true
@@ -483,10 +752,49 @@ tables:
           kind: format_timestamp
           input: seconds
           expr: {kind: path, path: [StateUpdatedTimestamp]}
+      - name: state_transitioned_timestamp
+        type: Timestamp
+        nullable: true
+        description: Last alarm state transition timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [StateTransitionedTimestamp]}
+      - name: actions_suppressed_by
+        type: Utf8
+        nullable: true
+        description: Reason alarm actions are suppressed.
+        expr: {kind: path, path: [ActionsSuppressedBy]}
+      - name: actions_suppressed_reason
+        type: Utf8
+        nullable: true
+        description: Explanation for suppressed alarm actions.
+        expr: {kind: path, path: [ActionsSuppressedReason]}
+      - name: actions_suppressor
+        type: Utf8
+        nullable: true
+        description: Suppressor alarm ARN.
+        expr: {kind: path, path: [ActionsSuppressor]}
+      - name: actions_suppressor_wait_period
+        type: Int64
+        nullable: true
+        description: Suppressor wait period in seconds.
+        expr: {kind: path, path: [ActionsSuppressorWaitPeriod]}
+      - name: actions_suppressor_extension_period
+        type: Int64
+        nullable: true
+        description: Suppressor extension period in seconds.
+        expr: {kind: path, path: [ActionsSuppressorExtensionPeriod]}
     filters:
+      - name: alarm_names
+        type: Json
+        description: JSON array of up to 100 alarm names. Do not combine with alarm_name_prefix.
       - name: alarm_name_prefix
+        description: Alarm name prefix. Do not combine with alarm_names.
       - name: action_prefix
+        description: Alarm action ARN prefix.
       - name: state_value
+        description: Alarm state to return.
 
   - name: alarm_history
     description: CloudWatch alarm history items returned by DescribeAlarmHistory.
@@ -506,6 +814,12 @@ tables:
         - path: [AlarmName]
           from: filter
           key: alarm_name
+        - path: [AlarmContributorId]
+          from: filter
+          key: alarm_contributor_id
+        - path: [AlarmTypes]
+          from: filter_string_array
+          key: alarm_types
         - path: [HistoryItemType]
           from: filter
           key: history_item_type
@@ -535,11 +849,40 @@ tables:
         nullable: true
         description: Alarm name.
         expr: {kind: path, path: [AlarmName]}
+      - name: alarm_contributor_id
+        type: Utf8
+        nullable: true
+        description: Alarm contributor identifier.
+        expr: {kind: path, path: [AlarmContributorId]}
+      - name: alarm_types
+        type: Json
+        nullable: true
+        virtual: true
+        description: Alarm types filter as a JSON array of strings.
+        expr: {kind: from_filter, key: alarm_types}
       - name: alarm_type
         type: Utf8
         nullable: true
         description: Alarm type.
         expr: {kind: path, path: [AlarmType]}
+      - name: start_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Alarm history start date filter.
+        expr: {kind: from_filter, key: start_date}
+      - name: end_date
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Alarm history end date filter.
+        expr: {kind: from_filter, key: end_date}
+      - name: scan_by
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Alarm history scan direction filter.
+        expr: {kind: from_filter, key: scan_by}
       - name: timestamp
         type: Timestamp
         nullable: true
@@ -563,12 +906,27 @@ tables:
         nullable: true
         description: Raw history data JSON string.
         expr: {kind: path, path: [HistoryData]}
+      - name: alarm_contributor_attributes
+        type: Json
+        nullable: true
+        description: Alarm contributor attributes.
+        expr: {kind: path, path: [AlarmContributorAttributes]}
     filters:
       - name: alarm_name
+        description: Alarm name.
+      - name: alarm_contributor_id
+        description: Alarm contributor identifier.
+      - name: alarm_types
+        type: Json
+        description: JSON array of alarm types, such as ["MetricAlarm"] or ["CompositeAlarm"].
       - name: history_item_type
+        description: Alarm history item type.
       - name: start_date
+        description: Starting date for alarm history.
       - name: end_date
+        description: Ending date for alarm history.
       - name: scan_by
+        description: Alarm history scan direction.
 
   - name: dashboards
     description: CloudWatch dashboard entries returned by ListDashboards.
@@ -595,6 +953,12 @@ tables:
       response_cursor_path: [NextToken]
       max_pages: 100
     columns:
+      - name: dashboard_name_prefix
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Dashboard name prefix filter.
+        expr: {kind: from_filter, key: dashboard_name_prefix}
       - name: dashboard_name
         type: Utf8
         nullable: false
@@ -620,6 +984,7 @@ tables:
         expr: {kind: path, path: [Size]}
     filters:
       - name: dashboard_name_prefix
+        description: Dashboard name prefix filter.
 
   - name: dashboard
     description: Details for one CloudWatch dashboard returned by GetDashboard.
@@ -779,6 +1144,22 @@ tables:
         nullable: true
         description: Metric stream output format.
         expr: {kind: path, path: [OutputFormat]}
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [CreationDate]}
+      - name: last_update_date
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr: {kind: path, path: [LastUpdateDate]}
       - name: include_filters
         type: Utf8
         nullable: true
@@ -789,6 +1170,16 @@ tables:
         nullable: true
         description: Excluded namespace filters as JSON objects.
         expr: {kind: join_array, path: [ExcludeFilters]}
+      - name: statistics_configurations
+        type: Json
+        nullable: true
+        description: Additional statistics configurations.
+        expr: {kind: path, path: [StatisticsConfigurations]}
+      - name: include_linked_accounts_metrics
+        type: Boolean
+        nullable: true
+        description: Whether the metric stream includes linked account metrics.
+        expr: {kind: path, path: [IncludeLinkedAccountsMetrics]}
     filters:
       - name: name
         required: true

@@ -6,17 +6,19 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use opentelemetry::Value as OtelValue;
 use opentelemetry::metrics::MeterProvider as _;
-use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+use opentelemetry::{KeyValue as OtelKeyValue, Value as OtelValue};
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
 };
-use opentelemetry_sdk::logs::SdkLoggerProvider;
-use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData, SpanExporter};
+use opentelemetry_sdk::trace::{
+    BatchSpanProcessor, SdkTracerProvider, SpanData, SpanExporter, TracerProviderBuilder,
+};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::Targets;
@@ -26,12 +28,18 @@ use tracing_subscriber::{EnvFilter, Registry};
 
 pub mod config;
 mod local_store;
+mod manager;
 pub mod metrics;
 pub(crate) mod service;
 
 use crate::bootstrap::AppError;
+use crate::workspaces::WorkspaceName;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+pub(crate) use local_store::{
+    TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage, TraceStoreError,
+};
+pub(crate) use manager::TraceManager;
 
 static INIT: OnceLock<Result<TracingInitState, String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
@@ -39,7 +47,82 @@ static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
 static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
+const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
+const OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES: &[&str] =
+    &[coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX];
 const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
+pub(crate) const QUERY_TRACE_SOURCES_ATTR: &str = "coral.query.sources";
+pub(crate) const QUERY_TRACE_TABLES_ATTR: &str = "coral.query.tables";
+pub(crate) const QUERY_TRACE_TABLE_FUNCTIONS_ATTR: &str = "coral.query.table_functions";
+
+pub(crate) fn app_error_type(error: &AppError) -> &'static str {
+    match error {
+        AppError::Unauthenticated(_) => "UNAUTHENTICATED",
+        AppError::PermissionDenied(_) => "PERMISSION_DENIED",
+        AppError::UserNotFound(_) => "USER_NOT_FOUND",
+        AppError::LastWorkspaceOwner(_) => "LAST_WORKSPACE_OWNER",
+        AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
+        AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
+        AppError::IdentitySpecNotFound { .. } => "IDENTITY_SPEC_NOT_FOUND",
+        AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
+        AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
+        AppError::InvalidInput(_) => "INVALID_INPUT",
+        AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingSourceInputs { .. } => "MISSING_SOURCE_INPUTS",
+        AppError::UnsupportedV4IdentityRequirements { .. } => {
+            "UNSUPPORTED_V4_IDENTITY_REQUIREMENTS"
+        }
+        AppError::MissingOrIncompatibleV4Materialization { .. } => {
+            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
+        }
+        AppError::IncompatibleInstalledV4Manifest { .. } => "INCOMPATIBLE_INSTALLED_V4_MANIFEST",
+        AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
+        AppError::InvalidV4OperationMetadataOverride { .. } => {
+            "INVALID_V4_OPERATION_METADATA_OVERRIDE"
+        }
+        AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
+        AppError::Unavailable(_) => "UNAVAILABLE",
+        AppError::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
+        AppError::Internal(_) => "INTERNAL",
+        AppError::Io(_) => "IO",
+        AppError::Yaml(_) => "YAML",
+        AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
+        AppError::TomlEncode(_) => "TOML_ENCODE",
+        AppError::Json(_) => "JSON",
+        AppError::Transport(_) => "TRANSPORT",
+        AppError::TaskJoin(_) => "TASK_JOIN",
+        AppError::Credentials(_) => "CREDENTIALS",
+        AppError::Database(_) => "DATABASE",
+        AppError::MissingConfigDir => "MISSING_CONFIG_DIR",
+    }
+}
+
+/// Records a span attribute only when the span belongs to Coral's subscriber
+/// with an installed local trace store.
+///
+/// The field must also use the local-only prefix so Coral's OTLP exporter strips
+/// it when local trace history and OTLP export are enabled together.
+pub(crate) fn record_local_only_span_attribute(
+    span: &tracing::Span,
+    field: &'static str,
+    value: &str,
+) {
+    let is_local_only = field.starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX);
+    debug_assert!(
+        is_local_only,
+        "local-only attribute must use the reserved prefix"
+    );
+    if !is_local_only {
+        return;
+    }
+    let span_belongs_to_local_trace_subscriber = span
+        .with_subscriber(|(_id, dispatch)| dispatch.is::<LocalTraceAttributeMarkerLayer>())
+        .unwrap_or(false);
+    if span_belongs_to_local_trace_subscriber {
+        span.set_attribute(field, value.to_owned());
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstalledLocalTraceStore {
@@ -58,11 +141,22 @@ struct TracingInitState {
     local_trace_store: Option<InstalledLocalTraceStore>,
 }
 
+/// Marks the exact Coral subscriber allowed to receive local-only attributes.
+///
+/// Process-global initialization state is insufficient here because a scoped
+/// subscriber can override the global subscriber for one thread or future.
+#[derive(Debug)]
+struct LocalTraceAttributeMarkerLayer;
+
+impl<S> tracing_subscriber::Layer<S> for LocalTraceAttributeMarkerLayer where S: tracing::Subscriber {}
+
 #[derive(Debug)]
 struct TargetFilteringSpanExporter<E> {
     inner: E,
     targets: Targets,
+    denied_targets: &'static [&'static str],
     excluded_rpc_services: &'static [&'static str],
+    stripped_attribute_prefixes: &'static [&'static str],
 }
 
 impl<E> TargetFilteringSpanExporter<E> {
@@ -70,12 +164,24 @@ impl<E> TargetFilteringSpanExporter<E> {
         Self {
             inner,
             targets,
+            denied_targets: &[],
             excluded_rpc_services: &[],
+            stripped_attribute_prefixes: &[],
         }
+    }
+
+    fn denying_targets(mut self, targets: &'static [&'static str]) -> Self {
+        self.denied_targets = targets;
+        self
     }
 
     fn excluding_rpc_services(mut self, services: &'static [&'static str]) -> Self {
         self.excluded_rpc_services = services;
+        self
+    }
+
+    fn stripping_attribute_prefixes(mut self, prefixes: &'static [&'static str]) -> Self {
+        self.stripped_attribute_prefixes = prefixes;
         self
     }
 }
@@ -87,8 +193,24 @@ where
     async fn export(&self, mut batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
         batch.retain(|span| {
             span_matches_targets(span, &self.targets)
+                && !span_matches_denied_target(span, self.denied_targets)
                 && !span_matches_excluded_rpc_service(span, self.excluded_rpc_services)
         });
+        for span in &mut batch {
+            strip_attributes_with_prefixes(&mut span.attributes, self.stripped_attribute_prefixes);
+            for event in &mut span.events.events {
+                strip_attributes_with_prefixes(
+                    &mut event.attributes,
+                    self.stripped_attribute_prefixes,
+                );
+            }
+            for link in &mut span.links.links {
+                strip_attributes_with_prefixes(
+                    &mut link.attributes,
+                    self.stripped_attribute_prefixes,
+                );
+            }
+        }
         if batch.is_empty() {
             return Ok(());
         }
@@ -111,6 +233,14 @@ where
     }
 }
 
+fn strip_attributes_with_prefixes(attributes: &mut Vec<OtelKeyValue>, prefixes: &[&str]) {
+    attributes.retain(|attribute| {
+        !prefixes
+            .iter()
+            .any(|prefix| attribute.key.as_str().starts_with(prefix))
+    });
+}
+
 fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
     let Some(target) = span_string_attribute(span, "target") else {
         return false;
@@ -119,6 +249,15 @@ fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
         return false;
     };
     targets.would_enable(&target, &level)
+}
+
+fn span_matches_denied_target(span: &SpanData, denied_targets: &[&str]) -> bool {
+    let Some(target) = span_string_attribute(span, "target") else {
+        return false;
+    };
+    denied_targets
+        .iter()
+        .any(|denied_target| target == *denied_target)
 }
 
 fn span_matches_excluded_rpc_service(span: &SpanData, excluded_services: &[&str]) -> bool {
@@ -227,6 +366,125 @@ fn parse_headers(raw: &str) -> HashMap<String, String> {
         .collect()
 }
 
+fn configured_otlp_endpoint(config: &TelemetryConfig) -> Option<&str> {
+    config
+        .otel
+        .endpoint
+        .as_deref()
+        .filter(|value| !value.is_empty())
+}
+
+fn configured_local_trace_store(
+    config: &TelemetryConfig,
+    dir: Option<PathBuf>,
+) -> Option<InstalledLocalTraceStore> {
+    dir.filter(|_| config.trace_history.enabled)
+        .map(|dir| InstalledLocalTraceStore::new(dir, config.trace_history.retention()))
+}
+
+pub(crate) async fn delete_workspace_traces(
+    trace_store_dir: PathBuf,
+    workspace_name: &WorkspaceName,
+) -> Result<usize, String> {
+    local_store::TraceStore::new(trace_store_dir)
+        .delete_traces_for_workspace(workspace_name.as_str().to_string())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn telemetry_resource(service_name: &str) -> Resource {
+    Resource::builder()
+        .with_attribute(opentelemetry::KeyValue::new(
+            "service.name",
+            service_name.to_string(),
+        ))
+        .build()
+}
+
+fn build_otlp_trace_exporter(
+    endpoint: &str,
+    headers: HashMap<String, String>,
+    targets: Targets,
+) -> Result<TargetFilteringSpanExporter<OtlpSpanExporter>, AppError> {
+    let exporter = OtlpSpanExporter::builder()
+        .with_http()
+        .with_endpoint(normalize_otlp_endpoint(endpoint, "traces"))
+        .with_headers(headers)
+        .build()
+        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+    Ok(TargetFilteringSpanExporter::new(exporter, targets)
+        .denying_targets(OTLP_TRACE_DENIED_TARGETS)
+        .stripping_attribute_prefixes(OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES))
+}
+
+fn add_otlp_trace_exporter(
+    builder: TracerProviderBuilder,
+    endpoint: &str,
+    headers: HashMap<String, String>,
+    targets: Targets,
+) -> Result<TracerProviderBuilder, AppError> {
+    let trace_exporter = build_otlp_trace_exporter(endpoint, headers, targets)?;
+    Ok(builder.with_span_processor(BatchSpanProcessor::builder(trace_exporter).build()))
+}
+
+fn add_local_trace_exporter(
+    builder: TracerProviderBuilder,
+    store: &InstalledLocalTraceStore,
+) -> Result<TracerProviderBuilder, AppError> {
+    let exporter = local_store::JsonlSpanExporter::new(store.dir.clone(), store.retention)
+        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+    let (internal_trace_targets, _) =
+        build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
+    let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets)
+        .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
+    Ok(builder.with_simple_exporter(exporter))
+}
+
+pub(crate) fn list_local_query_history(
+    dir: PathBuf,
+    retention: Duration,
+) -> Result<Vec<TraceQueryHistoryEntry>, TraceStoreError> {
+    local_store::TraceStore::with_retention(dir, retention).list_query_history_sync()
+}
+
+fn build_otlp_logger_provider(
+    resource: &Resource,
+    endpoint: &str,
+    headers: HashMap<String, String>,
+) -> Result<SdkLoggerProvider, AppError> {
+    let exporter = LogExporter::builder()
+        .with_http()
+        .with_endpoint(normalize_otlp_endpoint(endpoint, "logs"))
+        .with_headers(headers)
+        .build()
+        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+    Ok(SdkLoggerProvider::builder()
+        .with_resource(resource.clone())
+        .with_log_processor(BatchLogProcessor::builder(exporter).build())
+        .build())
+}
+
+fn build_otlp_meter_provider(
+    resource: &Resource,
+    endpoint: &str,
+    headers: HashMap<String, String>,
+) -> Result<SdkMeterProvider, AppError> {
+    let exporter = MetricExporter::builder()
+        .with_http()
+        .with_endpoint(normalize_otlp_endpoint(endpoint, "metrics"))
+        .with_headers(headers)
+        .build()
+        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+    Ok(SdkMeterProvider::builder()
+        .with_resource(resource.clone())
+        .with_reader(
+            PeriodicReader::builder(exporter)
+                .with_interval(METRICS_INTERVAL)
+                .build(),
+        )
+        .build())
+}
+
 /// Per-invocation context populated from the process environment by the CLI binary.
 #[derive(Debug, Default)]
 pub struct RunContext {
@@ -282,22 +540,7 @@ pub fn build_root_span(traceparent: Option<&str>) -> tracing::Span {
         process.pid = i64::from(std::process::id()),
         status = tracing::field::Empty
     );
-    if let Some(tp) = traceparent {
-        struct StringMapExtractor<'a>(&'a HashMap<String, String>);
-        impl Extractor for StringMapExtractor<'_> {
-            fn get(&self, key: &str) -> Option<&str> {
-                self.0.get(key).map(String::as_str)
-            }
-            fn keys(&self) -> Vec<&str> {
-                self.0.keys().map(String::as_str).collect()
-            }
-        }
-        let carrier = HashMap::from([("traceparent".to_string(), tp.to_string())]);
-        let parent_cx = opentelemetry::global::get_text_map_propagator(|p| {
-            p.extract(&StringMapExtractor(&carrier))
-        });
-        drop(span.set_parent(parent_cx));
-    }
+    coral_telemetry::set_parent_from_trace_headers(&span, traceparent, None);
     span
 }
 
@@ -350,22 +593,13 @@ pub(crate) fn init_tracing(
     Ok(state.local_trace_store.clone())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "Initialization wires OpenTelemetry traces, logs, metrics, and local export"
-)]
 fn try_init_tracing(
     config: &TelemetryConfig,
     enable_stderr_logs: bool,
     internal_trace_store_dir: Option<PathBuf>,
 ) -> Result<TracingInitState, AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-    let endpoint = config
-        .otel
-        .endpoint
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
+    let endpoint = configured_otlp_endpoint(config);
     let (log_filter, log_filter_error) = build_log_filter(config.otel.log_filter.as_deref());
     let stderr_layer = enable_stderr_logs.then(|| {
         tracing_subscriber::fmt::layer()
@@ -375,69 +609,28 @@ fn try_init_tracing(
             .with_filter(log_filter.clone())
     });
 
-    let local_trace_store = internal_trace_store_dir
-        .filter(|_| config.trace_history.enabled)
-        .map(|dir| InstalledLocalTraceStore::new(dir, config.trace_history.retention()));
+    let local_trace_store = configured_local_trace_store(config, internal_trace_store_dir);
     let internal_trace_store_enabled = local_trace_store.is_some();
+    let local_trace_attribute_marker_layer =
+        internal_trace_store_enabled.then_some(LocalTraceAttributeMarkerLayer);
     let should_export_traces = endpoint.is_some() || internal_trace_store_enabled;
     let mut trace_filter_error = None;
     let otel_trace_layer = if should_export_traces {
-        let resource = opentelemetry_sdk::Resource::builder()
-            .with_attribute(opentelemetry::KeyValue::new(
-                "service.name",
-                config.otel.service_name.clone(),
-            ))
-            .build();
-
-        let headers = parse_headers(config.otel.headers.as_deref().unwrap_or_default());
+        let resource = telemetry_resource(&config.otel.service_name);
         let mut builder = SdkTracerProvider::builder().with_resource(resource.clone());
 
-        if let Some(ref endpoint) = endpoint {
+        if let Some(endpoint) = endpoint {
+            let headers = parse_headers(config.otel.headers.as_deref().unwrap_or_default());
             let (otlp_trace_targets, error) =
                 build_trace_targets(&config.otel.trace_filter, DEFAULT_TRACE_FILTER);
             trace_filter_error = error;
-            let trace_exporter = OtlpSpanExporter::builder()
-                .with_http()
-                .with_endpoint(normalize_otlp_endpoint(endpoint, "traces"))
-                .with_headers(headers.clone())
-                .build()
-                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-            let trace_exporter =
-                TargetFilteringSpanExporter::new(trace_exporter, otlp_trace_targets);
-            builder = builder.with_span_processor(
-                opentelemetry_sdk::trace::BatchSpanProcessor::builder(trace_exporter).build(),
-            );
-
-            let log_exporter = LogExporter::builder()
-                .with_http()
-                .with_endpoint(normalize_otlp_endpoint(endpoint, "logs"))
-                .with_headers(headers.clone())
-                .build()
-                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-            let logger_provider = SdkLoggerProvider::builder()
-                .with_resource(resource.clone())
-                .with_log_processor(
-                    opentelemetry_sdk::logs::BatchLogProcessor::builder(log_exporter).build(),
-                )
-                .build();
+            builder =
+                add_otlp_trace_exporter(builder, endpoint, headers.clone(), otlp_trace_targets)?;
+            let logger_provider = build_otlp_logger_provider(&resource, endpoint, headers.clone())?;
             if let Ok(mut guard) = LOGGER_PROVIDER.lock() {
                 *guard = Some(logger_provider);
             }
-
-            let metric_exporter = MetricExporter::builder()
-                .with_http()
-                .with_endpoint(normalize_otlp_endpoint(endpoint, "metrics"))
-                .with_headers(headers)
-                .build()
-                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-            let meter_provider = SdkMeterProvider::builder()
-                .with_resource(resource.clone())
-                .with_reader(
-                    opentelemetry_sdk::metrics::PeriodicReader::builder(metric_exporter)
-                        .with_interval(METRICS_INTERVAL)
-                        .build(),
-                )
-                .build();
+            let meter_provider = build_otlp_meter_provider(&resource, endpoint, headers)?;
             opentelemetry::global::set_meter_provider(meter_provider.clone());
             initialize_metrics(Some(&meter_provider));
             if let Ok(mut guard) = METER_PROVIDER.lock() {
@@ -446,23 +639,13 @@ fn try_init_tracing(
         }
 
         if let Some(store) = local_trace_store.as_ref() {
-            let exporter = local_store::JsonlSpanExporter::new(store.dir.clone(), store.retention)
-                .map_err(|e| AppError::InvalidInput(e.to_string()))?;
-            let (internal_trace_targets, _) =
-                build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
-            let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets)
-                .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
-            builder = builder.with_span_processor(
-                opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter).build(),
-            );
+            builder = add_local_trace_exporter(builder, store)?;
         }
 
         let provider = builder.build();
         let tracer = provider.tracer("coral");
         let (trace_targets, layer_filter_error) = trace_layer_filter(
-            endpoint
-                .as_deref()
-                .map(|_| config.otel.trace_filter.as_str()),
+            endpoint.map(|_| config.otel.trace_filter.as_str()),
             internal_trace_store_enabled,
         );
         if trace_filter_error.is_none() {
@@ -494,6 +677,7 @@ fn try_init_tracing(
     });
 
     if let Err(error) = Registry::default()
+        .with(local_trace_attribute_marker_layer)
         .with(stderr_layer)
         .with(otel_trace_layer)
         .with(otel_log_layer)
@@ -550,15 +734,41 @@ pub fn shutdown_tracing() {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
+    use opentelemetry::KeyValue;
     use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
     use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone)]
+    struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_error| std::io::Error::other("capture lock poisoned"))?
+                .write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0
+                .lock()
+                .map_err(|_error| std::io::Error::other("capture lock poisoned"))?
+                .flush()
+        }
+    }
 
     use super::{
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
-        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, TargetFilteringSpanExporter, build_log_filter,
-        build_trace_targets, normalize_otlp_endpoint, parse_headers, trace_layer_filter,
+        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, LocalTraceAttributeMarkerLayer,
+        OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES, OTLP_TRACE_DENIED_TARGETS,
+        TargetFilteringSpanExporter, build_log_filter, build_trace_targets,
+        normalize_otlp_endpoint, parse_headers, record_local_only_span_attribute,
+        trace_layer_filter,
     };
 
     #[test]
@@ -610,10 +820,12 @@ mod tests {
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(!targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(!targets.would_enable("coral.http.body", &tracing::Level::TRACE));
+        assert!(!targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
 
     #[test]
-    fn local_trace_filter_includes_datafusion() {
+    fn local_trace_filter_includes_datafusion_and_body_spans() {
         let (targets, error) =
             build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
 
@@ -622,6 +834,8 @@ mod tests {
         assert!(targets.would_enable("coral_mcp::server", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
 
     #[test]
@@ -631,6 +845,8 @@ mod tests {
         assert!(error.is_none());
         assert!(targets.would_enable("coral_engine::http", &tracing::Level::TRACE));
         assert!(targets.would_enable("coral_engine::datafusion", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.http.body", &tracing::Level::TRACE));
+        assert!(targets.would_enable("coral.mcp.body", &tracing::Level::TRACE));
     }
 
     #[test]
@@ -673,6 +889,223 @@ mod tests {
         span_names.sort();
 
         assert_eq!(span_names, vec!["kept"]);
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn target_filtering_exporter_hard_denies_configured_targets() {
+        let memory = InMemorySpanExporter::default();
+        let (targets, error) = build_trace_targets(
+            "coral_app=trace,coral.http.body=trace,coral.mcp.body=trace",
+            DEFAULT_TRACE_FILTER,
+        );
+        assert!(error.is_none());
+        let exporter = TargetFilteringSpanExporter::new(memory.clone(), targets)
+            .denying_targets(OTLP_TRACE_DENIED_TARGETS);
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("filter-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let kept = tracing::trace_span!(target: "coral_app", "kept");
+            let _kept = kept.enter();
+
+            let dropped_http = tracing::trace_span!(
+                target: "coral.http.body",
+                "dropped_http_body",
+                coral.http.request.body = "secret",
+            );
+            let _dropped_http = dropped_http.enter();
+
+            let dropped_mcp = tracing::trace_span!(
+                target: "coral.mcp.body",
+                "dropped_mcp_body",
+                coral.mcp.request.body = "secret",
+            );
+            let _dropped_mcp = dropped_mcp.enter();
+        });
+        provider.force_flush().expect("flush spans");
+
+        let span_names = memory
+            .get_finished_spans()
+            .expect("finished spans")
+            .into_iter()
+            .map(|span| span.name.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(span_names, vec!["kept"]);
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn target_filtering_exporter_strips_local_only_trace_attributes() {
+        let local_memory = InMemorySpanExporter::default();
+        let memory = InMemorySpanExporter::default();
+        let (targets, error) = build_trace_targets("coral_app=trace", DEFAULT_TRACE_FILTER);
+        assert!(error.is_none());
+        let exporter = TargetFilteringSpanExporter::new(memory.clone(), targets)
+            .stripping_attribute_prefixes(OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES);
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(local_memory.clone())
+            .with_simple_exporter(exporter)
+            .build();
+        let tracer = provider.tracer("local-only-attribute-test");
+        let layer = tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_level(true);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::trace_span!(
+                target: "coral_app",
+                "search",
+                public = "kept",
+            );
+            span.set_attribute(
+                coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
+                "LOCAL_ONLY_SENTINEL",
+            );
+            span.add_event(
+                "search event",
+                vec![
+                    KeyValue::new("event.public", "kept"),
+                    KeyValue::new("coral.local.event.detail", "LOCAL_ONLY_EVENT_SENTINEL"),
+                ],
+            );
+            span.add_link_with_attributes(
+                SpanContext::new(
+                    TraceId::from(1),
+                    SpanId::from(2),
+                    TraceFlags::SAMPLED,
+                    false,
+                    TraceState::default(),
+                ),
+                vec![
+                    KeyValue::new("link.public", "kept"),
+                    KeyValue::new("coral.local.link.detail", "LOCAL_ONLY_LINK_SENTINEL"),
+                ],
+            );
+            let _span = span.enter();
+        });
+        provider.force_flush().expect("flush spans");
+
+        let local_spans = local_memory.get_finished_spans().expect("local spans");
+        let local_span = local_spans.first().expect("locally exported span");
+        assert!(format!("{local_span:?}").contains("LOCAL_ONLY_SENTINEL"));
+        assert!(format!("{local_span:?}").contains("LOCAL_ONLY_EVENT_SENTINEL"));
+        assert!(format!("{local_span:?}").contains("LOCAL_ONLY_LINK_SENTINEL"));
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let span = spans.first().expect("exported span");
+        assert!(
+            span.attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "public")
+        );
+        assert!(span.attributes.iter().all(|attribute| {
+            !attribute
+                .key
+                .as_str()
+                .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)
+        }));
+        assert!(
+            span.events
+                .events
+                .iter()
+                .all(|event| event.attributes.iter().all(|attribute| !attribute
+                    .key
+                    .as_str()
+                    .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)))
+        );
+        assert!(
+            span.links
+                .links
+                .iter()
+                .all(|link| link.attributes.iter().all(|attribute| !attribute
+                    .key
+                    .as_str()
+                    .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)))
+        );
+        assert!(!format!("{span:?}").contains("LOCAL_ONLY_SENTINEL"));
+        assert!(!format!("{span:?}").contains("LOCAL_ONLY_EVENT_SENTINEL"));
+        assert!(!format!("{span:?}").contains("LOCAL_ONLY_LINK_SENTINEL"));
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn local_only_attributes_require_coral_local_trace_subscriber() {
+        assert!(!subscriber_captures_local_only_attribute(None));
+        assert!(subscriber_captures_local_only_attribute(Some(
+            LocalTraceAttributeMarkerLayer
+        )));
+    }
+
+    fn subscriber_captures_local_only_attribute(
+        marker_layer: Option<LocalTraceAttributeMarkerLayer>,
+    ) -> bool {
+        let memory = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(memory.clone())
+            .build();
+        let tracer = provider.tracer("local-only-subscriber-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(marker_layer)
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("search", public = "kept");
+            record_local_only_span_attribute(
+                &span,
+                coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
+                "LOCAL_ONLY_SENTINEL",
+            );
+        });
+        provider.force_flush().expect("flush spans");
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let span = spans.first().expect("captured span");
+        let captured = span.attributes.iter().any(|attribute| {
+            attribute.key.as_str() == coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE
+        });
+        provider.shutdown().expect("provider shutdown");
+        captured
+    }
+
+    #[test]
+    fn direct_otel_span_attributes_are_not_formatted_as_logs() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let output_writer = output.clone();
+        let memory = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(memory)
+            .build();
+        let tracer = provider.tracer("local-only-format-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .compact()
+                    .with_writer(move || CapturedWriter(output_writer.clone())),
+            )
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("search", public = "kept");
+            span.set_attribute(
+                coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
+                "LOCAL_ONLY_STDERR_SENTINEL",
+            );
+            span.in_scope(|| tracing::warn!("provider task failed"));
+        });
+
+        let formatted = String::from_utf8(output.lock().expect("capture lock").clone())
+            .expect("formatter output is utf-8");
+        assert!(formatted.contains("provider task failed"));
+        assert!(!formatted.contains("LOCAL_ONLY_STDERR_SENTINEL"));
         provider.shutdown().expect("provider shutdown");
     }
 

@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - converted_to_draft
 
 permissions:
   contents: read
@@ -14,30 +20,47 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   changes:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     permissions:
       contents: read
       pull-requests: read
     outputs:
       github_actions: ${{ steps.filter.outputs.github_actions }}
       rust_checks: ${{ steps.filter.outputs.rust_checks }}
+      postgres_database_tests: ${{ steps.filter.outputs.postgres_database_tests }}
       release_workflow: ${{ steps.filter.outputs.release_workflow }}
       install-script: ${{ steps.filter.outputs.install-script }}
-      ui-build: ${{ steps.filter.outputs.ui-build }}
-      ui-tests: ${{ steps.filter.outputs.ui-tests }}
+      coral-image: ${{ steps.filter.outputs.coral-image }}
+      coral-ui-checks: ${{ steps.filter.outputs.coral-ui-checks }}
+      coral-ui-image: ${{ steps.filter.outputs.coral-ui-image }}
+      desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
+      schema-freshness: ${{ steps.filter.outputs.schema-freshness }}
       license-check: ${{ steps.filter.outputs.license-check }}
+      performance-regression: ${{ steps.filter.outputs.performance-regression }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      # Release Please updates its candidate branch before this repository's
+      # generation steps add their final commit. Give those writes time to
+      # coalesce so concurrency cancellation stops obsolete runs before the
+      # expensive validation jobs fan out.
+      - name: Let release automation settle
+        if: >-
+          github.event_name == 'pull_request' &&
+          startsWith(github.head_ref, 'release-please--')
+        run: sleep 120
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Detect changes
         id: filter
@@ -55,19 +78,59 @@ jobs:
               - 'rust-toolchain'
               - 'crates/**'
               - 'xtask/**'
+            postgres_database_tests:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'crates/coral-app/migrations/**'
+              - 'crates/coral-app/src/state/db/**'
+              - 'crates/coral-app/tests/postgres_database_tests.rs'
+              # The xtask recovery contracts run in this job too, against the
+              # same service database, so changes to the recovery code and the
+              # files it links have to trigger it — but not every xtask edit:
+              # the docs generator or perf checks cannot affect the contracts.
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/env.rs'
+              - 'xtask/src/admin.rs'
             release_workflow:
               - '.github/workflows/release.yml'
             install-script:
               - '.github/workflows/validate.yml'
               - 'scripts/install.sh'
-            ui-build:
+            # Kept out of the coral-ui-image block below: docker/coral-ui-publish.test.mjs
+            # reads that block by slicing to the next filter key.
+            coral-image:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'docker/Dockerfile'
+              - 'docker/entrypoint.sh'
+              - 'docker/coral-smoke.sh'
+            coral-ui-checks:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
-              - 'ui/**'
-            ui-tests:
+              - 'apps/coral-ui/**'
+              # Coral UI re-exports the desktop IPC bridge types, so a change there
+              # can break the Coral UI type-check.
+              - 'apps/desktop/src/shared/types.ts'
+            coral-ui-image:
               - '.github/workflows/validate.yml'
+              - '.github/workflows/docker-aliases.yml'
+              - '.github/workflows/docker-publish.yml'
+              - '.github/workflows/coral-ui-docker-publish.yml'
+              - '.github/workflows/release.yml'
+              - '.dockerignore'
+              - 'Makefile'
+              - 'docker/Dockerfile.coral-ui'
+              - 'docker/entrypoint-coral-ui.sh'
+              - 'docker/coral-ui-smoke.sh'
+              - 'docker/coral-ui-image.test.mjs'
+              - 'docker/coral-ui-publish.test.mjs'
+              - 'apps/coral-ui/**'
+              - 'apps/desktop/src/shared/types.ts'
               - 'crates/coral-api/proto/**'
-              - 'ui/**'
+            desktop-checks:
+              - '.github/workflows/validate.yml'
+              - 'apps/desktop/**'
             proto-lint:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -84,11 +147,23 @@ jobs:
               - 'Makefile'
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - 'xtask/**'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/docs/**'
+              - 'xtask/src/sources.rs'
               - 'crates/coral-spec/**'
               - 'sources/core/**'
-              - 'docs/**'
+              - 'apps/docs/**'
               - 'CHANGELOG.md'
+            schema-freshness:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/schemas.rs'
+              - 'crates/coral-spec/**'
             license-check:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -96,14 +171,35 @@ jobs:
               - 'Cargo.lock'
               - 'crates/**/Cargo.toml'
               - 'deny.toml'
+            performance-regression:
+              - '.github/workflows/validate.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Makefile'
+              - 'rust-toolchain.toml'
+              - 'rust-toolchain'
+              - 'crates/**'
+              - 'xtask/Cargo.toml'
+              - 'xtask/src/main.rs'
+              - 'xtask/src/perf.rs'
+              - 'sources/core/github/**'
 
   rust-checks:
     name: Rust checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: changes
+    # Healthy runs take 5-7 minutes. This is a backstop for a job that wedges
+    # outside nextest's reach — a stuck build, cache restore, or toolchain
+    # install — so it fails on its own instead of holding a runner until
+    # someone cancels it or GitHub's 6-hour default kills it.
+    timeout-minutes: 30
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      # No disk-space reclamation step here: the Blacksmith runner boots with a
+      # 145 GB root filesystem and ~81 GB free before any workflow step runs, so
+      # the GitHub-hosted-runner cleanup dance cost ~50s per run to reclaim space
+      # this job never needed (and evicted pre-pulled Docker images along the way).
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -125,13 +221,50 @@ jobs:
       - name: Run make rust-checks
         run: make rust-checks
 
+  postgres-database-tests:
+    name: Postgres database tests
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.postgres_database_tests == 'true' }}
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-postgres-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run Postgres database tests
+        env:
+          CORAL_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+        run: make postgres-tests
+
   windows-rust-smoke:
     name: Windows Rust smoke
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' || needs.changes.outputs.release_workflow == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -151,8 +284,17 @@ jobs:
 
       - name: Smoke CLI
         shell: pwsh
+        # Strict mode: without it only the final command's exit code decides
+        # the step, and this step passed for days while `source discover` was
+        # failing on every run — the trailing completion call reset the exit
+        # code. The workspace is created first because a fresh install has
+        # none since workspace access control, and `source discover` without
+        # one exits 1 by design.
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           .\target\debug\coral.exe --version
+          .\target\debug\coral.exe workspace create smoke
           .\target\debug\coral.exe source discover
           .\target\debug\coral.exe completion powershell > $null
 
@@ -174,7 +316,7 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -198,96 +340,174 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve latest Coral release
+        id: coral-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version="$(
+            curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "User-Agent: withcoral-install-ci" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/latest" |
+              sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
+              head -n 1
+          )"
+
+          if [ -z "$version" ]; then
+            echo "Could not determine latest Coral release version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Run install script
         env:
-          # Note: the install script generally runs fine without a GITHUB_TOKEN set, and we don't advise users to set
-          # one during installation, but in CI it often fails. See https://github.com/orgs/community/discussions/42748
-          # for the discussion.
-          GITHUB_TOKEN: ${{ github.token }}
+          # Keep tokens out of PR-controlled installer code; pass only the resolved release version.
+          CORAL_VERSION: ${{ steps.coral-release.outputs.version }}
+          GITHUB_TOKEN: ""
         run: |
           install_dir="$RUNNER_TEMP/coral-bin"
           CORAL_INSTALL_DIR="$install_dir" sh < scripts/install.sh
           "$install_dir/coral" --version
 
-  ui-build:
-    name: UI build
-    runs-on: ubuntu-latest
+
+  coral-ui-checks:
+    name: Coral UI checks
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
-    if: ${{ needs.changes.outputs.ui-build == 'true' || needs.changes.outputs.rust_checks == 'true' }}
+    if: ${{ needs.changes.outputs.coral-ui-checks == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/coral-ui/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/coral-ui/.node-version
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: apps/coral-ui/package-lock.json
 
-      - name: Install UI dependencies
-        run: npm ci --prefix ui
+      - name: Install Coral UI dependencies
+        run: npm ci --prefix apps/coral-ui
 
-      - name: Build UI
-        run: npm run build --prefix ui
+      - name: Lint and format check
+        run: npm run check --prefix apps/coral-ui
 
-      - name: Verify UI entrypoint
-        run: test -s ui/dist/index.html
+      - name: Type-check Coral UI
+        run: npm run typecheck --prefix apps/coral-ui
 
-      - name: Verify production build excludes test mocks
+      - name: Test Coral UI
+        run: npm test --prefix apps/coral-ui
+
+      - name: Build Coral UI
+        run: npm run build --prefix apps/coral-ui
+
+      - name: Smoke production Coral UI server
+        run: npm run test:server --prefix apps/coral-ui
+
+  coral-image:
+    name: Coral image
+    # Validates docker/Dockerfile and docker/entrypoint.sh against a stub
+    # binary. The entrypoint is pure shell up to its closing exec, so every
+    # branch it takes runs without compiling coral-cli: rust-checks covers the
+    # real binary, and docker-publish.yml smokes the real image at release.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.coral-image == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
+        with:
+          cache-key: coral/docker/Dockerfile
+
+      - name: Build and smoke the Coral image entrypoint
+        run: make coral-docker-stub-test CORAL_DOCKER_IMAGE=coral:stub
+
+  coral-ui-image:
+    name: Coral UI image
+    # The smoke matrix is peer-free, so nothing here compiles Rust or pulls a
+    # Coral image; readiness against a live peer is covered by the mocked
+    # health client in apps/coral-ui/app/routes/readyz.server.test.ts.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.coral-ui-image == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: useblacksmith/setup-docker-builder@a5256a73e30f09e37e3eceb8ca36043d17621d24 # v2.1.0
+        with:
+          cache-key: coral/docker/Dockerfile.coral-ui
+
+      - name: Check Coral UI image contract
+        run: node --test docker/coral-ui-image.test.mjs docker/coral-ui-publish.test.mjs
+
+      - name: Build and smoke the linux/amd64 Coral UI image
         run: |
-          if grep -R -E 'mockServiceWorker|setupWorker|@msw/playwright|mockScenario|PW_UI_SCREENCAST' ui/dist; then
-            echo 'Production UI build contains test/mock-only code' >&2
-            exit 1
-          fi
+          make coral-ui-docker-test CORAL_UI_DOCKER_IMAGE=coral-ui:local
+          test "$(docker image inspect coral-ui:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
 
-  ui-tests:
-    name: UI tests
-    runs-on: ubuntu-latest
+  desktop-checks:
+    name: Desktop checks
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
-    if: ${{ needs.changes.outputs.ui-tests == 'true' }}
+    if: ${{ needs.changes.outputs.desktop-checks == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/desktop/.node-version
+          package-manager-cache: false
+
+      - name: Set up Node with trusted npm cache
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/desktop/.node-version
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: apps/desktop/package-lock.json
 
-      - name: Install UI dependencies
-        run: npm ci --prefix ui
+      - name: Install desktop dependencies
+        run: npm ci --prefix apps/desktop
 
-      - name: Type-check UI tests
-        run: npm run test:ui:type-check --prefix ui
+      # The full build stages the Rust binary + Coral UI, which their dedicated jobs
+      # already cover; this runs desktop type and packaging-config checks.
+      - name: Check desktop
+        run: npm run check --prefix apps/desktop
 
-      - name: Install Chromium for Playwright
-        run: npm exec --prefix ui -- playwright install --with-deps chromium
-
-      - name: Run UI tests
-        run: npm run test:ui --prefix ui
-
-      - name: Upload UI test artifacts
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: ui-test-results
-          path: |
-            ui/test-results/**
-            ui/playwright-report/**
-          if-no-files-found: ignore
+      - name: Test desktop
+        run: npm test --prefix apps/desktop
 
   proto-lint:
     name: Lint protobuf API
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.proto-lint == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -299,12 +519,34 @@ jobs:
       - name: Run make lint-proto
         run: make lint-proto
 
-  gha-security-audit:
-    name: Github Actions security audit with zizmor
-    runs-on: ubuntu-latest
+  gha-security-audit-pr:
+    name: Github Actions security audit with zizmor (PR)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
-    if: ${{ needs.changes.outputs.github_actions == 'true' }}
+    if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name == 'pull_request' }}
     permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
+        with:
+          version: v1.25.2
+          annotations: true
+          advanced-security: false
+          min-severity: low
+
+  gha-security-audit-sarif:
+    name: Github Actions security audit with zizmor (SARIF)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
       security-events: write # Required for upload-sarif (used by zizmor-action) to upload SARIF files.
     steps:
       - name: Checkout repository
@@ -316,17 +558,17 @@ jobs:
         uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
         with:
           version: v1.25.2
-          annotations: ${{ github.event_name == 'pull_request' }}
-          advanced-security: ${{ github.event_name != 'pull_request' }}
+          annotations: false
+          advanced-security: true
           min-severity: low
 
   source-lint:
     name: Lint source manifests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.source-lint == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -348,11 +590,11 @@ jobs:
 
   docs-freshness:
     name: Docs freshness check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.docs-freshness == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -369,13 +611,50 @@ jobs:
       - name: Run make docs-check
         run: make docs-check
 
+      - name: Set up Node for Mintlify validation
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/coral-ui/.node-version
+          package-manager-cache: false
+
+      - name: Validate Mintlify docs
+        working-directory: apps/docs
+        run: npx --yes mint validate
+
+      - name: Check Mintlify links
+        working-directory: apps/docs
+        run: npx --yes mint broken-links
+
+  schema-freshness:
+    name: Schema freshness check
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.schema-freshness == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-schema-freshness-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run make schema-check
+        run: make schema-check
+
   license-check:
     name: Dependency license scan
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.license-check == 'true' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -397,25 +676,68 @@ jobs:
       - name: Run make license-check
         run: make license-check
 
+  performance-regression:
+    name: Performance regression
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.performance-regression == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Keep this separate from Rust checks. GitHub caches are immutable on
+          # exact-key hits, so sharing the debug/test cache prevents this job's
+          # release artifacts from warming future performance runs.
+          shared-key: coral-perf-release-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install hyperfine
+        uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: hyperfine@1.20.0
+          fallback: cargo-install
+
+      - name: Build CLI
+        run: cargo build --locked -p coral-cli --release
+
+      - name: Benchmark coral.tables query
+        run: |
+          cargo run --locked -p xtask --release -- perf-check \
+            --coral-bin target/release/coral \
+            --max-mean-seconds 0.75
+
   validate:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
       [
         changes,
         rust-checks,
         windows-rust-smoke,
         install-script,
-        ui-build,
-        ui-tests,
+        coral-ui-checks,
+        coral-ui-image,
+        coral-image,
+        desktop-checks,
         proto-lint,
-        gha-security-audit,
+        gha-security-audit-pr,
+        gha-security-audit-sarif,
         source-lint,
         docs-freshness,
+        schema-freshness,
         license-check,
+        performance-regression,
       ]
     # Run even when upstream jobs fail or are conditionally skipped so this
     # job can act as the single required status check for the workflow.
-    if: ${{ always() }}
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     steps:
       - name: Check all job results
         env:
@@ -423,26 +745,36 @@ jobs:
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
           WINDOWS_RUST_SMOKE_RESULT: ${{ needs.windows-rust-smoke.result }}
           INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
-          UI_BUILD_RESULT: ${{ needs.ui-build.result }}
-          UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
+          CORAL_UI_CHECKS_RESULT: ${{ needs.coral-ui-checks.result }}
+          CORAL_UI_IMAGE_RESULT: ${{ needs.coral-ui-image.result }}
+          CORAL_IMAGE_RESULT: ${{ needs.coral-image.result }}
+          DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
-          GHA_SECURITY_AUDIT_RESULT: ${{ needs.gha-security-audit.result }}
+          GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
+          GHA_SECURITY_AUDIT_SARIF_RESULT: ${{ needs.gha-security-audit-sarif.result }}
           SOURCE_LINT_RESULT: ${{ needs.source-lint.result }}
           DOCS_FRESHNESS_RESULT: ${{ needs.docs-freshness.result }}
+          SCHEMA_FRESHNESS_RESULT: ${{ needs.schema-freshness.result }}
           LICENSE_CHECK_RESULT: ${{ needs.license-check.result }}
+          PERFORMANCE_REGRESSION_RESULT: ${{ needs.performance-regression.result }}
         run: |
           jobs=(
             "changes:$CHANGES_RESULT"
             "rust-checks:$RUST_CHECKS_RESULT"
             "windows-rust-smoke:$WINDOWS_RUST_SMOKE_RESULT"
             "install-script:$INSTALL_SCRIPT_RESULT"
-            "ui-build:$UI_BUILD_RESULT"
-            "ui-tests:$UI_TESTS_RESULT"
+            "coral-ui-checks:$CORAL_UI_CHECKS_RESULT"
+            "coral-ui-image:$CORAL_UI_IMAGE_RESULT"
+            "coral-image:$CORAL_IMAGE_RESULT"
+            "desktop-checks:$DESKTOP_CHECKS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
-            "gha-security-audit:$GHA_SECURITY_AUDIT_RESULT"
+            "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
+            "gha-security-audit-sarif:$GHA_SECURITY_AUDIT_SARIF_RESULT"
             "source-lint:$SOURCE_LINT_RESULT"
             "docs-freshness:$DOCS_FRESHNESS_RESULT"
+            "schema-freshness:$SCHEMA_FRESHNESS_RESULT"
             "license-check:$LICENSE_CHECK_RESULT"
+            "performance-regression:$PERFORMANCE_REGRESSION_RESULT"
           )
 
           failed=0

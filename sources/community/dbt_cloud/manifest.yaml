@@ -1,0 +1,354 @@
+name: dbt_cloud
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query dbt Cloud jobs, runs, and environments through the dbt Cloud
+  Administrative API v2.
+inputs:
+  DBT_CLOUD_ACCOUNT_ID:
+    kind: variable
+    hint: |
+      Your dbt Cloud account ID. Found in Account Settings under
+      Account information, or in the URL:
+      https://<prefix>.us1.dbt.com/#/accounts/<account_id>/
+  DBT_CLOUD_API_TOKEN:
+    kind: secret
+    hint: |
+      Create a service token in dbt Cloud under
+      Account Settings -> Service Tokens with read access.
+      Use the Job viewer role (Enterprise) or Read-Only service token (Starter).
+      See https://docs.getdbt.com/docs/dbt-apis/service-tokens
+  DBT_CLOUD_BASE_URL:
+    kind: variable
+    hint: |
+      Your dbt Cloud Admin API base URL. Found in Account Settings
+      under Account information -> Access URL. Examples:
+      US multi-tenant: https://cloud.getdbt.com
+      US cell-based: https://<account_prefix>.us1.dbt.com
+      Europe: https://emea.dbt.com
+      Australia: https://au.dbt.com
+base_url: "{{input.DBT_CLOUD_BASE_URL}}"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.DBT_CLOUD_API_TOKEN}}
+test_queries:
+  - SELECT * FROM dbt_cloud.jobs LIMIT 1
+  - SELECT * FROM dbt_cloud.runs LIMIT 1
+tables:
+  - name: jobs
+    description: dbt Cloud jobs with schedules, execution state, and orchestration metadata.
+    guide: >
+      Use this table to discover job_id values before querying runs.
+      Returns all jobs for the authenticated account using offset pagination.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/jobs/
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: dbt Cloud job ID.
+      - name: account_id
+        type: Int64
+        nullable: true
+        description: Account ID owning the job.
+      - name: project_id
+        type: Int64
+        nullable: true
+        description: Project ID containing the job.
+      - name: environment_id
+        type: Int64
+        nullable: true
+        description: Environment ID the job runs against.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Job name.
+      - name: execute_steps
+        type: Json
+        nullable: true
+        description: List of dbt steps to execute.
+      - name: state
+        type: Int64
+        nullable: true
+        description: Job state value.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time when the job was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Time when the job was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw job object.
+        expr:
+          kind: current_row
+
+  - name: runs
+    description: dbt Cloud job runs with execution state, duration, and status metadata.
+    guide: >
+      Use job_id, status, project_id, or environment_id filters to push
+      filtering to the dbt Cloud API. Returns runs ordered by most recent
+      first using offset pagination.
+    fetch_limit_default: 100
+    filters:
+      - name: job_id
+      - name: status
+      - name: project_id
+      - name: environment_id
+    request:
+      method: GET
+      path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/runs/
+      query:
+        - name: job_definition_id
+          from: filter
+          key: job_id
+        - name: status
+          from: filter
+          key: status
+        - name: project_id
+          from: filter
+          key: project_id
+        - name: environment_id
+          from: filter
+          key: environment_id
+        - name: order_by
+          from: literal
+          value: "-id"
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: dbt Cloud run ID.
+      - name: job_id
+        type: Int64
+        nullable: true
+        description: Job ID that triggered this run.
+      - name: account_id
+        type: Int64
+        nullable: true
+        description: Account ID owning the run.
+      - name: project_id
+        type: Int64
+        nullable: true
+        description: Project ID containing the run.
+      - name: environment_id
+        type: Int64
+        nullable: true
+        description: Environment ID the run executed against.
+      - name: status
+        type: Int64
+        nullable: true
+        description: >-
+          Run status code. 1=Queued, 2=Starting, 3=Running,
+          10=Success, 20=Error, 30=Cancelled.
+      - name: status_message
+        type: Utf8
+        nullable: true
+        description: Human-readable status message.
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: >-
+          Total run duration as a string returned by the dbt Cloud API
+          (for example, "00:01:23"). Use queued_duration and run_duration
+          from the raw column for finer-grained timing.
+      - name: queued_duration
+        type: Utf8
+        nullable: true
+        description: Time the run spent queued, as a string.
+      - name: run_duration
+        type: Utf8
+        nullable: true
+        description: Actual execution time of the run, as a string.
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: Time when the run started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - started_at
+      - name: finished_at
+        type: Timestamp
+        nullable: true
+        description: Time when the run finished.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - finished_at
+      - name: job_id_filter
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Echoes the job_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: job_id
+      - name: status_filter
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Echoes the status filter used for this scan.
+        expr:
+          kind: from_filter
+          key: status
+      - name: project_id_filter
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Echoes the project_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: project_id
+      - name: environment_id_filter
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Echoes the environment_id filter used for this scan.
+        expr:
+          kind: from_filter
+          key: environment_id
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw run object.
+        expr:
+          kind: current_row
+
+  - name: environments
+    description: >-
+      dbt Cloud environments with deployment metadata and execution
+      configuration. Uses the v2 list endpoint; note that dbt Cloud v3
+      introduces project-scoped endpoints which may be preferred in future
+      revisions.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /api/v2/accounts/{{input.DBT_CLOUD_ACCOUNT_ID}}/environments/
+    response:
+      rows_path:
+        - data
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: dbt Cloud environment ID.
+      - name: account_id
+        type: Int64
+        nullable: true
+        description: Account ID owning the environment.
+      - name: project_id
+        type: Int64
+        nullable: true
+        description: Project ID containing the environment.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Environment name.
+      - name: dbt_version
+        type: Utf8
+        nullable: true
+        description: dbt version used in this environment.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Environment type. The v2 API enum is development or deployment.
+          Production and staging classification is in deployment_type, not type.
+      - name: deployment_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Deployment classification for deployment environments, such as
+          production or staging. Null for development environments.
+      - name: state
+        type: Int64
+        nullable: true
+        description: Environment state value.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time when the environment was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Time when the environment was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw environment object.
+        expr:
+          kind: current_row

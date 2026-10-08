@@ -16,10 +16,11 @@ fn manifest(dir: &Path) -> Value {
         "name": "linear",
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "projects",
             "description": "Pattern validator fixture",
+            "format": "jsonl",
             "source": {
                 "location": format!("file://{}/", dir.display()),
                 "glob": "**/*.jsonl"

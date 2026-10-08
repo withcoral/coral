@@ -1,0 +1,73 @@
+name: ip_api
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query geolocation details for an IP address or domain using the free
+  ip-api.com JSON API.
+base_url: "http://ip-api.com"
+test_queries:
+  - "SELECT * FROM ip_api.location LIMIT 1"
+  - "SELECT * FROM ip_api.location WHERE query = '8.8.8.8' LIMIT 1"
+
+tables:
+  - name: location
+    description: Geolocation details for an IP address or domain.
+    filters:
+      - name: query
+        required: false
+    request:
+      method: GET
+      path: /json/
+    requests:
+      - when_filters:
+          - query
+        method: GET
+        path: /json/{{filter.query}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: query
+        type: Utf8
+      - name: status
+        type: Utf8
+      - name: message
+        type: Utf8
+      - name: country
+        type: Utf8
+      - name: country_code
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - countryCode
+      - name: region
+        type: Utf8
+      - name: region_name
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - regionName
+      - name: city
+        type: Utf8
+      - name: zip
+        type: Utf8
+      - name: lat
+        type: Float64
+      - name: lon
+        type: Float64
+      - name: timezone
+        type: Utf8
+      - name: isp
+        type: Utf8
+      - name: org
+        type: Utf8
+      - name: asn
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - as

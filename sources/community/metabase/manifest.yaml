@@ -1,0 +1,565 @@
+name: metabase
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Metabase collections, dashboards, questions, databases, users, and
+  permission groups for BI governance and analytics workspace inventory.
+base_url: "{{input.METABASE_BASE_URL}}"
+
+inputs:
+  METABASE_BASE_URL:
+    kind: variable
+    default: http://localhost:3000
+    hint: |
+      Base URL for your Metabase instance, without a trailing slash.
+      Examples: http://localhost:3000 or https://metabase.example.com.
+  METABASE_API_KEY:
+    kind: secret
+    hint: |
+      Metabase API key. Create an API key in Metabase and grant it read access
+      to the collections, dashboards, questions, databases, users, and
+      permissions you want Coral to inspect.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-API-Key
+      from: template
+      template: "{{input.METABASE_API_KEY}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM metabase.collections LIMIT 1
+  - SELECT id, name FROM metabase.dashboards LIMIT 1
+
+tables:
+  - name: collections
+    description: Metabase collections that organize dashboards, questions, models, and other content.
+    guide: |
+      Start here to understand how analytics content is organized. Use
+      `id` as the `collection_id` filter for `metabase.collection_items`.
+      Set `archived = true` to inspect archived collections.
+    filters:
+      - name: archived
+      - name: exclude_other_user_collections
+      - name: personal_only
+      - name: namespace
+    request:
+      method: GET
+      path: /api/collection
+      query:
+        - name: archived
+          from: filter_bool
+          key: archived
+        - name: exclude-other-user-collections
+          from: filter_bool
+          key: exclude_other_user_collections
+        - name: personal-only
+          from: filter_bool
+          key: personal_only
+        - name: namespace
+          from: filter
+          key: namespace
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: true
+        description: Collection ID. Metabase can return null for the root collection.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Collection name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Collection description.
+      - name: color
+        type: Utf8
+        nullable: true
+        description: Collection color shown in Metabase.
+      - name: can_write
+        type: Boolean
+        nullable: true
+        description: Whether the API key can write to this collection.
+      - name: parent_id
+        type: Int64
+        nullable: true
+        description: Parent collection ID, if nested.
+      - name: personal_owner_id
+        type: Int64
+        nullable: true
+        description: User ID if this is a personal collection.
+      - name: authority_level
+        type: Utf8
+        nullable: true
+        description: Collection authority level, such as official.
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether this collection is archived.
+
+  - name: collection_items
+    description: Items inside a collection, including dashboards, cards, models, and child collections.
+    guide: |
+      Filter by `collection_id` using an ID from `metabase.collections`.
+      Use `collection_id = 'root'` for the root collection. This table is
+      useful for finding stale or unofficial analytics content by collection.
+    filters:
+      - name: collection_id
+        required: true
+      - name: archived
+      - name: models
+      - name: pinned_state
+      - name: sort_column
+      - name: sort_direction
+    request:
+      method: GET
+      path: /api/collection/{{filter.collection_id}}/items
+      query:
+        - name: archived
+          from: filter_bool
+          key: archived
+        - name: models
+          from: filter
+          key: models
+        - name: pinned_state
+          from: filter
+          key: pinned_state
+        - name: sort_column
+          from: filter
+          key: sort_column
+        - name: sort_direction
+          from: filter
+          key: sort_direction
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: collection_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Collection ID supplied as a filter.
+        expr:
+          kind: from_filter
+          key: collection_id
+      - name: id
+        type: Int64
+        nullable: false
+        description: Item ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Item display name.
+      - name: model
+        type: Utf8
+        nullable: true
+        description: Item model, such as dashboard, card, dataset, or collection.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Item description.
+      - name: display
+        type: Utf8
+        nullable: true
+        description: Display type returned by Metabase.
+      - name: collection_position
+        type: Int64
+        nullable: true
+        description: Position inside the collection, if pinned or ordered.
+      - name: last_edited_at
+        type: Timestamp
+        nullable: true
+        description: Last edit timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_edited_at]}
+      - name: last_edited_by_id
+        type: Int64
+        nullable: true
+        description: ID of the last editor, when present.
+        expr: {kind: path, path: [last_edited_by, id]}
+      - name: last_edited_by_name
+        type: Utf8
+        nullable: true
+        description: Display name of the last editor, when present.
+        expr: {kind: path, path: [last_edited_by, common_name]}
+
+  - name: dashboards
+    description: Metabase dashboards visible to the configured API key.
+    guide: |
+      Use this table to inventory BI surfaces and join dashboard ownership
+      back to `metabase.users`. Pass `f=archived` to return archived
+      dashboards.
+    filters:
+      - name: f
+    request:
+      method: GET
+      path: /api/dashboard
+      query:
+        - name: f
+          from: filter
+          key: f
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Dashboard ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Dashboard name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Dashboard description.
+      - name: collection_id
+        type: Int64
+        nullable: true
+        description: Collection containing this dashboard.
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether this dashboard is archived.
+      - name: creator_id
+        type: Int64
+        nullable: true
+        description: User ID that created the dashboard.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+      - name: enable_embedding
+        type: Boolean
+        nullable: true
+        description: Whether embedding is enabled for this dashboard.
+      - name: parameters
+        type: Json
+        nullable: true
+        description: Dashboard filter parameter configuration.
+      - name: f
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Metabase dashboard filter, such as archived.
+        expr:
+          kind: from_filter
+          key: f
+
+  - name: cards
+    description: Metabase questions, models, and SQL cards visible to the configured API key.
+    guide: |
+      In the Metabase API, cards are saved questions or models. Use this table
+      to find duplicate, archived, or unowned questions and inspect the
+      database/table backing each card. Pass `f=archived` to return archived
+      cards, or `model_id` to filter by Metabase model ID.
+    filters:
+      - name: f
+      - name: model_id
+    request:
+      method: GET
+      path: /api/card
+      query:
+        - name: f
+          from: filter
+          key: f
+        - name: model_id
+          from: filter
+          key: model_id
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Card/question ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Card/question name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Card description.
+      - name: display
+        type: Utf8
+        nullable: true
+        description: Visualization display type, such as table, line, or scalar.
+      - name: database_id
+        type: Int64
+        nullable: true
+        description: Source database ID.
+      - name: table_id
+        type: Int64
+        nullable: true
+        description: Source table ID when the card is query-builder based.
+      - name: collection_id
+        type: Int64
+        nullable: true
+        description: Collection containing this card.
+      - name: creator_id
+        type: Int64
+        nullable: true
+        description: User ID that created this card.
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether this card is archived.
+      - name: query_type
+        type: Utf8
+        nullable: true
+        description: Query type, usually query or native.
+        expr: {kind: path, path: [dataset_query, type]}
+      - name: dataset_query
+        type: Json
+        nullable: true
+        description: Saved MBQL or native query object.
+      - name: visualization_settings
+        type: Json
+        nullable: true
+        description: Visualization settings for the card.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+      - name: f
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Metabase card filter, such as archived.
+        expr:
+          kind: from_filter
+          key: f
+      - name: model_id
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Optional Metabase model ID filter.
+        expr:
+          kind: from_filter
+          key: model_id
+
+  - name: databases
+    description: Databases connected to Metabase.
+    guide: |
+      This table exposes database inventory metadata and intentionally omits
+      raw connection details. Join `id` to `metabase.cards.database_id` to
+      understand which questions depend on each warehouse or operational
+      database.
+    request:
+      method: GET
+      path: /api/database
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Metabase database ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Database display name.
+      - name: engine
+        type: Utf8
+        nullable: true
+        description: Database engine, such as postgres, mysql, or snowflake.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Database description.
+      - name: is_sample
+        type: Boolean
+        nullable: true
+        description: Whether this is Metabase's sample database.
+      - name: is_full_sync
+        type: Boolean
+        nullable: true
+        description: Whether full sync is enabled.
+      - name: is_on_demand
+        type: Boolean
+        nullable: true
+        description: Whether on-demand sync behavior is enabled.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  - name: users
+    description: Metabase users visible to the configured API key.
+    guide: |
+      Use this table for ownership and access audits. Metabase returns active
+      users by default; pass `status=deactivated`, `status=all`, or
+      `include_deactivated=true` when auditing inactive-owned content.
+    filters:
+      - name: status
+      - name: include_deactivated
+    request:
+      method: GET
+      path: /api/user
+      query:
+        - name: status
+          from: filter
+          key: status
+        - name: include_deactivated
+          from: filter_bool
+          key: include_deactivated
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: User ID.
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: First name.
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Last name.
+      - name: common_name
+        type: Utf8
+        nullable: true
+        description: Metabase display name.
+      - name: is_active
+        type: Boolean
+        nullable: true
+        description: Whether the user is active.
+      - name: is_superuser
+        type: Boolean
+        nullable: true
+        description: Whether the user is a Metabase admin.
+      - name: date_joined
+        type: Timestamp
+        nullable: true
+        description: User creation timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [date_joined]}
+      - name: last_login
+        type: Timestamp
+        nullable: true
+        description: Last login timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_login]}
+      - name: status
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional user status filter, such as all or deactivated.
+        expr:
+          kind: from_filter
+          key: status
+      - name: include_deactivated
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Optional filter to include deactivated users.
+        expr:
+          kind: from_filter
+          key: include_deactivated
+
+  - name: permission_groups
+    description: Metabase permission groups.
+    guide: |
+      This table lists groups configured in Metabase. Availability depends on
+      the API key's administrative permissions.
+    request:
+      method: GET
+      path: /api/permissions/group
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Permission group ID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Permission group name.
+      - name: member_count
+        type: Int64
+        nullable: true
+        description: Number of members in the group, when returned.

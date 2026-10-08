@@ -1,0 +1,1130 @@
+name: jikan
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query anime and manga data from MyAnimeList via the Jikan REST API v4.
+  Search anime and manga by keyword, browse top rankings, and filter by type,
+  status, and rating. No authentication required.
+base_url: https://api.jikan.moe/v4
+test_queries:
+  - SELECT mal_id, title, score FROM jikan.anime WHERE q = 'Cowboy Bebop' LIMIT 3
+  - SELECT mal_id, title, score, rank FROM jikan.top_anime LIMIT 5
+  - SELECT mal_id, title, score FROM jikan.manga WHERE q = 'Berserk' LIMIT 3
+  - SELECT mal_id, title, score, rank FROM jikan.top_manga LIMIT 5
+tables:
+  - name: anime
+    description: |
+      Search and browse anime from MyAnimeList. Filter by keyword, type, airing
+      status, age rating, and more. Results are paginated; use SQL LIMIT to
+      control how many rows are returned.
+
+      Filters:
+        q         – keyword search (optional)
+        type      – tv | movie | ova | ona | special | music (optional)
+        status    – airing | complete | upcoming (optional)
+        rating    – g | pg | pg13 | r17 | r | rx (optional)
+        sfw       – true | false (optional)
+        order_by  – mal_id | title | start_date | end_date | episodes |
+                    score | scored_by | rank | popularity | members |
+                    favorites (optional)
+        sort      – asc | desc (optional)
+    fetch_limit_default: 25
+    filters:
+      - name: q
+      - name: type
+      - name: status
+      - name: rating
+      - name: sfw
+      - name: order_by
+      - name: sort
+    request:
+      method: GET
+      path: /anime
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: type
+          from: filter
+          key: type
+        - name: status
+          from: filter
+          key: status
+        - name: rating
+          from: filter
+          key: rating
+        - name: sfw
+          from: filter
+          key: sfw
+        - name: order_by
+          from: filter
+          key: order_by
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 25
+        query_param: limit
+    columns:
+      - name: q
+        type: Utf8
+        nullable: true
+        description: Keyword search query
+        expr:
+          kind: from_filter
+          key: q
+      - name: order_by
+        type: Utf8
+        nullable: true
+        description: Order results by a specific field
+        expr:
+          kind: from_filter
+          key: order_by
+      - name: sort
+        type: Utf8
+        nullable: true
+        description: Sort direction (asc or desc)
+        expr:
+          kind: from_filter
+          key: sort
+      - name: sfw
+        type: Boolean
+        nullable: true
+        description: Filter out adult entries (true to exclude adult content)
+        expr:
+          kind: from_filter
+          key: sfw
+      - name: mal_id
+        type: Int64
+        nullable: false
+        description: MyAnimeList unique ID for the anime.
+        expr:
+          kind: path
+          path:
+            - mal_id
+      - name: url
+        type: Utf8
+        nullable: true
+        description: MyAnimeList page URL for the anime.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Default title (usually Romanized).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: title_english
+        type: Utf8
+        nullable: true
+        description: English-language title.
+        expr:
+          kind: path
+          path:
+            - title_english
+      - name: title_japanese
+        type: Utf8
+        nullable: true
+        description: Japanese title.
+        expr:
+          kind: path
+          path:
+            - title_japanese
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Media type: TV, Movie, OVA, ONA, Special, or Music."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: source
+        type: Utf8
+        nullable: true
+        description: "Original source material, e.g. Manga, Light novel, Original."
+        expr:
+          kind: path
+          path:
+            - source
+      - name: episodes
+        type: Int64
+        nullable: true
+        description: Number of episodes. Null if still airing or unknown.
+        expr:
+          kind: path
+          path:
+            - episodes
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Airing status: Finished Airing, Currently Airing, or Not yet aired."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: airing
+        type: Boolean
+        nullable: true
+        description: True if the anime is currently airing.
+        expr:
+          kind: path
+          path:
+            - airing
+      - name: aired_from
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 date the anime started airing.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - aired
+              - from
+      - name: aired_to
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 date the anime finished airing. Null if ongoing.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - aired
+              - to
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: "Episode duration string, e.g. '24 min per ep'."
+        expr:
+          kind: path
+          path:
+            - duration
+      - name: rating
+        type: Utf8
+        nullable: true
+        description: "Age rating: G, PG, PG-13, R-17+, R+, or Rx."
+        expr:
+          kind: path
+          path:
+            - rating
+      - name: score
+        type: Float64
+        nullable: true
+        description: Weighted community score out of 10. Null if not enough votes.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: scored_by
+        type: Int64
+        nullable: true
+        description: Number of members who have scored the anime.
+        expr:
+          kind: path
+          path:
+            - scored_by
+      - name: rank
+        type: Int64
+        nullable: true
+        description: Overall MAL ranking by score.
+        expr:
+          kind: path
+          path:
+            - rank
+      - name: popularity
+        type: Int64
+        nullable: true
+        description: Popularity ranking by number of members.
+        expr:
+          kind: path
+          path:
+            - popularity
+      - name: members
+        type: Int64
+        nullable: true
+        description: Number of MAL members who have this anime in their list.
+        expr:
+          kind: path
+          path:
+            - members
+      - name: favorites
+        type: Int64
+        nullable: true
+        description: Number of MAL members who have marked this anime as a favorite.
+        expr:
+          kind: path
+          path:
+            - favorites
+      - name: synopsis
+        type: Utf8
+        nullable: true
+        description: Plot synopsis.
+        expr:
+          kind: path
+          path:
+            - synopsis
+      - name: background
+        type: Utf8
+        nullable: true
+        description: Background notes and additional context about the anime.
+        expr:
+          kind: path
+          path:
+            - background
+      - name: season
+        type: Utf8
+        nullable: true
+        description: "Broadcast season: spring, summer, fall, or winter."
+        expr:
+          kind: path
+          path:
+            - season
+      - name: year
+        type: Int64
+        nullable: true
+        description: Broadcast year.
+        expr:
+          kind: path
+          path:
+            - year
+      - name: approved
+        type: Boolean
+        nullable: true
+        description: True if the MAL entry has been approved by a moderator.
+        expr:
+          kind: path
+          path:
+            - approved
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: JPEG poster image URL.
+        expr:
+          kind: path
+          path:
+            - images
+            - jpg
+            - image_url
+      - name: large_image_url
+        type: Utf8
+        nullable: true
+        description: Large JPEG poster image URL.
+        expr:
+          kind: path
+          path:
+            - images
+            - jpg
+            - large_image_url
+      - name: trailer_url
+        type: Utf8
+        nullable: true
+        description: YouTube embed URL for the trailer, if available.
+        expr:
+          kind: path
+          path:
+            - trailer
+            - embed_url
+
+  - name: manga
+    description: |
+      Search and browse manga from MyAnimeList. Filter by keyword, type,
+      publishing status, and more. Results are paginated; use SQL LIMIT to
+      control how many rows are returned.
+
+      Filters:
+        q         – keyword search (optional)
+        type      – manga | novel | lightnovel | oneshot | doujin | manhwa |
+                    manhua (optional)
+        status    – publishing | complete | hiatus | discontinued | upcoming
+                    (optional)
+        sfw       – true | false (optional)
+        order_by  – mal_id | title | start_date | end_date | chapters |
+                    volumes | score | scored_by | rank | popularity |
+                    members | favorites (optional)
+        sort      – asc | desc (optional)
+    fetch_limit_default: 25
+    filters:
+      - name: q
+      - name: type
+      - name: status
+      - name: sfw
+      - name: order_by
+      - name: sort
+    request:
+      method: GET
+      path: /manga
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: type
+          from: filter
+          key: type
+        - name: status
+          from: filter
+          key: status
+        - name: sfw
+          from: filter
+          key: sfw
+        - name: order_by
+          from: filter
+          key: order_by
+        - name: sort
+          from: filter
+          key: sort
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 25
+        query_param: limit
+    columns:
+      - name: q
+        type: Utf8
+        nullable: true
+        description: Keyword search query
+        expr:
+          kind: from_filter
+          key: q
+      - name: order_by
+        type: Utf8
+        nullable: true
+        description: Order results by a specific field
+        expr:
+          kind: from_filter
+          key: order_by
+      - name: sort
+        type: Utf8
+        nullable: true
+        description: Sort direction (asc or desc)
+        expr:
+          kind: from_filter
+          key: sort
+      - name: sfw
+        type: Boolean
+        nullable: true
+        description: Filter out adult entries (true to exclude adult content)
+        expr:
+          kind: from_filter
+          key: sfw
+      - name: mal_id
+        type: Int64
+        nullable: false
+        description: MyAnimeList unique ID for the manga.
+        expr:
+          kind: path
+          path:
+            - mal_id
+      - name: url
+        type: Utf8
+        nullable: true
+        description: MyAnimeList page URL for the manga.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Default title (usually Romanized).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: title_english
+        type: Utf8
+        nullable: true
+        description: English-language title.
+        expr:
+          kind: path
+          path:
+            - title_english
+      - name: title_japanese
+        type: Utf8
+        nullable: true
+        description: Japanese title.
+        expr:
+          kind: path
+          path:
+            - title_japanese
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Media type: Manga, Novel, Light Novel, One-shot, Doujinshi, Manhwa, or Manhua."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: chapters
+        type: Int64
+        nullable: true
+        description: Total chapter count. Null if still publishing or unknown.
+        expr:
+          kind: path
+          path:
+            - chapters
+      - name: volumes
+        type: Int64
+        nullable: true
+        description: Total volume count. Null if still publishing or unknown.
+        expr:
+          kind: path
+          path:
+            - volumes
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Publishing status: Finished, Publishing, On Hiatus, Discontinued, or Not yet published."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: publishing
+        type: Boolean
+        nullable: true
+        description: True if the manga is currently being published.
+        expr:
+          kind: path
+          path:
+            - publishing
+      - name: published_from
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 date the manga began publishing.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+              - from
+      - name: published_to
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 date the manga finished publishing. Null if ongoing.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+              - to
+      - name: score
+        type: Float64
+        nullable: true
+        description: Weighted community score out of 10. Null if not enough votes.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: scored_by
+        type: Int64
+        nullable: true
+        description: Number of members who have scored the manga.
+        expr:
+          kind: path
+          path:
+            - scored_by
+      - name: rank
+        type: Int64
+        nullable: true
+        description: Overall MAL ranking by score.
+        expr:
+          kind: path
+          path:
+            - rank
+      - name: popularity
+        type: Int64
+        nullable: true
+        description: Popularity ranking by number of members.
+        expr:
+          kind: path
+          path:
+            - popularity
+      - name: members
+        type: Int64
+        nullable: true
+        description: Number of MAL members who have this manga in their list.
+        expr:
+          kind: path
+          path:
+            - members
+      - name: favorites
+        type: Int64
+        nullable: true
+        description: Number of MAL members who have marked this manga as a favorite.
+        expr:
+          kind: path
+          path:
+            - favorites
+      - name: synopsis
+        type: Utf8
+        nullable: true
+        description: Plot synopsis.
+        expr:
+          kind: path
+          path:
+            - synopsis
+      - name: background
+        type: Utf8
+        nullable: true
+        description: Background notes and additional context about the manga.
+        expr:
+          kind: path
+          path:
+            - background
+      - name: approved
+        type: Boolean
+        nullable: true
+        description: True if the MAL entry has been approved by a moderator.
+        expr:
+          kind: path
+          path:
+            - approved
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: JPEG cover image URL.
+        expr:
+          kind: path
+          path:
+            - images
+            - jpg
+            - image_url
+      - name: large_image_url
+        type: Utf8
+        nullable: true
+        description: Large JPEG cover image URL.
+        expr:
+          kind: path
+          path:
+            - images
+            - jpg
+            - large_image_url
+
+  - name: top_anime
+    description: |
+      Fetch top-ranked anime from MyAnimeList. Optionally filter by media type
+      or ranking category. Results are paginated; use SQL LIMIT to control how
+      many rows are returned.
+
+      Filters:
+        type    – tv | movie | ova | ona | special | music (optional)
+        filter  – airing | upcoming | bypopularity | favorite (optional)
+        rating  – g | pg | pg13 | r17 | r | rx (optional)
+        sfw     – true | false (optional)
+    fetch_limit_default: 25
+    filters:
+      - name: type
+      - name: filter
+      - name: rating
+      - name: sfw
+    request:
+      method: GET
+      path: /top/anime
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: filter
+          from: filter
+          key: filter
+        - name: rating
+          from: filter
+          key: rating
+        - name: sfw
+          from: filter
+          key: sfw
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 25
+        query_param: limit
+    columns:
+      - name: filter
+        type: Utf8
+        nullable: true
+        description: Ranking category filter
+        expr:
+          kind: from_filter
+          key: filter
+      - name: sfw
+        type: Boolean
+        nullable: true
+        description: Filter out adult entries (true to exclude adult content)
+        expr:
+          kind: from_filter
+          key: sfw
+      - name: mal_id
+        type: Int64
+        nullable: false
+        description: MyAnimeList unique ID for the anime.
+        expr:
+          kind: path
+          path:
+            - mal_id
+      - name: url
+        type: Utf8
+        nullable: true
+        description: MyAnimeList page URL for the anime.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Default title (usually Romanized).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: title_english
+        type: Utf8
+        nullable: true
+        description: English-language title.
+        expr:
+          kind: path
+          path:
+            - title_english
+      - name: title_japanese
+        type: Utf8
+        nullable: true
+        description: Japanese title.
+        expr:
+          kind: path
+          path:
+            - title_japanese
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Media type: TV, Movie, OVA, ONA, Special, or Music."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: source
+        type: Utf8
+        nullable: true
+        description: "Original source material, e.g. Manga, Light novel, Original."
+        expr:
+          kind: path
+          path:
+            - source
+      - name: episodes
+        type: Int64
+        nullable: true
+        description: Number of episodes. Null if still airing or unknown.
+        expr:
+          kind: path
+          path:
+            - episodes
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Airing status: Finished Airing, Currently Airing, or Not yet aired."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: airing
+        type: Boolean
+        nullable: true
+        description: True if the anime is currently airing.
+        expr:
+          kind: path
+          path:
+            - airing
+      - name: aired_from
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 date the anime started airing.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - aired
+              - from
+      - name: aired_to
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 date the anime finished airing. Null if ongoing.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - aired
+              - to
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: "Episode duration string, e.g. '24 min per ep'."
+        expr:
+          kind: path
+          path:
+            - duration
+      - name: rating
+        type: Utf8
+        nullable: true
+        description: "Age rating: G, PG, PG-13, R-17+, R+, or Rx."
+        expr:
+          kind: path
+          path:
+            - rating
+      - name: score
+        type: Float64
+        nullable: true
+        description: Weighted community score out of 10.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: scored_by
+        type: Int64
+        nullable: true
+        description: Number of members who have scored the anime.
+        expr:
+          kind: path
+          path:
+            - scored_by
+      - name: rank
+        type: Int64
+        nullable: true
+        description: Overall MAL ranking by score.
+        expr:
+          kind: path
+          path:
+            - rank
+      - name: popularity
+        type: Int64
+        nullable: true
+        description: Popularity ranking by number of members.
+        expr:
+          kind: path
+          path:
+            - popularity
+      - name: members
+        type: Int64
+        nullable: true
+        description: Number of MAL members who have this anime in their list.
+        expr:
+          kind: path
+          path:
+            - members
+      - name: favorites
+        type: Int64
+        nullable: true
+        description: Number of MAL members who have marked this anime as a favorite.
+        expr:
+          kind: path
+          path:
+            - favorites
+      - name: synopsis
+        type: Utf8
+        nullable: true
+        description: Plot synopsis.
+        expr:
+          kind: path
+          path:
+            - synopsis
+      - name: season
+        type: Utf8
+        nullable: true
+        description: "Broadcast season: spring, summer, fall, or winter."
+        expr:
+          kind: path
+          path:
+            - season
+      - name: year
+        type: Int64
+        nullable: true
+        description: Broadcast year.
+        expr:
+          kind: path
+          path:
+            - year
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: JPEG poster image URL.
+        expr:
+          kind: path
+          path:
+            - images
+            - jpg
+            - image_url
+      - name: large_image_url
+        type: Utf8
+        nullable: true
+        description: Large JPEG poster image URL.
+        expr:
+          kind: path
+          path:
+            - images
+            - jpg
+            - large_image_url
+
+  - name: top_manga
+    description: |
+      Fetch top-ranked manga from MyAnimeList. Optionally filter by media type
+      or ranking category. Results are paginated; use SQL LIMIT to control how
+      many rows are returned.
+
+      Filters:
+        type    – manga | novel | lightnovel | oneshot | doujin | manhwa |
+                  manhua (optional)
+        filter  – publishing | upcoming | bypopularity | favorite (optional)
+    fetch_limit_default: 25
+    filters:
+      - name: type
+      - name: filter
+    request:
+      method: GET
+      path: /top/manga
+      query:
+        - name: type
+          from: filter
+          key: type
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_size:
+        default: 25
+        max: 25
+        query_param: limit
+    columns:
+      - name: filter
+        type: Utf8
+        nullable: true
+        description: Ranking category filter
+        expr:
+          kind: from_filter
+          key: filter
+      - name: mal_id
+        type: Int64
+        nullable: false
+        description: MyAnimeList unique ID for the manga.
+        expr:
+          kind: path
+          path:
+            - mal_id
+      - name: url
+        type: Utf8
+        nullable: true
+        description: MyAnimeList page URL for the manga.
+        expr:
+          kind: path
+          path:
+            - url
+      - name: title
+        type: Utf8
+        nullable: false
+        description: Default title (usually Romanized).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: title_english
+        type: Utf8
+        nullable: true
+        description: English-language title.
+        expr:
+          kind: path
+          path:
+            - title_english
+      - name: title_japanese
+        type: Utf8
+        nullable: true
+        description: Japanese title.
+        expr:
+          kind: path
+          path:
+            - title_japanese
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Media type: Manga, Novel, Light Novel, One-shot, Doujinshi, Manhwa, or Manhua."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: chapters
+        type: Int64
+        nullable: true
+        description: Total chapter count. Null if still publishing or unknown.
+        expr:
+          kind: path
+          path:
+            - chapters
+      - name: volumes
+        type: Int64
+        nullable: true
+        description: Total volume count. Null if still publishing or unknown.
+        expr:
+          kind: path
+          path:
+            - volumes
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Publishing status: Finished, Publishing, On Hiatus, Discontinued, or Not yet published."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: publishing
+        type: Boolean
+        nullable: true
+        description: True if the manga is currently being published.
+        expr:
+          kind: path
+          path:
+            - publishing
+      - name: published_from
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 date the manga began publishing.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+              - from
+      - name: published_to
+        type: Timestamp
+        nullable: true
+        description: ISO 8601 date the manga finished publishing. Null if ongoing.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - published
+              - to
+      - name: score
+        type: Float64
+        nullable: true
+        description: Weighted community score out of 10.
+        expr:
+          kind: path
+          path:
+            - score
+      - name: scored_by
+        type: Int64
+        nullable: true
+        description: Number of members who have scored the manga.
+        expr:
+          kind: path
+          path:
+            - scored_by
+      - name: rank
+        type: Int64
+        nullable: true
+        description: Overall MAL ranking by score.
+        expr:
+          kind: path
+          path:
+            - rank
+      - name: popularity
+        type: Int64
+        nullable: true
+        description: Popularity ranking by number of members.
+        expr:
+          kind: path
+          path:
+            - popularity
+      - name: members
+        type: Int64
+        nullable: true
+        description: Number of MAL members who have this manga in their list.
+        expr:
+          kind: path
+          path:
+            - members
+      - name: favorites
+        type: Int64
+        nullable: true
+        description: Number of MAL members who have marked this manga as a favorite.
+        expr:
+          kind: path
+          path:
+            - favorites
+      - name: synopsis
+        type: Utf8
+        nullable: true
+        description: Plot synopsis.
+        expr:
+          kind: path
+          path:
+            - synopsis
+      - name: background
+        type: Utf8
+        nullable: true
+        description: Background notes and additional context about the manga.
+        expr:
+          kind: path
+          path:
+            - background
+      - name: image_url
+        type: Utf8
+        nullable: true
+        description: JPEG cover image URL.
+        expr:
+          kind: path
+          path:
+            - images
+            - jpg
+            - image_url
+      - name: large_image_url
+        type: Utf8
+        nullable: true
+        description: Large JPEG cover image URL.
+        expr:
+          kind: path
+          path:
+            - images
+            - jpg
+            - large_image_url

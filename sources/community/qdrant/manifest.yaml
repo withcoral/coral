@@ -43,10 +43,12 @@ functions:
         bind:
           arg: vector
       - name: limit
+        type: Int64
         description: Maximum number of results (default 10).
         bind:
           arg: limit
       - name: score_threshold
+        type: Float64
         description: Minimum similarity score threshold.
         bind:
           arg: score_threshold
@@ -110,6 +112,7 @@ functions:
         bind:
           arg: negative
       - name: limit
+        type: Int64
         bind:
           arg: limit
       - name: strategy
@@ -542,7 +545,7 @@ tables:
         virtual: true
         expr: {kind: from_filter, key: collection_name}
       - name: ids
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: ids}
       - name: id
@@ -626,7 +629,7 @@ tables:
         virtual: true
         expr: {kind: from_filter, key: score_threshold}
       - name: filter
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: filter}
       - name: id
@@ -713,11 +716,11 @@ tables:
         virtual: true
         expr: {kind: from_filter, key: collection_name}
       - name: positive
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: positive}
       - name: negative
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: negative}
       - name: limit
@@ -729,7 +732,7 @@ tables:
         virtual: true
         expr: {kind: from_filter, key: strategy}
       - name: filter
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: filter}
       - name: id
@@ -797,11 +800,11 @@ tables:
         virtual: true
         expr: {kind: from_filter, key: collection_name}
       - name: target
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: target}
       - name: context
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: context}
       - name: limit
@@ -809,7 +812,7 @@ tables:
         virtual: true
         expr: {kind: from_filter, key: limit}
       - name: filter
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: filter}
       - name: id
@@ -857,7 +860,7 @@ tables:
         virtual: true
         expr: {kind: from_filter, key: collection_name}
       - name: filter
-        type: Json
+        type: Utf8
         virtual: true
         expr: {kind: from_filter, key: filter}
       - name: exact

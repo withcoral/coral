@@ -106,7 +106,7 @@ fn table_request_route_label(table_name: &str, route: &RequestRouteSpec) -> Stri
     }
 }
 
-/// Auth is source-scoped: all template dependencies must resolve from inputs
+/// Auth is source-scoped: all value-source input dependencies must resolve
 /// before any request is issued.
 fn check_auth_inputs(
     manifest: &HttpSourceManifest,
@@ -190,11 +190,40 @@ fn validate_header_inputs(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use std::sync::{Arc, OnceLock};
 
     use serde_json::json;
 
     use crate::backends::http::client::HttpSourceClient;
     use crate::backends::http::test_support::parse_http_manifest;
+    use crate::{RequestAuthenticator, RequestAuthenticatorError};
+
+    static TEST_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+    fn test_http_client() -> reqwest::Client {
+        TEST_HTTP_CLIENT.get_or_init(reqwest::Client::new).clone()
+    }
+
+    #[derive(Debug)]
+    struct TestRequestAuthenticator;
+
+    impl RequestAuthenticator for TestRequestAuthenticator {
+        fn name(&self) -> &'static str {
+            "test_signer"
+        }
+
+        fn authenticate(
+            &self,
+            _auth: &coral_spec::CustomAuthSpec,
+            _request: &reqwest::Request,
+            _resolved_inputs: &BTreeMap<String, String>,
+        ) -> std::result::Result<
+            Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+            RequestAuthenticatorError,
+        > {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn backend_client_requires_source_scoped_credentials() {
@@ -232,6 +261,8 @@ mod tests {
             &source_secrets,
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing source-scoped credentials must fail");
 
@@ -240,6 +271,45 @@ mod tests {
                 .to_string()
                 .contains("missing source input 'API_KEY' for template token")
         );
+    }
+
+    #[test]
+    fn backend_client_preserves_v4_custom_auth_registry() {
+        let mut manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "auth": {
+                "type": "CustomAuth",
+                "authenticator": "test_signer"
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": { "path": "/items" },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+        manifest.common.dsl_version = 4;
+        let request_authenticators = HashMap::from([(
+            "test_signer".to_string(),
+            Arc::new(TestRequestAuthenticator) as Arc<dyn RequestAuthenticator>,
+        )]);
+
+        HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &request_authenticators,
+            None,
+            test_http_client(),
+        )
+        .expect("v4 CustomAuth should remain available until identity runtime cutover");
     }
 
     #[test]
@@ -272,6 +342,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing table request path inputs must fail");
 
@@ -316,6 +388,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing table request header inputs must fail");
 
@@ -360,6 +434,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing table request query inputs must fail");
 
@@ -405,6 +481,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing table request body inputs must fail");
 
@@ -450,6 +528,8 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &HashMap::new(),
+            None,
+            test_http_client(),
         )
         .expect_err("missing request route inputs must fail");
 
@@ -542,6 +622,8 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &HashMap::new(),
+                None,
+                test_http_client(),
             )
             .expect_err(&format!(
                 "missing function request {name} input should fail"

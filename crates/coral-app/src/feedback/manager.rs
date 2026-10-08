@@ -10,6 +10,7 @@ use crate::feedback::publisher::FeedbackPublisher;
 use crate::feedback::publisher::NoopFeedbackPublisher;
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
+use crate::task::id::TaskId;
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub(crate) struct FeedbackReport {
     pub(crate) trying_to_do: String,
     pub(crate) tried: String,
     pub(crate) stuck: String,
+    pub(crate) task_id: Option<TaskId>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +65,8 @@ struct PersistedFeedbackReport<'a> {
     trying_to_do: &'a str,
     tried: &'a str,
     stuck: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<&'a str>,
 }
 
 #[derive(Clone)]
@@ -90,6 +94,7 @@ impl FeedbackManager {
         trying_to_do: &str,
         tried: &str,
         stuck: &str,
+        task_id: Option<TaskId>,
     ) -> Result<FeedbackSubmission, AppError> {
         let report = FeedbackReport {
             id: Uuid::new_v4().to_string(),
@@ -98,6 +103,7 @@ impl FeedbackManager {
             trying_to_do: required_text("trying_to_do", trying_to_do)?,
             tried: required_text("tried", tried)?,
             stuck: required_text("stuck", stuck)?,
+            task_id,
         };
         self.append_report(&report)?;
         self.spawn_publish(report.clone());
@@ -115,6 +121,7 @@ impl FeedbackManager {
     fn append_report(&self, report: &FeedbackReport) -> Result<(), AppError> {
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
         let file = self.layout.feedback_reports_file(&report.workspace);
+        let task_id = report.task_id.map(|task_id| task_id.to_string());
         let persisted = PersistedFeedbackReport {
             id: &report.id,
             workspace: report.workspace.as_str(),
@@ -122,6 +129,7 @@ impl FeedbackManager {
             trying_to_do: &report.trying_to_do,
             tried: &report.tried,
             stuck: &report.stuck,
+            task_id: task_id.as_deref(),
         };
         let mut line = serde_json::to_vec(&persisted)?;
         line.push(b'\n');
@@ -166,7 +174,7 @@ mod tests {
         let manager = FeedbackManager::new(layout.clone());
 
         let submission = manager
-            .submit_feedback(&workspace, " trying ", " tried ", " stuck ")
+            .submit_feedback(&workspace, " trying ", " tried ", " stuck ", None)
             .expect("feedback should submit");
         let report = submission.report;
 
@@ -182,6 +190,7 @@ mod tests {
         assert_eq!(value["trying_to_do"], "trying");
         assert_eq!(value["tried"], "tried");
         assert_eq!(value["stuck"], "stuck");
+        assert!(value.get("task_id").is_none());
         assert!(
             value["created_at"]
                 .as_str()
@@ -198,7 +207,7 @@ mod tests {
         let manager = FeedbackManager::new(layout.clone());
 
         let error = manager
-            .submit_feedback(&workspace, "trying", " ", "stuck")
+            .submit_feedback(&workspace, "trying", " ", "stuck", None)
             .expect_err("blank feedback should fail");
 
         assert!(
@@ -224,7 +233,7 @@ mod tests {
         );
 
         let submission = manager
-            .submit_feedback(&workspace, "trying", "tried", "stuck")
+            .submit_feedback(&workspace, "trying", "tried", "stuck", None)
             .expect("feedback should submit");
 
         assert!(!submission.report.id.is_empty());
@@ -233,6 +242,28 @@ mod tests {
             .expect("hosted publish task should start")
             .expect("hosted publish task should signal start");
         assert!(layout.feedback_reports_file(&workspace).exists());
+    }
+
+    #[tokio::test]
+    async fn submit_feedback_appends_task_id_when_present() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral-config")))
+            .expect("layout should resolve");
+        let workspace = WorkspaceName::default();
+        let manager = FeedbackManager::new(layout.clone());
+        let task_id = crate::task::id::TaskId::parse("550e8400-e29b-41d4-a716-446655440000")
+            .expect("task id should parse");
+
+        let submission = manager
+            .submit_feedback(&workspace, "trying", "tried", "stuck", Some(task_id))
+            .expect("feedback should submit");
+
+        assert_eq!(submission.report.task_id.as_ref(), Some(&task_id));
+        let raw = fs::read_to_string(layout.feedback_reports_file(&workspace))
+            .expect("feedback file should exist");
+        let value: Value =
+            serde_json::from_str(raw.lines().next().expect("jsonl record")).expect("valid json");
+        assert_eq!(value["task_id"], task_id.to_string());
     }
 
     struct PendingFeedbackPublisher {

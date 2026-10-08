@@ -1,0 +1,1305 @@
+dsl_version: 3
+name: youtube
+version: 1.3.0
+description: >-
+  Query channels (by ID or handle), videos, playlist items, search results,
+  and comments from YouTube Data API v3.
+backend: http
+base_url: https://www.googleapis.com/youtube/v3
+inputs:
+  YOUTUBE_API_KEY:
+    kind: secret
+    hint: |
+      Create an API key in Google Cloud Console with the YouTube Data API v3
+      enabled. Restrict the key to the YouTube Data API v3 for security.
+      See [YouTube Data API docs](https://developers.google.com/youtube/v3/getting-started).
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Goog-Api-Key
+      from: template
+      template: "{{input.YOUTUBE_API_KEY}}"
+test_queries:
+  - SELECT * FROM youtube.channels_by_handle WHERE handle = '@DynamoGaming' LIMIT 1
+  - SELECT * FROM youtube.channels WHERE channel_id = 'UCBR8-60-B28hp2BmDPdntcQ' LIMIT 1
+tables:
+  - name: channels
+    description: Look up YouTube channels by ID
+    guide: |
+      Returns metadata, statistics, and content details for one or more YouTube
+      channels looked up by ID. `channel_id` is required and accepts a single
+      UC-prefixed ID or a comma-separated list of up to 50.
+
+      To look up by @-handle instead, use `youtube.channels_by_handle`.
+
+      Note: YouTube returns statistics counts as strings (viewCount,
+      subscriberCount, videoCount). Use `content_details__related_playlists__uploads`
+      to get the uploads playlist ID directly for `youtube.playlist_items`.
+    filters:
+      - name: channel_id
+        required: true
+    request:
+      method: GET
+      path: /channels
+      query:
+        - name: part
+          from: literal
+          value: snippet,statistics,contentDetails
+        - name: id
+          from: filter
+          key: channel_id
+        - name: maxResults
+          from: literal
+          value: "50"
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: channel_id
+        type: Utf8
+        nullable: true
+        description: Channel ID filter used to look up the channel
+        expr:
+          kind: from_filter
+          key: channel_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: YouTube channel ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: snippet__title
+        type: Utf8
+        nullable: true
+        description: Channel display name
+        expr:
+          kind: path
+          path:
+            - snippet
+            - title
+      - name: snippet__description
+        type: Utf8
+        nullable: true
+        description: Channel description
+        expr:
+          kind: path
+          path:
+            - snippet
+            - description
+      - name: snippet__custom_url
+        type: Utf8
+        nullable: true
+        description: >-
+          Channel's custom URL (legacy /c/ or /user/ slug, e.g.
+          "GoogleDevelopers"). NOT the @-handle — use forHandle /
+          channels_by_handle for that.
+        expr:
+          kind: path
+          path:
+            - snippet
+            - customUrl
+      - name: snippet__published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the channel was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - publishedAt
+      - name: snippet__country
+        type: Utf8
+        nullable: true
+        description: Country with which the channel is associated
+        expr:
+          kind: path
+          path:
+            - snippet
+            - country
+      - name: statistics__view_count
+        type: Utf8
+        nullable: true
+        description: Total number of times the channel has been viewed
+        expr:
+          kind: path
+          path:
+            - statistics
+            - viewCount
+      - name: statistics__subscriber_count
+        type: Utf8
+        nullable: true
+        description: Number of subscribers (hidden when hiddenSubscriberCount is true)
+        expr:
+          kind: path
+          path:
+            - statistics
+            - subscriberCount
+      - name: statistics__video_count
+        type: Utf8
+        nullable: true
+        description: Number of public videos uploaded to the channel
+        expr:
+          kind: path
+          path:
+            - statistics
+            - videoCount
+      - name: statistics__hidden_subscriber_count
+        type: Boolean
+        nullable: true
+        description: Whether the channel's subscriber count is publicly visible
+        expr:
+          kind: path
+          path:
+            - statistics
+            - hiddenSubscriberCount
+      - name: content_details__related_playlists__uploads
+        type: Utf8
+        nullable: true
+        description: Uploads playlist ID — pass directly to youtube.playlist_items to list all videos
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - relatedPlaylists
+            - uploads
+
+  - name: channels_by_handle
+    description: Look up a YouTube channel by @-handle
+    guide: |
+      Returns metadata, statistics, and content details for a YouTube
+      channel looked up by handle. `handle` is required and accepts the
+      handle either with or without a leading `@` — e.g. `@DynamoGaming`
+      or `DynamoGaming` both work (YouTube's `forHandle` parameter takes
+      either form). Returns at most one row; returns 0 rows if the handle
+      does not exist.
+
+      To look up by channel ID instead (or multiple channels at once),
+      use `youtube.channels`.
+
+      Note: YouTube returns statistics counts as strings (viewCount,
+      subscriberCount, videoCount). Use `content_details__related_playlists__uploads`
+      to get the uploads playlist ID directly for `youtube.playlist_items`.
+    filters:
+      - name: handle
+        required: true
+    request:
+      method: GET
+      path: /channels
+      query:
+        - name: part
+          from: literal
+          value: snippet,statistics,contentDetails
+        - name: forHandle
+          from: filter
+          key: handle
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: handle
+        type: Utf8
+        nullable: true
+        description: Channel handle filter used to look up the channel (e.g. @DynamoGaming)
+        expr:
+          kind: from_filter
+          key: handle
+      - name: id
+        type: Utf8
+        nullable: false
+        description: YouTube channel ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: snippet__title
+        type: Utf8
+        nullable: true
+        description: Channel display name
+        expr:
+          kind: path
+          path:
+            - snippet
+            - title
+      - name: snippet__description
+        type: Utf8
+        nullable: true
+        description: Channel description
+        expr:
+          kind: path
+          path:
+            - snippet
+            - description
+      - name: snippet__custom_url
+        type: Utf8
+        nullable: true
+        description: >-
+          Channel's custom URL (legacy /c/ or /user/ slug, e.g.
+          "GoogleDevelopers"). NOT the @-handle — use forHandle /
+          channels_by_handle for that.
+        expr:
+          kind: path
+          path:
+            - snippet
+            - customUrl
+      - name: snippet__published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the channel was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - publishedAt
+      - name: snippet__country
+        type: Utf8
+        nullable: true
+        description: Country with which the channel is associated
+        expr:
+          kind: path
+          path:
+            - snippet
+            - country
+      - name: statistics__view_count
+        type: Utf8
+        nullable: true
+        description: Total number of times the channel has been viewed
+        expr:
+          kind: path
+          path:
+            - statistics
+            - viewCount
+      - name: statistics__subscriber_count
+        type: Utf8
+        nullable: true
+        description: Number of subscribers (hidden when hiddenSubscriberCount is true)
+        expr:
+          kind: path
+          path:
+            - statistics
+            - subscriberCount
+      - name: statistics__video_count
+        type: Utf8
+        nullable: true
+        description: Number of public videos uploaded to the channel
+        expr:
+          kind: path
+          path:
+            - statistics
+            - videoCount
+      - name: statistics__hidden_subscriber_count
+        type: Boolean
+        nullable: true
+        description: Whether the channel's subscriber count is publicly visible
+        expr:
+          kind: path
+          path:
+            - statistics
+            - hiddenSubscriberCount
+      - name: content_details__related_playlists__uploads
+        type: Utf8
+        nullable: true
+        description: Uploads playlist ID — pass directly to youtube.playlist_items to list all videos
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - relatedPlaylists
+            - uploads
+
+  - name: playlist_items
+    description: Videos and other items within a YouTube playlist
+    guide: |
+      Returns all items in a YouTube playlist in order. `playlist_id` is
+      required. To list a channel's uploads, query `youtube.channels` (by ID)
+      or `youtube.channels_by_handle` (by handle) first and use the
+      `content_details__related_playlists__uploads` value as the playlist_id.
+      Results paginate automatically via pageToken.
+    filters:
+      - name: playlist_id
+        required: true
+    request:
+      method: GET
+      path: /playlistItems
+      query:
+        - name: part
+          from: literal
+          value: snippet,contentDetails
+        - name: playlistId
+          from: filter
+          key: playlist_id
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 50
+        max: 50
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: playlist_id
+        type: Utf8
+        nullable: true
+        description: Playlist ID filter used to look up items
+        expr:
+          kind: from_filter
+          key: playlist_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Playlist item ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: snippet__published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the item was added to the playlist
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - publishedAt
+      - name: snippet__channel_id
+        type: Utf8
+        nullable: true
+        description: ID of the channel that added this item to the playlist (the playlist owner; from snippet.channelId)
+        expr:
+          kind: path
+          path:
+            - snippet
+            - channelId
+      - name: snippet__title
+        type: Utf8
+        nullable: true
+        description: Video title
+        expr:
+          kind: path
+          path:
+            - snippet
+            - title
+      - name: snippet__description
+        type: Utf8
+        nullable: true
+        description: Video description
+        expr:
+          kind: path
+          path:
+            - snippet
+            - description
+      - name: snippet__playlist_id
+        type: Utf8
+        nullable: true
+        description: ID of the playlist containing this item
+        expr:
+          kind: path
+          path:
+            - snippet
+            - playlistId
+      - name: snippet__position
+        type: Int64
+        nullable: true
+        description: Zero-based position of the item in the playlist
+        expr:
+          kind: path
+          path:
+            - snippet
+            - position
+      - name: snippet__resource_id__video_id
+        type: Utf8
+        nullable: true
+        description: YouTube video ID
+        expr:
+          kind: path
+          path:
+            - snippet
+            - resourceId
+            - videoId
+      - name: snippet__video_owner_channel_id
+        type: Utf8
+        nullable: true
+        description: ID of the channel that uploaded the video itself — may differ from snippet__channel_id (the playlist owner)
+        expr:
+          kind: path
+          path:
+            - snippet
+            - videoOwnerChannelId
+      - name: snippet__video_owner_channel_title
+        type: Utf8
+        nullable: true
+        description: Display name of the channel that uploaded the video (paired with snippet__video_owner_channel_id)
+        expr:
+          kind: path
+          path:
+            - snippet
+            - videoOwnerChannelTitle
+      - name: content_details__video_published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the video was originally published
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - contentDetails
+              - videoPublishedAt
+
+  - name: videos
+    description: YouTube video metadata, content details, statistics, and status
+    guide: |
+      Returns full metadata for one or more videos. `video_id` is required
+      and accepts a comma-separated list of up to 50 YouTube video IDs. Use
+      `youtube.playlist_items` or `youtube.search` to discover video IDs, then
+      enrich them here. Note: YouTube returns statistics counts (viewCount,
+      likeCount, commentCount) as strings. `dislikeCount` has been private
+      since December 2021 and is never returned. `content_details__duration`
+      is in ISO 8601 duration format (e.g. PT15M33S).
+    filters:
+      - name: video_id
+        required: true
+    request:
+      method: GET
+      path: /videos
+      query:
+        - name: part
+          from: literal
+          value: snippet,contentDetails,statistics,status
+        - name: id
+          from: filter
+          key: video_id
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: video_id
+        type: Utf8
+        nullable: true
+        description: Video ID filter used to look up the video
+        expr:
+          kind: from_filter
+          key: video_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: YouTube video ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: snippet__published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the video was published
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - publishedAt
+      - name: snippet__channel_id
+        type: Utf8
+        nullable: true
+        description: ID of the channel that uploaded the video
+        expr:
+          kind: path
+          path:
+            - snippet
+            - channelId
+      - name: snippet__channel_title
+        type: Utf8
+        nullable: true
+        description: Name of the channel that uploaded the video
+        expr:
+          kind: path
+          path:
+            - snippet
+            - channelTitle
+      - name: snippet__title
+        type: Utf8
+        nullable: true
+        description: Video title
+        expr:
+          kind: path
+          path:
+            - snippet
+            - title
+      - name: snippet__description
+        type: Utf8
+        nullable: true
+        description: Video description
+        expr:
+          kind: path
+          path:
+            - snippet
+            - description
+      - name: snippet__tags
+        type: Json
+        nullable: true
+        description: List of keyword tags associated with the video
+        expr:
+          kind: path
+          path:
+            - snippet
+            - tags
+      - name: snippet__category_id
+        type: Utf8
+        nullable: true
+        description: YouTube video category ID
+        expr:
+          kind: path
+          path:
+            - snippet
+            - categoryId
+      - name: snippet__live_broadcast_content
+        type: Utf8
+        nullable: true
+        description: "Broadcast status: live, upcoming, or none"
+        expr:
+          kind: path
+          path:
+            - snippet
+            - liveBroadcastContent
+      - name: snippet__default_language
+        type: Utf8
+        nullable: true
+        description: Language of the video's title and description
+        expr:
+          kind: path
+          path:
+            - snippet
+            - defaultLanguage
+      - name: content_details__duration
+        type: Utf8
+        nullable: true
+        description: Video duration in ISO 8601 format (e.g. PT15M33S)
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - duration
+      - name: content_details__dimension
+        type: Utf8
+        nullable: true
+        description: "Whether the video is available in 2d or 3d"
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - dimension
+      - name: content_details__definition
+        type: Utf8
+        nullable: true
+        description: "Video quality: hd or sd"
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - definition
+      - name: content_details__caption
+        type: Utf8
+        nullable: true
+        description: "Whether captions are available — returned as the string \"true\" or \"false\" by the YouTube API"
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - caption
+      - name: content_details__licensed_content
+        type: Boolean
+        nullable: true
+        description: Whether the video represents licensed content claimed by a partner
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - licensedContent
+      - name: content_details__projection
+        type: Utf8
+        nullable: true
+        description: "Projection format: rectangular or 360"
+        expr:
+          kind: path
+          path:
+            - contentDetails
+            - projection
+      - name: statistics__view_count
+        type: Utf8
+        nullable: true
+        description: Number of times the video has been viewed
+        expr:
+          kind: path
+          path:
+            - statistics
+            - viewCount
+      - name: statistics__like_count
+        type: Utf8
+        nullable: true
+        description: Number of users who liked the video
+        expr:
+          kind: path
+          path:
+            - statistics
+            - likeCount
+      - name: statistics__comment_count
+        type: Utf8
+        nullable: true
+        description: Number of comments on the video
+        expr:
+          kind: path
+          path:
+            - statistics
+            - commentCount
+      - name: status__upload_status
+        type: Utf8
+        nullable: true
+        description: "Upload state: uploaded, processed, failed, rejected, or deleted"
+        expr:
+          kind: path
+          path:
+            - status
+            - uploadStatus
+      - name: status__privacy_status
+        type: Utf8
+        nullable: true
+        description: "Video privacy: public, private, or unlisted"
+        expr:
+          kind: path
+          path:
+            - status
+            - privacyStatus
+      - name: status__license
+        type: Utf8
+        nullable: true
+        description: "Video licence: youtube or creativeCommon"
+        expr:
+          kind: path
+          path:
+            - status
+            - license
+      - name: status__embeddable
+        type: Boolean
+        nullable: true
+        description: Whether the video can be embedded on other websites
+        expr:
+          kind: path
+          path:
+            - status
+            - embeddable
+      - name: status__public_stats_viewable
+        type: Boolean
+        nullable: true
+        description: Whether extended video statistics are publicly visible
+        expr:
+          kind: path
+          path:
+            - status
+            - publicStatsViewable
+
+  - name: search
+    description: Provider-ranked YouTube search results for videos, channels, or playlists
+    guide: |
+      Returns relevance-ranked search results for the given keyword query.
+      `q` (the search term) is required — this is a provider-native search
+      endpoint; results are ranked by YouTube. Optionally add `channel_id`
+      to restrict to a specific channel, `type` to filter by resource type
+      (`video`, `channel`, or `playlist`; default: all three), `order`
+      (`relevance`, `date`, `rating`, `title`, `videoCount`, `viewCount`),
+      and RFC 3339 date bounds via `published_after` / `published_before`.
+
+      WARNING: search.list uses a separate "Search Queries" quota bucket
+      (default 100 calls/day), distinct from the 10,000-unit general Data API
+      quota. Each call costs 1 unit in that bucket. Defaults to 50 results to
+      keep one query to one call; add an explicit LIMIT for larger scans. To
+      browse a channel's videos against the general quota (1 unit/call), use
+      `youtube.playlist_items` instead.
+
+      Provider cap on channel-restricted video search: YouTube caps results at
+      500 when `channel_id` is combined with `type = 'video'` (the
+      `forContentOwner` / `forDeveloper` / `forMine` escapes require OAuth and
+      are not exposed here). To enumerate every video in a channel, fetch the
+      uploads playlist ID from `youtube.channels` /
+      `youtube.channels_by_handle` and query `youtube.playlist_items` with it
+      — that path has no 500-row cap.
+
+      The result `id__video_id`, `id__channel_id`, or `id__playlist_id`
+      column will be populated depending on the result type; the others will
+      be null. Use `youtube.videos` to enrich video results with full metadata.
+    fetch_limit_default: 50
+    filters:
+      - name: q
+        required: true
+      - name: channel_id
+        required: false
+      - name: type
+        required: false
+      - name: order
+        required: false
+      - name: published_after
+        required: false
+      - name: published_before
+        required: false
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: part
+          from: literal
+          value: snippet
+        - name: q
+          from: filter
+          key: q
+        - name: channelId
+          from: filter
+          key: channel_id
+        - name: type
+          from: filter
+          key: type
+        - name: order
+          from: filter
+          key: order
+        - name: publishedAfter
+          from: filter
+          key: published_after
+        - name: publishedBefore
+          from: filter
+          key: published_before
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 50
+        max: 50
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: q
+        type: Utf8
+        nullable: true
+        description: Search query string (provider-native ranked search)
+        expr:
+          kind: from_filter
+          key: q
+      - name: channel_id
+        type: Utf8
+        nullable: true
+        description: Channel ID filter to restrict results to a specific channel
+        expr:
+          kind: from_filter
+          key: channel_id
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Resource type filter: video, channel, or playlist"
+        expr:
+          kind: from_filter
+          key: type
+      - name: order
+        type: Utf8
+        nullable: true
+        description: "Sort order: relevance, date, rating, title, videoCount, or viewCount"
+        expr:
+          kind: from_filter
+          key: order
+      - name: published_after
+        type: Utf8
+        nullable: true
+        description: RFC 3339 lower bound on publication date (e.g. 2024-01-01T00:00:00Z)
+        expr:
+          kind: from_filter
+          key: published_after
+      - name: published_before
+        type: Utf8
+        nullable: true
+        description: RFC 3339 upper bound on publication date
+        expr:
+          kind: from_filter
+          key: published_before
+      - name: id__kind
+        type: Utf8
+        nullable: true
+        description: "Result resource type: youtube#video, youtube#channel, or youtube#playlist"
+        expr:
+          kind: path
+          path:
+            - id
+            - kind
+      - name: id__video_id
+        type: Utf8
+        nullable: true
+        description: Video ID (populated only when result is a video)
+        expr:
+          kind: path
+          path:
+            - id
+            - videoId
+      - name: id__channel_id
+        type: Utf8
+        nullable: true
+        description: Channel ID (populated only when result is a channel)
+        expr:
+          kind: path
+          path:
+            - id
+            - channelId
+      - name: id__playlist_id
+        type: Utf8
+        nullable: true
+        description: Playlist ID (populated only when result is a playlist)
+        expr:
+          kind: path
+          path:
+            - id
+            - playlistId
+      - name: snippet__published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the resource was created
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - publishedAt
+      - name: snippet__channel_id
+        type: Utf8
+        nullable: true
+        description: ID of the channel that published the resource
+        expr:
+          kind: path
+          path:
+            - snippet
+            - channelId
+      - name: snippet__title
+        type: Utf8
+        nullable: true
+        description: Title of the search result
+        expr:
+          kind: path
+          path:
+            - snippet
+            - title
+      - name: snippet__description
+        type: Utf8
+        nullable: true
+        description: Description of the search result
+        expr:
+          kind: path
+          path:
+            - snippet
+            - description
+      - name: snippet__channel_title
+        type: Utf8
+        nullable: true
+        description: Name of the channel that published the resource
+        expr:
+          kind: path
+          path:
+            - snippet
+            - channelTitle
+      - name: snippet__live_broadcast_content
+        type: Utf8
+        nullable: true
+        description: "Broadcast status of the result: live, upcoming, or none"
+        expr:
+          kind: path
+          path:
+            - snippet
+            - liveBroadcastContent
+
+  - name: comment_threads
+    description: Top-level comment threads on a YouTube video
+    guide: |
+      Returns top-level comment threads for a video. Each row represents one
+      thread. The top-level comment is in the `top_comment__*` columns;
+      `snippet__total_reply_count` shows how many replies exist. To retrieve
+      all replies, query `youtube.comments WHERE parent_id = '<top_comment__id>'`
+      using the `top_comment__id` value from this table.
+
+      Defaults to 200 threads. Popular videos can have millions of comments
+      so add an explicit LIMIT for deeper scans.
+
+      `order` accepts `time` (default) or `relevance`. `search_terms`
+      filters threads to those containing the given text.
+    fetch_limit_default: 200
+    filters:
+      - name: video_id
+        required: true
+      - name: order
+        required: false
+      - name: search_terms
+        required: false
+    request:
+      method: GET
+      path: /commentThreads
+      query:
+        - name: part
+          from: literal
+          value: snippet
+        - name: videoId
+          from: filter
+          key: video_id
+        - name: order
+          from: filter
+          key: order
+        - name: searchTerms
+          from: filter
+          key: search_terms
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 100
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: video_id
+        type: Utf8
+        nullable: true
+        description: Video ID filter used to look up comment threads
+        expr:
+          kind: from_filter
+          key: video_id
+      - name: order
+        type: Utf8
+        nullable: true
+        description: "Sort order filter: time or relevance"
+        expr:
+          kind: from_filter
+          key: order
+      - name: search_terms
+        type: Utf8
+        nullable: true
+        description: Text filter applied to comment threads
+        expr:
+          kind: from_filter
+          key: search_terms
+      - name: id
+        type: Utf8
+        nullable: false
+        description: >-
+          Comment thread ID (commentThreads.id). To fetch replies via
+          youtube.comments, pass top_comment__id (snippet.topLevelComment.id)
+          — NOT this column.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: snippet__video_id
+        type: Utf8
+        nullable: true
+        description: ID of the video the thread belongs to
+        expr:
+          kind: path
+          path:
+            - snippet
+            - videoId
+      - name: snippet__channel_id
+        type: Utf8
+        nullable: true
+        description: ID of the channel associated with the thread
+        expr:
+          kind: path
+          path:
+            - snippet
+            - channelId
+      - name: snippet__can_reply
+        type: Boolean
+        nullable: true
+        description: Whether the current viewer can reply to the thread
+        expr:
+          kind: path
+          path:
+            - snippet
+            - canReply
+      - name: snippet__total_reply_count
+        type: Int64
+        nullable: true
+        description: Total number of replies to the top-level comment
+        expr:
+          kind: path
+          path:
+            - snippet
+            - totalReplyCount
+      - name: snippet__is_public
+        type: Boolean
+        nullable: true
+        description: Whether the thread and its replies are visible to all users
+        expr:
+          kind: path
+          path:
+            - snippet
+            - isPublic
+      - name: top_comment__id
+        type: Utf8
+        nullable: true
+        description: ID of the top-level comment
+        expr:
+          kind: path
+          path:
+            - snippet
+            - topLevelComment
+            - id
+      - name: top_comment__text
+        type: Utf8
+        nullable: true
+        description: Display text of the top-level comment (may differ from original if links were rewritten)
+        expr:
+          kind: path
+          path:
+            - snippet
+            - topLevelComment
+            - snippet
+            - textDisplay
+      - name: top_comment__author_name
+        type: Utf8
+        nullable: true
+        description: Display name of the commenter
+        expr:
+          kind: path
+          path:
+            - snippet
+            - topLevelComment
+            - snippet
+            - authorDisplayName
+      - name: top_comment__author_channel_url
+        type: Utf8
+        nullable: true
+        description: YouTube channel URL of the commenter
+        expr:
+          kind: path
+          path:
+            - snippet
+            - topLevelComment
+            - snippet
+            - authorChannelUrl
+      - name: top_comment__author_channel_id
+        type: Utf8
+        nullable: true
+        description: Channel ID of the commenter
+        expr:
+          kind: path
+          path:
+            - snippet
+            - topLevelComment
+            - snippet
+            - authorChannelId
+            - value
+      - name: top_comment__like_count
+        type: Int64
+        nullable: true
+        description: Number of likes on the top-level comment
+        expr:
+          kind: path
+          path:
+            - snippet
+            - topLevelComment
+            - snippet
+            - likeCount
+      - name: top_comment__published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the top-level comment was posted
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - topLevelComment
+              - snippet
+              - publishedAt
+      - name: top_comment__updated_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the top-level comment was last edited
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - topLevelComment
+              - snippet
+              - updatedAt
+
+  - name: comments
+    description: Replies to a YouTube comment thread
+    guide: |
+      Defaults to 100 replies. Use an explicit LIMIT for threads with many
+      replies to avoid walking every page.
+
+      Returns all replies to a specific top-level comment. `parent_id` is
+      required and must be the `top_comment__id` value from
+      `youtube.comment_threads` (i.e. `snippet.topLevelComment.id`). YouTube's
+      `comments.list` `parentId` expects a comment ID, not a thread ID — do
+      not pass the `id` column from `youtube.comment_threads`.
+
+      Typical workflow:
+        1. Query `youtube.comment_threads WHERE video_id = '<id>'` to find
+           threads and their `top_comment__id` values.
+        2. Query `youtube.comments WHERE parent_id = '<top_comment__id>'` to
+           read all replies for that thread.
+    fetch_limit_default: 100
+    filters:
+      - name: parent_id
+        required: true
+    request:
+      method: GET
+      path: /comments
+      query:
+        - name: part
+          from: literal
+          value: snippet
+        - name: parentId
+          from: filter
+          key: parent_id
+    response:
+      rows_path:
+        - items
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      page_size:
+        default: 100
+        max: 100
+        query_param: maxResults
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: parent_id
+        type: Utf8
+        nullable: true
+        description: Use top_comment__id from youtube.comment_threads — YouTube's comments.list parentId expects a comment ID, not a thread ID
+        expr:
+          kind: from_filter
+          key: parent_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Reply comment ID
+        expr:
+          kind: path
+          path:
+            - id
+      - name: snippet__text_display
+        type: Utf8
+        nullable: true
+        description: Display text of the reply
+        expr:
+          kind: path
+          path:
+            - snippet
+            - textDisplay
+      - name: snippet__author_display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the reply author
+        expr:
+          kind: path
+          path:
+            - snippet
+            - authorDisplayName
+      - name: snippet__author_channel_url
+        type: Utf8
+        nullable: true
+        description: YouTube channel URL of the reply author
+        expr:
+          kind: path
+          path:
+            - snippet
+            - authorChannelUrl
+      - name: snippet__author_channel_id
+        type: Utf8
+        nullable: true
+        description: Channel ID of the reply author
+        expr:
+          kind: path
+          path:
+            - snippet
+            - authorChannelId
+            - value
+      - name: snippet__like_count
+        type: Int64
+        nullable: true
+        description: Number of likes on the reply
+        expr:
+          kind: path
+          path:
+            - snippet
+            - likeCount
+      - name: snippet__published_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the reply was posted
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - publishedAt
+      - name: snippet__updated_at
+        type: Timestamp
+        nullable: true
+        description: Date and time the reply was last edited
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - snippet
+              - updatedAt

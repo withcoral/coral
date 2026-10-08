@@ -1,0 +1,974 @@
+name: stackoverflow
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Stack Overflow questions, answers, search results, users, and tags via the
+  public Stack Exchange REST API v2.3. Works anonymously without authentication.
+base_url: https://api.stackexchange.com/2.3
+
+inputs:
+  STACKOVERFLOW_SITE:
+    kind: variable
+    default: stackoverflow
+    hint: >-
+      Stack Exchange network site to query. Defaults to
+      stackoverflow. Use the api_site_parameter from
+      https://api.stackexchange.com/2.3/sites to query other
+      sites (e.g. serverfault, askubuntu, superuser).
+
+test_queries:
+  - >-
+    SELECT question_id, title, score
+    FROM stackoverflow.questions LIMIT 1
+  - >-
+    SELECT question_id, title, score
+    FROM stackoverflow.search_questions(intitle => 'python') LIMIT 1
+  - >-
+    SELECT answer_id, score, is_accepted
+    FROM stackoverflow.answers LIMIT 1
+  - >-
+    SELECT name, count
+    FROM stackoverflow.tags LIMIT 1
+  - >-
+    SELECT user_id, display_name, reputation
+    FROM stackoverflow.users LIMIT 1
+
+tables:
+  - name: questions
+    description: >
+      Lists questions on the configured Stack Exchange site sorted
+      by activity, creation date, votes, or trending tabs. Use the
+      tagged filter to restrict results to specific tags. Coral
+      handles page-based pagination automatically.
+    guide: >
+      Start with `SELECT question_id, title, score, view_count,
+      answer_count FROM stackoverflow.questions LIMIT 10`. Use
+      `WHERE tagged = 'rust'` to filter by tag. Tags use semicolon
+      AND logic: `tagged = 'python;django'` returns questions
+      tagged with both.
+    fetch_limit_default: 100
+    filters:
+      - name: tagged
+      - name: sort
+      - name: fromdate
+      - name: todate
+      - name: min
+      - name: max
+    request:
+      method: GET
+      path: /questions
+      query:
+        - name: site
+          from: input
+          key: STACKOVERFLOW_SITE
+        - name: order
+          from: literal
+          value: desc
+        - name: sort
+          from: filter
+          key: sort
+        - name: tagged
+          from: filter
+          key: tagged
+        - name: fromdate
+          from: filter
+          key: fromdate
+        - name: todate
+          from: filter
+          key: todate
+        - name: min
+          from: filter
+          key: min
+        - name: max
+          from: filter
+          key: max
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 25
+      page_size:
+        default: 30
+        max: 100
+        query_param: pagesize
+    columns:
+      - name: question_id
+        type: Int64
+        nullable: false
+        description: Unique question identifier.
+        expr:
+          kind: path
+          path:
+            - question_id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Question title (HTML-encoded).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: link
+        type: Utf8
+        nullable: true
+        description: Full URL to the question page.
+        expr:
+          kind: path
+          path:
+            - link
+      - name: score
+        type: Int64
+        nullable: true
+        description: Net vote score (upvotes minus downvotes).
+        expr:
+          kind: path
+          path:
+            - score
+      - name: view_count
+        type: Int64
+        nullable: true
+        description: Total number of views.
+        expr:
+          kind: path
+          path:
+            - view_count
+      - name: answer_count
+        type: Int64
+        nullable: true
+        description: Number of answers posted.
+        expr:
+          kind: path
+          path:
+            - answer_count
+      - name: is_answered
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the question has an accepted answer or a
+          positively-scored answer.
+        expr:
+          kind: path
+          path:
+            - is_answered
+      - name: accepted_answer_id
+        type: Int64
+        nullable: true
+        description: >-
+          ID of the accepted answer, if any.
+        expr:
+          kind: path
+          path:
+            - accepted_answer_id
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of tag strings applied to the question.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: owner_user_id
+        type: Int64
+        nullable: true
+        description: User ID of the question author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - user_id
+      - name: owner_display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the question author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - display_name
+      - name: owner_reputation
+        type: Int64
+        nullable: true
+        description: Reputation score of the question author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - reputation
+      - name: owner_link
+        type: Utf8
+        nullable: true
+        description: Profile URL of the question author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - link
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: When the question was posted.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - creation_date
+      - name: last_activity_date
+        type: Timestamp
+        nullable: true
+        description: >-
+          Last activity time (edit, answer, or comment).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - last_activity_date
+      - name: last_edit_date
+        type: Timestamp
+        nullable: true
+        description: Last time the question was edited.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - last_edit_date
+      - name: closed_date
+        type: Timestamp
+        nullable: true
+        description: >-
+          When the question was closed, if applicable.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - closed_date
+      - name: closed_reason
+        type: Utf8
+        nullable: true
+        description: Reason the question was closed.
+        expr:
+          kind: path
+          path:
+            - closed_reason
+      - name: content_license
+        type: Utf8
+        nullable: true
+        description: >-
+          Content license (typically CC BY-SA 4.0).
+        expr:
+          kind: path
+          path:
+            - content_license
+      - name: tagged
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Filter by tags (semicolon-delimited AND logic).
+        expr:
+          kind: from_filter
+          key: tagged
+      - name: sort
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Echoes the sort filter (activity, votes, creation,
+          hot, week, month).
+        expr:
+          kind: from_filter
+          key: sort
+      - name: fromdate
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Start date of the range (Unix epoch seconds).
+        expr:
+          kind: from_filter
+          key: fromdate
+      - name: todate
+        type: Int64
+        nullable: true
+        virtual: true
+        description: End date of the range (Unix epoch seconds).
+        expr:
+          kind: from_filter
+          key: todate
+      - name: min
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Minimum bound on the active sort field (e.g. score when sort = 'votes').
+        expr:
+          kind: from_filter
+          key: min
+      - name: max
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Maximum bound on the active sort field (e.g. score when sort = 'votes').
+        expr:
+          kind: from_filter
+          key: max
+
+  - name: answers
+    description: >
+      Lists answers on the configured Stack Exchange site. Each row
+      includes the answer score, acceptance status, and author info.
+      Coral handles page-based pagination automatically.
+    guide: >
+      Start with `SELECT answer_id, question_id, score,
+      is_accepted FROM stackoverflow.answers LIMIT 10`.
+    fetch_limit_default: 100
+    filters:
+      - name: sort
+      - name: fromdate
+      - name: todate
+      - name: min
+      - name: max
+    request:
+      method: GET
+      path: /answers
+      query:
+        - name: site
+          from: input
+          key: STACKOVERFLOW_SITE
+        - name: order
+          from: literal
+          value: desc
+        - name: sort
+          from: filter
+          key: sort
+        - name: fromdate
+          from: filter
+          key: fromdate
+        - name: todate
+          from: filter
+          key: todate
+        - name: min
+          from: filter
+          key: min
+        - name: max
+          from: filter
+          key: max
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 25
+      page_size:
+        default: 30
+        max: 100
+        query_param: pagesize
+    columns:
+      - name: answer_id
+        type: Int64
+        nullable: false
+        description: Unique answer identifier.
+        expr:
+          kind: path
+          path:
+            - answer_id
+      - name: question_id
+        type: Int64
+        nullable: true
+        description: ID of the parent question.
+        expr:
+          kind: path
+          path:
+            - question_id
+      - name: score
+        type: Int64
+        nullable: true
+        description: Net vote score (upvotes minus downvotes).
+        expr:
+          kind: path
+          path:
+            - score
+      - name: is_accepted
+        type: Boolean
+        nullable: true
+        description: Whether this answer is accepted.
+        expr:
+          kind: path
+          path:
+            - is_accepted
+      - name: owner_user_id
+        type: Int64
+        nullable: true
+        description: User ID of the answer author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - user_id
+      - name: owner_display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the answer author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - display_name
+      - name: owner_reputation
+        type: Int64
+        nullable: true
+        description: Reputation score of the answer author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - reputation
+      - name: owner_link
+        type: Utf8
+        nullable: true
+        description: Profile URL of the answer author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - link
+      - name: content_license
+        type: Utf8
+        nullable: true
+        description: >-
+          Content license (typically CC BY-SA 4.0).
+        expr:
+          kind: path
+          path:
+            - content_license
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: When the answer was posted.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - creation_date
+      - name: last_activity_date
+        type: Timestamp
+        nullable: true
+        description: >-
+          Last activity time (edit or comment).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - last_activity_date
+      - name: last_edit_date
+        type: Timestamp
+        nullable: true
+        description: Last time the answer was edited.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - last_edit_date
+      - name: sort
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the sort filter (activity, votes, creation).
+        expr:
+          kind: from_filter
+          key: sort
+      - name: fromdate
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Start date of the range (Unix epoch seconds).
+        expr:
+          kind: from_filter
+          key: fromdate
+      - name: todate
+        type: Int64
+        nullable: true
+        virtual: true
+        description: End date of the range (Unix epoch seconds).
+        expr:
+          kind: from_filter
+          key: todate
+      - name: min
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Minimum bound on the active sort field (e.g. score when sort = 'votes').
+        expr:
+          kind: from_filter
+          key: min
+      - name: max
+        type: Int64
+        nullable: true
+        virtual: true
+        description: Maximum bound on the active sort field (e.g. score when sort = 'votes').
+        expr:
+          kind: from_filter
+          key: max
+
+  - name: tags
+    description: >
+      Lists tags on the configured Stack Exchange site sorted by
+      popularity. Each row includes the tag name, question count,
+      and metadata about synonyms and moderation status.
+    guide: >
+      Start with `SELECT name, count, has_synonyms FROM
+      stackoverflow.tags LIMIT 20` to see the most popular tags.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /tags
+      query:
+        - name: site
+          from: input
+          key: STACKOVERFLOW_SITE
+        - name: order
+          from: literal
+          value: desc
+        - name: sort
+          from: literal
+          value: popular
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 25
+      page_size:
+        default: 30
+        max: 100
+        query_param: pagesize
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Tag name (e.g. javascript, python, rust).
+        expr:
+          kind: path
+          path:
+            - name
+      - name: count
+        type: Int64
+        nullable: true
+        description: >-
+          Number of questions tagged with this tag.
+        expr:
+          kind: path
+          path:
+            - count
+      - name: has_synonyms
+        type: Boolean
+        nullable: true
+        description: Whether the tag has synonyms defined.
+        expr:
+          kind: path
+          path:
+            - has_synonyms
+      - name: is_moderator_only
+        type: Boolean
+        nullable: true
+        description: Whether the tag is restricted to moderators.
+        expr:
+          kind: path
+          path:
+            - is_moderator_only
+      - name: is_required
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the tag is required on at least one question.
+        expr:
+          kind: path
+          path:
+            - is_required
+
+  - name: users
+    description: >
+      Lists users on the configured Stack Exchange site sorted by reputation.
+      Each row includes user ID, display name, reputation, location, website
+      URL, profile link, and reputation changes. Coral handles page-based
+      pagination automatically.
+    guide: >
+      Start with `SELECT user_id, display_name, reputation, location
+      FROM stackoverflow.users LIMIT 10` to find the users with the highest
+      reputation. To search for a specific user, use the `inname` filter:
+      `WHERE inname = 'Jon Skeet'`.
+    fetch_limit_default: 100
+    filters:
+      - name: inname
+    request:
+      method: GET
+      path: /users
+      query:
+        - name: site
+          from: input
+          key: STACKOVERFLOW_SITE
+        - name: order
+          from: literal
+          value: desc
+        - name: sort
+          from: literal
+          value: reputation
+        - name: inname
+          from: filter
+          key: inname
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 25
+      page_size:
+        default: 30
+        max: 100
+        query_param: pagesize
+    columns:
+      - name: user_id
+        type: Int64
+        nullable: false
+        description: Unique user identifier.
+        expr:
+          kind: path
+          path:
+            - user_id
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the user.
+        expr:
+          kind: path
+          path:
+            - display_name
+      - name: reputation
+        type: Int64
+        nullable: true
+        description: Reputation score.
+        expr:
+          kind: path
+          path:
+            - reputation
+      - name: user_type
+        type: Utf8
+        nullable: true
+        description: Type of user (e.g. registered, moderator).
+        expr:
+          kind: path
+          path:
+            - user_type
+      - name: location
+        type: Utf8
+        nullable: true
+        description: Location of the user.
+        expr:
+          kind: path
+          path:
+            - location
+      - name: website_url
+        type: Utf8
+        nullable: true
+        description: Link to website, if any.
+        expr:
+          kind: path
+          path:
+            - website_url
+      - name: link
+        type: Utf8
+        nullable: true
+        description: Profile link to Stack Overflow.
+        expr:
+          kind: path
+          path:
+            - link
+      - name: profile_image
+        type: Utf8
+        nullable: true
+        description: Link to profile image.
+        expr:
+          kind: path
+          path:
+            - profile_image
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: When the user registered.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - creation_date
+      - name: reputation_change_year
+        type: Int64
+        nullable: true
+        description: Reputation change in the current year.
+        expr:
+          kind: path
+          path:
+            - reputation_change_year
+      - name: reputation_change_quarter
+        type: Int64
+        nullable: true
+        description: Reputation change in the current quarter.
+        expr:
+          kind: path
+          path:
+            - reputation_change_quarter
+      - name: reputation_change_month
+        type: Int64
+        nullable: true
+        description: Reputation change in the current month.
+        expr:
+          kind: path
+          path:
+            - reputation_change_month
+      - name: reputation_change_week
+        type: Int64
+        nullable: true
+        description: Reputation change in the current week.
+        expr:
+          kind: path
+          path:
+            - reputation_change_week
+      - name: reputation_change_day
+        type: Int64
+        nullable: true
+        description: Reputation change in the current day.
+        expr:
+          kind: path
+          path:
+            - reputation_change_day
+      - name: inname
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Filter by username (exact or partial matching).
+        expr:
+          kind: from_filter
+          key: inname
+      - name: raw
+        type: Json
+        nullable: false
+        description: Complete raw user object from the Stack Exchange API.
+        expr:
+          kind: current_row
+
+functions:
+  - name: search_questions
+    kind: search
+    description: >-
+      Provider-native search for Stack Exchange questions by title
+      keyword. Returns questions sorted by activity by default;
+      pass `sort => 'relevance'` to rank by relevance instead.
+      The tagged argument filters to questions with at least one of
+      the specified tags (semicolon-delimited OR, unlike the AND
+      logic on the questions table).
+    fetch_limit_default: 100
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: intitle
+        required: true
+        bind:
+          arg: intitle
+      - name: tagged
+        bind:
+          arg: tagged
+      - name: sort
+        bind:
+          arg: sort
+    request:
+      method: GET
+      path: /search
+      query:
+        - name: site
+          from: input
+          key: STACKOVERFLOW_SITE
+        - name: order
+          from: literal
+          value: desc
+        - name: intitle
+          from: arg
+          key: intitle
+        - name: tagged
+          from: arg
+          key: tagged
+        - name: sort
+          from: arg
+          key: sort
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      max_pages: 25
+      page_size:
+        default: 30
+        max: 100
+        query_param: pagesize
+    columns:
+      - name: question_id
+        type: Int64
+        nullable: false
+        description: Unique question identifier.
+        expr:
+          kind: path
+          path:
+            - question_id
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Question title (HTML-encoded).
+        expr:
+          kind: path
+          path:
+            - title
+      - name: link
+        type: Utf8
+        nullable: true
+        description: Full URL to the question page.
+        expr:
+          kind: path
+          path:
+            - link
+      - name: score
+        type: Int64
+        nullable: true
+        description: Net vote score (upvotes minus downvotes).
+        expr:
+          kind: path
+          path:
+            - score
+      - name: view_count
+        type: Int64
+        nullable: true
+        description: Total number of views.
+        expr:
+          kind: path
+          path:
+            - view_count
+      - name: answer_count
+        type: Int64
+        nullable: true
+        description: Number of answers posted.
+        expr:
+          kind: path
+          path:
+            - answer_count
+      - name: is_answered
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the question has an accepted answer or a
+          positively-scored answer.
+        expr:
+          kind: path
+          path:
+            - is_answered
+      - name: accepted_answer_id
+        type: Int64
+        nullable: true
+        description: >-
+          ID of the accepted answer, if any.
+        expr:
+          kind: path
+          path:
+            - accepted_answer_id
+      - name: tags
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of tag strings applied to the question.
+        expr:
+          kind: path
+          path:
+            - tags
+      - name: owner_user_id
+        type: Int64
+        nullable: true
+        description: User ID of the question author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - user_id
+      - name: owner_display_name
+        type: Utf8
+        nullable: true
+        description: Display name of the question author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - display_name
+      - name: owner_reputation
+        type: Int64
+        nullable: true
+        description: Reputation score of the question author.
+        expr:
+          kind: path
+          path:
+            - owner
+            - reputation
+      - name: creation_date
+        type: Timestamp
+        nullable: true
+        description: When the question was posted.
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - creation_date
+      - name: last_activity_date
+        type: Timestamp
+        nullable: true
+        description: >-
+          Last activity time (edit, answer, or comment).
+        expr:
+          kind: format_timestamp
+          input: seconds
+          expr:
+            kind: path
+            path:
+              - last_activity_date
+      - name: content_license
+        type: Utf8
+        nullable: true
+        description: >-
+          Content license (typically CC BY-SA 4.0).
+        expr:
+          kind: path
+          path:
+            - content_license

@@ -9,12 +9,18 @@ inputs:
   NOTION_API_KEY:
     kind: secret
     hint: |
-      Create an internal Notion integration and copy its internal integration
-      token. Share the pages and databases you want to query with the
-      integration from Notion's "Add connections" menu.
+      Notion doesn't ship a workspace-wide read token. You must create a
+      connection on a workspace you own, then grant it access to the pages
+      and databases you want to query.
+
+      Create the connection at [notion.so/developers](https://www.notion.so/developers)
+      and copy its internal integration token. Then open the integration's
+      content access settings and give it edit access to each page or
+      database you want Coral to read.
 
       The token needs read content capabilities for most tables. See the
-      [Notion authorization docs](https://developers.notion.com/reference/authorization).
+      [Notion authorization docs](https://developers.notion.com/guides/get-started/authorization).
+
 base_url: https://api.notion.com
 auth:
   type: HeaderAuth

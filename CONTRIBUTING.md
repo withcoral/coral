@@ -17,7 +17,7 @@ review changes.
 
 ## Please discuss first
 
-Open an issue or discussion before starting work on:
+Open a feature request before starting work on:
 
 - new public CLI commands or flags
 - new public config formats

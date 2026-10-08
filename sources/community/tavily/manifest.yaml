@@ -1,0 +1,140 @@
+name: tavily
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query web search results from Tavily. The source provides a provider-native
+  search function that returns ranked results with titles, URLs, content
+  snippets, and relevance scores, optimized for LLM consumption.
+base_url: https://api.tavily.com
+inputs:
+  TAVILY_API_KEY:
+    kind: secret
+    hint: >-
+      Tavily API key from https://app.tavily.com. Keys start with `tvly-`.
+    credential:
+      methods:
+        - type: source_config
+          label: Paste API key
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.TAVILY_API_KEY}}"
+test_queries:
+  - SELECT url, title, score FROM tavily.search(q => 'Coral SQL') LIMIT 2
+functions:
+  - name: search
+    kind: search
+    description: >-
+      Search the web using Tavily. Pass the query as a named argument with
+      `q => '<query>'`. Returns ranked results with titles, URLs, content
+      snippets, and relevance scores optimized for LLM consumption.
+    fetch_limit_default: 5
+    search_limits:
+      default_top_k: 5
+      max_top_k: 20
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: max_results
+        bind:
+          arg: max_results
+      - name: search_depth
+        bind:
+          arg: search_depth
+      - name: topic
+        bind:
+          arg: topic
+      - name: time_range
+        bind:
+          arg: time_range
+      - name: include_images
+        bind:
+          arg: include_images
+      - name: include_raw_content
+        bind:
+          arg: include_raw_content
+      - name: include_favicon
+        bind:
+          arg: include_favicon
+    request:
+      method: POST
+      path: /search
+      body:
+        - path: [query]
+          from: arg
+          key: q
+        - path: [max_results]
+          from: arg
+          key: max_results
+        - path: [search_depth]
+          from: arg
+          key: search_depth
+        - path: [topic]
+          from: arg
+          key: topic
+        - path: [time_range]
+          from: arg
+          key: time_range
+        - path: [include_images]
+          from: arg
+          key: include_images
+        - path: [include_raw_content]
+          from: arg
+          key: include_raw_content
+        - path: [include_favicon]
+          from: arg
+          key: include_favicon
+    response:
+      rows_path:
+        - results
+    pagination:
+      mode: none
+    columns:
+      - name: url
+        type: Utf8
+        nullable: false
+        description: URL of the search result.
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title of the search result.
+      - name: content
+        type: Utf8
+        nullable: true
+        description: >-
+          Most query-related content extracted from the source. With advanced
+          search depth, this contains concatenated relevant chunks.
+      - name: score
+        type: Float64
+        nullable: false
+        description: Relevance score of the search result (0 to 1).
+      - name: raw_content
+        type: Utf8
+        nullable: true
+        description: >-
+          Parsed and cleaned HTML content. Only available when
+          include_raw_content is enabled.
+      - name: published_date
+        type: Utf8
+        nullable: true
+        description: >-
+          Publication date of the source. Only available for news topic
+          searches.
+      - name: images
+        type: Json
+        nullable: true
+        description: >-
+          Images extracted from this search result. Only included when
+          include_images is enabled.
+      - name: favicon
+        type: Utf8
+        nullable: true
+        description: >-
+          Favicon URL for the search result. Only included when
+          include_favicon is enabled.

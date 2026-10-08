@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::ListTracesRequest;
 use coral_api::v1::trace_service_client::TraceServiceClient;
+use coral_api::v1::{ListTracesRequest, TraceView};
 use coral_client::local::ServerBuilder;
 use serde_json::json;
 use tempfile::TempDir;
@@ -105,7 +105,11 @@ fn write_trace(dir: &Path, trace_id: &str) {
         "trace_state": "",
         "is_remote": false
     });
-    std::fs::write(dir.join("spans.jsonl"), format!("{record}\n")).expect("write trace");
+    std::fs::write(
+        dir.join("spans-00000000000000000001-test-0000000000000000.jsonl"),
+        format!("{record}\n"),
+    )
+    .expect("write trace");
 }
 
 async fn list_trace_ids(endpoint_uri: &str) -> Vec<String> {
@@ -118,6 +122,8 @@ async fn list_trace_ids(endpoint_uri: &str) -> Vec<String> {
         .list_traces(Request::new(ListTracesRequest {
             page_size: 10,
             page_token: String::new(),
+            workspace: None,
+            view: TraceView::Unspecified as i32,
         }))
         .await
         .expect("list traces")

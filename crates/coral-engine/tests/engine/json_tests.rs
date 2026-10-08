@@ -17,10 +17,11 @@ fn events_manifest(name: &str, dir: &Path, column_type: &str) -> Value {
         "name": name,
         "version": "0.1.0",
         "dsl_version": 3,
-        "backend": "jsonl",
+        "backend": "file",
         "tables": [{
             "name": "events",
             "description": "events with JSON-valued properties",
+            "format": "jsonl",
             "source": {
                 "location": dir_url(dir),
                 "glob": "**/*.jsonl"
@@ -34,28 +35,30 @@ fn events_manifest(name: &str, dir: &Path, column_type: &str) -> Value {
 }
 
 fn events_fixture() -> Vec<Value> {
+    let firefox = json!({
+        "$browser": "Firefox",
+        "count": 7,
+        "score": 4.5,
+        "active": true,
+        "tags": ["alpha", "beta"],
+        "geo": {"country": "US"}
+    });
+    let chrome = json!({
+        "$browser": "Chrome",
+        "count": 3,
+        "score": 1.0,
+        "active": false,
+        "tags": ["gamma"],
+        "geo": {"country": "DE"}
+    });
     vec![
         json!({
             "id": 1,
-            "properties": {
-                "$browser": "Firefox",
-                "count": 7,
-                "score": 4.5,
-                "active": true,
-                "tags": ["alpha", "beta"],
-                "geo": {"country": "US"}
-            }
+            "properties": firefox.to_string()
         }),
         json!({
             "id": 2,
-            "properties": {
-                "$browser": "Chrome",
-                "count": 3,
-                "score": 1.0,
-                "active": false,
-                "tags": ["gamma"],
-                "geo": {"country": "DE"}
-            }
+            "properties": chrome.to_string()
         }),
     ]
 }
@@ -121,7 +124,7 @@ async fn json_string_scalars_round_trip_as_json_text() {
     write_jsonl_file(
         temp.path(),
         "events.jsonl",
-        &[json!({"id": 1, "properties": "hello"})],
+        &[json!({"id": 1, "properties": "\"hello\""})],
     );
     let source = build_source(events_manifest("json_scalar", temp.path(), "Json"));
 

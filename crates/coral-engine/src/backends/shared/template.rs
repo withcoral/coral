@@ -65,7 +65,7 @@ impl RuntimeValueNamespace {
 /// Resolve one declarative value source into an optional JSON value.
 #[expect(
     clippy::too_many_lines,
-    reason = "This matches all ValueSourceSpec variants and resolves them"
+    reason = "One arm per value source keeps the whole vocabulary visible in one dispatch table; splitting it by family would hide which variants exist."
 )]
 pub(crate) fn resolve_value_source(
     value: &ValueSourceSpec,
@@ -76,6 +76,7 @@ pub(crate) fn resolve_value_source(
             let rendered = render_template(template, context)?;
             Ok(Some(Value::String(rendered)))
         }
+        ValueSourceSpec::OneOf { values } => resolve_one_of(values, context),
         ValueSourceSpec::Literal { value } => Ok(Some(value.clone())),
         ValueSourceSpec::Filter { key, default } => Ok(string_runtime_value(
             context,
@@ -121,6 +122,12 @@ pub(crate) fn resolve_value_source(
         )),
         ValueSourceSpec::FilterBool { key, default } => {
             parse_bool_value(context, RuntimeValueNamespace::Filter, key, *default)
+        }
+        ValueSourceSpec::FilterStringArray { key, default } => {
+            parse_filter_strings(context, key, default.as_deref())
+        }
+        ValueSourceSpec::ArgStringArray { key, default } => {
+            parse_arg_strings(context, key, default.as_deref())
         }
         ValueSourceSpec::FilterSplit {
             key,
@@ -177,11 +184,31 @@ pub(crate) fn resolve_value_source(
         ValueSourceSpec::Input { key } => {
             Ok(context.resolved_inputs.get(key).cloned().map(Value::String))
         }
+        ValueSourceSpec::Bearer { key } => Ok(context
+            .resolved_inputs
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .map(|value| Value::String(format!("Bearer {value}")))),
         ValueSourceSpec::State { key } => {
             Ok(context.state.get(key).map(|v| Value::String(v.clone())))
         }
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => Ok(Some(now_minus_seconds(*seconds))),
     }
+}
+
+fn resolve_one_of(
+    values: &[ValueSourceSpec],
+    context: &RenderContext<'_>,
+) -> Result<Option<Value>> {
+    for value in values {
+        let Some(resolved) = resolve_value_source(value, context)? else {
+            continue;
+        };
+        if !value_to_string(&resolved).is_empty() {
+            return Ok(Some(resolved));
+        }
+    }
+    Ok(None)
 }
 
 fn string_runtime_value(
@@ -256,16 +283,23 @@ fn parse_f64_value(
     key: &str,
     default: Option<f64>,
 ) -> Result<Option<Value>> {
-    let Some(raw) = namespace.values(context).get(key) else {
-        return Ok(default.map(|value| json!(value)));
+    let parsed = if let Some(raw) = namespace.values(context).get(key) {
+        raw.parse::<f64>().map_err(|error| {
+            let label = namespace.label();
+            DataFusionError::Execution(format!(
+                "{label} '{key}' value '{raw}' is not a valid f64: {error}"
+            ))
+        })?
+    } else if let Some(default) = default {
+        default
+    } else {
+        return Ok(None);
     };
-    let parsed = raw.parse::<f64>().map_err(|error| {
+    let number = serde_json::Number::from_f64(parsed).ok_or_else(|| {
         let label = namespace.label();
-        DataFusionError::Execution(format!(
-            "{label} '{key}' value '{raw}' is not a valid f64: {error}"
-        ))
+        DataFusionError::Execution(format!("{label} '{key}' must be a finite number"))
     })?;
-    Ok(Some(json!(parsed)))
+    Ok(Some(Value::Number(number)))
 }
 
 fn parse_bool_value(
@@ -284,6 +318,73 @@ fn parse_bool_value(
         ))
     })?;
     Ok(Some(json!(parsed)))
+}
+
+/// Reads a list-valued filter or argument out of the string-keyed runtime maps.
+///
+/// The wire form is a JSON array literal, but a bare value is accepted as a
+/// one-element list. SQL callers reach for `= 'id'` long before `= '["id"]'`,
+/// and failing that mid-scan reads as a bug rather than as a syntax lesson.
+/// Items are stringified rather than required to be JSON strings, so a numeric
+/// list such as `[1,2]` works for integer-item parameters.
+///
+/// Text that opens a `[` was *meant* as an array, so a parse failure there is a
+/// malformed value and stays an error. Without that split the bare-value
+/// fallback would quietly forward `["a" "b"]` as one element literally named
+/// `["a" "b"]`.
+fn parse_string_array_value(
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
+    key: &str,
+    default: Option<&[String]>,
+) -> Result<Option<Value>> {
+    let Some(raw) = namespace.values(context).get(key) else {
+        return Ok(default.map(|values| json!(values)));
+    };
+    if !raw.trim_start().starts_with('[') {
+        return Ok(Some(json!([raw])));
+    }
+    let items = serde_json::from_str::<Vec<Value>>(raw).map_err(|error| {
+        let label = namespace.label();
+        DataFusionError::Execution(format!(
+            "{label} '{key}' value '{raw}' is not a valid JSON array: {error}"
+        ))
+    })?;
+    let items = items
+        .iter()
+        .map(|item| match item {
+            Value::String(item) => Ok(item.clone()),
+            Value::Null | Value::Array(_) | Value::Object(_) => {
+                let label = namespace.label();
+                Err(DataFusionError::Execution(format!(
+                    "{label} '{key}' value '{raw}' must be a JSON array of scalars"
+                )))
+            }
+            item => Ok(item.to_string()),
+        })
+        .collect::<Result<Vec<String>>>()?;
+    Ok(Some(json!(items)))
+}
+
+fn parse_filter_strings(
+    context: &RenderContext<'_>,
+    key: &str,
+    default: Option<&[String]>,
+) -> Result<Option<Value>> {
+    parse_string_array_value(context, RuntimeValueNamespace::Filter, key, default)
+}
+
+fn parse_arg_strings(
+    context: &RenderContext<'_>,
+    key: &str,
+    default: Option<&[String]>,
+) -> Result<Option<Value>> {
+    parse_string_array_value(
+        context,
+        RuntimeValueNamespace::FunctionArgument,
+        key,
+        default,
+    )
 }
 
 fn parse_split_i64_value(
@@ -439,6 +540,18 @@ pub(crate) fn validate_value_source_inputs(
         ValueSourceSpec::Template { template } => {
             validate_input_dependencies(template, resolved_inputs)
         }
+        ValueSourceSpec::OneOf { values } => {
+            let mut last_error = None;
+            for value in values {
+                match validate_value_source_inputs(value, resolved_inputs) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Err(last_error.unwrap_or_else(|| {
+                DataFusionError::Execution("`from: one_of` value source has no values".to_string())
+            }))
+        }
         ValueSourceSpec::Input { key } => {
             if resolved_inputs.contains_key(key) {
                 Ok(())
@@ -448,12 +561,22 @@ pub(crate) fn validate_value_source_inputs(
                 )))
             }
         }
+        ValueSourceSpec::Bearer { key } => {
+            if resolved_inputs.contains_key(key) {
+                Ok(())
+            } else {
+                Err(DataFusionError::Execution(format!(
+                    "missing source input '{key}' for `from: bearer` value source"
+                )))
+            }
+        }
         ValueSourceSpec::Literal { .. }
         | ValueSourceSpec::Filter { .. }
         | ValueSourceSpec::FilterInt { .. }
         | ValueSourceSpec::FilterFloat { .. }
         | ValueSourceSpec::FilterJson { .. }
         | ValueSourceSpec::FilterBool { .. }
+        | ValueSourceSpec::FilterStringArray { .. }
         | ValueSourceSpec::FilterSplit { .. }
         | ValueSourceSpec::FilterSplitInt { .. }
         | ValueSourceSpec::Arg { .. }
@@ -461,6 +584,7 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::ArgFloat { .. }
         | ValueSourceSpec::ArgJson { .. }
         | ValueSourceSpec::ArgBool { .. }
+        | ValueSourceSpec::ArgStringArray { .. }
         | ValueSourceSpec::ArgSplit { .. }
         | ValueSourceSpec::ArgSplitInt { .. }
         | ValueSourceSpec::State { .. }
@@ -472,10 +596,17 @@ pub(crate) fn validate_value_source_inputs(
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
+    use coral_spec::ValueSourceSpec;
     use serde_json::json;
 
-    use super::{EMPTY_MAP, RenderContext, resolve_value_source};
-    use coral_spec::ValueSourceSpec;
+    use super::{EMPTY_MAP, RenderContext, resolve_value_source, validate_value_source_inputs};
+
+    fn inputs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
 
     fn test_render_context<'a>(
         filters: &'a HashMap<String, String>,
@@ -742,6 +873,251 @@ mod tests {
     }
 
     #[test]
+    fn resolve_value_source_parses_filter_string_arrays_as_json_arrays() {
+        let filters = HashMap::from([(
+            "log_stream_names".to_string(),
+            r#"["stream-a","stream-b"]"#.to_string(),
+        )]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "log_stream_names".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("string array filter should resolve");
+
+        assert_eq!(value, Some(json!(["stream-a", "stream-b"])));
+    }
+
+    #[test]
+    fn resolve_value_source_uses_filter_string_array_default() {
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "log_stream_names".to_string(),
+                default: Some(vec!["stream-a".to_string()]),
+            },
+            &test_render_context(&HashMap::new(), &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("string array filter default should resolve");
+
+        assert_eq!(value, Some(json!(["stream-a"])));
+    }
+
+    #[test]
+    fn resolve_value_source_stringifies_non_string_array_entries() {
+        // OpenAPI array parameters are not all arrays of strings — GitHub's
+        // `creator_id` takes integers — and the wire form is text either way.
+        let filters = HashMap::from([("creator_id".to_string(), "[1,2]".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "creator_id".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("numeric array entries should resolve");
+
+        assert_eq!(value, Some(json!(["1", "2"])));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_a_malformed_json_array() {
+        // Text that opens a `[` was meant as an array, so the bare-value
+        // fallback must not quietly forward it as one literal element.
+        let filters = HashMap::from([("exclude".to_string(), r#"["a" "b"]"#.to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("a malformed array should fail");
+
+        assert!(
+            error.to_string().contains("is not a valid JSON array"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_non_scalar_array_entries() {
+        let filters = HashMap::from([("exclude".to_string(), r#"["a",{"k":1}]"#.to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("object entries should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must be a JSON array of scalars"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_reads_a_bare_value_as_a_one_element_array() {
+        // `WHERE exclude = 'repositories'` is the first thing a SQL caller
+        // reaches for, and failing it mid-scan reads as a bug rather than as a
+        // syntax lesson.
+        let filters = HashMap::from([("exclude".to_string(), "repositories".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("bare values should resolve");
+
+        assert_eq!(value, Some(json!(["repositories"])));
+    }
+
+    #[test]
+    fn resolve_value_source_parses_arg_string_arrays_as_json_arrays() {
+        let args = HashMap::from([("exclude".to_string(), r#"["repositories"]"#.to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::ArgStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("string array arg should resolve");
+
+        assert_eq!(value, Some(json!(["repositories"])));
+    }
+
+    #[test]
+    fn resolve_value_source_reads_arg_string_arrays_only_from_arguments() {
+        // The filter namespace must not satisfy an argument value source.
+        let filters = HashMap::from([("exclude".to_string(), r#"["repositories"]"#.to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::ArgStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("unbound arg should resolve to nothing");
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn resolve_value_source_uses_arg_string_array_default() {
+        let value = resolve_value_source(
+            &ValueSourceSpec::ArgStringArray {
+                key: "exclude".to_string(),
+                default: Some(vec!["repositories".to_string()]),
+            },
+            &test_render_context(&HashMap::new(), &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("string array arg default should resolve");
+
+        assert_eq!(value, Some(json!(["repositories"])));
+    }
+
+    #[test]
+    fn one_of_prefers_first_present_value() {
+        let resolved_inputs = inputs(&[("API_KEY", "lin_api_key"), ("OAUTH_TOKEN", "oauth")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![
+                    ValueSourceSpec::Input {
+                        key: "API_KEY".to_string(),
+                    },
+                    ValueSourceSpec::Bearer {
+                        key: "OAUTH_TOKEN".to_string(),
+                    },
+                ],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, Some(json!("lin_api_key")));
+    }
+
+    #[test]
+    fn one_of_uses_bearer_fallback_value() {
+        let resolved_inputs = inputs(&[("OAUTH_TOKEN", "oauth")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![
+                    ValueSourceSpec::Input {
+                        key: "API_KEY".to_string(),
+                    },
+                    ValueSourceSpec::Bearer {
+                        key: "OAUTH_TOKEN".to_string(),
+                    },
+                ],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, Some(json!("Bearer oauth")));
+    }
+
+    #[test]
+    fn one_of_ignores_empty_bearer_values() {
+        let resolved_inputs = inputs(&[("OAUTH_TOKEN", "")]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::OneOf {
+                values: vec![ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                }],
+            },
+            &RenderContext::source_scoped(&resolved_inputs),
+        )
+        .expect("one_of should resolve");
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn one_of_input_dependency_validation_accepts_any_resolved_branch() {
+        let value = ValueSourceSpec::OneOf {
+            values: vec![
+                ValueSourceSpec::Input {
+                    key: "API_KEY".to_string(),
+                },
+                ValueSourceSpec::Bearer {
+                    key: "OAUTH_TOKEN".to_string(),
+                },
+            ],
+        };
+
+        validate_value_source_inputs(&value, &inputs(&[("API_KEY", "lin_api_key")]))
+            .expect("api key should satisfy one_of");
+        validate_value_source_inputs(&value, &inputs(&[("OAUTH_TOKEN", "oauth_access")]))
+            .expect("oauth token should satisfy one_of");
+        assert!(
+            validate_value_source_inputs(&value, &inputs(&[]))
+                .expect_err("missing both should fail")
+                .to_string()
+                .contains("missing source input 'OAUTH_TOKEN' for `from: bearer` value source")
+        );
+    }
+
+    #[test]
     fn resolve_value_source_filter_does_not_parse_json() {
         let filters = HashMap::from([
             ("tag_list".to_string(), "[\"a\", \"b\"]".to_string()),
@@ -769,5 +1145,51 @@ mod tests {
         .expect("filter_json should resolve");
 
         assert_eq!(value_json, Some(json!(["a", "b"])));
+    }
+
+    #[test]
+    fn float_sources_reject_non_finite_values_and_defaults() {
+        for raw in ["NaN", "inf", "-inf"] {
+            let values = HashMap::from([("score".to_string(), raw.to_string())]);
+            let inputs = BTreeMap::new();
+            let context = test_render_context(&values, &values, &inputs);
+            for source in [
+                ValueSourceSpec::FilterFloat {
+                    key: "score".to_string(),
+                    default: None,
+                },
+                ValueSourceSpec::ArgFloat {
+                    key: "score".to_string(),
+                    default: None,
+                },
+            ] {
+                assert!(
+                    resolve_value_source(&source, &context)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("finite number")
+                );
+            }
+        }
+        let values = HashMap::new();
+        let inputs = BTreeMap::new();
+        let context = test_render_context(&values, &values, &inputs);
+        for source in [
+            ValueSourceSpec::FilterFloat {
+                key: "score".to_string(),
+                default: Some(f64::NAN),
+            },
+            ValueSourceSpec::ArgFloat {
+                key: "score".to_string(),
+                default: Some(f64::INFINITY),
+            },
+        ] {
+            assert!(
+                resolve_value_source(&source, &context)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("finite number")
+            );
+        }
     }
 }

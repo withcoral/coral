@@ -1,0 +1,220 @@
+dsl_version: 3
+version: "1.0.0"
+name: strava
+description: "Strava API. Query athlete activities and stats. Requires OAuth access token."
+backend: "http"
+base_url: "https://www.strava.com/api/v3"
+
+inputs:
+  STRAVA_ACCESS_TOKEN:
+    kind: secret
+    hint: "Strava OAuth access token. Get one at https://www.strava.com/settings/api"
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Strava
+          description: "Open a browser and authorize Coral to read your Strava activity data."
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: disabled
+            redirect_uri: "http://127.0.0.1:0/oauth/callback"
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: "https://www.strava.com/oauth/authorize"
+              token_url: "https://www.strava.com/oauth/token"
+            client:
+              id:
+                input: STRAVA_CLIENT_ID
+              secret:
+                input: STRAVA_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: comma
+                values:
+                  - activity:read_all
+                  - profile:read_all
+        - type: source_config
+          label: Paste access token
+
+  STRAVA_CLIENT_ID:
+    kind: variable
+    hint: "Strava app Client ID from https://www.strava.com/settings/api"
+
+  STRAVA_CLIENT_SECRET:
+    kind: secret
+    hint: "Strava app Client Secret from https://www.strava.com/settings/api"
+
+  STRAVA_ATHLETE_ID:
+    kind: variable
+    hint: "Your Strava numeric athlete ID (visible in profile URL)"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.STRAVA_ACCESS_TOKEN}}"
+
+tables:
+  - name: activities
+    description: >-
+      Athlete's activity history — runs, rides, swims. Ordered by most recent.
+      Use before/after filters (epoch seconds) to narrow the date range.
+    fetch_limit_default: 200
+    filters:
+      - name: before
+        type: Int64
+        description: "Epoch timestamp — only return activities before this time."
+      - name: after
+        type: Int64
+        description: "Epoch timestamp — only return activities after this time."
+    request:
+      path: "/athlete/activities"
+      method: GET
+      query:
+        - name: before
+          from: filter_int
+          key: before
+        - name: after
+          from: filter_int
+          key: after
+    pagination:
+      mode: page
+      page_size:
+        default: 50
+        max: 200
+        query_param: per_page
+      page_param: page
+      page_start: 1
+    columns:
+      - name: id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: sport_type
+        type: Utf8
+      - name: type
+        type: Utf8
+      - name: distance
+        type: Float64
+      - name: moving_time
+        type: Int64
+      - name: elapsed_time
+        type: Int64
+      - name: total_elevation_gain
+        type: Float64
+      - name: start_date
+        type: Utf8
+      - name: start_date_local
+        type: Utf8
+      - name: average_speed
+        type: Float64
+      - name: max_speed
+        type: Float64
+      - name: average_heartrate
+        type: Float64
+      - name: max_heartrate
+        type: Float64
+      - name: suffer_score
+        type: Float64
+      - name: average_cadence
+        type: Float64
+      - name: trainer
+        type: Boolean
+      - name: commute
+        type: Boolean
+      - name: manual
+        type: Boolean
+      - name: achievement_count
+        type: Int64
+      - name: kudos_count
+        type: Int64
+      - name: map__summary_polyline
+        type: Utf8
+
+  - name: athlete
+    description: "Authenticated athlete profile and stats"
+    request:
+      path: "/athlete"
+      method: GET
+    columns:
+      - name: id
+        type: Int64
+      - name: username
+        type: Utf8
+      - name: firstname
+        type: Utf8
+      - name: lastname
+        type: Utf8
+      - name: city
+        type: Utf8
+      - name: country
+        type: Utf8
+      - name: sex
+        type: Utf8
+      - name: follower_count
+        type: Int64
+      - name: friend_count
+        type: Int64
+      - name: measurement_preference
+        type: Utf8
+      - name: weight
+        type: Float64
+      - name: created_at
+        type: Utf8
+
+  - name: athlete_stats
+    description: "Aggregate running, riding, and swimming totals for the athlete — all time, recent, and year-to-date."
+    request:
+      path: "/athletes/{{input.STRAVA_ATHLETE_ID}}/stats"
+      method: GET
+    columns:
+      - name: recent_run_totals__count
+        type: Int64
+      - name: recent_run_totals__distance
+        type: Float64
+      - name: recent_run_totals__moving_time
+        type: Int64
+      - name: recent_run_totals__elapsed_time
+        type: Int64
+      - name: recent_run_totals__elevation_gain
+        type: Float64
+      - name: ytd_run_totals__count
+        type: Int64
+      - name: ytd_run_totals__distance
+        type: Float64
+      - name: ytd_run_totals__moving_time
+        type: Int64
+      - name: all_run_totals__count
+        type: Int64
+      - name: all_run_totals__distance
+        type: Float64
+      - name: all_run_totals__moving_time
+        type: Int64
+      - name: recent_ride_totals__count
+        type: Int64
+      - name: recent_ride_totals__distance
+        type: Float64
+      - name: ytd_ride_totals__count
+        type: Int64
+      - name: ytd_ride_totals__distance
+        type: Float64
+      - name: recent_swim_totals__count
+        type: Int64
+      - name: recent_swim_totals__distance
+        type: Float64
+      - name: ytd_swim_totals__count
+        type: Int64
+      - name: ytd_swim_totals__distance
+        type: Float64
+      - name: all_swim_totals__count
+        type: Int64
+      - name: all_swim_totals__distance
+        type: Float64
+
+test_queries:
+  - "SELECT name, sport_type, distance, moving_time, start_date_local FROM strava.activities LIMIT 5"
+  - "SELECT firstname, lastname, city, weight FROM strava.athlete"
+  - "SELECT recent_run_totals__count, recent_run_totals__distance, recent_swim_totals__count FROM strava.athlete_stats"

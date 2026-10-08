@@ -1,0 +1,257 @@
+name: baseten
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Monitor Baseten models, deployments, and secrets via the Management API.
+base_url: https://api.baseten.co
+
+inputs:
+  BASETEN_API_KEY:
+    kind: secret
+    hint: >-
+      Your Baseten API key from https://app.baseten.co/settings/account/api_keys.
+      Use a personal API key, or a team API key with "Full access" permissions —
+      "Inference only" and "Metrics only" team keys cannot list models, deployments,
+      or secrets. See https://docs.baseten.co/organization/api-keys for details.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Api-Key {{input.BASETEN_API_KEY}}"
+
+test_queries:
+  - SELECT id, name, instance_type_name, deployments_count FROM baseten.models LIMIT 5
+  - SELECT name, created_at, team_name FROM baseten.secrets LIMIT 10
+
+tables:
+  - name: models
+    description: >
+      List all models deployed in your Baseten account.
+      Shows instance type, deployment count, and production/development deployment IDs.
+    request:
+      method: GET
+      path: /v1/models
+    response:
+      rows_path:
+        - models
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique model identifier (UUID).
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Model display name.
+        expr:
+          kind: path
+          path: [name]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Model creation timestamp (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: deployments_count
+        type: Int64
+        nullable: true
+        description: Total number of deployments for this model.
+        expr:
+          kind: path
+          path: [deployments_count]
+      - name: production_deployment_id
+        type: Utf8
+        nullable: true
+        description: ID of the active production deployment.
+        expr:
+          kind: path
+          path: [production_deployment_id]
+      - name: development_deployment_id
+        type: Utf8
+        nullable: true
+        description: ID of the development deployment.
+        expr:
+          kind: path
+          path: [development_deployment_id]
+      - name: instance_type_name
+        type: Utf8
+        nullable: true
+        description: Hardware instance type (e.g. gpu.a100.1x, cpu.small).
+        expr:
+          kind: path
+          path: [instance_type_name]
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Workspace / team name.
+        expr:
+          kind: path
+          path: [team_name]
+
+  - name: deployments
+    description: >
+      Get all deployments for a specific model. Includes replica count,
+      status, autoscaling settings, and environment details.
+      Requires model_id filter (use the id from baseten.models).
+    filters:
+      - name: model_id
+        required: true
+    request:
+      method: GET
+      path: /v1/models/{{filter.model_id}}/deployments
+    response:
+      rows_path:
+        - deployments
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Deployment identifier (UUID).
+        expr:
+          kind: path
+          path: [id]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Deployment name (e.g. production, development).
+        expr:
+          kind: path
+          path: [name]
+      - name: model_id
+        type: Utf8
+        nullable: true
+        description: Parent model ID.
+        expr:
+          kind: path
+          path: [model_id]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Deployment creation timestamp (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: is_production
+        type: Boolean
+        nullable: true
+        description: Whether this is the production deployment.
+        expr:
+          kind: path
+          path: [is_production]
+      - name: is_development
+        type: Boolean
+        nullable: true
+        description: Whether this is the development deployment.
+        expr:
+          kind: path
+          path: [is_development]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Deployment status (ACTIVE, SCALED_TO_ZERO, BUILDING, etc.).
+        expr:
+          kind: path
+          path: [status]
+      - name: active_replica_count
+        type: Int64
+        nullable: true
+        description: Number of currently running replicas.
+        expr:
+          kind: path
+          path: [active_replica_count]
+      - name: instance_type_name
+        type: Utf8
+        nullable: true
+        description: Hardware instance type for this deployment.
+        expr:
+          kind: path
+          path: [instance_type_name]
+      - name: environment
+        type: Utf8
+        nullable: true
+        description: Deployment environment name.
+        expr:
+          kind: path
+          path: [environment]
+      - name: min_replicas
+        type: Int64
+        nullable: true
+        description: Autoscaling minimum replica count.
+        expr:
+          kind: path
+          path: [autoscaling_settings, min_replica]
+      - name: max_replicas
+        type: Int64
+        nullable: true
+        description: Autoscaling maximum replica count.
+        expr:
+          kind: path
+          path: [autoscaling_settings, max_replica]
+      - name: target_concurrency
+        type: Int64
+        nullable: true
+        description: Target request concurrency per replica for autoscaling.
+        expr:
+          kind: path
+          path: [autoscaling_settings, concurrency_target]
+      - name: model_id_filter
+        type: Utf8
+        nullable: true
+        description: The model_id filter value used in the query.
+        expr:
+          kind: from_filter
+          key: model_id
+
+  - name: secrets
+    description: >
+      List secret names registered in your Baseten account.
+      Secret values are never returned — only metadata (name, creation date, team).
+    request:
+      method: GET
+      path: /v1/secrets
+    response:
+      rows_path:
+        - secrets
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Secret name as registered in Baseten.
+        expr:
+          kind: path
+          path: [name]
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Secret creation timestamp (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [created_at]
+      - name: team_name
+        type: Utf8
+        nullable: true
+        description: Workspace / team that owns this secret.
+        expr:
+          kind: path
+          path: [team_name]

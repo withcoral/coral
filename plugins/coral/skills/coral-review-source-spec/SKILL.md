@@ -18,7 +18,7 @@ Review the source as product surface. Do not spend the review mainly restating C
    - `CONTRIBUTING.md`, especially "Source contributions".
    - The repo `AGENTS.md` and any nearer `AGENTS.md`.
    - Similar existing sources in `sources/core/` and the community example in `sources/community/hn/`.
-3. Compare against existing source patterns, not a generic API-wrapper ideal. Look at nearby sources with similar shape: public no-auth APIs, token APIs, GraphQL APIs, search-heavy APIs, log/time-series APIs, or generated large API sources.
+3. Compare against existing source patterns, not a generic API-wrapper ideal. Look at nearby sources with similar shape: public no-auth APIs, token APIs, OAuth-backed APIs, GraphQL APIs, search-heavy APIs, log/time-series APIs, or generated large API sources.
 4. Produce a code-review style result: findings first, ordered by severity, with file and line references. Include open questions only after findings. If there are no substantive issues, say so and mention residual risks or review gaps.
 
 ## Review Checklist
@@ -41,6 +41,10 @@ These checks should be based on the authoritative API docs for the API the sourc
 - Treat credential-like inputs as secrets, regardless of read-only scope or optional auth mode. Inputs named or described as `API_KEY`, `TOKEN`, `ACCESS_TOKEN`, `PASSWORD`, `SECRET`, `APPLICATION_KEY`, `READ_KEY`, `ADMIN_KEY`, private keys, bearer values, or authorization header values must be `kind: secret`; endpoint/base URL/site/region/domain/org/account/user/email values may be `kind: variable`.
 - Do not make a credential a variable with an empty default to simulate optional authentication. For the current source-spec surface, require the secret or call out the missing optional-auth design explicitly; never expose a token just to support anonymous installs.
 - Auth docs mention required token type, scopes or permissions, and where to get credentials.
+- If a secret declares `credential.methods`, each method matches the provider's supported setup path. OAuth methods use device-code, authorization-code, or client-credentials flow. Authorization-code methods need an explicit `pkce` value, loopback redirect URI, correct redirect port mode, and support for SSH, VM, and split-browser setups where the CLI accepts a pasted final localhost redirect URL while waiting for the loopback callback. Device-code methods need `device_authorization_url`, no redirect URI fields, and no static client secret. Client-credentials methods need `token_url`, `client.id.input`, `client.secret.input`, and `client.secret.transport`, with no redirect URI fields, authorization endpoints, device authorization endpoints, PKCE, or Dynamic Client Registration. All OAuth methods need correct endpoint URLs, appropriate client ID/default/input behavior, correct client-secret transport when applicable, and least-privilege scopes. For authorization-code or device-code Dynamic Client Registration, Coral always registers a native client, source specs cannot configure a `web` application type, and `request_refresh_token_grant: true` should appear only when the provider supports registering refresh-token grants. OAuth-protected Streamable HTTP MCP sources include `oauth.resource` when the provider requires resource indicators. OAuth URL templates may reference only declared `kind: variable` inputs for non-secret URL components.
+- OAuth methods do not replace runtime auth. The stored secret is still referenced by `auth`, request headers, query params, or body fields where the provider expects it.
+- OAuth setup docs tell users whether they need their own OAuth client, which redirect URI to register when applicable, which scopes to grant, and any provider/client settings required to issue refresh tokens. Client-credentials methods can rely on re-minting short-lived access tokens only when the provider returns usable `expires_in` metadata; otherwise users must reconnect after the token expires. Other methods whose provider will not issue refresh tokens should also call out that users must reconnect when access tokens expire.
+- When both OAuth and pasted-token setup are supported, the method ordering and labels make the preferred path obvious, usually OAuth first and `source_config` fallback second.
 - Non-trivial sources include README or manifest guides with setup, schema orientation, and example queries.
 - Behavior changes, setup changes, source semantics, and examples are documented in the same PR.
 
@@ -51,7 +55,13 @@ These checks should be based on the authoritative API docs for the API the sourc
 - Required filters are explicit and described in table `description` or `guide`.
 - Guides tell users how to start, which IDs to join through, and any provider-specific timestamp or query syntax traps.
 - Provider endpoints that accept query text and return ranked candidates use `kind: search` table functions with `search_limits`, stable result identifiers, and useful candidate metadata. Non-retrieval table functions keep the default kind for parameterized operations such as scoped child collections, time-range logs, metrics queries, or detail operations. Ordinary table filters are for exact lookup, scoping, or provider-side filtering; `mode: contains` is only substring matching. Flag provider-native search modeled as a filter and require a `kind: search` function.
-- Table and column names are snake_case, stable, and obvious. Avoid leaking odd provider operation names unless the source is intentionally generated.
+- Table, table-function, and column names are snake_case, stable, and obvious.
+  Table and table-function names must be unique within the source's
+  case-insensitive relation namespace. Table-function names must use SQL
+  identifier syntax: start with an ASCII letter or underscore, then use only
+  ASCII letters, numbers, or underscores. Prefer plain `snake_case` table names;
+  quoted SQL table names are valid for compatibility but should not leak odd
+  provider operation names unless the source is intentionally generated.
 
 ### HTTP and API Semantics
 
@@ -96,3 +106,10 @@ Review notes
 If no issues are found, say that directly and include any limits, such as not having live credentials or not inspecting CI logs.
 
 When highlighting a discrepancy between the source and the API documentation, always include links to the exact API documentation page.
+
+## Typed HTTP requests and cursors
+
+- Keep bare `filter` and `arg` string-valued. Use `filter_json`/`arg_json` for arrays or objects and `filter_float`/`arg_float` for finite numbers; JSON parsing preserves malformed text, while float parsing rejects invalid or non-finite input. Match function argument `type` to numeric inputs and describe arguments with `description`.
+- Expose request filters as virtual columns so SQL can supply them. Raw JSON filter text returned by `from_filter` should use `Utf8`, not `Json`.
+- Use HTTP `required_group` for alternatives such as discovery target or context. Test each alternative and the missing-all case; individual `required: true` flags still apply.
+- Verify cursor body pagination with actual numeric and string IDs across multiple pages. Numeric cursors remain JSON numbers in request bodies; query parameters and state templates use text.

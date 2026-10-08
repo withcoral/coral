@@ -1,0 +1,387 @@
+name: tableau
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Tableau Server or Tableau Cloud metadata for projects, workbooks,
+  views, data sources, and users.
+base_url: "{{input.TABLEAU_SERVER_URL}}/api/{{input.TABLEAU_API_VERSION}}/sites/{{input.TABLEAU_SITE_ID}}"
+
+inputs:
+  TABLEAU_SERVER_URL:
+    kind: variable
+    hint: |
+      Tableau Server or Tableau Cloud base URL, without a trailing slash.
+      Example: https://prod-useast-a.online.tableau.com.
+  TABLEAU_API_VERSION:
+    kind: variable
+    hint: |
+      Tableau REST API version supported by your site, such as 3.24. Match the
+      version documented for your Tableau Server or Tableau Cloud environment.
+  TABLEAU_SITE_ID:
+    kind: variable
+    hint: |
+      Tableau site LUID used in REST paths. This is not the site content URL.
+  TABLEAU_AUTH_TOKEN:
+    kind: secret
+    hint: |
+      Tableau REST API auth token returned by the Tableau sign-in endpoint.
+      Use a token for a least-privilege user with metadata read access.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Tableau-Auth
+      from: template
+      template: "{{input.TABLEAU_AUTH_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, name FROM tableau.projects LIMIT 1
+  - SELECT id, name, project_name FROM tableau.workbooks LIMIT 1
+  - SELECT id, name, workbook_id FROM tableau.views LIMIT 1
+
+tables:
+  - name: projects
+    description: Tableau projects visible to the authenticated user.
+    guide: |
+      Projects organize Tableau content. The REST endpoint paginates with
+      `pageNumber` and `pageSize`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /projects
+    response:
+      rows_path: [projects, project]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: pageNumber
+      page_start: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tableau project LUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Project name.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Project description.
+      - name: parent_project_id
+        type: Utf8
+        nullable: true
+        description: Parent project LUID.
+        expr: {kind: path, path: [parentProjectId]}
+      - name: content_permissions
+        type: Utf8
+        nullable: true
+        description: Project content permission mode.
+        expr: {kind: path, path: [contentPermissions]}
+
+  - name: workbooks
+    description: Tableau workbook metadata.
+    guide: |
+      Use `filter` for Tableau REST filter syntax, such as
+      `projectId:eq:<project_luid>` or `ownerId:eq:<user_luid>`. The table
+      exposes documented workbook metadata and avoids downloading workbook
+      content.
+    filters:
+      - name: filter
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /workbooks
+      query:
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path: [workbooks, workbook]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: pageNumber
+      page_start: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tableau workbook LUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Workbook name.
+      - name: content_url
+        type: Utf8
+        nullable: true
+        description: Workbook content URL.
+        expr: {kind: path, path: [contentUrl]}
+      - name: webpage_url
+        type: Utf8
+        nullable: true
+        description: Browser URL for the workbook.
+        expr: {kind: path, path: [webpageUrl]}
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Containing project LUID.
+        expr: {kind: path, path: [project, id]}
+      - name: project_name
+        type: Utf8
+        nullable: true
+        description: Containing project name.
+        expr: {kind: path, path: [project, name]}
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Workbook owner LUID.
+        expr: {kind: path, path: [owner, id]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Workbook creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Workbook update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updatedAt]}
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Tableau REST filter expression.
+        expr: {kind: from_filter, key: filter}
+
+  - name: views
+    description: Tableau view metadata.
+    guide: |
+      Views represent sheets and dashboards in workbooks. Use `filter` for
+      Tableau REST filter syntax, such as `workbookId:eq:<workbook_luid>`.
+    filters:
+      - name: filter
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /views
+      query:
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path: [views, view]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: pageNumber
+      page_start: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tableau view LUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: View name.
+      - name: content_url
+        type: Utf8
+        nullable: true
+        description: View content URL.
+        expr: {kind: path, path: [contentUrl]}
+      - name: workbook_id
+        type: Utf8
+        nullable: true
+        description: Parent workbook LUID.
+        expr: {kind: path, path: [workbook, id]}
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: View owner LUID.
+        expr: {kind: path, path: [owner, id]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: View creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: View update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updatedAt]}
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Tableau REST filter expression.
+        expr: {kind: from_filter, key: filter}
+
+  - name: datasources
+    description: Tableau published data source metadata.
+    guide: |
+      Use `filter` for Tableau REST filter syntax, such as
+      `projectId:eq:<project_luid>` or `ownerId:eq:<user_luid>`. This table
+      exposes metadata only and does not download data source content.
+    filters:
+      - name: filter
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /datasources
+      query:
+        - name: filter
+          from: filter
+          key: filter
+    response:
+      rows_path: [datasources, datasource]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: pageNumber
+      page_start: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tableau data source LUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Data source name.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Data source type when returned by Tableau.
+      - name: content_url
+        type: Utf8
+        nullable: true
+        description: Data source content URL.
+        expr: {kind: path, path: [contentUrl]}
+      - name: project_id
+        type: Utf8
+        nullable: true
+        description: Containing project LUID.
+        expr: {kind: path, path: [project, id]}
+      - name: project_name
+        type: Utf8
+        nullable: true
+        description: Containing project name.
+        expr: {kind: path, path: [project, name]}
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        description: Data source owner LUID.
+        expr: {kind: path, path: [owner, id]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Data source creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [createdAt]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Data source update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updatedAt]}
+      - name: filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional Tableau REST filter expression.
+        expr: {kind: from_filter, key: filter}
+
+  - name: users
+    description: Tableau site users.
+    guide: |
+      User rows require Tableau Server or site administrator permissions for
+      username/password or PAT sign-in. JWT-connected apps require the
+      `tableau:users:read` scope. The endpoint paginates with `pageNumber`
+      and `pageSize`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /users
+    response:
+      rows_path: [users, user]
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: pageNumber
+      page_start: 1
+      page_size:
+        default: 100
+        max: 1000
+        query_param: pageSize
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Tableau user LUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Tableau username.
+      - name: full_name
+        type: Utf8
+        nullable: true
+        description: User full name.
+        expr: {kind: path, path: [fullName]}
+      - name: site_role
+        type: Utf8
+        nullable: true
+        description: User site role.
+        expr: {kind: path, path: [siteRole]}
+      - name: last_login
+        type: Timestamp
+        nullable: true
+        description: Last login timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastLogin]}
+      - name: external_auth_user_id
+        type: Utf8
+        nullable: true
+        description: External auth user ID when returned by Tableau.
+        expr: {kind: path, path: [externalAuthUserId]}

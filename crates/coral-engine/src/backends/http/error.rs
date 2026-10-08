@@ -56,6 +56,7 @@ pub(crate) enum ProviderQueryError {
         method: Option<String>,
         url: Option<String>,
         detail: String,
+        retryable: bool,
     },
 
     #[error("{source_schema}.{table} pagination failed: {detail}")]
@@ -172,12 +173,14 @@ impl ProviderQueryError {
                 method,
                 url,
                 detail,
+                retryable,
             } => provider_stage_failure_to_structured(provider_decode_failure(
                 source_schema,
                 table,
                 method.as_deref(),
                 url.as_deref(),
                 detail,
+                *retryable,
             )),
             Self::Pagination {
                 source_schema,
@@ -398,7 +401,14 @@ fn provider_decode_failure<'a>(
     method: Option<&'a str>,
     url: Option<&'a str>,
     detail: &'a str,
+    retryable: bool,
 ) -> ProviderStageFailure<'a> {
+    let hint = if retryable {
+        "The upstream API response could not be fully decoded. Retry the query; if this persists, inspect the upstream API response."
+    } else {
+        "The upstream API returned a response that does not match the source manifest."
+    };
+
     ProviderStageFailure {
         source,
         table,
@@ -407,12 +417,13 @@ fn provider_decode_failure<'a>(
         detail,
         method,
         url,
-        hint: Some(
-            "The upstream API returned a response that does not match the source manifest."
-                .to_string(),
-        ),
-        retryable: false,
-        status: StatusCode::FailedPrecondition,
+        hint: Some(hint.to_string()),
+        retryable,
+        status: if retryable {
+            StatusCode::Unavailable
+        } else {
+            StatusCode::FailedPrecondition
+        },
         timed_out: false,
     }
 }
@@ -646,6 +657,7 @@ mod tests {
             method: Some("GET".to_string()),
             url: Some("https://api.github.com/issues".to_string()),
             detail: "expected value at line 1 column 1".to_string(),
+            retryable: false,
         }
         .to_structured();
         assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
@@ -656,6 +668,32 @@ mod tests {
             error.metadata().get("provider_failure_stage").unwrap(),
             "decode"
         );
+    }
+
+    #[test]
+    fn retryable_decode_failure_maps_to_unavailable_provider_failure() {
+        let error = ProviderQueryError::Decode {
+            source_schema: "github".to_string(),
+            table: "issues".to_string(),
+            method: Some("GET".to_string()),
+            url: Some("https://api.github.com/issues".to_string()),
+            detail: "EOF while parsing a string".to_string(),
+            retryable: true,
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "PROVIDER_REQUEST_FAILED");
+        assert_eq!(error.summary(), "Source response decode failed");
+        assert_eq!(error.status(), StatusCode::Unavailable);
+        assert!(error.retryable());
+        assert_eq!(
+            error.metadata().get("provider_failure_stage").unwrap(),
+            "decode"
+        );
+        let hint = error
+            .hint()
+            .expect("retryable decode failures should include a hint");
+        assert!(hint.contains("could not be fully decoded"));
+        assert!(!hint.contains("source manifest"));
     }
 
     #[test]

@@ -1,0 +1,1062 @@
+name: servicenow
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query ServiceNow ITSM and CMDB metadata from the Table API for incident,
+  change, problem, configuration item, and user inventory workflows.
+base_url: "{{input.SERVICENOW_INSTANCE_URL}}/api/now/v2/table"
+inputs:
+  SERVICENOW_INSTANCE_URL:
+    kind: variable
+    hint: |
+      Base URL for your ServiceNow instance, without a trailing slash.
+      Example: https://example.service-now.com.
+  SERVICENOW_USERNAME:
+    kind: variable
+    hint: |
+      ServiceNow username for Basic auth. Use a least-privilege integration
+      user with read access to the tables you want Coral to inspect.
+  SERVICENOW_PASSWORD:
+    kind: secret
+    hint: "ServiceNow password for the Basic auth integration user. Scope table ACLs to read-only access where possible."
+auth:
+  type: BasicAuth
+  username: "{{input.SERVICENOW_USERNAME}}"
+  password: "{{input.SERVICENOW_PASSWORD}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+test_queries:
+  - "SELECT sys_id, number, short_description FROM servicenow.incidents LIMIT 1"
+  - "SELECT sys_id, name, user_name FROM servicenow.users LIMIT 1"
+tables:
+  - name: incidents
+    description: "ServiceNow incident records visible to the configured user."
+    guide: |
+      Use `query` for ServiceNow encoded query syntax, such as
+      `active=true^priority=1`. This table requests a documented field subset
+      with `sysparm_fields` and paginates with `sysparm_limit` and
+      `sysparm_offset`.
+
+      Use the `query` virtual column with ServiceNow encoded query syntax and a SQL `LIMIT` to keep
+      production scans narrow. Coral applies a conservative default fetch limit and sends
+      `sysparm_no_count=true` so ServiceNow does not do extra count work for paginated reads.
+    filters:
+      - name: query
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /incident
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: "sys_id,number,short_description,state,priority,impact,urgency,category,assignment_group,assigned_to,caller_id,opened_by,opened_at,resolved_at,closed_at,active,sys_created_on,sys_updated_on"
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+        - name: sysparm_display_value
+          from: literal
+          value: all
+        - name: sysparm_no_count
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: "ServiceNow record sys_id."
+        expr:
+          kind: path
+          path: [sys_id, value]
+      - name: number
+        type: Utf8
+        nullable: true
+        description: "Incident number."
+        expr:
+          kind: path
+          path: [number, value]
+      - name: short_description
+        type: Utf8
+        nullable: true
+        description: "Short incident description."
+        expr:
+          kind: path
+          path: [short_description, value]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Incident state raw value."
+        expr:
+          kind: path
+          path: [state, value]
+      - name: state_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for state."
+        expr:
+          kind: path
+          path: [state, display_value]
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: "Incident priority raw value."
+        expr:
+          kind: path
+          path: [priority, value]
+      - name: priority_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for priority."
+        expr:
+          kind: path
+          path: [priority, display_value]
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: "Incident impact raw value."
+        expr:
+          kind: path
+          path: [impact, value]
+      - name: impact_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for impact."
+        expr:
+          kind: path
+          path: [impact, display_value]
+      - name: urgency
+        type: Utf8
+        nullable: true
+        description: "Incident urgency raw value."
+        expr:
+          kind: path
+          path: [urgency, value]
+      - name: urgency_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for urgency."
+        expr:
+          kind: path
+          path: [urgency, display_value]
+      - name: category
+        type: Utf8
+        nullable: true
+        description: "Incident category."
+        expr:
+          kind: path
+          path: [category, value]
+      - name: category_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for category."
+        expr:
+          kind: path
+          path: [category, display_value]
+      - name: assignment_group
+        type: Utf8
+        nullable: true
+        description: "Assignment group raw value."
+        expr:
+          kind: path
+          path: [assignment_group, value]
+      - name: assignment_group_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for assignment_group."
+        expr:
+          kind: path
+          path: [assignment_group, display_value]
+      - name: assigned_to
+        type: Utf8
+        nullable: true
+        description: "Assigned user raw value."
+        expr:
+          kind: path
+          path: [assigned_to, value]
+      - name: assigned_to_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for assigned_to."
+        expr:
+          kind: path
+          path: [assigned_to, display_value]
+      - name: caller_id
+        type: Utf8
+        nullable: true
+        description: "Caller raw value."
+        expr:
+          kind: path
+          path: [caller_id, value]
+      - name: caller_id_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for caller_id."
+        expr:
+          kind: path
+          path: [caller_id, display_value]
+      - name: opened_by
+        type: Utf8
+        nullable: true
+        description: "User that opened the incident."
+        expr:
+          kind: path
+          path: [opened_by, value]
+      - name: opened_by_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for opened_by."
+        expr:
+          kind: path
+          path: [opened_by, display_value]
+      - name: opened_at
+        type: Utf8
+        nullable: true
+        description: "Incident opened timestamp."
+        expr:
+          kind: path
+          path: [opened_at, value]
+      - name: resolved_at
+        type: Utf8
+        nullable: true
+        description: "Incident resolved timestamp."
+        expr:
+          kind: path
+          path: [resolved_at, value]
+      - name: closed_at
+        type: Utf8
+        nullable: true
+        description: "Incident closed timestamp."
+        expr:
+          kind: path
+          path: [closed_at, value]
+      - name: active
+        type: Utf8
+        nullable: true
+        description: "ServiceNow active value, usually \"true\" or \"false\"."
+        expr:
+          kind: path
+          path: [active, value]
+      - name: active_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for active."
+        expr:
+          kind: path
+          path: [active, display_value]
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: "Record creation timestamp."
+        expr:
+          kind: path
+          path: [sys_created_on, value]
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: "Record update timestamp."
+        expr:
+          kind: path
+          path: [sys_updated_on, value]
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional ServiceNow encoded query filter."
+        expr:
+          kind: from_filter
+          key: query
+  - name: change_requests
+    description: "ServiceNow change request records visible to the configured user."
+    guide: |
+      Use `query` for encoded query syntax such as `active=true^state=0`.
+      This table uses the ServiceNow Table API and offset pagination.
+
+      Use the `query` virtual column with ServiceNow encoded query syntax and a SQL `LIMIT` to keep
+      production scans narrow. Coral applies a conservative default fetch limit and sends
+      `sysparm_no_count=true` so ServiceNow does not do extra count work for paginated reads.
+    filters:
+      - name: query
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /change_request
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: "sys_id,number,short_description,type,state,priority,risk,impact,assignment_group,assigned_to,requested_by,start_date,end_date,active,sys_created_on,sys_updated_on"
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+        - name: sysparm_display_value
+          from: literal
+          value: all
+        - name: sysparm_no_count
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: "ServiceNow record sys_id."
+        expr:
+          kind: path
+          path: [sys_id, value]
+      - name: number
+        type: Utf8
+        nullable: true
+        description: "Change request number."
+        expr:
+          kind: path
+          path: [number, value]
+      - name: short_description
+        type: Utf8
+        nullable: true
+        description: "Short change description."
+        expr:
+          kind: path
+          path: [short_description, value]
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Change type."
+        expr:
+          kind: path
+          path: [type, value]
+      - name: type_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for type."
+        expr:
+          kind: path
+          path: [type, display_value]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Change state raw value."
+        expr:
+          kind: path
+          path: [state, value]
+      - name: state_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for state."
+        expr:
+          kind: path
+          path: [state, display_value]
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: "Change priority raw value."
+        expr:
+          kind: path
+          path: [priority, value]
+      - name: priority_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for priority."
+        expr:
+          kind: path
+          path: [priority, display_value]
+      - name: risk
+        type: Utf8
+        nullable: true
+        description: "Change risk raw value."
+        expr:
+          kind: path
+          path: [risk, value]
+      - name: risk_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for risk."
+        expr:
+          kind: path
+          path: [risk, display_value]
+      - name: impact
+        type: Utf8
+        nullable: true
+        description: "Change impact raw value."
+        expr:
+          kind: path
+          path: [impact, value]
+      - name: impact_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for impact."
+        expr:
+          kind: path
+          path: [impact, display_value]
+      - name: assignment_group
+        type: Utf8
+        nullable: true
+        description: "Assignment group raw value."
+        expr:
+          kind: path
+          path: [assignment_group, value]
+      - name: assignment_group_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for assignment_group."
+        expr:
+          kind: path
+          path: [assignment_group, display_value]
+      - name: assigned_to
+        type: Utf8
+        nullable: true
+        description: "Assigned user raw value."
+        expr:
+          kind: path
+          path: [assigned_to, value]
+      - name: assigned_to_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for assigned_to."
+        expr:
+          kind: path
+          path: [assigned_to, display_value]
+      - name: requested_by
+        type: Utf8
+        nullable: true
+        description: "Requesting user raw value."
+        expr:
+          kind: path
+          path: [requested_by, value]
+      - name: requested_by_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for requested_by."
+        expr:
+          kind: path
+          path: [requested_by, display_value]
+      - name: start_date
+        type: Utf8
+        nullable: true
+        description: "Planned start date."
+        expr:
+          kind: path
+          path: [start_date, value]
+      - name: end_date
+        type: Utf8
+        nullable: true
+        description: "Planned end date."
+        expr:
+          kind: path
+          path: [end_date, value]
+      - name: active
+        type: Utf8
+        nullable: true
+        description: "ServiceNow active value, usually \"true\" or \"false\"."
+        expr:
+          kind: path
+          path: [active, value]
+      - name: active_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for active."
+        expr:
+          kind: path
+          path: [active, display_value]
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: "Record creation timestamp."
+        expr:
+          kind: path
+          path: [sys_created_on, value]
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: "Record update timestamp."
+        expr:
+          kind: path
+          path: [sys_updated_on, value]
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional ServiceNow encoded query filter."
+        expr:
+          kind: from_filter
+          key: query
+  - name: problems
+    description: "ServiceNow problem records visible to the configured user."
+    guide: >-
+      Use the `query` virtual column with ServiceNow encoded query syntax and a
+      SQL `LIMIT` to keep production scans narrow. Coral applies a conservative
+      default fetch limit and sends `sysparm_no_count=true` so ServiceNow does
+      not do extra count work for paginated reads.
+    filters:
+      - name: query
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /problem
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: "sys_id,number,short_description,state,priority,assignment_group,assigned_to,known_error,active,opened_at,closed_at,sys_created_on,sys_updated_on"
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+        - name: sysparm_display_value
+          from: literal
+          value: all
+        - name: sysparm_no_count
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: "ServiceNow record sys_id."
+        expr:
+          kind: path
+          path: [sys_id, value]
+      - name: number
+        type: Utf8
+        nullable: true
+        description: "Problem number."
+        expr:
+          kind: path
+          path: [number, value]
+      - name: short_description
+        type: Utf8
+        nullable: true
+        description: "Short problem description."
+        expr:
+          kind: path
+          path: [short_description, value]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: "Problem state raw value."
+        expr:
+          kind: path
+          path: [state, value]
+      - name: state_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for state."
+        expr:
+          kind: path
+          path: [state, display_value]
+      - name: priority
+        type: Utf8
+        nullable: true
+        description: "Problem priority raw value."
+        expr:
+          kind: path
+          path: [priority, value]
+      - name: priority_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for priority."
+        expr:
+          kind: path
+          path: [priority, display_value]
+      - name: assignment_group
+        type: Utf8
+        nullable: true
+        description: "Assignment group raw value."
+        expr:
+          kind: path
+          path: [assignment_group, value]
+      - name: assignment_group_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for assignment_group."
+        expr:
+          kind: path
+          path: [assignment_group, display_value]
+      - name: assigned_to
+        type: Utf8
+        nullable: true
+        description: "Assigned user raw value."
+        expr:
+          kind: path
+          path: [assigned_to, value]
+      - name: assigned_to_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for assigned_to."
+        expr:
+          kind: path
+          path: [assigned_to, display_value]
+      - name: known_error
+        type: Utf8
+        nullable: true
+        description: "ServiceNow known error value, usually \"true\" or \"false\"."
+        expr:
+          kind: path
+          path: [known_error, value]
+      - name: known_error_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for known_error."
+        expr:
+          kind: path
+          path: [known_error, display_value]
+      - name: active
+        type: Utf8
+        nullable: true
+        description: "ServiceNow active value, usually \"true\" or \"false\"."
+        expr:
+          kind: path
+          path: [active, value]
+      - name: active_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for active."
+        expr:
+          kind: path
+          path: [active, display_value]
+      - name: opened_at
+        type: Utf8
+        nullable: true
+        description: "Problem opened timestamp."
+        expr:
+          kind: path
+          path: [opened_at, value]
+      - name: closed_at
+        type: Utf8
+        nullable: true
+        description: "Problem closed timestamp."
+        expr:
+          kind: path
+          path: [closed_at, value]
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: "Record creation timestamp."
+        expr:
+          kind: path
+          path: [sys_created_on, value]
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: "Record update timestamp."
+        expr:
+          kind: path
+          path: [sys_updated_on, value]
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional ServiceNow encoded query filter."
+        expr:
+          kind: from_filter
+          key: query
+  - name: cmdb_ci
+    description: "ServiceNow configuration items from the CMDB."
+    guide: >-
+      Use the `query` virtual column with ServiceNow encoded query syntax and a
+      SQL `LIMIT` to keep production scans narrow. Coral applies a conservative
+      default fetch limit and sends `sysparm_no_count=true` so ServiceNow does
+      not do extra count work for paginated reads.
+    filters:
+      - name: query
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /cmdb_ci
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: "sys_id,name,sys_class_name,install_status,operational_status,category,subcategory,manufacturer,model_id,owned_by,managed_by,support_group,sys_created_on,sys_updated_on"
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+        - name: sysparm_display_value
+          from: literal
+          value: all
+        - name: sysparm_no_count
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: "ServiceNow record sys_id."
+        expr:
+          kind: path
+          path: [sys_id, value]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: "Configuration item name."
+        expr:
+          kind: path
+          path: [name, value]
+      - name: sys_class_name
+        type: Utf8
+        nullable: true
+        description: "CI class name."
+        expr:
+          kind: path
+          path: [sys_class_name, value]
+      - name: sys_class_name_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for sys_class_name."
+        expr:
+          kind: path
+          path: [sys_class_name, display_value]
+      - name: install_status
+        type: Utf8
+        nullable: true
+        description: "Installation status."
+        expr:
+          kind: path
+          path: [install_status, value]
+      - name: install_status_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for install_status."
+        expr:
+          kind: path
+          path: [install_status, display_value]
+      - name: operational_status
+        type: Utf8
+        nullable: true
+        description: "Operational status."
+        expr:
+          kind: path
+          path: [operational_status, value]
+      - name: operational_status_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for operational_status."
+        expr:
+          kind: path
+          path: [operational_status, display_value]
+      - name: category
+        type: Utf8
+        nullable: true
+        description: "CI category."
+        expr:
+          kind: path
+          path: [category, value]
+      - name: category_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for category."
+        expr:
+          kind: path
+          path: [category, display_value]
+      - name: subcategory
+        type: Utf8
+        nullable: true
+        description: "CI subcategory."
+        expr:
+          kind: path
+          path: [subcategory, value]
+      - name: subcategory_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for subcategory."
+        expr:
+          kind: path
+          path: [subcategory, display_value]
+      - name: manufacturer
+        type: Utf8
+        nullable: true
+        description: "Manufacturer raw value."
+        expr:
+          kind: path
+          path: [manufacturer, value]
+      - name: manufacturer_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for manufacturer."
+        expr:
+          kind: path
+          path: [manufacturer, display_value]
+      - name: model_id
+        type: Utf8
+        nullable: true
+        description: "Model raw value."
+        expr:
+          kind: path
+          path: [model_id, value]
+      - name: model_id_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for model_id."
+        expr:
+          kind: path
+          path: [model_id, display_value]
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: "Owner raw value."
+        expr:
+          kind: path
+          path: [owned_by, value]
+      - name: owned_by_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for owned_by."
+        expr:
+          kind: path
+          path: [owned_by, display_value]
+      - name: managed_by
+        type: Utf8
+        nullable: true
+        description: "Manager raw value."
+        expr:
+          kind: path
+          path: [managed_by, value]
+      - name: managed_by_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for managed_by."
+        expr:
+          kind: path
+          path: [managed_by, display_value]
+      - name: support_group
+        type: Utf8
+        nullable: true
+        description: "Support group raw value."
+        expr:
+          kind: path
+          path: [support_group, value]
+      - name: support_group_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for support_group."
+        expr:
+          kind: path
+          path: [support_group, display_value]
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: "Record creation timestamp."
+        expr:
+          kind: path
+          path: [sys_created_on, value]
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: "Record update timestamp."
+        expr:
+          kind: path
+          path: [sys_updated_on, value]
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional ServiceNow encoded query filter."
+        expr:
+          kind: from_filter
+          key: query
+  - name: users
+    description: "ServiceNow user records visible to the configured user."
+    guide: >-
+      Use the `query` virtual column with ServiceNow encoded query syntax and a
+      SQL `LIMIT` to keep production scans narrow. Coral applies a conservative
+      default fetch limit and sends `sysparm_no_count=true` so ServiceNow does
+      not do extra count work for paginated reads.
+    filters:
+      - name: query
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /sys_user
+      query:
+        - name: sysparm_fields
+          from: literal
+          value: "sys_id,user_name,name,email,active,department,company,manager,title,sys_created_on,sys_updated_on"
+        - name: sysparm_query
+          from: filter
+          key: query
+        - name: sysparm_exclude_reference_link
+          from: literal
+          value: "true"
+        - name: sysparm_display_value
+          from: literal
+          value: all
+        - name: sysparm_no_count
+          from: literal
+          value: "true"
+    response:
+      rows_path: [result]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: sysparm_offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 1000
+        query_param: sysparm_limit
+    columns:
+      - name: sys_id
+        type: Utf8
+        nullable: false
+        description: "ServiceNow record sys_id."
+        expr:
+          kind: path
+          path: [sys_id, value]
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: "User login name."
+        expr:
+          kind: path
+          path: [user_name, value]
+      - name: name
+        type: Utf8
+        nullable: true
+        description: "User display name."
+        expr:
+          kind: path
+          path: [name, value]
+      - name: email
+        type: Utf8
+        nullable: true
+        description: "User email address."
+        expr:
+          kind: path
+          path: [email, value]
+      - name: active
+        type: Utf8
+        nullable: true
+        description: "ServiceNow active value, usually \"true\" or \"false\"."
+        expr:
+          kind: path
+          path: [active, value]
+      - name: active_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for active."
+        expr:
+          kind: path
+          path: [active, display_value]
+      - name: department
+        type: Utf8
+        nullable: true
+        description: "Department raw value."
+        expr:
+          kind: path
+          path: [department, value]
+      - name: department_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for department."
+        expr:
+          kind: path
+          path: [department, display_value]
+      - name: company
+        type: Utf8
+        nullable: true
+        description: "Company raw value."
+        expr:
+          kind: path
+          path: [company, value]
+      - name: company_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for company."
+        expr:
+          kind: path
+          path: [company, display_value]
+      - name: manager
+        type: Utf8
+        nullable: true
+        description: "Manager raw value."
+        expr:
+          kind: path
+          path: [manager, value]
+      - name: manager_display
+        type: Utf8
+        nullable: true
+        description: "ServiceNow display value for manager."
+        expr:
+          kind: path
+          path: [manager, display_value]
+      - name: title
+        type: Utf8
+        nullable: true
+        description: "User title."
+        expr:
+          kind: path
+          path: [title, value]
+      - name: sys_created_on
+        type: Utf8
+        nullable: true
+        description: "Record creation timestamp."
+        expr:
+          kind: path
+          path: [sys_created_on, value]
+      - name: sys_updated_on
+        type: Utf8
+        nullable: true
+        description: "Record update timestamp."
+        expr:
+          kind: path
+          path: [sys_updated_on, value]
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: "Optional ServiceNow encoded query filter."
+        expr:
+          kind: from_filter
+          key: query

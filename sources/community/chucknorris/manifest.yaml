@@ -1,0 +1,142 @@
+name: chucknorris
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch Chuck Norris facts from the free chucknorris.io API.
+base_url: https://api.chucknorris.io
+test_queries:
+  - SELECT * FROM chucknorris.jokes LIMIT 1
+  - SELECT * FROM chucknorris.categories LIMIT 1
+  - SELECT * FROM chucknorris.jokes_by_category WHERE category = 'animal' LIMIT 1
+  - SELECT * FROM chucknorris.search WHERE query = 'rust' LIMIT 1
+tables:
+  - name: jokes
+    description: Fetch a random Chuck Norris joke.
+    request:
+      method: GET
+      path: /jokes/random
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        expr: {kind: path, path: [id]}
+      - name: value
+        type: Utf8
+        expr: {kind: path, path: [value]}
+      - name: created_at
+        type: Utf8
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Utf8
+        expr: {kind: path, path: [updated_at]}
+      - name: icon_url
+        type: Utf8
+        expr: {kind: path, path: [icon_url]}
+      - name: url
+        type: Utf8
+        expr: {kind: path, path: [url]}
+      - name: categories
+        type: Json
+        expr: {kind: path, path: [categories]}
+
+  - name: jokes_by_category
+    description: Fetch a random Chuck Norris joke by category.
+    filters:
+      - name: category
+        required: true
+    request:
+      method: GET
+      path: /jokes/random
+      query:
+        - name: category
+          from: filter
+          key: category
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: category
+        type: Utf8
+        expr: {kind: from_filter, key: category}
+      - name: id
+        type: Utf8
+        expr: {kind: path, path: [id]}
+      - name: value
+        type: Utf8
+        expr: {kind: path, path: [value]}
+      - name: created_at
+        type: Utf8
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Utf8
+        expr: {kind: path, path: [updated_at]}
+      - name: icon_url
+        type: Utf8
+        expr: {kind: path, path: [icon_url]}
+      - name: url
+        type: Utf8
+        expr: {kind: path, path: [url]}
+      - name: categories
+        type: Json
+        expr: {kind: path, path: [categories]}
+
+  - name: categories
+    description: List all available joke categories.
+    request:
+      method: GET
+      path: /jokes/categories
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: category
+        type: Utf8
+        expr: {kind: current_row}
+
+  - name: search
+    description: Search for Chuck Norris jokes via free-text query.
+    filters:
+      - name: query
+        required: true
+    request:
+      method: GET
+      path: /jokes/search
+      query:
+        - name: query
+          from: filter
+          key: query
+    response:
+      rows_path:
+        - result
+    pagination:
+      mode: none
+    columns:
+      - name: query
+        type: Utf8
+        expr: {kind: from_filter, key: query}
+      - name: id
+        type: Utf8
+        expr: {kind: path, path: [id]}
+      - name: value
+        type: Utf8
+        expr: {kind: path, path: [value]}
+      - name: created_at
+        type: Utf8
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Utf8
+        expr: {kind: path, path: [updated_at]}
+      - name: icon_url
+        type: Utf8
+        expr: {kind: path, path: [icon_url]}
+      - name: url
+        type: Utf8
+        expr: {kind: path, path: [url]}
+      - name: categories
+        type: Json
+        expr: {kind: path, path: [categories]}

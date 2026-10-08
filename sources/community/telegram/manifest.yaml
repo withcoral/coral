@@ -1,0 +1,443 @@
+name: telegram
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query Telegram Bot API updates, chats, members, and administrators.
+base_url: "https://api.telegram.org/bot{{input.TELEGRAM_BOT_TOKEN}}"
+
+request_headers:
+  - name: Content-Type
+    from: literal
+    value: application/json
+  - name: Accept
+    from: literal
+    value: application/json
+
+inputs:
+  TELEGRAM_BOT_TOKEN:
+    kind: secret
+    hint: Telegram Bot Authorization Token (e.g. 123456789:ABCdefGh...)
+
+test_queries:
+  - SELECT id, first_name, username FROM telegram.me LIMIT 1
+
+tables:
+  - name: me
+    description: Get basic information about the bot.
+    guide: |
+      Exposes the bot's own user details (e.g. username, ID, and capabilities).
+      Useful for testing connectivity.
+    request:
+      method: GET
+      path: /getMe
+    response:
+      rows_path: [result]
+      ok_path: [ok]
+      error_path: [description]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique identifier for this bot.
+        expr: {kind: path, path: [id]}
+      - name: is_bot
+        type: Boolean
+        nullable: false
+        description: True, if this user is a bot.
+        expr: {kind: path, path: [is_bot]}
+      - name: first_name
+        type: Utf8
+        nullable: false
+        description: First name of the bot.
+        expr: {kind: path, path: [first_name]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username of the bot.
+        expr: {kind: path, path: [username]}
+      - name: can_join_groups
+        type: Boolean
+        nullable: true
+        description: True, if the bot can be invited to groups.
+        expr: {kind: path, path: [can_join_groups]}
+      - name: can_read_all_group_messages
+        type: Boolean
+        nullable: true
+        description: True, if privacy mode is disabled for the bot.
+        expr: {kind: path, path: [can_read_all_group_messages]}
+      - name: supports_inline_queries
+        type: Boolean
+        nullable: true
+        description: True, if the bot supports inline queries.
+        expr: {kind: path, path: [supports_inline_queries]}
+
+  - name: updates
+    description: Retrieve incoming message updates for the bot using long polling.
+    guide: |
+      Retrieves new incoming messages sent directly to the bot or in groups where the bot is a member.
+      Updates remain in the queue until acknowledged. To acknowledge and clear updates from the queue,
+      query this table with an `offset` filter equal to the highest `update_id` received + 1 (e.g. `WHERE offset = <last_update_id> + 1`).
+    filters:
+      - name: offset
+        type: Int64
+      - name: limit
+        type: Int64
+      - name: timeout
+        type: Int64
+    request:
+      method: POST
+      path: /getUpdates
+      body:
+        - path: [offset]
+          from: filter_int
+          key: offset
+        - path: [limit]
+          from: filter_int
+          key: limit
+        - path: [timeout]
+          from: filter_int
+          key: timeout
+    response:
+      rows_path: [result]
+      ok_path: [ok]
+      error_path: [description]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: update_id
+        type: Int64
+        nullable: false
+        description: The update's unique identifier.
+        expr: {kind: path, path: [update_id]}
+      - name: message_id
+        type: Int64
+        nullable: true
+        description: Unique message identifier inside the chat.
+        expr: {kind: path, path: [message, message_id]}
+      - name: chat_id
+        type: Int64
+        nullable: true
+        description: Unique identifier for the chat.
+        expr: {kind: path, path: [message, chat, id]}
+      - name: chat_type
+        type: Utf8
+        nullable: true
+        description: Type of chat (private, group, supergroup, or channel).
+        expr: {kind: path, path: [message, chat, type]}
+      - name: chat_title
+        type: Utf8
+        nullable: true
+        description: Title of the chat (for groups/channels).
+        expr: {kind: path, path: [message, chat, title]}
+      - name: from_id
+        type: Int64
+        nullable: true
+        description: Unique identifier for the sender user.
+        expr: {kind: path, path: [message, from, id]}
+      - name: from_username
+        type: Utf8
+        nullable: true
+        description: Username of the sender.
+        expr: {kind: path, path: [message, from, username]}
+      - name: text
+        type: Utf8
+        nullable: true
+        description: The text content of the message.
+        expr: {kind: path, path: [message, text]}
+      - name: date
+        type: Int64
+        nullable: true
+        description: Date the message was sent in Unix time.
+        expr: {kind: path, path: [message, date]}
+      - name: raw_message
+        type: Json
+        nullable: true
+        description: Full message object.
+        expr: {kind: path, path: [message]}
+      - name: raw_update
+        type: Json
+        nullable: false
+        description: Full raw update object.
+        expr: {kind: current_row}
+      - name: offset
+        type: Int64
+        virtual: true
+        description: Offset filter.
+        expr: {kind: from_filter, key: offset}
+      - name: limit
+        type: Int64
+        virtual: true
+        description: Limit filter.
+        expr: {kind: from_filter, key: limit}
+      - name: timeout
+        type: Int64
+        virtual: true
+        description: Timeout filter.
+        expr: {kind: from_filter, key: timeout}
+
+  - name: chats
+    description: Get up-to-date information about a chat.
+    guide: |
+      Required filter: `chat_id`. Supports numeric chat IDs (e.g. -1001234567) or usernames (e.g. @my_channel).
+    filters:
+      - name: chat_id
+        required: true
+    request:
+      method: POST
+      path: /getChat
+      body:
+        - path: [chat_id]
+          from: filter
+          key: chat_id
+    response:
+      rows_path: [result]
+      ok_path: [ok]
+      error_path: [description]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique identifier for this chat.
+        expr: {kind: path, path: [id]}
+      - name: type
+        type: Utf8
+        nullable: false
+        description: Type of chat (private, group, supergroup, or channel).
+        expr: {kind: path, path: [type]}
+      - name: title
+        type: Utf8
+        nullable: true
+        description: Title, for supergroups, channels and group chats.
+        expr: {kind: path, path: [title]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username, for private chats, supergroups and channels if available.
+        expr: {kind: path, path: [username]}
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: First name of the other party in a private chat.
+        expr: {kind: path, path: [first_name]}
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Last name of the other party in a private chat.
+        expr: {kind: path, path: [last_name]}
+      - name: bio
+        type: Utf8
+        nullable: true
+        description: Bio of the other party in a private chat.
+        expr: {kind: path, path: [bio]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description, for groups, supergroups and channels.
+        expr: {kind: path, path: [description]}
+      - name: invite_link
+        type: Utf8
+        nullable: true
+        description: Primary invite link, for groups, supergroups and channels.
+        expr: {kind: path, path: [invite_link]}
+      - name: pinned_message
+        type: Json
+        nullable: true
+        description: Pinned message object.
+        expr: {kind: path, path: [pinned_message]}
+      - name: chat_id
+        type: Utf8
+        virtual: true
+        description: Requested chat identifier.
+        expr: {kind: from_filter, key: chat_id}
+
+  - name: chat_administrators
+    description: List of administrators in a group, supergroup, or channel.
+    guide: |
+      Required filter: `chat_id`. Optional filter: `return_bots`.
+    filters:
+      - name: chat_id
+        required: true
+      - name: return_bots
+        type: Boolean
+        required: false
+    request:
+      method: POST
+      path: /getChatAdministrators
+      body:
+        - path: [chat_id]
+          from: filter
+          key: chat_id
+        - path: [return_bots]
+          from: filter_bool
+          key: return_bots
+    response:
+      rows_path: [result]
+      ok_path: [ok]
+      error_path: [description]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user_id
+        type: Int64
+        nullable: false
+        description: Unique identifier for the user.
+        expr: {kind: path, path: [user, id]}
+      - name: is_bot
+        type: Boolean
+        nullable: false
+        description: True, if this user is a bot.
+        expr: {kind: path, path: [user, is_bot]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username of the user.
+        expr: {kind: path, path: [user, username]}
+      - name: first_name
+        type: Utf8
+        nullable: false
+        description: First name of the user.
+        expr: {kind: path, path: [user, first_name]}
+      - name: status
+        type: Utf8
+        nullable: false
+        description: The member's status in the chat (creator or administrator).
+        expr: {kind: path, path: [status]}
+      - name: custom_title
+        type: Utf8
+        nullable: true
+        description: Custom title for this administrator.
+        expr: {kind: path, path: [custom_title]}
+      - name: is_anonymous
+        type: Boolean
+        nullable: false
+        description: True, if the user's presence in the chat is hidden.
+        expr: {kind: path, path: [is_anonymous]}
+      - name: raw_member
+        type: Json
+        nullable: false
+        description: Full ChatMember object.
+        expr: {kind: current_row}
+      - name: chat_id
+        type: Utf8
+        virtual: true
+        description: Requested chat identifier.
+        expr: {kind: from_filter, key: chat_id}
+      - name: return_bots
+        type: Boolean
+        virtual: true
+        description: Set to true to include bot administrators in the list.
+        expr: {kind: from_filter, key: return_bots}
+
+  - name: chat_member
+    description: Get information about a specific member of a chat.
+    guide: |
+      Required filters: `chat_id` and `user_id`.
+    filters:
+      - name: chat_id
+        required: true
+      - name: user_id
+        required: true
+    request:
+      method: POST
+      path: /getChatMember
+      body:
+        - path: [chat_id]
+          from: filter
+          key: chat_id
+        - path: [user_id]
+          from: filter_int
+          key: user_id
+    response:
+      rows_path: [result]
+      ok_path: [ok]
+      error_path: [description]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: user_id
+        type: Int64
+        nullable: false
+        description: Unique identifier for the user.
+        expr: {kind: path, path: [user, id]}
+      - name: is_bot
+        type: Boolean
+        nullable: false
+        description: True, if this user is a bot.
+        expr: {kind: path, path: [user, is_bot]}
+      - name: username
+        type: Utf8
+        nullable: true
+        description: Username of the user.
+        expr: {kind: path, path: [user, username]}
+      - name: first_name
+        type: Utf8
+        nullable: false
+        description: First name of the user.
+        expr: {kind: path, path: [user, first_name]}
+      - name: status
+        type: Utf8
+        nullable: false
+        description: The member's status in the chat.
+        expr: {kind: path, path: [status]}
+      - name: custom_title
+        type: Utf8
+        nullable: true
+        description: Custom title for this member.
+        expr: {kind: path, path: [custom_title]}
+      - name: raw_member
+        type: Json
+        nullable: false
+        description: Full ChatMember object.
+        expr: {kind: current_row}
+      - name: chat_id
+        type: Utf8
+        virtual: true
+        description: Requested chat identifier.
+        expr: {kind: from_filter, key: chat_id}
+      - name: user_id_filter
+        type: Int64
+        virtual: true
+        description: Requested user identifier.
+        expr: {kind: from_filter, key: user_id}
+
+  - name: chat_member_count
+    description: Get the number of members in a chat.
+    guide: |
+      Required filter: `chat_id`.
+    filters:
+      - name: chat_id
+        required: true
+    request:
+      method: POST
+      path: /getChatMemberCount
+      body:
+        - path: [chat_id]
+          from: filter
+          key: chat_id
+    response:
+      rows_path: []
+      ok_path: [ok]
+      error_path: [description]
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: member_count
+        type: Int64
+        nullable: false
+        description: Total number of members in the chat.
+        expr: {kind: path, path: [result]}
+      - name: chat_id
+        type: Utf8
+        virtual: true
+        description: Requested chat identifier.
+        expr: {kind: from_filter, key: chat_id}

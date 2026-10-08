@@ -1,0 +1,370 @@
+name: zoom
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query your Zoom user profile, scheduled meetings, and cloud recordings.
+  Read-only access via a Zoom access token (OAuth or Server-to-Server).
+inputs:
+  ZOOM_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Zoom access token with scopes: user:read:user,
+      meeting:read:list_meetings, cloud_recording:read:list_user_recordings.
+      Obtain a token from a Zoom Server-to-Server OAuth app or any Zoom
+      OAuth flow. See https://developers.zoom.us/docs/internal-apps/s2s-oauth/
+      for Server-to-Server setup.
+base_url: https://api.zoom.us/v2
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.ZOOM_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+rate_limit:
+  remaining_header: X-RateLimit-Remaining
+  retry_after_header: Retry-After
+test_queries:
+  - SELECT id, email, first_name, last_name FROM zoom.user LIMIT 1
+  - SELECT uuid, topic, start_time, duration FROM zoom.meetings LIMIT 5
+  - >-
+    SELECT uuid, topic, start_time, recording_count
+    FROM zoom.recordings
+    WHERE from_date = '2026-05-01' AND to_date = '2026-05-23'
+    LIMIT 5
+  - >-
+    SELECT uuid, topic, type FROM zoom.meetings
+    WHERE meeting_status = 'scheduled'
+    LIMIT 5
+tables:
+  # ------------------------------------------------------------------
+  # zoom.user — authenticated user profile
+  # GET /v2/users/me
+  # Single JSON object at root — no wrapper key, no pagination.
+  # ------------------------------------------------------------------
+  - name: user
+    description: >-
+      Zoom user profile for the authenticated account. Returns one row with
+      account metadata, license type, role, and login history.
+    guide: |
+      Start here to verify credentials and identify the Zoom account used
+      by Coral. This table returns one row for the authenticated user.
+      The `type` column indicates the license tier: 1 = Basic, 2 = Licensed,
+      4 = unassigned (no Meetings Basic), 99 = none (legacy).
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /users/me
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Zoom user ID.
+      - name: first_name
+        type: Utf8
+        nullable: true
+        description: First name.
+      - name: last_name
+        type: Utf8
+        nullable: true
+        description: Last name.
+      - name: email
+        type: Utf8
+        nullable: false
+        description: Email address.
+      - name: type
+        type: Int64
+        nullable: false
+        description: >-
+          License type (1 = Basic, 2 = Licensed, 4 = unassigned without
+          Meetings Basic, 99 = none/legacy).
+      - name: role_name
+        type: Utf8
+        nullable: true
+        description: Account role such as Owner, Admin, or Member.
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: IANA timezone identifier.
+      - name: dept
+        type: Utf8
+        nullable: true
+        description: Department name when configured.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Account creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: last_login_time
+        type: Timestamp
+        nullable: true
+        description: Last login time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - last_login_time
+      - name: pic_url
+        type: Utf8
+        nullable: true
+        description: Profile picture URL.
+      - name: account_id
+        type: Utf8
+        nullable: true
+        description: Zoom account ID.
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Language preference.
+
+  # ------------------------------------------------------------------
+  # zoom.meetings — scheduled meetings for the authenticated user
+  # GET /v2/users/me/meetings
+  # Pagination: next_page_token cursor, page_size query param.
+  # Optional filter: meeting_status → Zoom query param "type".
+  # The response field "type" is a different concept (numeric meeting kind).
+  # ------------------------------------------------------------------
+  - name: meetings
+    description: >-
+      Zoom meetings for the authenticated user. Defaults to scheduled meetings.
+      Use the optional `meeting_status` filter to control which list mode
+      Zoom returns.
+    guide: |
+      Lists meetings for the authenticated user. The `meeting_status` filter
+      controls Zoom's list mode and defaults to `scheduled`. Other values:
+      `live`, `upcoming`, `upcoming_meetings`, `previous_meetings`. Note
+      that `upcoming` and `previous_meetings` only cover the last/next
+      6 months. The response column `type` is a separate concept — it is
+      the numeric meeting kind (1 = instant, 2 = scheduled, etc.).
+    filters:
+      - name: meeting_status
+        description: >-
+          Controls which meetings Zoom returns. Values: scheduled (default),
+          live, upcoming, upcoming_meetings, previous_meetings. Note:
+          upcoming and previous_meetings only span a 6-month window.
+    request:
+      method: GET
+      path: /users/me/meetings
+      query:
+        - name: type
+          from: filter
+          key: meeting_status
+    response:
+      rows_path:
+        - meetings
+    pagination:
+      mode: cursor_query
+      cursor_param: next_page_token
+      response_cursor_path:
+        - next_page_token
+      page_size:
+        default: 30
+        max: 300
+        query_param: page_size
+    columns:
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Unique meeting instance UUID.
+      - name: id
+        type: Int64
+        nullable: false
+        description: Numeric meeting ID.
+      - name: topic
+        type: Utf8
+        nullable: true
+        description: Meeting topic.
+      - name: type
+        type: Int64
+        nullable: true
+        description: >-
+          Meeting type (1 = instant, 2 = scheduled, 3 = recurring no fixed time,
+          8 = recurring fixed time).
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Scheduled start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_time
+      - name: duration
+        type: Int64
+        nullable: true
+        description: Duration in minutes.
+      - name: timezone
+        type: Utf8
+        nullable: true
+        description: Meeting timezone.
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Meeting creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: join_url
+        type: Utf8
+        nullable: true
+        description: URL to join the meeting.
+      - name: meeting_status
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: >-
+          Echoes the meeting_status filter used for this scan. This controls
+          Zoom's list mode and is distinct from the response column `type`.
+        expr:
+          kind: from_filter
+          key: meeting_status
+
+  # ------------------------------------------------------------------
+  # zoom.recordings — cloud recordings for the authenticated user
+  # GET /v2/users/me/recordings
+  # Pagination: next_page_token cursor, page_size query param.
+  # Required filters: from_date and to_date (max 1-month range).
+  # Response wrapper: "meetings" (each item has nested recording_files).
+  # ------------------------------------------------------------------
+  - name: recordings
+    description: >-
+      Zoom cloud recordings for the authenticated user. Requires `from_date`
+      and `to_date` filters in `yyyy-MM-dd` format. The maximum date range
+      per query is one month.
+    guide: |
+      Requires `from_date` and `to_date` in the WHERE clause. Both must be
+      in `yyyy-MM-dd` format and the range must not exceed one calendar month.
+      Without these filters the Zoom API defaults to the current date only,
+      which typically returns no results. Each row is one recorded meeting;
+      individual recording files are in the `recording_files` JSON column.
+
+      Example:
+        SELECT uuid, topic, start_time, recording_count
+        FROM zoom.recordings
+        WHERE from_date = '2026-05-01' AND to_date = '2026-05-31'
+        LIMIT 10
+    filters:
+      - name: from_date
+        required: true
+        description: >-
+          Start date in yyyy-MM-dd format. Required. The Zoom API defaults
+          to the current date when omitted, returning few or no results.
+      - name: to_date
+        required: true
+        description: >-
+          End date in yyyy-MM-dd format. Required. The maximum range between
+          from_date and to_date is one calendar month.
+    request:
+      method: GET
+      path: /users/me/recordings
+      query:
+        - name: from
+          from: filter
+          key: from_date
+        - name: to
+          from: filter
+          key: to_date
+    response:
+      rows_path:
+        - meetings
+    pagination:
+      mode: cursor_query
+      cursor_param: next_page_token
+      response_cursor_path:
+        - next_page_token
+      page_size:
+        default: 30
+        max: 300
+        query_param: page_size
+    columns:
+      - name: uuid
+        type: Utf8
+        nullable: false
+        description: Meeting UUID.
+      - name: id
+        type: Int64
+        nullable: false
+        description: Numeric meeting ID.
+      - name: topic
+        type: Utf8
+        nullable: true
+        description: Meeting topic.
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Recording start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - start_time
+      - name: duration
+        type: Int64
+        nullable: true
+        description: Duration in minutes.
+      - name: total_size
+        type: Int64
+        nullable: true
+        description: Total recording size in bytes.
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Meeting type as returned by Zoom (e.g. 1 = instant, 2 = scheduled,
+          3 = recurring no fixed time, 8 = recurring fixed time). Modeled as
+          Utf8 per Zoom API documentation.
+      - name: share_url
+        type: Utf8
+        nullable: true
+        description: URL to share the recording.
+      - name: recording_count
+        type: Int64
+        nullable: true
+        description: Number of recording files.
+      - name: recording_files
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of recording file objects. Each object contains id,
+          file_type, file_size, play_url, download_url, status, and
+          recording_type.
+      - name: from_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the from_date filter used for this scan.
+        expr:
+          kind: from_filter
+          key: from_date
+      - name: to_date
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Echoes the to_date filter used for this scan.
+        expr:
+          kind: from_filter
+          key: to_date

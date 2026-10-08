@@ -1,5 +1,5 @@
 name: github
-version: 1.1.6
+version: 1.1.8
 dsl_version: 3
 backend: http
 description: >-
@@ -21,11 +21,81 @@ inputs:
   GITHUB_TOKEN:
     kind: secret
     hint: |
-      If you're already authenticated in GitHub CLI, run
-      `gh auth token`, or create a new personal access token (PAT).
-      Grant read access to the repositories and organizations you plan
-      to query; some admin tables require elevated scopes.
-      See [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+      Connect with GitHub OAuth or paste a personal access token. The
+      OAuth methods request the `repo`, `read:org`, `read:user`, and
+      `user:email` scopes.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitHub device code
+          description: Sign in to GitHub with a device code.
+          hint: |
+            Signs you in through GitHub, with no app setup or client
+            secret needed. Requests the `repo`, `read:org`, `read:user`,
+            and `user:email` scopes. To use your own GitHub app instead,
+            set GITHUB_OAUTH_CLIENT_ID to its Client ID and enable device
+            flow on the app.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://github.com/login/device/code
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Iv23liJHis6Bs8NO1DAI
+                input: GITHUB_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+        - type: oauth
+          label: Connect with GitHub OAuth app
+          description: Sign in through a GitHub OAuth app in your browser.
+          hint: |
+            Uses your own GitHub OAuth app. Register one with its
+            Authorization callback URL set to
+            `http://127.0.0.1:53682/oauth/callback`, then enter the app's
+            Client ID and Client secret below. Requests the `repo`,
+            `read:org`, `read:user`, and `user:email` scopes. See
+            [GitHub's guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app).
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://github.com/login/oauth/authorize
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Iv23liJHis6Bs8NO1DAI
+                input: GITHUB_OAUTH_CLIENT_ID
+              secret:
+                input: GITHUB_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+        - type: source_config
+          label: Paste token
+          description: Paste a GitHub token or provide GITHUB_TOKEN.
+          hint: |
+            If you use GitHub CLI, run `gh auth token`. Otherwise create a
+            personal access token with read access to the repositories and
+            organizations you query; some admin tables need elevated
+            scopes. Works with GitHub Enterprise Server. See
+            [GitHub PAT docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 auth:
   type: HeaderAuth
   headers:
@@ -257,6 +327,79 @@ functions:
         type: Utf8
         nullable: true
         expr: {kind: path, path: [repository_url]}
+      - name: created_at
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [updated_at]}
+      - name: closed_at
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [closed_at]}
+      - name: comments
+        type: Int64
+        nullable: true
+        expr: {kind: path, path: [comments]}
+      - name: labels
+        type: Utf8
+        nullable: true
+        description: Raw label objects as JSON text. Use label_names for a compact comma-separated projection.
+        expr: {kind: path, path: [labels]}
+      - name: label_names
+        type: Utf8
+        nullable: true
+        description: Comma-separated issue or pull request label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
+      - name: assignees
+        type: Utf8
+        nullable: true
+        description: Raw assignee objects as JSON text. Use assignee_logins for a compact comma-separated projection.
+        expr: {kind: path, path: [assignees]}
+      - name: assignee_logins
+        type: Utf8
+        nullable: true
+        description: Comma-separated issue or pull request assignee logins.
+        expr:
+          kind: join_array_path
+          path:
+            - assignees
+          item_path:
+            - login
+      - name: pull_request
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [pull_request]}
+      - name: pull_request__html_url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [pull_request, html_url]}
+      - name: pull_request__url
+        type: Utf8
+        nullable: true
+        expr: {kind: path, path: [pull_request, url]}
+      - name: is_pull_request
+        type: Boolean
+        nullable: true
+        description: True when the search result is a pull request rather than an issue.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: if_present
+              check:
+                kind: path
+                path:
+                  - pull_request
+              then_value: "true"
+            - kind: literal
+              value: false
   - name: search_labels
     description: Search GitHub labels in a repository.
     args:
@@ -4768,12 +4911,20 @@ tables:
       - name: severity
         type: Utf8
         nullable: true
-        virtual: true
+        virtual: false
         description: >-
-          A comma-separated list of severities.
+          Dependabot alert severity. WHERE filters on this column still push down to GitHub's severity parameter.
         expr:
-          kind: from_filter
-          key: severity
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - security_advisory
+                - severity
+            - kind: path
+              path:
+                - security_vulnerability
+                - severity
       - name: sort
         type: Utf8
         nullable: true
@@ -26174,10 +26325,14 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
       - name: comment_id
+        type: Int64
         required: false
+        lookup_key: true
       - name: commit_sha
         required: false
     request:
@@ -46800,6 +46955,7 @@ tables:
     guide: >
       Use this table to list issues assigned to the authenticated user. Works without WHERE filters.
       Start with org or state before paging; the feed is viewer-specific, not a global issue search.
+      Add owner, repo, and number to jump to one specific repository issue.
     filters:
       - name: filter
         required: false
@@ -46825,8 +46981,10 @@ tables:
         required: false
       - name: owner
         required: false
+        lookup_key: true
       - name: repo
         required: false
+        lookup_key: true
       - name: milestone
         required: false
       - name: assignee
@@ -46835,8 +46993,10 @@ tables:
         required: false
       - name: mentioned
         required: false
-      - name: issue_number
+      - name: number
+        type: Int64
         required: false
+        lookup_key: true
     request:
       method: GET
       path: /issues
@@ -46869,6 +47029,12 @@ tables:
           from: filter
           key: pulls
     requests:
+      - when_filters:
+          - owner
+          - repo
+          - number
+        method: GET
+        path: /repos/{{filter.owner}}/{{filter.repo}}/issues/{{filter.number}}
       - when_filters:
           - org
         method: GET
@@ -47550,6 +47716,28 @@ tables:
           kind: path
           path:
             - labels
+      - name: label_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated issue label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
+      - name: assignee_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated issue assignee logins.
+        expr:
+          kind: join_array_path
+          path:
+            - assignees
+          item_path:
+            - login
       - name: labels_url
         type: Utf8
         nullable: true
@@ -50963,14 +51151,6 @@ tables:
         expr:
           kind: from_filter
           key: repo
-      - name: issue_number
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: The number that identifies the issue.
-        expr:
-          kind: from_filter
-          key: issue_number
   - name: issues_list_comments
     description: List issue comments
     guide: >
@@ -57048,9 +57228,8 @@ tables:
   - name: memberships
     description: Get team membership for a user (Legacy)
     guide: >
-      Use this table to inspect one team membership. Requires team_id and username. If you only
-      know org and team_slug, resolve team_id from github.teams first; org and team_slug then select
-      the matching org team route instead of the legacy team_id path.
+      Use this legacy table when you already have the numeric team_id. Requires team_id and
+      username. If you only know org and team_slug, use github.org_team_memberships instead.
     filters:
       - name: team_id
         required: true
@@ -57138,6 +57317,81 @@ tables:
         expr:
           kind: from_filter
           key: team_slug
+  - name: org_team_memberships
+    description: Get organization team membership for a user
+    guide: >
+      Requires org, team_slug, and username. Use this table when you know the organization and team
+      slug. A missing membership returns an empty result instead of failing the query.
+    filters:
+      - name: org
+        required: true
+      - name: team_slug
+        required: true
+      - name: username
+        required: true
+    request:
+      method: GET
+      path: /orgs/{{filter.org}}/teams/{{filter.team_slug}}/memberships/{{filter.username}}
+    response:
+      allow_404_empty: true
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_start: 0
+      page_step: 1
+      offset_start: 0
+      link_header_require_results: false
+    columns:
+      - name: role
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: The role of the user in the team.
+        expr:
+          kind: path
+          path:
+            - role
+      - name: state
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: The state of the user's membership in the team.
+        expr:
+          kind: path
+          path:
+            - state
+      - name: url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - url
+      - name: org
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: The organization name.
+        expr:
+          kind: from_filter
+          key: org
+      - name: team_slug
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: The slug of the team name.
+        expr:
+          kind: from_filter
+          key: team_slug
+      - name: username
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: The handle for the GitHub user account.
+        expr:
+          kind: from_filter
+          key: username
   - name: meta
     description: Get GitHub meta information
     guide: >
@@ -89530,13 +89784,16 @@ tables:
     guide: >
       Requires owner and repo. By default this table requests state=all from GitHub so aggregates include open and closed
       pull requests; add state when you need only open, closed, or all. Other useful optional filters are head and base. Add
-      pull_number to jump from the default list call to a specific record lookup. GitHub only populates diff-stat columns
-      such as additions, deletions, and changed_files on that per-PR lookup, so include pull_number before using them.
+      number to jump from the default list call to a specific record lookup. GitHub only populates diff-stat columns
+      such as additions, deletions, changed_files, and the merged boolean on that per-PR lookup, so include number
+      before using them. For list queries, use merged_at IS NOT NULL to identify merged pull requests.
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
       - name: state
         required: false
       - name: head
@@ -89547,8 +89804,10 @@ tables:
         required: false
       - name: direction
         required: false
-      - name: pull_number
+      - name: number
+        type: Int64
         required: false
+        lookup_key: true
       - name: commit_sha
         required: false
     request:
@@ -89575,9 +89834,9 @@ tables:
       - when_filters:
           - owner
           - repo
-          - pull_number
+          - number
         method: GET
-        path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}
+        path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
       - when_filters:
           - owner
           - repo
@@ -89786,7 +90045,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Lines added. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Lines added. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -90044,6 +90303,16 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        expr:
+          kind: path
+          path:
+            - base
+            - ref
+      - name: base_ref
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for base__ref.
         expr:
           kind: path
           path:
@@ -91150,6 +91419,16 @@ tables:
           path:
             - base
             - sha
+      - name: base_sha
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for base__sha.
+        expr:
+          kind: path
+          path:
+            - base
+            - sha
       - name: base__user
         type: Utf8
         nullable: true
@@ -91391,7 +91670,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Number of changed files. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Number of changed files. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -91448,7 +91727,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Lines deleted. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Lines deleted. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -91499,6 +91778,16 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        expr:
+          kind: path
+          path:
+            - head
+            - ref
+      - name: head_ref
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for head__ref.
         expr:
           kind: path
           path:
@@ -92605,6 +92894,16 @@ tables:
           path:
             - head
             - sha
+      - name: head_sha
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for head__sha.
+        expr:
+          kind: path
+          path:
+            - head
+            - sha
       - name: head__user
         type: Utf8
         nullable: true
@@ -92923,6 +93222,7 @@ tables:
         type: Boolean
         nullable: true
         virtual: false
+        description: Only populated by the per-PR lookup. Filter number before using this boolean; for list workflows, use merged_at IS NOT NULL.
         expr:
           kind: path
           path:
@@ -92931,6 +93231,7 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Timestamp set when a pull request was merged. Use this to identify merged PRs in list responses.
         expr:
           kind: path
           path:
@@ -93548,14 +93849,6 @@ tables:
           kind: path
           path:
             - patch_url
-      - name: pull_number
-        type: Int64
-        nullable: true
-        virtual: true
-        description: The number that identifies the pull request.
-        expr:
-          kind: from_filter
-          key: pull_number
       - name: rebaseable
         type: Utf8
         nullable: true
@@ -93778,6 +94071,16 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        expr:
+          kind: path
+          path:
+            - user
+            - login
+      - name: user_login
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for user__login.
         expr:
           kind: path
           path:
@@ -100879,9 +101182,13 @@ tables:
         required: false
       - name: branch
         required: false
+      - name: head_branch
+        required: false
       - name: event
         required: false
       - name: status
+        required: false
+      - name: conclusion
         required: false
       - name: created
         required: false
@@ -100903,12 +101210,18 @@ tables:
         - name: branch
           from: filter
           key: branch
+        - name: branch
+          from: filter
+          key: head_branch
         - name: event
           from: filter
           key: event
         - name: status
           from: filter
           key: status
+        - name: status
+          from: filter
+          key: conclusion
         - name: created
           from: filter
           key: created
@@ -119943,12 +120256,20 @@ tables:
       - name: severity
         type: Utf8
         nullable: true
-        virtual: true
+        virtual: false
         description: >-
-          Filter by severity levels; can be low, medium, high, critical.
+          Dependabot alert severity. WHERE filters on this column still push down to GitHub's severity parameter.
         expr:
-          kind: from_filter
-          key: severity
+          kind: coalesce
+          exprs:
+            - kind: path
+              path:
+                - security_advisory
+                - severity
+            - kind: path
+              path:
+                - security_vulnerability
+                - severity
       - name: site_admin
         type: Boolean
         nullable: true
@@ -125849,14 +126170,18 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
       - name: sort
         required: false
       - name: direction
         required: false
       - name: comment_id
+        type: Int64
         required: false
+        lookup_key: true
     request:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}/issues/comments
@@ -134504,8 +134829,6 @@ tables:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}/releases/latest
     response:
-      rows_path:
-        - assets
       allow_404_empty: false
       row_strategy: direct
     pagination:
@@ -134515,22 +134838,40 @@ tables:
       offset_start: 0
       link_header_require_results: false
     columns:
-      - name: browser_download_url
+      - name: assets
         type: Utf8
         nullable: true
         virtual: false
         expr:
           kind: path
           path:
-            - browser_download_url
-      - name: content_type
+            - assets
+      - name: assets_url
         type: Utf8
         nullable: true
         virtual: false
         expr:
           kind: path
           path:
-            - content_type
+            - assets_url
+      - name: author__login
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Login for the release author.
+        expr:
+          kind: path
+          path:
+            - author
+            - login
+      - name: body
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - body
       - name: created_at
         type: Utf8
         nullable: true
@@ -134539,22 +134880,14 @@ tables:
           kind: path
           path:
             - created_at
-      - name: digest
-        type: Utf8
+      - name: draft
+        type: Boolean
         nullable: true
         virtual: false
         expr:
           kind: path
           path:
-            - digest
-      - name: download_count
-        type: Int64
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - download_count
+            - draft
       - name: id
         type: Int64
         nullable: true
@@ -134563,19 +134896,19 @@ tables:
           kind: path
           path:
             - id
-      - name: label
+      - name: html_url
         type: Utf8
         nullable: true
         virtual: false
         expr:
           kind: path
           path:
-            - label
+            - html_url
       - name: name
         type: Utf8
         nullable: true
         virtual: false
-        description: The file name of the asset.
+        description: The release name.
         expr:
           kind: path
           path:
@@ -134604,23 +134937,46 @@ tables:
         expr:
           kind: from_filter
           key: repo
-      - name: size
-        type: Int64
+      - name: prerelease
+        type: Boolean
         nullable: true
         virtual: false
         expr:
           kind: path
           path:
-            - size
-      - name: state
+            - prerelease
+      - name: published_at
         type: Utf8
         nullable: true
         virtual: false
-        description: State of the release asset.
         expr:
           kind: path
           path:
-            - state
+            - published_at
+      - name: tag_name
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - tag_name
+      - name: target_commitish
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - target_commitish
+      - name: tarball_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - tarball_url
       - name: updated_at
         type: Utf8
         nullable: true
@@ -134629,212 +134985,14 @@ tables:
           kind: path
           path:
             - updated_at
-      - name: uploader
+      - name: upload_url
         type: Utf8
         nullable: true
         virtual: false
         expr:
           kind: path
           path:
-            - uploader
-      - name: uploader__avatar_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - avatar_url
-      - name: uploader__email
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - email
-      - name: uploader__events_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - events_url
-      - name: uploader__followers_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - followers_url
-      - name: uploader__following_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - following_url
-      - name: uploader__gists_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - gists_url
-      - name: uploader__gravatar_id
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - gravatar_id
-      - name: uploader__html_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - html_url
-      - name: uploader__id
-        type: Int64
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - id
-      - name: uploader__login
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - login
-      - name: uploader__name
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - name
-      - name: uploader__node_id
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - node_id
-      - name: uploader__organizations_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - organizations_url
-      - name: uploader__received_events_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - received_events_url
-      - name: uploader__repos_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - repos_url
-      - name: uploader__site_admin
-        type: Boolean
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - site_admin
-      - name: uploader__starred_at
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - starred_at
-      - name: uploader__starred_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - starred_url
-      - name: uploader__subscriptions_url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - subscriptions_url
-      - name: uploader__type
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - type
-      - name: uploader__url
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - url
-      - name: uploader__user_view_type
-        type: Utf8
-        nullable: true
-        virtual: false
-        expr:
-          kind: path
-          path:
-            - uploader
-            - user_view_type
+            - upload_url
       - name: url
         type: Utf8
         nullable: true
@@ -134843,6 +135001,14 @@ tables:
           kind: path
           path:
             - url
+      - name: zipball_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - zipball_url
   - name: repo_release_tags
     description: Get a release by tag name
     guide: >
@@ -138338,8 +138504,10 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
     request:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}
@@ -147830,18 +147998,75 @@ tables:
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw requested team objects as JSON text. Use team_names or team_slugs for compact projections.
         expr:
           kind: path
           path:
             - teams
+      - name: team_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated names for requested teams.
+        expr:
+          kind: join_array_path
+          path:
+            - teams
+          item_path:
+            - name
+      - name: requested_team_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for team_names, matching the compact projection on github.pulls.
+        expr:
+          kind: join_array_path
+          path:
+            - teams
+          item_path:
+            - name
+      - name: team_slugs
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated slugs for requested teams.
+        expr:
+          kind: join_array_path
+          path:
+            - teams
+          item_path:
+            - slug
       - name: users
         type: Utf8
         nullable: true
         virtual: false
+        description: Raw requested reviewer user objects as JSON text. Use user_logins for a compact projection.
         expr:
           kind: path
           path:
             - users
+      - name: user_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated logins for requested user reviewers.
+        expr:
+          kind: join_array_path
+          path:
+            - users
+          item_path:
+            - login
+      - name: requested_reviewer_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Alias for user_logins, matching the compact projection on github.pulls.
+        expr:
+          kind: join_array_path
+          path:
+            - users
+          item_path:
+            - login
   - name: required_pull_request_reviews
     description: Get pull request review protection
     guide: >
@@ -165887,11 +166112,111 @@ tables:
         expr:
           kind: from_filter
           key: org
+  - name: authenticated_user
+    description: Get the authenticated user
+    guide: >
+      Works without WHERE filters. Alias for the current token's user profile; use github.user when
+      you need the broader generated user table or the account_id lookup route.
+    request:
+      method: GET
+      path: /user
+    response:
+      allow_404_empty: false
+      row_strategy: direct
+    pagination:
+      mode: link_header
+      page_start: 0
+      page_step: 1
+      offset_start: 0
+      link_header_require_results: false
+    columns:
+      - name: login
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: The handle for the authenticated GitHub user.
+        expr:
+          kind: path
+          path:
+            - login
+      - name: id
+        type: Int64
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: node_id
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - node_id
+      - name: name
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - name
+      - name: email
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - email
+      - name: html_url
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - html_url
+      - name: type
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - type
+      - name: site_admin
+        type: Boolean
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - site_admin
+      - name: created_at
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - created_at
+      - name: updated_at
+        type: Utf8
+        nullable: true
+        virtual: false
+        expr:
+          kind: path
+          path:
+            - updated_at
   - name: user
     description: Get the authenticated user
     guide: >
-      Works without WHERE filters. Most useful optional filters: account_id. Add account_id to jump from the
-      default list call to a specific record lookup.
+      Works without WHERE filters. The default route returns the current authenticated user. Most useful optional
+      filters: account_id. Add account_id to jump from the default route to a specific record lookup. For the
+      current token's user profile, github.authenticated_user is the shorter alias.
     filters:
       - name: account_id
         required: false
@@ -180222,6 +180547,28 @@ tables:
           kind: path
           path:
             - labels
+      - name: label_names
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated issue label names.
+        expr:
+          kind: join_array_path
+          path:
+            - labels
+          item_path:
+            - name
+      - name: assignee_logins
+        type: Utf8
+        nullable: true
+        virtual: false
+        description: Comma-separated issue assignee logins.
+        expr:
+          kind: join_array_path
+          path:
+            - assignees
+          item_path:
+            - login
       - name: labels_url
         type: Utf8
         nullable: true

@@ -1,0 +1,585 @@
+name: nrel
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query NREL/NLR solar simulation, irradiance data, and clean transportation directories.
+  Treat National Laboratory of the Rockies (NLR) developer endpoints as SQL tables.
+base_url: "{{input.NREL_API_BASE}}"
+
+inputs:
+  NREL_API_KEY:
+    kind: secret
+    hint: |
+      API key issued by the NREL/NLR Developer Network. Required for authenticating calls.
+      Retrieve or generate one at: https://developer.nlr.gov/signup/
+  NREL_API_BASE:
+    kind: variable
+    default: "https://developer.nlr.gov"
+    hint: |
+      Base URL of the developer endpoints. Default is the new domain (https://developer.nlr.gov).
+      Can be overridden to https://developer.nrel.gov if needed during transition phases.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: X-Api-Key
+      from: input
+      key: NREL_API_KEY
+
+test_queries:
+  - >-
+    SELECT ac_annual, capacity_factor, station_elevation FROM nrel.pvwatts
+    WHERE lat = 40.0 AND lon = -105.0 AND system_capacity = 4.0
+    AND module_type = 0 AND array_type = 0
+    AND tilt = 30.0 AND azimuth = 180.0 AND losses = 14.0
+    LIMIT 1
+  - >-
+    SELECT avg_dni_annual, avg_ghi_annual
+    FROM nrel.solar_resource
+    WHERE lat = 40.0 AND lon = -105.0
+    LIMIT 1
+  - >-
+    SELECT station_name, fuel_type, city, state
+    FROM nrel.alt_fuel_stations
+    WHERE state = 'CO'
+    LIMIT 5
+
+tables:
+  # ------------------------------------------------------------------
+  # nrel.pvwatts — Solar system performance simulations (V8)
+  # GET /api/pvwatts/v8.json
+  # ------------------------------------------------------------------
+  - name: pvwatts
+    description: |
+      Runs a standard photovoltaic system simulation using the PVWatts V8 model.
+      Requires latitude (lat), longitude (lon), nameplate system capacity (system_capacity),
+      module type (module_type), array type (array_type), system losses (losses),
+      tilt angle (tilt), and azimuth orientation (azimuth) as filters.
+      Outputs annual and monthly AC energy estimates.
+
+    fetch_limit_default: 1
+    filters:
+      - name: lat
+        required: true
+      - name: lon
+        required: true
+      - name: system_capacity
+        required: true
+      - name: module_type
+        required: true
+      - name: array_type
+        required: true
+      - name: losses
+        required: true
+      - name: tilt
+        required: true
+      - name: azimuth
+        required: true
+      - name: bifacial
+      - name: albedo
+      - name: soiling
+    request:
+      method: GET
+      path: /api/pvwatts/v8.json
+      query:
+        - name: lat
+          from: filter
+          key: lat
+        - name: lon
+          from: filter
+          key: lon
+        - name: system_capacity
+          from: filter
+          key: system_capacity
+        - name: module_type
+          from: filter
+          key: module_type
+        - name: array_type
+          from: filter
+          key: array_type
+        - name: losses
+          from: filter
+          key: losses
+        - name: tilt
+          from: filter
+          key: tilt
+        - name: azimuth
+          from: filter
+          key: azimuth
+        - name: bifaciality
+          from: filter
+          key: bifacial
+        - name: albedo
+          from: filter
+          key: albedo
+        - name: soiling
+          from: filter
+          key: soiling
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: lat
+        type: Float64
+        nullable: false
+        description: Latitude of the simulation coordinate.
+        expr:
+          kind: from_filter
+          key: lat
+      - name: lon
+        type: Float64
+        nullable: false
+        description: Longitude of the simulation coordinate.
+        expr:
+          kind: from_filter
+          key: lon
+      - name: system_capacity
+        type: Float64
+        nullable: false
+        description: Mapped nameplate solar capacity in kW.
+        expr:
+          kind: from_filter
+          key: system_capacity
+      - name: module_type
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Echoes the required module_type filter.
+        expr:
+          kind: from_filter
+          key: module_type
+      - name: array_type
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Echoes the required array_type filter.
+        expr:
+          kind: from_filter
+          key: array_type
+      - name: losses
+        type: Float64
+        nullable: false
+        virtual: true
+        description: Echoes the required losses filter.
+        expr:
+          kind: from_filter
+          key: losses
+      - name: tilt
+        type: Float64
+        nullable: false
+        virtual: true
+        description: Echoes the required tilt filter.
+        expr:
+          kind: from_filter
+          key: tilt
+      - name: azimuth
+        type: Float64
+        nullable: false
+        virtual: true
+        description: Echoes the required azimuth filter.
+        expr:
+          kind: from_filter
+          key: azimuth
+      - name: bifacial
+        type: Float64
+        nullable: true
+        virtual: true
+        description: Echoes the optional bifacial filter (Bifaciality ratio).
+        expr:
+          kind: from_filter
+          key: bifacial
+      - name: albedo
+        type: Float64
+        nullable: true
+        virtual: true
+        description: Echoes the optional albedo filter.
+        expr:
+          kind: from_filter
+          key: albedo
+      - name: soiling
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the optional soiling filter.
+        expr:
+          kind: from_filter
+          key: soiling
+      - name: ac_annual
+        type: Float64
+        nullable: true
+        description: Estimated annual AC energy output in kWh.
+        expr:
+          kind: path
+          path: [outputs, ac_annual]
+      - name: solrad_annual
+        type: Float64
+        nullable: true
+        description: Annual average solar radiation in kWh/m2/day.
+        expr:
+          kind: path
+          path: [outputs, solrad_annual]
+      - name: capacity_factor
+        type: Float64
+        nullable: true
+        description: MAPPED system capacity factor (annual production vs nameplate max).
+        expr:
+          kind: path
+          path: [outputs, capacity_factor]
+      - name: ac_monthly
+        type: Json
+        nullable: true
+        description: Array of 12 values representing monthly AC energy outputs (kWh).
+        expr:
+          kind: path
+          path: [outputs, ac_monthly]
+      - name: poa_monthly
+        type: Json
+        nullable: true
+        description: Array of 12 values representing monthly plane of array solar irradiance (kWh/m2).
+        expr:
+          kind: path
+          path: [outputs, poa_monthly]
+      - name: solrad_monthly
+        type: Json
+        nullable: true
+        description: Array of 12 values representing monthly average daily solar radiation (kWh/m2/day).
+        expr:
+          kind: path
+          path: [outputs, solrad_monthly]
+      - name: dc_monthly
+        type: Json
+        nullable: true
+        description: Array of 12 values representing monthly DC energy outputs (kWh).
+        expr:
+          kind: path
+          path: [outputs, dc_monthly]
+      - name: station_info
+        type: Json
+        nullable: true
+        description: Metadata about the climate/meteorology station selected for TMY calculations.
+        expr:
+          kind: path
+          path: [station_info]
+      - name: station_elevation
+        type: Float64
+        nullable: true
+        description: Elevation of the selected climate station in meters.
+        expr:
+          kind: path
+          path: [station_info, elev]
+
+  # ------------------------------------------------------------------
+  # nrel.solar_resource — General TMY solar averages
+  # GET /api/solar/solar_resource/v1.json
+  # ------------------------------------------------------------------
+  - name: solar_resource
+    description: |
+      Retrieves Typical Meteorological Year (TMY) averages (GHI, DNI, Latitude Tilt)
+      for solar resource evaluation at a coordinate.
+    fetch_limit_default: 1
+    filters:
+      - name: lat
+        required: true
+      - name: lon
+        required: true
+    request:
+      method: GET
+      path: /api/solar/solar_resource/v1.json
+      query:
+        - name: lat
+          from: filter
+          key: lat
+        - name: lon
+          from: filter
+          key: lon
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: lat
+        type: Float64
+        nullable: false
+        description: Latitude coordinate of the resource.
+        expr:
+          kind: from_filter
+          key: lat
+      - name: lon
+        type: Float64
+        nullable: false
+        description: Longitude coordinate of the resource.
+        expr:
+          kind: from_filter
+          key: lon
+      - name: avg_dni_annual
+        type: Float64
+        nullable: true
+        description: Annual average Direct Normal Irradiance (kWh/m2/day).
+        expr:
+          kind: path
+          path: [outputs, avg_dni, annual]
+      - name: avg_ghi_annual
+        type: Float64
+        nullable: true
+        description: Annual average Global Horizontal Irradiance (kWh/m2/day).
+        expr:
+          kind: path
+          path: [outputs, avg_ghi, annual]
+      - name: avg_lat_tilt_annual
+        type: Float64
+        nullable: true
+        description: Annual average Flat-plate Solar Resource at Latitude Tilt (kWh/m2/day).
+        expr:
+          kind: path
+          path: [outputs, avg_lat_tilt, annual]
+      - name: avg_dni_monthly
+        type: Json
+        nullable: true
+        description: "Monthly averages for Direct Normal Irradiance (month-keyed JSON object: jan, feb, etc.)."
+        expr:
+          kind: path
+          path: [outputs, avg_dni, monthly]
+      - name: avg_ghi_monthly
+        type: Json
+        nullable: true
+        description: "Monthly averages for Global Horizontal Irradiance (month-keyed JSON object: jan, feb, etc.)."
+        expr:
+          kind: path
+          path: [outputs, avg_ghi, monthly]
+      - name: avg_lat_tilt_monthly
+        type: Json
+        nullable: true
+        description: "Monthly averages for Flat-plate Solar Resource at Latitude Tilt (month-keyed JSON object: jan, feb, etc.)."
+        expr:
+          kind: path
+          path: [outputs, avg_lat_tilt, monthly]
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Metadata containing attribution and source dataset summaries.
+        expr:
+          kind: path
+          path: [metadata]
+
+  # ------------------------------------------------------------------
+  # nrel.alt_fuel_stations — Alternative Fuel Station directories
+  # GET /api/alt-fuel-stations/v1.json
+  # ------------------------------------------------------------------
+  - name: alt_fuel_stations
+    description: |
+      Scans alternative fuel stations from clean transportation directories.
+      Allows scoping by state, zip, limit, and specific alternative fuels.
+    fetch_limit_default: 20
+    filters:
+      - name: fuel_type
+      - name: state
+      - name: zip
+      - name: status
+      - name: access
+      - name: ev_network
+    request:
+      method: GET
+      path: /api/alt-fuel-stations/v1.json
+      query:
+        - name: fuel_type
+          from: filter
+          key: fuel_type
+        - name: state
+          from: filter
+          key: state
+        - name: zip
+          from: filter
+          key: zip
+        - name: status
+          from: filter
+          key: status
+        - name: access
+          from: filter
+          key: access
+        - name: ev_network
+          from: filter
+          key: ev_network
+    response:
+      rows_path: [fuel_stations]
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 200
+        max: 200
+        query_param: limit
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Unique database record identifier for the station.
+        expr:
+          kind: path
+          path: [id]
+      - name: station_name
+        type: Utf8
+        nullable: false
+        description: Public facing name of the alternative fuel station.
+        expr:
+          kind: path
+          path: [station_name]
+      - name: fuel_type
+        type: Utf8
+        nullable: false
+        description: Fuel type abbreviation (e.g. ELEC for EV charging, CNG for natural gas, LPG, HY, E85).
+        expr:
+          kind: path
+          path: [fuel_type_code]
+      - name: street_address
+        type: Utf8
+        nullable: true
+        description: Street address location.
+        expr:
+          kind: path
+          path: [street_address]
+      - name: intersection_directions
+        type: Utf8
+        nullable: true
+        description: Visual guidelines or local directions to find the chargers.
+        expr:
+          kind: path
+          path: [intersection_directions]
+      - name: city
+        type: Utf8
+        nullable: true
+        description: City.
+        expr:
+          kind: path
+          path: [city]
+      - name: state
+        type: Utf8
+        nullable: true
+        description: State/Province.
+        expr:
+          kind: path
+          path: [state]
+      - name: zip
+        type: Utf8
+        nullable: true
+        description: ZIP or postal code.
+        expr:
+          kind: path
+          path: [zip]
+      - name: station_phone
+        type: Utf8
+        nullable: true
+        description: Station operations contact phone number.
+        expr:
+          kind: path
+          path: [station_phone]
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Current operational status code (E for open, P for planned, T for temporarily closed).
+        expr:
+          kind: path
+          path: [status_code]
+      - name: access_days_time
+        type: Utf8
+        nullable: true
+        description: Standard hours of operation (e.g. 24 hours daily).
+        expr:
+          kind: path
+          path: [access_days_time]
+      - name: latitude
+        type: Float64
+        nullable: false
+        description: Latitude location coordinate.
+        expr:
+          kind: path
+          path: [latitude]
+      - name: longitude
+        type: Float64
+        nullable: false
+        description: Longitude location coordinate.
+        expr:
+          kind: path
+          path: [longitude]
+      - name: access
+        type: Utf8
+        nullable: true
+        description: Access scoping (public or private).
+        expr:
+          kind: path
+          path: [access_code]
+      - name: groups_with_access_code
+        type: Utf8
+        nullable: true
+        description: Who is authorized to access the chargers.
+        expr:
+          kind: path
+          path: [groups_with_access_code]
+      - name: ev_connector_types
+        type: Json
+        nullable: true
+        description: Array of connector types available (e.g. CHADEMO, J1772, TESLA, J1772COMBO, NEMA515).
+        expr:
+          kind: path
+          path: [ev_connector_types]
+      - name: ev_network
+        type: Utf8
+        nullable: true
+        description: Charging provider network (e.g. ChargePoint, Tesla, Electrify America).
+        expr:
+          kind: path
+          path: [ev_network]
+      - name: ev_pricing
+        type: Utf8
+        nullable: true
+        description: Pricing details or billing schemes.
+        expr:
+          kind: path
+          path: [ev_pricing]
+      - name: ev_level1_evse_num
+        type: Int64
+        nullable: true
+        description: Number of Level 1 EVSE ports.
+        expr:
+          kind: path
+          path: [ev_level1_evse_num]
+      - name: ev_level2_evse_num
+        type: Int64
+        nullable: true
+        description: Number of Level 2 EVSE ports.
+        expr:
+          kind: path
+          path: [ev_level2_evse_num]
+      - name: ev_dc_fast_num
+        type: Int64
+        nullable: true
+        description: Number of DC Fast Charging ports.
+        expr:
+          kind: path
+          path: [ev_dc_fast_num]
+      - name: open_date
+        type: Utf8
+        nullable: true
+        description: The calendar date the station first opened.
+        expr:
+          kind: path
+          path: [open_date]
+      - name: owner_type_code
+        type: Utf8
+        nullable: true
+        description: "Code representing type of owner (e.g., FG: Federal Govt, SG: State Govt, P: Private)."
+        expr:
+          kind: path
+          path: [owner_type_code]
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Exact timestamp the station details were last synced.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path: [updated_at]

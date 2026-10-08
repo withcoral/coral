@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package coral.v1;
+
+// How a runtime feature is configured in Coral's local config.
+enum FeatureConfiguredState {
+  // The configured state was not recorded.
+  FEATURE_CONFIGURED_STATE_UNSPECIFIED = 0;
+  // No override exists, so the feature uses its built-in default.
+  FEATURE_CONFIGURED_STATE_DEFAULT = 1;
+  // The local config explicitly enables the feature.
+  FEATURE_CONFIGURED_STATE_ENABLED = 2;
+  // The local config explicitly disables the feature.
+  FEATURE_CONFIGURED_STATE_DISABLED = 3;
+  // The local config carries a known feature key with a non-boolean value.
+  FEATURE_CONFIGURED_STATE_INVALID_VALUE = 4;
+  // The local config uses an unsupported `[features]` container shape.
+  FEATURE_CONFIGURED_STATE_INVALID_CONTAINER = 5;
+}
+
+// One runtime feature and its configured, resolved, and running state.
+message FeatureStatus {
+  // Stable key used under `[features]` in `config.toml`.
+  string key = 1;
+  // Short human-readable description of what the feature does.
+  string description = 2;
+  // Enabled state used when no override exists.
+  bool default_enabled = 3;
+  // Current local config state.
+  FeatureConfiguredState configured = 4;
+  // State local config resolves to, ignoring anything this process was launched
+  // with. Config is what callers write, so this is what they read back.
+  bool enabled = 5;
+  // State this running server booted with, including any `--enable-*` or
+  // `--disable-*` launch flag. Runtime features are read once at startup, so
+  // `enabled` and `active` differ until Coral restarts.
+  bool active = 6;
+}
+
+// Lists runtime features recognized by this Coral binary.
+message ListFeaturesRequest {}
+
+// Returns every recognized runtime feature, ordered by key.
+message ListFeaturesResponse {
+  // Recognized runtime features.
+  repeated FeatureStatus features = 1;
+}
+
+// Persists a local override for one runtime feature.
+message SetFeatureRequest {
+  // Stable feature key to override.
+  string key = 1;
+  // Override value to persist.
+  bool enabled = 2;
+}
+
+// Returns the feature state after the override is persisted.
+message SetFeatureResponse {
+  // Updated runtime feature.
+  FeatureStatus feature = 1;
+}
+
+// Runtime feature inspection and configuration APIs.
+service FeatureService {
+  // Lists runtime features with their configured, resolved, and running state.
+  rpc ListFeatures(ListFeaturesRequest) returns (ListFeaturesResponse);
+  // Persists a local override for one runtime feature. The change takes effect
+  // the next time Coral starts.
+  rpc SetFeature(SetFeatureRequest) returns (SetFeatureResponse);
+}

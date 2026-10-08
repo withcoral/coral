@@ -1,0 +1,1332 @@
+---
+name: auth0
+version: "0.1.0"
+dsl_version: 3
+backend: http
+description: >-
+  Query Auth0 tenant data — users, clients, connections, roles, role_users,
+  role_permissions, organizations, organization_members, resource servers,
+  client grants, actions, logs, grants, custom domains, and tenant settings
+  — via the Auth0 Management API v2 with bearer-token authentication.
+base_url: "{{input.AUTH0_DOMAIN}}/api/v2"
+
+inputs:
+  AUTH0_DOMAIN:
+    kind: variable
+    hint: >-
+      Your Auth0 tenant domain URL, for example
+      `https://dev-abc123.us.auth0.com`. Do not include a trailing slash.
+  AUTH0_API_TOKEN:
+    kind: secret
+    required: true
+    hint: >-
+      Auth0 Management API access token (JWT). Obtain one via the
+      Auth0 Dashboard under Applications > APIs > Auth0 Management API >
+      API Explorer or via a machine-to-machine client credentials grant.
+      Required scopes depend on the tables you query (e.g. read:users,
+      read:clients, read:connections, read:roles, read:organizations,
+      read:organization_members, read:resource_servers, read:client_grants,
+      read:actions, read:logs, read:grants, read:custom_domains,
+      read:tenant_settings).
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.AUTH0_API_TOKEN}}"
+
+rate_limit:
+  remaining_header: X-RateLimit-Remaining
+  reset_header: X-RateLimit-Reset
+
+test_queries:
+  - SELECT user_id, email, name FROM auth0.users LIMIT 1
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # users — list all users in the tenant
+  # ──────────────────────────────────────────────────────────────────────
+  - name: users
+    description: >
+      Lists all users in the Auth0 tenant. Returns profile data,
+      identity provider details, login counts, and metadata. Supports
+      provider-side search via the q filter using Lucene query syntax.
+    guide: >
+      Start with `SELECT user_id, email, name, last_login
+      FROM auth0.users LIMIT 10`. Use the q filter for provider-side
+      search: `WHERE q = 'email:"alice@example.com"'`. To filter by
+      connection use `WHERE q = 'identities.connection:"Username-Password-Authentication"'`.
+    filters:
+      - name: q
+        mode: search
+      - name: sort
+    request:
+      method: GET
+      path: /users
+      query:
+        - name: q
+          from: filter
+          key: q
+        - name: sort
+          from: filter
+          key: sort
+        - name: search_engine
+          from: literal
+          value: v3
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 50
+        query_param: per_page
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: Unique Auth0 user identifier.
+        expr: {kind: path, path: [user_id]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [email]}
+      - name: email_verified
+        type: Boolean
+        nullable: true
+        description: Whether the email address has been verified.
+        expr: {kind: path, path: [email_verified]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User full name.
+        expr: {kind: path, path: [name]}
+      - name: given_name
+        type: Utf8
+        nullable: true
+        description: User given (first) name.
+        expr: {kind: path, path: [given_name]}
+      - name: family_name
+        type: Utf8
+        nullable: true
+        description: User family (last) name.
+        expr: {kind: path, path: [family_name]}
+      - name: nickname
+        type: Utf8
+        nullable: true
+        description: User nickname.
+        expr: {kind: path, path: [nickname]}
+      - name: picture
+        type: Utf8
+        nullable: true
+        description: URL of the user's profile picture.
+        expr: {kind: path, path: [picture]}
+      - name: logins_count
+        type: Int64
+        nullable: true
+        description: Total number of logins for this user.
+        expr: {kind: path, path: [logins_count]}
+      - name: blocked
+        type: Boolean
+        nullable: true
+        description: Whether the user is blocked.
+        expr: {kind: path, path: [blocked]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: User creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: User last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+      - name: last_login
+        type: Timestamp
+        nullable: true
+        description: Time of the user's most recent login.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_login]}
+      - name: last_ip
+        type: Utf8
+        nullable: true
+        description: IP address of the user's most recent login.
+        expr: {kind: path, path: [last_ip]}
+      - name: last_password_reset
+        type: Timestamp
+        nullable: true
+        description: Time of the user's last password reset.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [last_password_reset]}
+      - name: multifactor_last_modified
+        type: Timestamp
+        nullable: true
+        description: Time MFA was last modified.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [multifactor_last_modified]}
+      - name: user_metadata
+        type: Json
+        nullable: true
+        description: User metadata editable by the user.
+        expr: {kind: path, path: [user_metadata]}
+      - name: app_metadata
+        type: Json
+        nullable: true
+        description: Application metadata editable only by the backend.
+        expr: {kind: path, path: [app_metadata]}
+      - name: identities
+        type: Json
+        nullable: true
+        description: Array of identity provider objects linked to the user.
+        expr: {kind: path, path: [identities]}
+      - name: multifactor
+        type: Json
+        nullable: true
+        description: Enrolled multi-factor authentication providers.
+        expr: {kind: path, path: [multifactor]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw user object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # clients — list all applications
+  # ──────────────────────────────────────────────────────────────────────
+  - name: clients
+    description: >
+      Lists all applications (clients) registered in the Auth0 tenant.
+      Includes client type, callbacks, grants, and metadata.
+    guide: >
+      Start with `SELECT client_id, name, app_type
+      FROM auth0.clients LIMIT 10`.
+    request:
+      method: GET
+      path: /clients
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: client_id
+        type: Utf8
+        nullable: false
+        description: Unique application (client) identifier.
+        expr: {kind: path, path: [client_id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Application name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Application description.
+        expr: {kind: path, path: [description]}
+      - name: app_type
+        type: Utf8
+        nullable: true
+        description: >-
+          Application type (e.g. spa, native, regular_web,
+          non_interactive).
+        expr: {kind: path, path: [app_type]}
+      - name: logo_uri
+        type: Utf8
+        nullable: true
+        description: URL of the application logo.
+        expr: {kind: path, path: [logo_uri]}
+      - name: is_first_party
+        type: Boolean
+        nullable: true
+        description: Whether this is a first-party application.
+        expr: {kind: path, path: [is_first_party]}
+      - name: is_token_endpoint_ip_header_trusted
+        type: Boolean
+        nullable: true
+        description: Whether the token endpoint trusts the client IP header.
+        expr: {kind: path, path: [is_token_endpoint_ip_header_trusted]}
+      - name: oidc_conformant
+        type: Boolean
+        nullable: true
+        description: Whether the application is OIDC-conformant.
+        expr: {kind: path, path: [oidc_conformant]}
+      - name: token_endpoint_auth_method
+        type: Utf8
+        nullable: true
+        description: >-
+          Token endpoint authentication method (e.g. client_secret_post,
+          client_secret_basic, none).
+        expr: {kind: path, path: [token_endpoint_auth_method]}
+      - name: custom_login_page_on
+        type: Boolean
+        nullable: true
+        description: Whether a custom login page is enabled.
+        expr: {kind: path, path: [custom_login_page_on]}
+      - name: callbacks
+        type: Json
+        nullable: true
+        description: Allowed callback URLs.
+        expr: {kind: path, path: [callbacks]}
+      - name: allowed_origins
+        type: Json
+        nullable: true
+        description: Allowed origins for CORS.
+        expr: {kind: path, path: [allowed_origins]}
+      - name: web_origins
+        type: Json
+        nullable: true
+        description: Allowed web origins.
+        expr: {kind: path, path: [web_origins]}
+      - name: allowed_logout_urls
+        type: Json
+        nullable: true
+        description: Allowed logout redirect URLs.
+        expr: {kind: path, path: [allowed_logout_urls]}
+      - name: grant_types
+        type: Json
+        nullable: true
+        description: Allowed grant types for the application.
+        expr: {kind: path, path: [grant_types]}
+      - name: client_metadata
+        type: Json
+        nullable: true
+        description: Client metadata key-value pairs.
+        expr: {kind: path, path: [client_metadata]}
+      - name: jwt_configuration
+        type: Json
+        nullable: true
+        description: JWT configuration including lifetime and algorithm.
+        expr: {kind: path, path: [jwt_configuration]}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # connections — list all identity provider connections
+  # ──────────────────────────────────────────────────────────────────────
+  - name: connections
+    description: >
+      Lists all identity provider connections configured in the Auth0
+      tenant. Includes database, social, enterprise, and passwordless
+      connections.
+    guide: >
+      Start with `SELECT id, name, strategy
+      FROM auth0.connections LIMIT 10`.
+    filters:
+      - name: strategy
+    request:
+      method: GET
+      path: /connections
+      query:
+        - name: strategy
+          from: filter
+          key: strategy
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique connection identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Connection name.
+        expr: {kind: path, path: [name]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Connection display name shown on the login page.
+        expr: {kind: path, path: [display_name]}
+      - name: strategy
+        type: Utf8
+        nullable: true
+        description: >-
+          Connection strategy (e.g. auth0, google-oauth2, samlp,
+          waad, sms, email).
+        expr: {kind: path, path: [strategy]}
+      - name: is_domain_connection
+        type: Boolean
+        nullable: true
+        description: Whether this is a domain-level connection.
+        expr: {kind: path, path: [is_domain_connection]}
+      - name: realms
+        type: Json
+        nullable: true
+        description: Realms associated with this connection.
+        expr: {kind: path, path: [realms]}
+      - name: enabled_clients
+        type: Json
+        nullable: true
+        description: Array of client IDs that can use this connection.
+        expr: {kind: path, path: [enabled_clients]}
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Connection metadata key-value pairs.
+        expr: {kind: path, path: [metadata]}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # roles — list all RBAC roles
+  # ──────────────────────────────────────────────────────────────────────
+  - name: roles
+    description: >
+      Lists all roles defined in the Auth0 tenant for role-based
+      access control (RBAC).
+    guide: >
+      Start with `SELECT id, name, description
+      FROM auth0.roles LIMIT 10`. Use the role id to query
+      role_users or role_permissions.
+    filters:
+      - name: name_filter
+    request:
+      method: GET
+      path: /roles
+      query:
+        - name: name_filter
+          from: filter
+          key: name_filter
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique role identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Role name.
+        expr: {kind: path, path: [name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Role description.
+        expr: {kind: path, path: [description]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw role object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # role_users — list users assigned to a role
+  # ──────────────────────────────────────────────────────────────────────
+  - name: role_users
+    description: >
+      Lists all users assigned to a specific role. Requires the role_id
+      filter obtained from the roles table.
+    guide: >
+      Always filter by role_id: `SELECT user_id, email, name
+      FROM auth0.role_users WHERE role_id = 'rol_xxx'`.
+    filters:
+      - name: role_id
+        required: true
+    request:
+      method: GET
+      path: /roles/{{filter.role_id}}/users
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: role_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Role ID (from URL filter).
+        expr:
+          kind: from_filter
+          key: role_id
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: User identifier.
+        expr: {kind: path, path: [user_id]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [email]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User full name.
+        expr: {kind: path, path: [name]}
+      - name: picture
+        type: Utf8
+        nullable: true
+        description: URL of the user's profile picture.
+        expr: {kind: path, path: [picture]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw role user object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # role_permissions — list permissions assigned to a role
+  # ──────────────────────────────────────────────────────────────────────
+  - name: role_permissions
+    description: >
+      Lists all permissions associated with a specific role. Requires the
+      role_id filter obtained from the roles table.
+    guide: >
+      Always filter by role_id: `SELECT permission_name,
+      resource_server_identifier FROM auth0.role_permissions
+      WHERE role_id = 'rol_xxx'`.
+    filters:
+      - name: role_id
+        required: true
+    request:
+      method: GET
+      path: /roles/{{filter.role_id}}/permissions
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: role_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Role ID (from URL filter).
+        expr:
+          kind: from_filter
+          key: role_id
+      - name: permission_name
+        type: Utf8
+        nullable: false
+        description: Permission name.
+        expr: {kind: path, path: [permission_name]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Permission description.
+        expr: {kind: path, path: [description]}
+      - name: resource_server_name
+        type: Utf8
+        nullable: true
+        description: Name of the resource server (API) this permission belongs to.
+        expr: {kind: path, path: [resource_server_name]}
+      - name: resource_server_identifier
+        type: Utf8
+        nullable: true
+        description: Identifier (audience) of the resource server.
+        expr: {kind: path, path: [resource_server_identifier]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw role permission object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # organizations — list all organizations
+  # ──────────────────────────────────────────────────────────────────────
+  - name: organizations
+    description: >
+      Lists all organizations configured in the Auth0 tenant. Organizations
+      represent groups of users that share common access to applications.
+    guide: >
+      Start with `SELECT id, name, display_name
+      FROM auth0.organizations LIMIT 10`. Use the id to query
+      organization_members.
+    request:
+      method: GET
+      path: /organizations
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique organization identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Organization name (URL-safe slug).
+        expr: {kind: path, path: [name]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Organization display name.
+        expr: {kind: path, path: [display_name]}
+      - name: branding
+        type: Json
+        nullable: true
+        description: Organization branding settings (logo_url, colors).
+        expr: {kind: path, path: [branding]}
+      - name: metadata
+        type: Json
+        nullable: true
+        description: Organization metadata key-value pairs.
+        expr: {kind: path, path: [metadata]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw organization object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # organization_members — list members of an organization
+  # ──────────────────────────────────────────────────────────────────────
+  - name: organization_members
+    description: >
+      Lists all members of a specific organization. Requires the
+      organization_id filter obtained from the organizations table.
+    guide: >
+      Always filter by organization_id: `SELECT user_id, email, name
+      FROM auth0.organization_members
+      WHERE organization_id = 'org_xxx'`.
+    filters:
+      - name: organization_id
+        required: true
+    request:
+      method: GET
+      path: /organizations/{{filter.organization_id}}/members
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: organization_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Organization ID (from URL filter).
+        expr:
+          kind: from_filter
+          key: organization_id
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: User identifier.
+        expr: {kind: path, path: [user_id]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+        expr: {kind: path, path: [email]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: User full name.
+        expr: {kind: path, path: [name]}
+      - name: picture
+        type: Utf8
+        nullable: true
+        description: URL of the user's profile picture.
+        expr: {kind: path, path: [picture]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw organization member object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # resource_servers — list all APIs
+  # ──────────────────────────────────────────────────────────────────────
+  - name: resource_servers
+    description: >
+      Lists all resource servers (APIs) registered in the Auth0 tenant.
+      Includes audience, scopes, token settings, and signing configuration.
+    guide: >
+      Start with `SELECT id, name, identifier
+      FROM auth0.resource_servers LIMIT 10`.
+    request:
+      method: GET
+      path: /resource-servers
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique resource server identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Resource server (API) name.
+        expr: {kind: path, path: [name]}
+      - name: identifier
+        type: Utf8
+        nullable: true
+        description: >-
+          Resource server identifier (audience URI) used in access
+          token requests.
+        expr: {kind: path, path: [identifier]}
+      - name: is_system
+        type: Boolean
+        nullable: true
+        description: Whether this is a system-level API (e.g. Auth0 Management API).
+        expr: {kind: path, path: [is_system]}
+      - name: enforce_policies
+        type: Boolean
+        nullable: true
+        description: Whether RBAC authorization policies are enforced.
+        expr: {kind: path, path: [enforce_policies]}
+      - name: token_dialect
+        type: Utf8
+        nullable: true
+        description: >-
+          Token dialect (e.g. access_token, access_token_authz).
+        expr: {kind: path, path: [token_dialect]}
+      - name: token_lifetime
+        type: Int64
+        nullable: true
+        description: Access token lifetime in seconds.
+        expr: {kind: path, path: [token_lifetime]}
+      - name: token_lifetime_for_web
+        type: Int64
+        nullable: true
+        description: Access token lifetime for web applications in seconds.
+        expr: {kind: path, path: [token_lifetime_for_web]}
+      - name: signing_alg
+        type: Utf8
+        nullable: true
+        description: Signing algorithm for access tokens (e.g. RS256).
+        expr: {kind: path, path: [signing_alg]}
+      - name: allow_offline_access
+        type: Boolean
+        nullable: true
+        description: Whether refresh tokens (offline access) are allowed.
+        expr: {kind: path, path: [allow_offline_access]}
+      - name: skip_consent_for_verifiable_first_party_clients
+        type: Boolean
+        nullable: true
+        description: Whether first-party clients skip the consent prompt.
+        expr: {kind: path, path: [skip_consent_for_verifiable_first_party_clients]}
+      - name: scopes
+        type: Json
+        nullable: true
+        description: Array of scopes (permissions) defined on this API.
+        expr: {kind: path, path: [scopes]}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # client_grants — list all client grants
+  # ──────────────────────────────────────────────────────────────────────
+  - name: client_grants
+    description: >
+      Lists all client grants in the Auth0 tenant. A client grant
+      represents the scopes an application has been authorized to
+      request for a specific API (resource server).
+    guide: >
+      Start with `SELECT id, client_id, audience
+      FROM auth0.client_grants LIMIT 10`. Filter by client_id or
+      audience to narrow results.
+    filters:
+      - name: client_id
+      - name: audience
+    request:
+      method: GET
+      path: /client-grants
+      query:
+        - name: client_id
+          from: filter
+          key: client_id
+        - name: audience
+          from: filter
+          key: audience
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique client grant identifier.
+        expr: {kind: path, path: [id]}
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: Application (client) identifier.
+        expr: {kind: path, path: [client_id]}
+      - name: audience
+        type: Utf8
+        nullable: true
+        description: API audience (resource server identifier).
+        expr: {kind: path, path: [audience]}
+      - name: scope
+        type: Json
+        nullable: true
+        description: Array of scopes granted to the client for this API.
+        expr: {kind: path, path: [scope]}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # actions — list all actions
+  # ──────────────────────────────────────────────────────────────────────
+  - name: actions
+    description: >
+      Lists all actions in the Auth0 tenant. Actions are serverless
+      functions that execute at specific extensibility points in
+      the Auth0 pipeline.
+    guide: >
+      Start with `SELECT id, name, supported_triggers, status
+      FROM auth0.actions LIMIT 10`.
+    filters:
+      - name: trigger_id
+      - name: deployed
+    request:
+      method: GET
+      path: /actions/actions
+      query:
+        - name: triggerId
+          from: filter
+          key: trigger_id
+        - name: deployed
+          from: filter
+          key: deployed
+    response:
+      rows_path:
+        - actions
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique action identifier.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Action name.
+        expr: {kind: path, path: [name]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Action status (e.g. pending, built, packaged, installed).
+        expr: {kind: path, path: [status]}
+      - name: runtime
+        type: Utf8
+        nullable: true
+        description: Action runtime version (e.g. node18).
+        expr: {kind: path, path: [runtime]}
+      - name: all_changes_deployed
+        type: Boolean
+        nullable: true
+        description: Whether all changes have been deployed.
+        expr: {kind: path, path: [all_changes_deployed]}
+      - name: supported_triggers
+        type: Json
+        nullable: true
+        description: Triggers this action is bound to.
+        expr: {kind: path, path: [supported_triggers]}
+      - name: dependencies
+        type: Json
+        nullable: true
+        description: NPM dependencies used by the action.
+        expr: {kind: path, path: [dependencies]}
+      - name: deployed_version_id
+        type: Utf8
+        nullable: true
+        description: Identifier of the currently deployed version.
+        expr: {kind: path, path: [deployed_version, id]}
+      - name: deployed_version_number
+        type: Int64
+        nullable: true
+        description: Version number of the currently deployed version.
+        expr: {kind: path, path: [deployed_version, number]}
+      - name: deployed_version_status
+        type: Utf8
+        nullable: true
+        description: Build status of the currently deployed version.
+        expr: {kind: path, path: [deployed_version, status]}
+      - name: deployed_version_created_at
+        type: Timestamp
+        nullable: true
+        description: When the deployed version was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [deployed_version, created_at]}
+      - name: deployed_version_updated_at
+        type: Timestamp
+        nullable: true
+        description: When the deployed version was last updated.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [deployed_version, updated_at]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Action creation time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Action last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [updated_at]}
+
+  # ──────────────────────────────────────────────────────────────────────
+  # logs — list tenant log events
+  # ──────────────────────────────────────────────────────────────────────
+  - name: logs
+    description: >
+      Lists tenant log events from Auth0. Includes authentication events,
+      API operations, and user activity. Supports provider-side search
+      via the q filter using Lucene query syntax.
+    guide: >
+      Start with `SELECT log_id, type, date, description
+      FROM auth0.logs LIMIT 20`. Use the q filter with Lucene syntax
+      to search: `WHERE q = 'type:"s"'` for successful logins.
+    filters:
+      - name: q
+        mode: search
+    request:
+      method: GET
+      path: /logs
+      query:
+        - name: q
+          from: filter
+          key: q
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: log_id
+        type: Utf8
+        nullable: false
+        description: Unique log event identifier.
+        expr: {kind: path, path: [log_id]}
+      - name: _id
+        type: Utf8
+        nullable: true
+        description: Internal log event ID.
+        expr: {kind: path, path: [_id]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Log event type code (e.g. s for success login, f for
+          failed login, ss for success signup).
+        expr: {kind: path, path: [type]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Human-readable event description.
+        expr: {kind: path, path: [description]}
+      - name: date
+        type: Timestamp
+        nullable: true
+        description: Event timestamp.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [date]}
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: Client ID involved in the event.
+        expr: {kind: path, path: [client_id]}
+      - name: client_name
+        type: Utf8
+        nullable: true
+        description: Client name involved in the event.
+        expr: {kind: path, path: [client_name]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User ID involved in the event.
+        expr: {kind: path, path: [user_id]}
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: Username or email involved in the event.
+        expr: {kind: path, path: [user_name]}
+      - name: connection
+        type: Utf8
+        nullable: true
+        description: Connection used during the event.
+        expr: {kind: path, path: [connection]}
+      - name: connection_id
+        type: Utf8
+        nullable: true
+        description: Connection ID used during the event.
+        expr: {kind: path, path: [connection_id]}
+      - name: ip
+        type: Utf8
+        nullable: true
+        description: IP address of the client.
+        expr: {kind: path, path: [ip]}
+      - name: user_agent
+        type: Utf8
+        nullable: true
+        description: User agent string from the client.
+        expr: {kind: path, path: [user_agent]}
+      - name: strategy
+        type: Utf8
+        nullable: true
+        description: Authentication strategy used.
+        expr: {kind: path, path: [strategy]}
+      - name: strategy_type
+        type: Utf8
+        nullable: true
+        description: Authentication strategy type.
+        expr: {kind: path, path: [strategy_type]}
+      - name: scope
+        type: Utf8
+        nullable: true
+        description: Scopes requested during the event.
+        expr: {kind: path, path: [scope]}
+      - name: audience
+        type: Utf8
+        nullable: true
+        description: API audience targeted during the event.
+        expr: {kind: path, path: [audience]}
+      - name: is_mobile
+        type: Boolean
+        nullable: true
+        description: Whether the event originated from a mobile device.
+        expr: {kind: path, path: [isMobile]}
+      - name: location_info
+        type: Json
+        nullable: true
+        description: Geolocation info for the event (city, country, etc.).
+        expr: {kind: path, path: [location_info]}
+      - name: details
+        type: Json
+        nullable: true
+        description: Additional event details payload.
+        expr: {kind: path, path: [details]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw log event object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # grants — list all user grants
+  # ──────────────────────────────────────────────────────────────────────
+  - name: grants
+    description: >
+      Lists all grants issued to users in the Auth0 tenant. A grant
+      represents the authorization a user has given to an application
+      to access specific scopes on an API.
+    guide: >
+      Start with `SELECT id, user_id, client_id, audience
+      FROM auth0.grants LIMIT 10`. Filter by user_id or client_id.
+    filters:
+      - name: user_id
+      - name: client_id
+      - name: audience
+    request:
+      method: GET
+      path: /grants
+      query:
+        - name: user_id
+          from: filter
+          key: user_id
+        - name: client_id
+          from: filter
+          key: client_id
+        - name: audience
+          from: filter
+          key: audience
+    response:
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique grant identifier.
+        expr: {kind: path, path: [id]}
+      - name: user_id
+        type: Utf8
+        nullable: true
+        description: User who authorized the grant.
+        expr: {kind: path, path: [user_id]}
+      - name: client_id
+        type: Utf8
+        nullable: true
+        description: Application that received the grant.
+        expr: {kind: path, path: [clientID]}
+      - name: audience
+        type: Utf8
+        nullable: true
+        description: API audience the grant applies to.
+        expr: {kind: path, path: [audience]}
+      - name: scope
+        type: Json
+        nullable: true
+        description: Array of scopes the user authorized.
+        expr: {kind: path, path: [scope]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw grant object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # custom_domains — list all custom domains
+  # ──────────────────────────────────────────────────────────────────────
+  - name: custom_domains
+    description: >
+      Lists all custom domains configured for the Auth0 tenant.
+      Custom domains allow using your own domain for the Auth0
+      login page and API endpoints.
+    guide: >
+      Start with `SELECT custom_domain_id, domain, status, type
+      FROM auth0.custom_domains`.
+    request:
+      method: GET
+      path: /custom-domains
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: custom_domain_id
+        type: Utf8
+        nullable: false
+        description: Unique custom domain identifier.
+        expr: {kind: path, path: [custom_domain_id]}
+      - name: domain
+        type: Utf8
+        nullable: true
+        description: Custom domain name (e.g. login.example.com).
+        expr: {kind: path, path: [domain]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Domain status (e.g. disabled, pending, pending_verification,
+          ready).
+        expr: {kind: path, path: [status]}
+      - name: type
+        type: Utf8
+        nullable: true
+        description: Domain type (e.g. auth0_managed_certs, self_managed_certs).
+        expr: {kind: path, path: [type]}
+      - name: primary
+        type: Boolean
+        nullable: true
+        description: Whether this is the primary custom domain.
+        expr: {kind: path, path: [primary]}
+      - name: origin_domain_name
+        type: Utf8
+        nullable: true
+        description: CNAME target origin domain.
+        expr: {kind: path, path: [origin_domain_name]}
+      - name: verification
+        type: Json
+        nullable: true
+        description: Domain verification details (methods, records).
+        expr: {kind: path, path: [verification]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw custom domain object.
+        expr:
+          kind: current_row
+
+  # ──────────────────────────────────────────────────────────────────────
+  # tenant_settings — retrieve tenant settings
+  # ──────────────────────────────────────────────────────────────────────
+  - name: tenant_settings
+    description: >
+      Returns the current tenant settings for your Auth0 tenant.
+      Includes branding, session lifetimes, flags, and feature
+      configuration.
+    guide: >
+      Run `SELECT friendly_name, support_email, default_directory
+      FROM auth0.tenant_settings`.
+    fetch_limit_default: 1
+    request:
+      method: GET
+      path: /tenants/settings
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: friendly_name
+        type: Utf8
+        nullable: true
+        description: Tenant friendly name.
+        expr: {kind: path, path: [friendly_name]}
+      - name: support_email
+        type: Utf8
+        nullable: true
+        description: Tenant support email address.
+        expr: {kind: path, path: [support_email]}
+      - name: support_url
+        type: Utf8
+        nullable: true
+        description: Tenant support URL.
+        expr: {kind: path, path: [support_url]}
+      - name: default_audience
+        type: Utf8
+        nullable: true
+        description: Default API audience for the tenant.
+        expr: {kind: path, path: [default_audience]}
+      - name: default_directory
+        type: Utf8
+        nullable: true
+        description: Default connection for password grants.
+        expr: {kind: path, path: [default_directory]}
+      - name: default_redirection_uri
+        type: Utf8
+        nullable: true
+        description: Default redirect URI after login.
+        expr: {kind: path, path: [default_redirection_uri]}
+      - name: picture_url
+        type: Utf8
+        nullable: true
+        description: URL of the tenant logo.
+        expr: {kind: path, path: [picture_url]}
+      - name: sandbox_version
+        type: Utf8
+        nullable: true
+        description: Sandbox runtime version for rules/hooks.
+        expr: {kind: path, path: [sandbox_version]}
+      - name: idle_session_lifetime
+        type: Float64
+        nullable: true
+        description: Idle session lifetime in hours.
+        expr: {kind: path, path: [idle_session_lifetime]}
+      - name: session_lifetime
+        type: Float64
+        nullable: true
+        description: Absolute session lifetime in hours.
+        expr: {kind: path, path: [session_lifetime]}
+      - name: allowed_logout_urls
+        type: Json
+        nullable: true
+        description: Tenant-level allowed logout URLs.
+        expr: {kind: path, path: [allowed_logout_urls]}
+      - name: enabled_locales
+        type: Json
+        nullable: true
+        description: Enabled locales for the Universal Login page.
+        expr: {kind: path, path: [enabled_locales]}
+      - name: flags
+        type: Json
+        nullable: true
+        description: Tenant feature flags.
+        expr: {kind: path, path: [flags]}
+      - name: guardian_mfa_page
+        type: Json
+        nullable: true
+        description: Guardian MFA page configuration.
+        expr: {kind: path, path: [guardian_mfa_page]}
+      - name: change_password
+        type: Json
+        nullable: true
+        description: Change password page configuration.
+        expr: {kind: path, path: [change_password]}
+      - name: error_page
+        type: Json
+        nullable: true
+        description: Error page configuration.
+        expr: {kind: path, path: [error_page]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw tenant settings object.
+        expr:
+          kind: current_row

@@ -4,17 +4,25 @@ mod catalog;
 mod error;
 mod query;
 mod query_error;
+mod udfs;
 
 pub use catalog::{
-    CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo,
+    CatalogInfo, ColumnInfo, DescribeCatalogSurfaceInfo, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
-    QueryExecution, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, SourceValidationReport,
+    DependentJoinConfig, DependentJoinSourceConfig, EffectiveDependentJoinConfig, MemorySize,
+    QueryExecution, QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue,
+    QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult, QueryTestSuccess,
+    ResolvedQueryResources, RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
+pub use udfs::{
+    CoralSqlFunctionArgument, CoralSqlFunctionDefinition, CoralSqlFunctionInferenceDefinition,
+    CoralSqlFunctionSignature, CoralSqlResultColumn, CoralSqlTableFunctionPublish,
+};
 
 #[cfg(test)]
 pub(crate) use query_error::UNKNOWN_COLUMN_REASON;

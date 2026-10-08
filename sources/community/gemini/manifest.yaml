@@ -1,0 +1,194 @@
+---
+name: gemini
+version: "0.1.0"
+dsl_version: 3
+backend: http
+description: >
+  Query Google Gemini models and run LLM inference using the Gemini API.
+base_url: "https://generativelanguage.googleapis.com/v1beta"
+
+inputs:
+  GEMINI_API_KEY:
+    kind: secret
+    required: true
+    hint: >-
+      Google Gemini API key. Obtain one for free at Google AI Studio
+      (https://aistudio.google.com/app/apikey).
+
+test_queries:
+  - SELECT name, version FROM gemini.models LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────
+  # models — list available Gemini models
+  # ──────────────────────────────────────────────────────────────────────
+  - name: models
+    description: Lists all available Gemini models and their capabilities.
+    guide: >
+      Start with `SELECT name, version, description FROM gemini.models`.
+    request:
+      method: GET
+      path: /models
+      headers:
+        - name: x-goog-api-key
+          from: template
+          template: "{{input.GEMINI_API_KEY}}"
+    response:
+      rows_path:
+        - models
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      page_size:
+        default: 50
+        max: 50
+        query_param: pageSize
+      response_cursor_path:
+        - nextPageToken
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: The model name (e.g., models/gemini-flash-latest).
+        expr: {kind: path, path: [name]}
+      - name: base_model_id
+        type: Utf8
+        nullable: true
+        description: Base model ID to be passed to generateContent.
+        expr: {kind: path, path: [baseModelId]}
+      - name: supported_generation_methods
+        type: Json
+        nullable: true
+        description: Methods supported by the model (e.g., generateContent).
+        expr: {kind: path, path: [supportedGenerationMethods]}
+      - name: version
+        type: Utf8
+        nullable: true
+        description: Model version.
+        expr: {kind: path, path: [version]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Human-readable model name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Description of the model.
+        expr: {kind: path, path: [description]}
+      - name: input_token_limit
+        type: Int64
+        nullable: true
+        description: Maximum input tokens allowed.
+        expr: {kind: path, path: [inputTokenLimit]}
+      - name: output_token_limit
+        type: Int64
+        nullable: true
+        description: Maximum output tokens allowed.
+        expr: {kind: path, path: [outputTokenLimit]}
+      - name: temperature
+        type: Float64
+        nullable: true
+        description: Default temperature for the model.
+        expr: {kind: path, path: [temperature]}
+      - name: top_p
+        type: Float64
+        nullable: true
+        description: Default topP for the model.
+        expr: {kind: path, path: [topP]}
+      - name: top_k
+        type: Int64
+        nullable: true
+        description: Default topK for the model.
+        expr: {kind: path, path: [topK]}
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw model object.
+        expr: {kind: current_row}
+
+functions:
+  # ──────────────────────────────────────────────────────────────────────
+  # generate — run Gemini LLM inference
+  # ──────────────────────────────────────────────────────────────────────
+  - name: generate
+    description: >
+      Run prompt inference against a specific Gemini model (e.g. gemini-flash-latest).
+    args:
+      - name: model
+        required: true
+        bind:
+          arg: model
+      - name: prompt
+        required: true
+        bind:
+          arg: prompt
+      - name: temperature
+        required: false
+        bind:
+          arg: temperature
+    request:
+      method: POST
+      path: /models/{{arg.model}}:generateContent
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+        - name: x-goog-api-key
+          from: template
+          template: "{{input.GEMINI_API_KEY}}"
+      body:
+        - path: [contents, "0", role]
+          from: literal
+          value: user
+        - path: [contents, "0", parts, "0", text]
+          from: arg
+          key: prompt
+        - path: [generationConfig, temperature]
+          from: arg
+          key: temperature
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: response
+        type: Utf8
+        nullable: true
+        description: The generated text from Gemini.
+        expr:
+          kind: path
+          path: [candidates, "0", content, parts, "0", text]
+      - name: finish_reason
+        type: Utf8
+        nullable: true
+        description: Reason generation stopped.
+        expr:
+          kind: path
+          path: [candidates, "0", finishReason]
+      - name: prompt_token_count
+        type: Int64
+        nullable: true
+        description: Number of input tokens evaluated.
+        expr:
+          kind: path
+          path: [usageMetadata, promptTokenCount]
+      - name: candidates_token_count
+        type: Int64
+        nullable: true
+        description: Number of output tokens generated.
+        expr:
+          kind: path
+          path: [usageMetadata, candidatesTokenCount]
+      - name: total_token_count
+        type: Int64
+        nullable: true
+        description: Total token usage for the request.
+        expr:
+          kind: path
+          path: [usageMetadata, totalTokenCount]
+      - name: raw
+        type: Json
+        nullable: false
+        description: The raw response object from the API.
+        expr: {kind: current_row}

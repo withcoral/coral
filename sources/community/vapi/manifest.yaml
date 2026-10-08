@@ -1,0 +1,443 @@
+name: vapi
+version: 0.2.0
+dsl_version: 3
+backend: http
+description: Query calls, assistants, and phone_numbers from Vapi Voice AI.
+base_url: https://api.vapi.ai
+
+inputs:
+  VAPI_API_KEY:
+    kind: secret
+    required: true
+    hint: >
+      API key for the Vapi Voice AI platform. Generate one at
+      https://dashboard.vapi.ai/org/api-keys — any key with read access is
+      sufficient. The key is sent as a Bearer token on every request.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.VAPI_API_KEY}}"
+
+test_queries:
+  - SELECT id, type, status, cost, created_at FROM vapi.calls LIMIT 5
+  - SELECT id, name, model__provider, voice__provider FROM vapi.assistants LIMIT 5
+  - SELECT id, name, number, assistant_id FROM vapi.phone_numbers LIMIT 5
+
+tables:
+  - name: calls
+    description: Call logs from Vapi, including status, cost, transcript, and AI analysis results.
+    guide: |
+      The `type` column includes values such as inboundPhoneCall, outboundPhoneCall,
+      webCall, and vapi.websocketCall. Vapi may add further types; do not filter with
+      a closed IN list.
+      The `status` column includes values such as queued, ringing, in-progress,
+      forwarding, and ended. Additional non-happy-path statuses exist; avoid closed
+      enum filters.
+      Use `created_at_lt` and `created_at_gt` filters for time-windowed queries and
+      manual date-cursor pagination. Vapi defaults to 100 rows and accepts up to 1000
+      per request via the `limit` filter.
+      `analysis__summary` and `artifact__transcript` are null for in-progress or
+      very short calls. Join to vapi.assistants on assistant_id = id.
+      Use `phone_number_id_filter` to scope calls to a specific phone number without
+      scanning the full call history.
+    filters:
+      - name: created_at_gt
+        description: Return calls created after this ISO 8601 timestamp (maps to createdAtGt).
+      - name: created_at_lt
+        description: Return calls created before this ISO 8601 timestamp (maps to createdAtLt).
+      - name: assistant_id_filter
+        description: Filter calls by assistant ID (maps to assistantId query param).
+      - name: phone_number_id_filter
+        description: Filter calls by phone number ID (maps to phoneNumberId query param).
+      - name: limit
+        description: Maximum number of calls to return. Vapi defaults to 100, maximum is 1000.
+    request:
+      method: GET
+      path: /call
+      query:
+        - name: createdAtGt
+          from: filter
+          key: created_at_gt
+        - name: createdAtLt
+          from: filter
+          key: created_at_lt
+        - name: assistantId
+          from: filter
+          key: assistant_id_filter
+        - name: phoneNumberId
+          from: filter
+          key: phone_number_id_filter
+        - name: limit
+          from: filter
+          key: limit
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique call identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: org_id
+        type: Utf8
+        nullable: true
+        description: Organization ID that owns this call.
+        expr:
+          kind: path
+          path:
+            - orgId
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the call record was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the call record was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: type
+        type: Utf8
+        nullable: true
+        description: "Call type: inboundPhoneCall, outboundPhoneCall, webCall, vapi.websocketCall, and others."
+        expr:
+          kind: path
+          path:
+            - type
+      - name: status
+        type: Utf8
+        nullable: true
+        description: "Call status: queued, ringing, in-progress, forwarding, ended, and other non-happy-path values."
+        expr:
+          kind: path
+          path:
+            - status
+      - name: ended_reason
+        type: Utf8
+        nullable: true
+        description: Reason the call ended (e.g. customer-ended-call, assistant-ended-call).
+        expr:
+          kind: path
+          path:
+            - endedReason
+      - name: started_at
+        type: Timestamp
+        nullable: true
+        description: When the call was answered (ISO 8601); null if not yet started.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - startedAt
+      - name: ended_at
+        type: Timestamp
+        nullable: true
+        description: When the call ended (ISO 8601); null if still in progress.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - endedAt
+      - name: cost
+        type: Float64
+        nullable: true
+        description: Total cost of the call in USD.
+        expr:
+          kind: path
+          path:
+            - cost
+      - name: assistant_id
+        type: Utf8
+        nullable: true
+        description: ID of the assistant that handled the call. Join to vapi.assistants on id.
+        expr:
+          kind: path
+          path:
+            - assistantId
+      - name: phone_number_id
+        type: Utf8
+        nullable: true
+        description: ID of the phone number used. Join to vapi.phone_numbers on id.
+        expr:
+          kind: path
+          path:
+            - phoneNumberId
+      - name: analysis__summary
+        type: Utf8
+        nullable: true
+        description: AI-generated summary of the call. Null for in-progress or short calls.
+        expr:
+          kind: path
+          path:
+            - analysis
+            - summary
+      - name: analysis__success_evaluation
+        type: Utf8
+        nullable: true
+        description: AI evaluation of whether the call achieved its goal.
+        expr:
+          kind: path
+          path:
+            - analysis
+            - successEvaluation
+      - name: artifact__transcript
+        type: Utf8
+        nullable: true
+        description: Full call transcript. Null for in-progress or very short calls.
+        expr:
+          kind: path
+          path:
+            - artifact
+            - transcript
+      - name: cost_breakdown
+        type: Json
+        nullable: true
+        description: Detailed cost breakdown by component (LLM, TTS, STT, etc.).
+        expr:
+          kind: path
+          path:
+            - costBreakdown
+
+  - name: assistants
+    description: Configured Vapi voice AI assistants, including model and voice provider settings.
+    guide: |
+      `model__provider` identifies the LLM provider (e.g. openai, anthropic, google).
+      `voice__provider` identifies the TTS provider (e.g. 11labs, deepgram, playht).
+      Join to vapi.calls on id = assistant_id to see calls handled by each assistant.
+      Vapi defaults to 100 rows per request. Use `limit`, `created_at_gt`, and
+      `created_at_lt` to page through large assistant lists.
+    filters:
+      - name: created_at_gt
+        description: Return assistants created after this ISO 8601 timestamp (maps to createdAtGt).
+      - name: created_at_lt
+        description: Return assistants created before this ISO 8601 timestamp (maps to createdAtLt).
+      - name: limit
+        description: Maximum number of assistants to return. Vapi defaults to 100, maximum is 1000.
+    request:
+      method: GET
+      path: /assistant
+      query:
+        - name: createdAtGt
+          from: filter
+          key: created_at_gt
+        - name: createdAtLt
+          from: filter
+          key: created_at_lt
+        - name: limit
+          from: filter
+          key: limit
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique assistant identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: org_id
+        type: Utf8
+        nullable: true
+        description: Organization ID that owns this assistant.
+        expr:
+          kind: path
+          path:
+            - orgId
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable name for the assistant.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the assistant was created (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the assistant was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: model__provider
+        type: Utf8
+        nullable: true
+        description: LLM provider for this assistant (e.g. openai, anthropic, google).
+        expr:
+          kind: path
+          path:
+            - model
+            - provider
+      - name: model__model
+        type: Utf8
+        nullable: true
+        description: Specific LLM model name (e.g. gpt-4o, claude-3-5-sonnet).
+        expr:
+          kind: path
+          path:
+            - model
+            - model
+      - name: voice__provider
+        type: Utf8
+        nullable: true
+        description: TTS provider for this assistant (e.g. 11labs, deepgram, playht).
+        expr:
+          kind: path
+          path:
+            - voice
+            - provider
+      - name: voice__voice_id
+        type: Utf8
+        nullable: true
+        description: Voice ID within the TTS provider.
+        expr:
+          kind: path
+          path:
+            - voice
+            - voiceId
+      - name: first_message
+        type: Utf8
+        nullable: true
+        description: The opening message the assistant speaks when a call connects.
+        expr:
+          kind: path
+          path:
+            - firstMessage
+
+  - name: phone_numbers
+    description: Provisioned Vapi phone numbers and their associated assistants.
+    guide: |
+      `number` is in E.164 format (e.g. +14155552671).
+      Join to vapi.calls on id = phone_number_id to see calls made through each number.
+      `assistant_id` links to the default assistant assigned to inbound calls on this number.
+      Vapi defaults to 100 rows per request. Use `limit`, `created_at_gt`, and
+      `created_at_lt` to page through large phone number lists.
+    filters:
+      - name: created_at_gt
+        description: Return phone numbers created after this ISO 8601 timestamp (maps to createdAtGt).
+      - name: created_at_lt
+        description: Return phone numbers created before this ISO 8601 timestamp (maps to createdAtLt).
+      - name: limit
+        description: Maximum number of phone numbers to return. Vapi defaults to 100, maximum is 1000.
+    request:
+      method: GET
+      path: /phone-number
+      query:
+        - name: createdAtGt
+          from: filter
+          key: created_at_gt
+        - name: createdAtLt
+          from: filter
+          key: created_at_lt
+        - name: limit
+          from: filter
+          key: limit
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique phone number identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: org_id
+        type: Utf8
+        nullable: true
+        description: Organization ID that owns this phone number.
+        expr:
+          kind: path
+          path:
+            - orgId
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Human-readable label for the phone number.
+        expr:
+          kind: path
+          path:
+            - name
+      - name: number
+        type: Utf8
+        nullable: true
+        description: Phone number in E.164 format (e.g. +14155552671).
+        expr:
+          kind: path
+          path:
+            - number
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the phone number was provisioned (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - createdAt
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the phone number record was last updated (ISO 8601).
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - updatedAt
+      - name: assistant_id
+        type: Utf8
+        nullable: true
+        description: Default assistant for inbound calls. Join to vapi.assistants on id.
+        expr:
+          kind: path
+          path:
+            - assistantId

@@ -34,6 +34,17 @@ impl fmt::Display for WorkspaceName {
     }
 }
 
+/// Names the legacy `default` workspace, which is now an ordinary name.
+///
+/// Test-only, and `#[cfg(test)]` is what keeps it that way: no production path
+/// can reach for this impl to stand in for "the caller's workspace", which
+/// comes from their memberships. Nothing provisions or protects the name any
+/// more either. One production resolver of it survives — the CLI falls back to
+/// `DEFAULT_WORKSPACE_ID` when neither `--workspace` nor `CORAL_WORKSPACE`
+/// names a workspace (`coral-cli/src/lib.rs`) — and the MCP workspace-binding
+/// slice (#2210) closes that one. This impl exists so fixtures can still spell
+/// the one workspace older installs were given.
+#[cfg(test)]
 impl Default for WorkspaceName {
     fn default() -> Self {
         Self(DEFAULT_WORKSPACE_ID.to_string())
@@ -47,5 +58,21 @@ mod tests {
     #[test]
     fn parses_default_workspace_name() {
         assert_eq!(WorkspaceName::default().as_str(), DEFAULT_WORKSPACE_ID);
+    }
+
+    /// `default` carries no reserved status, so it round-trips through the same
+    /// parser every other name does and compares equal to nothing else.
+    #[test]
+    fn the_legacy_default_name_is_an_ordinary_parsed_name() {
+        assert_eq!(
+            WorkspaceName::parse(DEFAULT_WORKSPACE_ID).expect("parse legacy default name"),
+            WorkspaceName::default()
+        );
+        for ordinary in ["default-team", "work"] {
+            assert_ne!(
+                WorkspaceName::parse(ordinary).expect("parse ordinary name"),
+                WorkspaceName::default()
+            );
+        }
     }
 }

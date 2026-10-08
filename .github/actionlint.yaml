@@ -1,0 +1,15 @@
+# Configuration for actionlint (https://github.com/rhysd/actionlint).
+#
+# Our workflows run on Blacksmith runners, whose labels actionlint cannot know
+# about. Without this list every `runs-on:` is reported as an unknown label,
+# which drowns out real findings. Keep it in sync when adding a runner size:
+#
+#   grep -rhoE '\bblacksmith-[a-z0-9.-]+' .github/ | sort -u
+self-hosted-runner:
+  labels:
+    - blacksmith-2vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404-arm
+    - blacksmith-4vcpu-windows-2025
+    - blacksmith-6vcpu-macos-26
+    - blacksmith-8vcpu-ubuntu-2404

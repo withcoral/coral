@@ -1,0 +1,768 @@
+name: openmetadata
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query OpenMetadata tables, dashboards, pipelines, users, teams, and glossary
+  terms for data catalog, ownership, and governance analysis.
+base_url: "{{input.OPENMETADATA_API_BASE}}"
+
+inputs:
+  OPENMETADATA_API_BASE:
+    kind: variable
+    default: http://localhost:8585/api
+    hint: |
+      Base URL for your OpenMetadata API, without a trailing slash.
+      Local quickstart example: http://localhost:8585/api.
+      Remote example: https://openmetadata.example.com/api.
+  OPENMETADATA_JWT_TOKEN:
+    kind: secret
+    hint: |
+      OpenMetadata JWT token or bot token. Use a token with read access to
+      catalog entities, governance metadata, users, and teams.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.OPENMETADATA_JWT_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, fully_qualified_name FROM openmetadata.tables LIMIT 1
+  - SELECT id, name FROM openmetadata.users LIMIT 1
+
+tables:
+  - name: tables
+    description: OpenMetadata table entities with ownership, tags, domains, and column metadata.
+    guide: |
+      Each row is one cataloged table. Use `fully_qualified_name` to join with
+      external naming conventions and `owners` to audit stewardship. OpenMetadata
+      returns non-deleted entities by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted entities.
+    filters:
+      - name: include
+    request:
+      method: GET
+      path: /v1/tables
+      query:
+        - name: fields
+          from: literal
+          value: owners,tags,domains,columns
+        - name: include
+          from: filter
+          key: include
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [paging, after]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Table UUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Table name.
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: Fully qualified table name.
+        expr: {kind: path, path: [fullyQualifiedName]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Table description.
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: Database service name.
+        expr: {kind: path, path: [service, name]}
+      - name: database_name
+        type: Utf8
+        nullable: true
+        description: Parent database name.
+        expr: {kind: path, path: [database, name]}
+      - name: database_schema_name
+        type: Utf8
+        nullable: true
+        description: Parent schema name.
+        expr: {kind: path, path: [databaseSchema, name]}
+      - name: owners
+        type: Utf8
+        nullable: true
+        description: Comma-joined owner names.
+        expr:
+          kind: join_array_path
+          path: [owners]
+          item_path: [name]
+          separator: ","
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-joined tag FQNs.
+        expr:
+          kind: join_array_path
+          path: [tags]
+          item_path: [tagFQN]
+          separator: ","
+      - name: domains
+        type: Utf8
+        nullable: true
+        description: Comma-joined assigned domain names.
+        expr:
+          kind: join_array_path
+          path: [domains]
+          item_path: [name]
+          separator: ","
+      - name: columns
+        type: Json
+        nullable: true
+        description: Column metadata returned by OpenMetadata.
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [updatedAt]}
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: User that last updated the entity.
+        expr: {kind: path, path: [updatedBy]}
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
+
+  - name: dashboards
+    description: OpenMetadata dashboard entities from BI tools such as Looker, Superset, or Tableau.
+    guide: |
+      Use this table to audit BI assets ingested into OpenMetadata. OpenMetadata
+      returns non-deleted entities by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted dashboards.
+    filters:
+      - name: include
+    request:
+      method: GET
+      path: /v1/dashboards
+      query:
+        - name: fields
+          from: literal
+          value: owners,tags,domains,charts
+        - name: include
+          from: filter
+          key: include
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [paging, after]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Dashboard UUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Dashboard name.
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: Fully qualified dashboard name.
+        expr: {kind: path, path: [fullyQualifiedName]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Dashboard description.
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: Dashboard service name.
+        expr: {kind: path, path: [service, name]}
+      - name: owners
+        type: Utf8
+        nullable: true
+        description: Comma-joined owner names.
+        expr:
+          kind: join_array_path
+          path: [owners]
+          item_path: [name]
+          separator: ","
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-joined tag FQNs.
+        expr:
+          kind: join_array_path
+          path: [tags]
+          item_path: [tagFQN]
+          separator: ","
+      - name: domains
+        type: Utf8
+        nullable: true
+        description: Comma-joined assigned domain names.
+        expr:
+          kind: join_array_path
+          path: [domains]
+          item_path: [name]
+          separator: ","
+      - name: charts
+        type: Json
+        nullable: true
+        description: Charts referenced by the dashboard.
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [updatedAt]}
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: User that last updated the entity.
+        expr: {kind: path, path: [updatedBy]}
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
+
+  - name: pipelines
+    description: OpenMetadata pipeline entities and orchestration metadata.
+    guide: |
+      Use this table to inventory pipeline metadata and ownership. OpenMetadata
+      returns non-deleted entities by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted pipelines.
+    filters:
+      - name: include
+    request:
+      method: GET
+      path: /v1/pipelines
+      query:
+        - name: fields
+          from: literal
+          value: owners,tags,tasks,followers
+        - name: include
+          from: filter
+          key: include
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [paging, after]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Pipeline UUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Pipeline name.
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: Fully qualified pipeline name.
+        expr: {kind: path, path: [fullyQualifiedName]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Pipeline description.
+      - name: service_name
+        type: Utf8
+        nullable: true
+        description: Pipeline service name.
+        expr: {kind: path, path: [service, name]}
+      - name: owners
+        type: Utf8
+        nullable: true
+        description: Comma-joined owner names.
+        expr:
+          kind: join_array_path
+          path: [owners]
+          item_path: [name]
+          separator: ","
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-joined tag FQNs.
+        expr:
+          kind: join_array_path
+          path: [tags]
+          item_path: [tagFQN]
+          separator: ","
+      - name: tasks
+        type: Json
+        nullable: true
+        description: Pipeline task metadata.
+      - name: followers
+        type: Utf8
+        nullable: true
+        description: Comma-joined follower names.
+        expr:
+          kind: join_array_path
+          path: [followers]
+          item_path: [name]
+          separator: ","
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [updatedAt]}
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: User that last updated the entity.
+        expr: {kind: path, path: [updatedBy]}
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
+
+  - name: users
+    description: OpenMetadata users.
+    guide: |
+      Use this table to audit OpenMetadata users, teams, and roles. OpenMetadata
+      returns non-deleted users by default; use `include = 'all'` or
+      `include = 'deleted'` when auditing soft-deleted users.
+    filters:
+      - name: include
+    request:
+      method: GET
+      path: /v1/users
+      query:
+        - name: fields
+          from: literal
+          value: teams,roles
+        - name: include
+          from: filter
+          key: include
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [paging, after]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: User UUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Username.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: User email address.
+      - name: is_admin
+        type: Boolean
+        nullable: true
+        description: Whether the user is an admin.
+        expr: {kind: path, path: [isAdmin]}
+      - name: teams
+        type: Utf8
+        nullable: true
+        description: Comma-joined team names.
+        expr:
+          kind: join_array_path
+          path: [teams]
+          item_path: [name]
+          separator: ","
+      - name: roles
+        type: Utf8
+        nullable: true
+        description: Comma-joined role names.
+        expr:
+          kind: join_array_path
+          path: [roles]
+          item_path: [name]
+          separator: ","
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [updatedAt]}
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: User that last updated the entity.
+        expr: {kind: path, path: [updatedBy]}
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
+
+  - name: teams
+    description: OpenMetadata teams.
+    guide: |
+      Use this table to inspect team hierarchy, users, owners, domains, and
+      policy metadata. OpenMetadata returns non-deleted teams by default; use
+      `include = 'all'` or `include = 'deleted'` when auditing soft-deleted
+      teams.
+    filters:
+      - name: include
+    request:
+      method: GET
+      path: /v1/teams
+      query:
+        - name: fields
+          from: literal
+          value: users,parents,owners,children,policies,domains
+        - name: include
+          from: filter
+          key: include
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [paging, after]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Team UUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Team name.
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Team description.
+      - name: team_type
+        type: Utf8
+        nullable: true
+        description: OpenMetadata team type.
+        expr: {kind: path, path: [teamType]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Team email address.
+      - name: users
+        type: Utf8
+        nullable: true
+        description: Comma-joined user names.
+        expr:
+          kind: join_array_path
+          path: [users]
+          item_path: [name]
+          separator: ","
+      - name: parents
+        type: Utf8
+        nullable: true
+        description: Comma-joined parent team names.
+        expr:
+          kind: join_array_path
+          path: [parents]
+          item_path: [name]
+          separator: ","
+      - name: owners
+        type: Utf8
+        nullable: true
+        description: Comma-joined owner names.
+        expr:
+          kind: join_array_path
+          path: [owners]
+          item_path: [name]
+          separator: ","
+      - name: children
+        type: Utf8
+        nullable: true
+        description: Comma-joined child team names.
+        expr:
+          kind: join_array_path
+          path: [children]
+          item_path: [name]
+          separator: ","
+      - name: domains
+        type: Utf8
+        nullable: true
+        description: Comma-joined assigned domain names.
+        expr:
+          kind: join_array_path
+          path: [domains]
+          item_path: [name]
+          separator: ","
+      - name: policies
+        type: Json
+        nullable: true
+        description: Policies associated with this team, when returned.
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [updatedAt]}
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: User that last updated the entity.
+        expr: {kind: path, path: [updatedBy]}
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this entity is soft-deleted.
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include
+
+  - name: glossary_terms
+    description: OpenMetadata glossary terms with ownership, tags, domains, and relationships.
+    guide: |
+      Use `glossary` or `parent` to narrow glossary terms by fully qualified
+      glossary or parent term name. OpenMetadata returns non-deleted terms by
+      default; use `include = 'all'` or `include = 'deleted'` when auditing
+      soft-deleted terms.
+    filters:
+      - name: glossary
+      - name: parent
+      - name: include
+    request:
+      method: GET
+      path: /v1/glossaryTerms
+      query:
+        - name: fields
+          from: literal
+          value: owners,tags,domains,relatedTerms,children,reviewers
+        - name: glossary
+          from: filter
+          key: glossary
+        - name: parent
+          from: filter
+          key: parent
+        - name: include
+          from: filter
+          key: include
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: cursor_query
+      cursor_param: after
+      response_cursor_path: [paging, after]
+      page_size:
+        default: 100
+        max: 1000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Glossary term UUID.
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Term name.
+      - name: fully_qualified_name
+        type: Utf8
+        nullable: true
+        description: Fully qualified term name.
+        expr: {kind: path, path: [fullyQualifiedName]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: Display name.
+        expr: {kind: path, path: [displayName]}
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Term description.
+      - name: glossary_name
+        type: Utf8
+        nullable: true
+        description: Parent glossary name.
+        expr: {kind: path, path: [glossary, name]}
+      - name: owners
+        type: Utf8
+        nullable: true
+        description: Comma-joined owner names.
+        expr:
+          kind: join_array_path
+          path: [owners]
+          item_path: [name]
+          separator: ","
+      - name: tags
+        type: Utf8
+        nullable: true
+        description: Comma-joined tag FQNs.
+        expr:
+          kind: join_array_path
+          path: [tags]
+          item_path: [tagFQN]
+          separator: ","
+      - name: domains
+        type: Utf8
+        nullable: true
+        description: Comma-joined assigned domain names.
+        expr:
+          kind: join_array_path
+          path: [domains]
+          item_path: [name]
+          separator: ","
+      - name: synonyms
+        type: Json
+        nullable: true
+        description: Glossary term synonyms.
+      - name: children
+        type: Json
+        nullable: true
+        description: Child glossary terms.
+      - name: related_terms
+        type: Json
+        nullable: true
+        description: Related glossary terms.
+        expr: {kind: path, path: [relatedTerms]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update timestamp.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr: {kind: path, path: [updatedAt]}
+      - name: updated_by
+        type: Utf8
+        nullable: true
+        description: User that last updated the entity.
+        expr: {kind: path, path: [updatedBy]}
+      - name: deleted
+        type: Boolean
+        nullable: true
+        description: Whether this entity is soft-deleted.
+      - name: glossary
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional glossary fully qualified name filter.
+        expr:
+          kind: from_filter
+          key: glossary
+      - name: parent
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional parent glossary term fully qualified name filter.
+        expr:
+          kind: from_filter
+          key: parent
+      - name: include
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional include filter, such as all, deleted, or non-deleted.
+        expr:
+          kind: from_filter
+          key: include

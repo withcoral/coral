@@ -1,0 +1,379 @@
+dsl_version: 3
+version: 1.0.0
+name: chesscom
+description: >-
+  Chess.com public API. Query player ratings, records, and game history.
+  No authentication required.
+backend: http
+base_url: https://api.chess.com/pub
+
+tables:
+  - name: stats
+    description: >-
+      Player rating statistics across rapid, blitz, bullet, and daily formats.
+      Use the username filter to specify which player to query.
+    filters:
+      - name: username
+        required: true
+        description: Chess.com username to look up.
+    request:
+      path: /player/{{filter.username}}/stats
+      method: GET
+    columns:
+      - name: username
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: username
+      - name: chess_rapid__last__rating
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_rapid
+            - last
+            - rating
+      - name: chess_rapid__last__date
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_rapid
+            - last
+            - date
+      - name: chess_rapid__record__win
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_rapid
+            - record
+            - win
+      - name: chess_rapid__record__loss
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_rapid
+            - record
+            - loss
+      - name: chess_rapid__record__draw
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_rapid
+            - record
+            - draw
+      - name: chess_blitz__last__rating
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_blitz
+            - last
+            - rating
+      - name: chess_blitz__last__date
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_blitz
+            - last
+            - date
+      - name: chess_blitz__record__win
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_blitz
+            - record
+            - win
+      - name: chess_blitz__record__loss
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_blitz
+            - record
+            - loss
+      - name: chess_blitz__record__draw
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_blitz
+            - record
+            - draw
+      - name: chess_bullet__last__rating
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_bullet
+            - last
+            - rating
+      - name: chess_bullet__last__date
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_bullet
+            - last
+            - date
+      - name: chess_bullet__record__win
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_bullet
+            - record
+            - win
+      - name: chess_bullet__record__loss
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_bullet
+            - record
+            - loss
+      - name: chess_bullet__record__draw
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_bullet
+            - record
+            - draw
+      - name: chess_daily__last__rating
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_daily
+            - last
+            - rating
+      - name: chess_daily__last__date
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_daily
+            - last
+            - date
+      - name: chess_daily__record__win
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_daily
+            - record
+            - win
+      - name: chess_daily__record__loss
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_daily
+            - record
+            - loss
+      - name: chess_daily__record__draw
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - chess_daily
+            - record
+            - draw
+
+  - name: profile
+    description: Player public profile information.
+    filters:
+      - name: username
+        required: true
+        description: Chess.com username to look up.
+    request:
+      path: /player/{{filter.username}}
+      method: GET
+    columns:
+      - name: requested_username
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: username
+      - name: username
+        type: Utf8
+      - name: player_id
+        type: Int64
+      - name: name
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: followers
+        type: Int64
+      - name: country
+        type: Utf8
+      - name: location
+        type: Utf8
+      - name: joined
+        type: Int64
+      - name: last_online
+        type: Int64
+      - name: is_streamer
+        type: Boolean
+      - name: verified
+        type: Boolean
+
+  - name: games
+    description: >-
+      Game history for a given year and month. Includes PGN, time control,
+      results, and accuracy scores.
+    filters:
+      - name: username
+        required: true
+        description: Chess.com username to look up.
+      - name: year
+        required: true
+        description: Year for game archive (e.g. 2026).
+      - name: month
+        required: true
+        description: Month for game archive, zero-padded (e.g. 05).
+    request:
+      path: /player/{{filter.username}}/games/{{filter.year}}/{{filter.month}}
+      method: GET
+    response:
+      rows_path:
+        - games
+    columns:
+      - name: username
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: username
+      - name: year
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: year
+      - name: month
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: month
+      - name: url
+        type: Utf8
+      - name: pgn
+        type: Utf8
+      - name: time_class
+        type: Utf8
+      - name: time_control
+        type: Utf8
+      - name: end_time
+        type: Int64
+      - name: rated
+        type: Boolean
+      - name: rules
+        type: Utf8
+      - name: white__username
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - white
+            - username
+      - name: white__rating
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - white
+            - rating
+      - name: white__result
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - white
+            - result
+      - name: black__username
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - black
+            - username
+      - name: black__rating
+        type: Int64
+        expr:
+          kind: path
+          path:
+            - black
+            - rating
+      - name: black__result
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - black
+            - result
+      - name: accuracies__white
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - accuracies
+            - white
+      - name: accuracies__black
+        type: Float64
+        expr:
+          kind: path
+          path:
+            - accuracies
+            - black
+
+  - name: clubs
+    description: Chess clubs the player is a member of.
+    filters:
+      - name: username
+        required: true
+        description: Chess.com username to look up.
+    request:
+      path: /player/{{filter.username}}/clubs
+      method: GET
+    response:
+      rows_path:
+        - clubs
+    columns:
+      - name: username
+        type: Utf8
+        expr:
+          kind: from_filter
+          key: username
+      - name: club_url
+        type: Utf8
+        expr:
+          kind: path
+          path:
+            - "@id"
+      - name: name
+        type: Utf8
+      - name: last_activity
+        type: Int64
+      - name: icon
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: joined
+        type: Int64
+
+test_queries:
+  - >-
+    SELECT chess_blitz__last__rating, chess_rapid__last__rating,
+    chess_blitz__record__win, chess_blitz__record__loss
+    FROM chesscom.stats WHERE username = 'hikaru'
+  - >-
+    SELECT url, time_class, white__username, white__result,
+    black__username, black__result
+    FROM chesscom.games
+    WHERE username = 'hikaru' AND year = '2026' AND month = '01'
+    LIMIT 5

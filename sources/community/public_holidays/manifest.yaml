@@ -1,0 +1,127 @@
+name: public_holidays
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch public holidays, available countries, and long weekends from the free Nager.Date API.
+base_url: https://date.nager.at/api/v3
+test_queries:
+  - SELECT * FROM public_holidays.available_countries LIMIT 5
+  - SELECT * FROM public_holidays.holidays WHERE year = '2023' AND country_code = 'US' LIMIT 5
+  - SELECT * FROM public_holidays.long_weekend WHERE year = '2023' AND country_code = 'US' LIMIT 5
+tables:
+  - name: available_countries
+    description: List all available countries supported by the API.
+    request:
+      method: GET
+      path: /AvailableCountries
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: country_code
+        type: Utf8
+        expr: {kind: path, path: [countryCode]}
+      - name: name
+        type: Utf8
+        expr: {kind: path, path: [name]}
+
+  - name: holidays
+    description: Fetch public holidays for a specific country and year.
+    filters:
+      - name: year
+        required: true
+      - name: country_code
+        required: true
+    request:
+      method: GET
+      path: /PublicHolidays/{{filter.year}}/{{filter.country_code}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: year
+        type: Utf8
+        expr: {kind: from_filter, key: year}
+      - name: date
+        type: Utf8
+        expr: {kind: path, path: [date]}
+      - name: local_name
+        type: Utf8
+        expr: {kind: path, path: [localName]}
+      - name: name
+        type: Utf8
+        expr: {kind: path, path: [name]}
+      - name: country_code
+        type: Utf8
+        expr: {kind: path, path: [countryCode]}
+      - name: fixed
+        type: Boolean
+        expr: {kind: path, path: [fixed]}
+      - name: global
+        type: Boolean
+        expr: {kind: path, path: [global]}
+      - name: counties
+        type: Json
+        expr: {kind: path, path: [counties]}
+      - name: launch_year
+        type: Int64
+        expr: {kind: path, path: [launchYear]}
+      - name: types
+        type: Json
+        expr: {kind: path, path: [types]}
+
+  - name: long_weekend
+    description: Fetch long weekends for a specific country and year.
+    filters:
+      - name: year
+        required: true
+      - name: country_code
+        required: true
+      - name: subdivision_code
+        required: false
+      - name: available_bridge_days
+        required: false
+    request:
+      method: GET
+      path: /LongWeekend/{{filter.year}}/{{filter.country_code}}
+      query:
+        - name: subdivisionCode
+          from: filter
+          key: subdivision_code
+        - name: availableBridgeDays
+          from: filter_int
+          key: available_bridge_days
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: year
+        type: Utf8
+        expr: {kind: from_filter, key: year}
+      - name: country_code
+        type: Utf8
+        expr: {kind: from_filter, key: country_code}
+      - name: start_date
+        type: Utf8
+        expr: {kind: path, path: [startDate]}
+      - name: end_date
+        type: Utf8
+        expr: {kind: path, path: [endDate]}
+      - name: day_count
+        type: Int64
+        expr: {kind: path, path: [dayCount]}
+      - name: need_bridge_day
+        type: Boolean
+        expr: {kind: path, path: [needBridgeDay]}
+      - name: bridge_days
+        type: Json
+        expr: {kind: path, path: [bridgeDays]}
+      - name: subdivision_code
+        type: Utf8
+        expr: {kind: from_filter, key: subdivision_code}
+      - name: available_bridge_days
+        type: Int64
+        expr: {kind: from_filter, key: available_bridge_days}

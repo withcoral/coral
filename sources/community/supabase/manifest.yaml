@@ -1,0 +1,740 @@
+name: supabase
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Supabase Management API platform metadata — organizations, projects,
+  branches, edge functions, secrets inventory, storage buckets, service
+  health, database backups, and PostgREST configuration. This source covers
+  the Management API (api.supabase.com) only; it does not query the
+  PostgREST data-plane or project Postgres databases.
+base_url: https://api.supabase.com
+rate_limit:
+  remaining_header: x-ratelimit-remaining
+  reset_header: x-ratelimit-reset
+inputs:
+  SUPABASE_ACCESS_TOKEN:
+    kind: secret
+    hint: >-
+      Personal access token (PAT) for the Supabase Management API.
+      Generate one at https://supabase.com/dashboard/account/tokens.
+      PATs carry the same privileges as your user account — use
+      fine-grained permissions to restrict the token to read-only
+      organization, project, edge-function, and health scopes.
+      See the Management API docs for OAuth2 alternatives.
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.SUPABASE_ACCESS_TOKEN}}"
+test_queries:
+  - SELECT id, name, slug FROM supabase.organizations LIMIT 1
+  - SELECT id, name, region, status FROM supabase.projects LIMIT 1
+tables:
+  # ──────────────────────────────────────────────
+  # Organizations
+  # ──────────────────────────────────────────────
+  - name: organizations
+    description: >
+      All Supabase organizations accessible to the authenticated user.
+      Each row includes the organization's UUID, display name, and URL slug.
+      Use the slug value as a filter in the organization_members table to
+      discover team composition.
+    guide: >
+      Start with `SELECT id, name, slug FROM supabase.organizations`.
+      The `slug` column is needed as a required filter for the
+      `organization_members` table.
+    request:
+      method: GET
+      path: /v1/organizations
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Organization UUID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Display name of the organization.
+        expr: {kind: path, path: [name]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: >-
+          URL-safe slug used in API paths and dashboard URLs.
+          Pass this value to the organization_members table's slug filter.
+        expr: {kind: path, path: [slug]}
+
+  # ──────────────────────────────────────────────
+  # Projects
+  # ──────────────────────────────────────────────
+  - name: projects
+    description: >
+      All Supabase projects accessible to the authenticated user across all
+      organizations. Each row includes project configuration, region, status,
+      owning organization, and database connection metadata. Use the project
+      ref as a filter for edge_functions, secrets, storage_buckets,
+      service_health, backups, and branches tables.
+    guide: >
+      Start with `SELECT id, ref, name, region, status, created_at FROM
+      supabase.projects LIMIT 10`. The `ref` column (20-char alphanumeric
+      string) is the required filter for project-scoped tables like
+      edge_functions, secrets, storage_buckets, service_health, backups,
+      and branches. The `database__host` column gives you the Postgres
+      connection hostname.
+    request:
+      method: GET
+      path: /v1/projects
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Project UUID.
+        expr: {kind: path, path: [id]}
+      - name: ref
+        type: Utf8
+        nullable: false
+        description: >-
+          20-character alphanumeric project ref used in API paths and as
+          the project_ref filter for other tables.
+        expr: {kind: path, path: [ref]}
+      - name: organization_id
+        type: Utf8
+        nullable: true
+        description: UUID of the owning organization.
+        expr: {kind: path, path: [organization_id]}
+      - name: organization_slug
+        type: Utf8
+        nullable: true
+        description: Slug of the owning organization.
+        expr: {kind: path, path: [organization_slug]}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Project display name.
+        expr: {kind: path, path: [name]}
+      - name: region
+        type: Utf8
+        nullable: true
+        description: Cloud region where the project is hosted (e.g. us-east-1).
+        expr: {kind: path, path: [region]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Current project status. Common values include ACTIVE_HEALTHY,
+          INACTIVE, COMING_UP, GOING_DOWN, INIT_FAILED, REMOVED,
+          RESTORING, UPGRADING, and PAUSING.
+        expr: {kind: path, path: [status]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the project was created (ISO 8601).
+        expr: {kind: path, path: [created_at]}
+      - name: database__host
+        type: Utf8
+        nullable: true
+        description: Postgres connection hostname.
+        expr: {kind: path, path: [database, host]}
+      - name: database__version
+        type: Utf8
+        nullable: true
+        description: Postgres version string (e.g. 15.1.1.61).
+        expr: {kind: path, path: [database, version]}
+      - name: database__postgres_engine
+        type: Utf8
+        nullable: true
+        description: Postgres engine variant (e.g. postgresql).
+        expr: {kind: path, path: [database, postgres_engine]}
+      - name: database__release_channel
+        type: Utf8
+        nullable: true
+        description: Database release channel (e.g. ga, beta).
+        expr: {kind: path, path: [database, release_channel]}
+
+  # ──────────────────────────────────────────────
+  # Organization members
+  # ──────────────────────────────────────────────
+  - name: organization_members
+    description: >
+      Members of a specific Supabase organization. Returns each member's
+      user ID, display name, email, assigned role, and MFA status. Requires
+      the organization slug as a filter - use the organizations table to
+      discover available slugs.
+    guide: >
+      Always filter by slug: `SELECT user_name, email, role_name, mfa_enabled
+      FROM supabase.organization_members WHERE slug = 'my-org'`. Discover
+      slugs first with `SELECT slug FROM supabase.organizations`.
+    filters:
+      - name: slug
+        required: true
+    request:
+      method: GET
+      path: /v1/organizations/{{filter.slug}}/members
+    response:
+      rows_path: []
+    columns:
+      - name: user_id
+        type: Utf8
+        nullable: false
+        description: Member's Supabase user UUID.
+        expr: {kind: path, path: [user_id]}
+      - name: user_name
+        type: Utf8
+        nullable: true
+        description: Username or display name of the member.
+        expr: {kind: path, path: [user_name]}
+      - name: email
+        type: Utf8
+        nullable: true
+        description: Member's email address.
+        expr: {kind: path, path: [email]}
+      - name: role_name
+        type: Utf8
+        nullable: true
+        description: >-
+          Role assigned to the member within the organization
+          (e.g. Owner, Administrator, Developer).
+        expr: {kind: path, path: [role_name]}
+      - name: mfa_enabled
+        type: Boolean
+        nullable: true
+        description: Whether multi-factor authentication is enabled for this member.
+        expr: {kind: path, path: [mfa_enabled]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the organization slug filter.
+        expr:
+          kind: from_filter
+          key: slug
+
+  # ──────────────────────────────────────────────
+  # Edge Functions
+  # ──────────────────────────────────────────────
+  - name: edge_functions
+    description: >
+      Edge Functions deployed to a specific project. Each row includes the
+      function's metadata, deployment version, JWT verification setting, and
+      entrypoint configuration. Requires the project ref as a filter - use
+      the projects table to discover available refs.
+    guide: >
+      Always filter by project_ref: `SELECT id, name, slug, status, version,
+      verify_jwt FROM supabase.edge_functions WHERE project_ref =
+      'abcdefghijklmnopqrst'`. Discover project refs first with
+      `SELECT ref, name FROM supabase.projects`.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/functions
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Function UUID.
+        expr: {kind: path, path: [id]}
+      - name: slug
+        type: Utf8
+        nullable: true
+        description: URL-safe function slug used in invocation URLs.
+        expr: {kind: path, path: [slug]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the function.
+        expr: {kind: path, path: [name]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Function status. Common values include ACTIVE and THROTTLED.
+        expr: {kind: path, path: [status]}
+      - name: version
+        type: Int64
+        nullable: true
+        description: Current deployment version number (increments on each deploy).
+        expr: {kind: path, path: [version]}
+      - name: verify_jwt
+        type: Boolean
+        nullable: true
+        description: Whether JWT verification is required for invocations.
+        expr: {kind: path, path: [verify_jwt]}
+      - name: import_map
+        type: Boolean
+        nullable: true
+        description: Whether the function uses a Deno import map.
+        expr: {kind: path, path: [import_map]}
+      - name: entrypoint_path
+        type: Utf8
+        nullable: true
+        description: Path to the function's entrypoint file.
+        expr: {kind: path, path: [entrypoint_path]}
+      - name: import_map_path
+        type: Utf8
+        nullable: true
+        description: Path to the import map file, if used.
+        expr: {kind: path, path: [import_map_path]}
+      - name: ezbr_sha256
+        type: Utf8
+        nullable: true
+        description: SHA-256 hash of the deployed function bundle.
+        expr: {kind: path, path: [ezbr_sha256]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Function creation time (epoch milliseconds).
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last update time (epoch milliseconds).
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated_at
+      - name: project_ref
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  # ──────────────────────────────────────────────
+  # Secrets
+  # ──────────────────────────────────────────────
+  - name: secrets
+    description: >
+      Project secrets inventory (environment variables available to Edge
+      Functions). The upstream Supabase API response includes secret
+      values, but this Coral table intentionally omits the value field and
+      exposes only secret names and last-updated timestamps. Requires the
+      project ref as a filter.
+    guide: >
+      Always filter by project_ref: `SELECT name, updated_at FROM
+      supabase.secrets WHERE project_ref = 'abcdefghijklmnopqrst'`.
+      This table is inventory-only: Supabase returns values upstream, but
+      Coral intentionally does not expose the value field in SQL results.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/secrets
+    response:
+      rows_path: []
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Secret key name (e.g. MY_API_KEY).
+        expr: {kind: path, path: [name]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the secret was last updated (ISO 8601).
+        expr: {kind: path, path: [updated_at]}
+      - name: project_ref
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  # ──────────────────────────────────────────────
+  # Storage Buckets
+  # ──────────────────────────────────────────────
+  - name: storage_buckets
+    description: >
+      Storage buckets configured for a project. Each row includes the
+      bucket's visibility setting (public/private), owner, and timestamps.
+      Requires the project ref as a filter.
+    guide: >
+      Always filter by project_ref: `SELECT id, name, public, owner,
+      created_at FROM supabase.storage_buckets WHERE project_ref =
+      'abcdefghijklmnopqrst'`. Public buckets allow unauthenticated
+      downloads; private buckets require a valid JWT.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/storage/buckets
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Bucket identifier (also used as the bucket name in URLs).
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Bucket display name.
+        expr: {kind: path, path: [name]}
+      - name: owner
+        type: Utf8
+        nullable: true
+        description: UUID of the user who created the bucket.
+        expr: {kind: path, path: [owner]}
+      - name: public
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the bucket allows public (unauthenticated) access
+          to its objects.
+        expr: {kind: path, path: [public]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the bucket was created (ISO 8601).
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the bucket was last updated (ISO 8601).
+        expr: {kind: path, path: [updated_at]}
+      - name: project_ref
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  # ──────────────────────────────────────────────
+  # Service Health
+  # ──────────────────────────────────────────────
+  - name: service_health
+    description: >
+      Health status of one service within a project. Returns whether the
+      service (auth, realtime, storage, rest, etc.) is healthy, along with
+      version info and any error messages. Requires the project ref and one
+      service name as filters.
+    guide: >
+      Always filter by project_ref and service: `SELECT name, healthy,
+      status, info__version, error FROM supabase.service_health WHERE
+      project_ref = 'abcdefghijklmnopqrst' AND service = 'auth'`. Common
+      service names are auth, realtime, storage, and rest. Query multiple
+      services with separate SQL statements.
+    filters:
+      - name: project_ref
+        required: true
+      - name: service
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/health
+      query:
+        - name: services
+          from: filter
+          key: service
+    response:
+      rows_path: []
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: >-
+          Service name (e.g. auth, realtime, storage, rest).
+        expr: {kind: path, path: [name]}
+      - name: healthy
+        type: Boolean
+        nullable: true
+        description: Whether the service is currently healthy.
+        expr: {kind: path, path: [healthy]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Service status (e.g. ACTIVE_HEALTHY, COMING_UP, GOING_DOWN).
+        expr: {kind: path, path: [status]}
+      - name: error
+        type: Utf8
+        nullable: true
+        description: Error message if the service is unhealthy, null otherwise.
+        expr: {kind: path, path: [error]}
+      - name: info__name
+        type: Utf8
+        nullable: true
+        description: >-
+          Internal service name (e.g. GoTrue for auth, Realtime for
+          realtime).
+        expr: {kind: path, path: [info, name]}
+      - name: info__version
+        type: Utf8
+        nullable: true
+        description: Service version string.
+        expr: {kind: path, path: [info, version]}
+      - name: info__description
+        type: Utf8
+        nullable: true
+        description: Brief description of the service.
+        expr: {kind: path, path: [info, description]}
+      - name: project_ref
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+      - name: service
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the requested service filter.
+        expr:
+          kind: from_filter
+          key: service
+
+  # ──────────────────────────────────────────────
+  # Database Backups
+  # ──────────────────────────────────────────────
+  - name: backups
+    description: >
+      Database backups for a project. Returns a list of completed and
+      in-progress backup snapshots with their status and type (logical
+      or physical). Requires the project ref as a filter. Note: this
+      endpoint also returns PITR (point-in-time recovery) metadata at
+      the top level, but only the individual backup rows are surfaced
+      here.
+    guide: >
+      Always filter by project_ref: `SELECT id, status, is_physical_backup,
+      inserted_at FROM supabase.backups WHERE project_ref =
+      'abcdefghijklmnopqrst'`. Check the status column for COMPLETED,
+      PENDING, or FAILED.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/database/backups
+    response:
+      rows_path:
+        - backups
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: Backup identifier.
+        expr: {kind: path, path: [id]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Backup status (e.g. COMPLETED, PENDING, FAILED).
+        expr: {kind: path, path: [status]}
+      - name: is_physical_backup
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether this is a physical backup (WAL-G) rather than a
+          logical (pg_dump) backup.
+        expr: {kind: path, path: [is_physical_backup]}
+      - name: inserted_at
+        type: Timestamp
+        nullable: true
+        description: When the backup was created (ISO 8601).
+        expr: {kind: path, path: [inserted_at]}
+      - name: project_ref
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  # ──────────────────────────────────────────────
+  # Database Branches
+  # ──────────────────────────────────────────────
+  - name: branches
+    description: >
+      Database branches for a project. Branching lets you create isolated
+      Postgres instances tied to Git branches for preview environments.
+      Each row includes the branch name, linked Git branch, PR number,
+      persistence setting, and lifecycle status. Requires the project ref
+      as a filter and branching to be enabled on the project.
+    guide: >
+      Always filter by project_ref: `SELECT id, name, git_branch,
+      is_default, persistent, status, created_at FROM supabase.branches
+      WHERE project_ref = 'abcdefghijklmnopqrst'`. If branching is not
+      enabled on the project, the API returns an error.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/branches
+    response:
+      rows_path: []
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Branch UUID.
+        expr: {kind: path, path: [id]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Branch display name.
+        expr: {kind: path, path: [name]}
+      - name: project_ref
+        type: Utf8
+        nullable: true
+        description: Ref of the branch's parent project.
+        expr: {kind: path, path: [project_ref]}
+      - name: parent_project_ref
+        type: Utf8
+        nullable: true
+        description: Ref of the production project this branch was forked from.
+        expr: {kind: path, path: [parent_project_ref]}
+      - name: is_default
+        type: Boolean
+        nullable: true
+        description: Whether this is the default (production) branch.
+        expr: {kind: path, path: [is_default]}
+      - name: git_branch
+        type: Utf8
+        nullable: true
+        description: Associated Git branch name (e.g. feat/new-feature).
+        expr: {kind: path, path: [git_branch]}
+      - name: pr_number
+        type: Int64
+        nullable: true
+        description: GitHub pull request number linked to this branch.
+        expr: {kind: path, path: [pr_number]}
+      - name: persistent
+        type: Boolean
+        nullable: true
+        description: >-
+          Whether the branch persists after the PR is merged or closed.
+          Non-persistent branches are auto-deleted.
+        expr: {kind: path, path: [persistent]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: >-
+          Branch lifecycle status (e.g. CREATING_PROJECT, RUNNING_MIGRATIONS,
+          MIGRATIONS_PASSED, FUNCTIONS_DEPLOYED).
+        expr: {kind: path, path: [status]}
+      - name: with_data
+        type: Boolean
+        nullable: true
+        description: Whether the branch was created with seed data from the parent.
+        expr: {kind: path, path: [with_data]}
+      - name: preview_project_status
+        type: Utf8
+        nullable: true
+        description: Status of the preview project backing this branch.
+        expr: {kind: path, path: [preview_project_status]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: When the branch was created (ISO 8601).
+        expr: {kind: path, path: [created_at]}
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: When the branch was last updated (ISO 8601).
+        expr: {kind: path, path: [updated_at]}
+      - name: deletion_scheduled_at
+        type: Timestamp
+        nullable: true
+        description: >-
+          When the branch is scheduled for deletion (ISO 8601). Null if
+          no deletion is pending.
+        expr: {kind: path, path: [deletion_scheduled_at]}
+      - name: project_ref_echo
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref
+
+  # ──────────────────────────────────────────────
+  # PostgREST Config
+  # ──────────────────────────────────────────────
+  - name: postgrest_config
+    description: >
+      PostgREST (Data API) configuration for a project. Shows the exposed
+      schemas, connection pool size, row limits, and extra search paths.
+      The upstream Supabase API response also includes secret-bearing
+      fields such as jwt_secret, but this Coral table intentionally omits
+      those fields from SQL results. Requires the project ref as a filter.
+    guide: >
+      Always filter by project_ref: `SELECT db_schema, max_rows, db_pool,
+      db_extra_search_path FROM supabase.postgrest_config WHERE project_ref
+      = 'abcdefghijklmnopqrst'`. The db_schema column shows which Postgres
+      schemas are exposed through the REST API. Supabase returns jwt_secret
+      upstream; this source does not expose it as a SQL column.
+    filters:
+      - name: project_ref
+        required: true
+    request:
+      method: GET
+      path: /v1/projects/{{filter.project_ref}}/postgrest
+    response:
+      rows_path: []
+      row_strategy: direct
+    columns:
+      - name: db_schema
+        type: Utf8
+        nullable: true
+        description: >-
+          Comma-separated list of Postgres schemas exposed through the
+          Data API (e.g. public,storage,graphql_public).
+        expr: {kind: path, path: [db_schema]}
+      - name: max_rows
+        type: Int64
+        nullable: true
+        description: Maximum number of rows returned per request.
+        expr: {kind: path, path: [max_rows]}
+      - name: db_extra_search_path
+        type: Utf8
+        nullable: true
+        description: >-
+          Additional Postgres schemas added to the search_path
+          (e.g. public,extensions).
+        expr: {kind: path, path: [db_extra_search_path]}
+      - name: db_pool
+        type: Int64
+        nullable: true
+        description: Number of database connections in the PostgREST pool.
+        expr: {kind: path, path: [db_pool]}
+      - name: project_ref
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Echoes the project_ref filter.
+        expr:
+          kind: from_filter
+          key: project_ref

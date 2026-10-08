@@ -1,0 +1,34 @@
+---
+title: "Quickstart"
+description: "Set up Coral in minutes: connect your first sources, connect your agents to Coral, and start querying your data."
+---
+
+This tutorial gets you from a fresh [install](/getting-started/installation) of Coral, to your agents using Coral to retrieve data.
+
+<Tip>
+  Did you install the CLI rather than the desktop app? Run `coral onboard` for
+  an interactive wizard that walks you through your first steps with the Coral
+  CLI.
+</Tip>
+
+## 1. Add data sources
+
+Coral comes with [bundled sources](/reference/bundled-sources) for GitHub, Slack, Datadog, Linear, Sentry, and more.
+Coral can only retrieve data from sources you've connected.
+
+The sources page in the desktop app allows you to add, remove or create new sources.
+
+## 2. Connect your agents
+
+The desktop app exposes an MCP server over stdio that your agents can connect to. You can go to the setting in the desktop app to set up your agents, or look at the [MCP docs](/guides/use-coral-over-mcp).
+
+You can also [install Coral skills](/getting-started/installation#skills) to help your agents use Coral more effectively.
+
+## 3. Query your data
+
+Connected sources are now available. Try asking your agent a question about your data.
+
+## Next steps
+
+- **[Search with Coral](/guides/search-with-coral)** — find the tables, columns, and values you need before writing SQL
+- **[Write a custom source spec](/guides/write-a-custom-source)** — connect any HTTP API or local dataset that isn't bundled yet

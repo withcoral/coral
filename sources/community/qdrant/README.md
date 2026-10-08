@@ -124,6 +124,10 @@ fixed result sets and do not require pagination.
 
 ## Validation
 
+See [the recorded live validation](VALIDATION.md) for the tested Qdrant version,
+fixture, multi-page results, and unsupported-endpoint limits.
+
+
 ```bash
 coral source lint sources/community/qdrant/manifest.yaml
 coral source add --file sources/community/qdrant/manifest.yaml

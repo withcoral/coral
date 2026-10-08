@@ -1,0 +1,123 @@
+name: frankfurter
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Fetch currency exchange rates from the free Frankfurter API.
+base_url: https://api.frankfurter.dev/v2
+test_queries:
+  - SELECT * FROM frankfurter.rates LIMIT 1
+  - SELECT * FROM frankfurter.rates WHERE "from" = '2023-01-01' AND "to" = '2023-01-31' AND base = 'EUR' LIMIT 1
+  - SELECT * FROM frankfurter.rates WHERE base = 'USD' AND quotes = 'EUR' LIMIT 1
+  - SELECT * FROM frankfurter.currencies LIMIT 1
+tables:
+  - name: rates
+    description: Fetch current and historical currency exchange rates.
+    filters:
+      - name: date
+        required: false
+      - name: from
+        required: false
+      - name: to
+        required: false
+      - name: base
+        required: false
+      - name: quotes
+        required: false
+      - name: providers
+        required: false
+      - name: group
+        required: false
+      - name: expand
+        required: false
+    request:
+      method: GET
+      path: /rates
+      query:
+        - name: date
+          from: filter
+          key: date
+        - name: from
+          from: filter
+          key: from
+        - name: to
+          from: filter
+          key: to
+        - name: base
+          from: filter
+          key: base
+        - name: quotes
+          from: filter
+          key: quotes
+        - name: providers
+          from: filter
+          key: providers
+        - name: group
+          from: filter
+          key: group
+        - name: expand
+          from: filter
+          key: expand
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: date
+        type: Utf8
+        expr: {kind: path, path: [date]}
+      - name: base
+        type: Utf8
+        expr: {kind: path, path: [base]}
+      - name: quote
+        type: Utf8
+        expr: {kind: path, path: [quote]}
+      - name: rate
+        type: Float64
+        expr: {kind: path, path: [rate]}
+      - name: providers
+        type: Json
+        expr: {kind: path, path: [providers]}
+      - name: requested_date
+        type: Utf8
+        expr: {kind: from_filter, key: date}
+      - name: from
+        type: Utf8
+        expr: {kind: from_filter, key: from}
+      - name: to
+        type: Utf8
+        expr: {kind: from_filter, key: to}
+      - name: quotes
+        type: Utf8
+        expr: {kind: from_filter, key: quotes}
+      - name: group
+        type: Utf8
+        expr: {kind: from_filter, key: group}
+      - name: expand
+        type: Utf8
+        expr: {kind: from_filter, key: expand}
+
+  - name: currencies
+    description: List all supported currencies and their names.
+    request:
+      method: GET
+      path: /currencies?scope=all
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: iso_code
+        type: Utf8
+        expr: {kind: path, path: [iso_code]}
+      - name: name
+        type: Utf8
+        expr: {kind: path, path: [name]}
+      - name: symbol
+        type: Utf8
+        expr: {kind: path, path: [symbol]}
+      - name: start_date
+        type: Utf8
+        expr: {kind: path, path: [start_date]}
+      - name: end_date
+        type: Utf8
+        expr: {kind: path, path: [end_date]}

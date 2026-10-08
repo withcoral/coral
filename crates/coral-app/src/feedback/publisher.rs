@@ -106,6 +106,7 @@ impl<'a> FeedbackEnvelope<'a> {
                 trying_to_do: &report.trying_to_do,
                 tried: &report.tried,
                 stuck: &report.stuck,
+                task_id: report.task_id.map(|task_id| task_id.to_string()),
             },
             client: FeedbackEnvelopeClient {
                 coral_version: env!("CARGO_PKG_VERSION"),
@@ -122,6 +123,8 @@ struct FeedbackEnvelopeReport<'a> {
     trying_to_do: &'a str,
     tried: &'a str,
     stuck: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -174,6 +177,7 @@ mod tests {
             trying_to_do: "trying".to_string(),
             tried: "tried".to_string(),
             stuck: "stuck".to_string(),
+            task_id: None,
         };
         let publisher = HostedFeedbackPublisher::with_endpoint(format!("http://{addr}/ingest"));
 
@@ -195,10 +199,38 @@ mod tests {
         assert_eq!(body["report"]["trying_to_do"], "trying");
         assert_eq!(body["report"]["tried"], "tried");
         assert_eq!(body["report"]["stuck"], "stuck");
+        assert!(
+            body["report"].get("task_id").is_none(),
+            "task_id should be omitted when feedback is not task attributed"
+        );
         assert_eq!(body["client"]["coral_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(body["client"].as_object().expect("client object").len(), 1);
 
         server.abort();
+    }
+
+    #[test]
+    fn feedback_envelope_includes_task_id_when_present() {
+        let report = FeedbackReport {
+            id: "feedback-123".to_string(),
+            workspace: WorkspaceName::default(),
+            created_at: Utc::now(),
+            trying_to_do: "trying".to_string(),
+            tried: "tried".to_string(),
+            stuck: "stuck".to_string(),
+            task_id: Some(
+                crate::task::id::TaskId::parse("550e8400-e29b-41d4-a716-446655440000")
+                    .expect("task id"),
+            ),
+        };
+
+        let body = serde_json::to_value(super::FeedbackEnvelope::new(&report))
+            .expect("feedback envelope JSON");
+
+        assert_eq!(
+            body["report"]["task_id"],
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
     }
 
     async fn read_http_body(stream: &mut tokio::net::TcpStream) -> Vec<u8> {

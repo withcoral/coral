@@ -1,0 +1,363 @@
+name: airbyte_cloud
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Airbyte Cloud metadata for workspaces, sources, destinations,
+  connections, and jobs.
+base_url: https://api.airbyte.com/v1
+
+inputs:
+  AIRBYTE_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      Short-lived Airbyte Cloud access token from the Application token
+      exchange. Permissions come from the Airbyte user associated with the
+      Application.
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.AIRBYTE_ACCESS_TOKEN}}
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT workspace_id, name FROM airbyte_cloud.workspaces LIMIT 1
+  - SELECT connection_id, name, status FROM airbyte_cloud.connections LIMIT 1
+  - SELECT job_id, status, start_time, last_updated_at, duration FROM airbyte_cloud.jobs LIMIT 1
+
+tables:
+  - name: workspaces
+    description: Airbyte Cloud workspaces visible to the API token.
+    guide: |
+      Workspaces are the top-level Airbyte Cloud containers for sources,
+      destinations, connections, and jobs. This endpoint is offset paginated
+      with `offset` and `limit`.
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /workspaces
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: workspace_id
+        type: Utf8
+        nullable: false
+        description: Airbyte workspace ID.
+        expr: {kind: path, path: [workspaceId]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Workspace name.
+      - name: data_residency
+        type: Utf8
+        nullable: true
+        description: Workspace data residency setting when returned.
+        expr: {kind: path, path: [dataResidency]}
+
+  - name: sources
+    description: Airbyte Cloud source connectors.
+    guide: |
+      Use `workspace_id` to scope source inventory through Airbyte's documented
+      `workspaceIds` query parameter. The source configuration
+      object is intentionally omitted because it can contain credentials or
+      connection parameters.
+    filters:
+      - name: workspace_id
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /sources
+      query:
+        - name: workspaceIds
+          from: filter
+          key: workspace_id
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: source_id
+        type: Utf8
+        nullable: false
+        description: Airbyte source ID.
+        expr: {kind: path, path: [sourceId]}
+      - name: workspace_id
+        type: Utf8
+        nullable: true
+        description: Workspace ID.
+        expr: {kind: path, path: [workspaceId]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Source name.
+      - name: source_type
+        type: Utf8
+        nullable: true
+        description: Source connector type.
+        expr: {kind: path, path: [sourceType]}
+      - name: workspace_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional workspace filter.
+        expr: {kind: from_filter, key: workspace_id}
+
+  - name: destinations
+    description: Airbyte Cloud destination connectors.
+    guide: |
+      Use `workspace_id` to scope destination inventory through Airbyte's
+      documented `workspaceIds` query parameter. The destination
+      configuration object is intentionally omitted because it can contain
+      warehouse credentials or connection parameters.
+    filters:
+      - name: workspace_id
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /destinations
+      query:
+        - name: workspaceIds
+          from: filter
+          key: workspace_id
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: destination_id
+        type: Utf8
+        nullable: false
+        description: Airbyte destination ID.
+        expr: {kind: path, path: [destinationId]}
+      - name: workspace_id
+        type: Utf8
+        nullable: true
+        description: Workspace ID.
+        expr: {kind: path, path: [workspaceId]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Destination name.
+      - name: destination_type
+        type: Utf8
+        nullable: true
+        description: Destination connector type.
+        expr: {kind: path, path: [destinationType]}
+      - name: workspace_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional workspace filter.
+        expr: {kind: from_filter, key: workspace_id}
+
+  - name: connections
+    description: Airbyte Cloud connections between sources and destinations.
+    guide: |
+      Use `workspace_id` to scope large Airbyte accounts through Airbyte's
+      documented `workspaceIds` query parameter. The returned `status` column
+      can be filtered locally in SQL. This table returns operational metadata,
+      not connection configuration secrets.
+    filters:
+      - name: workspace_id
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /connections
+      query:
+        - name: workspaceIds
+          from: filter
+          key: workspace_id
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: connection_id
+        type: Utf8
+        nullable: false
+        description: Airbyte connection ID.
+        expr: {kind: path, path: [connectionId]}
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Connection name.
+      - name: source_id
+        type: Utf8
+        nullable: true
+        description: Source ID.
+        expr: {kind: path, path: [sourceId]}
+      - name: destination_id
+        type: Utf8
+        nullable: true
+        description: Destination ID.
+        expr: {kind: path, path: [destinationId]}
+      - name: workspace_id
+        type: Utf8
+        nullable: true
+        description: Workspace ID when returned by Airbyte.
+        expr: {kind: path, path: [workspaceId]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Connection status.
+      - name: schedule_type
+        type: Utf8
+        nullable: true
+        description: Connection schedule type.
+        expr: {kind: path, path: [schedule, scheduleType]}
+      - name: schedule_cron_expression
+        type: Utf8
+        nullable: true
+        description: Cron expression for cron-scheduled connections.
+        expr: {kind: path, path: [schedule, cronExpression]}
+      - name: schedule_basic_timing
+        type: Utf8
+        nullable: true
+        description: Basic schedule timing value when returned by Airbyte.
+        expr: {kind: path, path: [schedule, basicTiming]}
+      - name: namespace_definition
+        type: Utf8
+        nullable: true
+        description: Namespace definition mode.
+        expr: {kind: path, path: [namespaceDefinition]}
+      - name: prefix
+        type: Utf8
+        nullable: true
+        description: Destination stream prefix.
+      - name: workspace_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional workspace filter.
+        expr: {kind: from_filter, key: workspace_id}
+  - name: jobs
+    description: Airbyte Cloud sync and reset jobs.
+    guide: |
+      Use `connection_id` to inspect one connection's recent job history.
+      Airbyte job lists can grow quickly, so the table has a conservative
+      default fetch limit.
+    filters:
+      - name: connection_id
+      - name: status
+    fetch_limit_default: 100
+    request:
+      method: GET
+      path: /jobs
+      query:
+        - name: connectionId
+          from: filter
+          key: connection_id
+        - name: status
+          from: filter
+          key: status
+    response:
+      rows_path: [data]
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        default: 100
+        max: 100
+        query_param: limit
+    columns:
+      - name: job_id
+        type: Int64
+        nullable: false
+        description: Airbyte job ID.
+        expr: {kind: path, path: [jobId]}
+      - name: connection_id
+        type: Utf8
+        nullable: true
+        description: Connection ID.
+        expr: {kind: path, path: [connectionId]}
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Job status.
+      - name: job_type
+        type: Utf8
+        nullable: true
+        description: Job type.
+        expr: {kind: path, path: [jobType]}
+      - name: start_time
+        type: Timestamp
+        nullable: true
+        description: Job start time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [startTime]}
+      - name: last_updated_at
+        type: Timestamp
+        nullable: true
+        description: Job last update time.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [lastUpdatedAt]}
+      - name: duration
+        type: Utf8
+        nullable: true
+        description: Job duration as an ISO-8601 duration string.
+        expr: {kind: path, path: [duration]}
+      - name: bytes_synced
+        type: Int64
+        nullable: true
+        description: Number of bytes synced by the job when returned by Airbyte.
+        expr: {kind: path, path: [bytesSynced]}
+      - name: rows_synced
+        type: Int64
+        nullable: true
+        description: Number of rows synced by the job when returned by Airbyte.
+        expr: {kind: path, path: [rowsSynced]}
+      - name: connection_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional connection filter.
+        expr: {kind: from_filter, key: connection_id}
+      - name: status_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional job status filter.
+        expr: {kind: from_filter, key: status}

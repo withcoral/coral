@@ -9,49 +9,78 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Test-only session-token minting for sibling crates' integration tests.
+# Production builds must leave this off.
+test-session-tokens = []
+
 [dependencies]
 arrow.workspace = true
-axum.workspace = true
+async-trait.workspace = true
+async-lock.workspace = true
+axum = { workspace = true, features = ["http1", "tokio"] }
 base64.workspace = true
 chrono.workspace = true
 etcetera.workspace = true
-fs2.workspace = true
+keyring-core.workspace = true
+jsonwebtoken.workspace = true
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 regex.workspace = true
 reqwest.workspace = true
+rusqlite.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+sea-query.workspace = true
+sea-query-sqlx.workspace = true
 sha2.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
 toml.workspace = true
 toml_edit.workspace = true
 tonic.workspace = true
+tonic-health.workspace = true
 tonic-types.workspace = true
-tonic-web.workspace = true
 tower.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
 
 coral-api.workspace = true
 coral-auth-aws = { path = "../auth/aws" }
 coral-engine.workspace = true
 coral-spec.workspace = true
+coral-telemetry.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store.workspace = true
 
 [dev-dependencies]
+# Self dev-dependency: enables the test-only token minting feature for this
+# crate's own integration tests without turning it on for production builds.
+coral-app = { path = ".", features = ["test-session-tokens"] }
 coral-client.workspace = true
 prost.workspace = true
+opentelemetry-proto.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
 
 [build-dependencies]
 serde_yaml.workspace = true

@@ -1,0 +1,12 @@
+# Bound every test so a wedged one fails the run instead of stalling it.
+#
+# Without `terminate-after`, nextest only *warns* about a slow test, once per
+# period, forever: a test that can never finish holds the job until someone
+# notices and cancels it. Terminating instead reports the test as TIMEOUT and
+# prints the output it had already produced, which is usually the panic that
+# explains the wedge.
+#
+# The slowest healthy test in CI runs in about 13s, so 60s marks a test as slow
+# and 5 periods (5 minutes) is a generous ceiling before it is killed.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }
