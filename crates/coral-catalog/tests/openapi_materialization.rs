@@ -887,7 +887,14 @@ fn operations_share_one_oauth_grant_up_to_the_scope_limit() {
             }
             MaterializationOutcome::Rejected(diagnostic) => {
                 assert!(union_size.is_none(), "{case}: {}", diagnostic.message());
-                assert_eq!(diagnostic.code(), "invalid_credential_contract", "{case}");
+                assert_eq!(diagnostic.code(), "credentials_not_supported", "{case}");
+                assert_eq!(
+                    diagnostic.message(),
+                    "the Provider's Operations together request more OAuth scopes than one \
+                     grant can hold at #/paths/~1probe/get: UserAuth and AdminAuth together \
+                     exceed the scope limit",
+                    "{case}"
+                );
             }
         }
     }
