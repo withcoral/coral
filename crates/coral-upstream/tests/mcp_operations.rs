@@ -500,6 +500,33 @@ async fn json_rpc_errors_are_typed_rejections_that_never_repeat_the_call() {
 }
 
 #[tokio::test]
+async fn a_malformed_json_rpc_error_is_not_a_rejection() {
+    for error in [
+        json!({"code": -32602}),
+        json!({"message": "no code"}),
+        json!({"code": "-32602", "message": "code must be an integer"}),
+    ] {
+        let server = server_with_response(
+            move |request: &Request| {
+                let request: Value = request.body_json().expect("call");
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc": "2.0", "id": request["id"], "error": error}))
+            },
+            false,
+        )
+        .await;
+        let error = call_once(&server, 4096)
+            .await
+            .expect_err("a malformed error envelope is no answer");
+        assert!(
+            matches!(error, coral_upstream::Error::McpRequest),
+            "{error:?}"
+        );
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
 async fn a_refused_initialize_is_an_incomplete_request_not_a_rejection() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

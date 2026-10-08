@@ -361,10 +361,11 @@ fn capture_rejection(
     {
         return Ok(());
     }
-    if let Some(code) = message
-        .get("error")
-        .and_then(|error| error.get("code"))
-        .and_then(Value::as_i64)
+    // JSON-RPC requires both members; an envelope missing either is malformed,
+    // not an answer, and stays a request failure.
+    if let Some(error) = message.get("error")
+        && error.get("message").and_then(Value::as_str).is_some()
+        && let Some(code) = error.get("code").and_then(Value::as_i64)
     {
         *slot.lock().map_err(|_poisoned| Error::McpResult)? =
             Some(Captured::Rejected(McpRejection::from_code(code)));
