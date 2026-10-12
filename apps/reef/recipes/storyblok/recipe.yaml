@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.storyblok.com/docs/tooling/mcp-server/setup
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: storyblok
+display_name: Storyblok
+description: Stories, assets and spaces from Storyblok.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+source:
+  mcp:
+    url: https://mcp.storyblok.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Storyblok
+      documentation_url: https://www.storyblok.com/docs/tooling/mcp-server/setup
+      flow: authorization_code
+    api_token:
+      method: bearer
+      label: Personal access token
+      documentation_url: https://www.storyblok.com/docs/tooling/mcp-server/setup
+  default: oauth

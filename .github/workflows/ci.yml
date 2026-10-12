@@ -1,0 +1,227 @@
+name: CI
+
+# The one workflow that pull requests and main start. It runs the gates from
+# the Validation table in AGENTS.md on every change except documentation. Each
+# job installs tools and runs the gate's own commands, so a local run and this
+# one agree. desktop.yml and reel.yml hold the longer jobs.
+#
+# Job names read "Area / Check", so the checks on a pull request sort by area.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  changes:
+    name: Changes
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      rust: ${{ steps.filter.outputs.rust }}
+      desktop-app: ${{ steps.filter.outputs.desktop-app }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # A push to main runs every gate. The filter would have to fetch the
+      # commit before the push, and this checkout keeps no credentials to do so.
+      - id: filter
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          # A file selects a filter when it matches every pattern in it. The
+          # filters name what a gate can ignore, not what it reads: a list of
+          # each gate's inputs goes stale, and a stale list skips a gate that
+          # would have failed.
+          predicate-quantifier: every
+          filters: |
+            # Anything but documentation.
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!apps/docs/**'
+            # The Rust gates also ignore the apps, which no Rust test reads,
+            # except the Node version that the Postgres gate's script runs on.
+            rust:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!apps/**/!(.node-version)'
+            # Desktop's macOS and Windows jobs cost the most, so they are the
+            # only ones that name their inputs. desktop.yml also runs nightly.
+            desktop-app:
+              - '{.github/**,apps/desktop/**}'
+
+  rust:
+    name: Rust / Checks
+    needs: changes
+    if: ${{ needs.changes.outputs.rust != 'false' }}
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # scripts/check-migrations.sh compares against the merge base with main.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ci-rust
+      - uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: nextest
+      - run: make rust-checks
+
+  postgres:
+    name: Rust / Postgres tests
+    needs: changes
+    if: ${{ needs.changes.outputs.rust != 'false' }}
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ci-postgres
+      - uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: nextest
+      # The gate's script is TypeScript that Node runs directly. It has no
+      # packages to install.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/reef/.node-version
+          package-manager-cache: false
+      # scripts/postgres.ts starts Postgres in a container, as it does locally.
+      - run: make postgres-tests
+
+  # The crates that touch the filesystem, credentials and process lifecycle,
+  # where Windows differs most. Desktop / Windows install builds the release
+  # runtime, so this job only tests.
+  rust-windows:
+    name: Rust / Windows tests
+    needs: changes
+    if: ${{ needs.changes.outputs.rust != 'false' }}
+    runs-on: blacksmith-4vcpu-windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ci-rust-windows
+      # Report every failing test binary, not only the first.
+      - run: cargo test --locked --no-fail-fast -p coral-app -p coral -p coral-credentials -p coral-db
+
+  reef:
+    name: Reef / Checks
+    needs: changes
+    if: ${{ needs.changes.outputs.code != 'false' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/npm-install
+        with:
+          apps: reef
+      # npm test runs every story's play function in Chromium.
+      - name: Install Playwright's Chromium
+        working-directory: apps/reef
+        run: npx playwright install --with-deps chromium
+      - run: npm run check --prefix apps/reef
+      - run: npm run typecheck --prefix apps/reef
+      - run: npm test --prefix apps/reef
+      - run: npm run build --prefix apps/reef
+      - run: npm run test:server --prefix apps/reef
+
+  dev:
+    name: Dev scripts / Tests
+    needs: changes
+    if: ${{ needs.changes.outputs.code != 'false' }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/npm-install
+        with:
+          apps: reef
+      - run: ./dev test
+
+  desktop:
+    name: Desktop
+    needs: changes
+    if: ${{ needs.changes.outputs.code != 'false' }}
+    uses: ./.github/workflows/desktop.yml
+    with:
+      all-platforms: ${{ needs.changes.outputs.desktop-app == 'true' }}
+
+  reel-desktop:
+    name: Reel
+    needs: changes
+    if: ${{ needs.changes.outputs.code != 'false' }}
+    uses: ./.github/workflows/reel.yml
+    with:
+      suite: desktop
+
+  # The product journeys, on both databases. Four runners each take a quarter.
+  reel-main:
+    # A name that reads the matrix stops GitHub from adding its values, which
+    # reel.yml's own job name already shows.
+    name: Reel${{ matrix.shard && '' }}
+    needs: changes
+    if: ${{ needs.changes.outputs.code != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+        shard: [1, 2, 3, 4]
+    uses: ./.github/workflows/reel.yml
+    with:
+      suite: main
+      database: ${{ matrix.database }}
+      shard: ${{ matrix.shard }}of4
+
+  reel-local-mode:
+    name: Reel
+    needs: changes
+    if: ${{ needs.changes.outputs.code != 'false' }}
+    uses: ./.github/workflows/reel.yml
+    with:
+      suite: local-mode
+
+  # The one check to require. It passes when every gate passed or its paths
+  # did not change. A skipped job passes a required check by itself, so
+  # requiring the gates one by one would also pass when `changes` fails.
+  required:
+    name: Required
+    needs: [changes, rust, postgres, rust-windows, reef, dev, desktop, reel-desktop, reel-main, reel-local-mode]
+    if: ${{ always() }}
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

@@ -1,0 +1,99 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Read-only inspection of the calling User's own current Saved Functions.
+//
+// A Saved Function Path names a definition only for its owning Principal in
+// one Workspace, so requests carry the Workspace and path rather than a
+// resource name. Another Principal's function and an absent path return the
+// same NOT_FOUND. Workspace-owned Agent functions never appear.
+service SavedFunctionService {
+  // Lists one page of the caller's own functions in path order, without source or diagnostics.
+  rpc ListSavedFunctions(ListSavedFunctionsRequest) returns (ListSavedFunctionsResponse);
+  // Returns one of the caller's own functions with its source and saved diagnostics.
+  rpc GetSavedFunction(GetSavedFunctionRequest) returns (SavedFunction);
+}
+
+// Lists the caller's own current Saved Functions in one Workspace.
+message ListSavedFunctionsRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Maximum results, bounded to 100; zero selects the default.
+  int32 page_size = 2;
+  // Opaque continuation from the preceding page in this scope.
+  string page_token = 3;
+}
+
+// One scoped page of source-free Saved Function summaries in path order.
+message ListSavedFunctionsResponse {
+  // The caller's own functions on this page.
+  repeated SavedFunctionSummary saved_functions = 1;
+  // Empty when no further page remains.
+  string next_page_token = 2;
+}
+
+// Source-free summary of one current Saved Function.
+message SavedFunctionSummary {
+  // Saved Function Path relative to coral.functions.
+  string path = 1;
+  // Exact authored description.
+  string description = 2;
+  // Occurrence time of the latest accepted save.
+  google.protobuf.Timestamp update_time = 3;
+}
+
+// Reads one of the caller's own current Saved Functions.
+message GetSavedFunctionRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Saved Function Path relative to coral.functions.
+  string path = 2;
+}
+
+// One current Saved Function with its authoring material.
+message SavedFunction {
+  // Saved Function Path relative to coral.functions.
+  string path = 1;
+  // Exact authored description.
+  string description = 2;
+  // Self-contained TypeScript declaration emitted from the source.
+  string declaration = 3;
+  // Exact authored TypeScript source.
+  string source = 4;
+  // Advisory diagnostics retained from the latest accepted save.
+  repeated SavedFunctionDiagnostic diagnostics = 5;
+  // True when Coral omitted diagnostics beyond its retention bound.
+  bool diagnostics_truncated = 6;
+  // Occurrence time of the latest accepted save.
+  google.protobuf.Timestamp update_time = 7;
+}
+
+// Category of one advisory TypeScript diagnostic.
+enum SavedFunctionDiagnosticCategory {
+  // Not supplied or not recognized by this client.
+  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_UNSPECIFIED = 0;
+  // Informational compiler message.
+  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_MESSAGE = 1;
+  // Non-blocking warning.
+  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_WARNING = 2;
+  // Strict semantic error retained without rejecting the save.
+  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_ERROR = 3;
+  // Non-blocking authoring suggestion.
+  SAVED_FUNCTION_DIAGNOSTIC_CATEGORY_SUGGESTION = 4;
+}
+
+// One bounded advisory diagnostic retained with an accepted save.
+message SavedFunctionDiagnostic {
+  // Diagnostic category.
+  SavedFunctionDiagnosticCategory category = 1;
+  // Official TypeScript diagnostic code.
+  uint64 code = 2;
+  // Bounded compiler message.
+  string message = 3;
+  // One-based source line, when known.
+  optional uint64 line = 4;
+  // One-based source column, when known.
+  optional uint64 column = 5;
+}

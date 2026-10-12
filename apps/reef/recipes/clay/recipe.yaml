@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://university.clay.com/docs/connect-to-clay-mcp
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: clay
+display_name: Clay
+description: Contacts, companies, enrichment and data workflows from Clay.
+source:
+  mcp:
+    url: https://api.clay.com/v3/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://university.clay.com/docs/connect-to-clay-mcp
+      flow: authorization_code
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

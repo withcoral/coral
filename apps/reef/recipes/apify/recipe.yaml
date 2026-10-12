@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/apify/actors-mcp-server
+# Public tools need an explicit tools query; default full source requires OAuth or an Apify token. x402 payment signing is outside credential methods.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+schema_version: 1
+id: apify
+display_name: Apify
+description: Actors, runs and datasets from Apify.
+source:
+  mcp:
+    url: https://mcp.apify.com
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://github.com/apify/actors-mcp-server
+      flow: authorization_code
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://github.com/apify/actors-mcp-server
+  default: oauth
+icons:
+  light: logo.svg

@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.cloud.google.com/looker/docs/mcp
+# Looker preview requires an owner-registered public client with PKCE; dynamic registration is unsupported.
+# cors_api grants API access. Fine-grained permissions come from the user and tool allowlist.
+schema_version: 1
+id: looker
+display_name: Looker
+description: Models, explores, queries and dashboards from Looker.
+source:
+  mcp:
+    url: https://{{input.hostname}}/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Looker
+      flow: authorization_code
+      documentation_url: https://docs.cloud.google.com/looker/docs/mcp
+      description: Configure your OAuth application before you sign in.
+      client:
+        id: '{{input.client_id}}'
+        authentication: none
+      scopes:
+        - cors_api
+  default: oauth
+inputs:
+  hostname:
+    type: hostname
+    label: Looker instance hostname
+  client_id:
+    type: string
+    label: OAuth client ID
+    description: Enter the client ID you register for your Looker instance.
+icons:
+  light: logo.svg

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://replicate.com/docs/reference/openapi/
+# Official MCP serves standalone SSE, so this recipe uses the official REST OpenAPI source.
+schema_version: 1
+id: replicate
+display_name: Replicate
+description: Models, predictions and training from Replicate.
+source:
+  openapi:
+    url: https://api.replicate.com/openapi.json
+authentication:
+  options:
+    api_token:
+      method: bearer
+      label: API token
+      documentation_url: https://replicate.com/docs/reference/openapi/
+  default: api_token
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

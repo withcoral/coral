@@ -3,23 +3,24 @@
 use std::env::VarError;
 use std::path::PathBuf;
 
-use coral_engine::QueryRuntimeContext;
-
-use super::consts::CORAL_CONFIG_DIR;
+use super::consts::{
+    CORAL_CONFIG_DIR, CORAL_DESKTOP, CORAL_LOCAL_WEB_URL, CORAL_STOP_ON_STDIN_CLOSE,
+    CORAL_TRACE_PARENT,
+};
 use super::error::AppError;
+use super::runtime::Launch;
 use crate::state::AppStateLayout;
+use crate::telemetry::RunContext;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AppEnvironment {
     coral_config_dir_override: Option<PathBuf>,
-    user_home_dir: Option<PathBuf>,
 }
 
 impl AppEnvironment {
     pub(crate) fn discover() -> Self {
         Self {
             coral_config_dir_override: coral_config_dir_override(),
-            user_home_dir: etcetera::home_dir().ok(),
         }
     }
 
@@ -34,16 +35,43 @@ impl AppEnvironment {
         AppStateLayout::discover(config_dir_override.or_else(|| self.coral_config_dir_override()))
     }
 
-    pub(crate) fn query_runtime_context(&self) -> QueryRuntimeContext {
-        QueryRuntimeContext {
-            home_dir: self.user_home_dir.clone(),
-            ..QueryRuntimeContext::default()
-        }
-    }
-
     pub(crate) fn env_var(name: &str) -> Result<Option<String>, VarError> {
         env_var(name)
     }
+
+    /// Reads the environment variable `name`, which the configuration setting
+    /// `setting` (for example `credentials.key_env`) selected. The value is
+    /// required: if the variable is unset, or its value is not valid UTF-8,
+    /// startup is refused with an error that names both the setting and the
+    /// variable, so the operator knows which line of `config.toml` to check.
+    pub(crate) fn required_env_var(setting: &str, name: &str) -> Result<String, AppError> {
+        env_var(name)
+            .map_err(|_not_unicode| {
+                AppError::FailedPrecondition(format!(
+                    "{setting} requires environment variable `{name}` to contain valid UTF-8"
+                ))
+            })?
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "{setting} requires environment variable `{name}`"
+                ))
+            })
+    }
+}
+
+/// Trims the environment variable name a deployment setting holds. A blank
+/// name, or one that `std::env::var` would panic on (`=` or NUL), is a
+/// configuration error that names `setting`; the caller wraps the message in
+/// its own error type.
+pub(crate) fn env_var_name(setting: &str, configured: &str) -> Result<String, String> {
+    let name = configured.trim();
+    if name.is_empty() {
+        return Err(format!("{setting} must not be empty"));
+    }
+    if name.contains(['=', '\0']) {
+        return Err(format!("{setting} must not contain '=' or NUL"));
+    }
+    Ok(name.to_owned())
 }
 
 #[expect(
@@ -66,76 +94,77 @@ fn env_var(name: &str) -> Result<Option<String>, VarError> {
     }
 }
 
+impl Launch {
+    /// Reads what the launching process set for this launch.
+    ///
+    /// Desktop sets `CORAL_DESKTOP=1`. A launcher that stops the runtime by
+    /// closing its stdin sets `CORAL_STOP_ON_STDIN_CLOSE=1`; it is opt-in
+    /// because a container without an attached stdin starts with stdin closed.
+    /// `CORAL_LOCAL_WEB_URL` is a local launcher's web origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the variable when `CORAL_LOCAL_WEB_URL` is not
+    /// Unicode or not a valid human interface origin.
+    pub fn from_env() -> Result<Self, String> {
+        let local_web_url = match env_var(CORAL_LOCAL_WEB_URL) {
+            Ok(Some(value)) => Some(
+                coral_mcp::HumanInterfaceUrl::parse(&value)
+                    .map_err(|error| format!("{CORAL_LOCAL_WEB_URL} {error}"))?,
+            ),
+            Ok(None) => None,
+            Err(_not_unicode) => return Err(format!("{CORAL_LOCAL_WEB_URL} must be Unicode")),
+        };
+        Ok(Self {
+            desktop: flag(CORAL_DESKTOP),
+            local_web_url,
+            stop_on_stdin_close: flag(CORAL_STOP_ON_STDIN_CLOSE),
+        })
+    }
+}
+
+impl RunContext {
+    /// Reads the optional W3C `traceparent` that links the process span to a
+    /// parent trace.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            trace_parent: env_var(CORAL_TRACE_PARENT).ok().flatten(),
+        }
+    }
+}
+
+fn flag(name: &str) -> bool {
+    matches!(env_var(name).as_ref().map(Option::as_deref), Ok(Some("1")))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AppEnvironment, CORAL_CONFIG_DIR, coral_config_dir_override};
-    use std::path::PathBuf;
+    use super::env_var_name;
 
     #[test]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "This test intentionally controls CORAL_CONFIG_DIR to validate the app-owned accessor."
-    )]
-    fn coral_config_dir_override_reads_env_once_through_app_accessor() {
-        if std::env::var_os("CORAL_RUN_CORAL_CONFIG_DIR_TEST").is_some() {
-            let expected = std::env::var_os(CORAL_CONFIG_DIR)
-                .map(PathBuf::from)
-                .expect("CORAL_CONFIG_DIR should be set in subprocess");
+    fn env_var_names_are_trimmed_and_fail_closed() {
+        assert_eq!(
+            env_var_name("credentials.key_env", " CORAL_CREDENTIALS_KEY \n").expect("valid name"),
+            "CORAL_CREDENTIALS_KEY"
+        );
+        for (configured, expected) in [
+            ("", "credentials.key_env must not be empty"),
+            (" \t", "credentials.key_env must not be empty"),
+            (
+                "CORAL=KEY",
+                "credentials.key_env must not contain '=' or NUL",
+            ),
+            (
+                "CORAL\0KEY",
+                "credentials.key_env must not contain '=' or NUL",
+            ),
+        ] {
             assert_eq!(
-                coral_config_dir_override().as_deref(),
-                Some(expected.as_path())
+                env_var_name("credentials.key_env", configured).expect_err(configured),
+                expected,
+                "{configured:?}"
             );
-            let env = AppEnvironment::discover();
-            assert_eq!(
-                env.coral_config_dir_override().as_deref(),
-                Some(expected.as_path())
-            );
-            return;
         }
-
-        let override_dir =
-            std::env::temp_dir().join(format!("coral-config-dir-override-{}", std::process::id()));
-        let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
-            .env("CORAL_RUN_CORAL_CONFIG_DIR_TEST", "1")
-            .env(CORAL_CONFIG_DIR, override_dir)
-            .arg("--exact")
-            .arg(
-                "bootstrap::env::tests::coral_config_dir_override_reads_env_once_through_app_accessor",
-            )
-            .arg("--nocapture")
-            .status()
-            .expect("run subprocess");
-        assert!(status.success(), "subprocess should pass");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "This test intentionally controls process environment values to validate the app-owned accessor."
-    )]
-    fn env_var_preserves_non_utf8_errors() {
-        use std::ffi::OsString;
-        use std::os::unix::ffi::OsStringExt as _;
-
-        const RUN_FLAG: &str = "CORAL_RUN_NON_UTF8_ENV_TEST";
-        const VALUE_ENV: &str = "CORAL_NON_UTF8_ENV_TEST";
-
-        if std::env::var_os(RUN_FLAG).is_some() {
-            let error = AppEnvironment::env_var(VALUE_ENV)
-                .expect_err("non-UTF8 env var should be reported");
-            assert!(matches!(error, std::env::VarError::NotUnicode(_)));
-            return;
-        }
-
-        let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
-            .env(RUN_FLAG, "1")
-            .env(VALUE_ENV, OsString::from_vec(vec![0xFF]))
-            .arg("--exact")
-            .arg("bootstrap::env::tests::env_var_preserves_non_utf8_errors")
-            .arg("--nocapture")
-            .status()
-            .expect("run subprocess");
-        assert!(status.success(), "subprocess should pass");
     }
 }

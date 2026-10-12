@@ -1,0 +1,47 @@
+use crate::{Error, HttpExecutionBinding, McpExecutionBinding, SchemaId};
+
+/// Complete upstream-specific invocation recipe for one materialized Operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionBinding {
+    /// HTTP request/response execution.
+    Http(HttpExecutionBinding),
+    /// MCP tool or resource execution.
+    Mcp(McpExecutionBinding),
+}
+
+impl ExecutionBinding {
+    pub(crate) const fn as_storage_str(&self) -> &'static str {
+        match self {
+            Self::Http(_) => "http",
+            Self::Mcp(_) => "mcp",
+        }
+    }
+
+    pub(crate) fn from_storage_json(protocol: &str, value: &str) -> Result<Self, Error> {
+        match protocol {
+            "http" => HttpExecutionBinding::from_storage_json(value).map(Self::Http),
+            "mcp" => McpExecutionBinding::from_storage_json(value).map(Self::Mcp),
+            _ => Err(Error::CorruptData(format!(
+                "Materialized Operation has unrecognized protocol '{protocol}'"
+            ))),
+        }
+    }
+
+    pub(crate) fn http_index(&self) -> (Option<&str>, Option<&str>, Option<&str>) {
+        match self {
+            Self::Http(binding) => (
+                Some(binding.method().as_str()),
+                Some(binding.path_template()),
+                binding.server_url(),
+            ),
+            Self::Mcp(_) => (None, None, None),
+        }
+    }
+
+    pub(crate) fn schema_ids(&self) -> Box<dyn Iterator<Item = &SchemaId> + '_> {
+        match self {
+            Self::Http(binding) => Box::new(binding.schema_ids()),
+            Self::Mcp(binding) => Box::new(binding.schema_ids()),
+        }
+    }
+}

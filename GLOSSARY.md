@@ -1,0 +1,704 @@
+# Coral
+
+Coral exposes connected data to agents and attributes their work without conflating current product concepts with
+retired experimental terminology. Coral provides a unified way to discover and use Operations exposed by Upstream
+Services.
+
+## Language
+
+**Organization**: The administrative owner above Workspaces. Each Coral deployment contains exactly one Organization.
+Isolating multiple Organizations means running separate deployments, so the cross-Organization boundary is physical
+rather than an in-query filter within one deployment. An Organization Owner governs Workspaces without authority inside
+them: the Owner can list every Workspace with its name, state, and designated Owners, assign a designated Owner, and
+archive or restore a Workspace. Everything else in a Workspace needs a Workspace Membership there. A local deployment
+has one implicit Organization whose implicit local User is its Organization Owner. _Avoid_: Mutable Organization
+resource, inherited Workspace authority, Organization-wide access to another User's private work
+
+**Organization Membership**: The Coral-owned relationship that gives a User an `owner` or `member` role and an
+`enabled` or `disabled` state in one Organization. An eligible first sign-in establishes an enabled Member; subsequent
+sign-ins neither overwrite the current role nor re-enable a disabled Membership. Organization Owners manage roles and
+disablement, and Coral protects the last enabled Organization Owner. Enabled Membership is a prerequisite for
+Workspace authority and never grants it; the `owner` role adds Organization administration and Workspace governance
+only. Removing Membership removes the User's Workspace Memberships, stored Provider Account credentials, and current
+Saved Functions from every Workspace in the Organization without deleting Administrative Lifecycle Events, retained
+Run snapshots, or historical attribution. When the User is the sole designated Owner of a Workspace, removal needs a
+transfer target: one enabled Organization Member who becomes the designated Owner of every such Workspace in the same
+change. _Avoid_: Workspace Membership, administrator, inherited Workspace authority, role inferred from login metadata
+
+**User Disablement**: An Organization Owner's suspension of a User's Organization Membership, preventing new
+authenticated requests and later upstream dispatches by that User, including those from already accepted Runs, without
+deleting the User's stable identity, Workspace Memberships, current Saved Functions, or retained history. A disabled
+designated Owner is still the Owner on record. Disablement is distinct from
+Membership removal, cannot be undone by signing in again, and does not disable Workspace-owned Agents merely because
+the User created them or provisioned their Provider Accounts. _Avoid_: User deletion, automatic session-based
+reactivation, Agent disablement
+
+**User Profile**: A User's mutable name and email, neither guaranteed unique, distinct from the stable User identity and
+never a grant of authority. Conflicting emails do not merge Users or transfer access. Workspace Owners can see names
+and emails in authorized people and Agent-creator views; Members can see their own profile and the designated Owners'
+names and emails, but not other Members' profiles or private work. Organization Owners can see the designated Owners of
+every Workspace. _Avoid_: Email as identity, authentication record, Organization-wide directory access through
+Workspace Membership
+
+**Workspace**: The ownership root, confidentiality boundary, and execution boundary for Coral data and agent work
+within one Organization. It has one immutable identity and a mutable display name. Authority inside a Workspace comes
+only from a Workspace Membership, and a User must have enabled Organization Membership to use one. Any enabled
+Organization Member can create a Workspace and becomes its first designated Owner. A Workspace owns its Providers and
+contains Principals and access rules. Each Provider has its own namespace, catalog, authentication setting, and
+Operation policy. A Workspace contains its Program Runs, Operation Invocations, requests, and execution history. A
+Workspace is `active` or `archived`. Archiving rejects new Runs and later upstream dispatches and permits no
+configuration change other than restoration. An accepted Run whose Program execution has started can finish
+secret-free computation; if execution has not started, Coral fails it without executing the Program. A Workspace Owner
+can inspect full retained history for the Owner's own User and for Workspace-owned Agents, but receives no Run access
+for another User. A Workspace Owner or an Organization Owner can archive and restore the Workspace. Final data removal
+belongs to host retention policy, not ordinary Workspace administration. _Avoid_: Immediate history deletion, using a
+display name as identity
+
+**Workspace Membership**: The relationship that makes a User a designated `owner` or `member` of one Workspace, and the
+only source of authority inside it. Coral creates one only for a User with a current enabled Organization Membership.
+A Member can inspect that Member's Membership and a safe directory of the designated Owners, but cannot list other
+Members or Agents. An Owner can list and manage all Workspace Memberships and Agents. Every Workspace keeps at least
+one designated Owner: leave, removal, and demotion of the last one are denied. The rule counts Owners on record,
+whatever the state of their Organization Membership, so a disabled Owner is still the Owner and User Disablement
+changes no Membership. An Organization Owner can assign a designated Owner to any active Workspace, including
+themselves; assignment promotes a current Member. Membership removal always ends the User's authority inside that Workspace and clears
+the User's stored Provider Account credentials and current Saved Functions. Rejoining after that cleanup requires
+reconnecting. _Avoid_: Organization Membership, inherited Membership, effective Owner, ownerless Workspace
+
+**Principal**: An authenticated actor, stably classified as a User or Agent, to whom Coral attributes work. Kind informs
+authorization but does not itself grant permission; a Principal does not privately own a Task.
+
+**Agent Principal**: An Agent Principal belongs immutably to exactly one Workspace and always acts as itself. A
+Workspace Owner creates and administers it in v1; the Workspace owns it, and Coral records its creating User without
+assigning a separate Agent Owner. Its authority comes from current Workspace policy, its enabled state, and its
+Providers. It has no Principal-specific Operation policy; an Agent that needs a different Operation set
+belongs in a different Workspace. A `fixed` Credential Route uses the Provider's shared Account for every caller.
+A `caller` route uses the Agent's own Provider Account, provisioned beforehand by a Workspace Owner through
+secret entry or OAuth for that exact Agent and Provider. The Agent does not sign in interactively; the provisioning
+human is not the invoking Principal. Account ownership does not become Agent authority. An Agent is `enabled` or
+`disabled`. Disabling it rejects new Runs and later upstream
+dispatches, including pending Invocations, and disables its Provider Accounts while preserving attribution. An
+accepted Run whose Program execution has started can finish secret-free computation; if execution has not started, Coral
+fails it without executing the Program. Moving the Agent requires a new Agent Principal and Agent Registration. Deletion
+removes its Registration, Provider Account credentials, and current Saved Functions under host retention policy,
+but keeps its stable identifier, safe attribution metadata, Administrative Lifecycle Events, retained Run source
+snapshots, Invocations, approvals, and historical account identifiers. An Agent is a caller Principal only in v1; it is
+not a protected resource that another Agent can call. An authenticated Agent can observe and cancel its own accepted
+Runs by Run identifier and cursor, but cannot list general execution history or access another Principal's Run. A Run
+identifier grants no authority. _Avoid_: Delegated Agent, Cross-Workspace Agent, Agent Workspace Grant, movable Agent
+
+**Principal Access Surface**: The Principal-specific view of one Workspace exposed through Streamable HTTP; v1 has no
+stdio MCP transport. Interactive clients and autonomous Agents use the Workspace's non-secret endpoint. An interactive
+client authenticates its User through OAuth; local mode maps this to the implicit local User. An autonomous Agent
+authenticates with its Agent Registration bearer credential. The endpoint fixes the Workspace before Program execution.
+The authenticating credential, not client software or MCP `clientInfo`, selects the Principal and attribution. The same
+Workspace can contain both kinds. Each surface applies that Principal's policy, Provider compatibility, discovery, and
+attribution. A dedicated Agent Workspace can be a creation preset for isolation, but is not a separate Workspace kind.
+_Avoid_: User Workspace, Agent Workspace, registration-specific MCP endpoint, shared Principal credential,
+Program-selected Workspace
+
+**Reef**: Coral's authenticated human interface for administration, authoring, inspection, and Invocation Approval.
+Every supported local and hosted deployment provides it. Reef is the only v1 human administration surface; its server
+uses private first-party management and Run interfaces and applies normal Organization and Workspace authorization.
+Reef's browser presentation receives minimum view models through server loaders, actions, and explicit resource routes
+rather than a generic Coral transport or Desktop proxy. Reef's playground and Operation forms build normal TypeScript
+Programs and start Runs through the private Run interface; they do not invoke Operations directly or create a second
+public execution protocol. _Avoid_: Principal Access Surface, public management API, direct Operation invocation,
+Desktop proxy
+
+**Reel**: The standalone developer tool for recording and reviewing browser-test scenarios and their evidence. It is
+separate from Reef and reviews test outcomes, recordings, screenshots, and source snapshots—not Coral Program Runs.
+_Avoid_: Recorded UI, Reef feature, Program Run viewer
+
+**Invoking Principal**: The authenticated Principal that submits a Coral Program Run. This Principal stays accountable
+for each Operation Invocation in the Run. An approver or the owner of upstream credentials does not replace the Invoking
+Principal. _Avoid_: Approver, credential owner
+
+**Agent Registration**: The single host-owned registration that authenticates one Agent Principal and fixes one
+Workspace for its Coral access. Coral creates the Agent Principal, Registration, and initial bearer credential
+atomically, with no separate activation ceremony. The Workspace MCP endpoint does not select the Registration. A
+separate strongly random bearer credential identifies and authenticates it. Coral shows that credential only when it
+creates or rotates it and stores only a verifier. Rotation invalidates the old credential without changing the
+Registration, Agent Principal, Workspace, policy, attribution, or history. The Registration can have an optional
+expiration that stops authentication without deleting the Agent, Provider Accounts, or history. A Workspace Owner can
+disable it or set a new expiration. Expiration has the same authority effect as disabling the Agent, without deleting
+it, its Provider Accounts, or its history. An Agent cannot rotate its credential, reactivate itself, or change its
+policy. _Avoid_: MCP clientInfo, Program identity, secret URL, recoverable credential, activation ceremony
+
+**Administrative Lifecycle Event**: An immutable, non-secret record of an accepted control-plane or authoring change
+that can affect future authority, configuration, or code. It covers Organization Membership, Workspace and Workspace
+Membership changes, Agents and Agent Registrations, Provider setup, publication, Credential Route and lifecycle changes,
+Provider Account authorization, connection and disconnection, Operation policy, approval decisions, and Saved Function
+saves and deletions. It records an actor that is either the accountable Principal or Coral itself, together with the
+action, safe target, outcome, changed field paths, timestamp, and trace identifier, without copying credentials,
+before-and-after values, or Invocation arguments. It also records whether a Workspace Membership or Organization Owner
+governance authorized the change. Organization Owners can inspect Organization Membership events and the events for
+their own governance actions: Owner assignment, archive, and restore. A Workspace Owner can inspect that Workspace's
+Workspace, Membership, Agent, Agent Saved Function, Provider, Credential Route, policy, and shared or Agent Provider
+Account events. A User can inspect events for their own Provider Accounts, Membership, and Saved Functions. Ownership
+does not expose another User's private work, and Agents cannot browse these events. Each event belongs to the domain
+that owns the changed state; it is not reconstructed from telemetry or duplicated as a Program Run Event. _Avoid_:
+Program Run Event, mutable audit row, secret log
+
+**Task**: A Workspace-owned unit of agent work toward a goal, with declared intent, the Principal that started it,
+a history of attributed attempts, and an independently declared terminal success or failure outcome that closes the goal
+to new attempts without canceling work already underway. A User can inspect that User's Tasks and a Workspace
+Owner can inspect Tasks attributed to Workspace-owned Agents, but ownership or ordinary Workspace membership grants no
+access to another User's private Task, intent, or history. Optional completion feedback belongs to the Task and shares its
+visibility and retention; it is not a separate report or interaction.
+
+_Avoid_: Single call, synthetic Run wrapper, Principal-owned Task, Workspace-shared Task, using Episode or session as
+aliases for Task
+
+**Task Interaction**: An individually identified, Workspace-owned child record in a Task's history of one authorized
+attempt to use Coral, retaining the participating Principal, separate per-call intent, timing, attempt outcome, and any
+search page or exact description as returned at that time. A User can inspect that User's interactions and a
+Workspace Owner can inspect Workspace-owned Agent interactions, without gaining another User's private work or giving
+Agents general history access.
+_Avoid_: Task, independent goal, Program Run, Operation Invocation, Program Run Event, Administrative Lifecycle Event,
+telemetry, replay checkpoint
+
+**Episode**: A retired predecessor to Task that is not part of Coral's current product model.
+
+_Avoid_: Using episode as an alias for Task
+
+**Upstream Service**: An external system, such as Gmail or Linear, that receives calls from a Provider. Several
+Providers can connect to the same Upstream Service through different interfaces or configurations. _Avoid_: Provider,
+Provider Account
+
+**Provider Recipe**: A distributed, secret-free description of one Upstream Service that pre-fills Provider Setup and
+Provider Configuration, so that adding a well-known Provider needs no hand-entered descriptor location, destinations,
+OAuth settings, or scope list. It offers one or more authentication options, and the owner confirms exactly one. It
+records only facts about the Upstream Service and never Coral's opinions about how that Service should be used, so it
+selects no Operations, renames nothing, and pins no Provider Generation. Runtime never evaluates a Recipe. _Avoid_:
+Source, Source Spec, source manifest, Provider Definition, Provider Configuration
+
+**Provider Definition**: The normalized, secret-free definition from which Coral configures a Provider. It defines the
+Operation surface, execution behavior, and supported credential contract without selecting a Workspace, Principal, or
+upstream account. In v1, Coral derives it from one exact OpenAPI document or MCP discovery snapshot and the confirmed
+Provider Configuration accepted through Provider Setup. It is a materialization input, not a public management resource or a v3 compatibility manifest. _Avoid_:
+Provider, Provider Account, Source Spec, stored setup form
+
+**Provider Configuration**: The owner's confirmed display name, authentication method, OAuth application settings and
+secret, and destination choices for a Provider, separate from its unchanged input document or discovery snapshot and
+individual account grants. Its non-secret settings remain pinned with the Provider Generation; application secrets are
+write-only, remain absent from inspection, and can rotate independently of account authorization. The source's own title
+is the suggested display name; the owner can replace it.
+_Avoid_: Provider Account, credential material, edited OpenAPI document
+_In Reef_: "Name" in the Configuration step, with "As in the document", "As in the recipe" or "Changed by you" provenance
+
+**Provider Setup**: A durable preparation of one exact OpenAPI document or MCP server discovery for Provider creation or
+regeneration. It pins the accepted descriptor or discovery snapshot, holds Provider Configuration for explicit review
+before sign-in, and records safe compatibility diagnostics. Authentication used to read the catalog is temporary,
+setup-scoped material rather than a permanent discovery account; retaining it as a Provider Account for execution
+requires an explicit choice. Failed or abandoned creation leaves no usable Provider Account. Creating or regenerating a
+Provider consumes the prepared setup; Coral does not fetch a different descriptor silently. A Setup is `awaiting_configuration`, `awaiting_authorization`, `awaiting_discovery`, `ready`, `consumed`, `expired`,
+or `canceled`. Only a
+ready Setup feeds Publication. A pre-ready Setup and any Setup holding setup-scoped credential material has a host
+deadline; expiry and explicit cancellation scrub that material. _Avoid_: Provider Definition inspection, live Provider,
+implicit refresh
+_In Reef_: never named; preparation within "Add provider", "Refresh operations", "Edit configuration", and "Change account setting"
+
+**Provider Publication**: The durable terminal result of one synchronous attempt to create or regenerate a Provider
+from one Provider Setup. Coral materializes the pinned input before one short final transaction and exposes no pending
+Publication lifecycle. That transaction consumes the Setup and either records a safe failure while publishing nothing or
+atomically publishes the Provider, active catalog, and any explicitly requested initial Provider Account;
+failed regeneration leaves the existing Provider unchanged. An exact management-request replay recovers a
+committed response without duplicating resources or evidence, while loss before a terminal commit leaves no accepted
+Publication. It exposes safe diagnostics but no private Provider generation. _Avoid_: Google long-running Operation,
+Provider generation, pending publication, request-independent import
+_In Reef_: "Add provider" (in flight "Adding…", result "Added"); regeneration commits with "Apply changes" (in flight "Applying…", result "Updated")
+
+**Provider Generation**: The private, immutable publication result that contains one Provider's exact Materialized
+Operation Catalog, executable Operation definitions, confirmed Provider Configuration, Provider Credential Contract, model-facing TypeScript view, and
+safe provenance. A Provider selects one active generation. A later Invocation selects the active generation, while an
+admitted Invocation retains its selected generation until it is terminal or past its deadline. A publication with no
+canonical change reuses the active generation. Coral exposes no generation list, selector, restore operation,
+comparison, or caller pin. _Avoid_: Operation revision, public catalog version, Program Run catalog snapshot
+
+**Provider**: One published, configured Operation catalog owned by exactly one Workspace, with one immutable resource
+identity and its own immutable, Workspace-unique Program namespace, authentication setting, Operation policy, and
+lifecycle. Providers are independent even when configured from the same upstream document or service.
+_Avoid_: Source, Upstream Service, Provider Definition, provider account
+_In Reef_: "provider"; revoke and restore are "Disable" and "Enable"; hard deletion is "Remove"
+
+**Operation**: A single callable action exposed by an Upstream Service through a Provider and made available by Coral.
+It has named inputs and returns one upstream-native result. _Avoid_: Capability, function, tool
+
+**Operation Key**: The Upstream Service-authored or deterministically derived key that addresses an Operation within one
+Provider's active catalog. It is not a cross-generation identity or a public client name. Management represents the
+current Provider-plus-Key address as a deterministic, transport-safe Operation resource name; that representation does
+not add another Operation identity or pin a Provider generation. A changed Key produces a changed resource name, and
+policy does not transfer silently. _Avoid_: Operation revision, public Call Path, Operation Provider Key, independent
+management id
+
+**Operation Call Path**: The collision-free JavaScript path for one Provider Operation in Coral Programs and
+Principal-facing discovery. It is the only v1 client name for the Operation; v1 has no separate
+language-neutral Operation Logical Name. Every Call Path starts with `coral.providers.<provider-namespace>`. Provider
+Publication assigns and collision-resolves the Operation-relative projection, then carries it forward while the same
+Operation Key stays active. The projection is idiomatic JavaScript: `/` and `.` in the Operation Key separate dotted
+namespace segments and each segment is lowerCamelCase, so `actions/add-repo-access` projects as
+`actions.addRepoAccess`. Each Provider prefixes that projection with its immutable namespace. The path
+persists outside an MCP session and is distinct from the internal Operation Key.
+A removed Operation-relative path or Provider namespace is not reserved and can be reused later. V1 provides
+no alias or historical Call Path compatibility guarantee. A Call Path does not pin a Provider Generation. _Avoid_:
+Operation Key, language-neutral intermediate name, Provider name, session-local function name, Provider-specific MCP
+tool
+
+**Provider Credential Contract**: The normalized, secret-free requirements for authorizing and authenticating one
+Provider generation. It records the selected credential method, its Credential Fields and where each is sent (header
+and parameter names, prefixes, literal values and path prefix), OAuth flow and
+endpoints, audience, client ownership, PKCE behavior, exact requested scopes, and the normalized set of credential-receiving
+base URLs, including base paths, without containing credential values. A Provider Account is compatible with a
+Generation only when these authority-bearing facts match its authorization; labels, descriptions, whether a field is
+masked while typed, schemas, Call Paths, and Operations added at an already-authorized destination do not affect
+compatibility.
+_Avoid_: Provider Account, credential material, scope compatibility check
+
+**Provider Account Authorization**: A durable host-owned process that obtains credentials through secret entry or OAuth
+for temporary Provider Setup use, an initial Provider Account, or explicit replacement of one exact Account. Its safe
+progress and completion metadata contain no credentials, and completion cannot silently retarget another caller,
+account setting, or changed authentication requirement.
+_Avoid_: Account Connection Request, request-bound OAuth stream, credential response
+
+**Provider Account**: The durable, Provider-local authorization record and protected credentials for its shared account
+or one exact caller Principal, with at most one current account for that scope. It is not a verified upstream identity,
+selectable inventory item, or reusable account across Providers.
+_Avoid_: Principal, verified upstream identity, reusable account
+_In Reef_: "account"; a User manages their own `caller` accounts on the workspace's personal "Accounts" page
+
+**Reported Grant**: The OAuth `scope` value exactly as a token endpoint returned it for a Provider Account, kept for
+people to read. It is not compared with the requested scopes and does not decide whether the Account is usable; a
+grant the service finds insufficient surfaces as that Operation's upstream failure.
+_Avoid_: granted scopes, scope check, parsed scopes
+_In Reef_: "granted permissions"
+
+**Credential Field**: One named value in a Provider Account's credentials, such as Jira's account email or Datadog's
+application key. It belongs to that one account and is never a Provider-wide setting.
+_Avoid_: credential input, secret (a field need not be sensitive), credential parameter
+
+**Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
+shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). Programs cannot
+select the route or account, and Coral never falls back to another route or credential. A User's missing,
+disconnected, expired, or incompatible `caller` Account does not hide Operations from discovery. The User connects a
+missing or disconnected Account during Invocation, before approval and dispatch, and reconnects an expired or
+incompatible one the same way; Coral never replaces a connected Account's credentials on its own. Before discovery, a
+`fixed` route and an Agent's `caller` route need a usable Account, and a `none` route needs a credential-free Provider.
+_Avoid_: Authentication method, runtime account selection, route fallback
+_In Reef_: "Whose account does it use?": "No account" (`none`), "One shared account" (`fixed`), "Individual accounts"
+(`caller`); Users connect their own accounts, and a Workspace Owner connects accounts for each Agent.
+
+**Account Connection Request**: A durable host-owned request for one exact User to connect a required Provider Account,
+shared by compatible waiting Invocations without sharing their Run deadlines. It is private to that User and pinned to
+the Provider's account setting and credential contract; it is not retargeted when either changes and is never created
+for a shared Account or an Agent. Only an Invocation creates it; discovery never does. Any completed connection that
+leaves that User's exact Account compatible with its pin satisfies it, wherever the User connects.
+_Avoid_: Provider Account Authorization, Program resume payload, automatic Program replay, Run preflight, Agent OAuth prompt
+
+**Materialized Operation Catalog**: The published, Provider-scoped definition of Operations produced when an Owner
+creates or regenerates a Provider. It indexes summaries separately from lazily loaded Operation definitions and
+authoritative provider schemas. It publishes active Operation-relative paths and a derived TypeScript view under the
+Provider's namespace for model and Reef guidance. An Operation that Coral cannot invoke
+faithfully remains cataloged as unavailable with a safe structural reason. Principal-facing discovery omits unavailable
+and policy-disabled Operations, and those whose Credential Route cannot serve the Principal. It exposes no Provider
+Account identifier, owner, account label, or credential state. Reef can show omitted Operations and their diagnostic
+reasons to authorized humans. Runtime never interprets the retained raw OpenAPI document or MCP discovery snapshot as
+the catalog. _Avoid_: Raw provider descriptor, live provider catalog, account inventory
+
+**Authoring Description**: The complete Principal-facing TypeScript call view of one currently visible Operation or
+Saved Function. It identifies the kind and call path and contains a safe summary plus one self-contained TypeScript
+declaration with every public type that the callable signature references. Its declaration can be projected from
+authoritative Provider schemas or emitted from Saved Function source; callers do not receive the different internal
+authority formats. Coral stores the complete Authoring Description, compiles Programs against it, and builds Search
+Hit signature lines from it. Exact Principal-facing description returns the complete inputs, the callable, an
+Operation's result wrapper, and the top level of the success data, and the other result types within a fixed byte
+budget: in full, as field-name stubs, or listed by name. Describing the same Call Path with `types` returns the named
+types of its declaration whole, with their own nested types under the same budget. Exact description of the Principal's
+own Saved Function without `types` also returns its source and saved diagnostics for later editing. _Avoid_: JSON Schema discovery result,
+shared storage format
+
+**Operation Description**: The Operation-specific Authoring Description. It also contains the Provider name, identity,
+safe presentation metadata, Operation Hints, and current approval requirement.
+Shared types belong to the Provider namespace, such as `coral.providers.github.SimpleUser`, rather than to one
+Operation group or a global type namespace. Authoritative provider schemas remain private catalog material and are not
+also returned as JSON Schema. An Operation whose complete stored description cannot fit the discovery limit is
+unavailable to Principal-facing discovery, while Reef can show its safe diagnostic; within that limit, describe fits
+its result types to the describe budget and returns the rest through `types`. _Avoid_: JSON Schema discovery result,
+global provider type
+
+**Discoverable Operation**: An Operation that Principal-facing discovery returns to one Principal now. Current
+Workspace authority, Principal state, Provider lifecycle, Operation Availability, and Operation Access State permit it,
+and its Credential Route can serve that Principal. Discoverability is not Account readiness: a User's Discoverable
+Operation can still require that User to connect an Account before dispatch. Search indexes and cursors confer no
+discoverability. _Avoid_: Ready Operation, discovery readiness
+
+**Universal Search**: Principal-filtered relevance discovery over the Principal's Discoverable Operations and Saved
+Functions. It returns Search Hits with evidence; describe returns an Authoring Description fitted to the describe
+budget, or the types of it named in `types`. It searches only
+secret-free catalog material and does not execute a Saved Function or dispatch to an Upstream Service. Provider-native
+search is an ordinary Operation that only a Coral Program can invoke. V1 Universal Search stores no Operation Result,
+Program Value, Run data, or observed memory. Reef exact catalog inspection is a separate administration projection. _Avoid_: Provider search fanout, observed-value memory, exact catalog administration
+
+**Search Entity**: One thing Universal Search can find: a Discoverable Operation of one current Provider, or one of
+the Principal's current Saved Functions. Each Search Entity has one complete Call Path, one Authoring Description,
+and one set of secret-free fields, its metadata and declaration-field paths, that Provider Publication or Saved
+Function save hands to Universal Search to index. An Operation whose declaration-field paths exceed the index bound
+keeps only its shallower paths and carries a warning. Universal Search returns a Search Hit for it, and describe its
+Authoring Description, never the Entity's private material. _Avoid_: Authoring Kind, search document
+
+**Search Hit**: One item of a search page: a Search Entity's kind and Call Path, its Provider display name, title,
+signature line, Description Snippet, Operation Hints, approval requirement, deprecation flag, and the evidence for why it
+matched; a Guidance Snippet and matched tags only where a query term matched them. Never the declaration.
+
+**Search Coverage**: What one search page states, per kind of Search Entity, about how much of the Principal's Search
+Entities it examined and why results may be missing: how many Providers or Saved Functions were eligible, searched, and
+failed, how many results the kind returned, and whether more remain. A kind that the Provider filter leaves out is
+skipped, not incomplete. Coverage describes one page at the time of the search, not the current catalog.
+
+**Description Snippet**: The bounded window of an Entity's description that a Search Hit shows: around the first
+matched query term when the description matched, otherwise its beginning.
+
+**Guidance Snippet**: The same bounded window over an Entity's guidance, shown only when a query term matched in it.
+
+**Operation Invocation**: One child record of a Program Run and one attempt to call one Operation, making at most one
+upstream dispatch in v1. Coral persists it and appends `invocation.started` before account or approval work; started
+means admitted, not dispatched, and its duration includes gate waiting. An Invocation is `pending` before its durable
+dispatch-start record, `dispatching` after that record and before it ends, and `ended` thereafter. An ended Invocation
+records `upstream_outcome`, `coral_failure`, `run_terminated`, or `indeterminate`; Run-level termination bypasses the
+Program's Operation interface, while `indeterminate` means dispatch started but Coral could not durably save a complete
+local result. At admission it retains the exact Provider identity and account-setting version, Credential Route, private
+Provider Generation, and Operation Key that it resolved. The Program Run remains `running` during waits but does not pin
+a generation for later Invocations. Workspaces and callers cannot list, select, restore, or pin Provider generations.
+The Invocation references the higher-level Program Run and its stored Program context instead of copying the Program
+source. Immediately before dispatch, Coral rechecks current Organization Membership and Workspace Membership, the Invoking Principal, Agent Registration, Workspace, Provider lifecycle and account-setting version,
+Operation, exact Provider policy, retained Credential Route, Provider Account and authorization version, approval,
+and current token material. Coral checks authority, Provider, Operation, and policy before it resolves `none`, `fixed`,
+or `caller`. It resolves a required User caller Account before creating any required Approval Request, because approval
+binds the exact Account authorization. It then rechecks all
+authority and configuration, refreshes or resolves credentials, and dispatches. Approval bypasses none of these checks.
+Authority loss or Run termination settles a pending Invocation and closes its exact Approval Request without dispatch or
+replay. Detaching from a concurrent Account Connection Request does not cancel another Invocation's wait or the
+connection itself. Account-setting changes, explicit Account replacement, and Disconnect stop affected pending work;
+Coral never switches accounts. A Provider update alone does not stop an already-authorized Invocation that retained an
+older Generation and compatible Account, but changed authentication requirements end obsolete connection requests and
+their waiting Invocations. Routine token refresh within the same authorization permits continuation after normal checks;
+it does not replace the selected authorization or invalidate approval. A permanent refresh rejection requires
+reconnection; a temporary refresh failure is a coded Coral Failure and does not change Account state. Its full
+authorized detail and Approval Request can show its exact logical arguments; summaries, logs, notifications, and
+telemetry omit them. Credentials and host-generated authentication data are never Invocation arguments. Repeating a call
+is a new Invocation rather than an automatic retry. _Avoid_: Retry attempt, query execution, stored Program
+
+**Operation Availability**: Whether a cataloged Operation can be invoked while preserving its upstream-native semantics.
+Caller credentials, approval, quotas, and upstream outages do not change it. Principal-facing discovery omits an
+unavailable Operation; Reef can show it and its structural reason for diagnostics. _Avoid_: Caller readiness,
+best-effort support
+
+**Effectful Operation**: An Operation that may change provider state or cause another external effect. Its outcome may
+remain uncertain when communication fails after dispatch. Coral treats every Operation that does not declare itself
+read-only (see Operation Hints) as possibly effectful. _Avoid_: Write operation, mutation
+
+**Operation Hints**: The effect hints an Operation's provider source declares: read-only, destructive, idempotent, and
+open-world. Coral takes each hint at catalog materialization only when the source declares it, from an MCP tool's
+annotations in v1, and never assumes a protocol default, so an undeclared hint says nothing. OpenAPI/HTTP-sourced
+Operations declare none in v1; Coral's MCP resource read is read-only by protocol definition. Hints are provider claims,
+not caller-configurable, and only a declared read-only hint affects policy. _Avoid_: Effect classification, `unknown`
+effect, tool annotations
+_In Reef_: one label per hint declared true: "Read-only", "Destructive", "Idempotent", "Open world"; none when undeclared
+
+**Operation Access State**: The Workspace decision that one Operation is `enabled`, `approval_required`, or `disabled`.
+An exact rule identifies only a Workspace, Provider, Operation Key, and state. A Workspace Owner manages it.
+Organization policy does not set Operation access in v1, and there are no Principal-, Agent-, Account-, or
+Credential Route-specific rules, patterns, ordered rules, or globs. A reusable Program in one Workspace therefore has
+one Operation policy for one Provider regardless of its Invoking Principal. A Principal can still have different
+discoverability and readiness because Credential Route, Provider Accounts, and Agent state are not policy (see
+Discoverable Operation); a stale Invocation fails safely. If no exact rule matches, the Operation's Operation Hints supply
+the default: an Operation that declares itself read-only defaults to `enabled`; every other Operation defaults to
+`approval_required`. Because v1 OpenAPI/HTTP-sourced Operations declare no hints, those Operations require approval
+until a Workspace rule enables them. Provider signature and execution-binding changes do not
+stale an exact rule in v1. A changed Operation Key does. Policy for one Provider does not affect another Provider.
+A Principal that needs a different Operation set belongs in a different Workspace.
+_Avoid_: Principal policy, Agent policy, Account-specific policy, Credential Route policy, Provider permission,
+Operation Availability, allow/ask/deny
+
+**Run Status Page**: The directly linked detail of one Program Run within Reef's activity interface, at one stable,
+non-secret URL, rather than a required standalone page. Every supported local or hosted deployment provides this
+interface, and its link opens the exact Run independently of the activity list's current filters. Opening it requires
+User OAuth and normal Run authorization; the URL grants no authority. The view shows the Run status, Events,
+Invocations, and every Approval Request and Account Connection Request that the User can inspect. It groups all current
+human actions for the Run and receives Run, approval, and account-connection changes without a manual refresh.
+Authorized Workspace Owners find Agent approval actions through Reef's queue and notifications. _Avoid_: Per-Invocation
+action URL, bearer URL, MCP session state
+
+**Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request or
+Account Connection Request of their own Run, while an observation of that Run is in progress. Each observing tool call
+asks about each current request at most once; a later call asks again while the request is still pending. An approval
+prompt is a form: accepting it approves that exact Invocation and declining it declines the Invocation, with the same
+first-wins rules as Reef. A connection prompt is a URL elicitation to the User's Reef page for that Provider Account, sent
+only to clients that support URL mode; declining it declines the request, and accepting it only opens the page. Dismissing a
+prompt without an answer decides nothing. An in-band prompt whose request no longer needs an answer is withdrawn; a
+later answer to an obsolete prompt decides nothing. The prompt keeps no durable state and grants no authority beyond the
+authenticated User's own. Agent bearer sessions, other Users, and Owners observing Agent Runs are never prompted.
+_Avoid_: one prompt per Run, form connection prompt
+
+**Approval Request**: A durable host-owned request for a human decision on one pending Operation Invocation. Reef is
+the v1 human resolution interface that every Request can use, in local and remote deployments; a deployment without its
+local or hosted Reef interface is not ready. Coral creates a Request whenever an Invocation requires approval. It records the exact logical
+Operation arguments for review on the Run Status Page independently of the agent transport. Its deadline settles the
+Invocation with `approval_expired`; denial settles it with `approval_declined`. The first durable terminal decision
+wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
+Invocation with `operation_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
+checks. A later Invocation can create a new request. The invoking User can also decide it through an Action Prompt in
+their MCP client; Reef remains available for every Request. An active browser is not required, and existing Requests
+survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
+
+**Invocation Approval**: A human decision that satisfies an `approval_required` Operation Access State for one exact
+Operation Invocation. It is bound to the Workspace, Provider and account-setting version, Invoking Principal, private
+Provider Generation, Operation, Credential Route, Provider Account and authorization version when present, and arguments. A User approves their own
+Invocation; any Workspace Owner can approve an Agent Invocation. An Agent never approves, and credential provisioning alone grants no approval authority. Coral retains the
+approver Principal, decision, timestamp, and optional short comment. A later restrictive policy change still applies at
+dispatch; the approval remains historical evidence and cannot authorize a later Invocation or change policy. _Avoid_:
+Always enable, policy rule, reusable approval token
+
+**Upstream Job**: An asynchronous process owned by an Upstream Service and started or observed through separate
+Operations. Coral does not merge those Operations into a workflow or automatically poll the job. _Avoid_: Provider Job,
+Coral workflow, Program Run
+
+**Upstream MCP Task**: An Upstream Service-owned asynchronous invocation lifecycle required or offered by an upstream
+MCP Operation. It is distinct from Coral's Program Run lifecycle. _Avoid_: Program Run, Coral task
+
+**TypeScript-only Coral**: A Coral product contract in which Operations, Saved Functions, and Coral Programs are
+presented and authored as TypeScript and SQL is absent from every layer. JavaScript remains valid TypeScript source, and
+Coral Programs execute with JavaScript semantics. Type information guides authoring but does not override observed
+upstream values or gate Program admission. _Avoid_: TypeScript facade, SQL hidden behind TypeScript, runtime type safety
+
+**Coral TypeScript Profile**: The single explicit authoring and admission profile shared by Reef, Saved Function save,
+MCP `exec`, and server-side Run compilation. It pins one official `typescript.js` version, compiler options, source-map
+behavior, and the ECMAScript declaration libraries supported by Coral's embedded V8. It accepts JavaScript as TypeScript
+source. Reef and Saved Function save report strict semantic diagnostics without making them admission failures; v1
+one-time Program admission parses and emits source but does not compute a full semantic check. The profile exposes no
+DOM, Web Worker, Node, npm, filesystem, authored import, or module-resolution surface. _Avoid_: Runtime TypeScript,
+client-selected compiler, Node TypeScript profile
+
+**Program Authoring Limits**: The fixed v1 bounds applied before a Saved Function save or Program Run is accepted. A
+Saved Function Path is at most 256 UTF-8 bytes and 16 segments. A submitted Program or one Saved Function source is at
+most 64 KiB. One Run links at most 64 Saved Functions, and its submitted plus linked TypeScript source is at most 512
+KiB. Its emitted JavaScript is at most 1 MiB and its source maps are at most 2 MiB. One Saved Function Declaration is at
+most 256 KiB. One save or Run compilation has a two-second deadline. Exceeding a bound returns a safe error, creates no
+partial Run, and leaves an existing Saved Function unchanged. _Avoid_: Deployment-selected authoring limit, unbounded
+compiler input, partial save
+
+**Program Diagnostic**: Bounded information about an authored TypeScript issue, Saved Function linking issue, or the
+error that caused a Program Run to fail, intended to help the caller understand the cause and determine the appropriate
+correction. Runtime diagnostics expose an existing error rather than a separate diagnostic execution. Authorized Run
+readers may receive Program-controlled error messages and mapped authored stacks, including bounded cause chains and
+grouped errors. Detailed runtime content is limited to information visible inside the
+Program's isolate; Operation Errors retain their defined shape, and trusted Coral error codes remain distinguishable
+from Program-controlled text. This content stays out of telemetry, and host internals and credentials remain private.
+A diagnostic makes no claim that repeating a Run is safe. Syntax and linking failures identify the authored Program or
+Saved Function with a line, column, and clear message. Runtime
+stacks map emitted JavaScript locations back to authored TypeScript and hide generated wrappers, emitted JavaScript,
+compiler internals, and V8 frames. Reef can show advisory semantic diagnostics without making them Run failures. Emitted
+JavaScript remains private diagnostic data rather than a product authoring view. _Avoid_: Raw V8 stack, generated
+wrapper location, emitted JavaScript display
+
+**Schema Type**: A TypeScript declaration derived from an Operation's input or output schema for authoring guidance. It
+does not imply runtime TypeScript type checking, and disagreement with an observed upstream value does not prevent a
+Coral Program from handling that value. _Avoid_: Runtime type, executable type
+
+**Agent-owned Pagination**: The calling agent reads continuation state from a provider operation result and explicitly
+invokes each subsequent page. Coral returns one provider response per invocation and does not automatically traverse or
+combine pages. _Avoid_: Transparent pagination, automatic pagination
+
+**Execution Binding**: The upstream-specific invocation recipe attached to an Operation behind Coral's common Operation
+interface. A v1 binding describes HTTP or MCP without exposing routing or credential details to Programs. _Avoid_:
+Execution attachment, client transport, File Collection binding
+
+**Upstream Outcome**: A complete upstream result received for one Operation Invocation and represented according to its
+Execution Binding. HTTP status and MCP `isError` remain upstream facts: Coral does not classify an Upstream Outcome as
+success or error. _Avoid_: Provider Outcome, Upstream Error, Coral Failure, normalized response
+
+**Coral Failure**: A safe, coded inability to produce a complete Upstream Outcome for one Operation Invocation. It
+excludes Run-level termination and unexpected host defects and makes no public claim about dispatch, external effects,
+or retry safety in v1. _Avoid_: Upstream failure, transport failure, Program failure
+
+**Upstream Result**: The Upstream Service-owned value and safe upstream metadata carried by an Upstream Outcome. Coral
+does not reshape the value into normalized rows or make upstream schema conformance a condition of success. _Avoid_:
+Provider-native Result, row projection, normalized query result
+
+**Operation Result**: The caller-facing `{ data, metadata }` projection of one complete Upstream Outcome. Its mandatory
+metadata carries safe execution-specific response facts; it has no `ok` discriminator or Coral-defined upstream success
+state. _Avoid_: Program outcome, failure union, Upstream Error
+
+**Operation Error (`OperationError`)**: The Coral-owned JavaScript `Error` subclass by which a known, safe Coral Failure
+rejects one Operation call. Programs reference the non-constructible class as `coral.OperationError`. It has a stable
+code and W3C trace identifier, carries no upstream evidence or retry claim, and is distinct from Run-level termination
+or an unexpected host defect. _Avoid_: Upstream Error, Program failure, provider response
+
+**MCP Content Block (`McpContentBlock`)**: One ordered member of an MCP-backed Operation's content sequence,
+distinguished by its content type. Binary image, audio, and embedded-resource payloads carry their bounded
+provider-native base64 data inline. _Avoid_: Return value, attachment
+
+**MCP Operation Result**: The complete result of one upstream MCP tool call, retaining its ordered MCP Content Blocks
+separately from its tool-typed structured content and metadata. An explicit `isError: true` remains part of the resolved
+Upstream Outcome. _Avoid_: Flattened tool result, preferred structured content, Operation Error
+
+**HTTP Operation Result**: The Operation Result of one complete HTTP response. A typed HTTP Operation declares it
+as `HttpResult<Data, Status, MediaType>` when the response matches a declared status and media type and decodes, and as
+`HttpUnknownResult` otherwise, with untyped data and at least one decode diagnostic. An Operation whose schema Coral
+cannot type declares one untyped result in full.
+
+**MCP Resource Reference (`McpResourceRef`)**: An opaque, Provider-bound reference created from an upstream MCP resource
+link. Reading it is a separate Provider Operation; Coral never auto-fetches it. _Avoid_: Raw resource URI, Binary Value
+
+**Saved Function Path**: The Principal-owned dotted JavaScript path relative to `coral.functions` that names one Saved
+Function, such as `internal.finance.calculateTax`. Each segment is a valid JavaScript path segment, and Coral rejects
+reserved internal segments. Parent paths are virtual namespaces rather than folders or separate resources. The complete
+path identifies one current definition for that Principal in one Workspace. _Avoid_: Filesystem path, public package
+name, Saved Function version
+
+**Saved Function Save**: The atomic creation or replacement of one current Saved Function at an exact Saved Function
+Path. `save_function` supplies the path, explicit description, and source; it creates an absent path and replaces an
+existing path. Only the owning Principal can save or replace it. The latest accepted save wins. It replaces the source,
+description, declaration, and diagnostics together, while failure leaves the current function unchanged. MCP exposes
+non-executing `save_function` and `delete_function` authoring tools with required Task and intent attribution. Reef uses
+a private first-party service for the same behavior. These surfaces do not execute code, and MCP `exec` remains the sole
+public execution entry point. A Workspace Owner can list, inspect, and delete an Agent-owned Saved Function but cannot
+save or replace one as the Agent. V1 exposes no public versions, edit token, or rename operation, and updating or
+deleting a function cannot change an already accepted Run. _Avoid_: Draft save, partial publication, Saved Function
+generation
+
+**Saved Function Declaration**: The exact, self-contained TypeScript declaration emitted from one accepted Saved
+Function source by Coral's pinned TypeScript compiler. It is the callable interface used by Universal Search, exact
+description, Reef authoring, and Program admission. A Saved Function is an accepted callable rather than an editor
+draft. Saving fails on syntax, declaration emission, forbidden capabilities, invalid exports, unresolved static Saved
+Function paths, or authoring limits. Ordinary TypeScript semantic diagnostics remain advisory and are stored with the
+accepted source. The declaration can use TypeScript interfaces that have no faithful JSON Schema projection. Coral
+stores it atomically with the source that produced it and does not make JSON Schema the Saved Function's interface
+authority. _Avoid_: Saved Function schema, hand-maintained declaration, runtime type
+
+**Saved Function**: A reusable named TypeScript callable that a User or Agent saves at a Saved Function Path within one
+Workspace under that Principal's `coral.functions` namespace. A User's current Saved Functions are private to that User.
+A Workspace Owner can read the source, description, declaration, and diagnostics of an Agent-owned Saved Function and
+can delete it, but cannot author code as the Agent. Disabling a Principal retains its current Saved Functions. Deleting
+an Agent or removing a User from the Workspace removes that Principal's current Saved Functions without transferring
+them; Administrative Lifecycle Events and retained Run source snapshots remain under their own retention rules. Its
+source is a no-import TypeScript module with exactly one default-exported callable. Coral owns the external name and
+call path; the module can contain local types, classes, constants, helper functions, and top-level initialization, but
+it cannot use packages or Node APIs. Top-level initialization can use the normal Program Runtime Surface, including
+Operations, Saved Functions, `coral.emit`, and `console`. It runs once for each accepted Run package before the
+submitted Program body. Every resulting call, output, and failure uses the same attribution, gates, limits, deadline,
+durability, and failure rules as the rest of the Run. Coral applies no special static effect analysis to this code, and
+a linked module can invoke an Operation even when the submitted Program never calls its exported function. Its authored
+TypeScript is its behavior authority, and its Saved Function Declaration is its interface authority. It is not a
+Provider Operation, can call several Operations or Saved Functions, and can expose TypeScript interfaces that are richer
+than JSON-compatible data contracts. At Program admission Coral statically identifies literal Saved Function references,
+rejects computed function paths, and links the exact current source closure into the Program compilation. V1 does not
+preserve reverse-reference integrity when a Saved Function is later deleted; a missing source in the closure blocks a
+later Run at admission. Coral does not publish the Saved Function as JSON Schema or a separately retained JavaScript
+executable. Within an accepted Run it behaves as an ordinary linked synchronous or asynchronous JavaScript function: its
+thrown errors are catchable, its Operation calls, emissions, logs, time, and resource use belong to the enclosing Run,
+and it creates no separate durable Run or Invocation record. Its type information guides callers but does not create
+runtime TypeScript semantics. _Avoid_: UDF, Operation, tool, Saved Function JSON Schema, dynamic function lookup
+
+**Coral Program**: Principal-authored TypeScript lowered to JavaScript and executed by a Coral-owned, secret-free
+runtime against schema-typed Provider Operations under `coral.providers` and Saved Functions under `coral.functions`.
+JavaScript remains valid source, and type information guides authoring without gating admission. It receives Operation
+Results, catchable Operation Errors, `coral.emit`, and a bounded global `console`; Run cancellation and deadlines remain
+host-owned and have no Program-visible signal. It receives no Workspace, Principal, Provider Account, policy, approval,
+credential, connection URL, or connection-request data. An Operation Error can identify a safe condition such as a
+required account, required approval, or disabled Operation, but it does not reveal authority configuration. A
+Coral Program can reach Upstream Services only through host-mediated Operations. _Avoid_: Trusted local script,
+arbitrary Node process, ambient authority
+
+**Program Compiler**: The private host component that applies the Coral TypeScript Profile, resolves Saved Function
+source, emits JavaScript and source maps, and produces safe Program Diagnostics. It keeps an official `typescript.js`
+compiler warm in one or more compiler-only V8 isolates that receive only packaged compiler assets and virtual source
+files. Compiler isolates expose no Program host binding or ambient authority and are recycled after memory growth or
+replaced after a failure. Program execution never shares a compiler isolate; every accepted Run uses a fresh execution
+isolate containing only emitted JavaScript and the Program Runtime Surface. _Avoid_: Runtime compiler, Node compiler
+process, shared compiler and Program isolate
+
+**Program Runtime Surface**: The secret-free ECMAScript environment in which V8 executes an accepted Program package. It
+provides ordinary objects, arrays, classes, closures, generators, Promises, `async` and `await`, maps, sets, regular
+expressions, dates, JSON, `Intl`, BigInt, Symbol, the bounded Coral `console`, and the `coral` host namespace. BigInt
+and other non-Program Values can be used internally but cannot be emitted or returned as Program Values. It provides no
+timers, DOM, browser, Node, Deno, npm, import, `require`, worker, subprocess, shared-memory, Atomics, filesystem,
+environment, direct-network, credential, or WebAssembly surface. V8 disables code generation from strings, including
+`eval`, `new Function`, and indirect access through `function.constructor`. _Avoid_: Browser sandbox, Node sandbox,
+ambient standard library, dynamic code
+
+**Program Admission**: The host step that accepts a submitted TypeScript Program only after Coral has resolved its
+statically named Saved Functions, built the exact source closure, enforced capability and size rules, and emitted
+executable JavaScript and source maps. Syntax, missing source, forbidden capability, emission, and limit failures return
+safe diagnostics without creating a Program Run. V1 does not compute ordinary TypeScript semantic diagnostics during
+one-time Program admission. After admission succeeds, later JavaScript or Operation failures belong to the durable
+Program Run. _Avoid_: Runtime compilation, partial Run, semantic type gate
+
+**Program Run**: The higher-level Workspace record for one accepted execution of a Coral Program; MCP work associates
+it with a Task, while standalone Reef execution does not require one. It stores the exact accepted Program source, the
+identities and exact source snapshots of linked Saved Functions, and enough private compiler output and provenance to
+retain the code that V8 executed. Every new Run compiles its submitted source and linked Saved Function closure with Coral's currently pinned TypeScript profile, even when a function was saved under an
+older profile. Coral stores the selected profile and emitted output with the Run and does not retain or select old
+compilers per Saved Function. The Run identity identifies this stored source and executable package; v1 adds no separate
+source or executable digest. A later profile update can affect future Runs but cannot change an accepted Run.
+Immediately before Program execution starts, Coral rechecks the current Organization Membership, Workspace, Principal,
+Agent, and Agent Registration authority. Authority loss after acceptance but before execution starts fails the Run
+without executing the Program or creating an Operation Invocation. After execution starts, authority loss blocks later
+upstream dispatch but does not stop secret-free computation. The accepted Run fixes its linked Saved Function code but
+does not fix one Provider generation for all later Operation calls; each Operation Invocation keeps selecting the active
+generation when that call starts. Child Operation Invocations reference this stored Program context. Authorized human
+Run detail can show the exact submitted Program source, linked Saved Function sources, and logical Invocation arguments,
+but not credentials, generated authentication fields, or internal host values. The Run is attributed to its Invoking
+Principal but is not owned by that Principal. Sharing a Workspace shares Providers and policy, not Run
+history. An authenticated Agent can observe and cancel only its own accepted Run by Run identifier and cursor. It cannot
+list Run history or access another Principal's Run. A User can list, inspect, and cancel Runs invoked by that User. A
+Workspace Owner can inspect and cancel Runs invoked by the Owner's User and by Workspace-owned Agents. The
+Owner receives no access to another User's Runs. Other Members cannot inspect another Principal's Runs. An Organization
+Owner without a Workspace Membership sees no Runs there. Credential provisioning alone grants no Run access.
+Loss of Workspace access stops future reads but does not delete history. The Run is identified independently of the
+request used to start or observe it. Caller disconnection does not end the Run; completion, explicit cancellation, or
+Coral policy does. A handled Operation Error does not fail the Run, while an unhandled one does; an Upstream Outcome
+does not determine Run status. _Avoid_: Program request, connection-scoped execution, Principal-owned Run
+
+**Program Run Event**: An immutable, sequenced observation recorded during a Coral Program Run for incremental
+consumption and audit. It describes Run execution, including cancellation and recovery effects, but does not duplicate
+control-plane, authoring, or approval decisions recorded as Administrative Lifecycle Events. Run Events are not replay
+checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow checkpoint
+
+**Program Emission**: A bounded, structured value that a Coral Program explicitly publishes during its Run. An Emission
+is durable caller-facing output, does not suspend execution, and remains observable if the Run later fails. _Avoid_:
+Yield, console output
+
+**Program Log**: A diagnostic message produced through a Coral Program's console during its Run. A Program Log aids
+observation but is not caller-facing Program output. _Avoid_: Emission, result
+
+**Binary Value (`BinaryValue`)**: A bounded, transport-neutral inline representation of finite binary data in an
+HTTP-backed Operation or Program Value. It carries validated base64 data and safe descriptive metadata but has no
+durable identity, storage lifetime, or stable cross-Run reference; MCP-backed Operations keep provider-native content
+blocks. _Avoid_: Artifact, file path, byte stream, stable cross-Run reference
+
+**Program Value**: The bounded, interoperable JSON published when a Coral Program crosses a durable output boundary. A
+Program can use any supported JavaScript value internally; native ECMAScript JSON property access, `toJSON`, omission,
+ordering, and coercion semantics apply when `coral.emit` or the successful return value publishes output. A root
+`undefined` return means there is no Final Value, while an Emission must produce interoperable JSON; serialization or
+shared JSON-model failure produces no Program Value. Bounded Binary Values and provider-native MCP Content Blocks are
+explicit tagged extensions that retain their binary forms. An Operation Error follows ordinary native serialization, so
+a Program must project its safe fields to a plain value when it wants to publish them. _Avoid_: Treating an internal
+JavaScript value as already durable, assuming every runtime value has a portable JSON form
+
+**Final Value**: The optional Program Value produced when a Coral Program Run succeeds. It is distinct from the Run's
+Emissions and Program Logs. _Avoid_: Transcript, accumulated output
+
+**Run Update**: An observation of a Coral Program Run containing its current state, a current Principal-filtered
+`required_actions` list, a bounded ordered batch of authored Program Emissions and Program Logs after an opaque cursor,
+and the next cursor. Automatic execution Events remain in authorized human history, not Run Updates. A terminal Run's
+outcome appears on the final output page; `has_more` means authored records or terminal details remain to be delivered.
+The required actions are a current snapshot, not a Run state or Program Run Events. Several can exist for
+concurrent Invocations. Each visible Request appears once, even if several Invocations wait on it. Required actions
+identify an account connection or Invocation approval, its required actor, deadline, opaque non-authorizing request
+identifier, and stable non-secret Run Status Page URL. An Account Connection Request appears only to its invoking User.
+An Agent can see that its own Run requires a Workspace Owner action, but cannot inspect or resolve the request. A
+terminal Run has no required actions. The cursor identifies authored-record delivery progress and the last visible
+required-action revision; internal execution bookkeeping alone is not a meaningful update. Adapters may project a Run
+Update into an MCP tool result or HTTP response without changing its semantics. _Avoid_: Full execution history,
+stream chunk, transport result, treating a required action as Run state or a Program Run Event

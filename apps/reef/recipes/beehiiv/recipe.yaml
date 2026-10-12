@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.beehiiv.com/oauth2
+# OAuth client registration requires contacting beehiiv Support; API key is the default.
+# Scope suffixes read and write grant the corresponding resource operations.
+schema_version: 1
+id: beehiiv
+display_name: beehiiv
+description: Publications, posts and subscribers from beehiiv.
+source:
+  openapi:
+    url: https://developers.beehiiv.com/docs/v2/openapi/openapi/api-reference.json
+authentication:
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://developers.beehiiv.com/oauth2
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      documentation_url: https://developers.beehiiv.com/oauth2
+      authorization_url: https://app.beehiiv.com/oauth/authorize
+      token_url: https://app.beehiiv.com/oauth/token
+      client:
+        authentication: client_secret_post
+      scopes:
+        - identify:read
+        - automations:read
+        - automations:write
+        - custom_fields:read
+        - custom_fields:write
+        - subscriptions:read
+        - subscriptions:write
+        - polls:read
+        - polls:write
+        - podcasts:read
+        - podcasts:write
+        - posts:read
+        - posts:write
+        - publication_fields:read
+        - publication_fields:write
+        - publications:read
+        - publications:write
+        - referral_program:read
+        - referral_program:write
+        - segments:read
+        - segments:write
+        - tiers:read
+        - tiers:write
+        - webhooks:read
+        - webhooks:write
+  default: api_key
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

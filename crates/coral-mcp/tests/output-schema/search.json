@@ -1,0 +1,278 @@
+{
+  "anyOf": [
+    {
+      "$ref": "#/$defs/SearchResult"
+    },
+    {
+      "$ref": "#/$defs/ToolFailure"
+    }
+  ],
+  "description": "The MCP envelope's isError remains authoritative. Terminal Run failures\nare successful observations, not `ToolFailure` values.",
+  "title": "ToolOutput",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SearchResult": {
+      "type": "object",
+      "properties": {
+        "hits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SearchHit"
+          }
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "retriever_statuses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RetrieverStatus"
+          },
+          "description": "One status per retriever: whether it ranked, and how much it searched."
+        }
+      },
+      "required": [
+        "hits",
+        "next_cursor",
+        "has_more",
+        "retriever_statuses"
+      ]
+    },
+    "SearchHit": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "call_path": {
+              "type": "string"
+            },
+            "signature_line": {
+              "type": "string",
+              "description": "The callable's input members one level deep and its result type by\nname, at most 512 UTF-8 bytes."
+            },
+            "description_snippet": {
+              "type": "string",
+              "description": "At most 512 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
+            },
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "provider_display_name": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hints": {
+              "$ref": "#/$defs/Hints"
+            },
+            "approval_required": {
+              "type": "boolean"
+            },
+            "deprecated": {
+              "type": "boolean"
+            },
+            "guidance_snippet": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Present only when a query term matched the guidance."
+            },
+            "matched_tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The tags a query term matched; absent when none did."
+            },
+            "kind": {
+              "type": "string",
+              "const": "operation"
+            }
+          },
+          "required": [
+            "kind",
+            "call_path",
+            "signature_line",
+            "description_snippet",
+            "evidence",
+            "provider_display_name",
+            "title",
+            "hints",
+            "approval_required",
+            "deprecated"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "call_path": {
+              "type": "string"
+            },
+            "signature_line": {
+              "type": "string",
+              "description": "The callable's input members one level deep and its result type by\nname, at most 512 UTF-8 bytes."
+            },
+            "description_snippet": {
+              "type": "string",
+              "description": "At most 512 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
+            },
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "kind": {
+              "type": "string",
+              "const": "saved_function"
+            }
+          },
+          "required": [
+            "kind",
+            "call_path",
+            "signature_line",
+            "description_snippet",
+            "evidence"
+          ]
+        }
+      ],
+      "description": "One Search Hit. Call a read from it when its signature line is complete:\nno cut marker (`…`) and no type named in its input that the line does not\nshow. Describe first otherwise, and before a write."
+    },
+    "Evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "fields",
+        "paths"
+      ]
+    },
+    "Hints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read_only": {
+          "type": "boolean"
+        },
+        "destructive": {
+          "type": "boolean"
+        },
+        "idempotent": {
+          "type": "boolean"
+        },
+        "open_world": {
+          "type": "boolean"
+        }
+      },
+      "description": "Effect hints the Provider declared. An absent field is undeclared, not a\nprotocol default."
+    },
+    "RetrieverStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retriever": {
+          "$ref": "#/$defs/Retriever"
+        },
+        "state": {
+          "$ref": "#/$defs/RetrieverState"
+        },
+        "coverage": {
+          "$ref": "#/$defs/RetrieverCoverage"
+        }
+      },
+      "required": [
+        "retriever",
+        "state",
+        "coverage"
+      ]
+    },
+    "Retriever": {
+      "type": "string",
+      "enum": [
+        "operation",
+        "saved_function"
+      ]
+    },
+    "RetrieverState": {
+      "type": "string",
+      "enum": [
+        "results_found",
+        "empty",
+        "skipped",
+        "partial",
+        "error"
+      ],
+      "description": "`partial` and `error` mean results may be missing: retry shortly or list\nwithout a query. Only a search that an earlier Coral retained holds\n`skipped`: its Provider filter left this kind out."
+    },
+    "RetrieverCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eligible_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "searched_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "returned_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "has_more": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "eligible_units",
+        "searched_units",
+        "failed_units",
+        "returned_count",
+        "has_more"
+      ]
+    },
+    "ToolFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  },
+  "type": "object"
+}

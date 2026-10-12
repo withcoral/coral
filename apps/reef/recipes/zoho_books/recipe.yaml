@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.zoho.com/books/api/v3/invoices/
+schema_version: 1
+id: zoho_books
+display_name: Zoho Books Invoices
+description: Invoices, invoice payments, credits, reminders and invoice
+  attachments from Zoho Books.
+source:
+  openapi:
+    url: https://www.zoho.com/books/api/v3/invoices/invoices.yml
+authentication:
+  options:
+    oauth_token:
+      method: header_credentials
+      label: Paste a temporary OAuth access token
+      description: Renew the token after one hour. Coral cannot refresh tokens sent with the Zoho header prefix.
+      documentation_url: https://www.zoho.com/books/api/v3/oauth/
+      fields:
+        access_token:
+          label: Access token
+      headers:
+        authorization:
+          field: access_token
+          prefix: 'Zoho-oauthtoken '
+inputs:
+  api_host:
+    type: hostname
+    label: API region
+    default: www.zohoapis.com
+    enum:
+      - www.zohoapis.com
+      - www.zohoapis.eu
+      - www.zohoapis.in
+      - www.zohoapis.com.au
+      - www.zohoapis.jp
+      - www.zohoapis.ca
+      - www.zohoapis.sa
+      - www.zohoapis.ae
+      - www.zohoapis.com.cn
+servers:
+  '#/servers':
+    base_url: https://{{input.api_host}}/books/v3
+icons:
+  light: logo.svg

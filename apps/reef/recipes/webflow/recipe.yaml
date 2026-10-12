@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.webflow.com/mcp/reference/how-it-works
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: webflow
+display_name: Webflow
+description: Sites, CMS content and designs from Webflow.
+icons:
+  light: logo.png
+source:
+  mcp:
+    url: https://mcp.webflow.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Webflow
+      documentation_url: https://developers.webflow.com/mcp/reference/how-it-works
+      flow: authorization_code
+  default: oauth

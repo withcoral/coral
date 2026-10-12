@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.logo.dev/docs/mcp/introduction
+# API credit usage is charged to the authorized team.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+schema_version: 1
+id: logo_dev
+display_name: Logo.dev
+description: Logos, domains and brand searches from Logo.dev.
+source:
+  mcp:
+    url: https://mcp.logo.dev/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://www.logo.dev/docs/mcp/introduction
+      flow: authorization_code
+    device_code:
+      method: oauth_discovery
+      label: Sign in with a device code
+      documentation_url: https://www.logo.dev/docs/mcp/introduction
+      flow: device_code
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

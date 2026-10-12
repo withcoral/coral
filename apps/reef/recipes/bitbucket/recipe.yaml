@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.atlassian.com/cloud/bitbucket/rest/intro/
+# Official brand asset: https://bitbucket.org/favicon.ico
+schema_version: 1
+id: bitbucket
+display_name: Bitbucket
+description: Repositories, pull requests, pipelines, issues and workspaces from Bitbucket Cloud.
+source:
+  openapi:
+    url: https://dac-static.atlassian.com/cloud/bitbucket/swagger.v3.json
+authentication:
+  options:
+    access_token:
+      method: bearer
+      label: Repository, project or workspace access token
+      documentation_url: https://support.atlassian.com/bitbucket-cloud/docs/access-tokens/
+    api_token:
+      method: basic_auth
+      label: Email and API token
+      documentation_url: https://developer.atlassian.com/cloud/bitbucket/rest/intro/
+      fields:
+        email:
+          label: Atlassian account email
+          sensitive: false
+        api_token:
+          label: API token
+      username:
+        field: email
+      password:
+        field: api_token
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      description: Create an OAuth app. Register the callback URL shown during setup.
+      documentation_url: https://developer.atlassian.com/cloud/bitbucket/rest/intro/
+      authorization_url: https://bitbucket.org/site/oauth2/authorize
+      token_url: https://bitbucket.org/site/oauth2/access_token
+      client:
+        authentication: client_secret_basic
+      pkce: disabled
+      scopes: []
+  default: access_token
+icons:
+  light: logo.png

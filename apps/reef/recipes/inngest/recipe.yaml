@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.inngest.com/docs/ai-dev-tools/mcp
+# Scopes come from public OAuth metadata; the server supports client metadata documents.
+schema_version: 1
+id: inngest
+display_name: Inngest
+description: Apps, functions, events and workflow runs from Inngest.
+source:
+  mcp:
+    url: https://api.inngest.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Inngest
+      flow: authorization_code
+      documentation_url: https://www.inngest.com/docs/ai-dev-tools/mcp
+    api_key:
+      method: bearer
+      label: Paste an API key
+      documentation_url: https://www.inngest.com/docs/ai-dev-tools/mcp
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

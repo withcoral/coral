@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://tally.so/help/mcp
+# Beta; available on all plans.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+schema_version: 1
+id: tally
+display_name: Tally
+description: Forms, submissions and workspaces from Tally.
+source:
+  mcp:
+    url: https://api.tally.so/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://tally.so/help/mcp
+      flow: authorization_code
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://tally.so/help/mcp
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

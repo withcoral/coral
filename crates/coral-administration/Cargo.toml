@@ -1,0 +1,33 @@
+[package]
+name = "coral-administration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+coral-db.workspace = true
+coral-workspace.workspace = true
+coral-provider.workspace = true
+coral-functions.workspace = true
+coral-search.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+coral-policy.workspace = true
+coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-search = { workspace = true, features = ["test-fixtures"] }
+coral-test-support.workspace = true
+coral-catalog.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+coral-credentials.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+
+coral-outbound.workspace = true

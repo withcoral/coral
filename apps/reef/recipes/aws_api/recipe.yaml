@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html
+# AWS authorization uses the requested resource and IAM permissions; metadata advertises no OAuth scope list.
+schema_version: 1
+id: aws_api
+display_name: AWS
+description: Resources, Athena queries, S3 objects and Redshift services from AWS.
+source:
+  mcp:
+    url: https://aws-mcp.{{input.region}}.api.aws/mcp?oauth=initialize
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with AWS
+      flow: authorization_code
+      documentation_url: https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html
+    token:
+      method: bearer
+      label: Paste an OAuth access token
+      documentation_url: https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html
+  default: oauth
+inputs:
+  region:
+    type: hostname
+    label: AWS MCP region
+    enum:
+      - us-east-1
+      - eu-central-1
+    default: us-east-1
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

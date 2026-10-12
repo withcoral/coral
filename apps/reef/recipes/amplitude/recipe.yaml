@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://amplitude.com/docs/amplitude-ai/amplitude-mcp
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: amplitude
+display_name: Amplitude
+description: Events, charts and product insights from Amplitude.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+source:
+  mcp:
+    url: '{{input.endpoint}}'
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Amplitude
+      documentation_url: https://amplitude.com/docs/amplitude-ai/amplitude-mcp
+      flow: authorization_code
+  default: oauth
+inputs:
+  endpoint:
+    type: url
+    label: MCP region
+    default: https://mcp.amplitude.com/mcp
+    enum:
+      - https://mcp.amplitude.com/mcp
+      - https://mcp.eu.amplitude.com/mcp
+    documentation_url: https://amplitude.com/docs/amplitude-ai/amplitude-mcp

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.railway.com/cli/mcp
+# Official brand asset: https://railway.com/favicon-16x16.png
+schema_version: 1
+id: railway
+display_name: Railway
+description: Projects, services, deployments and infrastructure from Railway.
+source:
+  mcp:
+    url: https://mcp.railway.com
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Railway
+      flow: authorization_code
+      documentation_url: https://docs.railway.com/cli/mcp
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

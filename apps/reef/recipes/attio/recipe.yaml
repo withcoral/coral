@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: attio
+display_name: Attio
+description: Records, lists, notes, tasks, meetings and comments from Attio.
+icons:
+  light: attio.svg
+  dark: attio-dark.svg
+
+# Attio serves its own OpenAPI document. Its only server is
+# https://api.attio.com, so the Recipe needs no inputs or servers.
+source:
+  openapi:
+    url: https://api.attio.com/openapi/api
+
+authentication:
+  default: api_key
+  options:
+    api_key:
+      # Attio also accepts the same token as an HTTP Basic credential. That
+      # sends the same credential, so it is not offered.
+      method: bearer
+      label: Paste an access token
+      description: Create an access token in the developer settings of your Attio workspace.
+      documentation_url: https://docs.attio.com/rest-api/guides/authentication
+    oauth:
+      # Attio has no public Coral application, so the owner creates an app in
+      # the Attio Developer console and confirms its client id and secret.
+      # Attio's docs do not mention PKCE, so it is disabled. The client
+      # authenticates with its secret at the token endpoint instead.
+      method: oauth_authorization_code
+      pkce: disabled
+      label: Sign in with Attio
+      description: Create an Attio app and turn on its scopes before you sign in.
+      documentation_url: https://docs.attio.com/rest-api/tutorials/connect-an-app-through-oauth
+      authorization_url: https://app.attio.com/authorize
+      token_url: https://app.attio.com/oauth/token
+      client:
+        authentication: client_secret_post
+      # Attio takes scopes from the app's settings in the Developer console,
+      # not from the authorization request, so the Recipe names none. Turn on
+      # the read-write variant of each scope:
+      #   user_management            workspace members
+      #   record_permission          records
+      #   object_configuration       objects and their attributes
+      #   list_entry                 list entries
+      #   list_configuration         lists and their attributes
+      #   public_collection          public collections
+      #   private_collection         every collection, whatever its access
+      #   comment                    comments and threads
+      #   task                       tasks
+      #   note                       notes
+      #   meeting                    meetings
+      #   call_recording             call recordings, transcripts and speakers
+      #   webhook                    webhooks
+      #   file                       files and uploads
+      #   email                      email metadata; never email content
+      #   activity_configuration     activities and their attributes
+      #   activity_record            activity records
+      #   sequence_unsubscribe       the sequence unsubscribe list
+      scopes: []

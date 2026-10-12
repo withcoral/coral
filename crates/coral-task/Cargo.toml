@@ -1,0 +1,34 @@
+[package]
+name = "coral-task"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+coral-db.workspace = true
+coral-functions.workspace = true
+coral-run.workspace = true
+coral-search.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+coral-workspace.workspace = true
+sea-query.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+coral-administration.workspace = true
+coral-outbound.workspace = true
+coral-catalog.workspace = true
+coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-policy.workspace = true
+coral-test-support.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true

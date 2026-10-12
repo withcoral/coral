@@ -1,0 +1,59 @@
+---
+title: "Run Coral as a shared server"
+sidebarTitle: "Overview"
+description: "Self-host Coral for your team, in containers, behind your own TLS."
+---
+
+Coral can be run as a shared self-hosted server, allowing you and your team to share workspaces, provider and operation policies. You can also choose to share provider credentials with your team members on a given workspace if this is part of your workflow.
+
+Self-hosted Coral has two major components:
+
+- `coral`: Docker image with the Coral server. This includes the runtime, provider configuration, policies, authentication server and MCP server.
+- `coral-web`: The UI you and your team can use to execute Coral management actions.
+
+In this guide, we will walk you through setting up Coral with either Docker Compose or Kubernetes.
+
+## Before you start
+
+1. Make sure you have an OIDC compatible identity provider: Self-hosted Coral requires that you have your own IdP that Coral can use to authenticate users. Any OIDC compatible IdP will work, so if you use Okta, Google Workspace or WorkOS you're already good to go. You will need to configure an application on your IdP for Coral.
+2. Choose your backing DB: Coral supports both SQLite and Postgres, with SQLite as the default. Choose what's appropriate for your setup.
+3. TLS termination: Coral requires the usage of TLS for user-facing connections, but Coral itself does not provide TLS support. You can use your preferred reverse proxy (e.g. nginx, envoy) or use Caddy if you don't have any.
+4. Public endpoints: Coral uses three endpoints that must be visible to the user's system. We will use `<coral-host>` as the placeholder for the root domain of your Coral deployment:
+
+- `<coral-host>`: URL for the `coral-web` UI.
+- `auth.<coral-host>`: Auth endpoint, used by both `coral-web` and the MCP server to authenticate users.
+- `mcp.<coral-host>`: MCP server endpoint.
+
+Make sure you can configure the names to point to your Coral deployment (details in the deployment guides) and that you can create valid TLS certificates for these domains.
+
+## Upgrade from Coral 0.x
+
+Coral 1.0 is a ground-up rewrite. Your agents now write TypeScript programs that call your providers, where 0.x ran SQL queries over sources. You manage Coral in the Coral UI instead of with `coral` commands, and your agents connect to the MCP server over HTTP instead of stdio.
+
+That makes 1.0 a breaking change. It starts from fresh state and doesn't convert what 0.x stored, so your 0.x setup stays as it is until you're ready to switch.
+
+When the Coral 1.0 runtime starts on a configuration folder or a database that an earlier version wrote, it stops and reports an error such as:
+
+```text
+pre-v1 Coral state detected at '<configuration folder>'; move or remove it before starting this version of Coral
+pre-v1 Coral database state detected; move or remove it, or configure a fresh database before starting this version of Coral
+```
+
+Coral never deletes, converts or archives old state. Don't start a Coral 1.0 container on a 0.x volume, because the container overwrites `config.toml` there.
+
+To start Coral 1.0:
+
+1. Stop the old Coral. Copy its configuration folder, or its volume, and keep the copy for as long as you need it.
+2. Give Coral 1.0 fresh state. Set `CORAL_CONFIG_DIR` to an empty folder or, in containers, mount a new volume. With Postgres, point Coral at an empty database.
+3. Write a new configuration from the [configuration reference](/reference/configuration), or follow one of the guides below. Coral 1.0 rejects a 0.x configuration file.
+4. Start Coral, then add your providers and connect your accounts again.
+5. Point your agents' MCP clients at the new MCP endpoint.
+
+To go back, stop Coral 1.0 and start the old version on the copy you kept.
+
+## Detailed guides
+
+<CardGroup cols={2}>
+  <Card title="Deploy with Docker Compose" icon="container" href="/getting-started/self-host/docker-compose" />
+  <Card title="Deploy with Kubernetes" icon="server" href="/getting-started/self-host/kubernetes" />
+</CardGroup>

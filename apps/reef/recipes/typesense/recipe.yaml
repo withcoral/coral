@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://typesense.org/docs/latest/api/api-keys.html
+# Official brand asset: https://typesense.org/favicon.png
+schema_version: 1
+id: typesense
+display_name: Typesense
+description: Collections, documents, searches and API keys from Typesense.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/typesense/typesense-api-spec/master/openapi.yml
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: API key
+      documentation_url: https://typesense.org/docs/latest/api/api-keys.html
+      fields:
+        api_key:
+          label: API key
+      headers:
+        x-typesense-api-key:
+          field: api_key
+inputs:
+  cluster_url:
+    type: url
+    label: Cluster URL
+    description: Enter your HTTPS Typesense cluster URL.
+    documentation_url: https://typesense.org/docs/guide/typesense-cloud.html
+servers:
+  '#/servers':
+    base_url: '{{input.cluster_url}}'
+icons:
+  light: logo.png

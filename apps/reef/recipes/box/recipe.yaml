@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.box.com/guides/box-mcp/setup
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: box
+display_name: Box
+description: Files, folders and document AI tools from Box.
+source:
+  mcp:
+    url: https://mcp.box.com
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://developer.box.com/guides/box-mcp/setup
+      description: Enable Box MCP. Create integration credentials and register the callback URL.
+      flow: authorization_code
+      client:
+        authentication: client_secret_post
+    access_token:
+      method: bearer
+      label: Box access token
+      documentation_url: https://developer.box.com/guides/box-mcp/setup
+  default: access_token
+icons:
+  light: logo.png

@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/resend/resend-mcp
+#
+# full_access covers all Resend operations, including writes.
+# The issuer advertises scopes, but the protected resource does not. Request them explicitly.
+schema_version: 1
+id: resend
+display_name: Resend
+description: Emails, domains and contacts from Resend.
+source:
+  mcp:
+    url: https://mcp.resend.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://github.com/resend/resend-mcp
+      flow: authorization_code
+      scopes:
+        - full_access
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://github.com/resend/resend-mcp
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

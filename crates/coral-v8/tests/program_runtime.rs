@@ -1,0 +1,1961 @@
+//! Interface tests for isolated Program compilation and execution.
+
+use coral_value as _;
+
+use std::sync::{Arc, Mutex};
+
+use coral_v8::{
+    CompiledProgram, ConsoleLevel, Error, IsolateLimits, LinkedSavedFunctionSource,
+    OperationHostError, ProgramCompiler, ProgramExecutionControl, ProgramExecutor, ProgramHost,
+    ProgramOutputHostError, SavedFunctionReference, TYPESCRIPT_PROFILE,
+};
+use deno_core_icudata as _;
+use serde as _;
+use serde_json as _;
+use sourcemap as _;
+use thiserror as _;
+use v8 as _;
+
+fn compilation_deadline() -> std::time::Instant {
+    std::time::Instant::now() + coral_v8::COMPILATION_TIMEOUT
+}
+
+fn linked_source(path: &[&str], source: &str) -> LinkedSavedFunctionSource {
+    LinkedSavedFunctionSource::new(
+        path.iter().map(|segment| (*segment).to_string()).collect(),
+        source.to_string(),
+    )
+}
+
+fn reference_paths(references: &[SavedFunctionReference]) -> Vec<&str> {
+    references
+        .iter()
+        .map(SavedFunctionReference::path)
+        .collect()
+}
+
+#[test]
+fn typescript_program_executes_as_javascript_in_v8() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            r#"
+                enum Direction { Up = "up", Down = "down" }
+                namespace MathHelpers {
+                    export function double(value: number): number {
+                        return value * 2;
+                    }
+                }
+                class BoxedValue {
+                    constructor(public readonly value: number) {}
+                }
+
+                const direction: Direction = Direction.Up;
+                const result = await Promise.resolve(
+                    new BoxedValue(MathHelpers.double(21)),
+                );
+                if (direction !== Direction.Up || result.value !== 42) {
+                    throw new Error("TypeScript Program produced the wrong result");
+                }
+            "#,
+        )
+        .expect("compile TypeScript");
+
+    ProgramExecutor::new(IsolateLimits::default())
+        .execute(&program)
+        .expect("execute emitted JavaScript");
+}
+
+#[test]
+fn execution_control_terminates_noncooperative_javascript() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(compilation_deadline(), "while (true) {}")
+        .expect("compile infinite Program");
+    let control = ProgramExecutionControl::new();
+    let execution_control = control.clone();
+    let execution = std::thread::spawn(move || {
+        ProgramExecutor::new(IsolateLimits::default()).execute_with_host_control(
+            &program,
+            Arc::new(RejectingOperationHost),
+            &execution_control,
+        )
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let _isolate_was_ready = control.terminate();
+    let result = execution.join().expect("join Program execution");
+    assert!(
+        matches!(result, Err(Error::ProgramHostTerminated)),
+        "unexpected termination result: {result:?}"
+    );
+}
+
+#[test]
+fn execution_distinguishes_no_final_value_from_explicit_null() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let no_value = compiler
+        .compile(compilation_deadline(), "")
+        .expect("compile empty body");
+    let explicit_null = compiler
+        .compile(compilation_deadline(), "return null;")
+        .expect("compile explicit null");
+    let structured = compiler
+        .compile(
+            compilation_deadline(),
+            r#"return { 1: "one", answer: 42, labels: ["coral"] };"#,
+        )
+        .expect("compile structured value");
+    let executor = ProgramExecutor::new(IsolateLimits::default());
+
+    assert_eq!(
+        executor
+            .execute(&no_value)
+            .expect("execute body with no value")
+            .final_value_json(),
+        None
+    );
+    assert_eq!(
+        executor
+            .execute(&explicit_null)
+            .expect("execute explicit null")
+            .final_value_json(),
+        Some("null")
+    );
+    assert_eq!(
+        executor
+            .execute(&structured)
+            .expect("execute structured value")
+            .final_value_json(),
+        Some(r#"{"1":"one","answer":42,"labels":["coral"]}"#)
+    );
+}
+
+#[test]
+fn final_values_follow_native_json_serialization() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let cases = [
+        ("non-finite number", "return Number.NaN;", "null"),
+        (
+            "nested undefined",
+            "return { omitted: undefined, kept: 42 };",
+            r#"{"kept":42}"#,
+        ),
+        ("nested function", "return [() => 42];", "[null]"),
+        ("sparse array", "return Array(1);", "[null]"),
+        (
+            "Date conversion",
+            "return new Date(0);",
+            r#""1970-01-01T00:00:00.000Z""#,
+        ),
+        (
+            "getter",
+            "return { get answer() { return 42; } };",
+            r#"{"answer":42}"#,
+        ),
+        (
+            "custom toJSON",
+            "return { toJSON() { return { projected: 42 }; } };",
+            r#"{"projected":42}"#,
+        ),
+        (
+            "Map conversion",
+            "return new Map([[\"answer\", 42]]);",
+            "{}",
+        ),
+    ];
+    let executor = ProgramExecutor::new(IsolateLimits::default());
+
+    for (case, source, expected) in cases {
+        let program = compiler
+            .compile(compilation_deadline(), source)
+            .expect("compile JSON serialization probe");
+        let output = executor.execute(&program).expect("serialize Final Value");
+        assert_eq!(output.final_value_json(), Some(expected), "{case}");
+    }
+}
+
+#[test]
+fn final_value_serialization_rejects_native_json_failures() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let invalid_values = [
+        (
+            "cyclic object",
+            "const value = {}; value.self = value; return value;",
+            Some("circular"),
+        ),
+        ("BigInt", "return 42n;", Some("BigInt")),
+        ("root function", "return () => 42;", None),
+    ];
+    let executor = ProgramExecutor::new(IsolateLimits::default());
+
+    for (case, source, expected_message) in invalid_values {
+        let program = compiler
+            .compile(compilation_deadline(), source)
+            .expect("compile invalid value probe");
+        let error = executor
+            .execute(&program)
+            .expect_err("native JSON failure must reject the Final Value");
+        match (expected_message, error) {
+            (Some(message), Error::ProgramOutputRejected(error)) => {
+                assert_eq!(error.name, "TypeError", "{case}: {error}");
+                assert!(error.message.contains(message), "{case}: {error}");
+            }
+            (None, Error::InvalidProgramValue(_)) => {}
+            (_, error) => panic!("{case} returned the wrong error variant: {error}"),
+        }
+    }
+}
+
+#[test]
+fn program_cannot_replace_the_pinned_json_serializer() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            r#"
+                JSON.stringify = () => '"fabricated"';
+                return { answer: 42 };
+            "#,
+        )
+        .expect("compile serializer mutation");
+
+    assert_eq!(
+        ProgramExecutor::new(IsolateLimits::default())
+            .execute(&program)
+            .expect("serialize with captured intrinsic")
+            .final_value_json(),
+        Some(r#"{"answer":42}"#)
+    );
+}
+
+#[test]
+fn profile_accepts_javascript_and_exposes_the_bounded_ecmascript_surface() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            r#"
+                function* numbers() { yield 1; yield 2; }
+                class Total {
+                    value = 0;
+                    add(value) { this.value += value; }
+                }
+
+                const total = new Total();
+                for (const value of numbers()) total.add(value);
+                const mapped = new Map([["answer", 42]]);
+                const selected = new Set(["coral"]);
+                const settled = await Promise.resolve(true);
+                const escaped = RegExp.escape("a+b");
+
+                const actual = {
+                    total: total.value,
+                    mapped: mapped.get("answer"),
+                    selected: selected.has("coral"),
+                    matched: /reef/u.test("reef"),
+                    year: new Date("2026-01-01T00:00:00Z").getUTCFullYear(),
+                    formatted: new Intl.NumberFormat("en-US").format(1234),
+                    bigint: Number(0x28n + 0b10n),
+                    symbol: Symbol.keyFor(Symbol.for("coral")),
+                    settled,
+                    regexpEscape: new RegExp(`^${escaped}$`).test("a+b") &&
+                        !new RegExp(`^${escaped}$`).test("aaab"),
+                    setUnion: [...new Set([1, 2]).union(new Set([2, 3]))],
+                    iteratorHelpers: Iterator.from([1, 2, 3])
+                        .map((value) => value * 2)
+                        .toArray(),
+                    promiseTry: await Promise.try(() => 42),
+                };
+                if (
+                    actual.total !== 3 ||
+                    actual.mapped !== 42 ||
+                    actual.selected !== true ||
+                    actual.matched !== true ||
+                    actual.year !== 2026 ||
+                    actual.formatted !== "1,234" ||
+                    actual.bigint !== 42 ||
+                    actual.symbol !== "coral" ||
+                    actual.settled !== true ||
+                    actual.regexpEscape !== true ||
+                    JSON.stringify(actual.setUnion) !== "[1,2,3]" ||
+                    JSON.stringify(actual.iteratorHelpers) !== "[2,4,6]" ||
+                    actual.promiseTry !== 42
+                ) {
+                    throw new Error("ES2025 runtime surface produced the wrong result");
+                }
+            "#,
+        )
+        .expect("compile JavaScript as TypeScript");
+
+    assert_eq!(program.profile(), TYPESCRIPT_PROFILE);
+    // The source map names only the Program, never a path or its source text.
+    let source_map: serde_json::Value =
+        serde_json::from_str(program.source_map()).expect("parse source map");
+    assert_eq!(
+        source_map.get("sources"),
+        Some(&serde_json::json!(["Program"]))
+    );
+    assert!(source_map.get("sourceRoot").is_none());
+    assert!(source_map.get("sourcesContent").is_none());
+
+    ProgramExecutor::new(IsolateLimits::default())
+        .execute(&program)
+        .expect("execute JavaScript");
+}
+
+#[test]
+fn program_syntax_diagnostics_use_authored_locations_without_a_semantic_gate() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let error = compiler
+        .compile(compilation_deadline(), "\nconst answer: = 42;")
+        .expect_err("syntax failure must block admission");
+    let Error::Compilation { diagnostics } = error else {
+        panic!("syntax failure returned {error}");
+    };
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code() == 1110
+                && diagnostic.line() == Some(2)
+                && diagnostic.column() == Some(15))
+    );
+
+    compiler
+        .compile(
+            compilation_deadline(),
+            "const answer: number = 'runtime value'; return answer;",
+        )
+        .expect("ordinary semantic diagnostics must not gate one-time admission");
+}
+
+#[test]
+fn saved_function_reference_analysis_is_static_and_runtime_only() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let paths = compiler
+        .saved_function_paths(compilation_deadline(),
+            r"
+                type Erased = typeof coral.functions.types.only;
+                interface ErasedHeritage extends coral.functions.types.interfaceOnly {}
+                declare class AmbientHeritage extends coral.functions.types.ambientOnly {}
+                class RuntimeHeritage extends coral.functions.models.base {}
+                const local = (coral: { functions: { local: { value(): number } } }) =>
+                    coral.functions.local.value();
+                const object = { coral: 1 };
+                void object.coral;
+                const first = coral.functions.alpha.one;
+                return [first, (coral.functions.beta.two as () => number)(), RuntimeHeritage, local];
+            ",
+        )
+        .expect("analyze literal Program references");
+    assert_eq!(
+        reference_paths(&paths),
+        ["alpha.one", "beta.two", "models.base"]
+    );
+    assert!(
+        matches!(
+            paths.as_slice(),
+            [alpha, beta, model]
+                if (alpha.line(), alpha.column()) == (10, 31)
+                    && (beta.line(), beta.column()) == (11, 33)
+                    && (model.line(), model.column()) == (5, 47)
+        ),
+        "unexpected references: {paths:?}"
+    );
+
+    let dependencies = compiler
+        .saved_function_dependency_paths(
+            compilation_deadline(),
+            r"
+                export default function compose(): number {
+                    type Erased = typeof coral.functions.types.only;
+                    return coral.functions.alpha.one();
+                }
+            ",
+        )
+        .expect("analyze literal Saved Function dependencies");
+    assert_eq!(reference_paths(&dependencies), ["alpha.one"]);
+    assert!(matches!(
+        dependencies.as_slice(),
+        [reference] if (reference.line(), reference.column()) == (4, 28)
+    ));
+
+    let overload_only = compiler
+        .saved_function_dependency_paths(compilation_deadline(),
+            "function coral(value: string): void; export default function compose() { return coral.functions.alpha.one(); }",
+        )
+        .expect("analyze through an erased overload declaration");
+    assert_eq!(reference_paths(&overload_only), ["alpha.one"]);
+    let erased_overload = compiler
+        .saved_function_dependency_paths(compilation_deadline(),
+            "function erased(value = coral.functions.types.overloadOnly()): void; export default function compose() { return 42; }",
+        )
+        .expect("ignore an erased overload declaration");
+    assert!(erased_overload.is_empty());
+
+    let shadowed_global = compiler
+        .saved_function_paths(compilation_deadline(),
+            "const globalThis = { coral: { functions: { local: { value: () => 42 } } } }; return globalThis.coral.functions.local.value();",
+        )
+        .expect("ignore a local globalThis binding");
+    assert!(shadowed_global.is_empty());
+
+    let shadowed = compiler
+        .prepare_saved_function(compilation_deadline(),
+            "export default function local(coral: { functions: { local: { value(): number } } }): number { return coral.functions.local.value(); }",
+        )
+        .expect("prepare a callable with a local coral parameter");
+    assert!(shadowed.references().is_empty());
+
+    for source in [
+        "const key = 'one'; return coral.functions.alpha[key]();",
+        "const key = 'one'; return (coral.functions.alpha as any)[key]();",
+        "const functions = coral.functions; return functions.alpha.one();",
+        "const root = coral; return root.functions.alpha.one();",
+        "const key = 'functions'; return coral[key].alpha.one();",
+        "return globalThis.coral.functions.alpha.one();",
+        "const global = globalThis; return global.coral.functions.alpha.one();",
+        "let global = globalThis; return global.coral.functions.alpha.one();",
+        "const key = 'coral'; return globalThis[key].functions.alpha.one();",
+        "let key = 'functions'; return globalThis.coral[key].alpha.one();",
+        "const key = unknownKey; return globalThis[key].functions.alpha.one();",
+        "const { coral: globalCoral } = globalThis; return globalCoral.functions.alpha.one();",
+        "const { functions } = globalThis.coral; return functions.alpha.one();",
+        "const pick = (root: any, key: string) => root[key]; return pick(coral.functions, 'alpha')();",
+        "const key = 'base'; class RuntimeHeritage extends coral.functions.models[key] {} return RuntimeHeritage;",
+    ] {
+        compiler
+            .saved_function_paths(compilation_deadline(), source)
+            .expect_err("computed or aliased Program reference must be rejected");
+    }
+}
+
+#[test]
+fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    for source in [
+        "return ((coral)).functions.alpha.one();",
+        "return (coral as any).functions.alpha.one();",
+        "return (((coral as any))).functions.alpha.one();",
+    ] {
+        let references = compiler
+            .saved_function_paths(compilation_deadline(), source)
+            .expect("transparent wrappers preserve a literal reference");
+        assert_eq!(reference_paths(&references), ["alpha.one"]);
+    }
+
+    let source = "type __coralModel = number; const __coralValue: __coralModel = 1; let global = globalThis; return global[\"JSON\"].stringify(__coralValue);";
+    let ordinary_globals = compiler
+        .saved_function_paths(compilation_deadline(), source)
+        .expect("ordinary globals and local compiler-prefix names remain available");
+    assert!(ordinary_globals.is_empty());
+    compiler
+        .compile(compilation_deadline(), source)
+        .expect("compile ordinary globals and local compiler-prefix names");
+}
+
+#[test]
+fn authored_source_cannot_reach_private_linker_bindings() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let error = compiler
+        .compile_with_saved_functions(compilation_deadline(),
+            "__coralSavedFunctionDefaults[0] = () => (() => 'changed'); return coral.functions.safe.value();",
+            &[linked_source(
+                &["safe", "value"],
+                "export default function value(): string { return 'original'; }",
+            )],
+        )
+        .expect_err("Program source must not reach private linker state");
+    assert!(
+        matches!(
+            &error,
+            Error::ForbiddenCapability(message)
+                if message == "private compiler bindings are not available at 1:1"
+        ),
+        "unexpected private-binding error: {error:?}"
+    );
+    compiler
+        .prepare_saved_function(
+            compilation_deadline(),
+            "export default function value() { return __coralSavedFunctionDefaults[0]; }",
+        )
+        .expect_err("Saved Function source must not reach private linker state");
+    for source in [
+        "class Attack extends (__coralSavedFunctionDefaults[0] = Object, Object) {} return Attack;",
+        "const captured = { __coralSavedFunctionDefaults }; return captured;",
+    ] {
+        compiler
+            .compile_with_saved_functions(
+                compilation_deadline(),
+                source,
+                &[linked_source(
+                    &["safe", "value"],
+                    "export default function value(): string { return 'original'; }",
+                )],
+            )
+            .expect_err("indirect source must not reach private linker state");
+    }
+
+    let local_private_name = compiler
+        .compile_with_saved_functions(compilation_deadline(),
+            "const __coralSavedFunctionDefaults = 42; void coral.functions.safe.value; return __coralSavedFunctionDefaults;",
+            &[linked_source(
+                &["safe", "value"],
+                "export default function value(): string { return 'original'; }",
+            )],
+        )
+        .expect("a local binding may use the compiler-private prefix");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute(&local_private_name)
+        .expect("execute local private-prefix binding");
+    assert_eq!(output.final_value_json(), Some("42"));
+
+    let prototype_probe = compiler
+        .compile_with_saved_functions(
+            compilation_deadline(),
+            r#"
+                const captured = globalThis.capturedLinkedDefault;
+                Reflect.deleteProperty(Array.prototype, "1");
+                return typeof captured;
+            "#,
+            &[
+                linked_source(
+                    &["attack", "install"],
+                    r#"
+                        Object.defineProperty(Array.prototype, "1", {
+                            configurable: true,
+                            set(value) { globalThis.capturedLinkedDefault = value; },
+                        });
+                        export default function install() {}
+                    "#,
+                ),
+                linked_source(
+                    &["safe", "value"],
+                    "export default function value(): number { return 42; }",
+                ),
+            ],
+        )
+        .expect("compile prototype-pollution probe");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute(&prototype_probe)
+        .expect("execute prototype-pollution probe");
+    assert_eq!(output.final_value_json(), Some(r#""undefined""#));
+}
+
+#[test]
+fn forbidden_capabilities_block_programs_and_saved_functions() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    for source in [
+        "await import('node:fs');",
+        "const moduleName = 'node:fs'; await import(moduleName);",
+        "return fetch('https://example.test');",
+        "return process.env.SECRET;",
+        "return eval('40 + 2');",
+        "return new Function('return 42')();",
+        "return new ArrayBuffer(8);",
+        "return new Uint8Array(8);",
+        "return globalThis.Uint16Array.from([1]);",
+        "return globalThis['DataView'];",
+        "//# sourceURL=spoofed.js\nreturn 42;",
+    ] {
+        compiler
+            .compile(compilation_deadline(), source)
+            .expect_err("forbidden Program capability must be rejected");
+    }
+    compiler
+        .compile(
+            compilation_deadline(),
+            "const process = { answer: 42 }; return process.answer;",
+        )
+        .expect("an authored local with the same name grants no ambient capability");
+    compiler
+        .compile(
+            compilation_deadline(),
+            "process: { break process; } return 42;",
+        )
+        .expect("a label named like an ambient global is ordinary JavaScript");
+    compiler
+        .compile(
+            compilation_deadline(),
+            "type BrowserFile = File; return true;",
+        )
+        .expect("an erased unresolved type is ordinary non-blocking semantic advice");
+    compiler
+        .prepare_saved_function(compilation_deadline(),
+            "type BrowserFile = File; export default function available(): boolean { return true; }",
+        )
+        .expect("a private erased unresolved type must not block Saved Function authoring");
+
+    for source in [
+        "export default async function load() { return import('node:fs'); }",
+        "export default function secret() { return process.env.SECRET; }",
+        "export default function bytes() { return new ArrayBuffer(8); }",
+        "export default function values() { return new Float64Array(8); }",
+    ] {
+        compiler
+            .prepare_saved_function(compilation_deadline(), source)
+            .expect_err("forbidden Saved Function capability must be rejected");
+    }
+}
+
+#[test]
+fn authored_comments_cannot_collide_with_linker_source_mapping_boundaries() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile_with_saved_functions(compilation_deadline(),
+            "return coral.functions.safe.value();",
+            &[
+                linked_source(
+                    &["comments", "marker"],
+                    "/*__coral_authored_saved_function_1__*/\n/*__coral_authored_program__*/\nexport default function marker(): number { return 1; }",
+                ),
+                linked_source(
+                    &["safe", "value"],
+                    "export default function value(): number { return 42; }",
+                ),
+            ],
+        )
+        .expect("authored marker-like comments cannot alter source mappings");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute(&program)
+        .expect("execute comment-collision probe");
+    assert_eq!(output.final_value_json(), Some("42"));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one compact corpus covers callable-rooted declaration projection"
+)]
+fn saved_function_declaration_fields_follow_the_callable_contract() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compilation = compiler
+        .prepare_saved_function(compilation_deadline(),
+            r#"
+                interface RecursiveNode {
+                    label: string;
+                    children: RecursiveNode[];
+                }
+                type Choice<T extends RecursiveNode> = T | { alternate: string };
+                interface ResultValue {
+                    status: "ready" | "waiting";
+                    "wire-name": unknown;
+                    7?: unknown;
+                    [key: string]: unknown;
+                    [Symbol.iterator](): Iterator<unknown>;
+                }
+                function inspect(value: Choice<RecursiveNode>, ...flags: string[]): Promise<ResultValue>;
+                function inspect<T extends RecursiveNode>(generic: T, mode: "generic"): Promise<ResultValue>;
+                function inspect(value: Choice<RecursiveNode>, ...flags: string[]): Promise<ResultValue> {
+                    void flags;
+                    return Promise.resolve({
+                        status: "ready",
+                        "wire-name": value,
+                        [Symbol.iterator]: function* () {},
+                    });
+                }
+                export default inspect;
+            "#,
+        )
+        .expect("prepare Saved Function");
+
+    let fields = compilation
+        .declaration_fields()
+        .expect("declaration projection is ready");
+    let paths = fields
+        .iter()
+        .map(coral_v8::SavedFunctionDeclarationField::path)
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"input.value.label"));
+    assert!(paths.contains(&"input.value.children"));
+    assert!(paths.contains(&"input.value.children[]"));
+    assert!(paths.contains(&"input.value.alternate"));
+    assert!(paths.contains(&"input.flags[]"));
+    assert!(paths.contains(&"input.generic.label"));
+    assert!(paths.contains(&"result.status"));
+    assert!(paths.contains(&"result[\"wire-name\"]"));
+    assert!(paths.contains(&"result[7]"));
+    assert!(paths.contains(&"result[key]"));
+    assert!(!paths.iter().any(|path| path.contains("iterator")));
+    assert!(
+        !paths.iter().any(|path| path.starts_with("RecursiveNode")),
+        "local declarations must be projected only through callable roots"
+    );
+
+    let nested_and_rest = compiler
+        .prepare_saved_function(
+            compilation_deadline(),
+            r"
+                interface Item { id: string }
+                type Items = Array<Item>;
+                interface Options { callback: (nested: Item) => Item }
+                export default function inspect(options: Options, ...items: Items): Item[] {
+                    return items.map(options.callback);
+                }
+            ",
+        )
+        .expect("prepare nested-callable and rest Saved Function");
+    let nested_and_rest_paths = nested_and_rest
+        .declaration_fields()
+        .expect("declaration projection is ready")
+        .iter()
+        .map(coral_v8::SavedFunctionDeclarationField::path)
+        .collect::<Vec<_>>();
+    assert!(nested_and_rest_paths.contains(&"input.options.callback"));
+    assert!(nested_and_rest_paths.contains(&"input.items[].id"));
+    assert!(!nested_and_rest_paths.contains(&"input.nested"));
+    assert!(!nested_and_rest_paths.contains(&"result.id"));
+    assert!(
+        !nested_and_rest_paths
+            .iter()
+            .any(|path| path.contains("[][]"))
+    );
+
+    for (case, source) in [
+        (
+            "tuple rest",
+            "interface Item { id: string } export default function inspect(...items: [Item, Item]): number { return items.length; }",
+        ),
+        (
+            "generic constrained rest",
+            "interface Item { id: string } export default function inspect<T extends Item[]>(...items: T): number { return items.length; }",
+        ),
+    ] {
+        let projected = compiler
+            .prepare_saved_function(compilation_deadline(), source)
+            .unwrap_or_else(|error| panic!("prepare {case}: {error}"));
+        let paths = projected
+            .declaration_fields()
+            .unwrap_or_else(|error| panic!("project {case}: {error}"))
+            .iter()
+            .map(coral_v8::SavedFunctionDeclarationField::path)
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"input.items[].id"), "{case}: {paths:?}");
+        assert!(
+            !paths.iter().any(|path| path.contains("[][]")),
+            "{case}: {paths:?}"
+        );
+    }
+
+    let destructured = compiler
+        .prepare_saved_function(compilation_deadline(),
+            "export default function inspect({ label }: { label: string }): string { return label; }",
+        )
+        .expect("prepare destructured Saved Function");
+    assert!(
+        destructured
+            .declaration_fields()
+            .expect("declaration projection is ready")
+            .iter()
+            .any(|field| field.path() == "input[0].label")
+    );
+}
+
+#[test]
+fn saved_function_authoring_types_the_coral_host_root() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let typed = compiler
+        .prepare_saved_function(
+            compilation_deadline(),
+            r"
+        export default async function report(id: string): Promise<string> {
+            try {
+                const issue = await coral.providers.tracker.issues.get({ id });
+                const title: string = await coral.functions.reports.title(issue.data);
+                await coral.emit(title);
+                return title;
+            } catch (error) {
+                if (error instanceof coral.OperationError) return error.code;
+                throw error;
+            }
+        }
+        ",
+        )
+        .expect("prepare a Saved Function that uses the coral host root");
+    assert_eq!(
+        typed
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| (diagnostic.code(), diagnostic.message()))
+            .collect::<Vec<_>>(),
+        []
+    );
+    assert_eq!(reference_paths(typed.references()), ["reports.title"]);
+
+    let misused = compiler
+        .prepare_saved_function(
+            compilation_deadline(),
+            "export default function misuse(): number { new coral.OperationError(); return coral.missing; }",
+        )
+        .expect("host root misuse is advisory");
+    for code in [2673, 2339] {
+        assert!(
+            misused
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code() == code),
+            "missing {code}: {:?}",
+            misused.diagnostics()
+        );
+    }
+
+    let error = compiler
+        .prepare_saved_function(
+            compilation_deadline(),
+            "export default function leak(error: coral.OperationError): string { return error.code; }",
+        )
+        .expect_err("the public declaration must stay self-contained");
+    assert!(
+        matches!(&error, Error::Compilation { diagnostics } if !diagnostics.is_empty()),
+        "unexpected host-type declaration error: {error:?}"
+    );
+}
+
+#[test]
+fn declaration_projection_uses_resolved_public_instance_types() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let compilation = compiler
+        .prepare_saved_function(
+            compilation_deadline(),
+            r#"
+        interface Item {
+            /** Contact address. */
+            customerEmail: string;
+        }
+        interface Box<T = Item> { item: T }
+        enum Status { Ready = "ready", Waiting = "waiting" }
+        type Renamed<T> = { [K in keyof T as `public_${string & K}`]: T[K] };
+        class Model {
+            private secret: string = "";
+            protected hidden: string = "";
+            static cache: string = "";
+            public name: string = "";
+        }
+        export default function inspect(
+            picked: Pick<Item, "customerEmail">,
+            renamed: Renamed<Item>,
+            boxed: Box,
+            model: Model,
+            status: Status,
+        ): Promise<Readonly<Item>> { return Promise.resolve({ customerEmail: "" }); }
+        "#,
+        )
+        .expect("prepare resolved types");
+    let fields = compilation.declaration_fields().expect("project fields");
+    let paths = fields
+        .iter()
+        .map(coral_v8::SavedFunctionDeclarationField::path)
+        .collect::<Vec<_>>();
+    for path in [
+        "input.picked.customerEmail",
+        "input.renamed.public_customerEmail",
+        "input.boxed.item.customerEmail",
+        "input.model.name",
+        "result.customerEmail",
+    ] {
+        assert!(paths.contains(&path), "missing {path}: {paths:?}");
+    }
+    for path in [
+        "input.model.secret",
+        "input.renamed.customerEmail",
+        "input.model.hidden",
+        "input.model.cache",
+    ] {
+        assert!(
+            !paths.contains(&path),
+            "not a public instance field: {path}"
+        );
+    }
+    assert!(
+        fields
+            .iter()
+            .any(|field| field.path() == "input.picked.customerEmail"
+                && field.text().contains("Contact address"))
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field.path() == "input.status" && field.text().contains("waiting"))
+    );
+}
+
+#[test]
+fn operation_paths_are_not_thenables() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler.compile(compilation_deadline(),
+        "const operation = await Promise.resolve(coral.providers.widgets.create); return await operation({ id: 1 });",
+    ).expect("compile path value");
+    let host = Arc::new(CapturingOperationHost::default());
+    ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host.clone())
+        .expect("resolve and invoke path");
+    assert_eq!(
+        host.calls.lock().expect("calls").as_slice(),
+        &[(
+            "coral.providers.widgets.create".to_string(),
+            "{\"id\":1}".to_string()
+        )]
+    );
+}
+
+#[test]
+fn execution_has_no_forbidden_ambient_capability() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            r#"
+                const categories = {
+                    node: ["global", "process", "Buffer"],
+                    browser: [
+                        "window", "document", "navigator", "location",
+                        "history", "screen", "performance",
+                    ],
+                    packages: ["require", "module", "exports", "Deno", "Bun"],
+                    filesystem: ["File", "FileReader", "showOpenFilePicker"],
+                    environment: ["process", "Deno", "Bun"],
+                    timers: [
+                        "setTimeout", "clearTimeout", "setInterval",
+                        "clearInterval", "setImmediate", "clearImmediate",
+                        "queueMicrotask",
+                    ],
+                    workers: [
+                        "Worker", "SharedWorker", "ServiceWorker",
+                        "importScripts", "MessageChannel", "BroadcastChannel",
+                    ],
+                    network: [
+                        "fetch", "XMLHttpRequest", "WebSocket", "EventSource",
+                    ],
+                    credentials: ["crypto", "Credential", "CredentialsContainer"],
+                    sharedMemory: ["SharedArrayBuffer", "Atomics"],
+                    binaryBuffers: [
+                        "ArrayBuffer", "DataView", "Int8Array", "Uint8Array",
+                        "Uint8ClampedArray", "Int16Array", "Uint16Array",
+                        "Int32Array", "Uint32Array", "Float16Array",
+                        "Float32Array", "Float64Array", "BigInt64Array",
+                        "BigUint64Array",
+                    ],
+                    webAssembly: ["WebAssembly"],
+                };
+                const ambient = Object.fromEntries(
+                    Object.entries(categories).map(([category, names]) => [
+                        category,
+                        Object.fromEntries(names.map((name) => [
+                            name,
+                            typeof globalThis[name],
+                        ])),
+                    ]),
+                );
+
+                for (const [category, globals] of Object.entries(ambient)) {
+                    for (const [name, kind] of Object.entries(globals)) {
+                        if (kind !== "undefined") {
+                            throw new Error(
+                                `forbidden ${category} capability ${name} was present`,
+                            );
+                        }
+                    }
+                }
+            "#,
+        )
+        .expect("compile ambient-capability probe");
+    ProgramExecutor::new(IsolateLimits::default())
+        .execute(&program)
+        .expect("execute ambient-capability probe");
+}
+
+#[test]
+fn runtime_also_disables_dynamic_code_for_previously_accepted_packages() {
+    let source_map = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(compilation_deadline(), "return true;")
+        .expect("compile source-map fixture")
+        .source_map()
+        .to_string();
+    let program = CompiledProgram::restore(
+        r#"
+            (async () => {
+                for (const attempt of [
+                    () => eval("1 + 1"),
+                    () => new Function("return 2")(),
+                    () => (() => {}).constructor("return 3")(),
+                    () => (async () => {}).constructor("return 4")(),
+                    () => (function* () {}).constructor("return 5")(),
+                ]) {
+                    try {
+                        attempt();
+                        throw new Error("dynamic code was available");
+                    } catch (error) {
+                        if (!(error instanceof EvalError)) throw error;
+                    }
+                }
+            })();
+        "#
+        .to_string(),
+        source_map,
+    );
+
+    ProgramExecutor::new(IsolateLimits::default())
+        .execute(&program)
+        .expect("runtime must reject dynamic code generation");
+}
+
+#[test]
+fn runtime_rejects_buffers_in_previously_accepted_packages() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let fixture = compiler
+        .compile(compilation_deadline(), "return 42;")
+        .expect("compile source-map fixture");
+    for source in [
+        "new ArrayBuffer(8)",
+        "new Uint8Array(8).buffer.constructor",
+        "new DataView(new ArrayBuffer(8))",
+        "new ArrayBuffer(0, { maxByteLength: 8 })",
+    ] {
+        let program = CompiledProgram::restore(
+            format!("(async () => {{ return {source}; }})();"),
+            fixture.source_map().to_string(),
+        );
+        let error = ProgramExecutor::new(IsolateLimits::default())
+            .execute(&program)
+            .expect_err("restored package must not gain binary-buffer access");
+        let Error::ProgramRejected(diagnostic) = error else {
+            panic!("unexpected buffer rejection: {error}");
+        };
+        assert!(diagnostic.to_string().contains("ReferenceError"));
+    }
+    assert_eq!(
+        ProgramExecutor::new(IsolateLimits::default())
+            .execute(&fixture)
+            .expect("execute healthy Program after rejection")
+            .final_value_json(),
+        Some("42")
+    );
+}
+
+#[test]
+fn compiler_and_fresh_execution_isolates_share_no_mutable_state() {
+    fn assert_send_and_sync<T: Send + Sync>() {}
+    assert_send_and_sync::<ProgramCompiler>();
+
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            r#"
+                globalThis.programMutation =
+                    (globalThis.programMutation ?? 0) + 1;
+                if (
+                    globalThis.programMutation !== 1 ||
+                    typeof globalThis.ts !== "undefined" ||
+                    typeof globalThis.__coralCompile !== "undefined" ||
+                    typeof globalThis.__coralForbiddenAmbientGlobals !== "undefined"
+                ) {
+                    throw new Error("mutable isolate state leaked into execution");
+                }
+            "#,
+        )
+        .expect("compile state probe");
+    let executor = ProgramExecutor::new(IsolateLimits::default());
+
+    executor.execute(&program).expect("first execution");
+    executor.execute(&program).expect("second execution");
+}
+
+#[test]
+fn program_cannot_replace_the_host_observed_entry_promise() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            r#"
+                Object.defineProperty(globalThis, "__coralProgram", {
+                    configurable: true,
+                    get() { return Promise.resolve("fabricated success"); },
+                    set(_actualPromise) {},
+                });
+                throw new Error("real Program rejection");
+            "#,
+        )
+        .expect("compile tampering probe");
+
+    let error = ProgramExecutor::new(IsolateLimits::default())
+        .execute(&program)
+        .expect_err("the actual entry Promise must reject");
+
+    assert!(matches!(
+        error,
+        Error::ProgramRejected(message)
+            if message.message == "real Program rejection"
+                && message.to_string().contains("at Program:7:")
+    ));
+}
+
+#[derive(Default)]
+struct CapturingOperationHost {
+    calls: Mutex<Vec<(String, String)>>,
+}
+
+impl ProgramHost for CapturingOperationHost {
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+    ) -> coral_v8::OperationFuture {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((call_path, arguments_json));
+        Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
+    }
+
+    fn emit(&self, _value_json: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+
+    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+}
+
+#[test]
+fn operation_call_passes_one_logical_argument_object_to_the_host() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(
+            compilation_deadline(),
+            r#"
+                return await coral.providers.widgets.create({
+                    id: "widget/1",
+                    page: 2,
+                    body: { label: "example" },
+                });
+            "#,
+        )
+        .expect("compile Operation argument probe");
+    let host = Arc::new(CapturingOperationHost::default());
+
+    ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host.clone())
+        .expect("execute Operation argument probe");
+
+    assert_eq!(
+        *host.calls.lock().expect("captured Operation calls"),
+        vec![(
+            "coral.providers.widgets.create".to_string(),
+            r#"{"id":"widget/1","page":2,"body":{"label":"example"}}"#.to_string()
+        )]
+    );
+}
+
+struct RejectingOperationHost;
+
+impl ProgramHost for RejectingOperationHost {
+    fn invoke(
+        self: Arc<Self>,
+        call_path: String,
+        _arguments_json: String,
+    ) -> coral_v8::OperationFuture {
+        Box::pin(async move {
+            Err(OperationHostError::Rejected {
+                code: "upstream_incomplete",
+                message: "durable Operation failure",
+                trace_id: call_path
+                    .ends_with(".traced")
+                    .then(|| "0123456789abcdef0123456789abcdef".to_string()),
+            })
+        })
+    }
+
+    fn emit(&self, _value_json: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+
+    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+}
+
+struct FatalOperationHost;
+
+impl ProgramHost for FatalOperationHost {
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+    ) -> coral_v8::OperationFuture {
+        Box::pin(async { Err(OperationHostError::Fatal) })
+    }
+
+    fn emit(&self, _value_json: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+
+    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+}
+
+#[test]
+fn failure_stacks_name_only_authored_locations() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+    let fail = linked_source(
+        &["debug", "fail"],
+        "\ninterface Marker { value: number }\n\nexport default function fail(): never {\n\n    throw new Error('private linked canary');\n}",
+    );
+    let failure = linked_source(
+        &["debug", "failure"],
+        "export default function failure(): never { throw new Error('authored dependency canary'); }",
+    );
+    let caller = linked_source(
+        &["debug", "caller"],
+        "export default function caller(): never { return coral.functions.debug.failure(); }",
+    );
+    let fetch = linked_source(
+        &["debug", "fetch"],
+        "export default async function fetch() {\n    await coral.providers.weather.getForecast();\n}",
+    );
+    // (Program, its Saved Functions, the failure's message, its authored frames)
+    let cases: [(&str, Vec<LinkedSavedFunctionSource>, &str, &[&str]); 7] = [
+        (
+            "const meaning: number = 42;\nvoid meaning;\nthrow new Error(\"private rejection canary\");",
+            vec![],
+            "Error: private rejection canary\n",
+            &["at Program:3:7"],
+        ),
+        // Final Value serialization runs authored code too.
+        (
+            "return {\n    toJSON() {\n        throw new Error(\"private serialization canary\");\n    },\n};",
+            vec![],
+            "Error: private serialization canary\n",
+            &["at Program:3:"],
+        ),
+        (
+            "return coral.functions.debug.fail();",
+            vec![fail],
+            "Error: private linked canary\n",
+            &[
+                "at Saved Function coral.functions.debug.fail:6:",
+                "at Program:1:",
+            ],
+        ),
+        (
+            "return coral.functions.debug.caller();",
+            vec![failure, caller],
+            "Error: authored dependency canary\n",
+            &[
+                "at Saved Function coral.functions.debug.failure:1:",
+                "at Saved Function coral.functions.debug.caller:1:",
+                "at Program:1:",
+            ],
+        ),
+        // Operation rejections settle asynchronously but keep their call sites.
+        (
+            "\nawait coral.providers.weather.getForecast();",
+            vec![],
+            "",
+            &["at Program:2:"],
+        ),
+        (
+            "Error.stackTraceLimit = 0;\nError.prepareStackTrace = () => 'spoofed';\nawait coral.providers.weather.getForecast();",
+            vec![],
+            "",
+            &["at Program:3:"],
+        ),
+        (
+            "return await coral.functions.debug.fetch();",
+            vec![fetch],
+            "",
+            &[
+                "at Saved Function coral.functions.debug.fetch:2:",
+                "at Program:1:",
+            ],
+        ),
+    ];
+    for (source, functions, message, frames) in cases {
+        let program = compiler
+            .compile_with_saved_functions(compilation_deadline(), source, &functions)
+            .expect(source);
+        let error = ProgramExecutor::new(IsolateLimits::default())
+            .execute_with_host(&program, Arc::new(RejectingOperationHost))
+            .expect_err(source);
+        let (Error::ProgramRejected(diagnostic) | Error::ProgramOutputRejected(diagnostic)) = error
+        else {
+            panic!("{source} returned {error}");
+        };
+        let diagnostic = diagnostic.to_string();
+        assert!(diagnostic.starts_with(message), "{diagnostic}");
+        for frame in frames {
+            assert!(diagnostic.contains(frame), "missing {frame}: {diagnostic}");
+        }
+        for private in ["program.js", "program.ts", "coral_", "async"] {
+            assert!(!diagnostic.contains(private), "{diagnostic}");
+        }
+    }
+}
+
+#[test]
+fn rejected_operation_host_failure_is_catchable() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(
+            compilation_deadline(),
+            r#"
+                try {
+                    await coral.providers.weather.getForecast();
+                    return "unexpected resolution";
+                } catch (error) {
+                    let constructible = false;
+                    try { new coral.OperationError(); constructible = true; } catch {}
+                    return {
+                        isError: error instanceof Error,
+                        isOperationError: error instanceof coral.OperationError,
+                        name: error.name,
+                        code: error.code,
+                        message: error.message,
+                        traceId: error.traceId,
+                        serialized: JSON.stringify(error),
+                        fields: Object.getOwnPropertyNames(error).sort(),
+                        constructible,
+                    };
+                }
+            "#,
+        )
+        .expect("compile durable Operation rejection probe");
+
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(RejectingOperationHost))
+        .expect("durable host rejection remains catchable");
+
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
+            .expect("JSON"),
+        serde_json::json!({
+            "isError": true,
+            "isOperationError": true,
+            "name": "OperationError",
+            "code": "upstream_incomplete",
+            "message": "durable Operation failure",
+            "serialized": "{}",
+            "fields": ["code", "message", "stack"],
+            "constructible": false,
+        })
+    );
+}
+
+#[test]
+fn operation_error_preserves_optional_trace_and_resists_program_replacement() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("compiler")
+        .compile(
+            compilation_deadline(),
+            r#"
+        const OperationError = coral.OperationError;
+        for (const replace of [
+            () => { coral.OperationError = Error; },
+            () => { OperationError.prototype.name = "forged"; },
+            () => { OperationError.prototype.toJSON = () => "forged"; },
+            () => { Object.setPrototypeOf(OperationError, null); },
+        ]) { try { replace(); } catch {} }
+        globalThis.Error = function() { throw "replaced"; };
+        Object.setPrototypeOf = () => { throw "replaced"; };
+        Object.defineProperties = () => { throw "replaced"; };
+        Object.prototype.get = function () {};
+        try { await coral.providers.weather.traced(); }
+        catch (error) {
+            return {name: error.name, isOperationError: error instanceof OperationError,
+                code: error.code, traceId: error.traceId, serialized: JSON.stringify(error)};
+        }
+    "#,
+        )
+        .expect("compile");
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(RejectingOperationHost))
+        .expect("handled");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output.final_value_json().expect("value"))
+            .expect("JSON"),
+        serde_json::json!({
+            "name": "OperationError", "isOperationError": true, "code": "upstream_incomplete",
+            "traceId": "0123456789abcdef0123456789abcdef", "serialized": "{}"
+        })
+    );
+}
+
+#[test]
+fn unhandled_operation_errors_fail_execution_even_without_await() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+    for source in [
+        "coral.providers.weather.getForecast(); return 42;",
+        "return {toJSON() { coral.providers.weather.getForecast(); return 42; }};",
+    ] {
+        let program = compiler
+            .compile(compilation_deadline(), source)
+            .expect("compile");
+        assert!(
+            matches!(
+                ProgramExecutor::new(IsolateLimits::default())
+                    .execute_with_host(&program, Arc::new(RejectingOperationHost)),
+                Err(Error::ProgramRejected(_))
+            ),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn invalid_operation_host_values_reject_without_invoking_the_host() {
+    let program = ProgramCompiler::new(IsolateLimits::default()).expect("compiler").compile(compilation_deadline(), r#"
+        const cycle = {}; cycle.self = cycle;
+        const calls = [() => coral.providers.widgets.create(undefined),
+            () => coral.providers.widgets.create(1n),
+            () => coral.providers.widgets.create(cycle),
+            () => coral.providers.widgets.create({}, {})];
+        for (const call of calls) {
+            try { await call(); throw Error("unexpected resolution"); }
+            catch (error) {
+                if (!(error instanceof coral.OperationError) || error.code !== "invalid_input") throw error;
+            }
+        }
+        return "handled";
+    "#).expect("compile invalid values");
+    let host = Arc::new(CapturingOperationHost::default());
+    let result = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host.clone())
+        .expect("catch invalid input");
+    assert_eq!(result.final_value_json(), Some(r#""handled""#));
+    assert!(host.calls.lock().expect("calls").is_empty());
+}
+
+#[test]
+fn fatal_operation_host_failure_during_final_value_serialization_stays_fatal() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(
+            compilation_deadline(),
+            r#"
+                return {
+                    toJSON() {
+                        try {
+                            coral.providers.weather.getForecast();
+                            return "unexpected resolution";
+                        } catch {
+                            return "unexpected catch";
+                        }
+                    },
+                };
+            "#,
+        )
+        .expect("compile final serialization host failure probe");
+
+    let error = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(FatalOperationHost))
+        .expect_err("fatal host failure during serialization must terminate execution");
+
+    assert!(matches!(error, Error::ProgramHostTerminated));
+}
+
+#[test]
+fn fatal_operation_host_failure_cannot_be_caught_by_the_program() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(
+            compilation_deadline(),
+            r#"
+                try {
+                    await coral.providers.weather.getForecast();
+                    return "unexpected resolution";
+                } catch {
+                    return "unexpected catch";
+                }
+            "#,
+        )
+        .expect("compile Operation host failure probe");
+
+    let error = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, Arc::new(FatalOperationHost))
+        .expect_err("fatal host failure must terminate Program execution");
+
+    assert!(matches!(error, Error::ProgramHostTerminated));
+}
+
+#[test]
+fn source_cannot_escape_the_private_async_wrapper() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let escapes = [
+        (
+            "two top-level IIFEs",
+            r#"
+                throw new Error("hidden rejection");
+            })();
+            (async () => {
+            "#,
+        ),
+        (
+            "one top-level comma expression",
+            r#"
+                throw new Error("hidden rejection");
+            })(), (async () => {
+            "#,
+        ),
+    ];
+
+    for (case, source) in escapes {
+        let error = compiler
+            .compile(compilation_deadline(), source)
+            .expect_err("source must not escape the private wrapper");
+        assert!(
+            matches!(&error, Error::InvalidProgramBody),
+            "{case} returned {error}"
+        );
+    }
+}
+
+#[test]
+fn a_single_microtask_checkpoint_drains_deep_continuations() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let chains = [
+        (
+            "sequential awaits",
+            r"
+                let value = 0;
+                for (let step = 0; step < 5000; step += 1) {
+                    value = await Promise.resolve(value + 1);
+                }
+                return value;
+            ",
+        ),
+        (
+            "chained then callbacks",
+            r"
+                let chain = Promise.resolve(0);
+                for (let step = 0; step < 5000; step += 1) {
+                    chain = chain.then((value) => value + 1);
+                }
+                return await chain;
+            ",
+        ),
+    ];
+    let executor = ProgramExecutor::new(IsolateLimits::default());
+
+    for (case, source) in chains {
+        let program = compiler
+            .compile(compilation_deadline(), source)
+            .expect("compile deep chain");
+        let output = executor.execute(&program).expect("execute deep chain");
+        assert_eq!(
+            output.final_value_json(),
+            Some("5000"),
+            "{case} did not settle in one checkpoint"
+        );
+    }
+}
+
+#[derive(Default)]
+struct OperationGate {
+    state: Mutex<(bool, Option<std::task::Waker>)>,
+}
+
+impl OperationGate {
+    fn finish(&self) {
+        let mut state = self.state.lock().expect("gate");
+        state.0 = true;
+        if let Some(waker) = state.1.take() {
+            waker.wake();
+        }
+    }
+}
+
+struct GatedOperationHost {
+    started: std::sync::mpsc::Sender<Arc<OperationGate>>,
+}
+
+impl ProgramHost for GatedOperationHost {
+    fn invoke(self: Arc<Self>, _path: String, _arguments: String) -> coral_v8::OperationFuture {
+        let gate = Arc::new(OperationGate::default());
+        self.started
+            .send(gate.clone())
+            .expect("report started Operation");
+        Box::pin(std::future::poll_fn(move |context| {
+            let mut state = gate.state.lock().expect("gate");
+            if state.0 {
+                std::task::Poll::Ready(Ok("{\"data\":42,\"metadata\":{}}".to_string()))
+            } else {
+                state.1 = Some(context.waker().clone());
+                std::task::Poll::Pending
+            }
+        }))
+    }
+
+    fn emit(&self, _json: &str) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn operations_progress_concurrently_and_unawaited_work_is_drained() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
+    for source in [
+        "const results = await Promise.all([coral.providers.test.first(), coral.providers.test.second()]); return results[0].data + results[1].data;",
+        "coral.providers.test.first(); coral.providers.test.second(); return 84;",
+        "return { toJSON() { coral.providers.test.first(); coral.providers.test.second(); return 84; } };",
+    ] {
+        let program = compiler
+            .compile(compilation_deadline(), source)
+            .expect("compile");
+        let (started, calls) = std::sync::mpsc::channel();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let control = ProgramExecutionControl::new();
+        let worker_control = control.clone();
+        let worker = std::thread::spawn(move || {
+            let result = ProgramExecutor::new(IsolateLimits::default()).execute_with_host_control(
+                &program,
+                Arc::new(GatedOperationHost { started }),
+                &worker_control,
+            );
+            completed.send(result).expect("send completion");
+        });
+        let first = calls.recv_timeout(std::time::Duration::from_secs(2));
+        let second = calls.recv_timeout(std::time::Duration::from_secs(2));
+        if first.is_err() || second.is_err() {
+            let _installed = control.terminate();
+        }
+        let first = first.expect("first Operation starts");
+        let second = second.expect("second Operation starts before the first completes");
+        second.finish();
+        assert!(
+            completion.try_recv().is_err(),
+            "unawaited work must finish before the Run"
+        );
+        first.finish();
+        let output = completion
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("execution settles")
+            .expect("Program succeeds");
+        worker.join().expect("worker");
+        assert_eq!(output.final_value_json(), Some("84"));
+    }
+}
+
+#[test]
+fn cancellation_wakes_execution_waiting_for_an_operation() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("compiler")
+        .compile(compilation_deadline(), "await coral.providers.test.wait();")
+        .expect("compile");
+    let (started, calls) = std::sync::mpsc::channel();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let control = ProgramExecutionControl::new();
+    let worker_control = control.clone();
+    let worker = std::thread::spawn(move || {
+        completed
+            .send(
+                ProgramExecutor::new(IsolateLimits::default()).execute_with_host_control(
+                    &program,
+                    Arc::new(GatedOperationHost { started }),
+                    &worker_control,
+                ),
+            )
+            .expect("send completion");
+    });
+    let _pending = calls
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("Operation started");
+    let _installed = control.terminate();
+    let result = completion
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("termination wakes executor");
+    worker.join().expect("worker");
+    assert!(
+        matches!(result, Err(Error::ProgramHostTerminated)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn a_program_awaiting_an_absent_event_source_is_pending_rather_than_hanging() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            "await new Promise(() => {}); return 1;",
+        )
+        .expect("compile never-settling await");
+
+    let error = ProgramExecutor::new(IsolateLimits::default())
+        .execute(&program)
+        .expect_err("a never-settling Program must not produce a Final Value");
+    assert!(matches!(&error, Error::PendingProgram), "{error}");
+}
+
+/// Records Program output and Operation calls under the given value limits.
+struct RecordingHost {
+    limits: coral_value::ValueLimits,
+    emitted: Mutex<Vec<String>>,
+    logs: Mutex<Vec<(ConsoleLevel, String)>>,
+    calls: Mutex<Vec<String>>,
+}
+
+/// Each value crossing to the host may encode to at most this many bytes.
+const HOST_BYTES: usize = 128;
+
+impl RecordingHost {
+    fn new(limits: coral_value::ValueLimits) -> Arc<Self> {
+        Arc::new(Self {
+            limits,
+            emitted: Mutex::default(),
+            logs: Mutex::default(),
+            calls: Mutex::default(),
+        })
+    }
+}
+
+impl ProgramHost for RecordingHost {
+    fn value_limits(&self) -> coral_value::ValueLimits {
+        self.limits
+    }
+
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        arguments_json: String,
+    ) -> coral_v8::OperationFuture {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(arguments_json);
+        Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
+    }
+
+    fn emit(&self, value_json: &str) -> Result<(), ProgramOutputHostError> {
+        self.emitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(value_json.to_string());
+        Ok(())
+    }
+
+    fn log(&self, level: ConsoleLevel, message: &str) -> Result<(), ProgramOutputHostError> {
+        self.logs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((level, message.to_string()));
+        Ok(())
+    }
+}
+
+fn run_with_recording_host(source: &str) -> (Option<String>, Arc<RecordingHost>) {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(compilation_deadline(), source)
+        .expect("compile output probe");
+    let host = RecordingHost::new(
+        coral_value::ValueLimits::new(1024, HOST_BYTES, 1024, 1024).expect("limits"),
+    );
+    let output = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host.clone())
+        .expect("execute output probe");
+    (output.final_value_json().map(str::to_string), host)
+}
+
+#[test]
+fn program_emissions_and_console_lines_reach_the_host_in_order() {
+    let (_, host) = run_with_recording_host(
+        r#"
+            await coral.emit({ step: 1 });
+            console.log("joined", 1, true, null);
+            console.debug("d");
+            console.info("i");
+            console.warn("w");
+            console.error("e");
+            await coral.emit([2]);
+        "#,
+    );
+    assert_eq!(
+        *host.emitted.lock().expect("emissions"),
+        [r#"{"step":1}"#, "[2]"]
+    );
+    assert_eq!(
+        *host.logs.lock().expect("logs"),
+        [
+            (ConsoleLevel::Info, "joined 1 true null".to_string()),
+            (ConsoleLevel::Debug, "d".to_string()),
+            (ConsoleLevel::Info, "i".to_string()),
+            (ConsoleLevel::Warn, "w".to_string()),
+            (ConsoleLevel::Error, "e".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn oversized_or_invalid_host_values_reject_without_reaching_the_host() {
+    // A JSON string encodes with two quotes; an Operation input also carries `{"body":}`.
+    let fits = HOST_BYTES - 2;
+    let body_fits = HOST_BYTES - r#"{"body":""}"#.len();
+    let (outcomes, host) = run_with_recording_host(&format!(
+        r#"
+            const outcomes = [];
+            const attempt = async (action) => {{
+                try {{
+                    await action();
+                    outcomes.push("accepted");
+                }} catch (error) {{
+                    outcomes.push(error.code ?? error.name);
+                }}
+            }};
+            await attempt(() => coral.emit("x".repeat({fits})));
+            await attempt(() => coral.emit("x".repeat({fits} + 1)));
+            await attempt(() => coral.emit(undefined));
+            await attempt(() => coral.providers.widgets.create({{ body: "x".repeat({body_fits}) }}));
+            await attempt(() => coral.providers.widgets.create({{ body: "x".repeat({body_fits} + 1) }}));
+            return outcomes;
+        "#
+    ));
+    assert_eq!(
+        outcomes.as_deref(),
+        Some(r#"["accepted","RangeError","TypeError","accepted","operation_input_too_large"]"#)
+    );
+    assert_eq!(host.emitted.lock().expect("emissions").len(), 1);
+    assert_eq!(host.calls.lock().expect("calls").len(), 1);
+}
+
+/// Runs `source` to its rejection and returns the retained error and the host.
+fn rejection(source: &str) -> (coral_v8::ProgramError, Arc<RecordingHost>) {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(compilation_deadline(), source)
+        .expect(source);
+    let host = RecordingHost::new(coral_value::ValueLimits::default());
+    let error = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host.clone())
+        .expect_err(source);
+    let Error::ProgramRejected(error) = error else {
+        panic!("{source} returned {error}");
+    };
+    (*error, host)
+}
+
+#[test]
+fn program_errors_are_bounded() {
+    let (error, _) = rejection("throw 'Address missing';");
+    assert_eq!(
+        (
+            error.name.as_str(),
+            error.message.as_str(),
+            error.frames.len()
+        ),
+        ("ThrownValue", "Address missing", 0)
+    );
+
+    let (error, _) = rejection(&format!(
+        "const e = new Error('{}'); e.name = '{}'; throw e;",
+        "m".repeat(2000),
+        "N".repeat(100)
+    ));
+    assert_eq!((error.name.len(), error.message.len()), (64, 1024));
+    assert!(error.truncated);
+
+    let (error, _) = rejection("const e = new Error('cycle'); e.cause = e; throw e;");
+    assert!(error.cause.expect("cause").circular);
+
+    // An error keeps at most four nested causes.
+    let (error, _) = rejection(
+        "let e = new Error('root'); for (let i = 0; i < 8; i++) e = new Error('level ' + i, { cause: e }); throw e;",
+    );
+    let mut depth = 0;
+    let mut node = &error;
+    while let Some(cause) = &node.cause {
+        depth += 1;
+        node = cause;
+    }
+    assert_eq!(depth, 4);
+    assert!(node.cause_omitted);
+
+    let (error, _) = rejection(
+        "throw new AggregateError(Array.from({ length: 20 }, (_, i) => new Error('failure ' + i)), 'Many failures');",
+    );
+    assert_eq!((error.errors.len(), error.omitted_errors), (8, 12));
+
+    // Mutual recursion keeps adjacent frames distinct, so only the frame bound applies.
+    let (error, _) = rejection(
+        "Error.stackTraceLimit = 100;\nfunction ping(n: number): never { return n === 0 ? fail() : pong(n - 1); }\nfunction pong(n: number): never { return ping(n - 1); }\nfunction fail(): never { throw new Error('deep'); }\nping(40);",
+    );
+    assert_eq!(error.frames.len(), 16);
+    assert!(error.truncated);
+
+    // Eight large members exceed the retained error budget, so members are dropped.
+    let (error, _) = rejection(&format!(
+        "throw new AggregateError(Array.from({{ length: 8 }}, () => new Error('{}')), 'Large');",
+        "x".repeat(1000)
+    ));
+    assert!(error.omitted_errors > 0);
+    assert!(serde_json::to_vec(&error).expect("encode").len() <= 8 * 1024);
+}
+
+#[test]
+fn reading_a_program_error_runs_no_program_code() {
+    for source in [
+        "const e = new Error('original'); Object.defineProperty(e, 'cause', { get() { coral.emit('getter ran'); return new Error('extra'); } }); throw e;",
+        "Error.prepareStackTrace = () => { coral.emit('stack hook ran'); return 'private stack'; }; throw new Error('original');",
+        "const e = new Error('original'); const errors: Error[] = []; Object.defineProperty(errors, '0', { get() { coral.emit('index getter ran'); return e; } }); const all = new AggregateError([], 'original'); (all as { errors: Error[] }).errors = errors; throw all;",
+    ] {
+        let (error, host) = rejection(source);
+        assert_eq!(error.message, "original", "{source}");
+        assert!(
+            host.emitted.lock().expect("emissions").is_empty(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn source_maps_name_only_authored_sources_and_embed_no_text() {
+    let program = ProgramCompiler::new(IsolateLimits::default())
+        .expect("start compiler")
+        .compile(compilation_deadline(), "return 1;")
+        .expect("compile");
+    coral_v8::validate_source_map(program.source_map()).expect("compiled map");
+    let compiled: serde_json::Value =
+        serde_json::from_str(program.source_map()).expect("source map JSON");
+    let with = |key: &str, value: serde_json::Value| {
+        let mut map = compiled.clone();
+        map.as_object_mut()
+            .expect("source map object")
+            .insert(key.to_string(), value);
+        map.to_string()
+    };
+    for invalid in [
+        "{".to_string(),
+        with("file", serde_json::json!("other.js")),
+        with("sourceRoot", serde_json::json!("/private")),
+        with("sourcesContent", serde_json::json!(["return 1;"])),
+        with("sources", serde_json::json!(["program.ts"])),
+        with(
+            "sources",
+            serde_json::json!(["Saved Function coral.functions.a/b"]),
+        ),
+        with(
+            "sources",
+            serde_json::json!(["Saved Function coral.functions.a\nb"]),
+        ),
+        with(
+            "sources",
+            serde_json::json!([format!(
+                "Saved Function coral.functions.{}",
+                "a".repeat(257)
+            )]),
+        ),
+    ] {
+        assert!(
+            matches!(
+                coral_v8::validate_source_map(&invalid),
+                Err(Error::InvalidSourceMap(_))
+            ),
+            "{invalid}"
+        );
+    }
+}

@@ -1,0 +1,401 @@
+//! The Operation retriever: Operations of the Workspace's visible, ready
+//! Providers, ranked inside the database.
+//!
+//! Visibility stays with the owners. coral-provider decides whether a
+//! Provider is ready for the caller; coral-policy decides whether an
+//! Operation is disabled or needs approval. The retriever asks them once per
+//! request and loads no Operation catalog before ranking: catalog reads happen
+//! at hydration and in `describe`, for single Operations.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use coral_db::Transaction;
+use coral_policy::ExactOperationRules;
+use coral_provider::ActiveProvider;
+
+use super::plan::QueryPlan;
+use super::repository;
+use super::{
+    Answer, EntityRef, EntityRetriever, Hydrated, Listing, OperationRef, QueryError, QueryRequest,
+    RequestContext, RetrievalError, count,
+};
+use crate::eligibility::operation_approval;
+use crate::evidence::{EvidenceBuilder, EvidenceTerms};
+use crate::hit::{HitMaterial, hit_text};
+use crate::signature::Callable;
+use crate::{
+    CallPath, EntityKind, Error, ExactAuthoringDescription, OperationAuthoringDescription,
+    ProviderNamespace, RetrieverCoverage, SearchEvidence, SearchHit,
+};
+
+/// Ranks, hydrates, and describes Operations.
+#[derive(Debug, Default)]
+pub(crate) struct OperationRetriever {
+    /// Makes the ranked statement fail, for tests of a retriever error.
+    #[cfg(test)]
+    pub(crate) fail_ranking: bool,
+}
+
+#[async_trait]
+impl EntityRetriever for OperationRetriever {
+    fn kind(&self) -> EntityKind {
+        EntityKind::Operation
+    }
+
+    async fn list(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+        provider_filter: Option<&ProviderNamespace>,
+    ) -> Result<Listing, Error> {
+        let providers = filtered_providers(transaction, context, provider_filter).await?;
+        let units = providers.len();
+        let rules = Arc::new(
+            coral_policy::exact_operation_rules_in_transaction(transaction, context.workspace_id)
+                .await?,
+        );
+        let mut listed = Vec::new();
+        for provider in providers {
+            let targets = coral_catalog::available_search_targets_in_transaction(
+                transaction,
+                provider.generation_id(),
+            )
+            .await
+            .map_err(coral_provider::Error::from)?;
+            let provider = Arc::new(provider);
+            for target in targets {
+                if operation_approval(
+                    &rules,
+                    provider.provider().id(),
+                    target.key(),
+                    target.hints(),
+                )
+                .is_none()
+                {
+                    continue;
+                }
+                listed.push(EntityRef::Operation(OperationRef {
+                    call_path: CallPath::operation(
+                        provider.provider().namespace(),
+                        target.relative_path(),
+                    )?,
+                    provider: Arc::clone(&provider),
+                    operation_key: target.key().clone(),
+                    rules: Arc::clone(&rules),
+                    near_spellings: Arc::new([]),
+                }));
+            }
+        }
+        Ok(Listing {
+            entities: listed,
+            units,
+        })
+    }
+
+    async fn query(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+        request: &QueryRequest<'_>,
+    ) -> Result<Answer, QueryError> {
+        let providers = filtered_providers(transaction, context, request.provider_filter).await?;
+        let rules = Arc::new(
+            coral_policy::exact_operation_rules_in_transaction(transaction, context.workspace_id)
+                .await
+                .map_err(Error::from)?,
+        );
+        let eligible = providers.len();
+        let Some(plan) = QueryPlan::build(request.terms) else {
+            // No term can select anything, so no unit waits on the index.
+            return Ok(Answer {
+                window: Vec::new(),
+                coverage: RetrieverCoverage::new(count(eligible), count(eligible), 0, false),
+            });
+        };
+        let complete = repository::complete_generations(transaction, context.workspace_id)
+            .await
+            .map_err(QueryError::retrieval)?;
+        // A Provider whose active Generation has no complete index state is
+        // not searched: not indexed yet, or its attempt failed.
+        let searched = providers
+            .into_iter()
+            .filter(|provider| complete.contains(&provider.generation_id().to_string()))
+            .map(|provider| (provider.provider().id().clone(), Arc::new(provider)))
+            .collect::<HashMap<_, _>>();
+
+        #[cfg(test)]
+        if self.fail_ranking {
+            repository::failing_statement(transaction)
+                .await
+                .map_err(QueryError::retrieval)?;
+        }
+
+        let ranked = if searched.is_empty() {
+            repository::Ranking {
+                entities: Vec::new(),
+                near_spellings: Vec::new(),
+            }
+        } else {
+            let provider_ids = searched.keys().cloned().collect::<Vec<_>>();
+            let generation_ids = searched
+                .values()
+                .map(|provider| provider.generation_id().clone())
+                .collect::<Vec<_>>();
+            repository::rank_operations(
+                transaction,
+                context.workspace_id,
+                &provider_ids,
+                &generation_ids,
+                &rules,
+                &plan,
+                request.window + 1,
+            )
+            .await
+            .map_err(QueryError::Retriever)?
+        };
+        let has_more = ranked.entities.len() > request.window;
+        let near_spellings: Arc<[String]> = ranked.near_spellings.into();
+        let mut window = Vec::new();
+        for operation in ranked.entities.into_iter().take(request.window) {
+            let provider = searched
+                .get(&operation.provider_id)
+                .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
+                    "a ranked Operation's Provider was not searched",
+                )))?;
+            window.push(EntityRef::Operation(OperationRef {
+                provider: Arc::clone(provider),
+                operation_key: operation.operation_key,
+                rules: Arc::clone(&rules),
+                call_path: operation.call_path,
+                near_spellings: Arc::clone(&near_spellings),
+            }));
+        }
+        Ok(Answer {
+            coverage: RetrieverCoverage::new(
+                count(eligible),
+                count(searched.len()),
+                count(window.len()),
+                has_more,
+            ),
+            window,
+        })
+    }
+
+    async fn hydrate(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+        entity: &EntityRef,
+    ) -> Result<Hydrated, Error> {
+        let EntityRef::Operation(operation) = entity else {
+            return Ok(Hydrated::Dropped);
+        };
+        let hydrated = match coral_provider::hydrate_operation_in_transaction(
+            transaction,
+            &operation.provider,
+            &operation.operation_key,
+        )
+        .await
+        {
+            Ok(Some(hydrated)) => hydrated,
+            Ok(None) => return Ok(Hydrated::Dropped),
+            // A corrupt Operation leaves the page; the others stay.
+            Err(
+                coral_provider::Error::CorruptData(_)
+                | coral_provider::Error::Catalog(coral_catalog::Error::CorruptData(_)),
+            ) => return Ok(Hydrated::Unreadable),
+            Err(error) => return Err(error.into()),
+        };
+        let Some(description) =
+            describe_material(hydrated.material(), &operation.rules, &operation.call_path)?
+        else {
+            return Ok(Hydrated::Dropped);
+        };
+        let material = HitMaterial {
+            declaration: description.typescript_declaration(),
+            callable: Callable::Operation {
+                leaf: description.call_path().leaf(),
+            },
+            description: description.description(),
+            guidance: description.guidance(),
+            tags: description.tags(),
+        };
+        let Some(terms) = context.terms else {
+            return Ok(Hydrated::Hit(Box::new(SearchHit::from_operation(
+                &description,
+                hit_text(&material, None),
+                SearchEvidence::default(),
+            ))));
+        };
+        let terms = EvidenceTerms::new(terms, &operation.near_spellings);
+        let mut evidence = EvidenceBuilder::new(&terms);
+        evidence
+            .field("call_path", [description.call_path().as_str()])
+            .field(
+                "provider_namespace",
+                [description.provider_namespace().as_str()],
+            )
+            .field(
+                "provider_display_name",
+                [description.provider_display_name()],
+            )
+            .field("title", description.title())
+            .field("description", [description.description()])
+            .tags(description.tags().iter().map(String::as_str))
+            .field("guidance", description.guidance());
+        for field in hydrated.declaration_fields() {
+            evidence.path(field.path().as_str(), field.text());
+        }
+        let Some(matched) = evidence.build() else {
+            tracing::debug!(
+                call_path = description.call_path().as_str(),
+                "a ranked Operation has no evidence and leaves the page"
+            );
+            return Ok(Hydrated::Dropped);
+        };
+        let text = hit_text(&material, Some((&terms, &matched)));
+        Ok(Hydrated::Hit(Box::new(SearchHit::from_operation(
+            &description,
+            text,
+            matched.evidence,
+        ))))
+    }
+
+    async fn describe(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+        call_path: &CallPath,
+    ) -> Result<Option<ExactAuthoringDescription>, Error> {
+        let Some((namespace, relative_path)) = call_path
+            .as_str()
+            .strip_prefix("coral.providers.")
+            .and_then(|path| path.split_once('.'))
+        else {
+            return Ok(None);
+        };
+        let Ok(namespace) = ProviderNamespace::parse(namespace) else {
+            return Ok(None);
+        };
+        let Some(provider) = visible_providers(transaction, context, Some(&namespace))
+            .await?
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        let Some(material) = coral_provider::operation_material_by_relative_path_in_transaction(
+            transaction,
+            &provider,
+            relative_path,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        let rules =
+            coral_policy::exact_operation_rules_in_transaction(transaction, context.workspace_id)
+                .await?;
+        Ok(describe_material(&material, &rules, call_path)?
+            .map(ExactAuthoringDescription::operation))
+    }
+}
+
+/// The namespaces of the Workspace's Active Providers that are ready for the
+/// caller, in order: what a Provider filter may name.
+pub(crate) async fn searchable_namespaces(
+    transaction: &mut Transaction<'_>,
+    context: RequestContext<'_>,
+) -> Result<Vec<ProviderNamespace>, Error> {
+    Ok(namespaces(
+        &visible_providers(transaction, context, None).await?,
+    ))
+}
+
+/// The Providers a search's filter leaves, all visible ones without a filter.
+/// A filter reads only the Provider it names, so another Provider's state
+/// cannot fail the search. A filter that names no visible Provider is refused
+/// with the namespaces the caller can search, so a wrong guess never reads as
+/// an empty catalog.
+async fn filtered_providers(
+    transaction: &mut Transaction<'_>,
+    context: RequestContext<'_>,
+    provider_filter: Option<&ProviderNamespace>,
+) -> Result<Vec<ActiveProvider>, Error> {
+    let filtered = visible_providers(transaction, context, provider_filter).await?;
+    if provider_filter.is_some() && filtered.is_empty() {
+        return Err(Error::UnknownProviderNamespace {
+            searchable: searchable_namespaces(transaction, context).await?,
+        });
+    }
+    Ok(filtered)
+}
+
+fn namespaces(providers: &[ActiveProvider]) -> Vec<ProviderNamespace> {
+    let mut namespaces = providers
+        .iter()
+        .map(|provider| provider.provider().namespace().clone())
+        .collect::<Vec<_>>();
+    namespaces.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    namespaces.dedup();
+    namespaces
+}
+
+/// The Workspace's Active Providers that are ready for the caller, cut to the
+/// namespace filter. Reads no Operation catalog.
+async fn visible_providers(
+    transaction: &mut Transaction<'_>,
+    context: RequestContext<'_>,
+    provider_filter: Option<&ProviderNamespace>,
+) -> Result<Vec<ActiveProvider>, Error> {
+    let mut visible = Vec::new();
+    for provider in
+        coral_provider::active_providers_in_transaction(transaction, context.workspace_id).await?
+    {
+        if provider_filter.is_some_and(|namespace| provider.provider().namespace() != namespace) {
+            continue;
+        }
+        if coral_provider::account::discoverable_in_transaction(
+            transaction,
+            &provider,
+            context.actor.principal(),
+        )
+        .await?
+        {
+            visible.push(provider);
+        }
+    }
+    Ok(visible)
+}
+
+/// The complete description of one current Operation, or `None` when policy
+/// disables it or its path is not the expected one.
+fn describe_material(
+    material: &coral_provider::OperationAuthoringMaterial,
+    rules: &ExactOperationRules,
+    call_path: &CallPath,
+) -> Result<Option<OperationAuthoringDescription>, Error> {
+    if CallPath::operation(material.provider_namespace(), material.relative_path())? != *call_path {
+        return Ok(None);
+    }
+    let Some(approval) = operation_approval(
+        rules,
+        material.provider_id(),
+        material.operation_key(),
+        material.hints(),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(OperationAuthoringDescription::new(
+        call_path.clone(),
+        material.typescript_declaration().to_string(),
+        material.provider_namespace().clone(),
+        material.provider_id().clone(),
+        material.provider_display_name().to_string(),
+        material.presentation().clone(),
+        material.hints(),
+        approval,
+    )))
+}

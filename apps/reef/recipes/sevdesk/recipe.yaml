@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://api.sevdesk.de/
+schema_version: 1
+id: sevdesk
+display_name: sevdesk
+description: Contacts, invoices, vouchers, orders and bookkeeping accounts from sevdesk.
+source:
+  openapi:
+    url: https://api.sevdesk.de/openapi.yaml
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: API token
+      documentation_url: https://api.sevdesk.de/
+      fields:
+        api_key:
+          label: API token
+      headers:
+        authorization:
+          field: api_key
+servers:
+  '#/servers':
+    base_url: https://my.sevdesk.de/api/v1
+icons:
+  light: logo.svg

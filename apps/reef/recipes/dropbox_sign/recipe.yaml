@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/hellosign/hellosign-openapi
+# Official brand asset: https://cdn.prod.website-files.com/64412cfef2e5476af2f044bd/6441320df020d65e5a8250be_webclip.png
+schema_version: 1
+id: dropbox_sign
+display_name: Dropbox Sign
+description: Signature requests, templates, teams and signing documents from Dropbox Sign.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/hellosign/hellosign-openapi/main/openapi-fern.yaml
+authentication:
+  options:
+    api_key:
+      method: basic_auth
+      label: API key
+      documentation_url: https://developers.hellosign.com/api/api-reference-authentication
+      fields:
+        username:
+          label: API key
+          sensitive: true
+      username:
+        field: username
+      password:
+        literal: ''
+    access_token:
+      method: bearer
+      label: OAuth access token
+      documentation_url: https://developers.hellosign.com/api/api-reference-authentication
+  default: api_key
+icons:
+  light: logo.png

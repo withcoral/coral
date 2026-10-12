@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: gmail
+display_name: Gmail
+description: Messages, threads, drafts, labels and mailbox settings from Gmail.
+icons:
+  light: logo.svg
+
+source:
+  openapi:
+    # Google publishes a Discovery document, not OpenAPI. Regenerate this
+    # conversion with `npm run recipes:gmail --prefix apps/reef`.
+    file: openapi.json
+
+authentication:
+  options:
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in with Google
+      documentation_url: https://developers.google.com/workspace/guides/create-credentials#oauth-client-id
+      authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+      token_url: https://oauth2.googleapis.com/token
+      client:
+        # No client id: Coral has no public Google application, so the owner
+        # configures a web application client with Reef's callback URL.
+        authentication: client_secret_post
+      # The smallest set that every Gmail method accepts.
+      scopes:
+        - https://mail.google.com/
+        - https://www.googleapis.com/auth/gmail.settings.basic
+        - https://www.googleapis.com/auth/gmail.settings.sharing
+      authorization_parameters:
+        # Google returns a refresh token only for offline access, and again
+        # only when the person consents.
+        access_type: offline
+        prompt: consent

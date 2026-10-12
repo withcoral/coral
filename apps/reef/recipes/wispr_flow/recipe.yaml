@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.wisprflow.ai/articles/9551372685-connect-an-mcp-client-to-wispr-flow-remote-mcp-server
+# Requires cloud sync and Google, Apple or Microsoft sign-in. Password authentication is unsupported; HIPAA disables meeting access.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+schema_version: 1
+id: wispr_flow
+display_name: Wispr Flow
+description: Notes, meetings and calendar context from Wispr Flow.
+source:
+  mcp:
+    url: https://api.wisprflow.ai/connect/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://docs.wisprflow.ai/articles/9551372685-connect-an-mcp-client-to-wispr-flow-remote-mcp-server
+      flow: authorization_code
+    device_code:
+      method: oauth_discovery
+      label: Sign in with a device code
+      documentation_url: https://docs.wisprflow.ai/articles/9551372685-connect-an-mcp-client-to-wispr-flow-remote-mcp-server
+      flow: device_code
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

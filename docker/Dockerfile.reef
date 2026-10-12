@@ -1,0 +1,30 @@
+# Reef is compiled on the build platform. The target runtime stage is COPY-only,
+# so image assembly never executes target-architecture code.
+FROM --platform=$BUILDPLATFORM node:24.15.0-trixie-slim AS build
+WORKDIR /src
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+COPY apps/reef/package.json apps/reef/package-lock.json ./apps/reef/
+RUN npm ci --prefix apps/reef
+COPY crates/coral-grpc/proto ./crates/coral-grpc/proto
+COPY apps/reef ./apps/reef
+RUN npm run build --prefix apps/reef
+
+FROM node:24.15.0-trixie-slim
+ARG CORAL_WEB_VERSION
+ARG CORAL_WEB_REVISION
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000
+LABEL org.opencontainers.image.source="https://github.com/withcoral/coral" \
+      org.opencontainers.image.version="$CORAL_WEB_VERSION" \
+      org.opencontainers.image.revision="$CORAL_WEB_REVISION"
+# The bundled server carries every dependency, as Desktop ships it: no
+# installed packages, and no server build beside the client files.
+COPY --from=build /src/apps/reef/server.mjs ./server.mjs
+COPY --from=build /src/apps/reef/build/client ./build/client
+COPY --chown=0:0 --chmod=0755 docker/entrypoint-reef.sh /usr/local/bin/entrypoint-reef.sh
+# The numeric form of the base image's `node` user: Kubernetes `runAsNonRoot`
+# can only verify a UID, and refuses an image whose USER is a name.
+USER 1000:1000
+EXPOSE 3000
+HEALTHCHECK --interval=2s --timeout=2s --retries=15 CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+ENTRYPOINT ["/usr/local/bin/entrypoint-reef.sh"]

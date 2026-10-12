@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/postman.html
+schema_version: 1
+id: salesforce
+display_name: Salesforce
+description: Accounts, contacts, opportunities, records and searches from Salesforce.
+source:
+  mcp:
+    url: https://api.salesforce.com/platform/mcp/v1/platform/sobject-all
+authentication:
+  options:
+    access_token:
+      method: bearer
+      label: JWT access token
+      documentation_url: https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/create-external-client-app.html
+icons:
+  light: logo.svg

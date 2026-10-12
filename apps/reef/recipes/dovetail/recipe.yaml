@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.dovetail.com/docs/mcp
+# Official logo: https://dovetail.com/apple-touch-favicon.png
+schema_version: 1
+id: dovetail
+display_name: Dovetail
+description: Research projects, notes and customer insights from Dovetail.
+icons:
+  light: dovetail.png
+source:
+  mcp:
+    url: https://dovetail.com/api/mcp
+authentication:
+  options:
+    api_token:
+      method: bearer
+      label: API token
+      documentation_url: https://developers.dovetail.com/docs/mcp
+      description: Create a personal API token in your Dovetail account.
+  default: api_token

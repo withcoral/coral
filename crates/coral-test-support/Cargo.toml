@@ -1,0 +1,24 @@
+[package]
+name = "coral-test-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+coral-credentials.workspace = true
+coral-db = { workspace = true, features = ["test-support"] }
+coral-workspace.workspace = true
+ring.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

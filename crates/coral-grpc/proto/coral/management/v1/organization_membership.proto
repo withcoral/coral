@@ -1,0 +1,69 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "coral/management/v1/workspace.proto";
+import "google/protobuf/empty.proto";
+
+// Current Organization Owner inspection and atomic offboarding.
+service OrganizationMembershipService {
+  // Own current Membership and profile; does not read the administration directory.
+  rpc GetCurrentOrganizationMembership(GetCurrentOrganizationMembershipRequest) returns (OrganizationMembership);
+  // Only a current enabled Organization Owner can read the directory.
+  rpc ListOrganizationMemberships(ListOrganizationMembershipsRequest) returns (ListOrganizationMembershipsResponse);
+  // Removes authority and current private work in one domain transaction.
+  rpc DeleteOrganizationMembership(DeleteOrganizationMembershipRequest) returns (google.protobuf.Empty);
+}
+
+// Organization roles do not come from Workspace designation.
+enum OrganizationRole {
+  // No role specified.
+  ORGANIZATION_ROLE_UNSPECIFIED = 0;
+  // Organization administrator. Governs Workspaces without authority inside them.
+  ORGANIZATION_ROLE_OWNER = 1;
+  // Ordinary Member with no Organization administration authority.
+  ORGANIZATION_ROLE_MEMBER = 2;
+}
+
+// Current Membership, including disabled Users; never private work.
+message OrganizationMembership {
+  // organizationMemberships/{user}; the deployment has one implicit Organization.
+  string name = 1;
+  // Safe profile for the authorized administration directory.
+  UserProfile profile = 2;
+  // Current Organization role, independent of Workspace designation.
+  OrganizationRole role = 3;
+  // Whether the User can authenticate and exercise ordinary Workspace authority.
+  bool enabled = 4;
+  // Opaque exact revision; removal/rejoin never reuses it.
+  string etag = 5;
+}
+
+// Inspects the authenticated User's own current Membership and profile.
+message GetCurrentOrganizationMembershipRequest {}
+
+// Owner-only page request.
+message ListOrganizationMembershipsRequest {
+  // Zero defaults to 30; maximum 100.
+  int32 page_size = 1;
+  // Non-authorizing opaque continuation.
+  string page_token = 2;
+}
+
+// One page of current Organization Memberships.
+message ListOrganizationMembershipsResponse {
+  // Current Memberships, including disabled Users.
+  repeated OrganizationMembership memberships = 1;
+  // Empty at end.
+  string next_page_token = 2;
+}
+
+// Removes Membership and current private work while preserving retained history.
+message DeleteOrganizationMembershipRequest {
+  // Canonical Organization Membership name: organizationMemberships/{user}.
+  string name = 1;
+  // Required current concurrency token.
+  string etag = 2;
+  // organizationMemberships/{user} that becomes the designated Owner of every
+  // Workspace the removed User solely owns. Required when one exists.
+  string transfer_to = 3;
+}

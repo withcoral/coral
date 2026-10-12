@@ -1,8 +1,12 @@
 //! Cross-crate telemetry helpers.
 //!
-//! This crate owns small telemetry utilities that need to be shared by the
-//! app, client, engine, and MCP adapter without adding dependency edges between
-//! those crates.
+//! This crate owns transport-neutral W3C propagation, safe telemetry utilities
+//! shared by application, domain, and adapter crates, and the filter that
+//! decides what spans may leave the host.
+
+mod export;
+
+pub use export::OtlpSpanFilter;
 
 use opentelemetry::Context;
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator as _};
@@ -10,20 +14,59 @@ use opentelemetry::trace::{Status as OtelStatus, TraceContextExt as _};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
+/// Safe lowercase W3C trace identifier used for cross-crate correlation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceId(String);
+
+impl TraceId {
+    /// Parses one lowercase nonzero W3C trace identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe static message when the identifier is not exactly 32
+    /// lowercase hexadecimal characters or is the invalid all-zero value.
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
+        if value.len() != 32
+            || value == "00000000000000000000000000000000"
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("trace id must be a lowercase nonzero 32-character W3C trace id");
+        }
+        Ok(Self(value.to_string()))
+    }
+
+    /// Uses the current trace, or starts correlation for uninstrumented host work.
+    /// This does not configure or require an exporter.
+    #[must_use]
+    pub fn current_or_new() -> Self {
+        use opentelemetry_sdk::trace::IdGenerator as _;
+        let context = tracing::Span::current().context();
+        let span = context.span();
+        let id = if span.span_context().is_valid() {
+            span.span_context().trace_id()
+        } else {
+            opentelemetry_sdk::trace::RandomIdGenerator::default().new_trace_id()
+        };
+        Self(id.to_string())
+    }
+
+    /// Returns the safe trace identifier.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 const TRACEPARENT_HEADER: &str = "traceparent";
 const TRACESTATE_HEADER: &str = "tracestate";
 
 /// Stable message recorded for failed gRPC requests.
 pub const GRPC_REQUEST_ERROR_MESSAGE: &str = "gRPC request failed";
 
-/// Prefix for span attributes that may be retained in local trace history but
-/// must be removed before exporting spans over OTLP.
+/// Prefix for host-only span attributes that must not be exported over OTLP.
 pub const LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX: &str = "coral.local.";
-/// Local-only Universal Search text used by Query Stream.
-pub const QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE: &str = "coral.local.search.query";
-/// Span attribute containing the Coral workspace associated with an operation.
-pub const WORKSPACE_SPAN_ATTRIBUTE: &str = "workspace";
-
 /// Records a categorical failure without accepting caller-controlled message text.
 pub fn record_failure(
     span: &tracing::Span,
@@ -35,22 +78,6 @@ pub fn record_failure(
     span.record("exception.message", stable_message);
     span.set_status(OtelStatus::error(stable_message));
 }
-
-/// Boolean span attribute that opts an operation into Query Stream.
-pub const QUERY_STREAM_ENTRY_ATTRIBUTE: &str = "coral.stream.entry";
-/// Span attribute containing the semantic Query Stream operation kind.
-pub const QUERY_STREAM_KIND_ATTRIBUTE: &str = "coral.stream.kind";
-/// Span attribute containing the privacy-safe Query Stream operation name.
-pub const QUERY_STREAM_NAME_ATTRIBUTE: &str = "coral.stream.name";
-
-/// Semantic Query Stream kind for SQL and catalog query operations.
-pub const QUERY_STREAM_KIND_QUERY: &str = "query";
-/// Semantic Query Stream kind for Universal Search operations.
-pub const QUERY_STREAM_KIND_SEARCH: &str = "search";
-/// Semantic Query Stream kind for tool operations without a more specific kind.
-pub const QUERY_STREAM_KIND_TOOL: &str = "tool";
-/// Semantic Query Stream kind for another explicitly marked user-visible operation.
-pub const QUERY_STREAM_KIND_OTHER: &str = "other";
 
 struct TraceHeaders<'a> {
     traceparent: &'a str,
@@ -136,16 +163,37 @@ fn context_has_valid_span(context: &Context) -> bool {
 mod tests {
     use std::collections::HashMap;
 
-    use opentelemetry::trace::{
-        SpanId, Status as OtelStatus, TraceContextExt as _, TraceId, TracerProvider as _,
-    };
+    use opentelemetry::trace::{SpanId, Status as OtelStatus, TraceId, TracerProvider as _};
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
     use tracing_subscriber::prelude::*;
 
     use super::{
-        TRACEPARENT_HEADER, TRACESTATE_HEADER, context_from_extractor, context_from_trace_headers,
-        inject_context, record_failure, set_parent_from_trace_headers,
+        context_from_extractor, context_from_trace_headers, record_failure,
+        set_parent_from_trace_headers,
     };
+
+    /// Persisted trace IDs are decoded through this parser, so it admits only
+    /// the one spelling Coral writes.
+    #[test]
+    fn trace_id_accepts_only_lowercase_nonzero_32_hex() {
+        let valid = "0123456789abcdef0123456789abcdef";
+        assert_eq!(super::TraceId::parse(valid).unwrap().as_str(), valid);
+        for invalid in [
+            "0123456789ABCDEF0123456789ABCDEF",
+            "0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdef0",
+            "00000000000000000000000000000000",
+            "0123456789abcdef0123456789abcdeg",
+            "0123456789abcdef-123456789abcdef",
+            "",
+        ] {
+            assert_eq!(
+                super::TraceId::parse(invalid),
+                Err("trace id must be a lowercase nonzero 32-character W3C trace id"),
+                "{invalid}"
+            );
+        }
+    }
 
     #[test]
     fn record_failure_sets_shared_error_fields() {
@@ -195,35 +243,6 @@ mod tests {
     }
 
     #[test]
-    fn extracts_valid_traceparent_and_tracestate() {
-        let trace_id = "00000000000000000000000000000077";
-        let span_id = "0000000000000088";
-        let context = context_from_trace_headers(
-            Some(&format!("00-{trace_id}-{span_id}-01")),
-            Some("vendor=value"),
-        )
-        .expect("valid trace context");
-
-        let span_context = context.span().span_context().clone();
-        assert_eq!(
-            span_context.trace_id(),
-            TraceId::from_hex(trace_id).expect("trace id")
-        );
-        assert_eq!(
-            span_context.span_id(),
-            SpanId::from_hex(span_id).expect("span id")
-        );
-        assert!(span_context.is_remote());
-        assert_eq!(span_context.trace_state().header(), "vendor=value");
-    }
-
-    #[test]
-    fn rejects_missing_or_invalid_traceparent() {
-        assert!(context_from_trace_headers(None, Some("vendor=value")).is_none());
-        assert!(context_from_trace_headers(Some("not-a-traceparent"), None).is_none());
-    }
-
-    #[test]
     fn rejects_missing_or_invalid_traceparent_under_active_span() {
         let memory = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
@@ -245,37 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn extracts_from_generic_carrier() {
-        let carrier = HashMap::from([(
-            TRACEPARENT_HEADER.to_string(),
-            "00-00000000000000000000000000000077-0000000000000088-01".to_string(),
-        )]);
-
-        assert!(context_from_extractor(&carrier).is_some());
-    }
-
-    #[test]
-    fn injects_trace_context_headers() {
-        let context = context_from_trace_headers(
-            Some("00-00000000000000000000000000000077-0000000000000088-01"),
-            Some("vendor=value"),
-        )
-        .expect("valid trace context");
-        let mut carrier = HashMap::new();
-
-        inject_context(&context, &mut carrier);
-
-        assert_eq!(
-            carrier.get(TRACEPARENT_HEADER).map(String::as_str),
-            Some("00-00000000000000000000000000000077-0000000000000088-01")
-        );
-        assert_eq!(
-            carrier.get(TRACESTATE_HEADER).map(String::as_str),
-            Some("vendor=value")
-        );
-    }
-
-    #[test]
     fn sets_span_parent_from_trace_headers() {
         let memory = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
@@ -290,7 +278,7 @@ mod tests {
             set_parent_from_trace_headers(
                 &span,
                 Some("00-00000000000000000000000000000077-0000000000000088-01"),
-                None,
+                Some("vendor=value"),
             );
             let _guard = span.enter();
         });
@@ -310,6 +298,7 @@ mod tests {
             SpanId::from_hex("0000000000000088").expect("span id")
         );
         assert!(child.parent_span_is_remote);
+        assert_eq!(child.span_context.trace_state().header(), "vendor=value");
         provider.shutdown().expect("provider shutdown");
     }
 }

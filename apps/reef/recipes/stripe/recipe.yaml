@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: stripe
+display_name: Stripe
+description: Charges, customers, subscriptions, invoices, payouts and balance from Stripe.
+icons:
+  light: stripe.svg
+
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/stripe/openapi/refs/heads/master/latest/openapi.spec3.yaml
+
+authentication:
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      description: Choose a restricted key with the permissions required by your Operations.
+      documentation_url: https://docs.stripe.com/keys
+
+# The document's API, file-service and meter-event destinations are kept as declared.

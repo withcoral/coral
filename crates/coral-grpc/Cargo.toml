@@ -1,0 +1,51 @@
+[package]
+name = "coral-grpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+coral-administration.workspace = true
+axum.workspace = true
+base64.workspace = true
+coral-auth.workspace = true
+coral-catalog.workspace = true
+coral-credentials.workspace = true
+coral-functions.workspace = true
+coral-policy.workspace = true
+coral-provider.workspace = true
+coral-run.workspace = true
+coral-search.workspace = true
+coral-task.workspace = true
+coral-telemetry.workspace = true
+coral-workspace.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tonic-health.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+coral-search = { workspace = true, features = ["test-fixtures"] }
+coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-outbound.workspace = true
+coral-test-support.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+tokio-stream = { workspace = true, features = ["net"] }
+uuid.workspace = true
+url.workspace = true
+wiremock.workspace = true

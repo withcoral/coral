@@ -1,0 +1,699 @@
+//! MCP wire evidence through the upstream Adapter's public interface.
+#![allow(
+    unused_crate_dependencies,
+    reason = "integration targets inherit library dependencies"
+)]
+#![expect(clippy::indexing_slicing, reason = "assert known fixture JSON members")]
+
+use coral_catalog::AuthenticationConfiguration;
+use coral_catalog::{MaterializationOutcome, McpDiscoverySnapshot, ProviderSetupInput};
+use coral_outbound::DestinationPolicy;
+use coral_upstream::{McpResources, McpUpstream, ReadyMcpDispatch};
+use serde_json::{Value, json};
+use std::sync::Arc;
+use wiremock::matchers::{body_partial_json, method};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+fn catalog(url: &str) -> coral_catalog::PreparedProviderCatalog {
+    catalog_with_contract(url, None)
+}
+
+fn catalog_with_contract(
+    url: &str,
+    credential_contract: Option<Value>,
+) -> coral_catalog::PreparedProviderCatalog {
+    let mut snapshot = json!({
+        "protocolVersion": "2025-11-25",
+        "serverInfo": {"name": "fixture", "version": "1"},
+        "server": {"transport": "streamable_http", "url": url},
+        "capabilities": {"tools": {}, "resources": {}, "tasks": {"requests": {"tools": {"call": {}}}}},
+        "tools": [{
+            "name": "mixed", "inputSchema": {"type": "object"},
+            "outputSchema": {"type": "object", "properties": {"count": {"type": "integer"}}},
+            "execution": {"taskSupport": "optional"},
+            "annotations": {"readOnlyHint": true}
+        }]
+    });
+    if let Some(contract) = credential_contract {
+        snapshot["credentialContract"] = contract;
+    }
+    let snapshot = McpDiscoverySnapshot::parse(&snapshot.to_string()).expect("snapshot");
+    match coral_catalog::materialize(
+        DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+        &ProviderSetupInput::from(snapshot),
+        &[],
+    ) {
+        MaterializationOutcome::Ready(catalog) => catalog,
+        MaterializationOutcome::Rejected(reason) => panic!("{}", reason.message()),
+    }
+}
+
+async fn server(result: Value) -> MockServer {
+    server_with_response(
+        move |request: &Request| {
+            let request: Value = request.body_json().expect("tool call");
+            assert_eq!(request["params"]["name"], "mixed");
+            assert_eq!(request["params"]["arguments"], json!({"page": 2}));
+            assert!(request["params"].get("task").is_none());
+            assert!(request["params"].get("inputResponses").is_none());
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": request["id"], "result": result
+            }))
+        },
+        false,
+    )
+    .await
+}
+
+async fn server_with_response(
+    response: impl wiremock::Respond + 'static,
+    session: bool,
+) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "initialize"})))
+        .respond_with(move |request: &Request| {
+            let request: Value = request.body_json().expect("initialize");
+            assert_eq!(request["params"]["capabilities"], json!({}));
+            let response = ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": request["id"],
+                "result": {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}, "resources": {}},
+                           "serverInfo": {"name": "fixture", "version": "1"}}
+            }));
+            if session { response.insert_header("mcp-session-id", "private-session") } else { response }
+        })
+        .mount(&server).await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(
+            json!({"method": "notifications/initialized"}),
+        ))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "tools/call"})))
+        .respond_with(response)
+        .expect(1)
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one resource-link scenario asserts projection, provenance and explicit read"
+)]
+async fn resource_references_preserve_position_and_only_read_with_the_issuing_provider() {
+    let server = server(json!({"content": [
+        {"type": "text", "text": "before"},
+        {"type": "resource_link", "uri": "private://bucket/secret?token=hidden", "name": "report", "title": "Report", "description": "Read separately", "mimeType": "text/plain", "size": 123,
+         "annotations": {"priority": 0.7}, "_meta": {"vendor/version": 2}},
+        {"type": "resource", "resource": {"uri": "private://inline/secret", "text": "inline", "mimeType": "text/plain", "_meta": {"vendor/encoding": "utf-8"}}},
+        {"type": "text", "text": "after"}
+    ]})).await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "resources/read"})))
+        .respond_with(|request: &Request| {
+            let request: Value = request.body_json().expect("read request");
+            assert_eq!(request["params"]["uri"], "private://bucket/secret?token=hidden");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": request["id"], "result": {
+                    "contents": [{"uri": "private://bucket/secret?token=hidden", "text": "report body", "mimeType": "text/plain", "_meta": {"vendor/page": 1}}],
+                    "_meta": {"vendor/read": true}, "content": ["read extension, not a tool block"], "ttlMs": "provider extension"
+                }
+            }))
+        }).expect(1).mount(&server).await;
+    let catalog = catalog(&server.uri());
+    let tool = catalog
+        .operations()
+        .iter()
+        .find(|op| op.key().as_str() == "mixed")
+        .expect("tool");
+    let read = catalog
+        .operations()
+        .iter()
+        .find(|op| op.key().as_str() == "resources/read")
+        .expect("resource Operation");
+    let resources = Arc::new(McpResources::default());
+    let upstream = McpUpstream::new(
+        DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+    )
+    .expect("client");
+    let dispatch = ReadyMcpDispatch::plan(
+        tool,
+        &json!({"page": 2}),
+        "provider-a",
+        resources.clone(),
+        coral_value::ValueLimits::default(),
+    )
+    .expect("plan");
+    let outcome = upstream.send(dispatch).await.expect("links");
+    let content = &outcome.operation_result()["data"]["content"];
+    assert_eq!(content[0], json!({"type": "text", "text": "before"}));
+    assert_eq!(content[1]["name"], "report");
+    assert_eq!(content[1]["title"], "Report");
+    assert_eq!(content[1]["description"], "Read separately");
+    assert_eq!(content[1]["mimeType"], "text/plain");
+    assert_eq!(content[1]["size"], 123);
+    assert_eq!(content[1]["annotations"], json!({"priority": 0.7}));
+    assert_eq!(content[1]["_meta"], json!({"vendor/version": 2}));
+    assert_eq!(content[2]["resource"]["text"], "inline");
+    assert_eq!(content[3], json!({"type": "text", "text": "after"}));
+    assert!(
+        !outcome
+            .operation_result()
+            .to_string()
+            .contains("private://")
+    );
+    assert_eq!(
+        server.received_requests().await.expect("requests").len(),
+        3,
+        "links are never auto-read"
+    );
+    let args = json!({"reference": content[1]["resource"]});
+    for invalid in [
+        json!({"reference": "private://bucket/secret?token=hidden"}),
+        json!({"uri": "private://bucket/secret"}),
+        json!({"reference": {"$coralMcpResource": "forged"}}),
+    ] {
+        assert!(
+            ReadyMcpDispatch::plan(
+                read,
+                &invalid,
+                "provider-a",
+                resources.clone(),
+                coral_value::ValueLimits::default()
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        ReadyMcpDispatch::plan(
+            read,
+            &args,
+            "provider-b",
+            resources.clone(),
+            coral_value::ValueLimits::default()
+        )
+        .is_err(),
+        "same server URL does not mean same Provider"
+    );
+    assert!(
+        ReadyMcpDispatch::plan(
+            read,
+            &args,
+            "provider-a",
+            Arc::new(McpResources::default()),
+            coral_value::ValueLimits::default()
+        )
+        .is_err(),
+        "another Run has no authority to use the reference"
+    );
+    let dispatch = ReadyMcpDispatch::plan(
+        read,
+        &args,
+        "provider-a",
+        resources,
+        coral_value::ValueLimits::default(),
+    )
+    .expect("exact Provider reference");
+    let outcome = upstream.send(dispatch).await.expect("resource read");
+    assert_eq!(
+        outcome.operation_result()["data"]["contents"][0]["text"],
+        "report body"
+    );
+    assert_eq!(
+        outcome.operation_result()["data"]["contents"][0]["_meta"],
+        json!({"vendor/page": 1})
+    );
+    assert_eq!(
+        outcome.operation_result()["metadata"],
+        json!({"kind": "mcp", "_meta": {"vendor/read": true}})
+    );
+    assert_eq!(
+        outcome.operation_result()["data"]["content"],
+        json!(["read extension, not a tool block"])
+    );
+    assert_eq!(
+        outcome.operation_result()["data"]["ttlMs"],
+        "provider extension"
+    );
+    assert!(
+        !outcome
+            .operation_result()
+            .to_string()
+            .contains("private://")
+    );
+    assert_eq!(server.received_requests().await.expect("requests").len(), 6);
+}
+
+async fn call_once(
+    server: &MockServer,
+    limit: usize,
+) -> Result<coral_upstream::McpOutcome, coral_upstream::Error> {
+    let catalog = catalog(&server.uri());
+    let operation = catalog
+        .operations()
+        .iter()
+        .find(|op| op.key().as_str() == "mixed")
+        .expect("tool");
+    let dispatch = ReadyMcpDispatch::plan(
+        operation,
+        &json!({"page": 2}),
+        "provider-a",
+        Arc::new(McpResources::default()),
+        coral_value::ValueLimits::new(8 << 20, 16 << 20, limit, 64 << 20).expect("limits"),
+    )
+    .expect("plan");
+    McpUpstream::new(
+        DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+    )
+    .expect("client")
+    .send(dispatch)
+    .await
+}
+
+#[tokio::test]
+async fn request_associated_sse_preserves_an_empty_complete_result_and_absent_fields() {
+    let server = server_with_response(
+        |request: &Request| {
+            let request: Value = request.body_json().expect("call");
+            let result = json!({"jsonrpc": "2.0", "id": request["id"], "result": {"content": []}});
+            ResponseTemplate::new(200).set_body_raw(
+                format!(": heartbeat\r\n\r\nevent: message\r\ndata: {result}\r\n\r\n"),
+                "text/event-stream",
+            )
+        },
+        true,
+    )
+    .await;
+    let outcome = call_once(&server, 4096)
+        .await
+        .expect("SSE complete response");
+    assert_eq!(
+        outcome.operation_result(),
+        &json!({"data": {"content": []}, "metadata": {"kind": "mcp"}})
+    );
+    server.verify().await;
+    let requests = server.received_requests().await.expect("requests");
+    assert!(
+        requests.iter().all(|request| request.method != "GET"),
+        "no unsolicited resource stream"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request
+                .body_json::<Value>()
+                .is_ok_and(|value| value["method"] == "tools/call"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn mcp_request_limit_includes_the_wire_envelope_before_dispatch() {
+    let catalog = catalog("http://127.0.0.1:1/mcp");
+    let operation = catalog
+        .operations()
+        .iter()
+        .find(|op| op.key().as_str() == "mixed")
+        .expect("Operation");
+    let arguments = json!({"text":"x".repeat(950)});
+    assert!(arguments.to_string().len() < 1024);
+    assert!(matches!(
+        ReadyMcpDispatch::plan(
+            operation,
+            &arguments,
+            "provider-a",
+            Arc::new(McpResources::default()),
+            coral_value::ValueLimits::new(512, 2048, 1024, 4096).expect("limits")
+        ),
+        Err(coral_upstream::Error::InputTooLarge)
+    ));
+}
+
+#[tokio::test]
+async fn mcp_request_at_the_wire_byte_limit_is_sent_once() {
+    let server = server_with_response(
+        |request: &Request| {
+            let request: Value = request.body_json().expect("request");
+            ResponseTemplate::new(200).set_body_json(
+                json!({"jsonrpc":"2.0", "id":request["id"], "result":{"content":[]}}),
+            )
+        },
+        true,
+    )
+    .await;
+    let catalog = catalog(&server.uri());
+    let operation = catalog
+        .operations()
+        .iter()
+        .find(|op| op.key().as_str() == "mixed")
+        .expect("Operation");
+    let empty_wire = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mixed","arguments":{"text":""},"_meta":{"progressToken":0}}}"#;
+    let arguments = json!({"text":"x".repeat(1024 - empty_wire.len())});
+    let limits = coral_value::ValueLimits::new(512, 2048, 1024, 4096).expect("limits");
+    let dispatch = ReadyMcpDispatch::plan(
+        operation,
+        &arguments,
+        "provider-a",
+        Arc::new(McpResources::default()),
+        limits,
+    )
+    .expect("exact boundary accepted");
+    McpUpstream::new(
+        DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+    )
+    .expect("client")
+    .send(dispatch)
+    .await
+    .expect("complete outcome");
+    let requests = server.received_requests().await.expect("requests");
+    let calls = requests
+        .iter()
+        .filter(|request| {
+            request
+                .body_json::<Value>()
+                .is_ok_and(|value| value["method"] == "tools/call")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls.first().expect("call").body.len(), 1024);
+    let oversized = json!({"text":"x".repeat(1025 - empty_wire.len())});
+    assert!(matches!(
+        ReadyMcpDispatch::plan(
+            operation,
+            &oversized,
+            "provider-a",
+            Arc::new(McpResources::default()),
+            limits
+        ),
+        Err(coral_upstream::Error::InputTooLarge)
+    ));
+}
+
+#[tokio::test]
+async fn oversized_json_and_sse_results_keep_the_size_failure_category() {
+    for media in ["application/json", "text/event-stream"] {
+        let server = server_with_response(
+            ResponseTemplate::new(200).set_body_raw("x".repeat(5000), media),
+            true,
+        )
+        .await;
+        assert!(matches!(
+            call_once(&server, 4096).await,
+            Err(coral_upstream::Error::ResultTooLarge)
+        ));
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn expired_sessions_protocol_errors_and_oversized_results_never_repeat_the_call() {
+    for response in [
+        ResponseTemplate::new(404),
+        ResponseTemplate::new(503),
+        ResponseTemplate::new(200).set_body_raw("not JSON", "application/json"),
+        ResponseTemplate::new(200).set_body_raw("x".repeat(5000), "application/json"),
+        ResponseTemplate::new(200)
+            .set_body_raw(format!("data: {}", "x".repeat(5000)), "text/event-stream"),
+    ] {
+        let server = server_with_response(response, true).await;
+        call_once(&server, 4096)
+            .await
+            .expect_err("no complete result");
+        server.verify().await;
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request
+                    .body_json::<Value>()
+                    .is_ok_and(|value| value["method"] == "initialize"))
+                .count(),
+            1,
+            "expired session must not cause reinitialization and replay"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request
+                    .body_json::<Value>()
+                    .is_ok_and(|value| value["method"] == "tools/call"))
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn tool_extension_fields_do_not_change_the_result_method() {
+    let expected = json!({"content": [], "isError": true, "tools": [], "resources": [], "contents": ["extra"], "resultType": "provider extension"});
+    for sse in [false, true] {
+        let response = expected.clone();
+        let server = server_with_response(
+            move |request: &Request| {
+                let request: Value = request.body_json().expect("call");
+                let envelope = json!({"jsonrpc": "2.0", "id": request["id"], "result": response});
+                if sse {
+                    ResponseTemplate::new(200)
+                        .set_body_raw(format!("data: {envelope}\n\n"), "text/event-stream")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(envelope)
+                }
+            },
+            false,
+        )
+        .await;
+        let outcome = call_once(&server, 4096)
+            .await
+            .expect("extensions cannot reclassify a complete tool result");
+        assert_eq!(
+            outcome.operation_result(),
+            &json!({"data": expected, "metadata": {"kind": "mcp"}})
+        );
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn incomplete_tool_response_is_not_a_complete_outcome() {
+    let server = server(json!({"structuredContent": {"only": "partial"}})).await;
+    call_once(&server, 16 * 1024 * 1024)
+        .await
+        .expect_err("a missing required content field cannot be silently manufactured");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn complete_tool_outcomes_preserve_content_structured_content_and_error_presence() {
+    for is_error in [None, Some(false), Some(true)] {
+        let mut result = json!({
+            "content": [
+                {"type": "text", "text": "before", "annotations": {"audience": ["assistant"], "priority": 0.7}, "_meta": {"vendor/part": 1}},
+                {"type": "image", "data": "AAE=", "mimeType": "image/png"},
+                {"type": "audio", "data": "AgM=", "mimeType": "audio/wav"},
+                {"type": "text", "text": "after"}
+            ],
+            "structuredContent": {"count": "not the declared integer", "cursor": "next-page"},
+            "_meta": {"vendor/request": "r-123"}
+        });
+        if let Some(value) = is_error {
+            result["isError"] = json!(value);
+        }
+        let server = server(result.clone()).await;
+        let outcome = call_once(&server, 16 * 1024 * 1024)
+            .await
+            .expect("complete outcome, even isError");
+        let meta = result
+            .as_object_mut()
+            .expect("result")
+            .remove("_meta")
+            .expect("metadata");
+        assert_eq!(
+            outcome.operation_result(),
+            &json!({"data": result, "metadata": {"kind": "mcp", "_meta": meta}})
+        );
+        server.verify().await;
+        // Count JSON-RPC posts only: a session close from an earlier test can land
+        // on a reused loopback port before this server's handshake.
+        let posts = server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count();
+        assert_eq!(
+            posts, 3,
+            "handshake and one call only; no discovery, pagination or task requests"
+        );
+    }
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture proves header injection, missing-credential refusal and contract rejection"
+)]
+async fn bearer_contract_sends_the_host_credential_and_credential_free_dispatch_refuses_one() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer dispatch-canary",
+        ))
+        .and(body_partial_json(json!({"method": "initialize"})))
+        .respond_with(|request: &Request| {
+            let request: Value = request.body_json().expect("initialize");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": request["id"],
+                "result": {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                           "serverInfo": {"name": "fixture", "version": "1"}}
+            }))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer dispatch-canary",
+        ))
+        .and(body_partial_json(
+            json!({"method": "notifications/initialized"}),
+        ))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer dispatch-canary",
+        ))
+        .and(body_partial_json(json!({"method": "tools/call"})))
+        .respond_with(|request: &Request| {
+            let request: Value = request.body_json().expect("call");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": request["id"], "result": {"content": []}
+            }))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).insert_header("www-authenticate", "Bearer"))
+        .mount(&server)
+        .await;
+    let url = format!("{}/mcp", server.uri());
+    let authenticated = catalog_with_contract(
+        &url,
+        Some(json!(coral_catalog::ProviderCredentialContract::from(
+            AuthenticationConfiguration::Bearer
+        ))),
+    );
+    let operation = authenticated
+        .operations()
+        .iter()
+        .find(|operation| operation.relative_path() == "mixed")
+        .expect("tool");
+    let resources = Arc::new(McpResources::default());
+    let mut ready = ReadyMcpDispatch::plan(
+        operation,
+        &json!({"page": 2}),
+        "provider",
+        resources.clone(),
+        coral_value::ValueLimits::default(),
+    )
+    .expect("plan");
+    assert!(matches!(
+        McpUpstream::new(
+            DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+        )
+        .unwrap()
+        .send(
+            ReadyMcpDispatch::plan(
+                operation,
+                &json!({"page": 2}),
+                "provider",
+                resources.clone(),
+                coral_value::ValueLimits::default()
+            )
+            .unwrap()
+        )
+        .await,
+        Err(coral_upstream::Error::CredentialRequired)
+    ));
+    ready
+        .authorize(&coral_credentials::CredentialValues::token(
+            coral_credentials::Secret::new("dispatch-canary".into()).unwrap(),
+        ))
+        .expect("authorize bearer dispatch");
+    let outcome = McpUpstream::new(
+        DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+    )
+    .unwrap()
+    .send(ready)
+    .await
+    .expect("authenticated call");
+    assert_eq!(outcome.operation_result()["data"]["content"], json!([]));
+
+    let credential_free = catalog(&url);
+    let operation = credential_free
+        .operations()
+        .iter()
+        .find(|operation| operation.relative_path() == "mixed")
+        .expect("tool");
+    let mut ready = ReadyMcpDispatch::plan(
+        operation,
+        &json!({"page": 2}),
+        "provider",
+        resources,
+        coral_value::ValueLimits::default(),
+    )
+    .expect("plan");
+    assert!(matches!(
+        ready.authorize(&coral_credentials::CredentialValues::token(
+            coral_credentials::Secret::new("dispatch-canary".into()).unwrap()
+        )),
+        Err(coral_upstream::Error::CredentialRequired)
+    ));
+}
+
+#[tokio::test]
+async fn mcp_operations_send_confirmed_service_headers_without_credentials() {
+    let server = server(json!({"content": []})).await;
+    let snapshot = McpDiscoverySnapshot::parse(&json!({
+        "protocolVersion": "2025-11-25", "serverInfo": {"name": "fixture", "version": "1"},
+        "server": {"transport": "streamable_http", "url": server.uri()},
+        "capabilities": {"tools": {}}, "tools": [{"name": "mixed", "inputSchema": {"type": "object"}}]
+    }).to_string()).unwrap().restore_configuration(&json!({
+        "authentication": {"method": "none"}, "display_name": "Fixture", "servers": {},
+        "request_headers": {"x-tenant": "example"}
+    }).to_string(), 1).unwrap();
+    let policy =
+        DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps);
+    let MaterializationOutcome::Ready(catalog) =
+        coral_catalog::materialize(policy, &snapshot.into(), &[])
+    else {
+        panic!("catalog");
+    };
+    let dispatch = ReadyMcpDispatch::plan(
+        catalog.operations().first().unwrap(),
+        &json!({"page": 2}),
+        "provider-a",
+        Arc::new(McpResources::default()),
+        coral_value::ValueLimits::default(),
+    )
+    .unwrap();
+    McpUpstream::new(policy)
+        .unwrap()
+        .send(dispatch)
+        .await
+        .unwrap();
+    for request in server.received_requests().await.unwrap() {
+        assert_eq!(request.headers.get("x-tenant").unwrap(), "example");
+        assert!(!request.headers.contains_key("authorization"));
+    }
+}

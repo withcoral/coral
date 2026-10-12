@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://dev.frontapp.com/docs/mcp-server
+# Official brand asset: https://front.com/apple-icon.png
+# Front requires an owner-configured confidential client and does not support dynamic registration. The OAuth
+# app settings grant read/write/send. Request feature:mcp to authorize the MCP feature. Resource metadata
+# advertises no scopes.
+schema_version: 1
+id: front_mcp
+service: front
+display_name: Front
+description: Conversations, messages, drafts and inbox actions from Front.
+source:
+  mcp:
+    url: https://mcp.frontapp.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Front
+      documentation_url: https://dev.frontapp.com/docs/mcp-server
+      flow: authorization_code
+      client:
+        authentication: client_secret_post
+      scopes:
+        - feature:mcp
+      description: Create a Front OAuth app. Enable read, write and send permissions. Configure its client credentials.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

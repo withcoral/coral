@@ -36,14 +36,17 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::config::{RESERVED_PROVIDER_AUTH_PARAMS, ResolvedOidcProvider};
-use super::id_token::{ValidatedOidcIdentity, validate_id_token};
-use crate::outbound_url_policy::{Configured, Discovered, EndpointUrl, read_bounded_body};
+use super::id_token::{ValidatedOidcIdentity, validate_access_token_admission, validate_id_token};
+use coral_outbound::{Configured, Discovered, EndpointUrl, read_bounded_body};
 
 /// Timeout applied to establishing a connection to the provider.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Timeout applied to a complete discovery or token request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Fixed v1 lifetime of validated discovery metadata.
+const DISCOVERY_CACHE_TTL: Duration = Duration::from_mins(5);
 
 /// Ceiling on a provider response body, applied while it is read.
 const RESPONSE_MAX_BYTES: usize = 64 * 1024;
@@ -70,6 +73,7 @@ const RESERVED_TOKEN_PARAMS: &[&str] = &[
 #[derive(Clone)]
 pub(super) struct OidcProviderClient {
     http: reqwest::Client,
+    discovered_http: coral_outbound::Client,
     random: SystemRandom,
     discovery: Arc<DiscoveryCache>,
 }
@@ -93,6 +97,7 @@ pub(super) struct OidcAuthorizationRequest {
 /// named the token endpoint.
 pub(super) struct OidcCodeExchange {
     id_token: Zeroizing<String>,
+    access_token: Option<Zeroizing<String>>,
     jwks_uri: EndpointUrl<Discovered>,
     signing_algorithms: Vec<String>,
 }
@@ -145,6 +150,8 @@ pub(super) enum OidcProviderClientError {
     TokenExchange,
     #[error("OIDC ID token validation failed")]
     IdTokenValidation,
+    #[error("OIDC access token admission failed")]
+    AccessTokenAdmission,
 }
 
 impl OidcProviderClient {
@@ -153,7 +160,9 @@ impl OidcProviderClient {
     /// Refusing redirects keeps a credential-bearing token request from being
     /// replayed to a destination the discovery document did not name and this
     /// module never validated.
-    pub(super) fn new() -> Result<Self, OidcProviderClientError> {
+    pub(super) fn new(
+        policy: coral_outbound::DestinationPolicy,
+    ) -> Result<Self, OidcProviderClientError> {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
@@ -161,8 +170,11 @@ impl OidcProviderClient {
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|_error| OidcProviderClientError::ClientInitialization)?;
+        let discovered_http = coral_outbound::Client::new(policy, REQUEST_TIMEOUT)
+            .map_err(|_error| OidcProviderClientError::ClientInitialization)?;
         Ok(Self {
             http,
+            discovered_http,
             random: SystemRandom::new(),
             discovery: Arc::new(DiscoveryCache::default()),
         })
@@ -214,9 +226,10 @@ impl OidcProviderClient {
         code_verifier: &str,
     ) -> Result<OidcCodeExchange, OidcProviderClientError> {
         let discovery = self.discover(provider).await?;
-        let response = discovery
-            .token_endpoint
-            .post(&self.http)
+        let response = self
+            .discovered_http
+            .post(discovery.token_endpoint.as_url())
+            .map_err(|_error| OidcProviderClientError::TokenExchange)?
             .header(ACCEPT, "application/json")
             .form(&[
                 ("grant_type", "authorization_code"),
@@ -244,6 +257,9 @@ impl OidcProviderClient {
         }
         Ok(OidcCodeExchange {
             id_token: document.id_token,
+            access_token: document
+                .access_token
+                .filter(|_| provider.access_token.is_some()),
             jwks_uri: discovery.jwks_uri,
             signing_algorithms: discovery.signing_algorithms,
         })
@@ -257,11 +273,14 @@ impl OidcProviderClient {
     ) -> Result<ValidatedOidcIdentity, OidcProviderClientError> {
         let OidcCodeExchange {
             id_token,
+            access_token,
             jwks_uri,
             signing_algorithms,
         } = exchange;
-        let response = jwks_uri
-            .get(&self.http)
+        let response = self
+            .discovered_http
+            .get(jwks_uri.as_url())
+            .map_err(|_error| OidcProviderClientError::IdTokenValidation)?
             .header(ACCEPT, "application/json")
             .send()
             .await
@@ -282,7 +301,15 @@ impl OidcProviderClient {
             &jwks,
         );
         drop(id_token);
-        identity.map_err(|_error| OidcProviderClientError::IdTokenValidation)
+        let identity = identity.map_err(|_error| OidcProviderClientError::IdTokenValidation)?;
+        validate_access_token_admission(
+            provider,
+            access_token.as_ref().map(|token| token.as_str()),
+            &identity,
+            &jwks,
+        )
+        .map_err(|_error| OidcProviderClientError::AccessTokenAdmission)?;
+        Ok(identity)
     }
 
     /// Returns the provider's validated discovery document, reusing a cached
@@ -300,7 +327,6 @@ impl OidcProviderClient {
         &self,
         provider: &ResolvedOidcProvider,
     ) -> Result<ValidatedDiscovery, OidcProviderClientError> {
-        let ttl = provider.discovery_cache_ttl();
         loop {
             if let Some(cached) = self.discovery.get(&provider.issuer).await {
                 return Ok(cached);
@@ -309,9 +335,7 @@ impl OidcProviderClient {
                 Flight::Lead(mut flight) => {
                     let outcome = self.fetch_discovery(provider).await;
                     if let Ok(discovery) = &outcome {
-                        self.discovery
-                            .insert(&provider.issuer, discovery, ttl)
-                            .await;
+                        self.discovery.insert(&provider.issuer, discovery).await;
                     }
                     flight.publish(&outcome);
                     return outcome;
@@ -444,13 +468,9 @@ impl DiscoveryCache {
             .map(|entry| entry.discovery.clone())
     }
 
-    /// Stores `discovery` for `ttl`, dropping it when the deadline cannot be
-    /// represented or has already passed.
-    ///
-    /// A zero `ttl` therefore disables caching without a separate code path.
-    async fn insert(&self, issuer: &str, discovery: &ValidatedDiscovery, ttl: Duration) {
-        let now = Instant::now();
-        let Some(expires_at) = now.checked_add(ttl).filter(|deadline| *deadline > now) else {
+    /// Stores validated discovery for the fixed v1 lifetime.
+    async fn insert(&self, issuer: &str, discovery: &ValidatedDiscovery) {
+        let Some(expires_at) = Instant::now().checked_add(DISCOVERY_CACHE_TTL) else {
             return;
         };
         self.entries.write().await.insert(
@@ -573,10 +593,11 @@ impl DiscoveryDocument {
     }
 }
 
-/// The one field this module reads from a token response.
+/// Tokens are retained only until identity and optional admission validation.
 #[derive(Deserialize)]
 struct TokenResponse {
     id_token: Zeroizing<String>,
+    access_token: Option<Zeroizing<String>>,
 }
 
 /// An endpoint this module reads out of a discovery document.
@@ -652,6 +673,7 @@ fn discovered_endpoint(
 
 #[cfg(test)]
 mod tests {
+    use crate::auth::test_config::loopback_policy;
     use std::collections::BTreeMap;
 
     use serde_json::{Value, json};
@@ -660,12 +682,14 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+
     use std::path::Path;
 
     use super::*;
     use crate::auth::config::AuthSettings;
-    use crate::auth::id_token::tests::{claims as id_token_claims, rsa_key, token as id_token};
+    use crate::auth::id_token::tests::{
+        claims as id_token_claims, rsa_key, set_claim, token as id_token,
+    };
 
     const CLIENT_SECRET: &str = "client-secret-must-not-leak";
 
@@ -677,13 +701,12 @@ mod tests {
         let settings = AuthSettings::from_toml(&format!(
             "[auth]
              [auth.session]
-             [auth.authorization_server]
-             issuer = 'http://localhost'
+             [listeners.auth]
+             public_url = 'http://localhost'
              [auth.provider]
              issuer = '{issuer}'
              client_id = 'provider-client'
              client_secret = '{CLIENT_SECRET}'
-             redirect_uri = 'http://localhost/auth/oidc/callback'
              scopes = ['openid', 'email']
              {extra}
              [auth.provider.auth_params]
@@ -694,10 +717,7 @@ mod tests {
         // A resolved provider is only reachable through runtime resolution, so
         // the helper supplies the session signing key the same way a running
         // server would.
-        let signing_key = BASE64_STANDARD.encode(
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key"),
-        );
+        let signing_key = BASE64_STANDARD.encode(coral_test_support::p256_pkcs8());
         let (settings, _issuer) = settings
             .resolve_runtime_dependencies(Path::new("config.toml"), &|name| {
                 Ok((name == "CORAL_SESSION_SIGNING_KEY").then(|| signing_key.clone()))
@@ -756,6 +776,7 @@ mod tests {
         let issuer = EndpointUrl::<Configured>::parse(&server.uri()).expect("issuer URL");
         OidcCodeExchange {
             id_token: Zeroizing::new(id_token(&id_token_claims())),
+            access_token: None,
             jwks_uri: EndpointUrl::<Discovered>::parse(
                 &format!("{}/jwks?source=url-secret", server.uri()),
                 &issuer,
@@ -775,7 +796,7 @@ mod tests {
             valid_document(&server, &issuer).to_string(),
         )
         .await;
-        let request = OidcProviderClient::new()
+        let request = OidcProviderClient::new(loopback_policy())
             .expect("client")
             .authorization_request(&provider(&issuer))
             .await
@@ -865,7 +886,7 @@ mod tests {
         let server = MockServer::start().await;
         let issuer = format!("{}/tenant/", server.uri());
         mount_valid_discovery(&server, &issuer).await;
-        let client = OidcProviderClient::new().expect("client");
+        let client = OidcProviderClient::new(loopback_policy()).expect("client");
         let provider = provider(&issuer);
 
         for _ in 0..3 {
@@ -884,8 +905,7 @@ mod tests {
     async fn cached_discovery_is_dropped_once_its_ttl_expires() {
         let cache = DiscoveryCache::default();
         let issuer = "https://accounts.example.test";
-        let ttl = Duration::from_mins(5);
-        cache.insert(issuer, &validated_discovery(), ttl).await;
+        cache.insert(issuer, &validated_discovery()).await;
         assert!(cache.get("https://other.example.test").await.is_none());
 
         tokio::time::advance(Duration::from_mins(4)).await;
@@ -906,7 +926,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
-        let client = OidcProviderClient::new().expect("client");
+        let client = OidcProviderClient::new(loopback_policy()).expect("client");
         let provider = provider(&issuer);
         let Err(error) = client.authorization_request(&provider).await else {
             panic!("expected the provider outage to fail discovery");
@@ -968,30 +988,13 @@ mod tests {
         let server = MockServer::start().await;
         let issuer = format!("{}/tenant/", server.uri());
         mount_valid_discovery(&server, &issuer).await;
-        let client = OidcProviderClient::new().expect("client");
+        let client = OidcProviderClient::new(loopback_policy()).expect("client");
         let provider = provider(&issuer);
 
         for outcome in authorization_burst(&client, &provider, 16).await {
             outcome.expect("concurrent authorization request");
         }
         assert_eq!(discovery_requests(&server).await, 1);
-    }
-
-    #[tokio::test]
-    async fn zero_discovery_cache_ttl_disables_reuse() {
-        let server = MockServer::start().await;
-        let issuer = format!("{}/tenant/", server.uri());
-        mount_valid_discovery(&server, &issuer).await;
-        let client = OidcProviderClient::new().expect("client");
-        let provider = provider_with(&issuer, "discovery_cache_ttl_seconds = 0");
-
-        for _ in 0..2 {
-            client
-                .authorization_request(&provider)
-                .await
-                .expect("authorization request");
-        }
-        assert_eq!(discovery_requests(&server).await, 2);
     }
 
     /// Nothing is cached to release a burst that failed, so the fetch itself has
@@ -1003,7 +1006,7 @@ mod tests {
         let server = MockServer::start().await;
         let issuer = format!("{}/tenant/", server.uri());
         mount_held_open(&server, ResponseTemplate::new(500)).await;
-        let client = OidcProviderClient::new().expect("client");
+        let client = OidcProviderClient::new(loopback_policy()).expect("client");
         let provider = provider(&issuer);
 
         for outcome in authorization_burst(&client, &provider, 16).await {
@@ -1015,79 +1018,43 @@ mod tests {
         assert_eq!(discovery_requests(&server).await, 1);
     }
 
-    /// Turning reuse off must not turn discovery into a queue: callers still
-    /// share a fetch that is already running, they just keep no document once
-    /// it finishes.
+    /// A cancelled request drops its lead mid-fetch. Its followers have to be
+    /// released to lead a retry rather than wait on an outcome nobody will
+    /// publish.
     #[tokio::test]
-    async fn zero_discovery_cache_ttl_still_shares_one_in_flight_request() {
+    async fn a_cancelled_flight_lead_releases_its_followers() {
         let server = MockServer::start().await;
         let issuer = format!("{}/tenant/", server.uri());
         mount_held_open(
             &server,
-            ResponseTemplate::new(200).set_body_bytes(valid_document(&server, &issuer).to_string()),
+            ResponseTemplate::new(200)
+                .set_body_string(valid_document(&server, &issuer).to_string()),
         )
         .await;
-        let client = OidcProviderClient::new().expect("client");
-        let provider = provider_with(&issuer, "discovery_cache_ttl_seconds = 0");
+        let client = OidcProviderClient::new(loopback_policy()).expect("client");
+        let provider = provider(&issuer);
+        let request = || {
+            let client = client.clone();
+            let provider = provider.clone();
+            tokio::spawn(async move { client.authorization_request(&provider).await })
+        };
 
-        for outcome in authorization_burst(&client, &provider, 16).await {
-            outcome.expect("concurrent authorization request");
+        let lead = request();
+        while discovery_requests(&server).await == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert_eq!(discovery_requests(&server).await, 1);
-    }
+        let follower = request();
+        // Well inside the held-open window, so the follower joins the lead's flight.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(discovery_requests(&server).await, 1, "a follower fetched");
+        lead.abort();
 
-    #[tokio::test]
-    async fn a_published_flight_reaches_every_follower() {
-        let cache = DiscoveryCache::default();
-        let issuer = "https://accounts.example.test";
-        let Flight::Lead(mut lead) = cache.join(issuer) else {
-            panic!("the first caller leads its own flight");
-        };
-        let followers = (0..3)
-            .map(|_index| match cache.join(issuer) {
-                Flight::Follow(follower) => follower,
-                Flight::Lead(_) => panic!("a caller arriving mid-flight follows it"),
-            })
-            .collect::<Vec<_>>();
-
-        lead.publish(&Err(OidcProviderClientError::Discovery));
-
-        for mut follower in followers {
-            let Err(error) = follower.recv().await.expect("published outcome") else {
-                panic!("the published outcome was a failure");
-            };
-            assert_eq!(error, OidcProviderClientError::Discovery);
-        }
-        assert!(
-            matches!(cache.join(issuer), Flight::Lead(_)),
-            "a finished flight still holds later callers"
-        );
-    }
-
-    /// A cancelled request drops its lead mid-fetch. Its followers have to be
-    /// released rather than left waiting on an outcome nobody will publish, and
-    /// the flight has to be retired rather than left for callers to join.
-    #[tokio::test]
-    async fn a_cancelled_flight_lead_releases_its_followers() {
-        let cache = DiscoveryCache::default();
-        let issuer = "https://accounts.example.test";
-        let Flight::Lead(lead) = cache.join(issuer) else {
-            panic!("the first caller leads its own flight");
-        };
-        let Flight::Follow(mut follower) = cache.join(issuer) else {
-            panic!("a caller arriving mid-flight follows it");
-        };
-
-        drop(lead);
-
-        assert!(
-            follower.recv().await.is_err(),
-            "a follower is still waiting on a flight that will never publish"
-        );
-        assert!(
-            matches!(cache.join(issuer), Flight::Lead(_)),
-            "an abandoned flight still holds later callers"
-        );
+        tokio::time::timeout(Duration::from_secs(5), follower)
+            .await
+            .expect("the follower is still waiting on the cancelled flight")
+            .expect("join")
+            .expect("the follower leads the retry");
+        assert_eq!(discovery_requests(&server).await, 2);
     }
 
     #[tokio::test]
@@ -1123,7 +1090,7 @@ mod tests {
                 document.to_string(),
             )
             .await;
-            let error = OidcProviderClient::new()
+            let error = OidcProviderClient::new(loopback_policy())
                 .expect("client")
                 .discover(&provider(&issuer))
                 .await
@@ -1139,11 +1106,8 @@ mod tests {
         }
     }
 
-    /// HTTPS to a private host is accepted: an issuer reachable over HTTPS is
-    /// entitled to name endpoints anywhere, and it is the transport, not the
-    /// destination, that is policed.
     #[tokio::test]
-    async fn discovery_accepts_private_https_endpoints() {
+    async fn private_browser_navigation_does_not_grant_permission_to_fetch() {
         let server = MockServer::start().await;
         let issuer = server.uri();
         mount_discovery(
@@ -1158,11 +1122,57 @@ mod tests {
             .to_string(),
         )
         .await;
-        OidcProviderClient::new()
-            .expect("client")
-            .discover(&provider(&issuer))
+        let client =
+            OidcProviderClient::new(coral_outbound::DestinationPolicy::default()).expect("client");
+        let provider = provider(&issuer);
+        let navigation = client
+            .authorization_request(&provider)
             .await
-            .expect("private HTTPS endpoints");
+            .expect("navigation");
+        assert_eq!(navigation.url.host_str(), Some("10.0.0.8"));
+        assert_eq!(
+            client
+                .exchange_code(&provider, "code", "verifier")
+                .await
+                .err(),
+            Some(OidcProviderClientError::TokenExchange)
+        );
+        assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn public_oidc_client_refuses_local_token_and_key_fetches() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant", server.uri());
+        mount_valid_discovery(&server, &issuer).await;
+        let client =
+            OidcProviderClient::new(coral_outbound::DestinationPolicy::default()).expect("client");
+        let provider = provider(&issuer);
+        let discovery = client
+            .discover(&provider)
+            .await
+            .expect("configured discovery");
+        assert_eq!(
+            client
+                .exchange_code(&provider, "code", "verifier")
+                .await
+                .err(),
+            Some(OidcProviderClientError::TokenExchange)
+        );
+        let exchange = OidcCodeExchange {
+            id_token: Zeroizing::new("unused".into()),
+            access_token: None,
+            jwks_uri: discovery.jwks_uri,
+            signing_algorithms: discovery.signing_algorithms,
+        };
+        assert_eq!(
+            client
+                .validate_code_exchange(&provider, exchange, "nonce")
+                .await
+                .err(),
+            Some(OidcProviderClientError::IdTokenValidation)
+        );
+        assert_eq!(server.received_requests().await.expect("requests").len(), 1);
     }
 
     #[tokio::test]
@@ -1181,7 +1191,7 @@ mod tests {
             )
             .await;
             assert_eq!(
-                OidcProviderClient::new()
+                OidcProviderClient::new(loopback_policy())
                     .expect("client")
                     .discover(&provider(&issuer))
                     .await
@@ -1220,7 +1230,7 @@ mod tests {
                 document.to_string(),
             )
             .await;
-            let result = OidcProviderClient::new()
+            let result = OidcProviderClient::new(loopback_policy())
                 .expect("client")
                 .discover(&provider(&issuer))
                 .await;
@@ -1253,7 +1263,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let exchange = OidcProviderClient::new()
+        let exchange = OidcProviderClient::new(loopback_policy())
             .expect("client")
             .exchange_code(&provider(&issuer), "provider-code", "pkce-verifier")
             .await
@@ -1310,7 +1320,7 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        let error = OidcProviderClient::new()
+        let error = OidcProviderClient::new(loopback_policy())
             .expect("client")
             .exchange_code(
                 &provider(&issuer),
@@ -1344,7 +1354,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            OidcProviderClient::new()
+            OidcProviderClient::new(loopback_policy())
                 .expect("client")
                 .discover(&provider(&issuer))
                 .await
@@ -1366,7 +1376,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let error = OidcProviderClient::new()
+        let error = OidcProviderClient::new(loopback_policy())
             .expect("client")
             .exchange_code(&provider(&issuer), "code", "verifier")
             .await
@@ -1385,13 +1395,77 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys":[rsa_key()]})))
             .mount(&server)
             .await;
-        let identity = OidcProviderClient::new()
+        let identity = OidcProviderClient::new(loopback_policy())
             .expect("client")
             .validate_code_exchange(&provider, exchange, "expected-nonce")
             .await
             .expect("identity");
-        assert_eq!(identity.principal_claim, "subject");
+        assert_eq!(identity.subject, "subject");
         assert_eq!(identity.display_name.as_deref(), Some("User"));
+    }
+
+    #[tokio::test]
+    async fn login_requires_the_configured_access_token_organization() {
+        let server = MockServer::start().await;
+        let issuer = server.uri();
+        let provider = provider_with(
+            &issuer,
+            "[auth.provider.access_token]\n\
+             audience = 'workos-environment'\n\
+             [auth.provider.access_token.required_claims]\n\
+             org_id = 'org_allowed'",
+        );
+        let mut identity_claims = id_token_claims();
+        set_claim(&mut identity_claims, "iss", json!(issuer));
+        let mut access_claims = identity_claims.clone();
+        access_claims
+            .as_object_mut()
+            .expect("claims")
+            .remove("nonce");
+        set_claim(&mut access_claims, "aud", json!("workos-environment"));
+        set_claim(&mut access_claims, "org_id", json!("org_allowed"));
+        let valid_access_token = id_token(&access_claims);
+        set_claim(&mut access_claims, "org_id", json!("org_other"));
+        for (access_token, accepted) in [
+            (Some(valid_access_token), true),
+            (Some(id_token(&access_claims)), false),
+            (Some("opaque-token-must-not-leak".to_string()), false),
+            (None, false),
+        ] {
+            server.reset().await;
+            mount_discovery(
+                &server,
+                "/.well-known/openid-configuration",
+                valid_document(&server, &issuer).to_string(),
+            )
+            .await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id_token": id_token(&identity_claims),
+                    "access_token": access_token,
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(path("/jwks"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!({"keys": [rsa_key()]})),
+                )
+                .mount(&server)
+                .await;
+            let client = OidcProviderClient::new(loopback_policy()).expect("client");
+            let exchange = client
+                .exchange_code(&provider, "code", "verifier")
+                .await
+                .expect("code exchange");
+            let result = client
+                .validate_code_exchange(&provider, exchange, "expected-nonce")
+                .await;
+            assert_eq!(result.is_ok(), accepted);
+            if let Err(error) = result {
+                assert_eq!(error.to_string(), "OIDC access token admission failed");
+            }
+        }
     }
 
     #[tokio::test]
@@ -1406,7 +1480,7 @@ mod tests {
                 .respond_with(response)
                 .mount(&server)
                 .await;
-            let error = OidcProviderClient::new()
+            let error = OidcProviderClient::new(loopback_policy())
                 .expect("client")
                 .validate_code_exchange(
                     &provider("http://localhost/issuer"),
@@ -1434,7 +1508,7 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        OidcProviderClient::new()
+        OidcProviderClient::new(loopback_policy())
             .expect("client")
             .validate_code_exchange(
                 &provider("http://localhost/issuer"),

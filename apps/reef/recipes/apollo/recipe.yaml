@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official docs: https://docs.apollo.io/docs/apollo-mcp
+# OAuth scopes come from discovered metadata. Coral MCP cannot represent x-api-key authentication.
+schema_version: 1
+id: apollo
+display_name: Apollo
+description: Prospects, contacts, enrichment and sales workflows from Apollo.
+source:
+  mcp:
+    url: https://mcp.apollo.io/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://docs.apollo.io/docs/apollo-mcp
+      flow: authorization_code
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

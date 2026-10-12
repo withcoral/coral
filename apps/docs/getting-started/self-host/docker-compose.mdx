@@ -1,0 +1,221 @@
+---
+title: "Deploying Coral with Docker Compose"
+sidebarTitle: "Docker Compose"
+---
+
+This guide will explain how to set up Coral using Docker Compose with your choice of SQLite or Postgres as the backing DB.
+
+We will use `<coral-host>` as the placeholder for the domain of your Coral deployment.
+
+1. Create a compose file with the following contents on your working directory:
+
+- See the [Configuration Reference](/reference/configuration) for more details on the configuration options.
+- This compose file exposes no ports. Depending on how you intend to do TLS termination, either add the TLS termination container to this compose file (e.g. Caddy) or expose the ports 14556 (mcp), 8779 (auth) and 3000 (UI) to your reverse proxy so it can forward calls to Coral.
+- Coral's gRPC should not be exposed outside the compose network. Be mindful the server is plaintext with no encryption.
+
+<Tabs>
+<Tab title="With SQLite">
+
+```yaml
+services:
+  coral:
+    image: ghcr.io/withcoral/coral:latest
+    volumes:
+      - coral-state:/var/lib/coral
+    environment:
+      CORAL_SESSION_SIGNING_KEY: ${CORAL_SESSION_SIGNING_KEY} # Used to sign JWT tokens
+      CORAL_OIDC_CLIENT_SECRET: ${CORAL_OIDC_CLIENT_SECRET}
+      CORAL_CONFIG: |
+        [listeners.grpc]
+        bind = "0.0.0.0:14555"
+
+        [listeners.mcp]
+        bind = "0.0.0.0:14556"
+        public_url = "https://mcp.<coral-host>"
+
+        [listeners.auth]
+        bind = "0.0.0.0:8779"
+        public_url = "https://auth.<coral-host>"
+
+        [listeners.web]
+        public_url = "https://<coral-host>"
+
+        [auth.session]
+        signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+
+        [auth.provider]
+        issuer = "https://your-idp.example.com"
+        client_id = "..."
+        client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+        bootstrap_owner_subject = "..."   # your OIDC subject; becomes organization owner
+  coral-web:
+    image: ghcr.io/withcoral/coral-web:latest
+    depends_on:
+      coral:
+        condition: service_healthy
+    environment:
+      CORAL_ENDPOINT: http://coral:14555
+      CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT: "1" # Plaintext connection to coral container
+      CORAL_WEB_AUTH_MODE: required
+      CORAL_WEB_PUBLIC_URL: https://<coral-host>
+      CORAL_WEB_AUTH_ISSUER: https://auth.<coral-host>
+      CORAL_WEB_SESSION_SECRET: ${CORAL_WEB_SESSION_SECRET} # to encrypt session cookies
+
+volumes:
+  coral-state:
+```
+
+<Note>
+  Coral will save both the SQLite DB files and the encryption key for sensitive
+  data in the `coral-state` volume.
+</Note>
+
+</Tab>
+<Tab title="With Postgres">
+
+```yaml
+services:
+  coral:
+    image: ghcr.io/withcoral/coral:latest
+    environment:
+      CORAL_DATABASE_URL: ${CORAL_DATABASE_URL}
+      CORAL_CREDENTIALS_KEY: ${CORAL_CREDENTIALS_KEY}
+      CORAL_SESSION_SIGNING_KEY: ${CORAL_SESSION_SIGNING_KEY}
+      CORAL_OIDC_CLIENT_SECRET: ${CORAL_OIDC_CLIENT_SECRET}
+      CORAL_CONFIG: |
+        [listeners.grpc]
+        bind = "0.0.0.0:14555"
+
+        [listeners.mcp]
+        bind = "0.0.0.0:14556"
+        public_url = "https://mcp.<coral-host>"
+
+        [listeners.auth]
+        bind = "0.0.0.0:8779"
+        public_url = "https://auth.<coral-host>"
+
+        [listeners.web]
+        public_url = "https://<coral-host>"
+
+        [credentials]
+        key_env = "CORAL_CREDENTIALS_KEY"
+
+        [auth.session]
+        signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+
+        [auth.provider]
+        issuer = "https://your-idp.example.com"
+        client_id = "..."
+        client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+        bootstrap_owner_subject = "..."
+
+        [database]
+        backend = "postgres"
+        url_env = "CORAL_DATABASE_URL"
+
+  coral-web:
+    image: ghcr.io/withcoral/coral-web:latest
+    depends_on:
+      coral:
+        condition: service_healthy
+    environment:
+      CORAL_ENDPOINT: http://coral:14555
+      CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT: "1"
+      CORAL_WEB_AUTH_MODE: required
+      CORAL_WEB_PUBLIC_URL: https://<coral-host>
+      CORAL_WEB_AUTH_ISSUER: https://auth.<coral-host>
+      CORAL_WEB_SESSION_SECRET: ${CORAL_WEB_SESSION_SECRET}
+```
+
+If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral container so Coral knows it can trust the certificate. For example, if you're using AWS RDS:
+
+- Download the CA bundle:
+  ```bash
+  curl -sSo rds-ca.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+  ```
+- Mount it on the Coral container in the compose file:
+
+  ```yaml
+  coral:
+    image: ghcr.io/withcoral/coral:latest
+    volumes:
+      - ./rds-ca.pem:/etc/coral/rds-ca.pem:ro
+    environment: # unchanged
+  ```
+
+- Refer to the CA bundle in your `.env` file:
+  ```dotenv
+  CORAL_DATABASE_URL=postgres://coral:PASSWORD@<rds-endpoint>:5432/coral?sslmode=verify-full&sslrootcert=/etc/coral/rds-ca.pem
+  ```
+
+</Tab>
+</Tabs>
+
+2. Create an .env file that will hold the credentials used by Coral
+
+```dotenv
+# Coral session signing key - create with:
+# openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -outform DER | base64 -w0
+CORAL_SESSION_SIGNING_KEY=...
+
+# Client secret from your OIDC provider's application settings.
+CORAL_OIDC_CLIENT_SECRET=...
+
+# Coral web session secret, at least 32 characters.
+# openssl rand -hex 32
+CORAL_WEB_SESSION_SECRET=...
+
+# The following are only needed in the Postgres example
+
+# Credential encryption key - create with: openssl rand -base64 32
+CORAL_CREDENTIALS_KEY=...
+
+# Postgres connection URL
+CORAL_DATABASE_URL=postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full
+```
+
+3. Start Coral with `docker compose up -d`
+
+4. Start your reverse proxy for TLS termination. If you don't have one, you can use Caddy by merging it into the compose file:
+
+```yaml
+services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      coral:
+        condition: service_healthy
+      coral-web:
+        condition: service_healthy
+
+volumes:
+  caddy-data:
+  caddy-config:
+```
+
+Caddyfile:
+
+```caddyfile
+{
+	email ops@example.com
+}
+<coral-host> {
+	reverse_proxy coral-web:3000
+}
+auth.<coral-host> {
+	reverse_proxy coral:8779
+}
+mcp.<coral-host> {
+	reverse_proxy coral:14556
+}
+```
+
+5. You should be able to open the UI in your browser in `https://<coral-host>`. After you create your first workspace you can use the UI instructions to connect an MCP client via `https://mcp.<coral-host>`.

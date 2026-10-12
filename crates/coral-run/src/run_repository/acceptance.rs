@@ -1,0 +1,220 @@
+//! The accepted Program package, its linked source snapshots, and `run.started`.
+
+use coral_db::Transaction;
+use coral_functions::SavedFunctionSelection;
+use coral_workspace::WorkspaceId;
+use sea_query::{Expr, ExprTrait as _, Iden, Query};
+use sqlx::FromRow;
+
+use super::ProgramRunRecords;
+use super::events::{NewEvent, insert_event};
+use crate::engine::ProgramPackage;
+use crate::types::AcceptedRun;
+use crate::{
+    COMPILATION_TIMEOUT, EMITTED_JAVASCRIPT_MAX_BYTES, Error, PROGRAM_SOURCE_MAX_BYTES,
+    ProgramSource, RunId, RunState, SOURCE_MAP_MAX_BYTES,
+};
+
+#[derive(Iden)]
+enum ProgramRunPackages {
+    Table,
+    RunId,
+    WorkspaceId,
+    SubmittedSource,
+    EmittedJavascript,
+    SourceMap,
+    CompilerDiagnosticsJson,
+    TypescriptProfileId,
+    CompilerVersion,
+    JavascriptTarget,
+    ProgramSourceMaxBytes,
+    EmittedJavascriptMaxBytes,
+    SourceMapMaxBytes,
+    ProgramValueMaxBytes,
+    CompilationTimeoutMillis,
+}
+
+#[derive(Debug, FromRow)]
+struct PackageRow {
+    emitted_javascript: String,
+    source_map: String,
+    compiler_diagnostics_json: String,
+    typescript_profile_id: String,
+    compiler_version: String,
+    javascript_target: String,
+}
+
+impl PackageRow {
+    fn decode(self) -> Result<ProgramPackage, Error> {
+        let package = ProgramPackage::new(
+            self.emitted_javascript,
+            self.source_map,
+            self.compiler_diagnostics_json,
+            self.typescript_profile_id,
+            self.compiler_version,
+            self.javascript_target,
+        );
+        package.validate()?;
+        Ok(package)
+    }
+}
+
+pub(crate) async fn insert_acceptance(
+    transaction: &mut Transaction<'_>,
+    run: &AcceptedRun,
+    source: &ProgramSource,
+    package: &ProgramPackage,
+    linked: &[SavedFunctionSelection],
+) -> Result<(), Error> {
+    let program_source_max_bytes = stored_usize(PROGRAM_SOURCE_MAX_BYTES)?;
+    let emitted_javascript_max_bytes = stored_usize(EMITTED_JAVASCRIPT_MAX_BYTES)?;
+    let source_map_max_bytes = stored_usize(SOURCE_MAP_MAX_BYTES)?;
+    let program_value_max_bytes = stored_usize(run.value_limits.host_bytes())?;
+    let compilation_timeout_millis =
+        i64::try_from(COMPILATION_TIMEOUT.as_millis()).map_err(|_error| {
+            Error::CorruptData("compilation timeout exceeds durable range".to_string())
+        })?;
+    let statement = Query::insert()
+        .into_table(ProgramRunRecords::Table)
+        .columns([
+            ProgramRunRecords::Id,
+            ProgramRunRecords::WorkspaceId,
+            ProgramRunRecords::PrincipalId,
+            ProgramRunRecords::PrincipalKind,
+            ProgramRunRecords::State,
+            ProgramRunRecords::AcceptedAtUnixNanos,
+            ProgramRunRecords::DeadlineAtUnixNanos,
+            ProgramRunRecords::ShutdownGraceNanos,
+            ProgramRunRecords::ValueLimitsJson,
+            ProgramRunRecords::NextEventSequence,
+            ProgramRunRecords::AccumulatedOutputBytes,
+        ])
+        .values_panic([
+            Expr::val(run.id.to_string()),
+            Expr::val(run.workspace_id.to_string()),
+            Expr::val(run.principal.id().as_str()),
+            Expr::val(run.principal.kind().as_storage_str()),
+            Expr::val(RunState::Running.as_storage_str()),
+            Expr::val(run.accepted_at_unix_nanos),
+            Expr::val(run.deadline_at_unix_nanos),
+            Expr::val(run.shutdown_grace_nanos),
+            Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
+            Expr::val(2_i64),
+            Expr::val(0_i64),
+        ])
+        .to_owned();
+    transaction.execute(statement).await?;
+
+    let statement = Query::insert()
+        .into_table(ProgramRunPackages::Table)
+        .columns([
+            ProgramRunPackages::RunId,
+            ProgramRunPackages::WorkspaceId,
+            ProgramRunPackages::SubmittedSource,
+            ProgramRunPackages::EmittedJavascript,
+            ProgramRunPackages::SourceMap,
+            ProgramRunPackages::CompilerDiagnosticsJson,
+            ProgramRunPackages::TypescriptProfileId,
+            ProgramRunPackages::CompilerVersion,
+            ProgramRunPackages::JavascriptTarget,
+            ProgramRunPackages::ProgramSourceMaxBytes,
+            ProgramRunPackages::EmittedJavascriptMaxBytes,
+            ProgramRunPackages::SourceMapMaxBytes,
+            ProgramRunPackages::ProgramValueMaxBytes,
+            ProgramRunPackages::CompilationTimeoutMillis,
+        ])
+        .values_panic([
+            Expr::val(run.id.to_string()),
+            Expr::val(run.workspace_id.to_string()),
+            Expr::val(source.as_str()),
+            Expr::val(&package.javascript),
+            Expr::val(&package.source_map),
+            Expr::val(&package.diagnostics_json),
+            Expr::val(&package.typescript_profile_id),
+            Expr::val(&package.compiler_version),
+            Expr::val(&package.javascript_target),
+            Expr::val(program_source_max_bytes),
+            Expr::val(emitted_javascript_max_bytes),
+            Expr::val(source_map_max_bytes),
+            Expr::val(program_value_max_bytes),
+            Expr::val(compilation_timeout_millis),
+        ])
+        .to_owned();
+    transaction.execute(statement).await?;
+    for snapshot in linked {
+        insert_run_snapshot(transaction, run, snapshot).await?;
+    }
+
+    insert_event(
+        transaction,
+        &run.workspace_id,
+        &run.id,
+        1,
+        NewEvent::Started,
+        run.accepted_at_unix_nanos,
+    )
+    .await
+}
+
+pub(crate) async fn load_package_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+) -> Result<Option<ProgramPackage>, Error> {
+    let statement = Query::select()
+        .columns([
+            ProgramRunPackages::EmittedJavascript,
+            ProgramRunPackages::SourceMap,
+            ProgramRunPackages::CompilerDiagnosticsJson,
+            ProgramRunPackages::TypescriptProfileId,
+            ProgramRunPackages::CompilerVersion,
+            ProgramRunPackages::JavascriptTarget,
+        ])
+        .from(ProgramRunPackages::Table)
+        .and_where(Expr::col(ProgramRunPackages::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(ProgramRunPackages::RunId).eq(run_id.to_string()))
+        .to_owned();
+    let row: Option<PackageRow> = transaction.fetch_optional(statement).await?;
+    row.map(PackageRow::decode).transpose()
+}
+
+fn stored_usize(value: usize) -> Result<i64, Error> {
+    i64::try_from(value)
+        .map_err(|_error| Error::CorruptData("Program limit exceeds durable range".to_string()))
+}
+
+#[derive(Iden)]
+enum ProgramRunSavedFunctionSnapshots {
+    Table,
+    RunId,
+    WorkspaceId,
+    SavedFunctionId,
+    Path,
+    Source,
+}
+
+async fn insert_run_snapshot(
+    transaction: &mut Transaction<'_>,
+    run: &AcceptedRun,
+    snapshot: &SavedFunctionSelection,
+) -> Result<(), Error> {
+    let statement = Query::insert()
+        .into_table(ProgramRunSavedFunctionSnapshots::Table)
+        .columns([
+            ProgramRunSavedFunctionSnapshots::RunId,
+            ProgramRunSavedFunctionSnapshots::WorkspaceId,
+            ProgramRunSavedFunctionSnapshots::SavedFunctionId,
+            ProgramRunSavedFunctionSnapshots::Path,
+            ProgramRunSavedFunctionSnapshots::Source,
+        ])
+        .values_panic([
+            Expr::val(run.id.to_string()),
+            Expr::val(run.workspace_id.to_string()),
+            Expr::val(snapshot.id().to_string()),
+            Expr::val(snapshot.path().as_str()),
+            Expr::val(snapshot.source().as_str()),
+        ])
+        .to_owned();
+    transaction.execute(statement).await?;
+    Ok(())
+}

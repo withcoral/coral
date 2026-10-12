@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://help.gong.io/docs/create-an-integration-to-connect-to-the-mcp-server
+schema_version: 1
+id: gong
+display_name: Gong
+description: Account answers, deal answers and meeting briefs from Gong.
+source:
+  mcp:
+    url: https://mcp.gong.io/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      description: Create a manual MCP integration. Register the callback URL and
+        client credentials.
+      documentation_url: https://help.gong.io/docs/create-an-integration-to-connect-to-the-mcp-server
+      flow: authorization_code
+      client:
+        authentication: client_secret_basic
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

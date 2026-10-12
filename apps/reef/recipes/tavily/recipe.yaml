@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/tavily-ai/tavily-mcp
+# Official brand asset: https://www.tavily.com/icon.svg?icon.0v6b1ltlljvdd.svg
+schema_version: 1
+id: tavily
+display_name: Tavily
+description: Web search results and extracted content from Tavily.
+source:
+  mcp:
+    url: https://mcp.tavily.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Tavily
+      flow: authorization_code
+      documentation_url: https://github.com/tavily-ai/tavily-mcp
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://github.com/tavily-ai/tavily-mcp
+icons:
+  light: logo.svg

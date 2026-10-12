@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://circleci.com/docs/guides/toolkit/connecting-to-the-circleci-mcp-server/
+# Official brand asset: https://d2qm0z2kzhiwa.cloudfront.net/assets/safari-pinned-tab-4b4ee212af4cd7e2665d09761df7f3c8.svg
+schema_version: 1
+id: circleci
+display_name: CircleCI
+description: Pipelines, workflows, jobs and test results from CircleCI.
+source:
+  mcp:
+    url: https://mcp.circleci.com/v1/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with CircleCI
+      flow: authorization_code
+      documentation_url: https://circleci.com/docs/guides/toolkit/connecting-to-the-circleci-mcp-server/
+    api_token:
+      method: bearer
+      label: Personal API token
+      documentation_url: https://circleci.com/docs/guides/toolkit/connecting-to-the-circleci-mcp-server/
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

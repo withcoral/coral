@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Deploy Google's official Streamable HTTP implementation with its OAuth proxy.
+# https://github.com/googleads/google-ads-mcp#http-server-mode
+# No Google-hosted shared URL exists. The instance URL is not a credential.
+# The current release exposes read-only reporting, not campaign mutations.
+schema_version: 1
+id: google_ads_mcp
+display_name: Google Ads
+description: Accounts, campaign reports and resource metadata from Google Ads.
+icons:
+  light: logo.svg
+inputs:
+  instance:
+    type: url
+    label: Google Ads MCP instance URL
+    description: Enter your deployment URL without the /mcp path or a final slash.
+    documentation_url: https://developers.google.com/google-ads/api/docs/developer-toolkit/mcp-server
+source:
+  mcp:
+    url: '{{input.instance}}/mcp'
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Google
+      documentation_url: https://developers.google.com/google-ads/api/docs/developer-toolkit/mcp-server
+      flow: authorization_code
+      # The deployed OAuth proxy advertises its scopes through discovery.

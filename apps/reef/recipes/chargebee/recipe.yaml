@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=../schema.json
+# Use Data Lookup MCP keys, not REST API keys. OAuth is unavailable for Multi-Business Entity sites.
+# Data Lookup provides read-only access; it does not replace every REST API operation.
+schema_version: 1
+id: chargebee
+display_name: Chargebee
+description: Customers, subscriptions, invoices and payments from Chargebee.
+source:
+  mcp:
+    url: https://{{input.site}}.{{input.region_host}}/data_lookup_agent
+authentication:
+  default: mcp_key
+  options:
+    mcp_key:
+      method: bearer
+      label: Paste an MCP API key
+      description: Enable MCP access. Create a key for the Data Lookup server.
+      documentation_url: https://www.chargebee.com/docs/billing/2.0/ai-in-chargebee/data-lookup-agent
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Chargebee
+      documentation_url: https://www.chargebee.com/docs/billing/2.0/ai-in-chargebee/data-lookup-agent
+      flow: authorization_code
+      description: Configure your Chargebee OAuth client before you sign in.
+inputs:
+  site:
+    type: hostname
+    label: Chargebee site
+    description: Enter your site subdomain. Add -test for a test site.
+  region_host:
+    type: hostname
+    label: Region
+    default: mcp.chargebee.com
+    enum:
+      - mcp.chargebee.com
+      - mcp.eu.chargebee.com
+      - mcp.au.chargebee.com
+    documentation_url: https://www.chargebee.com/docs/billing/2.0/kb/platform/how-do-i-fix-mcp-server-connection-errors-caused-by-an-incorrect-regional-url
+icons:
+  light: logo.svg

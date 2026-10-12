@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=../schema.json
+# All official Discovery methods are preserved in the generated snapshot.
+# Regenerate with scripts/google-discovery-openapi.ts using its source URL.
+# OAuth scopes are copied from Discovery; Business Profile uses documented business.manage.
+schema_version: 1
+id: google_analytics_data
+display_name: Google Analytics Data
+description: Reports, audiences and realtime metrics from Google Analytics.
+icons:
+  light: logo.svg
+source:
+  openapi:
+    file: openapi.json
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in with Google
+      description: Configure your Google OAuth application before you sign in.
+      documentation_url: https://developers.google.com/analytics/devguides/reporting/data/v1/quickstart
+      authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+      token_url: https://oauth2.googleapis.com/token
+      scopes:
+        - https://www.googleapis.com/auth/analytics.readonly
+      client:
+        authentication: client_secret_post
+      authorization_parameters:
+        access_type: offline
+        prompt: consent
+    access_token:
+      method: bearer
+      label: Paste an OAuth access token
+      documentation_url: https://developers.google.com/analytics/devguides/reporting/data/v1/quickstart

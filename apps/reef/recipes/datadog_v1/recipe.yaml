@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: datadog_v1
+display_name: Datadog
+description: >-
+  Monitors, events, dashboards, hosts, downtimes, SLOs, synthetic tests, logs and
+  metrics from Datadog's v1 API.
+icons:
+  light: logo.png
+
+inputs:
+  site:
+    type: hostname
+    label: Datadog site
+    default: datadoghq.com
+    # A closed set, so Coral can offer a dropdown rather than free text.
+    enum:
+      - datadoghq.com
+      - us3.datadoghq.com
+      - us5.datadoghq.com
+      - ap1.datadoghq.com
+      - ap2.datadoghq.com
+      - uk1.datadoghq.com
+      - datadoghq.eu
+      - ddog-gov.com
+      - us2.ddog-gov.com
+
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/DataDog/datadog-api-client-typescript/master/.generator/schemas/v1/openapi.yaml
+
+authentication:
+  default: api_keys
+  options:
+    pat:
+      method: bearer
+      label: Paste a personal access token
+      documentation_url: https://docs.datadoghq.com/account_management/personal-access-tokens/
+    api_keys:
+      # Two credentials in two headers, collected as one credential record.
+      method: header_credentials
+      label: API and application keys
+      documentation_url: https://docs.datadoghq.com/account_management/api-app-keys/
+      fields:
+        api_key:
+          label: API key
+        application_key:
+          label: Application key
+      headers:
+        dd-api-key: { field: api_key }
+        dd-application-key: { field: application_key }
+
+servers:
+  # Datadog serves some Operations from other hosts. Each server declaration is
+  # configured where the document makes it, not flattened onto one base URL.
+  '#/servers':
+    base_url: https://api.{{input.site}}
+  '#/paths/~1/get/servers':
+    base_url: https://ip-ranges.{{input.site}}
+  '#/paths/~1v1~1input/post/servers':
+    base_url: https://http-intake.logs.{{input.site}}
+
+# V2 has a separate upstream document and needs a separate Recipe.

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.jotform.com/developers/mcp/?tab=mcp
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: jotform
+display_name: Jotform
+description: Forms, submissions and workspace content from Jotform.
+icons:
+  light: logo.png
+source:
+  mcp:
+    url: https://mcp.jotform.com
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Jotform
+      documentation_url: https://www.jotform.com/developers/mcp/?tab=mcp
+      flow: authorization_code
+  default: oauth

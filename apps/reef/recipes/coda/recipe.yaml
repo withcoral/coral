@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://coda.io/developers/apis/v1
+# Official logo: https://cdn.coda.io/icons/png/color/coda-apple-120.png
+schema_version: 1
+id: coda
+display_name: Coda (Superhuman Docs)
+description: Documents, pages and tables from Coda (Superhuman Docs).
+icons:
+  light: coda.png
+source:
+  openapi:
+    url: https://coda.io/apis/v1/openapi.json
+authentication:
+  options:
+    api_token:
+      method: bearer
+      label: API token
+      documentation_url: https://coda.io/developers/apis/v1
+      description: Create a token with the document access and operation permissions you need.
+  default: api_token

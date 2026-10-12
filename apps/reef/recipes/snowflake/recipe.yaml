@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp
+# OAuth scopes come from resource metadata configured by OAUTH_SCOPES_SUPPORTED.
+# The owner configures the Snowflake OAuth integration client id and secret.
+schema_version: 1
+id: snowflake
+display_name: Snowflake
+description: Data queries, Cortex tools and semantic models from Snowflake.
+source:
+  mcp:
+    url: '{{input.mcp_url}}'
+authentication:
+  options:
+    pat:
+      method: bearer
+      label: Paste a programmatic access token
+      documentation_url: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Snowflake
+      flow: authorization_code
+      documentation_url: https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp
+      description: Configure your OAuth application before you sign in.
+      client:
+        authentication: client_secret_basic
+  default: pat
+inputs:
+  mcp_url:
+    type: url
+    label: Snowflake MCP server URL
+    description: Enter your public account URL for a configured database and schema
+      MCP server.
+icons:
+  light: logo.svg

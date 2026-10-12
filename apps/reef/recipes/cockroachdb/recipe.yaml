@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.cockroachlabs.com/blog/cockroachdb-ai-agents-managed-mcp-server/
+# Official brand asset: https://www.cockroachlabs.com/icon1.png?38190d312b196e2c
+schema_version: 1
+id: cockroachdb
+display_name: CockroachDB Cloud
+description: Clusters, databases and queries from CockroachDB Cloud.
+source:
+  mcp:
+    url: https://cockroachlabs.cloud/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with CockroachDB Cloud
+      flow: authorization_code
+      documentation_url: https://docs.cockroachlabs.com/docs/cockroachcloud/connect-to-the-cockroachdb-cloud-mcp-server
+    api_key:
+      method: bearer
+      label: Service account API key
+      documentation_url: https://docs.cockroachlabs.com/docs/cockroachcloud/connect-to-the-cockroachdb-cloud-mcp-server
+icons:
+  light: logo.png

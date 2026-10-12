@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/exa-labs/exa-mcp-server
+# Official brand asset: https://exa.ai/images/favicon-32x32.png
+schema_version: 1
+id: exa
+display_name: Exa
+description: Web search results and page content from Exa.
+source:
+  mcp:
+    url: https://mcp.exa.ai/mcp
+authentication:
+  default: oauth
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://github.com/exa-labs/exa-mcp-server/blob/main/api/mcp.ts
+    anonymous:
+      method: none
+      label: Use public access
+      description: Use the public tools with lower limits.
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Exa
+      documentation_url: https://github.com/exa-labs/exa-mcp-server
+      flow: authorization_code
+      # Scopes come from authorization-server metadata.
+icons:
+  light: logo.svg

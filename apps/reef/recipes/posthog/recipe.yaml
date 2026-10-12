@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://posthog.com/docs/model-context-protocol
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: posthog
+display_name: PostHog
+description: Product analytics, feature flags and experiments from PostHog.
+icons:
+  light: logo.svg
+source:
+  mcp:
+    url: https://mcp.posthog.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with PostHog
+      documentation_url: https://posthog.com/docs/model-context-protocol
+      flow: authorization_code
+    api_token:
+      method: bearer
+      label: Personal API key
+      documentation_url: https://posthog.com/docs/model-context-protocol/faq
+  default: oauth

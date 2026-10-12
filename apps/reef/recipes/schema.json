@@ -1,0 +1,1165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "number",
+      "const": 1
+    },
+    "id": {
+      "$ref": "#/$defs/__schema0"
+    },
+    "service": {
+      "description": "The id of the recipe that describes the same service from another source, such as github for github_mcp. Without one, the recipe is its own service. Reef offers the recipes of one service together.",
+      "$ref": "#/$defs/__schema0"
+    },
+    "display_name": {
+      "$ref": "#/$defs/__schema1"
+    },
+    "description": {
+      "$ref": "#/$defs/__schema2"
+    },
+    "icons": {
+      "type": "object",
+      "properties": {
+        "light": {
+          "$ref": "#/$defs/__schema3"
+        },
+        "dark": {
+          "$ref": "#/$defs/__schema3"
+        }
+      },
+      "required": [
+        "light"
+      ],
+      "additionalProperties": false
+    },
+    "inputs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema0"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "$ref": "#/$defs/__schema4"
+          },
+          "label": {
+            "$ref": "#/$defs/__schema1"
+          },
+          "description": {
+            "$ref": "#/$defs/__schema5"
+          },
+          "documentation_url": {
+            "$ref": "#/$defs/__schema6"
+          },
+          "default": {
+            "$ref": "#/$defs/__schema9"
+          },
+          "enum": {
+            "$ref": "#/$defs/__schema10"
+          }
+        },
+        "required": [
+          "type",
+          "label"
+        ],
+        "additionalProperties": false,
+        "description": "A non-secret value the person gives when adding the provider. A default must be in enum when both are set. Never use an input for a credential."
+      }
+    },
+    "source": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "openapi": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "$ref": "#/$defs/__schema11"
+                    }
+                  },
+                  "required": [
+                    "url"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9][a-z0-9_-]*\\.(?:json|ya?ml)$",
+                      "description": "The file name of an OpenAPI document beside recipe.yaml, for a service that publishes none at a URL. Reef sends its text to Coral.",
+                      "not": {
+                        "enum": [
+                          "recipe.yaml"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "file"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "openapi"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mcp": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "$ref": "#/$defs/__schema11"
+                }
+              },
+              "required": [
+                "url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "mcp"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "authentication": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/__schema14"
+        },
+        "options": {
+          "$ref": "#/$defs/__schema15"
+        }
+      },
+      "required": [
+        "options"
+      ],
+      "additionalProperties": false,
+      "description": "Named ways to authenticate. The person confirms one, and Coral never falls back to another. A single option fills itself in; of several, default names the one to fill in."
+    },
+    "servers": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema50"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/__schema51"
+          },
+          {
+            "$ref": "#/$defs/__schema52"
+          }
+        ],
+        "description": "The server for one servers declaration in the OpenAPI document: a base_url, or one of its declared URLs with values for its variables."
+      }
+    },
+    "request_headers": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema54"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema13"
+      },
+      "maxProperties": 64,
+      "description": "Non-secret headers sent to the service with each request. Coral sets credential and transport headers itself."
+    },
+    "help": {
+      "type": "object",
+      "properties": {
+        "servers": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/__schema50"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "$ref": "#/$defs/__schema55"
+              },
+              "description": {
+                "$ref": "#/$defs/__schema56"
+              },
+              "documentation_url": {
+                "$ref": "#/$defs/__schema57"
+              }
+            },
+            "additionalProperties": false,
+            "minProperties": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "display_name",
+    "source"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "__schema0": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "__schema1": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+    },
+    "__schema2": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "__schema3": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*\\.(?:svg|png)$",
+      "description": "The file name of an image beside recipe.yaml, not a path or URL."
+    },
+    "__schema4": {
+      "type": "string",
+      "enum": [
+        "string",
+        "url",
+        "hostname"
+      ]
+    },
+    "__schema5": {
+      "$ref": "#/$defs/__schema2"
+    },
+    "__schema6": {
+      "$ref": "#/$defs/__schema7"
+    },
+    "__schema7": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "allOf": [
+        {
+          "pattern": "^[^{}]*$"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+        },
+        {
+          "pattern": "^https?:\\/\\/"
+        }
+      ],
+      "description": "An http or https URL. It cannot reference inputs.",
+      "$ref": "#/$defs/__schema8"
+    },
+    "__schema8": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "allOf": [
+        {
+          "pattern": "^[^{}]*$"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+        }
+      ]
+    },
+    "__schema9": {
+      "$ref": "#/$defs/__schema8"
+    },
+    "__schema10": {
+      "minItems": 1,
+      "maxItems": 100,
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/__schema8"
+      },
+      "uniqueItems": true
+    },
+    "__schema11": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/__schema7"
+        },
+        {
+          "$ref": "#/$defs/__schema12"
+        }
+      ],
+      "description": "A URL that may reference inputs as {{input.name}}. Coral fills in the inputs before it checks or fetches the URL."
+    },
+    "__schema12": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "allOf": [
+        {
+          "pattern": "^(?:[^{}]|\\{\\{input\\.([a-z][a-z0-9_]{0,63})\\}\\})*$"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+        },
+        {
+          "pattern": "^(?:https?:\\/\\/|\\{\\{input\\.([a-z][a-z0-9_]{0,63})\\}\\})"
+        },
+        {
+          "pattern": "\\{\\{input\\.([a-z][a-z0-9_]{0,63})\\}\\}"
+        }
+      ],
+      "description": "Literal text plus {{input.name}} references, and nothing else. Each reference must name a declared input.",
+      "$ref": "#/$defs/__schema13"
+    },
+    "__schema13": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "allOf": [
+        {
+          "pattern": "^(?:[^{}]|\\{\\{input\\.([a-z][a-z0-9_]{0,63})\\}\\})*$"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+        }
+      ],
+      "description": "Literal text plus {{input.name}} references, and nothing else. Each reference must name a declared input."
+    },
+    "__schema14": {
+      "$ref": "#/$defs/__schema0"
+    },
+    "__schema15": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema0"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema16"
+      },
+      "minProperties": 1,
+      "maxProperties": 16
+    },
+    "__schema16": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "none"
+            },
+            "label": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": {
+              "$ref": "#/$defs/__schema17"
+            },
+            "documentation_url": {
+              "$ref": "#/$defs/__schema18"
+            }
+          },
+          "required": [
+            "method",
+            "label"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "bearer"
+            },
+            "label": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": {
+              "$ref": "#/$defs/__schema17"
+            },
+            "documentation_url": {
+              "$ref": "#/$defs/__schema18"
+            }
+          },
+          "required": [
+            "method",
+            "label"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "$ref": "#/$defs/__schema19"
+            },
+            "label": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": {
+              "$ref": "#/$defs/__schema17"
+            },
+            "documentation_url": {
+              "$ref": "#/$defs/__schema18"
+            },
+            "fields": {
+              "$ref": "#/$defs/__schema20"
+            },
+            "headers": {
+              "$ref": "#/$defs/__schema22"
+            }
+          },
+          "required": [
+            "method",
+            "label",
+            "fields",
+            "headers"
+          ],
+          "additionalProperties": false,
+          "description": "Credential fields sent in named headers, each optionally after an exact prefix such as 'Token token='. A single API key is one field in one header. The person enters only the credential."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "$ref": "#/$defs/__schema27"
+            },
+            "label": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": {
+              "$ref": "#/$defs/__schema17"
+            },
+            "documentation_url": {
+              "$ref": "#/$defs/__schema18"
+            },
+            "fields": {
+              "$ref": "#/$defs/__schema20"
+            },
+            "username": {
+              "$ref": "#/$defs/__schema28"
+            },
+            "password": {
+              "$ref": "#/$defs/__schema29"
+            }
+          },
+          "required": [
+            "method",
+            "label",
+            "fields",
+            "username",
+            "password"
+          ],
+          "additionalProperties": false,
+          "description": "HTTP Basic authentication. At least one part uses a credential field; a literal username such as api needs no entry. A password is a field, or empty to send none."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "$ref": "#/$defs/__schema30"
+            },
+            "label": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": {
+              "$ref": "#/$defs/__schema17"
+            },
+            "documentation_url": {
+              "$ref": "#/$defs/__schema18"
+            },
+            "fields": {
+              "$ref": "#/$defs/__schema20"
+            },
+            "parameters": {
+              "$ref": "#/$defs/__schema31"
+            }
+          },
+          "required": [
+            "method",
+            "label",
+            "fields",
+            "parameters"
+          ],
+          "additionalProperties": false,
+          "description": "OpenAPI only. Coral adds each credential value to each request as a query parameter."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "$ref": "#/$defs/__schema34"
+            },
+            "label": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": {
+              "$ref": "#/$defs/__schema17"
+            },
+            "documentation_url": {
+              "$ref": "#/$defs/__schema18"
+            },
+            "authorization_url": {
+              "$ref": "#/$defs/__schema11"
+            },
+            "token_url": {
+              "$ref": "#/$defs/__schema11"
+            },
+            "client": {
+              "$ref": "#/$defs/__schema35"
+            },
+            "pkce": {
+              "$ref": "#/$defs/__schema37"
+            },
+            "scopes": {
+              "$ref": "#/$defs/__schema38"
+            },
+            "scope_format": {
+              "$ref": "#/$defs/__schema40"
+            },
+            "authorization_parameters": {
+              "$ref": "#/$defs/__schema42"
+            }
+          },
+          "required": [
+            "method",
+            "label",
+            "authorization_url",
+            "token_url",
+            "scopes"
+          ],
+          "additionalProperties": false,
+          "description": "Authorization-code OAuth. PKCE uses S256; only a confidential client (client_secret_basic or client_secret_post) may disable it."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "$ref": "#/$defs/__schema45"
+            },
+            "label": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": {
+              "$ref": "#/$defs/__schema17"
+            },
+            "documentation_url": {
+              "$ref": "#/$defs/__schema18"
+            },
+            "device_authorization_url": {
+              "$ref": "#/$defs/__schema11"
+            },
+            "token_url": {
+              "$ref": "#/$defs/__schema11"
+            },
+            "client": {
+              "$ref": "#/$defs/__schema35"
+            },
+            "scopes": {
+              "$ref": "#/$defs/__schema38"
+            },
+            "scope_format": {
+              "$ref": "#/$defs/__schema40"
+            }
+          },
+          "required": [
+            "method",
+            "label",
+            "device_authorization_url",
+            "token_url",
+            "scopes"
+          ],
+          "additionalProperties": false,
+          "description": "Device-code OAuth. Coral handles device authorization, polling and tokens."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "$ref": "#/$defs/__schema46"
+            },
+            "label": {
+              "$ref": "#/$defs/__schema1"
+            },
+            "description": {
+              "$ref": "#/$defs/__schema17"
+            },
+            "documentation_url": {
+              "$ref": "#/$defs/__schema18"
+            },
+            "flow": {
+              "$ref": "#/$defs/__schema47"
+            },
+            "client": {
+              "$ref": "#/$defs/__schema35"
+            },
+            "scopes": {
+              "$ref": "#/$defs/__schema48"
+            },
+            "scope_format": {
+              "$ref": "#/$defs/__schema40"
+            },
+            "authorization_parameters": {
+              "$ref": "#/$defs/__schema49"
+            }
+          },
+          "required": [
+            "method",
+            "label",
+            "flow"
+          ],
+          "additionalProperties": false,
+          "description": "MCP only. Coral finds the issuer and endpoints through OAuth discovery. Choose the flow, and optionally the exact scopes to ask for."
+        }
+      ]
+    },
+    "__schema17": {
+      "$ref": "#/$defs/__schema2"
+    },
+    "__schema18": {
+      "$ref": "#/$defs/__schema7"
+    },
+    "__schema19": {
+      "type": "string",
+      "const": "header_credentials"
+    },
+    "__schema20": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema0"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema21"
+      },
+      "minProperties": 1,
+      "maxProperties": 16,
+      "description": "The fields of one credential. Every field must be used. Coral keeps every value private, even one that is not secret, such as an account id. sensitive only masks the value as the person types it."
+    },
+    "__schema21": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/__schema1"
+        },
+        "description": {
+          "$ref": "#/$defs/__schema2"
+        },
+        "sensitive": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "__schema22": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema23"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema25"
+      },
+      "minProperties": 1,
+      "maxProperties": 16
+    },
+    "__schema23": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9!#$%&'*+.^_`|~-]+$",
+      "description": "A lowercase HTTP header name.",
+      "not": {
+        "enum": [
+          "connection",
+          "content-length",
+          "content-type",
+          "cookie",
+          "host",
+          "keep-alive",
+          "proxy-authorization",
+          "proxy-connection",
+          "set-cookie",
+          "te",
+          "trailer",
+          "transfer-encoding",
+          "upgrade",
+          "user-agent",
+          "accept",
+          "last-event-id",
+          "mcp-protocol-version",
+          "mcp-session-id"
+        ]
+      },
+      "$ref": "#/$defs/__schema24"
+    },
+    "__schema24": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9!#$%&'*+.^_`|~-]+$",
+      "description": "A lowercase HTTP header name."
+    },
+    "__schema25": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/__schema0"
+            },
+            "prefix": {
+              "$ref": "#/$defs/__schema26"
+            }
+          },
+          "required": [
+            "field"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "literal": {
+              "minLength": 1,
+              "allOf": [
+                {
+                  "pattern": "^[^{}]*$"
+                },
+                {
+                  "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                }
+              ],
+              "$ref": "#/$defs/__schema26"
+            }
+          },
+          "required": [
+            "literal"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "__schema26": {
+      "type": "string",
+      "maxLength": 2048,
+      "allOf": [
+        {
+          "pattern": "^[^{}]*$"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+        }
+      ],
+      "description": "A non-secret protocol constant, never a credential or account id. Empty is allowed, as for a Basic password."
+    },
+    "__schema27": {
+      "type": "string",
+      "const": "basic_auth"
+    },
+    "__schema28": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          "required": [
+            "field"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "literal": {
+              "$ref": "#/$defs/__schema26"
+            }
+          },
+          "required": [
+            "literal"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "__schema29": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          "required": [
+            "field"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "literal": {
+              "type": "string",
+              "const": ""
+            }
+          },
+          "required": [
+            "literal"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "__schema30": {
+      "type": "string",
+      "const": "query_credentials"
+    },
+    "__schema31": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema32"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema33"
+      },
+      "minProperties": 1,
+      "maxProperties": 16
+    },
+    "__schema32": {
+      "maxLength": 256,
+      "allOf": [
+        {
+          "pattern": "^[^{}]*$"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+        }
+      ],
+      "$ref": "#/$defs/__schema8"
+    },
+    "__schema33": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          "required": [
+            "field"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "literal": {
+              "minLength": 1,
+              "allOf": [
+                {
+                  "pattern": "^[^{}]*$"
+                },
+                {
+                  "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                }
+              ],
+              "$ref": "#/$defs/__schema26"
+            }
+          },
+          "required": [
+            "literal"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "__schema34": {
+      "type": "string",
+      "const": "oauth_authorization_code"
+    },
+    "__schema35": {
+      "description": "The OAuth application. Set id to use your own application; without one, Coral identifies itself to the server where the server and the operator policy allow. client_secret_basic or client_secret_post make Coral ask for the application secret.",
+      "default": {},
+      "$ref": "#/$defs/__schema36"
+    },
+    "__schema36": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "maxLength": 1024,
+          "allOf": [
+            {
+              "pattern": "^(?:[^{}]|\\{\\{input\\.([a-z][a-z0-9_]{0,63})\\}\\})*$"
+            },
+            {
+              "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+            }
+          ],
+          "$ref": "#/$defs/__schema13"
+        },
+        "authentication": {
+          "default": "none",
+          "type": "string",
+          "enum": [
+            "none",
+            "client_secret_basic",
+            "client_secret_post"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "__schema37": {
+      "default": "required",
+      "type": "string",
+      "enum": [
+        "required",
+        "disabled"
+      ]
+    },
+    "__schema38": {
+      "maxItems": 100,
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/__schema39"
+      },
+      "uniqueItems": true
+    },
+    "__schema39": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "allOf": [
+        {
+          "pattern": "^[^{}]*$"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+        },
+        {
+          "pattern": "^[^ ]+$"
+        }
+      ],
+      "$ref": "#/$defs/__schema8"
+    },
+    "__schema40": {
+      "description": "How scopes are separated in the authorization request. This never joins several scopes into one.",
+      "default": {},
+      "$ref": "#/$defs/__schema41"
+    },
+    "__schema41": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "default": "space",
+          "type": "string",
+          "enum": [
+            "space",
+            "comma"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "__schema42": {
+      "$ref": "#/$defs/__schema43"
+    },
+    "__schema43": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema44"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema26"
+      },
+      "maxProperties": 32,
+      "description": "Extra non-secret parameters for the authorization request, such as access_type: offline. Coral sets the OAuth protocol parameters itself."
+    },
+    "__schema44": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$",
+      "not": {
+        "enum": [
+          "client_id",
+          "client_secret",
+          "redirect_uri",
+          "response_type",
+          "state",
+          "scope",
+          "resource",
+          "code",
+          "grant_type",
+          "code_challenge",
+          "code_challenge_method",
+          "code_verifier"
+        ]
+      },
+      "$ref": "#/$defs/__schema0"
+    },
+    "__schema45": {
+      "type": "string",
+      "const": "oauth_device_code"
+    },
+    "__schema46": {
+      "type": "string",
+      "const": "oauth_discovery"
+    },
+    "__schema47": {
+      "type": "string",
+      "enum": [
+        "authorization_code",
+        "device_code"
+      ]
+    },
+    "__schema48": {
+      "$ref": "#/$defs/__schema38"
+    },
+    "__schema49": {
+      "$ref": "#/$defs/__schema43"
+    },
+    "__schema50": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^#\\/(?:servers|(?:paths|components\\/pathItems)\\/.+\\/servers)$"
+    },
+    "__schema51": {
+      "type": "object",
+      "properties": {
+        "base_url": {
+          "$ref": "#/$defs/__schema11"
+        }
+      },
+      "required": [
+        "base_url"
+      ],
+      "additionalProperties": false
+    },
+    "__schema52": {
+      "type": "object",
+      "properties": {
+        "declared_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "allOf": [
+            {
+              "pattern": "^(?!.*\\{\\{)"
+            },
+            {
+              "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+            }
+          ],
+          "description": "An OpenAPI server URL exactly as the document declares it, not a recipe template."
+        },
+        "variables": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/__schema13"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "$ref": "#/$defs/__schema0"
+                  },
+                  "values": {
+                    "$ref": "#/$defs/__schema53"
+                  }
+                },
+                "required": [
+                  "input",
+                  "values"
+                ],
+                "additionalProperties": false,
+                "description": "Sets a server variable from an input by mapping each input value to a variable value. The input should declare enum, and values should cover it."
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "declared_url"
+      ],
+      "additionalProperties": false
+    },
+    "__schema53": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/__schema8"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema8"
+      },
+      "minProperties": 1,
+      "maxProperties": 100
+    },
+    "__schema54": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9!#$%&'*+.^_`|~-]+$",
+      "description": "A lowercase HTTP header name.",
+      "not": {
+        "enum": [
+          "connection",
+          "content-length",
+          "content-type",
+          "cookie",
+          "host",
+          "keep-alive",
+          "proxy-authorization",
+          "proxy-connection",
+          "set-cookie",
+          "te",
+          "trailer",
+          "transfer-encoding",
+          "upgrade",
+          "user-agent",
+          "authorization"
+        ]
+      },
+      "$ref": "#/$defs/__schema24"
+    },
+    "__schema55": {
+      "$ref": "#/$defs/__schema1"
+    },
+    "__schema56": {
+      "$ref": "#/$defs/__schema2"
+    },
+    "__schema57": {
+      "$ref": "#/$defs/__schema7"
+    }
+  },
+  "title": "Provider Recipe",
+  "description": "Generated from apps/reef/app/lib/provider-recipes/recipe-format.ts. Run npm run recipes:schema --prefix apps/reef to update it."
+}

@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.algolia.com/doc/rest-api/search
+# Complete official Search API descriptor. Application ID must match the API key account.
+schema_version: 1
+id: algolia
+display_name: Algolia
+description: Indexes, records and search results from Algolia.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/algolia/api-clients-automation/main/specs/bundled/search.yml
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: API key
+      documentation_url: https://www.algolia.com/doc/rest-api/search
+      fields:
+        api_key:
+          label: API key
+          sensitive: true
+      headers:
+        x-algolia-api-key:
+          field: api_key
+  default: api_key
+inputs:
+  application_id:
+    type: hostname
+    label: Application ID
+    documentation_url: https://www.algolia.com/doc/rest-api/search
+servers:
+  '#/servers':
+    declared_url: https://{appId}.algolia.net
+    variables:
+      appId: '{{input.application_id}}'
+request_headers:
+  x-algolia-application-id: '{{input.application_id}}'
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

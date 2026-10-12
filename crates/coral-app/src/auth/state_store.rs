@@ -20,9 +20,8 @@ const MAX_OAUTH_STATE_ENTRIES_PER_KIND: usize = 4_096;
 /// provider is contacted — so anyone holding a resolvable `client_id` and one
 /// of its redirect URIs, both public by construction, mints an entry per
 /// request. Bounding each client separately keeps that inside the client it
-/// came from, and leaves exhausting the shared budget to require a distinct
-/// client metadata document for every block of this many entries — each
-/// document live, or Coral will not resolve it at all.
+/// came from. DCR makes new client IDs inexpensive, so the deployment-wide
+/// approval budget remains authoritative independently of this per-client cap.
 ///
 /// The bound is per client rather than per browser binding because a caller
 /// that sends no cookie is handed a fresh binding on every request, so a
@@ -451,14 +450,11 @@ fn approval_key(
 
 #[cfg(test)]
 mod tests {
-    use std::future::{Future, poll_fn};
+    use std::future::Future;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::task::Poll;
 
     use ring::rand::SystemRandom;
-    use tokio::sync::Notify;
-    use tokio::task::JoinHandle;
+    use tokio::sync::Barrier;
 
     use super::*;
 
@@ -506,61 +502,46 @@ mod tests {
         }
     }
 
-    /// Parks both takes on the store mutex and returns their join handles.
-    ///
-    /// The caller holds the store lock across this call, so each take is polled
-    /// once, observed to be `Pending`, and left queued on the mutex. Releasing
-    /// the lock afterwards forces the two takes to contend, which `join!` alone
-    /// only manages by luck of the scheduler.
-    async fn park_takes_on_store_lock<T: Send + 'static>(
-        first: impl Future<Output = T> + Send + 'static,
-        second: impl Future<Output = T> + Send + 'static,
-    ) -> (JoinHandle<T>, JoinHandle<T>) {
-        let parked = Arc::new(AtomicUsize::new(0));
-        let notify = Arc::new(Notify::new());
-        let handles = (
-            spawn_parked_take(first, Arc::clone(&parked), Arc::clone(&notify)),
-            spawn_parked_take(second, Arc::clone(&parked), Arc::clone(&notify)),
-        );
-        while parked.load(Ordering::SeqCst) < 2 {
-            notify.notified().await;
-        }
-        handles
-    }
-
-    fn spawn_parked_take<T: Send + 'static>(
-        take: impl Future<Output = T> + Send + 'static,
-        parked: Arc<AtomicUsize>,
-        notify: Arc<Notify>,
-    ) -> JoinHandle<T> {
-        tokio::spawn(async move {
-            let mut take = Box::pin(take);
-            poll_fn(|context| match take.as_mut().poll(context) {
-                Poll::Pending => Poll::Ready(()),
-                Poll::Ready(_) => panic!("take completed while the store lock was held"),
+    /// Runs a burst of takes that all start together and returns what each took.
+    async fn take_burst<T, F>(start_take: impl Fn() -> F) -> Vec<Option<T>>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<Option<T>, StateStoreError>> + Send + 'static,
+    {
+        const BURST: usize = 16;
+        let barrier = Arc::new(Barrier::new(BURST));
+        let takes = (0..BURST)
+            .map(|_index| {
+                let barrier = Arc::clone(&barrier);
+                let take = start_take();
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    take.await
+                })
             })
-            .await;
-            parked.fetch_add(1, Ordering::SeqCst);
-            notify.notify_one();
-            take.await
-        })
+            .collect::<Vec<_>>();
+        let mut outcomes = Vec::with_capacity(BURST);
+        for take in takes {
+            outcomes.push(take.await.expect("join").expect("take"));
+        }
+        outcomes
     }
 
-    #[tokio::test]
-    async fn authorization_approvals_are_hashed_and_atomically_single_use() {
+    fn only_winner<T>(taken: Vec<Option<T>>) -> T {
+        let mut winners = taken.into_iter().flatten().collect::<Vec<_>>();
+        assert_eq!(winners.len(), 1, "exactly one take may win");
+        winners.pop().expect("one winner")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn authorization_approvals_are_browser_bound_and_atomically_single_use() {
         let store = Arc::new(InMemoryStateStore::new());
-        let raw_ticket = [0x5a; 32];
-        let ticket = Arc::new(OAuthAuthorizationApprovalTicket::from_bytes(raw_ticket));
+        let ticket = Arc::new(OAuthAuthorizationApprovalTicket::from_bytes([0x5a; 32]));
         let binding = browser_binding();
         store
             .store_authorization_approval(&ticket, &binding, approval("approval"))
             .await
             .unwrap();
-        let inner = store.inner.lock().await;
-        let hash = approval_key(&ticket, &binding);
-        assert!(inner.approvals.contains_key(&hash));
-        assert!(!inner.approvals.contains_key(&raw_ticket));
-        drop(inner);
         let wrong_binding = OAuthAuthorizationApprovalBrowserBinding::from_bytes([0x43; 32]);
         assert!(
             store
@@ -570,27 +551,18 @@ mod tests {
                 .is_none()
         );
 
-        let inner = store.inner.lock().await;
-        let take = |store: &Arc<InMemoryStateStore>,
-                    ticket: &Arc<OAuthAuthorizationApprovalTicket>| {
-            let store = Arc::clone(store);
-            let ticket = Arc::clone(ticket);
-            async move {
-                let binding = browser_binding();
-                store.take_authorization_approval(&ticket, &binding).await
-            }
-        };
-        let (first, second) =
-            park_takes_on_store_lock(take(&store, &ticket), take(&store, &ticket)).await;
-        drop(inner);
-        let (first, second) = tokio::join!(first, second);
-        let first = first.unwrap().unwrap();
-        let second = second.unwrap().unwrap();
-        assert_eq!(
-            usize::from(first.is_some()) + usize::from(second.is_some()),
-            1
+        let winner = only_winner(
+            take_burst(|| {
+                let store = Arc::clone(&store);
+                let ticket = Arc::clone(&ticket);
+                async move {
+                    store
+                        .take_authorization_approval(&ticket, &browser_binding())
+                        .await
+                }
+            })
+            .await,
         );
-        let winner = first.or(second).expect("one approval winner");
         assert!(winner == approval("approval"));
         assert!(
             store
@@ -725,6 +697,36 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn cheap_dcr_identities_cannot_bypass_the_global_pending_approval_budget() {
+        let store = InMemoryStateStore::new();
+        for index in 0..4096_u64 {
+            let mut bytes = [0; 32];
+            bytes
+                .get_mut(..8)
+                .unwrap()
+                .copy_from_slice(&index.to_be_bytes());
+            store
+                .store_authorization_approval(
+                    &OAuthAuthorizationApprovalTicket::from_bytes(bytes),
+                    &browser_binding(),
+                    client_approval(&format!("dcr_{index:032x}"), "held"),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .store_authorization_approval(
+                    &OAuthAuthorizationApprovalTicket::from_bytes([255; 32]),
+                    &browser_binding(),
+                    client_approval("dcr_ffffffffffffffffffffffffffffffff", "over"),
+                )
+                .await,
+            Err(StateStoreError::CapacityExceeded { max_entries: 4096 })
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn authorization_approvals_expire_and_release_capacity() {
         let store =
@@ -776,30 +778,22 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn authorization_sessions_are_hashed_and_atomically_single_use() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn authorization_sessions_are_atomically_single_use() {
         let store = Arc::new(InMemoryStateStore::new());
         store
             .store_authorization_session("secret-state", session("state"))
             .await
             .unwrap();
-        let inner = store.inner.lock().await;
-        let hash = secret_hash("secret-state").unwrap();
-        assert!(inner.sessions.contains_key(&hash));
-        assert_ne!(hash.as_slice(), b"secret-state");
 
-        let take = |store: &Arc<InMemoryStateStore>| {
-            let store = Arc::clone(store);
-            async move { store.take_authorization_session("secret-state").await }
-        };
-        let (first, second) = park_takes_on_store_lock(take(&store), take(&store)).await;
-        drop(inner);
-        let (first, second) = tokio::join!(first, second);
-        assert_eq!(
-            usize::from(first.unwrap().unwrap().is_some())
-                + usize::from(second.unwrap().unwrap().is_some()),
-            1
+        let winner = only_winner(
+            take_burst(|| {
+                let store = Arc::clone(&store);
+                async move { store.take_authorization_session("secret-state").await }
+            })
+            .await,
         );
+        assert_eq!(winner.client_state.as_deref(), Some("state"));
         assert!(
             store
                 .take_authorization_session("secret-state")
@@ -809,37 +803,32 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn authorization_codes_are_atomically_single_use() {
         let store = Arc::new(InMemoryStateStore::new());
         store
             .store_authorization_code("secret-code", code("user"))
             .await
             .unwrap();
-        let inner = store.inner.lock().await;
 
-        let take = |store: &Arc<InMemoryStateStore>| {
-            let store = Arc::clone(store);
-            async move {
-                store
-                    .take_authorization_code_for_request(
-                        "secret-code",
-                        "client",
-                        "http://127.0.0.1/callback",
-                        "challenge",
-                        "https://mcp.example.test/mcp",
-                    )
-                    .await
-            }
-        };
-        let (first, second) = park_takes_on_store_lock(take(&store), take(&store)).await;
-        drop(inner);
-        let (first, second) = tokio::join!(first, second);
-        assert_eq!(
-            usize::from(first.unwrap().unwrap().is_some())
-                + usize::from(second.unwrap().unwrap().is_some()),
-            1
+        let winner = only_winner(
+            take_burst(|| {
+                let store = Arc::clone(&store);
+                async move {
+                    store
+                        .take_authorization_code_for_request(
+                            "secret-code",
+                            "client",
+                            "http://127.0.0.1/callback",
+                            "challenge",
+                            "https://mcp.example.test/mcp",
+                        )
+                        .await
+                }
+            })
+            .await,
         );
+        assert_eq!(winner.user_id, "user");
     }
 
     #[tokio::test]

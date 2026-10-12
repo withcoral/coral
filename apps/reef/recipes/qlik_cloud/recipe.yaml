@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://help.qlik.com/en-US/cloud-services/Subsystems/Hub/Content/Sense_Hub/QlikMCP/Connecting-Qlik-MCP-server.htm
+# Tenant metadata advertises scopes. Manually registered apps must enable user_default and mcp:execute.
+schema_version: 1
+id: qlik_cloud
+display_name: Qlik Cloud
+description: Apps, data models and analytics from Qlik Cloud.
+source:
+  mcp:
+    url: https://{{input.hostname}}/api/ai/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Qlik Cloud
+      flow: authorization_code
+      documentation_url: https://help.qlik.com/en-US/cloud-services/Subsystems/Hub/Content/Sense_Hub/QlikMCP/Connecting-Qlik-MCP-server.htm
+  default: oauth
+inputs:
+  hostname:
+    type: hostname
+    label: Qlik Cloud tenant hostname
+icons:
+  light: logo.svg

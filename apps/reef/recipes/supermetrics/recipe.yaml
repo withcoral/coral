@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.supermetrics.com/docs/supermetrics-mcp-server
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: supermetrics
+display_name: Supermetrics
+description: Connected marketing data and account metadata from Supermetrics.
+icons:
+  light: logo.png
+source:
+  mcp:
+    url: https://mcp.supermetrics.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Supermetrics
+      documentation_url: https://docs.supermetrics.com/docs/supermetrics-mcp-server
+      flow: authorization_code
+    api_token:
+      method: bearer
+      label: API key
+      documentation_url: https://mcp.supermetrics.com/docs
+  default: oauth

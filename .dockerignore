@@ -7,13 +7,21 @@
 .playwright-cli
 .verify
 .envrc
+.dev
 tasks
 target
 **/node_modules
 **/.env
 **/.env.*
-apps/coral-ui/build
-apps/coral-ui/.react-router
-apps/coral-ui/app/generated
-apps/coral-ui/storybook-static
-benchmarks/universal-search/runs
+apps/reef/build
+apps/reef/server.mjs
+# Desktop build output, including a staged runtime binary
+apps/desktop/out
+apps/desktop/dist
+apps/desktop/resources/coral
+apps/desktop/resources/reef
+apps/reef/.react-router
+apps/reef/app/generated
+apps/reef/storybook-static
+# Test-only IdP controls and sensitive browser evidence never enter image builds.
+apps/reef/e2e

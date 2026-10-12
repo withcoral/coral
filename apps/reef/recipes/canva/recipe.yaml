@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.canva.dev/docs/apps/mcp/access/
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: canva
+display_name: Canva
+description: Designs, assets and exports from Canva.
+icons:
+  light: logo.svg
+source:
+  mcp:
+    url: https://api.canva.com/connect/v1/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Canva
+      documentation_url: https://www.canva.dev/docs/apps/mcp/access/
+      flow: authorization_code
+      description: Create a Canva MCP app and register the callback URL before you sign in.
+      client:
+        authentication: client_secret_basic
+  default: oauth

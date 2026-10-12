@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 use super::AuthorizationServerHttpState;
 use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARAMETERS};
 use super::response::security_headers;
+use coral_auth::PrivateAudience;
 
 /// The largest form body this endpoint reads.
 ///
@@ -73,6 +74,13 @@ pub(super) async fn oauth_token(
     {
         return token_error(TokenError::InvalidRequest);
     }
+    let Some(target) = TokenTarget::resolve(
+        &state,
+        &resource,
+        form.coral_audience.as_deref().map(String::as_str),
+    ) else {
+        return token_error(TokenError::InvalidTarget);
+    };
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let authorization = match state
         .code_store
@@ -90,11 +98,7 @@ pub(super) async fn oauth_token(
     // perform: the code being redeemed was issued to a browser that carried
     // someone through their identity provider. An agent obtains its own
     // credential elsewhere, and whatever mints one declares it there.
-    let issued = match state.session_tokens.issue_access_token(
-        &authorization.user_id,
-        &authorization.client_id,
-        &authorization.resource,
-    ) {
+    let issued = match target.issue(&state.session_tokens, &authorization) {
         Ok(issued) => issued,
         Err(error) => {
             tracing::warn!(%error, "token endpoint could not issue an access token");
@@ -120,6 +124,61 @@ pub(super) async fn oauth_token(
             "expires_in": expires_in,
         }),
     )
+}
+
+// First-party selection narrows the resource approved at login; it never
+// changes the User, creates a workload credential, or upgrades MCP to Reef.
+enum TokenTarget {
+    Public,
+    Mcp(coral_workspace::WorkspaceId),
+    Reef,
+}
+
+impl TokenTarget {
+    fn resolve(
+        state: &AuthorizationServerHttpState,
+        resource: &str,
+        audience: Option<&str>,
+    ) -> Option<Self> {
+        let workspace = state
+            .workspace_resource_family
+            .as_ref()
+            .and_then(|family| family.parse_resource(resource));
+        let Some(audience) = audience else {
+            return Some(Self::Public);
+        };
+        match PrivateAudience::parse(audience)? {
+            PrivateAudience::Mcp => workspace.map(Self::Mcp),
+            PrivateAudience::Reef => (workspace.is_none()
+                && state.authorization_resources.contains(resource))
+            .then_some(Self::Reef),
+        }
+    }
+
+    fn issue(
+        &self,
+        issuer: &coral_auth::SessionTokenIssuer,
+        authorization: &crate::auth::state_store::OAuthAuthorizationCodeRecord,
+    ) -> Result<coral_auth::IssuedAccessToken, String> {
+        match self {
+            Self::Mcp(workspace) => issuer.issue_workspace_access_token(
+                &authorization.user_id,
+                &authorization.client_id,
+                PrivateAudience::Mcp.as_str(),
+                workspace,
+            ),
+            Self::Reef => issuer.issue_access_token(
+                &authorization.user_id,
+                &authorization.client_id,
+                PrivateAudience::Reef.as_str(),
+            ),
+            Self::Public => issuer.issue_access_token(
+                &authorization.user_id,
+                &authorization.client_id,
+                &authorization.resource,
+            ),
+        }
+    }
 }
 
 fn client_auth_rejection(headers: &axum::http::HeaderMap) -> Option<Response> {
@@ -173,6 +232,7 @@ struct TokenForm {
     client_id: Option<Zeroizing<String>>,
     code_verifier: Option<Zeroizing<String>>,
     resource: Option<Zeroizing<String>>,
+    coral_audience: Option<Zeroizing<String>>,
 }
 
 enum FormError {
@@ -213,6 +273,7 @@ fn parse_form(raw: &[u8]) -> Result<TokenForm, FormError> {
             "client_id" => &mut form.client_id,
             "code_verifier" => &mut form.code_verifier,
             "resource" => &mut form.resource,
+            "coral_audience" => &mut form.coral_audience,
             _ => continue,
         };
         *target = Some(value);
@@ -305,31 +366,23 @@ fn json_response(status: StatusCode, body: &serde_json::Value) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-    use std::path::Path;
     use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::{HeaderMap, HeaderValue};
-    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-    use ring::rand::SystemRandom;
-    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+
     use serde_json::Value;
     use url::form_urlencoded;
 
-    use super::super::client_metadata::HttpClientMetadataResolver;
     use super::super::query;
+    use super::super::test_state::http_state;
     use super::*;
-    use crate::auth::config::AuthSettings;
-    use crate::auth::provider_client::OidcProviderClient;
-    use crate::auth::session::SessionTokenIssuer;
     use crate::auth::state_store::{CodeStore, InMemoryStateStore, OAuthAuthorizationCodeRecord};
+    use coral_auth::SessionTokenIssuer;
 
     const CLIENT: &str = "https://client.example.test/oauth/client.json";
     const REDIRECT: &str = "http://127.0.0.1:14554/oauth/callback";
     const VERIFIER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
-    const TTL: u64 = 300;
-    const AUTH_ISSUER: &str = "https://auth.example.test";
     const RESOURCE: &str = "https://api.example.test/mcp";
 
     fn state() -> (
@@ -337,58 +390,97 @@ mod tests {
         Arc<InMemoryStateStore>,
         SessionTokenIssuer,
     ) {
-        let signing_key =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key");
-        let signing_key = BASE64_STANDARD.encode(signing_key.as_ref());
-        let raw = format!(
-            r#"
-[auth.session]
-signing_key_env = "TEST_SESSION_SIGNING_KEY"
-access_token_ttl_seconds = {TTL}
-
-[auth.authorization_server]
-issuer = "{AUTH_ISSUER}"
-
-[auth.provider]
-type = "oidc"
-issuer = "https://accounts.example.test"
-client_id = "upstream-client"
-client_secret = "test-secret"
-redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
-"#
-        );
-        let settings = AuthSettings::from_toml(&raw)
-            .expect("valid auth settings")
-            .expect("configured auth settings");
-        let (settings, session_tokens) = settings
-            .resolve_runtime_dependencies(Path::new("config.toml"), &|name| {
-                if name == "TEST_SESSION_SIGNING_KEY" {
-                    Ok(Some(signing_key.clone()))
-                } else {
-                    Ok(None)
-                }
-            })
-            .expect("resolved auth settings");
         let store = Arc::new(InMemoryStateStore::new());
-        let authorization_resources = Arc::new(BTreeSet::from([RESOURCE.into()]));
-        let client_metadata_resolver = Arc::new(
-            HttpClientMetadataResolver::new(AUTH_ISSUER, &authorization_resources)
-                .expect("client metadata resolver"),
+        let state = http_state(
+            "https://accounts.example.test",
+            "",
+            store.clone(),
+            &[RESOURCE],
         );
-        let state = AuthorizationServerHttpState {
-            settings: Arc::new(settings),
-            session_tokens: session_tokens.clone(),
-            approval_store: store.clone(),
-            session_store: store.clone(),
-            code_store: store.clone(),
-            provider_client: OidcProviderClient::new().expect("client"),
-            authorization_resources,
-            workspace_resource_family: None,
-            client_metadata_resolver,
-            database: None,
-        };
+        let session_tokens = state.session_tokens.clone();
         (state, store, session_tokens)
+    }
+
+    #[tokio::test]
+    async fn first_party_tokens_keep_the_authorized_surface_and_workspace() {
+        let workspace =
+            coral_workspace::WorkspaceId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
+        let workspace_resource = format!("https://mcp.example.test/workspaces/{workspace}/mcp");
+        for (resource, requested, expected_status) in [
+            (workspace_resource.as_str(), "mcp", StatusCode::OK),
+            (workspace_resource.as_str(), "reef", StatusCode::BAD_REQUEST),
+            (
+                workspace_resource.as_str(),
+                "unknown",
+                StatusCode::BAD_REQUEST,
+            ),
+            (RESOURCE, "reef", StatusCode::OK),
+            (RESOURCE, "mcp", StatusCode::BAD_REQUEST),
+        ] {
+            let (mut state, store, _) = state();
+            state.workspace_resource_family = Some(Arc::new(
+                crate::WorkspaceMcpUrls::new(
+                    crate::CanonicalOauthUrl::parse("https://mcp.example.test").unwrap(),
+                )
+                .unwrap(),
+            ));
+            store
+                .store_authorization_code(
+                    "code",
+                    OAuthAuthorizationCodeRecord {
+                        user_id: "user".into(),
+                        client_id: CLIENT.into(),
+                        redirect_uri: REDIRECT.into(),
+                        code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes())),
+                        resource: resource.to_owned(),
+                    },
+                )
+                .await
+                .unwrap();
+            let server = super::super::start_listener(
+                "127.0.0.1:0".parse().unwrap(),
+                super::super::auth_router(state),
+            )
+            .await
+            .unwrap();
+            let body = set_field(
+                &set_field(
+                    &form("code", CLIENT, REDIRECT, VERIFIER),
+                    "resource",
+                    Some(resource),
+                ),
+                "coral_audience",
+                Some(requested),
+            );
+            let response = reqwest::Client::new()
+                .post(format!("{}/oauth/token", server.endpoint_uri()))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected_status);
+            let json: Value = response.json().await.unwrap();
+            if expected_status == StatusCode::OK {
+                let token = json.get("access_token").unwrap().as_str().unwrap();
+                let claims: Value = serde_json::from_slice(
+                    &URL_SAFE_NO_PAD
+                        .decode(token.split('.').nth(1).unwrap())
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(claims.get("aud").unwrap(), requested);
+                assert_eq!(claims.get("sub").unwrap(), "user");
+                if requested == "mcp" {
+                    assert_eq!(claims.get("workspace_id").unwrap(), &workspace.to_string());
+                } else {
+                    assert!(claims.get("workspace_id").is_none());
+                }
+            } else {
+                assert_eq!(json.get("error").unwrap(), "invalid_target");
+            }
+            server.shutdown().await.unwrap();
+        }
     }
 
     async fn seed(store: &dyn CodeStore, code: &str, verifier: &str) {
@@ -687,17 +779,48 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
         assert_eq!(get("token_type"), "Bearer");
         assert!(value.get("scope").is_none());
         let expires_in = get("expires_in").as_u64().expect("expires_in");
-        assert!(expires_in > 0 && expires_in <= TTL);
-        let validated = session
-            .verifier()
-            .validate_access_token(
-                get("access_token").as_str().expect("access token"),
-                &[RESOURCE],
+        assert!(expires_in > 0 && expires_in <= session.access_token_ttl().as_secs());
+        let fixture = coral_test_support::TestDatabase::new(coral_workspace::migrator())
+            .await
+            .unwrap();
+        let organization = coral_workspace::OrganizationModule::new(fixture.database());
+        let user = coral_workspace::AuthenticatedUser::organization_member(
+            coral_workspace::UserId::parse("raw/provider/subject").unwrap(),
+            coral_workspace::OrganizationRole::Member,
+        );
+        organization
+            .provision_login(&coral_workspace::ChangeContext::new(
+                user.clone(),
+                1,
+                coral_workspace::TraceId::current_or_new(),
+            ))
+            .await
+            .unwrap();
+        let authentication = coral_auth::PrincipalAuthentication::new(
+            &session,
+            organization,
+            coral_workspace::WorkspaceModule::new(fixture.database()),
+        );
+        let token = get("access_token").as_str().expect("access token");
+        let principal = authentication
+            .authenticate(
+                &coral_workspace::WorkspaceId::parse("01234567-89ab-4cde-8fab-0123456789ab")
+                    .unwrap(),
+                Some(token),
+                RESOURCE,
             )
-            .expect("valid access token");
-        assert_eq!(validated.audience, RESOURCE);
-        assert_eq!(validated.client_id, CLIENT);
-        assert_eq!(validated.user_id, "raw/provider/subject");
+            .await
+            .expect("redeemed token authenticates through the domain Interface");
+        assert_eq!(principal.principal().id().as_str(), user.user_id().as_str());
+        // Wire-format assertions only; authentication above verifies the credential.
+        let claims = jsonwebtoken::dangerous::insecure_decode::<Value>(token)
+            .unwrap()
+            .claims;
+        assert_eq!(claims.get("aud").and_then(Value::as_str), Some(RESOURCE));
+        assert_eq!(
+            claims.get("client_id").and_then(Value::as_str),
+            Some(CLIENT)
+        );
         // Single use is the store's guarantee rather than this handler's:
         // `take_authorization_code_for_request` does its get-check-remove under
         // one lock, so two redemptions of a code cannot both observe it. This

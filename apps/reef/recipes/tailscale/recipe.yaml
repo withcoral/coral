@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: tailscale
+display_name: Tailscale
+description: Devices, users, keys, DNS, access policy and logs from Tailscale.
+icons:
+  light: tailscale.svg
+  dark: tailscale-dark.svg
+
+# Tailscale serves its own OpenAPI document. Operations take a {tailnet} path
+# parameter, and "-" names the default tailnet of the token.
+source:
+  openapi:
+    url: https://api.tailscale.com/api/v2?outputOpenapiSchema=true
+
+authentication:
+  default: api_key
+  options:
+    api_key:
+      # Tailscale also accepts the same token as an HTTP Basic username with an
+      # empty password. That sends the same credential, so it is not offered.
+      method: bearer
+      label: Paste an API access token
+      description: Create an access token on the Keys page of the Tailscale admin console.
+      documentation_url: https://tailscale.com/docs/reference/tailscale-api
+    oauth:
+      # Tailscale OAuth apps (alpha). An Owner or Admin creates the app through
+      # the Tailscale API and gets its client id and secret. Only users in the
+      # app's own tailnet can authorize, so there is no shared Coral app.
+      # Tailscale's OAuth clients use the client credentials grant, which no
+      # recipe method expresses.
+      method: oauth_authorization_code
+      label: Sign in with Tailscale
+      description: Create a Tailscale OAuth app before you sign in.
+      documentation_url: https://tailscale.com/docs/features/oauth-apps
+      authorization_url: https://login.tailscale.com/a/oauth_authorize
+      token_url: https://api.tailscale.com/api/v2/oauth/token
+      client:
+        authentication: client_secret_post
+      # Each scope includes its :read variant. all and all:read are omitted
+      # because the list below covers every area explicitly.
+      scopes:
+        - devices:core # Read devices, authorize or remove them, and edit their tags.
+        - devices:routes # Approve subnet routes and exit nodes.
+        - devices:posture_attributes # Read and write device posture attributes.
+        - device_invites # Read, resend and delete device invites.
+        - users # Read users, change roles, and approve, suspend, restore or delete users.
+        - policy_file # Read, validate and change the tailnet policy file.
+        - dns # Read and change DNS settings.
+        - auth_keys # Read and create auth keys.
+        - api_access_tokens # Read and revoke API access tokens.
+        - oauth_keys # Read and manage OAuth clients.
+        - federated_keys # Read and manage federated identities.
+        - oauth_apps # Read and manage OAuth apps.
+        - webhooks # Read, change and test webhooks, and rotate their secrets.
+        - log_streaming # Read and change log streaming configuration.
+        - logs:network # Read network flow logs and change their settings.
+        - logs:configuration:read # Read configuration audit logs. There is no write scope.
+        - account_settings # Read and change tailnet contacts.
+        - feature_settings # Read and change posture integrations and tailnet feature settings.
+        - networking_settings # Read and change networking settings, such as HTTPS certificates.
+        - services # Read and manage Tailscale Services.
+        - tailnets # Read and create tailnets in an organization.

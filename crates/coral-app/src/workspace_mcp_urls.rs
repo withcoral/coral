@@ -1,369 +1,169 @@
-//! Per-workspace MCP resource URLs: one template, three roles.
+//! OAuth resource and metadata URLs for the canonical Workspace MCP route.
 //!
-//! Every served workspace has exactly one MCP URL, derived from the configured
-//! public base URL as `<base>/workspace/<name>`. That one string is the routing
-//! key, the OAuth protected-resource identifier, and the access-token audience,
-//! so derivation and parsing live here — a second derivation anywhere else
-//! could mint an audience that no longer matches the advertised resource.
-//! [`CanonicalOauthUrl`] canonicalizes the base; the workspace segment is held
-//! to a charset strict enough that concatenation is itself canonical.
+//! The MCP Adapter owns the path and stable-identity parsing. This helper adds
+//! the configured public origin; neither display names nor URL prefixes select
+//! a Workspace. A matching URL grants no authority.
 
-use url::Position;
+use coral_mcp::{parse_workspace_mcp_path, workspace_mcp_path};
+use coral_workspace::WorkspaceId;
 
-use crate::oauth_resource::CanonicalOauthUrl;
+use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 
 /// The well-known prefix protected-resource metadata is served under (RFC 9728).
 pub const PROTECTED_RESOURCE_METADATA_ROOT: &str = "/.well-known/oauth-protected-resource";
 
-/// The path segment between the base URL and the workspace name.
-pub const WORKSPACE_ROUTE_SEGMENT: &str = "workspace";
-
-/// A workspace name in the strict charset per-workspace URLs admit.
-///
-/// The charset is the RFC 3986 unreserved set (ASCII alphanumerics plus
-/// `-`, `.`, `_`, `~`), excluding `.` and `..`. It is deliberately tighter
-/// than the app's workspace-name validation: a name outside it cannot appear
-/// in a URL, a challenge header, or an audience without escaping, and escaping
-/// would create a second spelling of the one canonical string. A workspace
-/// whose name falls outside this set is simply unreachable by URL until it is
-/// renamed. No percent-encoding is admitted: `%` is not in the charset, so an
-/// encoded spelling of a valid name is rejected rather than normalized.
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct McpWorkspaceSegment(String);
-
-impl McpWorkspaceSegment {
-    /// Parses one raw path segment, refusing anything outside the charset.
-    #[must_use]
-    pub fn parse(segment: &str) -> Option<Self> {
-        let charset_ok = !segment.is_empty()
-            && segment.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
-            });
-        if !charset_ok || segment == "." || segment == ".." {
-            return None;
-        }
-        Some(Self(segment.to_string()))
-    }
-
-    /// Borrows the validated workspace name.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for McpWorkspaceSegment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-/// Derives and parses the per-workspace MCP URL family under one base URL.
+/// Derives and parses Workspace MCP resources under one validated public origin.
 #[derive(Clone, Debug)]
 pub struct WorkspaceMcpUrls {
-    base: CanonicalOauthUrl,
+    origin: CanonicalOauthUrl,
 }
 
 impl WorkspaceMcpUrls {
-    /// Builds the URL family under a canonical base, e.g. `https://host/mcp`.
-    #[must_use]
-    pub fn new(base: CanonicalOauthUrl) -> Self {
-        Self { base }
+    /// Builds a URL family from an HTTPS or explicit-loopback HTTP origin.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-root path: MCP is served only at the canonical
+    /// `/workspaces/{workspace_id}/mcp` route, not under configurable prefixes.
+    pub fn new(origin: CanonicalOauthUrl) -> Result<Self, OauthUrlError> {
+        if origin.url().path() != "/" {
+            return Err(OauthUrlError::Origin);
+        }
+        Ok(Self { origin })
     }
 
-    /// Returns the canonical base the family hangs under.
+    /// Returns the canonical public origin, without a trailing slash.
     #[must_use]
     pub fn base(&self) -> &CanonicalOauthUrl {
-        &self.base
+        &self.origin
     }
 
-    /// `scheme://host[:port]`, with no path — borrowed from the base URL.
-    fn origin(&self) -> &str {
-        &self.base.url()[..Position::BeforePath]
-    }
-
-    /// The listener-relative path of the base, with a root path as `""` and no
-    /// trailing slash.
-    ///
-    /// Routes and metadata paths are derived by appending to this. Normalizing
-    /// here — `CanonicalOauthUrl` strips only a root path, so a non-root
-    /// trailing slash survives canonicalization — is what keeps a
-    /// trailing-slash `public_url` from producing a `//workspace/...` double
-    /// slash; trimming every trailing slash also folds the root path down to
-    /// the empty string under the same rule. The trimmed slice borrows the
-    /// base, so this costs nothing to compute.
-    #[must_use]
-    pub fn base_path(&self) -> &str {
-        self.base.url().path().trim_end_matches('/')
-    }
-
-    /// The base as a resource identifier — `origin` plus the normalized base
-    /// path — the string every per-workspace resource extends.
-    fn base_identifier(&self) -> String {
-        format!("{}{}", self.origin(), self.base_path())
-    }
-
-    /// Whether `candidate` names the family base in either spelling.
-    ///
-    /// The base has two canonical forms: [`Self::base`]'s identifier keeps a
-    /// non-root trailing slash, while the prefix every per-workspace resource
-    /// extends — see [`Self::resource`] — trims it. The base is an audience
-    /// of no surface, so an `auth.allowed_audiences` entry matching *either*
-    /// spelling would resurrect the audience the per-workspace family replaced;
-    /// configuration rejects both.
+    /// Whether a canonical audience names the origin rather than a Workspace.
     #[must_use]
     pub fn is_base_audience(&self, candidate: &str) -> bool {
-        self.base().identifier() == candidate || self.base_identifier() == candidate
+        self.origin.identifier() == candidate
     }
 
-    /// The one MCP resource URL for a workspace: routing key, OAuth resource,
-    /// and token audience, byte-identical in all three roles.
+    /// The exact Workspace MCP endpoint and OAuth resource/audience.
     #[must_use]
-    pub fn resource(&self, segment: &McpWorkspaceSegment) -> String {
+    pub fn resource(&self, workspace_id: &WorkspaceId) -> String {
         format!(
-            "{}/{WORKSPACE_ROUTE_SEGMENT}/{segment}",
-            self.base_identifier()
+            "{}{}",
+            self.origin.identifier(),
+            workspace_mcp_path(workspace_id)
         )
     }
 
-    /// The listener-relative MCP route path for a workspace.
+    /// The RFC 9728 protected-resource metadata URL for one Workspace.
     #[must_use]
-    pub fn route_path(&self, segment: &McpWorkspaceSegment) -> String {
-        format!("{}/{WORKSPACE_ROUTE_SEGMENT}/{segment}", self.base_path())
-    }
-
-    /// The RFC 9728 metadata URL for a workspace's resource: the well-known
-    /// suffix is inserted between the host and the resource's path.
-    #[must_use]
-    pub fn metadata_url(&self, segment: &McpWorkspaceSegment) -> String {
-        format!("{}{}", self.origin(), self.metadata_path(segment))
-    }
-
-    /// The listener-relative path [`Self::metadata_url`] is served at.
-    #[must_use]
-    pub fn metadata_path(&self, segment: &McpWorkspaceSegment) -> String {
+    pub fn metadata_url(&self, workspace_id: &WorkspaceId) -> String {
         format!(
-            "{PROTECTED_RESOURCE_METADATA_ROOT}{}/{WORKSPACE_ROUTE_SEGMENT}/{segment}",
-            self.base_path()
+            "{}{}",
+            self.origin.identifier(),
+            self.metadata_path(workspace_id)
         )
     }
 
-    /// Parses a canonical resource identifier back to its workspace segment.
-    ///
-    /// The exact inverse of [`Self::resource`]: anything that is not the base,
-    /// the literal workspace segment, and one charset-valid name is refused.
+    /// The listener-relative protected-resource metadata path.
     #[must_use]
-    pub fn parse_resource(&self, resource: &str) -> Option<McpWorkspaceSegment> {
-        Self::parse_tail(resource.strip_prefix(&self.base_identifier())?)
-    }
-
-    /// Parses a listener-relative MCP route path back to its workspace segment.
-    ///
-    /// The exact inverse of [`Self::route_path`].
-    #[must_use]
-    pub fn parse_route_path(&self, path: &str) -> Option<McpWorkspaceSegment> {
-        Self::parse_tail(path.strip_prefix(self.base_path())?)
-    }
-
-    /// Parses a listener-relative metadata path back to its workspace segment.
-    ///
-    /// The exact inverse of [`Self::metadata_path`].
-    #[must_use]
-    pub fn parse_metadata_path(&self, path: &str) -> Option<McpWorkspaceSegment> {
-        self.parse_route_path(path.strip_prefix(PROTECTED_RESOURCE_METADATA_ROOT)?)
-    }
-
-    fn parse_tail(tail: &str) -> Option<McpWorkspaceSegment> {
-        McpWorkspaceSegment::parse(
-            tail.strip_prefix('/')?
-                .strip_prefix(WORKSPACE_ROUTE_SEGMENT)?
-                .strip_prefix('/')?,
+    pub fn metadata_path(&self, workspace_id: &WorkspaceId) -> String {
+        format!(
+            "{PROTECTED_RESOURCE_METADATA_ROOT}{}",
+            workspace_mcp_path(workspace_id)
         )
+    }
+
+    /// Parses an exact resource under this origin into its stable Workspace ID.
+    #[must_use]
+    pub fn parse_resource(&self, resource: &str) -> Option<WorkspaceId> {
+        parse_workspace_mcp_path(resource.strip_prefix(self.origin.identifier())?)
+    }
+
+    /// Parses an exact protected-resource metadata path.
+    #[must_use]
+    pub fn parse_metadata_path(&self, path: &str) -> Option<WorkspaceId> {
+        parse_workspace_mcp_path(path.strip_prefix(PROTECTED_RESOURCE_METADATA_ROOT)?)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{McpWorkspaceSegment, WorkspaceMcpUrls};
-    use crate::oauth_resource::CanonicalOauthUrl;
+    use super::*;
 
-    fn urls(base: &str) -> WorkspaceMcpUrls {
-        WorkspaceMcpUrls::new(CanonicalOauthUrl::parse(base).expect("canonical base"))
-    }
-
-    fn segment(name: &str) -> McpWorkspaceSegment {
-        McpWorkspaceSegment::parse(name).expect("valid segment")
-    }
+    const ID: &str = "01234567-89ab-4cde-8fab-0123456789ab";
 
     #[test]
-    fn segments_admit_only_the_unreserved_charset() {
-        for valid in ["team", "analytics-staging", "a", "Team_2", "v1.2~x", "..."] {
-            assert!(McpWorkspaceSegment::parse(valid).is_some(), "{valid}");
-        }
-        for invalid in [
-            "",
-            ".",
-            "..",
-            "team/other",
-            "te am",
-            "te%61m",
-            "tëam",
-            "team?",
-            "team#",
-            "team\\",
-            "team\n",
-            "té",
-            "🪸",
+    fn resources_and_metadata_share_the_served_workspace_path() {
+        let id = WorkspaceId::parse(ID).expect("Workspace id");
+        for origin in [
+            "https://CORAL.example/",
+            "https://coral.example:8443",
+            "http://127.0.0.1:14556/",
+            "http://[::1]:14556",
         ] {
-            assert!(McpWorkspaceSegment::parse(invalid).is_none(), "{invalid:?}");
+            let urls = WorkspaceMcpUrls::new(CanonicalOauthUrl::parse(origin).expect("origin"))
+                .expect("Workspace URLs");
+            let path = workspace_mcp_path(&id);
+            let resource = urls.resource(&id);
+            assert_eq!(resource, format!("{}{path}", urls.base().identifier()));
+            assert_eq!(urls.parse_resource(&resource), Some(id.clone()));
+            assert_eq!(parse_workspace_mcp_path(&path), Some(id.clone()));
+            assert_eq!(
+                urls.metadata_path(&id),
+                format!("{PROTECTED_RESOURCE_METADATA_ROOT}{path}")
+            );
+            assert_eq!(
+                urls.metadata_url(&id),
+                format!("{}{}", urls.base().identifier(), urls.metadata_path(&id))
+            );
+            assert_eq!(
+                urls.parse_metadata_path(&urls.metadata_path(&id)),
+                Some(id.clone())
+            );
+            assert!(urls.parse_resource(urls.base().identifier()).is_none());
+            assert!(urls.is_base_audience(urls.base().identifier()));
         }
     }
 
     #[test]
-    fn derivation_and_parsing_are_exact_inverses() {
-        for (base, name) in [
-            ("https://coral.example/mcp", "team"),
-            ("https://coral.example/mcp", "analytics-staging"),
-            ("https://coral.example:8443/mcp", "team"),
-            ("http://127.0.0.1:14556/mcp", "team"),
-            ("https://coral.example", "team"),
-        ] {
-            let urls = urls(base);
-            let segment = segment(name);
-            let resource = urls.resource(&segment);
-            assert_eq!(
-                urls.parse_resource(&resource).as_ref(),
-                Some(&segment),
-                "resource round-trip for {base} / {name}"
-            );
-            let route = urls.route_path(&segment);
-            assert_eq!(
-                urls.parse_route_path(&route).as_ref(),
-                Some(&segment),
-                "route round-trip for {base} / {name}"
-            );
-            let metadata_path = urls.metadata_path(&segment);
-            assert_eq!(
-                urls.parse_metadata_path(&metadata_path).as_ref(),
-                Some(&segment),
-                "metadata round-trip for {base} / {name}"
-            );
-            assert!(
-                urls.metadata_url(&segment).ends_with(&metadata_path),
-                "metadata URL must end with its served path"
-            );
-        }
-    }
-
-    #[test]
-    fn the_documented_template_shapes_hold_exactly() {
-        let urls = urls("https://coral.example/mcp");
-        let team = segment("team");
-        assert_eq!(
-            urls.resource(&team),
-            "https://coral.example/mcp/workspace/team"
-        );
-        assert_eq!(urls.route_path(&team), "/mcp/workspace/team");
-        assert_eq!(
-            urls.metadata_url(&team),
-            "https://coral.example/.well-known/oauth-protected-resource/mcp/workspace/team"
-        );
-        assert_eq!(
-            urls.metadata_path(&team),
-            "/.well-known/oauth-protected-resource/mcp/workspace/team"
-        );
-    }
-
-    /// A `public_url` with a non-root trailing slash canonicalizes with the
-    /// slash intact, so the family must normalize it — otherwise every derived
-    /// URL doubles the separator into `//workspace/...`.
-    #[test]
-    fn a_trailing_slash_base_does_not_double_the_separator() {
+    fn legacy_bases_and_path_prefixes_are_rejected() {
         for base in [
-            "https://coral.example/mcp/",
-            "https://coral.example/base/mcp/",
-        ] {
-            let urls = urls(base);
-            let team = segment("team");
-            assert!(
-                !urls.resource(&team).contains("//workspace"),
-                "resource for {base}: {}",
-                urls.resource(&team)
-            );
-            assert!(
-                !urls.route_path(&team).contains("//workspace"),
-                "route for {base}: {}",
-                urls.route_path(&team)
-            );
-            assert!(
-                !urls.metadata_path(&team).contains("//workspace"),
-                "metadata for {base}: {}",
-                urls.metadata_path(&team)
-            );
-            // And the normalized derivations still round-trip.
-            assert_eq!(
-                urls.parse_resource(&urls.resource(&team)).as_ref(),
-                Some(&team)
-            );
-            assert_eq!(
-                urls.parse_route_path(&urls.route_path(&team)).as_ref(),
-                Some(&team)
-            );
-        }
-        let urls = urls("https://coral.example/mcp/");
-        assert_eq!(urls.base_path(), "/mcp");
-        assert_eq!(
-            urls.resource(&segment("team")),
-            "https://coral.example/mcp/workspace/team"
-        );
-    }
-
-    #[test]
-    fn a_root_base_derives_origin_rooted_workspace_urls() {
-        let urls = urls("https://coral.example/");
-        let team = segment("team");
-        assert_eq!(urls.base_path(), "");
-        assert_eq!(urls.resource(&team), "https://coral.example/workspace/team");
-        assert_eq!(urls.route_path(&team), "/workspace/team");
-        assert_eq!(
-            urls.metadata_path(&team),
-            "/.well-known/oauth-protected-resource/workspace/team"
-        );
-    }
-
-    #[test]
-    fn non_canonical_spellings_parse_to_nothing() {
-        let urls = urls("https://coral.example/mcp");
-        for resource in [
             "https://coral.example/mcp",
-            "https://coral.example/mcp/workspace",
-            "https://coral.example/mcp/workspace/",
-            "https://coral.example/mcp/workspace/team/",
-            "https://coral.example/mcp/workspace/team/extra",
-            "https://coral.example/mcp/workspace/te%61m",
-            "https://coral.example/mcp/workspace/te am",
-            "https://coral.example/mcp/Workspace/team",
-            "https://other.example/mcp/workspace/team",
-            "https://coral.example/other/workspace/team",
-            "http://coral.example/mcp/workspace/team",
+            "https://coral.example/mcp/",
+            "https://coral.example/custom",
         ] {
-            assert!(urls.parse_resource(resource).is_none(), "{resource}");
+            let error = WorkspaceMcpUrls::new(CanonicalOauthUrl::parse(base).expect("URL"))
+                .expect_err("MCP requires an origin");
+            assert_eq!(error, OauthUrlError::Origin);
         }
-        for path in [
-            "/mcp",
-            "/mcp/workspace",
-            "/mcp/workspace/",
-            "/mcp/workspace/team/",
-            "/mcp/workspace/team/extra",
-            "/mcp/workspace/te%61m",
-            "/workspace/team",
+    }
+
+    #[test]
+    fn resources_reject_names_aliases_and_other_origins() {
+        let urls = WorkspaceMcpUrls::new(
+            CanonicalOauthUrl::parse("https://coral.example").expect("origin"),
+        )
+        .expect("Workspace URLs");
+        for resource in [
+            "https://coral.example/mcp/workspace/team".to_string(),
+            "https://coral.example/workspaces/team/mcp".to_string(),
+            format!("https://coral.example/workspaces/{ID}/mcp/"),
+            format!("https://coral.example/workspaces/{ID}/mcp?x=1"),
+            format!("https://coral.example/workspaces/{ID}/mcp#fragment"),
+            format!("https://coral.example/workspaces/{}/mcp", ID.to_uppercase()),
+            format!(
+                "https://coral.example/workspaces/{}/mcp",
+                ID.replacen('0', "%30", 1)
+            ),
+            format!("https://other.example/workspaces/{ID}/mcp"),
+            format!("http://coral.example/workspaces/{ID}/mcp"),
+            format!("https://coral.example.attacker/workspaces/{ID}/mcp"),
         ] {
-            assert!(urls.parse_route_path(path).is_none(), "{path}");
+            assert!(urls.parse_resource(&resource).is_none(), "{resource}");
         }
         assert!(
-            urls.parse_metadata_path("/.well-known/oauth-protected-resource/mcp")
-                .is_none(),
-            "the base metadata path names no workspace"
+            urls.parse_metadata_path("/.well-known/oauth-protected-resource/mcp/workspace/team")
+                .is_none()
         );
     }
 }

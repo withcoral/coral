@@ -7,7 +7,6 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde_json::{Map, Value};
 
 use super::config::ResolvedOidcProvider;
-use crate::identity::PrincipalId;
 
 const CLOCK_SKEW_SECONDS: u64 = 60;
 const MAX_SUBJECT_BYTES: usize = 255;
@@ -16,18 +15,19 @@ const MAX_DISPLAY_NAME_BYTES: usize = 255;
 /// A fully verified identity. Intentionally does not implement `Debug`.
 ///
 /// The upstream identity is the verified `issuer` plus the raw `subject`, and
-/// that pair alone keys the user directory. `principal_claim` is a separately
-/// configured projection of the same token: it is carried only so login
-/// provisioning can recompute the pre-v1 task-attribution digest, and it is
-/// deliberately not derived from — nor allowed to stand in for — the subject.
+/// that pair alone keys the user directory. A configured principal projection
+/// can constrain admission but never replaces or accompanies that identity.
 pub(super) struct ValidatedOidcIdentity {
     /// Issuer the ID token's signature and `iss` claim were verified against.
     pub(super) issuer: String,
     /// Raw upstream `sub` claim, unmodified and non-empty.
     pub(super) subject: String,
-    /// Value of the provider's configured `principal_claim`.
-    pub(super) principal_claim: String,
     pub(super) display_name: Option<String>,
+    pub(super) profile_name: Option<String>,
+    pub(super) email: Option<String>,
+    pub(super) email_verified: Option<bool>,
+    pub(super) hosted_domain: Option<String>,
+    pub(super) profile_observed_at_unix_nanos: i64,
 }
 
 pub(super) fn validate_id_token(
@@ -37,6 +37,59 @@ pub(super) fn validate_id_token(
     advertised_algorithms: &[String],
     jwks: &JwkSet,
 ) -> Result<ValidatedOidcIdentity, ()> {
+    let claims = verified_jwt_claims(
+        &provider.issuer,
+        &provider.client_id,
+        token,
+        advertised_algorithms,
+        jwks,
+    )?;
+    validate_claims(provider, expected_nonce, &claims)
+}
+
+/// Admission-only evidence from the same upstream code exchange. No claim or
+/// token is returned to callers, persisted, or forwarded to Coral clients.
+pub(super) fn validate_access_token_admission(
+    provider: &ResolvedOidcProvider,
+    token: Option<&str>,
+    identity: &ValidatedOidcIdentity,
+    jwks: &JwkSet,
+) -> Result<(), ()> {
+    let Some(policy) = &provider.access_token else {
+        return Ok(());
+    };
+    // This is an explicit RS256 JWT profile, not an assumption that arbitrary
+    // OAuth access tokens are JWTs or share ID-token signing algorithms.
+    let claims = verified_jwt_claims(
+        &provider.issuer,
+        &policy.audience,
+        token.ok_or(())?,
+        &["RS256".to_string()],
+        jwks,
+    )?;
+    let claims = claims.as_object().ok_or(())?;
+    validate_token_times(claims)?;
+    if claims.get("iss").and_then(Value::as_str) != Some(identity.issuer.as_str())
+        || claims.get("sub").and_then(Value::as_str) != Some(identity.subject.as_str())
+        || claims.get("aud").and_then(Value::as_str) != Some(policy.audience.as_str())
+    {
+        return Err(());
+    }
+    for (name, expected) in &policy.required_claims {
+        if claims.get(name) != Some(expected) {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn verified_jwt_claims(
+    issuer: &str,
+    audience: &str,
+    token: &str,
+    advertised_algorithms: &[String],
+    jwks: &JwkSet,
+) -> Result<Value, ()> {
     let header = decode_header(token).map_err(|_error| ())?;
     let algorithm = header.alg;
     let (key_algorithm, algorithm_name) = algorithm_policy(algorithm).ok_or(())?;
@@ -72,12 +125,11 @@ pub(super) fn validate_id_token(
     validation.leeway = CLOCK_SKEW_SECONDS;
     validation.validate_nbf = true;
     validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-    validation.set_issuer(&[provider.issuer.as_str()]);
-    validation.set_audience(&[provider.client_id.as_str()]);
-    let claims = decode::<Value>(token, &decoding_key, &validation)
-        .map_err(|_error| ())?
-        .claims;
-    validate_claims(provider, expected_nonce, &claims)
+    validation.set_issuer(&[issuer]);
+    validation.set_audience(&[audience]);
+    decode::<Value>(token, &decoding_key, &validation)
+        .map(|verified| verified.claims)
+        .map_err(|_error| ())
 }
 
 fn algorithm_policy(algorithm: Algorithm) -> Option<(KeyAlgorithm, &'static str)> {
@@ -91,7 +143,7 @@ fn algorithm_policy(algorithm: Algorithm) -> Option<(KeyAlgorithm, &'static str)
         Algorithm::ES256 => Some((KeyAlgorithm::ES256, "ES256")),
         Algorithm::ES384 => Some((KeyAlgorithm::ES384, "ES384")),
         Algorithm::EdDSA => Some((KeyAlgorithm::EdDSA, "EdDSA")),
-        Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => None,
+        _ => None,
     }
 }
 
@@ -137,28 +189,19 @@ fn validate_claims(
     claims: &Value,
 ) -> Result<ValidatedOidcIdentity, ()> {
     let claims = claims.as_object().ok_or(())?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_error| ())?
-        .as_secs();
-    let issued_at = claim_numeric_date(claims, "iat")?;
-    let expires_at = claim_numeric_date(claims, "exp")?;
-    if expires_at <= issued_at
-        || expires_at.saturating_add(CLOCK_SKEW_SECONDS) < now
-        || issued_at > now.saturating_add(CLOCK_SKEW_SECONDS)
-        || claims.get("iss").and_then(Value::as_str) != Some(provider.issuer.as_str())
+    validate_token_times(claims)?;
+    if claims.get("iss").and_then(Value::as_str) != Some(provider.issuer.as_str())
         || claims.get("nonce").and_then(Value::as_str) != Some(expected_nonce)
     {
         return Err(());
     }
-    if let Some(not_before) = claims.get("nbf") {
-        let not_before = numeric_date(not_before)?;
-        if not_before > now.saturating_add(CLOCK_SKEW_SECONDS) {
-            return Err(());
-        }
-    }
     let subject = claims.get("sub").and_then(Value::as_str).ok_or(())?;
-    if !valid_subject(subject) {
+    if !valid_subject(subject)
+        || subject
+            == coral_workspace::local_organization_owner()
+                .user_id()
+                .as_str()
+    {
         return Err(());
     }
     validate_audience(claims, &provider.client_id)?;
@@ -170,12 +213,6 @@ fn validate_claims(
             return Err(());
         }
     }
-    let principal_claim = claims
-        .get(&provider.principal_claim)
-        .and_then(Value::as_str)
-        .filter(|principal| valid_subject(principal) && PrincipalId::parse(principal).is_ok())
-        .ok_or(())?
-        .to_string();
     let display_name = match claims.get(&provider.display_name_claim) {
         None | Some(Value::Null) => None,
         Some(Value::String(value)) if value.trim().is_empty() => None,
@@ -191,9 +228,55 @@ fn validate_claims(
     Ok(ValidatedOidcIdentity {
         issuer: provider.issuer.clone(),
         subject: subject.to_string(),
-        principal_claim,
         display_name,
+        profile_name: profile_text(claims, &provider.name_claim, MAX_DISPLAY_NAME_BYTES),
+        email: profile_text(claims, &provider.email_claim, 320),
+        email_verified: claims
+            .get(&provider.email_verified_claim)
+            .and_then(Value::as_bool),
+        hosted_domain: profile_text(claims, "hd", 255),
+        profile_observed_at_unix_nanos: i64::try_from(
+            Duration::try_from_secs_f64(claims.get("iat").and_then(Value::as_f64).ok_or(())?)
+                .map_err(|_error| ())?
+                .as_nanos(),
+        )
+        .map_err(|_error| ())?,
     })
+}
+
+// Optional malformed profile claims do not revoke otherwise eligible login or grants.
+// Preserve provider spelling; normalization belongs only to human email lookup.
+fn profile_text(claims: &Map<String, Value>, claim: &str, max_bytes: usize) -> Option<String> {
+    claims
+        .get(claim)
+        .and_then(Value::as_str)
+        .filter(|value| {
+            !value.trim().is_empty()
+                && value.len() <= max_bytes
+                && !value.chars().any(char::is_control)
+        })
+        .map(ToOwned::to_owned)
+}
+
+fn validate_token_times(claims: &Map<String, Value>) -> Result<(), ()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_error| ())?
+        .as_secs();
+    let issued_at = claim_numeric_date(claims, "iat")?;
+    let expires_at = claim_numeric_date(claims, "exp")?;
+    if expires_at <= issued_at
+        || expires_at.saturating_add(CLOCK_SKEW_SECONDS) < now
+        || issued_at > now.saturating_add(CLOCK_SKEW_SECONDS)
+    {
+        return Err(());
+    }
+    if let Some(not_before) = claims.get("nbf")
+        && numeric_date(not_before)? > now.saturating_add(CLOCK_SKEW_SECONDS)
+    {
+        return Err(());
+    }
+    Ok(())
 }
 
 fn valid_subject(value: &str) -> bool {
@@ -259,38 +342,33 @@ pub(in crate::auth) mod tests {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
     use jsonwebtoken::{EncodingKey, Header, encode, get_current_timestamp};
-    use ring::rand::SystemRandom;
-    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+
     use serde_json::json;
     use std::path::Path;
 
     use super::*;
     use crate::auth::config::AuthSettings;
-    use crate::identity::LOCAL_PRINCIPAL_ID;
+    const LOCAL_PRINCIPAL_ID: &str = "coral:local";
 
-    const RSA_N: &str = "yRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5_CYYi_cvI-SXVT9kPWSKXxJXBXd_4LkvcPuUakBoAkfh-eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG_AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi-yUod-j8MtvIj812dkS4QMiRVN_by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQ";
-    const RSA_PRIVATE_DER: &str = "MIIEpAIBAAKCAQEAyRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5/CYYi/cvI+SXVT9kPWSKXxJXBXd/4LkvcPuUakBoAkfh+eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG/AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi+yUod+j8MtvIj812dkS4QMiRVN/by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQIDAQABAoIBAHREk0I0O9DvECKdWUpAmF3mY7oY9PNQiu44Yaf+AoSuyRpRUGTMIgc3u3eivOE8ALX0BmYUO5JtuRNZDpvt4SAwqCnVUinIf6C+eH/wSurCpapSM0BAHp4aOA7igptyOMgMPYBHNA1e9A7jE0dCxKWMl3DSWNyjQTk4zeRGEAEfbNjHrq6YCtjHSZSLmWiG80hnfnYos9hOr5JnLnyS7ZmFE/5P3XVrxLc/tQ5zum0R4cbrgzHiQP5RgfxGJaEi7XcgherCCOgurJSSbYH29Gz8u5fFbS+Yg8s+OiCss3cs1rSgJ9/eHZuzGEdUZVARH6hVMjSuwvqVTFaE8AgtleECgYEA+uLMn4kNqHlJS2A5uAnCkj90ZxEtNm3E8hAxUrhssktY5XSOAPBlxyf5RuRGIImGtUVIr4HuJSa5TX48n3Vdt9MYCprO/iYl6moNRSPt5qowIIOJmIjY2mqPDfDt/zw+fcDD3lmCJrFlzcnh0uea1CohxEbQnL3cypeLt+WbU6kCgYEAzSp19m1ajieFkqgoB0YTpt/OroDx38vvI5unInJlEeOjQ+oIAQdN2wpxBvTrRorMU6P07mFUbt1j+Co6CbNiw+X8HcCaqYLR5clbJOOWNR36PuzOpQLkfK8woupBxzW9B8gZmY8rB1mbJ+/WTPrEJy6YGmIEBkWylQ2VpW8O4O0CgYEApdbvvfFBlwD9YxbrcGz7MeNCFbMz+MucqQntIKoKJ91ImPxvtc0y6e/Rhnv0oyNlaUOwJVu0yNgNG117w0g4t/+Q38mvVC5xV7/cn7x9UMFk6MkqVir3dYGEqIl/OP1grY2Tq9HtB5iyG9L8NIamQOLMyUqqMUILxdthHyFmiGkCgYEAn9+PjpjGMPHxL0gj8Q8VbzsFtou6b1deIRRA2CHmSltltR1gYVTMwXxQeUhPMmgkMqUXzs4/WijgpthY44hK1TaZEKIuoxrS70nJ4WQLf5a9k1065fDsFZD6yGjdGxvwEmlGMZgTwqV7t1I4X0Ilqhav5hcs5apYL7gnPYPeRz0CgYALHCj/Ji8XSsDoF/MhVhnGdIs2P99NNdmo3R2Pv0CuZbDKMU559LJHUvrKS8WkuWRDuKrz1W/EQKApFjDGpdqToZqriUFQzwy7mR3ayIiogzNtHcvbDHx8oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==";
+    const RSA_N: &str = coral_test_support::RSA_TEST_PUBLIC_MODULUS;
+    const RSA_PRIVATE_DER: &str = coral_test_support::RSA_TEST_PRIVATE_KEY_DER;
 
     fn provider(extra: &str) -> ResolvedOidcProvider {
         let extra = extra.replace("[required_claims]", "[auth.provider.required_claims]");
         let settings = AuthSettings::from_toml(&format!(
             "[auth]
              [auth.session]
-             [auth.authorization_server]
-             issuer = 'http://localhost:9080'
+             [listeners.auth]
+             public_url = 'http://localhost:9080'
              [auth.provider]
              issuer = 'http://localhost/issuer'
              client_id = 'provider-client'
              client_secret = 'secret'
-             redirect_uri = 'http://localhost:9080/auth/oidc/callback'
              {extra}"
         ))
         .expect("valid auth config")
         .expect("auth settings");
-        let signing_key = STANDARD.encode(
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key"),
-        );
+        let signing_key = STANDARD.encode(coral_test_support::p256_pkcs8());
         let (settings, _issuer) = settings
             .resolve_runtime_dependencies(Path::new("config.toml"), &|name| {
                 Ok((name == "CORAL_SESSION_SIGNING_KEY").then(|| signing_key.clone()))
@@ -394,7 +472,7 @@ pub(in crate::auth) mod tests {
         let mut critical = Header::new(Algorithm::RS256);
         critical.kid = Some("key-1".into());
         critical.crit = Some(vec!["custom".into()]);
-        critical.extras.insert("custom".into(), "value".into());
+        critical.extras.insert("custom", "value");
         assert!(validate(
             &signed(&critical, &claims),
             &["RS256".into()],
@@ -461,6 +539,82 @@ pub(in crate::auth) mod tests {
     }
 
     #[test]
+    fn access_token_admission_binds_signature_audience_time_and_oidc_subject() {
+        let provider = provider(
+            "[auth.provider.access_token]\n\
+             audience = 'environment-audience'\n\
+             [auth.provider.access_token.required_claims]\n\
+             org_id = 'org_allowed'",
+        );
+        let identity = validate_id_token(
+            &provider,
+            &token(&claims()),
+            "expected-nonce",
+            &["RS256".into()],
+            &jwks(&[rsa_key()]),
+        )
+        .expect("verified OIDC identity");
+        let mut base = claims();
+        set_claim(&mut base, "aud", json!("environment-audience"));
+        set_claim(&mut base, "org_id", json!("org_allowed"));
+        base.as_object_mut().expect("claims").remove("nonce");
+        let valid = token(&base);
+        let check = |token: Option<&str>, keys: &[Value]| {
+            validate_access_token_admission(&provider, token, &identity, &jwks(keys))
+        };
+        assert!(check(Some(&valid), &[rsa_key()]).is_ok());
+        assert!(check(None, &[rsa_key()]).is_err());
+        assert!(check(Some("opaque"), &[rsa_key()]).is_err());
+        assert!(check(Some(&valid), &[rsa_key(), rsa_key()]).is_err());
+        for (field, value) in [
+            ("iss", json!("https://another-provider.test")),
+            ("aud", json!("another-environment")),
+            ("aud", json!("provider-client")),
+            (
+                "aud",
+                json!(["environment-audience", "another-environment"]),
+            ),
+            ("sub", json!("another-user")),
+            ("org_id", json!("org_other")),
+            ("org_id", json!(["org_allowed", "org_other"])),
+            ("org_id", Value::Null),
+            ("exp", json!(get_current_timestamp() - 120)),
+            ("iat", json!(get_current_timestamp() + 120)),
+            ("nbf", json!(get_current_timestamp() + 120)),
+            ("exp", json!("not-a-date")),
+        ] {
+            let mut invalid = base.clone();
+            set_claim(&mut invalid, field, value);
+            assert!(
+                check(Some(&token(&invalid)), &[rsa_key()]).is_err(),
+                "{field}"
+            );
+        }
+        for field in ["iss", "aud", "sub", "exp", "iat", "org_id"] {
+            let mut missing = base.clone();
+            missing.as_object_mut().expect("claims").remove(field);
+            assert!(
+                check(Some(&token(&missing)), &[rsa_key()]).is_err(),
+                "{field}"
+            );
+        }
+        let mut tampered = valid;
+        let signature = tampered.rfind('.').expect("signature") + 1;
+        let replacement = if tampered.as_bytes().get(signature) == Some(&b'A') {
+            "B"
+        } else {
+            "A"
+        };
+        tampered.replace_range(signature..=signature, replacement);
+        assert!(check(Some(&tampered), &[rsa_key()]).is_err());
+        let mut hmac = Header::new(Algorithm::HS256);
+        hmac.kid = Some("key-1".into());
+        let forged = encode(&hmac, &base, &EncodingKey::from_secret(b"not-a-public-key"))
+            .expect("forged token");
+        assert!(check(Some(&forged), &[rsa_key()]).is_err());
+    }
+
+    #[test]
     fn validates_mandatory_oidc_claims_and_time_types() {
         let provider = provider("");
         let base = claims();
@@ -478,6 +632,8 @@ pub(in crate::auth) mod tests {
             ("nbf", json!("soon")),
             ("sub", json!("")),
             ("sub", json!("nön-ascii")),
+            ("sub", json!(LOCAL_PRINCIPAL_ID)),
+            ("sub", Value::String("x".repeat(MAX_SUBJECT_BYTES + 1))),
         ] {
             let mut claims = base.clone();
             set_claim(&mut claims, field, value);
@@ -516,49 +672,66 @@ pub(in crate::auth) mod tests {
             .expect("matching authorized party must allow multiple audiences");
     }
 
-    /// The directory key is the verified issuer plus the raw `sub`. It survives
-    /// whether the configured principal claim happens to be `sub` or names a
-    /// different claim entirely, and the subject keeps a shape the principal
-    /// claim would be rejected for.
+    /// OIDC subjects remain opaque upstream identifiers, not Coral User IDs.
     #[test]
-    fn keeps_verified_issuer_and_raw_subject_independent_of_the_principal_claim() {
-        let default_claim = provider("");
-        let identity = validate_claims(&default_claim, "expected-nonce", &claims())
-            .expect("default principal claim");
-        assert_eq!(identity.issuer, "http://localhost/issuer");
-        assert_eq!(identity.subject, "subject");
-        assert_eq!(identity.principal_claim, "subject");
-
-        let projected = provider("principal_claim = 'uid'");
+    fn keeps_verified_issuer_and_raw_subject_independent_of_other_claims() {
+        let provider = provider("");
         let mut claims = claims();
         set_claim(&mut claims, "sub", json!("upstream sub/with spaces"));
-        set_claim(&mut claims, "uid", json!("projected-claim"));
+        set_claim(&mut claims, "uid", json!(LOCAL_PRINCIPAL_ID));
         let identity =
-            validate_claims(&projected, "expected-nonce", &claims).expect("projected identity");
+            validate_claims(&provider, "expected-nonce", &claims).expect("verified identity");
+        assert_eq!(identity.issuer, "http://localhost/issuer");
         assert_eq!(identity.subject, "upstream sub/with spaces");
-        assert_eq!(identity.principal_claim, "projected-claim");
+    }
+
+    #[test]
+    fn profile_freshness_follows_verified_token_issuance_not_validation_order() {
+        let provider = provider("");
+        let mut older = claims();
+        let now = get_current_timestamp();
+        set_claim(&mut older, "iat", json!(now - 30));
+        let mut newer = older.clone();
+        set_claim(&mut newer, "iat", json!(now - 10));
+        let newer = validate_claims(&provider, "expected-nonce", &newer).unwrap();
+        let older = validate_claims(&provider, "expected-nonce", &older).unwrap();
+        assert!(older.profile_observed_at_unix_nanos < newer.profile_observed_at_unix_nanos);
+    }
+
+    #[test]
+    fn profile_claims_are_separate_and_email_verification_is_not_login_admission() {
+        let provider = provider("display_name_claim = 'email'");
+        for verified in [Value::Null, json!(false), json!(true)] {
+            let mut claims = claims();
+            set_claim(&mut claims, "name", json!("Ada"));
+            set_claim(&mut claims, "email", json!("Ada@Example.test"));
+            set_claim(&mut claims, "email_verified", verified.clone());
+            set_claim(&mut claims, "hd", json!("example.test"));
+            let identity = validate_claims(&provider, "expected-nonce", &claims)
+                .expect("verification does not gate eligible login");
+            assert_eq!(identity.profile_name.as_deref(), Some("Ada"));
+            assert_eq!(identity.email.as_deref(), Some("Ada@Example.test"));
+            assert_eq!(identity.email_verified, verified.as_bool());
+            assert_eq!(identity.hosted_domain.as_deref(), Some("example.test"));
+        }
     }
 
     #[test]
     fn validates_identity_projection_and_required_claim_semantics() {
         let provider = provider(
-            "principal_claim = 'uid'
-             display_name_claim = 'name'
+            "display_name_claim = 'name'
              [required_claims]
              tenant = 'one'
              groups = ['admin', 'dev']",
         );
         let mut claims = claims();
-        set_claim(&mut claims, "uid", json!("Case-Sensitive"));
         set_claim(&mut claims, "name", json!("  Coral User  "));
         set_claim(&mut claims, "tenant", json!(["one", "two"]));
         set_claim(&mut claims, "groups", json!(["dev", "other", "admin"]));
         let identity =
             validate_claims(&provider, "expected-nonce", &claims).expect("projected identity");
-        assert_eq!(identity.principal_claim, "Case-Sensitive");
         assert_eq!(identity.display_name.as_deref(), Some("Coral User"));
-        // The directory key is the verified issuer plus the raw `sub`, neither of
-        // which the configured principal claim may displace.
+        // Presentation and admission claims cannot select another identity.
         assert_eq!(identity.issuer, "http://localhost/issuer");
         assert_eq!(identity.subject, "subject");
         for display in [Value::Null, json!("   ")] {
@@ -579,12 +752,6 @@ pub(in crate::auth) mod tests {
             Some("Renée Coral")
         );
         for (field, value) in [
-            ("uid", json!(" surrounded ")),
-            ("uid", json!("interior space")),
-            ("uid", json!("interior\u{1}control")),
-            ("uid", json!(LOCAL_PRINCIPAL_ID)),
-            ("uid", json!("é")),
-            ("uid", Value::String("x".repeat(MAX_SUBJECT_BYTES + 1))),
             ("name", json!(7)),
             ("name", json!("Coral\u{0}User")),
             (

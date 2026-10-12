@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.heygen.com/mcp/overview
+# The hosted server uses OAuth and web-plan credits, rather than the local server API key. Resource metadata
+# advertises openid/profile/email. Keep the documented trailing slash.
+schema_version: 1
+id: heygen_mcp
+service: heygen
+display_name: HeyGen
+description: Avatars, voices, templates and video generation from HeyGen.
+source:
+  mcp:
+    url: https://mcp.heygen.com/mcp/v1/
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with HeyGen
+      documentation_url: https://developers.heygen.com/mcp/overview
+      flow: authorization_code
+      description: Connect your HeyGen account. Generation uses your HeyGen plan credits.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

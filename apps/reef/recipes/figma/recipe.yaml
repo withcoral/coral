@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.figma.com/docs/figma-mcp-server/
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: figma
+display_name: Figma
+description: Design context and files from Figma.
+icons:
+  light: logo.svg
+source:
+  mcp:
+    url: https://mcp.figma.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Figma
+      documentation_url: https://developers.figma.com/docs/figma-mcp-server/
+      flow: authorization_code
+  default: oauth

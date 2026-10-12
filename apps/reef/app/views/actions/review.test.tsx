@@ -1,0 +1,266 @@
+/** @vitest-environment happy-dom */
+
+import { act, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { useEffect, useState } from 'react'
+import { describe, expect, it } from 'vitest'
+
+import { renderRoute } from '@/test-support/route'
+import { approvalRequest as approval } from '../activity/fixtures'
+import { ActionReviewSession, ApprovalReview } from './review'
+
+type Approval = typeof approval
+type DecisionResponse = { error: string } | { state: string }
+
+const approved: DecisionResponse = { state: 'approved' }
+// The instructions an invalid comment describes itself with.
+const correction = 'Use at most 1024 UTF-8 bytes. Remove null characters.'
+
+function renderReview() {
+  const submissions: Array<{
+    form: FormData
+    respond: (response: DecisionResponse) => void
+  }> = []
+  let updateRequest!: (request: Approval | null) => void
+  function ReviewPage() {
+    const [request, setRequest] = useState<Approval | null>(approval)
+    useEffect(() => {
+      updateRequest = setRequest
+    }, [])
+    return (
+      <ActionReviewSession request={request}>
+        {request ? <ApprovalReview detail={request} /> : <p>Reconnecting to the exact review.</p>}
+      </ActionReviewSession>
+    )
+  }
+  const { container, router } = renderRoute(<ReviewPage />, {
+    entry: '/activity?record=one&request=one',
+    // The shell owns the CSRF token that review forms submit.
+    csrf: 'test-csrf',
+    routes: [
+      {
+        path: '/activity/resolve',
+        action: async ({ request }) => {
+          const form = await request.formData()
+          return new Promise<DecisionResponse>((respond) => submissions.push({ form, respond }))
+        },
+      },
+      { path: '/elsewhere', element: <p>Another page</p> },
+    ],
+  })
+  return {
+    container,
+    submissions,
+    location: () => router.state.location,
+    navigate: async (to: string, options?: Parameters<typeof router.navigate>[1]) => {
+      await act(async () => {
+        await router.navigate(to, options)
+      })
+    },
+    show: async (request: Approval | null) => {
+      await act(async () => updateRequest(request))
+    },
+  }
+}
+
+const user = userEvent.setup()
+const comment = () => screen.getByRole('textbox', { name: 'Comment (optional)' })
+const button = (name: string) => screen.getByRole('button', { name })
+const statuses = () => screen.getAllByRole('status').map((status) => status.textContent)
+
+async function enterComment(value: string) {
+  await user.clear(comment())
+  await user.paste(value)
+}
+
+async function click(name: string) {
+  await user.click(button(name))
+}
+
+describe('exact approval review', () => {
+  it.each([
+    [
+      'approval to its exact operation',
+      `/activity?record=${encodeURIComponent(approval.run)}&request=${encodeURIComponent(approval.name)}`,
+      `/activity?record=${encodeURIComponent(approval.invocation)}&request=${encodeURIComponent(approval.name)}`,
+      'record',
+      approval.invocation,
+    ],
+    [
+      'initial request',
+      '/activity?record=one',
+      `/activity?record=one&request=${encodeURIComponent(approval.name)}`,
+      'request',
+      approval.name,
+    ],
+  ])(
+    'pins the already displayed %s without discarding a draft',
+    async (_label, shown, pinned, key, value) => {
+      const page = renderReview()
+      await page.navigate(shown)
+      await enterComment('Keep this draft')
+      await page.navigate(pinned, { replace: true, defaultShouldRevalidate: false })
+      expect(new URLSearchParams(page.location().search).get(key)).toBe(value)
+      expect(comment()).toHaveValue('Keep this draft')
+      expect(document.body).not.toHaveTextContent('Discard your comment?')
+    },
+  )
+  it('rejects 1025 UTF-8 bytes but submits exactly 1024 bytes of multibyte comment', async () => {
+    const page = renderReview()
+    // Each é is two UTF-8 bytes, so the boundary is not a character limit.
+    const atLimit = 'é'.repeat(512)
+    await enterComment(`${atLimit}a`)
+
+    expect(button('Approve this call')).toBeDisabled()
+    expect(button('Deny this call')).toBeDisabled()
+    expect(comment()).toBeInvalid()
+    expect(comment()).toHaveAccessibleDescription(correction)
+    await click('Approve this call')
+    await click('Deny this call')
+    expect(page.submissions).toHaveLength(0)
+
+    await enterComment(atLimit)
+    expect(comment()).toBeValid()
+    expect(button('Approve this call')).toBeEnabled()
+    expect(button('Deny this call')).toBeEnabled()
+    await click('Approve this call')
+    expect(page.submissions).toHaveLength(1)
+    expect(Object.fromEntries(page.submissions[0].form)).toEqual({
+      csrf: 'test-csrf',
+      name: approval.name,
+      intent: 'approve',
+      comment: atLimit,
+    })
+    await act(async () => page.submissions[0].respond(approved))
+  })
+
+  it('rejects null characters in a short comment and permits correction', async () => {
+    const page = renderReview()
+    await enterComment('Review\0note')
+
+    expect(button('Approve this call')).toBeDisabled()
+    expect(button('Deny this call')).toBeDisabled()
+    expect(comment()).toBeInvalid()
+    expect(comment()).toHaveAccessibleDescription(correction)
+    await click('Approve this call')
+    await click('Deny this call')
+    expect(page.submissions).toHaveLength(0)
+
+    await enterComment('Review note')
+    expect(button('Approve this call')).toBeEnabled()
+    expect(button('Deny this call')).toBeEnabled()
+    expect(comment()).toBeValid()
+    expect(page.container).not.toHaveTextContent('Remove null characters.')
+    await click('Deny this call')
+    expect(page.submissions).toHaveLength(1)
+    expect(page.submissions[0].form.get('comment')).toBe('Review note')
+    expect(page.submissions[0].form.get('intent')).toBe('decline')
+    await act(async () => page.submissions[0].respond({ state: 'declined' }))
+  })
+
+  it.each([
+    ['Approve this call', 'Approving…', 'Deny this call', 'approve'],
+    ['Deny this call', 'Denying…', 'Approve this call', 'decline'],
+  ])(
+    'prevents duplicate or opposite decisions while %s is pending',
+    async (label, pending, other, intent) => {
+      const page = renderReview()
+      await enterComment('Reviewed the exact arguments.')
+      await click(label)
+
+      expect(page.submissions).toHaveLength(1)
+      expect(page.submissions[0].form.get('intent')).toBe(intent)
+      expect(button(pending)).toBeDisabled()
+      expect(button(other)).toBeDisabled()
+      await click(pending)
+      await click(other)
+      expect(page.submissions).toHaveLength(1)
+      expect(comment()).toHaveValue('Reviewed the exact arguments.')
+
+      await act(async () => page.submissions[0].respond({ error: 'Try again.' }))
+      expect(button(label)).toBeEnabled()
+      expect(button(other)).toBeEnabled()
+    },
+  )
+
+  it('retains the comment after an action error and submits the corrected comment on retry', async () => {
+    const page = renderReview()
+    await enterComment('Original review note')
+    await click('Approve this call')
+    expect(page.submissions).toHaveLength(1)
+    await act(async () =>
+      page.submissions[0].respond({ error: 'Could not save your decision. Try again.' }),
+    )
+
+    expect(page.container).toHaveTextContent('Could not save your decision. Try again.')
+    expect(comment()).toHaveValue('Original review note')
+    expect(button('Approve this call')).toBeEnabled()
+    expect(button('Deny this call')).toBeEnabled()
+
+    await enterComment('Corrected review note')
+    await click('Approve this call')
+    expect(page.submissions).toHaveLength(2)
+    expect(Object.fromEntries(page.submissions[1].form)).toEqual({
+      csrf: 'test-csrf',
+      name: approval.name,
+      intent: 'approve',
+      comment: 'Corrected review note',
+    })
+    await act(async () => page.submissions[1].respond(approved))
+
+    // The header states the outcome; no banner repeats it.
+    expect(statuses()).toEqual(['Approved'])
+    expect(page.container).not.toHaveTextContent('Could not save your decision.')
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  it('shows the durable denial returned to a stale approval attempt and removes decision controls', async () => {
+    const page = renderReview()
+    await enterComment('I intended to approve this call.')
+    await click('Approve this call')
+    expect(page.submissions).toHaveLength(1)
+    expect(page.submissions[0].form.get('intent')).toBe('approve')
+    await act(async () => page.submissions[0].respond({ state: 'declined' }))
+
+    // An unchanged pending read must not overwrite the winning action response.
+    await page.show({ ...approval })
+    expect(statuses()).toEqual(['Denied'])
+    expect(page.container).not.toHaveTextContent('Approval needed')
+    expect(page.container).not.toHaveTextContent('Approved')
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /this call/ })).not.toBeInTheDocument()
+  })
+
+  it('does not guard a submitted comment as unsent after a durable winning denial', async () => {
+    const page = renderReview()
+    await enterComment('I intended to approve this call.')
+    await click('Approve this call')
+    expect(page.submissions).toHaveLength(1)
+    await act(async () => page.submissions[0].respond({ state: 'declined' }))
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+
+    await page.navigate('/elsewhere')
+    expect(page.container.textContent).toBe('Another page')
+    expect(document.body).not.toHaveTextContent('Discard your comment?')
+  })
+
+  it('keeps a concealed draft guarded and restores it when the exact review returns', async () => {
+    const page = renderReview()
+    await enterComment('Keep this unsent review note.')
+    await page.show(null)
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(page.container).not.toHaveTextContent('Keep this unsent review note.')
+
+    await page.navigate('/elsewhere')
+    expect(page.location().pathname).toBe('/activity')
+    expect(document.body).toHaveTextContent('Discard your comment?')
+    await click('Keep editing')
+    await page.show({ ...approval })
+    expect(comment()).toHaveValue('Keep this unsent review note.')
+    expect(page.submissions).toHaveLength(0)
+
+    await page.navigate('/elsewhere')
+    await click('Discard comment')
+    expect(page.container.textContent).toBe('Another page')
+  })
+})

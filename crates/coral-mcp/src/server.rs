@@ -1,1542 +1,782 @@
-//! RMCP server implementation for Coral's stdio MCP surface.
+use std::borrow::Cow;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use std::{collections::BTreeSet, sync::Arc};
-
-use coral_api::v1::{
-    AddFunctionRequest, CatalogItemKind as ProtoCatalogItemKind, DescribeCatalogSurfaceRequest,
-    DescribeCatalogSurfaceResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
-    PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
-    TaskAttribution as ProtoTaskAttribution, TaskStatus as ProtoTaskStatus, Workspace,
-    catalog_item,
+use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
+use coral_search::SearchInput;
+use coral_task::{TaskId, TaskIntent, TaskOutcome};
+use coral_workspace::{TraceId, WorkspaceId};
+use rmcp::model::{
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerConfig,
 };
-use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchClient,
-    SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
-    search_response_json_value, with_task_metadata,
+use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
+use rmcp::{ErrorData, ServerHandler};
+use uuid::Uuid;
+
+use crate::McpRuntime;
+use crate::arguments::{
+    self, CancelArguments, DeleteFunctionArguments, DescribeArguments, EndTaskArguments,
+    ExecArguments, SaveFunctionArguments, SearchArguments, StartTaskArguments, TaskOutcomeArgument,
+    ToolArguments, WaitArguments,
 };
-use rmcp::{
-    ErrorData, ServerHandler,
-    handler::server::tool::ToolCallContext,
-    model::{
-        CallToolRequestParams, CallToolResult, Implementation, ListResourcesResult,
-        ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-        ResourceContents, ServerCapabilities, ServerInfo, Tool,
-    },
-    service::{RequestContext, RoleServer},
-};
-use serde::Serialize;
-use serde_json::{Map, Value};
-use tonic::{
-    Request,
-    metadata::{Ascii, MetadataValue},
-};
-use tracing::Instrument as _;
+use crate::projection::{self, ToolFailure};
+use crate::prompts::{Asked, Channel, Prompting};
 
-use crate::{
-    McpOptions, McpQueryExample, McpToolContext, McpToolRouter,
-    extensions::InitializeInstructions,
-    guide_block::GuideBlockState,
-    surface::{
-        AddFunctionArguments, CatalogToolKind, EndTaskArguments, FeedbackStoredValue,
-        SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, StartTaskArguments,
-        TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
-        ToolDescriptionContext, ToolName, add_function_arguments, available_tools,
-        build_tool_result, describe_arguments, describe_value, end_task_arguments,
-        feedback_arguments, function_added_value, guide_resource, guide_resource_content,
-        initial_instructions, list_catalog_arguments, list_catalog_value, list_columns_arguments,
-        list_columns_value, render_function_artifact, required_task_id_argument,
-        required_tool_intent_argument, search_arguments, sql_arguments, start_task_arguments,
-        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
-        tool_error_result,
-    },
-    telemetry,
-};
+#[cfg(test)]
+mod tests;
 
-const LIST_CATALOG_UNBOUNDED_LIMIT: u32 = 0;
-const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
-const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
-const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
-const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
-const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
-
-enum ToolCallOutcome {
-    Payload(Value),
-    Sql(SqlBatchExecution),
-    ToolError {
-        operation: &'static str,
-        status: tonic::Status,
-    },
-}
-
-enum SqlBatchOutput {
-    Executed(SqlBatchValue),
-    GuideBlocked(SqlGuideBlockValue),
-}
-
-struct SqlBatchExecution {
-    output: SqlBatchOutput,
-    task_gate: tokio::sync::OwnedMutexGuard<()>,
-}
-
-fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
-    serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
-}
-
-enum QueryRows {
-    Rows(Vec<Value>),
-    GuideRequired(Vec<SqlGuideValue>),
-}
-
-fn task_id_from_backend_response(
-    operation: &'static str,
-    value: &str,
-) -> Result<TaskId, tonic::Status> {
-    if value.is_empty() {
-        return Err(tonic::Status::internal(format!(
-            "{operation} response missing task_id"
-        )));
-    }
-    TaskId::from_uuid_str(value)
-        .map_err(|_err| tonic::Status::internal(format!("{operation} response invalid task_id")))
-}
-
-fn task_started_value(task: &coral_api::v1::Task) -> Result<TaskStartedValue, tonic::Status> {
-    let task_id = task_id_from_backend_response("start task", &task.task_id)?;
-    Ok(TaskStartedValue {
-        task_id,
-        message: "Task started.",
-        instructions: "Pass this task_id plus a concise intent for the specific operation on each subsequent Coral data or enabled-feedback call, then call end_task when the task is complete.",
-    })
-}
-
-fn task_status_to_proto(status: TaskStatus) -> ProtoTaskStatus {
-    match status {
-        TaskStatus::Success => ProtoTaskStatus::Success,
-        TaskStatus::Failure => ProtoTaskStatus::Failure,
-    }
-}
-
-fn task_status_from_proto(status: i32) -> Result<TaskStatus, tonic::Status> {
-    match ProtoTaskStatus::try_from(status) {
-        Ok(ProtoTaskStatus::Success) => Ok(TaskStatus::Success),
-        Ok(ProtoTaskStatus::Failure) => Ok(TaskStatus::Failure),
-        Ok(ProtoTaskStatus::Unspecified) | Err(_) => Err(tonic::Status::internal(
-            "end task response missing task status",
-        )),
-    }
-}
-
-impl ToolCallOutcome {
-    fn success(value: Value) -> Self {
-        Self::Payload(value)
-    }
-
-    fn from_value_result(operation: &'static str, result: Result<Value, tonic::Status>) -> Self {
-        match result {
-            Ok(value) => Self::Payload(value),
-            Err(status) => Self::ToolError { operation, status },
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ToolIntent(String);
-
-impl ToolIntent {
-    fn from_tool_request(
-        arguments: Option<&Map<String, Value>>,
-        key: &str,
-    ) -> Result<Self, ErrorData> {
-        required_tool_intent_argument(arguments, key).map(Self)
-    }
-
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Default)]
-struct TaskCallContext {
-    task_id: Option<TaskId>,
-    tool_intent: Option<ToolIntent>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TaskContextRequirement {
-    None,
-    Intent,
-    TaskId,
-    TaskIdAndIntent,
-}
-
-impl TaskContextRequirement {
-    fn requires_intent(self) -> bool {
-        matches!(self, Self::Intent | Self::TaskIdAndIntent)
-    }
-
-    fn requires_task_id(self) -> bool {
-        matches!(self, Self::TaskId | Self::TaskIdAndIntent)
-    }
-}
-
-impl TaskCallContext {
-    fn from_tool_request(
-        options: &McpOptions,
-        tool_name: Option<ToolName>,
-        arguments: Option<&Map<String, Value>>,
-    ) -> Result<Self, ErrorData> {
-        let Some(tool_name) = tool_name else {
-            return Ok(Self::default());
-        };
-        let requirement = task_context_requirement(options, tool_name);
-        if requirement == TaskContextRequirement::None {
-            return Ok(Self::default());
-        }
-        let intent = requirement
-            .requires_intent()
-            .then(|| ToolIntent::from_tool_request(arguments, "intent"))
-            .transpose()?;
-        let task_id = requirement
-            .requires_task_id()
-            .then(|| required_task_id_argument(arguments, "task_id"))
-            .transpose()?;
-        Ok(Self {
-            task_id,
-            tool_intent: intent,
-        })
-    }
-
-    fn record_telemetry(&self, span: &tracing::Span) {
-        if let Some(task_id) = self.task_id.as_ref() {
-            telemetry::record_task_id(span, &task_id.to_string());
-        }
-    }
-
-    fn task_id(&self) -> Option<TaskId> {
-        self.task_id
-    }
-
-    fn task_id_metadata(&self) -> Option<MetadataValue<Ascii>> {
-        self.task_id.map(|task_id| {
-            task_id
-                .to_string()
-                .parse()
-                .expect("UUID task ids are valid ASCII metadata")
-        })
-    }
-
-    fn query_attribution_proto(&self) -> Option<ProtoTaskAttribution> {
-        Some(ProtoTaskAttribution {
-            task_id: self.task_id?.to_string(),
-            intent: self.tool_intent.as_ref()?.as_str().to_string(),
-        })
-    }
-}
-
-fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskContextRequirement {
-    match tool_name {
-        ToolName::Sql
-        | ToolName::AddFunction
-        | ToolName::Search
-        | ToolName::ListCatalog
-        | ToolName::Describe
-        | ToolName::ListColumns => TaskContextRequirement::TaskIdAndIntent,
-        ToolName::StartTask => TaskContextRequirement::Intent,
-        ToolName::EndTask => TaskContextRequirement::TaskId,
-        ToolName::Feedback if options.feedback_enabled => TaskContextRequirement::TaskIdAndIntent,
-        ToolName::Feedback => TaskContextRequirement::None,
-    }
-}
-
-/// A handler factory was asked for before a workspace was resolved.
+/// MCP protocol versions this Adapter serves, oldest first.
 ///
-/// Every MCP tool and resource is workspace-scoped, so a factory without a
-/// concrete workspace could only serve sessions that invent one. Each transport
-/// resolves its own workspace first and reports this refusal in the terms its
-/// caller understands.
-#[derive(Debug, thiserror::Error)]
-#[error("MCP sessions require a resolved workspace")]
-pub(crate) struct WorkspaceRequired;
+/// This is the tested window, not everything RMCP knows. `server/discover`
+/// advertises exactly this list. An `initialize` handshake exists only before
+/// 2026-07-28, so a client asking over it for a newer version, or for a legacy
+/// version outside the window, lands on the oldest entry, which is also the
+/// version with the fewest wire obligations. Add a version here only together
+/// with its raw-wire test coverage; drop the oldest once no supported client
+/// sends it.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] =
+    &[ProtocolVersion::V_2025_11_25, ProtocolVersion::V_2026_07_28];
 
-/// Cloneable factory for constructing an independent MCP handler per session.
-#[derive(Clone)]
-pub(crate) struct CoralMcpServerFactory {
-    app: AppClient,
-    workspace: Workspace,
-    options: McpOptions,
-    guide_block: Arc<GuideBlockState>,
+/// The version an `initialize` handshake lands on when the requested version
+/// is outside the window or, from 2026-07-28, has no such handshake at all.
+fn fallback_protocol_version() -> ProtocolVersion {
+    SUPPORTED_PROTOCOL_VERSIONS
+        .first()
+        .expect("the protocol window is never empty")
+        .clone()
 }
 
-impl CoralMcpServerFactory {
-    /// Creates a handler factory with the tools selected by `options`.
-    ///
-    /// The caller must ensure that `app` is authorized for every session
-    /// created by this factory. A transport may share one factory only when
-    /// those sessions share the same authorization context. An authenticated
-    /// transport must use a client bound to the validated session and must not
-    /// fall back to a shared unauthenticated client.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceRequired`] when `options` names no workspace. The
-    /// workspace is taken once here rather than read per request, so a live
-    /// handler can only ever reach the one it was scoped to.
-    pub(crate) fn new(app: AppClient, options: McpOptions) -> Result<Self, WorkspaceRequired> {
-        let workspace = options.workspace.clone().ok_or(WorkspaceRequired)?;
-        Ok(Self {
-            app,
-            workspace,
-            options,
-            guide_block: Arc::new(GuideBlockState::default()),
-        })
+#[derive(Clone)]
+pub(crate) struct McpServer {
+    runtime: McpRuntime,
+    workspace_id: WorkspaceId,
+}
+
+impl McpServer {
+    pub(crate) const fn new(runtime: McpRuntime, workspace_id: WorkspaceId) -> Self {
+        Self {
+            runtime,
+            workspace_id,
+        }
     }
 
-    /// Constructs a fresh handler for one MCP session.
-    ///
-    /// Handlers from this factory share task-scoped guide-block state.
-    #[must_use]
-    pub(crate) fn create(&self) -> CoralMcpServer {
-        CoralMcpServer::new(
-            &self.app,
-            self.workspace.clone(),
-            self.options.clone(),
-            Arc::clone(&self.guide_block),
+    async fn dispatch(
+        &self,
+        mut request: CallToolRequestParams,
+        channel: Channel,
+    ) -> Result<CallToolResponse, DispatchError> {
+        let prompting = Prompting::from_request(
+            channel,
+            request.request_state.take(),
+            request.input_responses.take(),
         )
-    }
-
-    /// Constructs a handler whose source client is replaced.
-    ///
-    /// A shared deployment refuses owner-only source configuration to agent
-    /// credentials, which a local unauthenticated fixture cannot reproduce.
-    /// Substituting the source client is how tests reach that refusal.
-    #[cfg(test)]
-    pub(crate) fn create_with_source_client(&self, source: SourceClient) -> CoralMcpServer {
-        let mut server = self.create();
-        server.core_tools.source = source;
-        server
-    }
-}
-
-/// Session-bound implementation of Coral's built-in MCP tools.
-#[derive(Clone)]
-pub struct CoralToolset {
-    source: SourceClient,
-    catalog: CatalogClient,
-    query: QueryClient,
-    search: SearchClient,
-    function: FunctionClient,
-    feedback: FeedbackClient,
-    task: TaskClient,
-    guide_block: Arc<GuideBlockState>,
-    startup_context: McpStartupContext,
-    workspace: Workspace,
-    options: McpOptions,
-    retained_tool_names: Option<Arc<BTreeSet<String>>>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct McpStartupContext {
-    source_names: Vec<String>,
-    query_examples: Vec<McpQueryExample>,
-}
-
-impl McpStartupContext {
-    fn new(
-        source_names: impl IntoIterator<Item = String>,
-        query_examples: impl IntoIterator<Item = McpQueryExample>,
-    ) -> Self {
-        let mut source_names = source_names
-            .into_iter()
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .collect::<Vec<_>>();
-        source_names.sort_unstable();
-        source_names.dedup();
-        let query_examples = normalize_query_examples(query_examples);
-        Self {
-            source_names,
-            query_examples,
+        .map_err(invalid_input_message)?;
+        let name = request.name.as_ref();
+        if prompting.continued_run().is_some()
+            && !matches!(name, ExecArguments::NAME | WaitArguments::NAME)
+        {
+            return Err(invalid_input_message(format!(
+                "tool '{name}' does not accept requestState"
+            )));
         }
-    }
-
-    fn from_options(options: &McpOptions) -> Self {
-        Self::new(options.source_names.clone(), options.query_examples.clone())
-    }
-
-    fn source_names(&self) -> &[String] {
-        &self.source_names
-    }
-
-    fn query_examples(&self) -> &[McpQueryExample] {
-        &self.query_examples
-    }
-}
-
-impl CoralToolset {
-    fn new(
-        app: &AppClient,
-        workspace: Workspace,
-        options: McpOptions,
-        guide_block: Arc<GuideBlockState>,
-    ) -> Self {
-        let startup_context = McpStartupContext::from_options(&options);
-        Self::new_with_startup_context(app, workspace, options, startup_context, guide_block)
-    }
-
-    fn new_with_startup_context(
-        app: &AppClient,
-        workspace: Workspace,
-        options: McpOptions,
-        startup_context: McpStartupContext,
-        guide_block: Arc<GuideBlockState>,
-    ) -> Self {
-        Self {
-            source: app.source_client(),
-            catalog: app.catalog_client(),
-            query: app.query_client(),
-            search: app.search_client(),
-            function: app.function_client(),
-            feedback: app.feedback_client(),
-            task: app.task_client(),
-            guide_block,
-            startup_context,
-            workspace,
-            options,
-            retained_tool_names: None,
-        }
-    }
-
-    fn tool_allowed(&self, tool: ToolName) -> bool {
-        let feature_allows = match tool {
-            ToolName::Feedback => self.options.feedback_enabled,
-            _ => true,
+        let complete = match name {
+            StartTaskArguments::NAME => {
+                let arguments = arguments::parse::<StartTaskArguments>(request.arguments)?;
+                self.start_task(arguments).await
+            }
+            SearchArguments::NAME => {
+                let arguments = arguments::parse::<SearchArguments>(request.arguments)?;
+                self.search(arguments).await
+            }
+            DescribeArguments::NAME => {
+                let arguments = arguments::parse::<DescribeArguments>(request.arguments)?;
+                self.describe(arguments).await
+            }
+            SaveFunctionArguments::NAME => {
+                let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
+                self.save_function(arguments).await
+            }
+            DeleteFunctionArguments::NAME => {
+                let arguments = arguments::parse::<DeleteFunctionArguments>(request.arguments)?;
+                self.delete_function(arguments).await
+            }
+            ExecArguments::NAME => {
+                let arguments = arguments::parse::<ExecArguments>(request.arguments)?;
+                return self.exec(arguments, prompting).await;
+            }
+            WaitArguments::NAME => {
+                let arguments = arguments::parse::<WaitArguments>(request.arguments)?;
+                return self.wait(arguments, prompting).await;
+            }
+            CancelArguments::NAME => {
+                let arguments = arguments::parse::<CancelArguments>(request.arguments)?;
+                self.cancel(arguments).await
+            }
+            EndTaskArguments::NAME => {
+                let arguments = arguments::parse::<EndTaskArguments>(request.arguments)?;
+                self.end_task(arguments).await
+            }
+            _ => Err(DispatchError::Protocol(ErrorData::invalid_params(
+                format!("tool '{name}' not found"),
+                None,
+            ))),
         };
-        feature_allows
-            && self
-                .retained_tool_names
-                .as_ref()
-                .is_none_or(|names| names.contains(tool.as_str()))
+        complete.map(Into::into)
     }
 
-    fn workspace(&self) -> Workspace {
-        self.workspace.clone()
-    }
-
-    /// Returns an enforced view containing only the named core tools.
-    #[must_use]
-    pub fn retain(&self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        let mut retained = names.into_iter().map(Into::into).collect::<BTreeSet<_>>();
-        if let Some(current) = &self.retained_tool_names {
-            retained.retain(|name| current.contains(name));
-        }
-        let mut projected = self.clone();
-        projected.retained_tool_names = Some(Arc::new(retained));
-        projected
-    }
-
-    async fn load_sources(&self) -> Result<Vec<Source>, tonic::Status> {
-        let mut source_client = self.source.clone();
-        Ok(source_client
-            .list_sources(Request::new(ListSourcesRequest {
-                workspace: Some(self.workspace()),
-            }))
-            .await?
-            .into_inner()
-            .sources)
-    }
-
-    /// Lists installed sources for a discovery surface, degrading to none only
-    /// when the caller may not read source configuration.
-    ///
-    /// Source configuration is owner-only because it carries credential setup
-    /// metadata, so an MCP agent credential is refused even while acting for a
-    /// person who owns the workspace. Sources are advisory context on discovery
-    /// surfaces, so that owner-only `PermissionDenied` refusal must shrink the
-    /// answer rather than fail the request. Every other status — a transient
-    /// `Unavailable`/`Internal` and the like — is a real fault the surface must
-    /// still surface, so it propagates rather than masquerading as "no sources".
-    async fn load_sources_for_discovery(&self) -> Result<Vec<Source>, tonic::Status> {
-        match self.load_sources().await {
-            Ok(sources) => Ok(sources),
-            Err(status) if status.code() == tonic::Code::PermissionDenied => {
-                tracing::warn!(
-                    error = %status,
-                    "source configuration is owner-only; omitting sources from an MCP discovery surface"
-                );
-                Ok(Vec::new())
-            }
-            Err(status) => Err(status),
-        }
-    }
-
-    async fn load_catalog(
-        &self,
-        catalog_name: Option<&str>,
-        schema_name: Option<&str>,
-        kind: ProtoCatalogItemKind,
-        pagination: PaginationRequest,
-    ) -> Result<ListCatalogResponse, tonic::Status> {
-        let mut catalog_client = self.catalog.clone();
-        Ok(catalog_client
-            .list_catalog(Request::new(ListCatalogRequest {
-                workspace: Some(self.workspace()),
-                catalog_name: catalog_name.unwrap_or_default().to_string(),
-                schema_name: schema_name.unwrap_or_default().to_string(),
-                kind: kind as i32,
-                pagination: Some(pagination),
-            }))
-            .await?
-            .into_inner())
-    }
-
-    async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
-        self.load_catalog(
-            None,
-            None,
-            CATALOG_KIND_TABLE,
-            PaginationRequest {
-                limit: LIST_CATALOG_UNBOUNDED_LIMIT,
-                offset: 0,
-            },
-        )
-        .await
-        .map(|response| {
-            response
-                .items
-                .into_iter()
-                .filter_map(|item| match item.item {
-                    Some(catalog_item::Item::Table(table)) => Some(table),
-                    Some(catalog_item::Item::TableFunction(_)) | None => None,
-                })
-                .collect()
-        })
-    }
-
-    async fn load_guide_catalog(
-        &self,
-    ) -> Result<(Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
-        self.load_catalog(
-            None,
-            None,
-            CATALOG_KIND_ALL,
-            PaginationRequest {
-                limit: LIST_CATALOG_UNBOUNDED_LIMIT,
-                offset: 0,
-            },
-        )
-        .await
-        .map(guide_catalog_from_response)
-    }
-
-    async fn load_catalog_surface_description(
-        &self,
-        catalog_name: Option<&str>,
-        schema_name: &str,
-        surface_name: &str,
-    ) -> Result<DescribeCatalogSurfaceResponse, tonic::Status> {
-        let mut catalog_client = self.catalog.clone();
-        Ok(catalog_client
-            .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
-                workspace: Some(self.workspace()),
-                catalog_name: catalog_name.unwrap_or_default().to_string(),
-                schema_name: schema_name.to_string(),
-                surface_name: surface_name.to_string(),
-            }))
-            .await?
-            .into_inner())
-    }
-
-    async fn load_catalog_counts(&self) -> Result<(usize, usize), tonic::Status> {
-        // One item is enough: the app returns per-kind counts before pagination.
-        let response = self
-            .load_catalog(
-                None,
-                None,
-                CATALOG_KIND_ALL,
-                PaginationRequest {
-                    limit: LIST_CATALOG_COUNT_LIMIT,
-                    offset: 0,
-                },
-            )
-            .await?;
-        let counts = response
-            .counts
-            .ok_or_else(|| tonic::Status::internal("catalog response missing counts"))?;
-        Ok((
-            usize::try_from(counts.table_count).unwrap_or(usize::MAX),
-            usize::try_from(counts.table_function_count).unwrap_or(usize::MAX),
-        ))
-    }
-
-    async fn load_sources_and_catalog_counts(
-        &self,
-    ) -> Result<(Vec<Source>, usize, usize), tonic::Status> {
-        let (sources, counts) = tokio::join!(
-            self.load_sources_for_discovery(),
-            self.load_catalog_counts()
-        );
-        let (table_count, table_function_count) = counts?;
-        Ok((sources?, table_count, table_function_count))
-    }
-
-    async fn load_sources_and_guide_catalog(
-        &self,
-    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
-        let (sources, catalog) =
-            tokio::join!(self.load_sources_for_discovery(), self.load_guide_catalog());
-        let (tables, table_function_schema_names) = catalog?;
-        Ok((sources?, tables, table_function_schema_names))
-    }
-
-    async fn query_rows(
-        &self,
-        request: Request<ExecuteSqlRequest>,
-    ) -> Result<QueryRows, tonic::Status> {
-        let mut query_client = self.query.clone();
-        let mut response = query_client.execute_sql(request).await?.into_inner();
-        if let Some(required) = response.guide_required.take() {
-            if required.guides.is_empty() {
-                return Err(tonic::Status::internal(
-                    "guide-required response contained no guides",
-                ));
-            }
-            return Ok(QueryRows::GuideRequired(
-                required
-                    .guides
-                    .into_iter()
-                    .map(|guide| {
-                        SqlGuideValue::new(
-                            guide.schema_name,
-                            guide.resource_name,
-                            guide.guide,
-                            guide.guide_id,
-                        )
-                    })
-                    .collect(),
-            ));
-        }
-        let result = decode_execute_sql_response(&response)
-            .map_err(|error| tonic::Status::internal(error.to_string()))?;
-        batches_to_json_rows_json_safe_numbers(result.batches())
-            .map(QueryRows::Rows)
-            .map_err(|error| tonic::Status::internal(error.to_string()))
-    }
-
-    async fn execute_one_sql_query(
-        &self,
-        index: usize,
-        sql: String,
-        shown_guide_ids: Vec<String>,
-        task_attribution: ProtoTaskAttribution,
-    ) -> SqlQueryResultValue {
-        let request = Request::new(ExecuteSqlRequest {
-            workspace: Some(self.workspace()),
-            sql,
-            guide_read_context: Some(QueryGuideReadContext { shown_guide_ids }),
-            task_attribution: Some(task_attribution),
-        });
-        match self.query_rows(request).await {
-            Ok(QueryRows::Rows(rows)) => SqlQueryResultValue::Success { index, rows },
-            Ok(QueryRows::GuideRequired(guides)) => {
-                SqlQueryResultValue::GuideRequired { index, guides }
-            }
-            Err(status) => SqlQueryResultValue::Error {
-                index,
-                error: tool_error_from_status("Query", &status),
-            },
-        }
-    }
-
-    async fn execute_sql_batch(
-        &self,
-        queries: Vec<String>,
-        task_context: TaskCallContext,
-    ) -> Result<SqlBatchExecution, tonic::Status> {
-        let task_id = task_context
-            .task_id()
-            .ok_or_else(|| tonic::Status::internal("SQL call missing validated task id"))?;
-        let task_attribution = task_context
-            .query_attribution_proto()
-            .ok_or_else(|| tonic::Status::internal("SQL call missing validated task intent"))?;
-        let task_gate = self.guide_block.lock_task(task_id).await?;
-        let shown_guide_ids = self.guide_block.shown_guide_ids(task_id)?;
-
-        let mut tasks = tokio::task::JoinSet::new();
-        for (index, sql) in queries.into_iter().enumerate() {
-            let server = self.clone();
-            let task_attribution = task_attribution.clone();
-            let shown_guide_ids = shown_guide_ids.clone();
-            tasks.spawn(
-                async move {
-                    server
-                        .execute_one_sql_query(index, sql, shown_guide_ids, task_attribution)
-                        .await
-                }
-                .in_current_span(),
-            );
-        }
-
-        let mut results = Vec::new();
-        while let Some(joined) = tasks.join_next().await {
-            results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))?);
-        }
-
-        let guides = results
-            .iter()
-            .flat_map(SqlQueryResultValue::required_guides)
-            .cloned()
-            .collect::<Vec<_>>();
-        self.guide_block.record_guides(task_id, &guides)?;
-        if let [SqlQueryResultValue::GuideRequired { guides, .. }] = results.as_slice() {
-            return Ok(SqlBatchExecution {
-                output: SqlBatchOutput::GuideBlocked(SqlGuideBlockValue::new(guides.clone())),
-                task_gate,
-            });
-        }
-
-        Ok(SqlBatchExecution {
-            output: SqlBatchOutput::Executed(SqlBatchValue::from_unordered(results)),
-            task_gate,
-        })
-    }
-
-    async fn start_task_value(
+    async fn start_task(
         &self,
         arguments: StartTaskArguments,
-    ) -> Result<Value, tonic::Status> {
-        let mut task_client = self.task.clone();
-        let task = task_client
-            .start_task(Request::new(StartTaskRequest {
-                workspace: Some(self.workspace()),
-                intent: arguments.intent,
-            }))
-            .await?
-            .into_inner()
-            .task
-            .ok_or_else(|| tonic::Status::internal("start task response missing task"))?;
-        serialize_tool_value(task_started_value(&task)?)
-    }
-
-    async fn end_task_value(&self, arguments: EndTaskArguments) -> Result<Value, tonic::Status> {
-        let mut task_client = self.task.clone();
-        let task_end = task_client
-            .end_task(Request::new(EndTaskRequest {
-                workspace: Some(self.workspace()),
-                task_id: arguments.task_id.to_string(),
-                task_status: task_status_to_proto(arguments.task_status) as i32,
-            }))
-            .await?
-            .into_inner()
-            .task_end
-            .ok_or_else(|| tonic::Status::internal("end task response missing task_end"))?;
-        let task_id = task_id_from_backend_response("end task", &task_end.task_id)?;
-        if task_id != arguments.task_id {
-            return Err(tonic::Status::internal(
-                "end task response task_id did not match request",
-            ));
-        }
-        self.guide_block.clear_task(task_id)?;
-        serialize_tool_value(TaskEndedValue {
-            task_id,
-            task_status: task_status_from_proto(task_end.task_status)?,
-            note: "Task status recorded. Before responding, you MUST call `add_function` if it would improve future discovery or compress this task’s useful query workflow into fewer or simpler future calls. Do not add a duplicate or simple rename of an existing function.",
-        })
-    }
-
-    async fn submit_feedback_value(
-        &self,
-        trying_to_do: &str,
-        tried: &str,
-        stuck: &str,
-    ) -> Result<Value, tonic::Status> {
-        let mut feedback_client = self.feedback.clone();
-        let response = feedback_client
-            .submit_feedback(Request::new(SubmitFeedbackRequest {
-                workspace: Some(self.workspace()),
-                trying_to_do: trying_to_do.to_string(),
-                tried: tried.to_string(),
-                stuck: stuck.to_string(),
-            }))
-            .await?
-            .into_inner();
-        let report = response
-            .report
-            .ok_or_else(|| tonic::Status::internal("feedback response missing report"))?;
-        serialize_tool_value(FeedbackStoredValue {
-            feedback_id: report.id,
-            created_at: report.created_at,
-            message: "Feedback report stored.",
-        })
-    }
-
-    async fn add_function_value(
-        &self,
-        arguments: AddFunctionArguments,
-    ) -> Result<Value, tonic::Status> {
-        let artifact_sql = render_function_artifact(&arguments).map_err(|error| {
-            tonic::Status::internal(format!("failed to render function artifact: {error}"))
-        })?;
-        let mut function_client = self.function.clone();
-        let response = function_client
-            .add_function(Request::new(AddFunctionRequest {
-                workspace: Some(self.workspace()),
-                sql: artifact_sql,
-                fail_if_exists: true,
-                write_surface: FunctionWriteSurface::Mcp as i32,
-            }))
-            .await?
-            .into_inner();
-        let function = response
-            .function
-            .ok_or_else(|| tonic::Status::internal("add function response missing function"))?;
-        function_added_value(&function)
-    }
-
-    async fn search_tool_result(
-        &self,
-        request_arguments: Option<&Map<String, Value>>,
-    ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = search_arguments(request_arguments)?;
-        let mut search_client = self.search.clone();
-        match search_client
-            .search(Request::new(SearchRequest {
-                workspace: Some(self.workspace()),
-                query: arguments.query,
-                limit: arguments.limit,
-            }))
+    ) -> Result<CallToolResult, DispatchError> {
+        let intent = TaskIntent::parse(&arguments.intent).map_err(invalid_input)?;
+        // Read before the Task starts, so a failed read leaves no Task behind.
+        let providers = self
+            .runtime
+            .modules
+            .commands
+            .searchable_providers(&self.runtime.principal, &self.workspace_id)
             .await
-            .map(|response| search_response_json_value(&response.into_inner()))
-        {
-            Ok(value) => Ok(ToolCallOutcome::success(value)),
-            Err(status) if status.code() == tonic::Code::InvalidArgument => {
-                Err(status_to_error_data(&status))
-            }
-            Err(status) => Ok(ToolCallOutcome::ToolError {
-                operation: "Search",
-                status,
-            }),
-        }
-    }
-
-    async fn list_catalog_tool_result(
-        &self,
-        request_arguments: Option<&Map<String, Value>>,
-    ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = list_catalog_arguments(request_arguments)?;
-        let mut catalog_client = self.catalog.clone();
-        let result = catalog_client
-            .list_catalog(Request::new(ListCatalogRequest {
-                workspace: Some(self.workspace()),
-                catalog_name: arguments.catalog.unwrap_or_default(),
-                schema_name: arguments.schema.unwrap_or_default(),
-                kind: catalog_item_kind_from_tool(arguments.kind) as i32,
-                pagination: Some(PaginationRequest {
-                    limit: arguments.pagination.limit,
-                    offset: arguments.pagination.offset,
-                }),
-            }))
-            .await
-            .map(|response| list_catalog_value(&response.into_inner()));
-        Ok(ToolCallOutcome::from_value_result(
-            "Catalog listing",
-            result,
-        ))
-    }
-
-    async fn describe_tool_result(
-        &self,
-        request_arguments: Option<&Map<String, Value>>,
-    ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = describe_arguments(request_arguments)?;
-        let result = self
-            .load_catalog_surface_description(
-                arguments.catalog.as_deref(),
-                &arguments.schema,
-                &arguments.surface,
+            .map_err(task_failure)?;
+        let task = self
+            .runtime
+            .modules
+            .tasks
+            .start(
+                &self.runtime.principal,
+                &self.workspace_id,
+                intent,
+                now_unix_nanos()?,
             )
             .await
-            .and_then(|response| describe_value(&response));
-        Ok(ToolCallOutcome::from_value_result(
-            "Catalog item description",
-            result,
+            .map_err(task_failure)?;
+        projection::success(projection::StartedTask {
+            task_id: task.id().to_string(),
+            providers: providers
+                .iter()
+                .map(|namespace| namespace.as_str().to_string())
+                .collect(),
+        })
+        .map_err(DispatchError::Tool)
+    }
+
+    async fn search(&self, arguments: SearchArguments) -> Result<CallToolResult, DispatchError> {
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let request = SearchInput {
+            query: arguments.query,
+            provider: arguments.provider,
+            limit: arguments.limit,
+            cursor: arguments.cursor,
+        };
+        let results = self
+            .runtime
+            .modules
+            .commands
+            .search(&call, request)
+            .await
+            .map_err(task_failure)?;
+        projection::search(&results)
+            .and_then(projection::success)
+            .map_err(DispatchError::Tool)
+    }
+
+    async fn describe(
+        &self,
+        arguments: DescribeArguments,
+    ) -> Result<CallToolResult, DispatchError> {
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let result = self
+            .runtime
+            .modules
+            .commands
+            .describe(
+                &call,
+                &arguments.path,
+                arguments.types.as_deref().unwrap_or_default(),
+            )
+            .await
+            .map_err(task_failure)?;
+        projection::exact_description(&result)
+            .and_then(projection::success)
+            .map_err(DispatchError::Tool)
+    }
+
+    async fn save_function(
+        &self,
+        arguments: SaveFunctionArguments,
+    ) -> Result<CallToolResult, DispatchError> {
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let function = self
+            .runtime
+            .modules
+            .commands
+            .save_function(
+                &call,
+                &arguments.path,
+                &arguments.description,
+                &arguments.source,
+            )
+            .await
+            .map_err(task_failure)?;
+        projection::saved_function(&function)
+            .and_then(projection::success)
+            .map_err(DispatchError::Tool)
+    }
+
+    async fn delete_function(
+        &self,
+        arguments: DeleteFunctionArguments,
+    ) -> Result<CallToolResult, DispatchError> {
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        self.runtime
+            .modules
+            .commands
+            .delete_function(&call, &arguments.path)
+            .await
+            .map_err(task_failure)?;
+        projection::success(projection::DeletedFunction {
+            call_path: format!("coral.functions.{}", arguments.path),
+        })
+        .map_err(DispatchError::Tool)
+    }
+
+    async fn exec(
+        &self,
+        arguments: ExecArguments,
+        prompting: Prompting,
+    ) -> Result<CallToolResponse, DispatchError> {
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let timeout = arguments
+            .run_timeout_ms
+            .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
+        let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_EXEC_WAIT_MS))?;
+        let reread = RunObservation::initial(Duration::ZERO).map_err(invalid_input)?;
+        // A retry answers prompts about the Run this call already started.
+        if let Some(run_id) = prompting.continued_run().cloned() {
+            return self
+                .observe_prompting(&run_id, &reread, &reread, prompting)
+                .await;
+        }
+        let accepted = self
+            .runtime
+            .modules
+            .commands
+            .submit(&call, &arguments.program, timeout)
+            .await
+            .map_err(task_failure)?;
+        if wait_ms == 0 {
+            return self
+                .run_update(&accepted)
+                .map(Into::into)
+                .map_err(DispatchError::Tool);
+        }
+        let observation =
+            RunObservation::initial(Duration::from_millis(wait_ms)).map_err(invalid_input)?;
+        self.observe_prompting(accepted.run_id(), &observation, &reread, prompting)
+            .await
+    }
+
+    async fn wait(
+        &self,
+        arguments: WaitArguments,
+        prompting: Prompting,
+    ) -> Result<CallToolResponse, DispatchError> {
+        let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
+        let cursor = arguments
+            .cursor
+            .as_deref()
+            .map(RunCursor::parse)
+            .transpose()
+            .map_err(invalid_input)?;
+        let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_WAIT_MS))?;
+        let reread =
+            RunObservation::immediate(cursor, RUN_EVENT_PAGE_MAX).map_err(invalid_input)?;
+        // A retry has already waited; it answers and observes immediately.
+        let observation = match prompting.continued_run() {
+            Some(continued) if continued != &run_id => {
+                return Err(invalid_input_message(
+                    "requestState belongs to another Run".into(),
+                ));
+            }
+            Some(_) => reread.clone(),
+            None => reread
+                .clone()
+                .with_wait(Duration::from_millis(wait_ms))
+                .map_err(invalid_input)?,
+        };
+        self.observe_prompting(&run_id, &observation, &reread, prompting)
+            .await
+    }
+
+    /// Observes a Run and asks the client about each current action it can answer.
+    /// Answers go to the Run domain, which decides whether they change anything;
+    /// the returned update is reread after them.
+    async fn observe_prompting(
+        &self,
+        run_id: &RunId,
+        observation: &RunObservation,
+        reread: &RunObservation,
+        mut prompting: Prompting,
+    ) -> Result<CallToolResponse, DispatchError> {
+        let trace = generated_trace_id()?;
+        self.answer_prompts(run_id, prompting.take_answers(), &trace)
+            .await?;
+        let mut update = self.observe(run_id, observation).await?;
+        while prompting.available() && !update.required_actions().is_empty() {
+            let prompts = self
+                .runtime
+                .modules
+                .runs
+                .action_prompts(&self.runtime.principal, &self.workspace_id, run_id)
+                .await
+                .map_err(run_failure)?;
+            let intent = if prompts.is_empty() {
+                None
+            } else {
+                self.runtime
+                    .modules
+                    .tasks
+                    .run_intent(&self.runtime.principal, &self.workspace_id, run_id)
+                    .await
+                    .map_err(task_failure)?
+            };
+            match prompting
+                .ask(
+                    prompts,
+                    run_id,
+                    &self.runtime.modules.human_interface,
+                    intent.as_ref().map(coral_task::TaskIntent::as_str),
+                )
+                .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?
+            {
+                Asked::Nothing => break,
+                Asked::InputRequired(result) => return Ok(result.into()),
+                Asked::InBand(prompts) => {
+                    for prompt in prompts {
+                        let request = prompt.request().clone();
+                        // Boxed: the watcher holds a whole Run observation.
+                        let withdrawn = Box::pin(self.until_withdrawn(
+                            run_id,
+                            &request,
+                            update.next_cursor().clone(),
+                        ));
+                        // Boxed: it reads the connection through the Account domain.
+                        let connected = Box::pin(self.runtime.modules.runs.connection_connected(
+                            &self.runtime.principal,
+                            &self.workspace_id,
+                            &request,
+                            &trace,
+                        ));
+                        let answer = prompt.ask(withdrawn, connected).await;
+                        // Apply each answer at once: a later prompt may stay open.
+                        self.answer_prompts(run_id, vec![answer], &trace).await?;
+                    }
+                    update = self.observe(run_id, reread).await?;
+                }
+            }
+        }
+        self.run_update(&update)
+            .map(Into::into)
+            .map_err(DispatchError::Tool)
+    }
+
+    /// Completes once `request` is no longer a current action of the Run.
+    /// An unreadable Run never withdraws a prompt; its answer is checked anyway.
+    async fn until_withdrawn(
+        &self,
+        run_id: &RunId,
+        request: &coral_run::RequiredActionRequest,
+        mut cursor: RunCursor,
+    ) {
+        loop {
+            let observation = RunObservation::immediate(Some(cursor), RUN_EVENT_PAGE_MAX).and_then(
+                |observation| observation.with_wait(Duration::from_millis(arguments::MAX_WAIT_MS)),
+            );
+            let Ok(observation) = observation else {
+                return std::future::pending().await;
+            };
+            let Ok(update) = self.observe(run_id, &observation).await else {
+                return std::future::pending().await;
+            };
+            if !update
+                .required_actions()
+                .iter()
+                .any(|action| &action.request == request)
+            {
+                return;
+            }
+            cursor = update.next_cursor().clone();
+        }
+    }
+
+    async fn observe(
+        &self,
+        run_id: &RunId,
+        observation: &RunObservation,
+    ) -> Result<coral_run::RunUpdate, DispatchError> {
+        self.runtime
+            .modules
+            .runs
+            .observe(
+                &self.runtime.principal,
+                &self.workspace_id,
+                run_id,
+                observation,
+            )
+            .await
+            .map_err(run_failure)
+    }
+
+    async fn answer_prompts(
+        &self,
+        run_id: &RunId,
+        answers: Vec<(coral_run::RequiredActionRequest, coral_run::PromptAnswer)>,
+        trace: &TraceId,
+    ) -> Result<(), DispatchError> {
+        for (request, answer) in answers {
+            match self
+                .runtime
+                .modules
+                .runs
+                .answer_action_prompt(
+                    &self.runtime.principal,
+                    &self.workspace_id,
+                    run_id,
+                    &request,
+                    answer,
+                    trace,
+                )
+                .await
+            {
+                // The action ended or was resolved elsewhere while the User
+                // considered it. The reread update shows the current state.
+                Ok(()) | Err(coral_run::Error::ApprovalNotFound) => {}
+                Err(error) => return Err(run_failure(error)),
+            }
+        }
+        Ok(())
+    }
+
+    async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, DispatchError> {
+        let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
+        let cursor = arguments
+            .cursor
+            .as_deref()
+            .map(RunCursor::parse)
+            .transpose()
+            .map_err(invalid_input)?;
+        let observation =
+            RunObservation::immediate(cursor, RUN_EVENT_PAGE_MAX).map_err(invalid_input)?;
+        let update = self
+            .runtime
+            .modules
+            .runs
+            .cancel(
+                &self.runtime.principal,
+                &self.workspace_id,
+                &run_id,
+                &observation,
+            )
+            .await
+            .map_err(run_failure)?;
+        self.run_update(&update).map_err(DispatchError::Tool)
+    }
+
+    async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
+        let task_id = TaskId::parse(&arguments.task_id).map_err(invalid_input)?;
+        let outcome = match arguments.outcome {
+            TaskOutcomeArgument::Success => TaskOutcome::Success,
+            TaskOutcomeArgument::Failure => TaskOutcome::Failure,
+        };
+        let task = self
+            .runtime
+            .modules
+            .tasks
+            .end(
+                &self.runtime.principal,
+                &self.workspace_id,
+                &task_id,
+                outcome,
+                arguments.feedback.as_deref(),
+                now_unix_nanos()?,
+            )
+            .await
+            .map_err(task_failure)?;
+        let durable_outcome = task
+            .outcome()
+            .ok_or_else(|| DispatchError::Tool(ToolFailure::internal()))?;
+        projection::success(projection::EndedTask {
+            task_id: task.id().to_string(),
+            outcome: durable_outcome.into(),
+        })
+        .map_err(DispatchError::Tool)
+    }
+
+    fn run_update(&self, update: &coral_run::RunUpdate) -> Result<CallToolResult, ToolFailure> {
+        let modules = &self.runtime.modules;
+        projection::run_update(
+            update,
+            &modules.human_interface,
+            modules.run_update_page_bytes.get(),
+        )
+    }
+
+    fn attributed_command(
+        &self,
+        task_id: &str,
+        intent: &str,
+    ) -> Result<coral_task::AttributedCommand, DispatchError> {
+        Ok(coral_task::AttributedCommand::new(
+            self.runtime.principal.clone(),
+            self.workspace_id.clone(),
+            TaskId::parse(task_id).map_err(invalid_input)?,
+            TaskIntent::parse(intent).map_err(invalid_input)?,
+            generated_trace_id()?,
         ))
     }
-
-    async fn dispatch_tool(
-        &self,
-        request: CallToolRequestParams,
-        task_context: TaskCallContext,
-        tool_name: Option<ToolName>,
-    ) -> Result<ToolCallOutcome, ErrorData> {
-        let Some(tool) = tool_name.filter(|tool| self.tool_allowed(*tool)) else {
-            return Err(ErrorData::invalid_params(
-                format!("tool '{}' not found", request.name),
-                None,
-            ));
-        };
-
-        match tool {
-            ToolName::Sql => {
-                let arguments = sql_arguments(request.arguments.as_ref())?;
-                match self
-                    .execute_sql_batch(arguments.queries, task_context)
-                    .await
-                {
-                    Ok(execution) => Ok(ToolCallOutcome::Sql(execution)),
-                    Err(status) => Ok(ToolCallOutcome::ToolError {
-                        operation: "Query",
-                        status,
-                    }),
-                }
-            }
-            ToolName::AddFunction => {
-                let arguments = add_function_arguments(request.arguments.as_ref())?;
-                Ok(ToolCallOutcome::from_value_result(
-                    "Function add",
-                    self.add_function_value(arguments).await,
-                ))
-            }
-            ToolName::ListCatalog => {
-                self.list_catalog_tool_result(request.arguments.as_ref())
-                    .await
-            }
-            ToolName::Search => self.search_tool_result(request.arguments.as_ref()).await,
-            ToolName::Describe => self.describe_tool_result(request.arguments.as_ref()).await,
-            ToolName::ListColumns => {
-                self.list_columns_tool_result(request.arguments.as_ref())
-                    .await
-            }
-            ToolName::StartTask => {
-                let arguments = start_task_arguments(request.arguments.as_ref())?;
-                match self.start_task_value(arguments).await {
-                    Ok(value) => Ok(ToolCallOutcome::success(value)),
-                    Err(status) if status.code() == tonic::Code::InvalidArgument => {
-                        Err(status_to_error_data(&status))
-                    }
-                    Err(status) => Ok(ToolCallOutcome::ToolError {
-                        operation: "Task start",
-                        status,
-                    }),
-                }
-            }
-            ToolName::EndTask => {
-                let arguments = end_task_arguments(request.arguments.as_ref())?;
-                Ok(ToolCallOutcome::from_value_result(
-                    "Task end",
-                    self.end_task_value(arguments).await,
-                ))
-            }
-            ToolName::Feedback => {
-                let arguments = feedback_arguments(request.arguments.as_ref())?;
-                Ok(ToolCallOutcome::from_value_result(
-                    "Feedback submission",
-                    self.submit_feedback_value(
-                        &arguments.trying_to_do,
-                        &arguments.tried,
-                        &arguments.stuck,
-                    )
-                    .await,
-                ))
-            }
-        }
-    }
-
-    async fn list_columns_tool_result(
-        &self,
-        request_arguments: Option<&Map<String, Value>>,
-    ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = list_columns_arguments(request_arguments)?;
-        let mut catalog_client = self.catalog.clone();
-        match catalog_client
-            .list_columns(Request::new(ListColumnsRequest {
-                workspace: Some(self.workspace()),
-                catalog_name: arguments.catalog.clone().unwrap_or_default(),
-                schema_name: arguments.schema.clone(),
-                table_name: arguments.table.clone(),
-                pattern: arguments.pattern.clone(),
-                ignore_case: arguments.ignore_case,
-                required_only: arguments.required_only,
-                pagination: Some(PaginationRequest {
-                    limit: arguments.pagination.limit,
-                    offset: arguments.pagination.offset,
-                }),
-            }))
-            .await
-        {
-            Ok(response) => Ok(ToolCallOutcome::success(list_columns_value(
-                arguments.catalog.as_deref(),
-                &arguments.schema,
-                &arguments.table,
-                &response.into_inner(),
-            ))),
-            Err(status) if status.code() == tonic::Code::InvalidArgument => {
-                Err(status_to_error_data(&status))
-            }
-            Err(status) => Ok(ToolCallOutcome::ToolError {
-                operation: "Column listing",
-                status,
-            }),
-        }
-    }
-
-    /// Returns the definitions for the tools in this core-tool projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an MCP error when the current catalog description cannot be
-    /// loaded.
-    pub async fn definitions(&self) -> Result<Vec<Tool>, ErrorData> {
-        if self
-            .retained_tool_names
-            .as_ref()
-            .is_some_and(|names| names.is_empty())
-        {
-            return Ok(Vec::new());
-        }
-        let (visible_table_count, visible_function_count) = self
-            .load_catalog_counts()
-            .await
-            .map_err(|status| status_to_error_data(&status))?;
-        let source_names = self
-            .load_sources_for_discovery()
-            .await
-            .map_err(|status| status_to_error_data(&status))?
-            .into_iter()
-            .map(|source| source.name)
-            .collect();
-        let tool_context =
-            ToolDescriptionContext::new(visible_table_count, visible_function_count, source_names);
-        Ok(available_tools(
-            &tool_context,
-            ToolAvailability {
-                feedback_enabled: self.options.feedback_enabled,
-                observed_values_search_enabled: self.options.observed_values_search_enabled,
-            },
-        )
-        .into_iter()
-        .filter(|tool| {
-            self.retained_tool_names
-                .as_ref()
-                .is_none_or(|names| names.contains(tool.name.as_ref()))
-        })
-        .collect())
-    }
-
-    /// Calls one tool in this core-tool projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns the normal MCP tool error when the tool is hidden, unknown, or
-    /// called with invalid arguments.
-    pub async fn call(&self, request: CallToolRequestParams) -> Result<CallToolResult, ErrorData> {
-        let tool_name = request.name.as_ref().parse::<ToolName>().ok();
-        let span = telemetry::call_tool_span(
-            tool_name.map_or("", |_| request.name.as_ref()),
-            tool_name,
-            &self.workspace().name,
-            self.options.trace_parent.as_deref(),
-        );
-        self.call_with_span(request, tool_name, &span).await
-    }
-
-    async fn call_with_span(
-        &self,
-        request: CallToolRequestParams,
-        tool_name: Option<ToolName>,
-        span: &tracing::Span,
-    ) -> Result<CallToolResult, ErrorData> {
-        let inject_task_metadata = !matches!(
-            tool_name,
-            Some(ToolName::StartTask | ToolName::EndTask | ToolName::Sql)
-        );
-        let task_context = TaskCallContext::from_tool_request(
-            &self.options,
-            tool_name.filter(|tool| self.tool_allowed(*tool)),
-            request.arguments.as_ref(),
-        );
-        match task_context {
-            Ok(task_context) => {
-                task_context.record_telemetry(span);
-                let task_id_metadata = if inject_task_metadata {
-                    task_context.task_id_metadata()
-                } else {
-                    None
-                };
-                let outcome = telemetry::instrument(
-                    span.clone(),
-                    with_task_metadata(
-                        task_id_metadata,
-                        self.dispatch_tool(request, task_context, tool_name),
-                    ),
-                )
-                .await;
-                finish_tool_call(span, outcome)
-            }
-            Err(error) => finish_tool_call(span, Err(error)),
-        }
-    }
 }
 
-#[derive(Clone)]
-pub(crate) struct CoralMcpServer {
-    core_tools: CoralToolset,
-    extension_tools: McpToolRouter,
-    tool_context: McpToolContext,
-    initialize_instructions: InitializeInstructions,
-}
-
-impl CoralMcpServer {
-    fn new(
-        app: &AppClient,
-        workspace: Workspace,
-        options: McpOptions,
-        guide_block: Arc<GuideBlockState>,
-    ) -> Self {
-        let surface = options.surface.clone();
-        let core_tools = CoralToolset::new(app, workspace, options, guide_block);
-        let tool_context = McpToolContext::new(core_tools.clone(), core_tools.workspace());
-        let public_core_tools = surface.public_core_tool_names().map_or_else(
-            || core_tools.clone(),
-            |names| core_tools.retain(names.clone()),
-        );
-        Self {
-            core_tools: public_core_tools,
-            extension_tools: surface.extension_tools().clone(),
-            tool_context,
-            initialize_instructions: surface.initialize_instructions().clone(),
-        }
-    }
-}
-
-impl ServerHandler for CoralMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        let info = ServerInfo::new(
+impl ServerHandler for McpServer {
+    fn get_info(&self) -> ServerConfig {
+        // Embedded output blocks are `resource` content, and the spec asks servers
+        // that send them to declare resources. Nothing is listed or readable.
+        ServerConfig::new(
             ServerCapabilities::builder()
-                .enable_resources()
                 .enable_tools()
+                .enable_resources()
                 .build(),
         )
-        // The workspace joins the advertised name so a client connected to two
-        // workspaces shows them as two distinct connectors.
-        .with_server_info(Implementation::new(
-            format!("Coral / {}", self.core_tools.workspace().name),
-            env!("CARGO_PKG_VERSION"),
-        ));
-        match &self.initialize_instructions {
-            InitializeInstructions::CoralDefault => info.with_instructions(initial_instructions(
-                &self.core_tools.workspace().name,
-                self.core_tools.startup_context.source_names(),
-                self.core_tools.startup_context.query_examples(),
-                self.core_tools.options.observed_values_search_enabled,
-            )),
-            InitializeInstructions::Replace(Some(instructions)) => {
-                info.with_instructions(instructions.clone())
-            }
-            InitializeInstructions::Replace(None) => info,
-        }
+        .with_protocol_version(fallback_protocol_version())
+        .with_server_info(Implementation::new("Coral", env!("CARGO_PKG_VERSION")))
+        .with_instructions(crate::instructions::INSTRUCTIONS)
     }
 
-    async fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        let span = telemetry::list_tools_span(self.core_tools.options.trace_parent.as_deref());
-        telemetry::instrument_protocol(span, async {
-            let mut tools = self.core_tools.definitions().await?;
-            tools.extend(self.extension_tools.list_all());
-            Ok(ListToolsResult::with_all_items(tools))
-        })
-        .await
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let tool_name = request.name.as_ref().parse::<ToolName>().ok();
-        let requested_tool_name =
-            if tool_name.is_some() || self.extension_tools.has_route(request.name.as_ref()) {
-                request.name.as_ref()
-            } else {
-                ""
-            };
-        let span = telemetry::call_tool_span(
-            requested_tool_name,
-            tool_name,
-            &self.core_tools.workspace().name,
-            self.core_tools.options.trace_parent.as_deref(),
-        );
-        if tool_name.is_some_and(|tool| self.core_tools.tool_allowed(tool)) {
-            return self
-                .core_tools
-                .call_with_span(request, tool_name, &span)
-                .await;
+    ) -> Result<CallToolResponse, ErrorData> {
+        match self.dispatch(request, Channel::negotiate(&context)).await {
+            Ok(response) => Ok(response),
+            Err(DispatchError::Tool(error)) => Ok(projection::failure(&error).into()),
+            Err(DispatchError::Protocol(error)) => Err(error),
         }
-        if self.extension_tools.has_route(request.name.as_ref()) {
-            let tool_context = ToolCallContext::new(&self.tool_context, request, context);
-            let result =
-                telemetry::instrument(span.clone(), self.extension_tools.call(tool_context)).await;
-            telemetry::record_tool_result(&span, &result);
-            return result;
-        }
-        let error = ErrorData::invalid_params(format!("tool '{}' not found", request.name), None);
-        telemetry::record_protocol_error(&span, &error);
-        Err(error)
     }
 
-    async fn list_resources(
+    fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ListResourcesResult, ErrorData> {
-        let span = telemetry::list_resources_span(self.core_tools.options.trace_parent.as_deref());
-        telemetry::instrument_protocol(span, async {
-            let (sources, visible_table_count, visible_function_count) = self
-                .core_tools
-                .load_sources_and_catalog_counts()
-                .await
-                .map_err(|status| status_to_error_data(&status))?;
-            Ok(ListResourcesResult::with_all_items(vec![
-                guide_resource(&sources, visible_table_count, visible_function_count),
-                tables_resource(visible_table_count),
-            ]))
-        })
-        .await
+    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
+        // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
+        // and Claude Code rejects a tools/list result that omits them. Older
+        // versions ignore the extra fields, so the hints are not version-gated.
+        std::future::ready(Ok(ListToolsResult::with_all_items(arguments::tools())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
     }
 
-    async fn read_resource(
+    // Embedded output URIs label one result's blocks; they are never listed or read.
+    fn list_resources(
         &self,
-        request: ReadResourceRequestParams,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
-        let span = telemetry::read_resource_span(
-            request.uri.as_str(),
-            self.core_tools.options.trace_parent.as_deref(),
-        );
-        telemetry::instrument_protocol(span, async {
-            match request.uri.as_str() {
-                "coral://guide" => {
-                    let (sources, tables, table_function_schema_names) = self
-                        .core_tools
-                        .load_sources_and_guide_catalog()
-                        .await
-                        .map_err(|status| status_to_error_data(&status))?;
-                    Ok(ReadResourceResult::new(vec![
-                        ResourceContents::text(
-                            guide_resource_content(
-                                &sources,
-                                &tables,
-                                &table_function_schema_names,
-                                self.core_tools.options.observed_values_search_enabled,
-                            ),
-                            request.uri,
-                        )
-                        .with_mime_type("text/markdown"),
-                    ]))
-                }
-                "coral://tables" => {
-                    let tables = self
-                        .core_tools
-                        .load_all_table_summaries()
-                        .await
-                        .map_err(|status| status_to_error_data(&status))?;
-                    let text = tables_resource_content(&tables)
-                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-                    Ok(ReadResourceResult::new(vec![
-                        ResourceContents::text(text, request.uri)
-                            .with_mime_type("application/json"),
-                    ]))
-                }
-                _ => Err(ErrorData::resource_not_found(
-                    format!("resource '{}' not found", request.uri),
-                    None,
-                )),
-            }
-        })
-        .await
+    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
+        std::future::ready(Ok(ListResourcesResult::with_all_items(Vec::new())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
+    }
+
+    fn read_resource(
+        &self,
+        _request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
+        std::future::ready(Err(ErrorData::resource_not_found(
+            "Resource not found",
+            None,
+        )))
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + MaybeSendFuture + '_
+    {
+        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
     }
 }
 
-fn finish_tool_call(
-    span: &tracing::Span,
-    outcome: Result<ToolCallOutcome, ErrorData>,
-) -> Result<CallToolResult, ErrorData> {
-    match outcome {
-        Ok(ToolCallOutcome::Payload(value)) => {
-            telemetry::record_success(span);
-            Ok(build_tool_result(value))
-        }
-        Ok(ToolCallOutcome::Sql(execution)) => finish_sql_tool_call(span, execution),
-        Ok(ToolCallOutcome::ToolError { operation, status }) => {
-            telemetry::record_tonic_status(span, &status);
-            Ok(tool_error_result(
-                tool_error_from_status(operation, &status),
-                None,
-            ))
-        }
-        Err(error) => {
-            telemetry::record_protocol_error(span, &error);
-            Err(error)
-        }
+fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
+    if wait_ms > arguments::MAX_WAIT_MS {
+        return Err(invalid_input_message(format!(
+            "wait_ms must be at most {}",
+            arguments::MAX_WAIT_MS
+        )));
     }
+    Ok(wait_ms)
 }
 
-fn finish_sql_tool_call(
-    span: &tracing::Span,
-    execution: SqlBatchExecution,
-) -> Result<CallToolResult, ErrorData> {
-    let SqlBatchExecution { output, task_gate } = execution;
-    let result = match output {
-        SqlBatchOutput::Executed(batch) => {
-            let serialized = match serialize_tool_value(&batch) {
-                Ok(value) => value,
-                Err(status) => {
-                    telemetry::record_tonic_status(span, &status);
-                    return Ok(tool_error_result(
-                        tool_error_from_status("Query", &status),
-                        None,
-                    ));
-                }
-            };
-            if batch.has_errors() {
-                telemetry::record_sql_batch_partial_failure(span);
-                Ok(tool_error_result(
-                    batch.partial_failure_error(),
-                    Some(serialized),
-                ))
-            } else {
-                telemetry::record_success(span);
-                Ok(build_tool_result(serialized))
-            }
+fn now_unix_nanos() -> Result<i64, DispatchError> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?;
+    i64::try_from(duration.as_nanos())
+        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
+}
+
+fn generated_trace_id() -> Result<TraceId, DispatchError> {
+    TraceId::parse(&Uuid::new_v4().simple().to_string())
+        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
+}
+
+fn invalid_input(error: impl std::fmt::Display) -> DispatchError {
+    invalid_input_message(error.to_string())
+}
+
+fn invalid_input_message(message: String) -> DispatchError {
+    DispatchError::Protocol(ErrorData::invalid_params(message, None))
+}
+
+fn task_failure(error: coral_task::Error) -> DispatchError {
+    let failure = match error {
+        coral_task::Error::InvalidInput(message) => ToolFailure::safe("invalid_input", message),
+        coral_task::Error::TaskNotFound => {
+            ToolFailure::stable("task_not_found", "Task was not found")
         }
-        SqlBatchOutput::GuideBlocked(block) => {
-            let serialized = serialize_tool_value(block).map_err(|status| {
-                telemetry::record_tonic_status(span, &status);
-                ErrorData::internal_error(status.message().to_string(), None)
-            })?;
-            telemetry::record_success(span);
-            Ok(build_tool_result(serialized))
+        coral_task::Error::WorkspaceNotFound => {
+            ToolFailure::stable("workspace_not_found", "Workspace was not found")
+        }
+        coral_task::Error::PermissionDenied(_) => {
+            ToolFailure::stable("permission_denied", "Permission was denied")
+        }
+        coral_task::Error::Workspace(error) => workspace_tool_failure(error),
+        coral_task::Error::Search(error) => return search_failure(error),
+        coral_task::Error::Functions(error) => return functions_failure(error),
+        coral_task::Error::Run(error) => return run_failure(error),
+        coral_task::Error::TaskClosed => {
+            ToolFailure::stable("task_closed", "Task is closed to new attempts")
+        }
+        coral_task::Error::InteractionNotFound => {
+            ToolFailure::stable("interaction_not_found", "Task Interaction was not found")
+        }
+        coral_task::Error::SnapshotTooLarge => ToolFailure::stable(
+            "snapshot_too_large",
+            "Complete discovery snapshot exceeds its limit",
+        ),
+        coral_task::Error::Clock => ToolFailure::internal(),
+        coral_task::Error::CorruptData(_) | coral_task::Error::Database(_) => {
+            ToolFailure::internal()
         }
     };
-    drop(task_gate);
-    result
+    DispatchError::Tool(failure)
 }
 
-fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogItemKind {
-    match kind {
-        None => CATALOG_KIND_ALL,
-        Some(CatalogToolKind::Table) => CATALOG_KIND_TABLE,
-        Some(CatalogToolKind::TableFunction) => CATALOG_KIND_TABLE_FUNCTION,
+fn search_failure(error: coral_search::Error) -> DispatchError {
+    if let Some((code, message)) = error.safe_rejection() {
+        return DispatchError::Tool(ToolFailure::safe(code, message));
     }
-}
-
-fn guide_catalog_from_response(
-    response: ListCatalogResponse,
-) -> (Vec<ProtoTableSummary>, Vec<String>) {
-    let mut tables = Vec::new();
-    let mut table_function_schema_names = Vec::new();
-    for item in response.items {
-        match item.item {
-            Some(catalog_item::Item::Table(table)) => tables.push(table),
-            Some(catalog_item::Item::TableFunction(function)) => {
-                table_function_schema_names.push(function.schema_name);
-            }
-            None => {}
+    let failure = match error {
+        coral_search::Error::PermissionDenied(_) => {
+            ToolFailure::stable("permission_denied", "Permission was denied")
         }
-    }
-    (tables, table_function_schema_names)
+        coral_search::Error::Workspace(error) => workspace_tool_failure(error),
+        coral_search::Error::Functions(error) => return functions_failure(error),
+        _ => ToolFailure::internal(),
+    };
+    DispatchError::Tool(failure)
 }
 
-fn normalize_query_examples(
-    query_examples: impl IntoIterator<Item = McpQueryExample>,
-) -> Vec<McpQueryExample> {
-    let mut normalized = Vec::new();
-    for example in query_examples {
-        let sql = example.sql().trim();
-        if sql.is_empty() {
-            continue;
-        }
-        let mut normalized_example =
-            McpQueryExample::new(sql.to_string()).with_sources(example.sources().iter().cloned());
-        if let Some(row_count) = example.row_count() {
-            normalized_example = normalized_example.with_row_count(row_count);
-        }
-        normalized.push(normalized_example);
-        if normalized.len() >= MAX_INITIAL_QUERY_EXAMPLES {
-            break;
-        }
+fn functions_failure(error: coral_functions::Error) -> DispatchError {
+    use coral_functions::Error;
+    if let Some((code, message)) = error.safe_rejection() {
+        return DispatchError::Tool(ToolFailure::safe(code, message));
     }
-    normalized
+    let failure = match error {
+        Error::Workspace(error) => workspace_tool_failure(error),
+        _ => ToolFailure::internal(),
+    };
+    DispatchError::Tool(failure)
 }
 
-#[cfg(test)]
-mod startup_context_tests {
-    use super::{MAX_INITIAL_QUERY_EXAMPLES, McpStartupContext, task_id_from_backend_response};
-    use crate::McpQueryExample;
-
-    #[test]
-    fn task_id_from_backend_response_canonicalizes_uuid() {
-        let task_id =
-            task_id_from_backend_response("start task", "550e8400e29b41d4a716446655440000")
-                .expect("task id should parse");
-
-        assert_eq!(task_id.to_string(), "550e8400-e29b-41d4-a716-446655440000");
+fn run_failure(error: coral_run::Error) -> DispatchError {
+    if let Some((code, message)) = error.safe_rejection() {
+        return DispatchError::Tool(ToolFailure::safe(code, message));
     }
+    let failure = match error {
+        coral_run::Error::RunNotFound => {
+            ToolFailure::stable("run_not_found", "Program Run was not found")
+        }
+        coral_run::Error::Functions(error) => return functions_failure(error),
+        coral_run::Error::ProgramValueTooLarge => ToolFailure::stable(
+            "program_value_too_large",
+            "Program Final Value is too large",
+        ),
+        coral_run::Error::InvocationRejected(failure) => {
+            ToolFailure::safe("invocation_rejected", failure.message())
+        }
+        coral_run::Error::Workspace(error) => workspace_tool_failure(error),
+        _ => ToolFailure::internal(),
+    };
+    DispatchError::Tool(failure)
+}
 
-    #[test]
-    fn task_id_from_backend_response_rejects_malformed_uuid() {
-        let status = task_id_from_backend_response("end task", "not-a-uuid")
-            .expect_err("malformed backend task id should fail");
-
-        assert_eq!(status.code(), tonic::Code::Internal);
-        assert_eq!(status.message(), "end task response invalid task_id");
-    }
-
-    #[test]
-    fn startup_context_sorts_and_dedupes_source_names() {
-        let context = McpStartupContext::new(
-            [
-                "slack".to_string(),
-                "github".to_string(),
-                "linear".to_string(),
-                "github".to_string(),
-            ],
-            [],
-        );
-
-        assert_eq!(
-            context
-                .source_names()
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            vec!["github", "linear", "slack"]
-        );
-    }
-
-    #[test]
-    fn startup_context_keeps_query_examples_in_order() {
-        let context = McpStartupContext::new(
-            [],
-            [
-                McpQueryExample::new(" SELECT * FROM github.issues "),
-                McpQueryExample::new(""),
-                McpQueryExample::new("SELECT * FROM github.issues"),
-                McpQueryExample::new("SELECT * FROM linear.issues"),
-            ],
-        );
-
-        assert_eq!(
-            context
-                .query_examples()
-                .iter()
-                .map(McpQueryExample::sql)
-                .collect::<Vec<_>>(),
-            vec![
-                "SELECT * FROM github.issues",
-                "SELECT * FROM github.issues",
-                "SELECT * FROM linear.issues",
-            ]
-        );
-    }
-
-    #[test]
-    fn startup_context_keeps_query_example_metadata() {
-        let context = McpStartupContext::new(
-            [],
-            [McpQueryExample::new(" SELECT * FROM github.issues ")
-                .with_sources(["github".to_string(), "github".to_string()])
-                .with_row_count(15)],
-        );
-
-        let example = context.query_examples().first().expect("query example");
-        assert_eq!(example.sql(), "SELECT * FROM github.issues");
-        assert_eq!(example.sources(), &["github".to_string()]);
-        assert_eq!(example.row_count(), Some(15));
-    }
-
-    #[test]
-    fn startup_context_caps_query_examples() {
-        let context = McpStartupContext::new(
-            [],
-            (0..MAX_INITIAL_QUERY_EXAMPLES + 2)
-                .map(|index| McpQueryExample::new(format!("SELECT {index}"))),
-        );
-
-        assert_eq!(context.query_examples().len(), MAX_INITIAL_QUERY_EXAMPLES);
-        assert_eq!(
-            context.query_examples().last().map(McpQueryExample::sql),
-            Some("SELECT 4")
-        );
+fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
+    match error {
+        coral_workspace::Error::InvalidInput(message) => {
+            ToolFailure::safe("invalid_input", message)
+        }
+        coral_workspace::Error::WorkspaceNotFound => {
+            ToolFailure::stable("workspace_not_found", "Workspace was not found")
+        }
+        coral_workspace::Error::WorkspaceArchived => {
+            ToolFailure::stable("workspace_archived", "Workspace is archived")
+        }
+        coral_workspace::Error::PermissionDenied(_)
+        | coral_workspace::Error::AgentNotFound
+        | coral_workspace::Error::InvalidAgentCredential => {
+            ToolFailure::stable("permission_denied", "Permission was denied")
+        }
+        coral_workspace::Error::AgentDisabled => {
+            ToolFailure::stable("agent_disabled", "Agent is disabled")
+        }
+        coral_workspace::Error::AgentRegistrationExpired => ToolFailure::stable(
+            "agent_registration_expired",
+            "Agent Registration has expired",
+        ),
+        coral_workspace::Error::OrganizationAuthorityConflict
+        | coral_workspace::Error::EtagMismatch
+        | coral_workspace::Error::RequestAlreadyApplied
+        | coral_workspace::Error::CredentialGeneration
+        | coral_workspace::Error::WorkspaceAlreadyActive
+        | coral_workspace::Error::WorkspaceAlreadyArchived
+        | coral_workspace::Error::MembershipAlreadyExists
+        | coral_workspace::Error::MembershipNotFound
+        | coral_workspace::Error::LastWorkspaceOwner
+        | coral_workspace::Error::OwnerTransferRequired
+        | coral_workspace::Error::OwnerTargetNotEnabled
+        | coral_workspace::Error::CorruptData(_)
+        | coral_workspace::Error::Database(_)
+        | coral_workspace::Error::EventFields(_)
+        | coral_workspace::Error::AmbiguousEmail => ToolFailure::internal(),
     }
 }
 
-#[cfg(test)]
-mod tool_call_telemetry_tests {
-    use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
-    use serde_json::{Map, Value};
-    use tracing_subscriber::layer::SubscriberExt as _;
+enum DispatchError {
+    Protocol(ErrorData),
+    Tool(ToolFailure),
+}
 
-    use super::finish_tool_call;
-    use crate::surface::{ToolName, list_catalog_arguments};
-    use crate::telemetry::{self, MCP_PROTOCOL_ERROR_MESSAGE};
-
-    #[test]
-    fn finish_tool_call_returns_details_without_recording_them() {
-        let exporter = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter.clone())
-            .build();
-        let tracer = provider.tracer("mcp-tool-error-privacy-test");
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let sentinel = "SENSITIVE_LIST_CATALOG_KIND_MARKER";
-        let arguments = Map::from_iter([("kind".to_string(), Value::String(sentinel.to_string()))]);
-        let Err(error) = list_catalog_arguments(Some(&arguments)) else {
-            panic!("unknown list_catalog kind should fail argument parsing");
-        };
-        let span =
-            telemetry::call_tool_span("list_catalog", Some(ToolName::ListCatalog), "default", None);
-        let returned = finish_tool_call(&span, Err(error))
-            .expect_err("invalid list_catalog kind should remain a caller-visible protocol error");
-        assert!(returned.message.contains(sentinel));
-        drop(span);
-
-        provider.force_flush().expect("flush spans");
-        let spans = exporter.get_finished_spans().expect("finished spans");
-        let tool_call = spans
-            .iter()
-            .find(|span| span.name == "coral.mcp.call_tool")
-            .expect("tool call span");
-
-        assert_eq!(
-            string_attribute(tool_call, "error.type"),
-            Some("INVALID_PARAMS".to_string())
-        );
-        assert_eq!(
-            string_attribute(tool_call, "exception.message"),
-            Some(MCP_PROTOCOL_ERROR_MESSAGE.to_string())
-        );
-        assert_eq!(
-            tool_call.status,
-            OtelStatus::error(MCP_PROTOCOL_ERROR_MESSAGE)
-        );
-        assert!(!format!("{tool_call:?}").contains(sentinel));
-
-        provider.shutdown().expect("provider shutdown");
-    }
-
-    fn string_attribute(span: &SpanData, name: &str) -> Option<String> {
-        span.attributes
-            .iter()
-            .find(|attribute| attribute.key.as_str() == name)
-            .map(|attribute| attribute.value.as_str().into_owned())
+impl From<ErrorData> for DispatchError {
+    fn from(error: ErrorData) -> Self {
+        Self::Protocol(error)
     }
 }

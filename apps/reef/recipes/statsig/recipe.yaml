@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.statsig.com/integrations/mcp/manual-setup
+# Official brand asset: https://www.statsig.com/images/favicons/favicon.svg
+schema_version: 1
+id: statsig
+display_name: Statsig
+description: Experiments, feature gates and metrics from Statsig.
+source:
+  mcp:
+    url: https://api.statsig.com/v3/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Statsig
+      flow: authorization_code
+      documentation_url: https://docs.statsig.com/integrations/mcp/manual-setup
+icons:
+  light: logo.svg

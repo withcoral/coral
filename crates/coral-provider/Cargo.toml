@@ -1,0 +1,49 @@
+[package]
+name = "coral-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# Test-only faults in persisted Provider material, and publication, removal and
+# rename helpers that each own their transaction instead of the Provider
+# workflow. Dev-dependencies enable this; production crates never do.
+test-fixtures = []
+
+[dependencies]
+coral-outbound = { workspace = true, features = ["transport"] }
+async-trait.workspace = true
+coral-catalog.workspace = true
+coral-db.workspace = true
+coral-credentials.workspace = true
+serde.workspace = true
+reqwest.workspace = true
+url.workspace = true
+base64.workspace = true
+ring.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+coral-telemetry.workspace = true
+coral-upstream.workspace = true
+coral-workspace.workspace = true
+sea-query.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+unicode-general-category.workspace = true
+uuid = { workspace = true, features = ["v5"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+# Integration tests build this library without `cfg(test)`.
+coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-administration.workspace = true
+coral-functions.workspace = true
+tempfile.workspace = true
+wiremock.workspace = true
+coral-test-support.workspace = true

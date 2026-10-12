@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://support.auth0.com/center/s/article/OpenAPI-Spec-Swagger-representation-of-management-API
+# Official brand asset: https://cdn.auth0.com/website/website/favicons/auth0-favicon-180.png
+# Auth0 has an official MCP server, but its published transport is local stdio.
+# Coral recipes require Streamable HTTP: https://github.com/auth0/auth0-mcp-server/blob/main/server.json
+schema_version: 1
+id: auth0
+display_name: Auth0
+description: Users, applications, connections, organizations and identity settings from Auth0.
+source:
+  openapi:
+    url: https://auth0.com/docs/oas/management/v2/management-api-oas.json
+authentication:
+  options:
+    access_token:
+      method: bearer
+      label: Management API access token
+      documentation_url: https://auth0.com/docs/secure/tokens/access-tokens/management-api-access-tokens
+      description: Use a token for your tenant Management API audience and required scopes.
+inputs:
+  tenant_domain:
+    type: hostname
+    label: Auth0 tenant hostname
+    documentation_url: https://auth0.com/docs/secure/tokens/access-tokens/management-api-access-tokens
+servers:
+  '#/servers':
+    base_url: https://{{input.tenant_domain}}/api/v2
+icons:
+  light: logo.png

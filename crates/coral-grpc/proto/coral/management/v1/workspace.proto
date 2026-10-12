@@ -1,0 +1,133 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+// Human Workspace administration under current Workspace Membership.
+service WorkspaceService {
+  // Creates an active Workspace and the User's designated Owner Membership.
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (Workspace);
+  // Lists the Workspaces where the User holds a Membership.
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  // Inspects a Workspace without granting access to private work.
+  rpc GetWorkspace(GetWorkspaceRequest) returns (Workspace);
+  // Changes display_name only; lifecycle uses explicit actions.
+  rpc UpdateWorkspace(UpdateWorkspaceRequest) returns (Workspace);
+  // Stops configuration and future dispatch without deleting retained work.
+  rpc ArchiveWorkspace(ArchiveWorkspaceRequest) returns (Workspace);
+  // Restores future authority without replaying terminal work.
+  rpc RestoreWorkspace(RestoreWorkspaceRequest) returns (Workspace);
+}
+
+// Current Workspace lifecycle. Unspecified is never an active Workspace.
+enum WorkspaceState {
+  // Not supplied or not recognized by this client.
+  WORKSPACE_STATE_UNSPECIFIED = 0;
+  // Accepts configuration and new work under current authority.
+  WORKSPACE_STATE_ACTIVE = 1;
+  // Rejects configuration and new work except restoration.
+  WORKSPACE_STATE_ARCHIVED = 2;
+}
+
+// Workspace Membership role, not access to another User's private work.
+enum WorkspaceRole {
+  // Not supplied; invalid in Membership writes.
+  WORKSPACE_ROLE_UNSPECIFIED = 0;
+  // Can administer the Workspace.
+  WORKSPACE_ROLE_OWNER = 1;
+  // Can use the Workspace without administration authority.
+  WORKSPACE_ROLE_MEMBER = 2;
+}
+
+// Narrow authorized presentation, never authentication rows or verification evidence.
+message UserProfile {
+  // Stable User resource name.
+  string user = 1;
+  // Mutable trusted name; empty when unavailable.
+  string display_name = 2;
+  // Provider spelling; empty when unavailable. Not necessarily verified or unique.
+  string email = 3;
+  // Implicit local User; has no invented email.
+  bool local = 4;
+}
+
+// Safe Workspace configuration and the requesting User's Membership role.
+message Workspace {
+  reserved 8, 10;
+  reserved "authority_source", "has_designated_owner";
+  // Canonical immutable name: workspaces/{workspace}.
+  string name = 1;
+  // Mutable human label.
+  string display_name = 2;
+  // Current lifecycle state.
+  WorkspaceState state = 3;
+  // Opaque concurrency precondition for mutations.
+  string etag = 4;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 5;
+  // Last configuration change.
+  google.protobuf.Timestamp update_time = 6;
+  // The requesting User's Membership role; not authority over other Users' work.
+  WorkspaceRole effective_role = 7;
+  // Authenticated User resource name, for inspecting one's own Membership.
+  string current_user = 9;
+  // Requesting User's authorized profile.
+  UserProfile current_user_profile = 11;
+  // Canonical non-secret Streamable HTTP endpoint from host configuration.
+  string mcp_endpoint = 12;
+}
+
+// First-party creation request.
+message CreateWorkspaceRequest {
+  // Required human label.
+  string display_name = 1;
+  // Required first-party UUID. Reuse cannot create another Workspace.
+  string request_id = 2;
+}
+
+// Bounded visible Workspace listing.
+message ListWorkspacesRequest {
+  // Zero uses the default; maximum 100.
+  int32 page_size = 1;
+  // Opaque, non-authorizing continuation from this exact listing.
+  string page_token = 2;
+}
+
+// One visible page.
+message ListWorkspacesResponse {
+  // Current visible Workspaces.
+  repeated Workspace workspaces = 1;
+  // Empty when complete.
+  string next_page_token = 2;
+}
+
+// Exact Workspace inspection.
+message GetWorkspaceRequest {
+  // Canonical Workspace name.
+  string name = 1;
+}
+
+// Optimistic partial update.
+message UpdateWorkspaceRequest {
+  // Required name, etag, and masked values.
+  Workspace workspace = 1;
+  // Required; only display_name is supported.
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+// Explicit archive action.
+message ArchiveWorkspaceRequest {
+  // Canonical Workspace name.
+  string name = 1;
+  // Required current etag.
+  string etag = 2;
+}
+
+// Explicit restoration action.
+message RestoreWorkspaceRequest {
+  // Canonical Workspace name.
+  string name = 1;
+  // Required current etag.
+  string etag = 2;
+}

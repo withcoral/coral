@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.sanity.io/docs/ai/mcp-server
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: sanity
+display_name: Sanity
+description: Content, schemas and projects from Sanity.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+source:
+  mcp:
+    url: https://mcp.sanity.io
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Sanity
+      documentation_url: https://www.sanity.io/docs/ai/mcp-server
+      flow: authorization_code
+    api_token:
+      method: bearer
+      label: API token
+      documentation_url: https://www.sanity.io/docs/ai/mcp-server
+  default: oauth

@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://gatewayapi.com/docs/message/overview/
+schema_version: 1
+id: gatewayapi
+display_name: GatewayAPI
+description: SMS messages, RCS messages and delivery responses from GatewayAPI.
+source:
+  openapi:
+    url: https://messaging.gatewayapi.com/openapi.json
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: API key
+      documentation_url: https://gatewayapi.com/docs/message/overview/
+      fields:
+        api_key:
+          label: API key
+      headers:
+        authorization:
+          field: api_key
+          prefix: 'Token '
+inputs:
+  api_url:
+    type: url
+    label: API region
+    default: https://messaging.gatewayapi.com
+    enum:
+      - https://messaging.gatewayapi.com
+      - https://messaging.gatewayapi.eu
+servers:
+  '#/servers':
+    base_url: '{{input.api_url}}'
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

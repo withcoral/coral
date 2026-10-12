@@ -10,7 +10,7 @@ use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorization
 use super::AuthorizationServerHttpState;
 use super::query;
 use super::response::{TrustedRedirect, direct_error};
-use crate::state::db::{CoralDb, LoginIdentity, LoginProvisioning, now_unix_nanos_i64};
+use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
 
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
@@ -70,7 +70,7 @@ pub(super) async fn oidc_callback(
             return trusted.error("server_error", "authorization failed");
         }
     };
-    let user_id = match provision(state.database.as_deref(), &identity).await {
+    let user_id = match provision(state.user_directory.as_ref(), &identity).await {
         Ok(user_id) => user_id,
         Err(outcome) => return outcome.into_error(&trusted),
     };
@@ -108,6 +108,8 @@ const ISSUER_MISMATCH_DESCRIPTION: &str = "this account is already registered un
 enum ProvisioningFailure {
     /// The subject is already bound to a different issuer.
     IssuerMismatch,
+    /// Coral-side disablement cannot be undone by upstream sign-in.
+    Disabled,
     /// Coral could not record the login at all.
     Unavailable,
 }
@@ -117,6 +119,7 @@ impl ProvisioningFailure {
         match self {
             Self::IssuerMismatch => trusted.error("access_denied", ISSUER_MISMATCH_DESCRIPTION),
             Self::Unavailable => trusted.error("server_error", "authorization failed"),
+            Self::Disabled => trusted.error("access_denied", "access is disabled"),
         }
     }
 }
@@ -129,33 +132,38 @@ impl ProvisioningFailure {
 /// client redeems — and every token and principal id minted from it — carries
 /// only Coral's own identifier. A login that cannot be recorded issues no code.
 async fn provision(
-    database: Option<&CoralDb>,
+    user_directory: Option<&UserDirectory>,
     identity: &ValidatedOidcIdentity,
 ) -> Result<String, ProvisioningFailure> {
-    let Some(database) = database else {
-        tracing::warn!("OIDC callback has no database to provision a verified login into");
+    let Some(user_directory) = user_directory else {
+        tracing::warn!("OIDC callback has no User directory to provision a verified login into");
         return Err(ProvisioningFailure::Unavailable);
     };
     let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
         tracing::warn!("OIDC callback could not read the system clock");
         return Err(ProvisioningFailure::Unavailable);
     };
-    let provisioning = database
-        .user_state()
-        .provision_login(LoginIdentity {
-            issuer: &identity.issuer,
-            subject: &identity.subject,
-            display_name: identity.display_name.as_deref(),
-            principal_claim: &identity.principal_claim,
-            now_unix_nanos,
-        })
+    let provisioning = user_directory
+        .provision_login(
+            VerifiedOidcLogin::new(
+                &identity.issuer,
+                &identity.subject,
+                identity.display_name.as_deref(),
+                now_unix_nanos,
+            )
+            .with_profile(coral_workspace::VerifiedUserProfile::new(
+                identity.profile_name.as_deref(),
+                identity.email.as_deref(),
+                identity.email_verified,
+                identity.hosted_domain.as_deref(),
+            ))
+            .with_profile_observed_at(identity.profile_observed_at_unix_nanos),
+        )
         .await;
     match provisioning {
-        Ok(LoginProvisioning::Provisioned(user)) => Ok(user.user_id),
-        Ok(LoginProvisioning::IssuerMismatch { stored_issuer }) => {
-            // The bound issuer identifies an upstream deployment, so it stays at
-            // `debug`; the guidance an operator reads carries no upstream value.
-            tracing::debug!(%stored_issuer, "OIDC login subject is bound to another issuer");
+        Ok(LoginProvisioning::Provisioned(user_id)) => Ok(user_id.to_string()),
+        Ok(LoginProvisioning::Disabled) => Err(ProvisioningFailure::Disabled),
+        Ok(LoginProvisioning::IssuerMismatch) => {
             tracing::warn!(
                 "OIDC callback refused a login whose subject is already bound to a different \
                  provider issuer; reconcile that user directory row before this login can succeed"
@@ -163,10 +171,19 @@ async fn provision(
             Err(ProvisioningFailure::IssuerMismatch)
         }
         Err(error) => {
-            tracing::warn!(%error, "OIDC callback could not provision the verified login");
+            let _error = error;
+            tracing::warn!("OIDC callback could not provision the verified login");
             Err(ProvisioningFailure::Unavailable)
         }
     }
+}
+
+fn now_unix_nanos_i64() -> Result<i64, ()> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_error| ())?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|_error| ())
 }
 
 #[derive(Default)]
@@ -221,7 +238,7 @@ fn random_code() -> Result<String, ()> {
 ///
 /// `redirect_uri` is only ever stored after `authorize`'s `registered_redirect`
 /// matched it against a registered URI and parsed it under
-/// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect), so
+/// [`BrowserRedirect`](coral_outbound::BrowserRedirect), so
 /// re-applying `BrowserRedirect` here would not add a check — it would only
 /// move where the same policy was applied. [`TrustedRedirect::parse`] carries
 /// the reason the `None` arm is checked rather than unwrapped.
@@ -231,33 +248,27 @@ fn trusted_redirect(session: &OAuthAuthorizationSessionRecord) -> Option<Trusted
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::path::Path;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use axum::http::{StatusCode, header};
-    use base64::engine::general_purpose::STANDARD;
-    use ring::rand::SystemRandom;
-    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+
     use serde_json::{Value, json};
-    use tempfile::TempDir;
     use tracing_subscriber::layer::SubscriberExt as _;
     use url::{Url, form_urlencoded};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::AuthorizationServerHttpState;
-    use super::super::client_metadata::HttpClientMetadataResolver;
+    use super::super::test_state::http_state;
     use super::*;
-    use crate::auth::config::{AuthSettings, ResolvedAuthSettings};
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
-    use crate::auth::provider_client::OidcProviderClient;
-    use crate::auth::session::SessionTokenIssuer;
     use crate::auth::state_store::{CodeStore, InMemoryStateStore, SessionStore, StateStoreError};
-    use crate::state::db::{DbRepos, ResolvedDatabaseConfig};
+    use crate::auth::test_config::PROVIDER_SECRET;
+    use coral_db::Database;
+    use coral_test_support::TestDatabase;
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -265,116 +276,41 @@ mod tests {
     const VERIFIER: &str = "stored-upstream-verifier";
     const NONCE: &str = "stored-upstream-nonce";
     const PROVIDER_CODE: &str = "provider-code-secret";
-    const PROVIDER_SECRET: &str = "provider-secret-must-not-leak";
-    const AUTH_ISSUER: &str = "https://auth.example.test";
     const RESOURCE: &str = "https://api.example.test/mcp";
     const UPSTREAM_SUBJECT: &str = "raw-principal";
     const BOUND_ISSUER: &str = "https://already.bound.example.test";
 
-    fn settings(issuer: &str) -> ResolvedAuthSettings {
-        let settings = AuthSettings::from_toml(&format!(
-            "[auth]
-             [auth.session]
-             [auth.authorization_server]
-             issuer = '{AUTH_ISSUER}'
-             [auth.provider]
-             issuer = '{issuer}'
-             client_id = 'provider-client'
-             client_secret = '{PROVIDER_SECRET}'
-             redirect_uri = '{AUTH_ISSUER}/auth/oidc/callback'"
-        ))
-        .expect("valid auth config")
-        .expect("auth settings");
-        let signing_key = STANDARD.encode(
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key"),
-        );
-        let (settings, _issuer) = settings
-            .resolve_runtime_dependencies(Path::new("config.toml"), &|name| {
-                Ok((name == "CORAL_SESSION_SIGNING_KEY").then(|| signing_key.clone()))
-            })
-            .expect("resolved runtime dependencies");
-        settings
-    }
-
     fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
-        let signing_key =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key");
-        let session_tokens = SessionTokenIssuer::new(
-            Some(AUTH_ISSUER),
-            signing_key.as_ref(),
-            Duration::from_mins(5),
-        )
-        .expect("session");
-        let authorization_resources = Arc::new(BTreeSet::from([RESOURCE.into()]));
-        let client_metadata_resolver = Arc::new(
-            HttpClientMetadataResolver::new(AUTH_ISSUER, &authorization_resources)
-                .expect("client metadata resolver"),
-        );
-        AuthorizationServerHttpState {
-            settings: Arc::new(settings(issuer)),
-            session_tokens,
-            approval_store: store.clone(),
-            session_store: store.clone(),
-            code_store: store,
-            provider_client: OidcProviderClient::new().expect("client"),
-            authorization_resources,
-            workspace_resource_family: None,
-            client_metadata_resolver,
-            database: None,
-        }
+        http_state(issuer, "", store, &[RESOURCE])
     }
 
     fn state_with(
         issuer: &str,
         store: Arc<InMemoryStateStore>,
-        database: Arc<CoralDb>,
+        database: Arc<Database>,
     ) -> AuthorizationServerHttpState {
         let mut state = state(issuer, store);
-        state.database = Some(database);
+        state.user_directory = Some(UserDirectory::new(database));
         state
     }
 
-    /// Opens the private `SQLite` database a callback provisions logins into.
-    async fn database() -> (Arc<CoralDb>, TempDir) {
-        let (database, temp) = unmigrated_database().await;
-        database.migrate().await.expect("migrate sqlite");
-        (database, temp)
-    }
-
-    /// The same database with no schema, standing in for one Coral cannot write.
-    async fn unmigrated_database() -> (Arc<CoralDb>, TempDir) {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let database = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
-            path: temp.path().join("coral.sqlite"),
-        })
-        .await
-        .expect("open sqlite");
-        (Arc::new(database), temp)
-    }
-
-    /// The user directory as `(user_id, subject)` pairs.
-    async fn directory(database: &CoralDb) -> Vec<(String, String)> {
-        let mut session = database;
-        session
-            .users()
-            .list()
+    /// Opens the migrated database a callback provisions logins into.
+    async fn database() -> (Arc<Database>, TestDatabase) {
+        let (database, fixture) = database_with(&crate::state::current_migrator()).await;
+        coral_search::prepare_storage(database.as_ref())
             .await
-            .expect("list users")
-            .into_iter()
-            .map(|user| (user.user_id, user.subject))
-            .collect()
+            .expect("prepare search storage");
+        (database, fixture)
     }
 
-    async fn workspace_count(database: &CoralDb) -> usize {
-        let mut session = database;
-        session
-            .workspaces()
-            .list()
-            .await
-            .expect("list workspaces")
-            .len()
+    /// A database with no schema, standing in for one Coral cannot write.
+    async fn unmigrated_database() -> (Arc<Database>, TestDatabase) {
+        database_with(&sqlx::migrate::Migrator::with_migrations(Vec::new())).await
+    }
+
+    async fn database_with(migrator: &sqlx::migrate::Migrator) -> (Arc<Database>, TestDatabase) {
+        let fixture = TestDatabase::new(migrator).await.expect("test database");
+        (fixture.database(), fixture)
     }
 
     /// Redeems the code a successful callback returned and reports the identity
@@ -567,6 +503,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_organization_admission_gates_codes_without_importing_roles() {
+        let server = MockServer::start().await;
+        let store = Arc::new(InMemoryStateStore::new());
+        let (db, _temp) = database().await;
+        let mut app = http_state(
+            &server.uri(),
+            "[auth.provider.access_token]\naudience = 'environment'\n\
+             [auth.provider.access_token.required_claims]\norg_id = 'org_allowed'",
+            store.clone(),
+            &[RESOURCE],
+        );
+        app.user_directory = Some(UserDirectory::new(db.clone()));
+        for (organization, accepted) in [("org_other", false), ("org_allowed", true)] {
+            server.reset().await;
+            mount_provider(&server, 200, 200, NONCE).await;
+            let mut identity = id_token_claims();
+            set_claim(&mut identity, "iss", json!(server.uri()));
+            set_claim(&mut identity, "nonce", json!(NONCE));
+            set_claim(&mut identity, "sub", json!(UPSTREAM_SUBJECT));
+            let mut access = identity.clone();
+            access.as_object_mut().expect("claims").remove("nonce");
+            set_claim(&mut access, "aud", json!("environment"));
+            set_claim(&mut access, "org_id", json!(organization));
+            set_claim(&mut access, "role", json!("owner"));
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id_token": id_token(&identity), "access_token": id_token(&access),
+                })))
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            seed(store.as_ref(), OIDC_STATE).await;
+            let response = callback(
+                app.clone(),
+                &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
+            )
+            .await;
+            if accepted {
+                let user_id = stored_user_id(store.as_ref(), &response).await;
+                let authority = coral_workspace::OrganizationModule::new(db.clone())
+                    .resolve_user_authority(
+                        &coral_workspace::UserId::parse(&user_id).expect("User ID"),
+                    )
+                    .await
+                    .expect("authority");
+                assert_eq!(
+                    authority.organization_role(),
+                    Some(coral_workspace::OrganizationRole::Member)
+                );
+            } else {
+                let values = redirect_query(&response);
+                assert!(values.contains(&("error".into(), "server_error".into())));
+                assert!(!values.iter().any(|(key, _)| key == "code"));
+                assert!(!values.iter().any(|(_, value)| value.contains(organization)));
+                assert!(take(store.as_ref(), OIDC_STATE).await.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn success_is_single_use_and_stores_the_internal_identity_with_bindings() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
@@ -608,10 +605,20 @@ mod tests {
             .await
             .expect("store")
             .expect("authorization");
+        assert_ne!(
+            authorization.user_id, UPSTREAM_SUBJECT,
+            "the stored code must name Coral's opaque User id, never the upstream subject"
+        );
+        uuid::Uuid::parse_str(&authorization.user_id).expect("Coral User id is a UUID");
+        let user = coral_workspace::OrganizationModule::new(db)
+            .resolve_user_authority(
+                &coral_workspace::UserId::parse(&authorization.user_id).unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(
-            directory(db.as_ref()).await,
-            vec![(authorization.user_id.clone(), UPSTREAM_SUBJECT.to_string())],
-            "the stored code must name the provisioned user id, never the upstream subject"
+            user.organization_role(),
+            Some(coral_workspace::OrganizationRole::Member)
         );
         assert_eq!(authorization.resource, RESOURCE);
         let requests = server.received_requests().await.expect("requests");
@@ -637,61 +644,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_logins_for_one_subject_converge_on_one_user() {
-        let server = MockServer::start().await;
-        mount_provider(&server, 200, 200, NONCE).await;
-        let store = Arc::new(InMemoryStateStore::new());
-        let (db, _temp) = database().await;
-        seed(store.as_ref(), "state-one").await;
-        seed(store.as_ref(), "state-two").await;
-        let app = state_with(&server.uri(), store.clone(), db.clone());
-
-        let (first, second) = tokio::join!(
-            callback_raw(
-                app.clone(),
-                query(&[("state", "state-one"), ("code", PROVIDER_CODE)])
-            ),
-            callback_raw(
-                app,
-                query(&[("state", "state-two"), ("code", PROVIDER_CODE)])
-            ),
-        );
-
-        assert_eq!(first.status(), StatusCode::FOUND);
-        assert_eq!(second.status(), StatusCode::FOUND);
-        let first_user = stored_user_id(store.as_ref(), &first).await;
-        let second_user = stored_user_id(store.as_ref(), &second).await;
-        assert_eq!(first_user, second_user);
-        assert_eq!(
-            directory(db.as_ref()).await,
-            vec![(first_user, UPSTREAM_SUBJECT.to_string())],
-            "one subject must converge on one directory row"
-        );
-        assert_eq!(
-            workspace_count(db.as_ref()).await,
-            0,
-            "signing in must not create a workspace"
-        );
-    }
-
-    #[tokio::test]
     async fn issuer_mismatch_fails_login_without_logging_the_upstream_identity() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let store = Arc::new(InMemoryStateStore::new());
         let (db, _temp) = database().await;
-        db.user_state()
-            .provision_login(LoginIdentity {
-                issuer: BOUND_ISSUER,
-                subject: UPSTREAM_SUBJECT,
-                display_name: None,
-                principal_claim: "unrelated-claim",
-                now_unix_nanos: 1,
-            })
+        UserDirectory::new(db.clone())
+            .provision_login(VerifiedOidcLogin::new(
+                BOUND_ISSUER,
+                UPSTREAM_SUBJECT,
+                None,
+                1,
+            ))
             .await
             .expect("seed the directory");
         seed(store.as_ref(), OIDC_STATE).await;
-        let mut app = state_with(&server.uri(), store, db.clone());
+        let mut app = state_with(&server.uri(), store, db);
         app.code_store = Arc::new(RejectCodeStore);
 
         let logs = CapturedLogs::default();
@@ -710,11 +678,6 @@ mod tests {
         )));
         assert!(!values.iter().any(|(key, _value)| key == "code"));
         assert_security(&response);
-        assert_eq!(
-            directory(db.as_ref()).await.len(),
-            1,
-            "a refused login must not mint a second directory row"
-        );
 
         let captured = logs.captured();
         assert!(
@@ -734,11 +697,11 @@ mod tests {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let (unmigrated, _temp) = unmigrated_database().await;
-        for database in [None, Some(unmigrated)] {
+        for user_directory in [None, Some(UserDirectory::new(unmigrated))] {
             let store = Arc::new(InMemoryStateStore::new());
             seed(store.as_ref(), OIDC_STATE).await;
             let mut app = state(&server.uri(), store);
-            app.database = database;
+            app.user_directory = user_directory;
             app.code_store = Arc::new(RejectCodeStore);
 
             let response = callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;

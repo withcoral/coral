@@ -1,0 +1,31 @@
+[package]
+name = "coral-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+coral-outbound.workspace = true
+coral-db.workspace = true
+jsonschema.workspace = true
+sea-query.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+unicode-id-start.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+coral-test-support.workspace = true
+coral-v8.workspace = true
+tokio.workspace = true

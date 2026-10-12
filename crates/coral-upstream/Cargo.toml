@@ -1,0 +1,33 @@
+[package]
+name = "coral-upstream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+base64.workspace = true
+coral-outbound = { workspace = true, features = ["transport"] }
+coral-catalog.workspace = true
+coral-credentials.workspace = true
+coral-value.workspace = true
+encoding_rs.workspace = true
+futures-util.workspace = true
+mime.workspace = true
+reqwest.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sse-stream.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true

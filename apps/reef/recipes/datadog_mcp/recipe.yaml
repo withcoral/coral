@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.datadoghq.com/mcp_server/setup/
+schema_version: 1
+id: datadog_mcp
+service: datadog_v1
+display_name: Datadog
+description: Logs, metrics, traces, incidents and monitors from Datadog.
+source:
+  mcp:
+    url: https://mcp.datadoghq.com/v1/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Datadog (MCP)
+      flow: authorization_code
+      documentation_url: https://docs.datadoghq.com/mcp_server/setup/
+icons:
+  light: logo.png

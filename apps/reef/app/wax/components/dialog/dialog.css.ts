@@ -1,0 +1,152 @@
+import { createVar, keyframes, style, styleVariants } from '@/wax/css'
+
+import { utils } from '@/styles/utils'
+import { animation, staticUtilities, theme, zIndex } from '@/wax/theme/theme.css'
+
+export const backdrop = style({
+  backgroundColor: staticUtilities.black,
+  inset: 0,
+  opacity: 0.2,
+  position: 'fixed',
+  selectors: {
+    '&[data-starting-style], &[data-ending-style]': {
+      opacity: 0,
+    },
+  },
+  transition: 'opacity 150ms cubic-bezier(0.45, 1.005, 0, 1.005)',
+  zIndex: zIndex.modalBackdrop,
+})
+
+// The sticky header offsets this padding so it stays flush with the popup edge.
+const padding = createVar()
+
+export const popup = style({
+  backgroundColor: theme.surface.floating,
+  border: `1px solid ${theme.stroke.floating}`,
+  borderRadius: '10px',
+  boxShadow: theme.elevation.e4,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+  insetBlockStart: '50%',
+  insetInlineStart: '50%',
+  maxHeight: 'calc(100vh - 64px)',
+  maxWidth: 'calc(100vw - 48px)',
+  overflow: 'auto',
+  padding,
+  position: 'fixed',
+  selectors: {
+    '&[data-nested-dialog-open]::after': {
+      backgroundColor: utils.opacify(staticUtilities.black, 0.05),
+      borderRadius: 'inherit',
+      content: '',
+      inset: 0,
+      position: 'absolute',
+    },
+    '&[data-starting-style], &[data-ending-style]': {
+      opacity: 0,
+      transform: 'translate(-50%, -50%) scale(0.9)',
+    },
+  },
+  transform: 'translate(-50%, -50%) scale(calc(1 - 0.1 * var(--nested-dialogs)))',
+  transition: 'all 150ms',
+  translate: '0 calc(0px + 16px * var(--nested-dialogs))',
+  vars: { [padding]: '24px' },
+  zIndex: zIndex.modal,
+})
+
+// Opening is a keyframe rather than a transition from `data-starting-style`, because
+// a drawer that a route renders mounts already open and Base UI skips that phase.
+const drawerTravel = createVar()
+const { panel } = animation
+const drawerHidden = {
+  filter: panel.blur,
+  transform: `translateX(${drawerTravel})`,
+}
+const drawerReveal = keyframes({ from: drawerHidden })
+
+export const drawer = style({
+  insetBlockStart: 0,
+  insetInlineStart: 0,
+  height: '100dvh',
+  maxHeight: '100dvh',
+  maxWidth: 'calc(100vw - 48px)',
+  borderRadius: 0,
+  vars: { [padding]: '12px', [drawerTravel]: '-100%' },
+  transform: 'none',
+  translate: 'none',
+  animation: `${drawerReveal} ${panel.open} ${panel.ease}`,
+  transition: 'none',
+  selectors: {
+    // The drawer takes focus so its arrow keys work; it is not a control, so it shows no ring.
+    '&:focus-visible': { outline: 'none' },
+    '&[data-starting-style]': { opacity: 1, transform: 'none' },
+    '&[data-ending-style]': {
+      ...drawerHidden,
+      opacity: 1,
+      transition: `transform ${panel.close} ${panel.ease}, filter ${panel.close} ${panel.ease}`,
+    },
+  },
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      animation: 'none',
+      selectors: { '&[data-ending-style]': { transition: 'none' } },
+    },
+  },
+})
+
+export const rightDrawer = style({
+  insetInlineEnd: 0,
+  insetInlineStart: 'auto',
+  vars: { [drawerTravel]: '100%' },
+})
+
+export const popupSize = styleVariants({
+  l: { width: '600px' },
+  m: { width: '400px' },
+  xl: { width: '700px' },
+})
+
+export const fullWidthOnMobile = style({
+  '@media': { '(max-width: 640px)': { width: '100vw', maxWidth: '100vw' } },
+})
+
+export const header = style({
+  position: 'sticky',
+  top: `calc(-1 * ${padding})`,
+  zIndex: 2,
+  flexShrink: 0,
+  background: theme.surface.floating,
+  paddingBlock: 12,
+  paddingInlineEnd: 24,
+})
+
+export const title = style({
+  color: theme.content.primary,
+  flexShrink: 0,
+  ...theme.typography.headingMedium,
+  ...utils.boxClamp(1),
+  marginInlineEnd: '24px',
+})
+
+export const description = style({
+  color: theme.content.secondary,
+  flexShrink: 0,
+  ...theme.typography.body,
+})
+
+export const close = style({
+  insetBlockStart: '16px',
+  insetInlineEnd: '16px',
+  position: 'absolute',
+  selectors: { [`${header} &`]: { insetBlockStart: 12, insetInlineEnd: 0 } },
+})
+
+// The footer stays put, so a contained popup keeps its actions in view.
+export const actions = style({
+  display: 'flex',
+  flexShrink: 0,
+  gap: '10px',
+  justifyContent: 'flex-end',
+  marginBlockStart: '12px',
+})

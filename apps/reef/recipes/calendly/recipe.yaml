@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.calendly.com/docs/mcp/calendly-mcp-server
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: calendly
+display_name: Calendly
+description: Availability, scheduled events and scheduling workflows from Calendly.
+source:
+  mcp:
+    url: https://mcp.calendly.com
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://developer.calendly.com/docs/mcp/calendly-mcp-server
+      flow: authorization_code
+icons:
+  light: logo.svg

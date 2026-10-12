@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://help.gamma.app/es/articles/13943863-como-uso-gamma-con-outbound-connectors-e-integraciones
+# OAuth scopes come from server discovery; the Recipe names none.
+# Coral MCP does not support the provider header-credential alternative.
+schema_version: 1
+id: gamma
+display_name: Gamma
+description: Presentations, documents and themes from Gamma.
+icons:
+  light: logo.png
+source:
+  mcp:
+    url: https://mcp.gamma.app/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Gamma
+      documentation_url: https://help.gamma.app/es/articles/13943863-como-uso-gamma-con-outbound-connectors-e-integraciones
+      flow: authorization_code
+  default: oauth

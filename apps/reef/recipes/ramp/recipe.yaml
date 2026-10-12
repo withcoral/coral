@@ -1,0 +1,193 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.ramp.com/llms-guides/authorization.txt
+schema_version: 1
+id: ramp
+display_name: Ramp
+description: Transactions, cards, reimbursements, bills, users and vendors from Ramp.
+source:
+  openapi:
+    url: https://docs.ramp.com/openapi/developer-api.json
+authentication:
+  default: access_token
+  options:
+    access_token:
+      method: bearer
+      label: Access token
+      documentation_url: https://docs.ramp.com/llms-guides/authorization.txt
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      description: Create a developer app. Enable the required scopes and callback URL.
+      documentation_url: https://docs.ramp.com/llms-guides/authorization.txt
+      authorization_url: https://api.ramp.com/v1/authorize
+      token_url: https://api.ramp.com/developer/v1/token
+      client:
+        authentication: client_secret_basic
+      pkce: disabled
+      scopes:
+        - accounting:read
+        - accounting:write
+        - ai_spend:read
+        - ai_usage:write
+        - applications:read
+        - applications:write
+        - approval_chains:write
+        - approvals:read
+        - approvals:write
+        - attendee_types:read
+        - attendee_types:write
+        - audit_logs:read
+        - bank_accounts:read
+        - bank_accounts:write
+        - bank_feeds:read
+        - bills:read
+        - bills:write
+        - blank_canvas:write
+        - budgets:read
+        - business:read
+        - cards:read
+        - cards:read_vault
+        - cards:write
+        - cashbacks:read
+        - comments:write
+        - custom_forms:read
+        - custom_records:read
+        - custom_records:write
+        - departments:read
+        - departments:write
+        - embedded_cards:write
+        - entities:read
+        - external_attendees:read
+        - external_attendees:write
+        - funds:read
+        - funds:write
+        - incorporation:read
+        - incorporation:write
+        - item_receipts:read
+        - item_receipts:write
+        - limits:read
+        - limits:write
+        - locations:read
+        - locations:write
+        - memos:read
+        - memos:write
+        - merchants:read
+        - offline_access
+        - openid
+        - purchase_orders:read
+        - purchase_orders:write
+        - receipt_integrations:read
+        - receipt_integrations:write
+        - receipts:read
+        - receipts:write
+        - reimbursements:read
+        - reimbursements:write
+        - repayments:read
+        - scim:write
+        - sourcing:read
+        - sourcing:write
+        - spend_programs:read
+        - spend_programs:write
+        - spend_requests:read
+        - spend_requests:write
+        - statements:read
+        - tasks:read
+        - transactions:read
+        - transactions:write
+        - transfers:read
+        - treasury:read
+        - trips:read
+        - unified_requests:read
+        - unified_requests:write
+        - users:read
+        - users:write
+        - vendors:read
+        - vendors:write
+        - workflows:read
+        - x402:write
+        - x402_provisioning:write
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+
+# accounting:read: Grant read access to accounting
+# accounting:write: Grant write access to accounting
+# ai_spend:read: Grant read access to ai_spend
+# ai_usage:write: Grant write access to ai_usage
+# applications:read: Grant read access to applications
+# applications:write: Grant write access to applications
+# approval_chains:write: Grant write access to approval_chains
+# approvals:read: Grant read access to approvals
+# approvals:write: Grant write access to approvals
+# attendee_types:read: Grant read access to attendee_types
+# attendee_types:write: Grant write access to attendee_types
+# audit_logs:read: Grant read access to audit_logs
+# bank_accounts:read: Grant read access to bank_accounts
+# bank_accounts:write: Grant write access to bank_accounts
+# bank_feeds:read: Grant read access to bank_feeds
+# bills:read: Grant read access to bills
+# bills:write: Grant write access to bills
+# blank_canvas:write: Grant write access to blank_canvas
+# budgets:read: Grant read access to budgets
+# business:read: Grant read access to business
+# cards:read: Grant read access to cards
+# cards:read_vault: Grant read_vault access to cards
+# cards:write: Grant write access to cards
+# cashbacks:read: Grant read access to cashbacks
+# comments:write: Grant write access to comments
+# custom_forms:read: Grant read access to custom_forms
+# custom_records:read: Grant read access to custom_records
+# custom_records:write: Grant write access to custom_records
+# departments:read: Grant read access to departments
+# departments:write: Grant write access to departments
+# embedded_cards:write: Grant write access to embedded_cards
+# entities:read: Grant read access to entities
+# external_attendees:read: Grant read access to external_attendees
+# external_attendees:write: Grant write access to external_attendees
+# funds:read: Grant read access to funds
+# funds:write: Grant write access to funds
+# incorporation:read: Grant read access to incorporation
+# incorporation:write: Grant write access to incorporation
+# item_receipts:read: Grant read access to item_receipts
+# item_receipts:write: Grant write access to item_receipts
+# limits:read: Grant read access to limits
+# limits:write: Grant write access to limits
+# locations:read: Grant read access to locations
+# locations:write: Grant write access to locations
+# memos:read: Grant read access to memos
+# memos:write: Grant write access to memos
+# merchants:read: Grant read access to merchants
+# offline_access: Grant access to offline_access
+# openid: Grant access to openid
+# purchase_orders:read: Grant read access to purchase_orders
+# purchase_orders:write: Grant write access to purchase_orders
+# receipt_integrations:read: Grant read access to receipt_integrations
+# receipt_integrations:write: Grant write access to receipt_integrations
+# receipts:read: Grant read access to receipts
+# receipts:write: Grant write access to receipts
+# reimbursements:read: Grant read access to reimbursements
+# reimbursements:write: Grant write access to reimbursements
+# repayments:read: Grant read access to repayments
+# scim:write: Grant write access to scim
+# sourcing:read: Grant read access to sourcing
+# sourcing:write: Grant write access to sourcing
+# spend_programs:read: Grant read access to spend_programs
+# spend_programs:write: Grant write access to spend_programs
+# spend_requests:read: Grant read access to spend_requests
+# spend_requests:write: Grant write access to spend_requests
+# statements:read: Grant read access to statements
+# tasks:read: Grant read access to tasks
+# transactions:read: Grant read access to transactions
+# transactions:write: Grant write access to transactions
+# transfers:read: Grant read access to transfers
+# treasury:read: Grant read access to treasury
+# trips:read: Grant read access to trips
+# unified_requests:read: Grant read access to unified_requests
+# unified_requests:write: Grant write access to unified_requests
+# users:read: Grant read access to users
+# users:write: Grant write access to users
+# vendors:read: Grant read access to vendors
+# vendors:write: Grant write access to vendors
+# workflows:read: Grant read access to workflows
+# x402:write: Grant write access to x402
+# x402_provisioning:write: Grant write access to x402_provisioning

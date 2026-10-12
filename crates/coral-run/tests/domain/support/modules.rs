@@ -1,0 +1,869 @@
+//! Test database, domain modules and Operation fixtures shared by Run tests.
+use crate::tests::*;
+use coral_provider::account::AccountModule;
+
+pub(crate) struct TestClock {
+    pub(crate) next: AtomicI64,
+}
+
+impl TestClock {
+    pub(crate) const fn new() -> Self {
+        Self {
+            next: AtomicI64::new(1_000),
+        }
+    }
+}
+
+impl Clock for TestClock {
+    fn now_unix_nanos(&self) -> Result<i64, String> {
+        Ok(self.next.fetch_add(1, Ordering::SeqCst))
+    }
+}
+
+pub(crate) async fn registered_agent(
+    workspaces: &WorkspaceModule,
+    owner: &AuthenticatedPrincipal,
+    workspace_id: &coral_workspace::WorkspaceId,
+) -> AuthenticatedPrincipal {
+    let issued = workspaces
+        .create_agent(
+            &change(
+                owner.authenticated_user().expect("Owner User").clone(),
+                10,
+                '1',
+            ),
+            workspace_id,
+            coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
+            None,
+        )
+        .await
+        .expect("create Agent");
+    workspaces
+        .authenticate_agent(workspace_id, issued.credential.expose(), 11)
+        .await
+        .expect("authenticate Agent")
+}
+
+pub(crate) fn saved_function_change(
+    actor: AuthenticatedPrincipal,
+    occurred_at_unix_nanos: i64,
+    digit: char,
+) -> SavedFunctionChangeContext {
+    SavedFunctionChangeContext::new(
+        actor,
+        occurred_at_unix_nanos,
+        TraceId::parse(&digit.to_string().repeat(32)).expect("trace id"),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CancellationCaller {
+    User,
+    Agent,
+}
+
+impl CancellationCaller {
+    pub(crate) const ALL: [Self; 2] = [Self::User, Self::Agent];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+/// Every domain migration plan a Run test database installs.
+pub(crate) const MIGRATION_PLANS: [&sqlx::migrate::Migrator; 7] = [
+    coral_workspace::migrator(),
+    coral_catalog::migrator(),
+    coral_provider::migrator(),
+    coral_policy::migrator(),
+    crate::migrator(),
+    coral_functions::migrator(),
+    coral_search::migrator(),
+];
+
+pub(crate) struct TestModules {
+    pub(crate) test_database: TestDatabase,
+    pub(crate) database: Arc<coral_db::Database>,
+    pub(crate) workspaces: WorkspaceModule,
+    pub(crate) providers: ProviderModule,
+    pub(crate) policies: OperationPolicyModule,
+    pub(crate) runs: RunModule,
+    pub(crate) upstream: Arc<dyn UpstreamSender>,
+    pub(crate) clock: Arc<TestClock>,
+}
+
+impl TestModules {
+    pub(crate) async fn new(engine: Arc<dyn ProgramEngine>) -> Self {
+        Self::with_upstream(engine, Arc::new(RejectingUpstream)).await
+    }
+
+    pub(crate) async fn with_upstream(
+        engine: Arc<dyn ProgramEngine>,
+        upstream: Arc<dyn UpstreamSender>,
+    ) -> Self {
+        Self::with_invocation_adapters(engine, upstream, Arc::new(NoopInvocationObserver)).await
+    }
+
+    pub(crate) async fn with_invocation_adapters(
+        engine: Arc<dyn ProgramEngine>,
+        upstream: Arc<dyn UpstreamSender>,
+        observer: Arc<dyn InvocationObserver>,
+    ) -> Self {
+        Self::with_execution_adapters(engine, upstream, observer, Arc::new(NoopExecutionObserver))
+            .await
+    }
+
+    pub(crate) async fn with_execution_adapters(
+        engine: Arc<dyn ProgramEngine>,
+        upstream: Arc<dyn UpstreamSender>,
+        invocation_observer: Arc<dyn InvocationObserver>,
+        execution_observer: Arc<dyn ExecutionObserver>,
+    ) -> Self {
+        let migrator = coral_test_support::combined_migrator(&MIGRATION_PLANS);
+        let fixture = TestDatabase::new(&migrator)
+            .await
+            .expect("create Program Run test database");
+        let database = fixture.database();
+        coral_search::prepare_storage(&database)
+            .await
+            .expect("prepare Universal Search storage");
+        let workspaces = WorkspaceModule::new(database.clone());
+        let providers = ProviderModule::new(
+            DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+            database.clone(),
+            workspaces.clone(),
+        );
+        let policies = OperationPolicyModule::new(database.clone(), workspaces.clone());
+        let clock = Arc::new(TestClock::new());
+        let runs = RunModule::with_adapters(
+            database.clone(),
+            workspaces.clone(),
+            engine,
+            upstream.clone(),
+            clock.clone(),
+            crate::TestObservers::new(invocation_observer, execution_observer),
+        );
+        Self {
+            test_database: fixture,
+            database,
+            workspaces,
+            providers,
+            policies,
+            runs,
+            upstream,
+            clock,
+        }
+    }
+
+    /// A production-wired Run Module (real V8 and upstream) over this fixture's
+    /// database, optionally resolving caller and shared Accounts.
+    pub(crate) fn live_runs(&self, accounts: Option<AccountModule>) -> RunModule {
+        let runs = RunModule::new(
+            DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+            self.database.clone(),
+            self.workspaces.clone(),
+            crate::IsolateLimits::default(),
+        )
+        .expect("start the real Program runtime");
+        match accounts {
+            Some(accounts) => runs.with_accounts(accounts),
+            None => runs,
+        }
+    }
+
+    /// An Approval Module that decides deadlines on this fixture's clock.
+    pub(crate) fn approvals(&self) -> crate::approval::ApprovalModule {
+        crate::approval::ApprovalModule::new(self.database.clone(), self.workspaces.clone())
+            .with_clock(self.clock.clone())
+    }
+
+    /// Makes the fixture Operation wait for a human approval decision.
+    pub(crate) async fn require_approval(&self, operation: &OperationFixture) {
+        self.policies
+            .set_access_state(
+                &change(operation.user.clone(), 40, '4'),
+                operation.policy_target.clone(),
+                OperationAccessState::ApprovalRequired,
+            )
+            .await
+            .expect("require approval for the fixture Operation");
+    }
+
+    /// Installs or removes a persistence fault, such as a constraint that rejects
+    /// the next lifecycle event, after the fixture is arranged.
+    pub(crate) async fn inject_fault(&self, sql: &str) {
+        self.test_database
+            .execute_fixture_sql(sql)
+            .await
+            .expect("apply persistence fault");
+    }
+
+    pub(crate) async fn user_scope(
+        &self,
+        user_id: &str,
+        intent: &str,
+    ) -> (coral_workspace::WorkspaceId, AuthenticatedPrincipal) {
+        let user =
+            organization_user(self.database.clone(), user_id, OrganizationRole::Member).await;
+        let workspace = self
+            .workspaces
+            .create(
+                &change(user.clone(), 10, '1'),
+                WorkspaceDisplayName::parse(intent).expect("display name"),
+            )
+            .await
+            .expect("create Workspace");
+        let principal = AuthenticatedPrincipal::user(user);
+        (workspace.id().clone(), principal)
+    }
+
+    /// Provisions an Organization Member and gives them a Membership in one
+    /// Workspace, the only source of authority there. `owner` is one of the
+    /// Workspace's designated Owners.
+    pub(crate) async fn workspace_user(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        owner: &AuthenticatedUser,
+        user_id: &str,
+        role: WorkspaceRole,
+    ) -> AuthenticatedUser {
+        let user =
+            organization_user(self.database.clone(), user_id, OrganizationRole::Member).await;
+        self.workspaces
+            .set_membership(&change(owner.clone(), 12, '2'), workspace_id, &user, role)
+            .await
+            .expect("add Workspace Membership");
+        user
+    }
+
+    /// A second designated Owner's change context, for administration that
+    /// removes or demotes the Workspace's creator.
+    pub(crate) async fn workspace_admin(&self, operation: &OperationFixture) -> ChangeContext {
+        change(
+            self.workspace_user(
+                &operation.workspace_id,
+                &operation.user,
+                "test:workspace-admin",
+                WorkspaceRole::Owner,
+            )
+            .await,
+            40,
+            '4',
+        )
+    }
+
+    pub(crate) async fn cancellation_caller(
+        &self,
+        caller: CancellationCaller,
+        workspace_id: &coral_workspace::WorkspaceId,
+        user: &AuthenticatedPrincipal,
+    ) -> AuthenticatedPrincipal {
+        match caller {
+            CancellationCaller::User => user.clone(),
+            CancellationCaller::Agent => {
+                registered_agent(&self.workspaces, user, workspace_id).await
+            }
+        }
+    }
+
+    pub(crate) async fn user_operation(&self, user_id: &str, intent: &str) -> OperationFixture {
+        self.user_operation_at(user_id, intent, "https://upstream.example")
+            .await
+    }
+
+    pub(crate) async fn user_operation_at(
+        &self,
+        user_id: &str,
+        intent: &str,
+        server_url: &str,
+    ) -> OperationFixture {
+        let (workspace_id, principal) = self.user_scope(user_id, intent).await;
+        let user = principal
+            .authenticated_user()
+            .expect("User Principal")
+            .clone();
+        let document_json = serde_json::json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Weather", "version": "1"},
+            "servers": [{"url": server_url}],
+            "paths": {
+                "/forecast": {
+                    "get": {
+                        "operationId": "getForecast",
+                        "summary": "Get forecast",
+                        "parameters": [{
+                            "name": "city",
+                            "in": "query",
+                            "schema": {"type": "string"}
+                        }],
+                        "responses": {
+                            "200": {
+                                "description": "Forecast",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {"temperature": {"type": "number"}},
+                                            "required": ["temperature"]
+                                        }
+                                    }
+                                }
+                            },
+                            "422": {
+                                "description": "Forecast rejected",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {"temperature": {"type": "number"}},
+                                            "required": ["temperature"]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .to_string();
+        let document = OpenApiDocument::parse(&document_json).expect("OpenAPI document");
+        let setup = self
+            .providers
+            .prepare_openapi_fixture(&change(user.clone(), 30, '7'), &workspace_id, document)
+            .await
+            .expect("create Provider Setup");
+        let publication = self
+            .providers
+            .publish_workspace_provider(
+                &change(user.clone(), 31, '8'),
+                WorkspaceProviderPublicationRequest::new(
+                    ManagementRequestId::parse("00000000-0000-0000-0000-000000000001")
+                        .expect("request id"),
+                    workspace_id.clone(),
+                    setup.id().clone(),
+                    ProviderNamespace::parse("weather").expect("namespace"),
+                    CredentialRoute::None,
+                ),
+            )
+            .await
+            .expect("publish Provider");
+        let published = publication
+            .published_provider()
+            .expect("successful Publication");
+        let provider_id = published.id().clone();
+        let policy_target = OperationPolicyTarget::new(
+            workspace_id.clone(),
+            provider_id.clone(),
+            OperationKey::parse("getForecast").expect("Operation Key"),
+        );
+        self.policies
+            .set_access_state(
+                &change(user.clone(), 32, '9'),
+                policy_target.clone(),
+                OperationAccessState::Enabled,
+            )
+            .await
+            .expect("enable credential-free HTTP Operation");
+        OperationFixture {
+            workspace_id,
+            principal,
+            user,
+            provider_id,
+            policy_target,
+        }
+    }
+
+    pub(crate) async fn expire_worker_claim(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+        expires_at_unix_nanos: i64,
+    ) {
+        let changed = self
+            .database
+            .execute(
+                Query::update()
+                    .table(Alias::new("program_run_records"))
+                    .value(
+                        Alias::new("worker_claim_expires_at_unix_nanos"),
+                        expires_at_unix_nanos,
+                    )
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
+                    .and_where(Expr::col(Alias::new("id")).eq(run_id.to_string()))
+                    .to_owned(),
+            )
+            .await
+            .expect("expire worker claim through private recovery control");
+        assert_eq!(changed, 1);
+    }
+}
+
+pub(crate) async fn configure_shared_account(
+    fixture: &TestModules,
+    operation: &mut OperationFixture,
+    server: &str,
+    secret: &str,
+) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
+    let document = serde_json::json!({
+        "openapi":"3.1.0", "info":{"title":"Private weather","version":"1"},
+        "servers":[{"url":server}], "security":[{"bearer":[]}],
+        "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},
+        "paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}
+    });
+    let values = coral_credentials::CredentialValues::token(
+        coral_credentials::Secret::new(secret.into()).unwrap(),
+    );
+    let (dir, accounts) = configure_shared_provider(fixture, operation, &document, values).await;
+    let mut tx = fixture.database.begin().await.unwrap();
+    let target = coral_provider::resolve_invocation_operation_in_transaction(
+        &mut tx,
+        &operation.workspace_id,
+        &ProviderNamespace::parse("weather").unwrap(),
+        "getForecast",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let evidence = coral_provider::account::select_in_transaction(
+        &mut tx,
+        &target,
+        operation.principal.principal(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        accounts
+            .credentials(
+                &operation.workspace_id,
+                &operation.provider_id,
+                &evidence,
+                40
+            )
+            .await
+            .expect("published shared Account credentials")
+            .get(coral_credentials::CredentialValues::TOKEN)
+            .unwrap()
+            .expose(),
+        secret
+    );
+    (dir, accounts)
+}
+
+/// Publishes one shared-account Provider from `document`, connected with `values`.
+/// Publishes a shared-account Provider whose method the owner authored, rather than
+/// one the document declared.
+pub(crate) async fn configure_authored_provider(
+    fixture: &TestModules,
+    operation: &mut OperationFixture,
+    document: &serde_json::Value,
+    authored: coral_catalog::AuthenticationConfiguration,
+    fields: std::collections::BTreeMap<String, coral_catalog::CredentialField>,
+    values: coral_credentials::CredentialValues,
+) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
+    let context = change(operation.user.clone(), 40, '4');
+    let dir = tempfile::tempdir().unwrap();
+    let accounts = coral_provider::account::AccountModule::new(
+        fixture.providers.clone(),
+        coral_credentials::CredentialVault::open(&dir.path().join("key")).unwrap(),
+    );
+    fixture
+        .providers
+        .delete_provider(&context, &operation.workspace_id, &operation.provider_id)
+        .await
+        .unwrap();
+    let setup = fixture
+        .providers
+        .prepare_openapi_fixture(
+            &context,
+            &operation.workspace_id,
+            OpenApiDocument::parse(&document.to_string()).unwrap(),
+        )
+        .await
+        .unwrap();
+    let review = fixture
+        .providers
+        .review_setup_configuration(context.actor(), &operation.workspace_id, setup.id())
+        .await
+        .unwrap();
+    let mut configuration = review.confirmed.clone().unwrap();
+    configuration.authentication = Some(authored);
+    configuration.credential_fields = fields;
+    let confirmed = fixture
+        .providers
+        .confirm_setup_configuration(
+            &context,
+            &operation.workspace_id,
+            setup.id(),
+            review.revision,
+            configuration,
+        )
+        .await
+        .unwrap();
+    assert!(
+        confirmed.errors.is_empty(),
+        "authored configuration: {:?}",
+        confirmed.errors
+    );
+    let grant = accounts
+        .authorize_setup(
+            &context,
+            &operation.workspace_id,
+            setup.id(),
+            confirmed.revision,
+            values,
+        )
+        .await
+        .unwrap();
+    let publication = fixture
+        .providers
+        .publish_workspace_provider(
+            &context,
+            coral_provider::WorkspaceProviderPublicationRequest::new(
+                ManagementRequestId::parse("71000000-0000-4000-8000-000000000031").unwrap(),
+                operation.workspace_id.clone(),
+                setup.id().clone(),
+                coral_provider::ProviderNamespace::parse("weather").unwrap(),
+                CredentialRoute::Fixed,
+            )
+            .with_account_grant(grant.provisional_grant_id.expect("provisional grant")),
+        )
+        .await
+        .unwrap();
+    let provider = publication.published_provider().expect("published").clone();
+    operation.provider_id = provider.id().clone();
+    operation.policy_target = OperationPolicyTarget::new(
+        operation.workspace_id.clone(),
+        operation.provider_id.clone(),
+        OperationKey::parse("getForecast").unwrap(),
+    );
+    fixture
+        .policies
+        .set_access_state(
+            &context,
+            operation.policy_target.clone(),
+            OperationAccessState::Enabled,
+        )
+        .await
+        .unwrap();
+    (dir, accounts)
+}
+
+pub(crate) async fn configure_shared_provider(
+    fixture: &TestModules,
+    operation: &mut OperationFixture,
+    document: &serde_json::Value,
+    values: coral_credentials::CredentialValues,
+) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
+    let context = change(operation.user.clone(), 40, '4');
+    let dir = tempfile::tempdir().unwrap();
+    let accounts = coral_provider::account::AccountModule::new(
+        fixture.providers.clone(),
+        coral_credentials::CredentialVault::open(&dir.path().join("key")).unwrap(),
+    );
+    fixture
+        .providers
+        .delete_provider(&context, &operation.workspace_id, &operation.provider_id)
+        .await
+        .unwrap();
+    let provider = fixture
+        .providers
+        .publish_shared_fixture(
+            &context,
+            &operation.workspace_id,
+            OpenApiDocument::parse(&document.to_string()).unwrap(),
+            "weather",
+            &accounts,
+            values,
+        )
+        .await
+        .unwrap();
+    operation.provider_id = provider.id().clone();
+    operation.policy_target = OperationPolicyTarget::new(
+        operation.workspace_id.clone(),
+        operation.provider_id.clone(),
+        OperationKey::parse("getForecast").unwrap(),
+    );
+    fixture
+        .policies
+        .set_access_state(
+            &context,
+            operation.policy_target.clone(),
+            OperationAccessState::Enabled,
+        )
+        .await
+        .unwrap();
+    (dir, accounts)
+}
+
+pub(crate) async fn configure_user_caller(
+    fixture: &TestModules,
+    operation: &OperationFixture,
+    server: &str,
+) -> (tempfile::TempDir, coral_provider::account::AccountModule) {
+    let context = change(operation.user.clone(), 40, '4');
+    let document = serde_json::json!({
+        "openapi":"3.1.0", "info":{"title":"Private weather","version":"1"},
+        "servers":[{"url":server}], "security":[{"bearer":[]}],
+        "components":{"securitySchemes":{"bearer":{"type":"http","scheme":"bearer"}}},
+        "paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}
+    });
+    let setup = fixture
+        .providers
+        .prepare_update_fixture(
+            &context,
+            &operation.workspace_id,
+            &operation.provider_id,
+            OpenApiDocument::parse(&document.to_string()).unwrap(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .providers
+        .regenerate_provider(
+            &context,
+            ProviderRegenerationRequest::new(
+                ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                operation.workspace_id.clone(),
+                operation.provider_id.clone(),
+                setup.id().clone(),
+                2,
+            )
+            .with_account_setting(CredentialRoute::Caller)
+            .with_incompatible_configuration_confirmation(),
+        )
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let accounts = coral_provider::account::AccountModule::new(
+        fixture.providers.clone(),
+        coral_credentials::CredentialVault::open(&dir.path().join("key")).unwrap(),
+    );
+    (dir, accounts)
+}
+
+pub(crate) async fn assert_connection_completion_event(
+    accounts: &coral_provider::account::AccountModule,
+    context: &ChangeContext,
+    workspace: &coral_workspace::WorkspaceId,
+    request: coral_provider::account::ConnectionRequestId,
+) {
+    let events = accounts
+        .list_user_lifecycle_events(context, workspace)
+        .await
+        .unwrap();
+    let events = events
+        .iter()
+        .filter(|event| event.target_id() == request.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events.len(),
+        1,
+        "one request event, separate from authorization and Account evidence"
+    );
+    let event = events.first().unwrap();
+    assert_eq!(
+        event.action(),
+        coral_provider::LifecycleAction::AccountConnectionCompleted
+    );
+    assert_eq!(event.outcome(), coral_provider::LifecycleOutcome::Succeeded);
+    assert_eq!(
+        event.actor(),
+        &coral_provider::LifecycleActor::User {
+            user_id: context.actor().user_id().clone(),
+            authority_source: coral_workspace::AuthoritySource::WorkspaceMembership,
+        }
+    );
+    assert_eq!(event.trace_id(), context.trace_id());
+    assert_eq!(event.changed_field_paths(), &["state"]);
+}
+
+pub(crate) async fn wait_for_connection(
+    accounts: &coral_provider::account::AccountModule,
+    operation: &OperationFixture,
+) -> coral_provider::account::ConnectionRequest {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let requests = accounts
+                .list_connection_requests(
+                    &change(operation.user.clone(), 40, '4'),
+                    &operation.workspace_id,
+                )
+                .await
+                .unwrap();
+            if let Some(request) = requests.first() {
+                return request.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Invocation waits on durable connection")
+}
+
+pub(crate) struct OperationFixture {
+    pub(crate) workspace_id: coral_workspace::WorkspaceId,
+    pub(crate) principal: AuthenticatedPrincipal,
+    pub(crate) user: AuthenticatedUser,
+    pub(crate) provider_id: ProviderId,
+    pub(crate) policy_target: OperationPolicyTarget,
+}
+
+pub(crate) fn submission(source: &str) -> RunSubmission {
+    RunSubmission::new(
+        ProgramSource::parse(source).expect("Program source"),
+        RunTimeout::from_millis(60_000).expect("Run timeout"),
+    )
+}
+
+pub(crate) fn immediate(cursor: Option<crate::RunCursor>, limit: u16) -> RunObservation {
+    RunObservation::immediate(cursor, limit).expect("Run observation")
+}
+
+pub(crate) async fn wait_for_terminal(
+    runs: &RunModule,
+    principal: &AuthenticatedPrincipal,
+    workspace_id: &coral_workspace::WorkspaceId,
+    run_id: &crate::RunId,
+) -> crate::RunUpdate {
+    for _ in 0..200 {
+        let update = runs
+            .observe(principal, workspace_id, run_id, &immediate(None, 100))
+            .await
+            .expect("observe Run");
+        if update.state().is_terminal() {
+            assert!(
+                update.required_actions().is_empty(),
+                "terminal Runs have no required actions"
+            );
+            return update;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("Run did not become terminal");
+}
+
+pub(crate) async fn retained_events(
+    runs: &RunModule,
+    actor: &AuthenticatedPrincipal,
+    workspace: &coral_workspace::WorkspaceId,
+    run: &crate::RunId,
+) -> Vec<RunEvent> {
+    let mut events = Vec::new();
+    let mut after = 0;
+    loop {
+        let detail = runs
+            .inspect_run(
+                actor,
+                workspace,
+                run,
+                &crate::RunInspection {
+                    event_after: after,
+                    event_limit: 100,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("inspect retained history");
+        after = detail.events.last().map_or(after, RunEvent::sequence);
+        events.extend(detail.events);
+        if !detail.has_more_events {
+            return events;
+        }
+    }
+}
+
+/// Everything the Run's owner can read back about a Run: retained Events,
+/// each Invocation's exact evidence, and the activity rows. Leak checks search it.
+pub(crate) async fn run_history_text(
+    runs: &RunModule,
+    actor: &AuthenticatedPrincipal,
+    workspace: &coral_workspace::WorkspaceId,
+    run: &crate::RunId,
+) -> String {
+    use std::fmt::Write as _;
+    let events = retained_events(runs, actor, workspace, run).await;
+    let mut text = format!("{events:?}");
+    for event in &events {
+        if let RunEventKind::InvocationStarted { invocation_id } = event.kind() {
+            let detail = runs
+                .inspect_invocation(actor, workspace, invocation_id)
+                .await
+                .expect("inspect Invocation");
+            write!(
+                text,
+                "{:?}{:?}{:?}{:?}",
+                detail.summary, detail.arguments, detail.outcome, detail.requests
+            )
+            .unwrap();
+        }
+    }
+    let entries = runs
+        .activity_entries(
+            actor,
+            workspace,
+            run,
+            &crate::RunEntryWindow::Start,
+            100,
+            None,
+        )
+        .await
+        .expect("read activity entries");
+    write!(text, "{:?}", entries.run).unwrap();
+    for entry in entries.entries {
+        match entry {
+            crate::RunEntry::Invocation(summary) => write!(text, "{summary:?}").unwrap(),
+            crate::RunEntry::Event { kind, .. } => text.push_str(&kind),
+        }
+    }
+    text
+}
+
+pub(crate) async fn assert_run_concealed(
+    runs: &RunModule,
+    principal: &AuthenticatedPrincipal,
+    workspace_id: &coral_workspace::WorkspaceId,
+    run_id: &crate::RunId,
+) {
+    assert!(matches!(
+        runs.observe(principal, workspace_id, run_id, &immediate(None, 100))
+            .await,
+        Err(Error::RunNotFound)
+    ));
+}
+
+pub(crate) async fn wait_until(predicate: impl Fn() -> bool) {
+    for _ in 0..200 {
+        if predicate() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("condition did not become true");
+}
+
+pub(crate) async fn organization_admin(fixture: &TestModules) -> ChangeContext {
+    change(
+        organization_user(
+            fixture.database.clone(),
+            "test:organization-admin",
+            OrganizationRole::Owner,
+        )
+        .await,
+        40,
+        '4',
+    )
+}
+
+pub(crate) fn change(actor: AuthenticatedUser, at: i64, trace_digit: char) -> ChangeContext {
+    ChangeContext::new(
+        actor,
+        at,
+        TraceId::parse(&trace_digit.to_string().repeat(32)).expect("trace id"),
+    )
+}

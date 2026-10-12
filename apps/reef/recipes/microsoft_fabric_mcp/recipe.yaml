@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema.json
+# Microsoft Entra tenant provisioning and delegated permissions are required.
+# Coral currently rejects the organizations issuer metadata (IssuerMismatch).
+# Paste a resource-specific delegated bearer token until discovery supports it.
+# Application-only tokens are not interchangeable with delegated user tokens.
+schema_version: 1
+id: microsoft_fabric_mcp
+display_name: Microsoft Fabric
+description: Workspaces, items, permissions and capacities from Microsoft Fabric.
+icons:
+  light: logo.svg
+source:
+  mcp:
+    url: https://api.fabric.microsoft.com/v1/mcp/core
+authentication:
+  default: access_token
+  options:
+    access_token:
+      method: bearer
+      label: Paste a delegated OAuth access token
+      description: Use a token for this MCP resource. Renew the token when it expires.
+      documentation_url: https://learn.microsoft.com/en-us/rest/api/fabric/articles/mcp-servers/core-remote/overview-core-mcp-server

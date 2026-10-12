@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server
+# API usage is billed to the organization chosen during authorization.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+schema_version: 1
+id: perplexity
+display_name: Perplexity
+description: Search results, answers and research from Perplexity.
+source:
+  mcp:
+    url: https://api.perplexity.ai/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server
+      flow: authorization_code
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server
+  default: oauth
+icons:
+  light: logo.svg

@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.customer.io/ai/mcp/get-started/
+# Official brand asset: https://avatars.githubusercontent.com/u/1152079?v=4
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: customer_io
+display_name: Customer.io
+description: Automations, audiences, content and delivery metrics from Customer.io.
+source:
+  mcp:
+    url: https://mcp.customer.io/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://docs.customer.io/ai/mcp/ide/
+      description: Ask your account admin to enable Customer.io MCP.
+      flow: authorization_code
+icons:
+  light: logo.png

@@ -14,9 +14,8 @@
         { "type": "json", "path": "apps/desktop/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "apps/desktop/package-lock.json", "jsonpath": "$.version" },
         { "type": "json", "path": "apps/desktop/package-lock.json", "jsonpath": "$.packages[\"\"].version" }
-      ],
-      "exclude-paths": ["sources/community", "sources/core-v4", "sources/v4"]
+      ]
     }
   },
-  "bootstrap-sha": "51de7ec4e927d627e02ada30d258921eb258d8e8"
+  "bootstrap-sha": "2c58881841bf62fc52a44bb5c2571760e65a58dd"
 }

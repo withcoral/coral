@@ -1,8 +1,3 @@
-use axum::extract::{RawQuery, Request, State};
-use axum::http::HeaderMap;
-use axum::response::Response;
-use url::Url;
-
 use super::super::provider_client::OidcAuthorizationRequest;
 use super::super::state_store::{
     OAuthAuthorizationApprovalRecord, OAuthAuthorizationSessionRecord,
@@ -10,7 +5,10 @@ use super::super::state_store::{
 use super::client_metadata::OAuthClientRegistration;
 use super::response::{TrustedRedirect, direct_error, redirect};
 use super::{AuthorizationServerHttpState, canonical_authorization_resource, query};
-use crate::outbound_url_policy::{BrowserRedirect, EndpointUrl};
+use axum::extract::{RawQuery, Request, State};
+use axum::http::HeaderMap;
+use axum::response::Response;
+use coral_outbound::{BrowserRedirect, EndpointUrl};
 
 mod confirmation;
 
@@ -32,11 +30,18 @@ pub(super) async fn oauth_authorize_get(
     let Ok(registration) = resolve_client(&state, client_id).await else {
         return direct_error("invalid_request", "client_id or redirect_uri is invalid");
     };
+    // The web client returning to its login callback is pinned to the web
+    // resource below. Returning to any other callback its metadata document
+    // names — Provider Setup consent — it is validated like any other client.
+    let web_login = state
+        .settings
+        .authorization_server()
+        .web_login(client_id, redirect_uri);
     let Some(callback) = registered_redirect(&registration.redirect_uris, redirect_uri) else {
         return direct_error("invalid_request", "client_id or redirect_uri is invalid");
     };
     let client_name = registration.client_name;
-    let trusted = TrustedRedirect::new(callback.clone(), query.state.clone());
+    let trusted = TrustedRedirect::new(callback.as_url().clone(), query.state.clone());
 
     match query.response_type.as_deref() {
         Some("code") => {}
@@ -68,7 +73,9 @@ pub(super) async fn oauth_authorize_get(
     let Ok(resource) = canonical_authorization_resource(resource) else {
         return trusted.error("invalid_target", "resource is invalid");
     };
-    if !state.accepts_authorization_resource(&resource) {
+    if !state.accepts_authorization_resource(&resource)
+        || web_login.is_some_and(|web| web.public_url != resource)
+    {
         return trusted.error("invalid_target", "resource does not match this server");
     }
     let approval = OAuthAuthorizationApprovalRecord {
@@ -79,14 +86,14 @@ pub(super) async fn oauth_authorize_get(
         code_challenge,
         resource,
     };
-    // A trusted client proceeds as if the user had already pressed Continue.
+    // A trusted client proceeds as if the user had already pressed Allow.
     // The check sits after every validation above, so trust changes only the
     // confirmation step — never what counts as a valid request — and the
     // metadata document still had to resolve and name this redirect URI.
     if state
         .settings
         .authorization_server()
-        .is_trusted_client(client_id)
+        .is_trusted_client(client_id, redirect_uri)
     {
         return provider_sign_in(&state, approval, &trusted).await;
     }
@@ -152,7 +159,7 @@ pub(super) async fn oauth_authorize_post(
 
 /// Sends an approved authorization on to the upstream provider.
 ///
-/// This is the step a Continue submission continues into and a trusted client
+/// This is the step an Allow submission continues into and a trusted client
 /// skips to directly. The session is stored before the redirect is returned,
 /// so the callback can never arrive ahead of the state it needs, and the store
 /// hands it out once, so the callback that consumes it is the only one that
@@ -260,14 +267,17 @@ async fn resolve_client(
 /// The resolved URI is the requested one, not the registration that matched it:
 /// under [`loopback_port_variant`] the two can differ in port, and it is the
 /// requested port that a native client is listening on.
-fn registered_redirect(redirect_uris: &[String], redirect_uri: &str) -> Option<Url> {
+fn registered_redirect(
+    redirect_uris: &[String],
+    redirect_uri: &str,
+) -> Option<EndpointUrl<BrowserRedirect>> {
     let requested = EndpointUrl::<BrowserRedirect>::parse(redirect_uri).ok()?;
     let matched = redirect_uris.iter().any(|uri| {
         uri.as_str() == redirect_uri
             || EndpointUrl::<BrowserRedirect>::parse(uri)
                 .is_ok_and(|registered| loopback_port_variant(&registered, &requested))
     });
-    matched.then(|| requested.into_url())
+    matched.then_some(requested)
 }
 
 /// Reports whether `requested` is `registered` listening on another port.
@@ -314,7 +324,6 @@ fn approval_error() -> Response {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -323,12 +332,11 @@ mod tests {
     use axum::http::{HeaderValue, StatusCode, header};
     use base64::Engine as _;
     use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-    use ring::rand::SystemRandom;
-    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
     use tokio::sync::Barrier;
-    use url::form_urlencoded;
+    use url::{Url, form_urlencoded};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -336,66 +344,24 @@ mod tests {
     use super::super::client_metadata::{
         ClientMetadataError, ClientMetadataResolver, OAuthClientRegistration,
     };
+    use super::super::test_state::http_state;
     use super::*;
-    use crate::auth::config::AuthSettings;
-    use crate::auth::config::ResolvedAuthSettings;
-    use crate::auth::session::{SessionTokenIssuer, test_signing_key};
     use crate::auth::state_store::{
         ApprovalStore, InMemoryStateStore, OAuthAuthorizationApprovalBrowserBinding,
         OAuthAuthorizationApprovalTicket, SessionStore,
     };
+    use crate::auth::test_config::{AUTH_ISSUER, PROVIDER_SECRET};
 
-    const AUTH_ISSUER: &str = "https://auth.example.test";
     const RESOURCE: &str = "https://api.example.test/mcp";
     const CLIENT_ID: &str = "https://client.example.test/oauth/client.json";
     const REDIRECT_URI: &str = "https://client.example.test/callback?tenant=one";
     const CLIENT_STATE: &str = "client-state&error=injected";
     const CHALLENGE: &str = "0123456789012345678901234567890123456789012";
-    const PROVIDER_SECRET: &str = "provider-secret-must-not-leak";
     const BROWSER_BINDING: [u8; 32] = [0x42; 32];
 
     fn approval_page_style_src() -> String {
         let digest = Sha256::digest(confirmation::APPROVAL_PAGE_STYLES.as_bytes());
         format!("style-src 'sha256-{}'", STANDARD.encode(digest))
-    }
-
-    fn settings(issuer: &str) -> ResolvedAuthSettings {
-        settings_with_trusted_clients(issuer, &[])
-    }
-
-    fn settings_with_trusted_clients(
-        issuer: &str,
-        trusted_clients: &[&str],
-    ) -> ResolvedAuthSettings {
-        let trusted_clients = trusted_clients
-            .iter()
-            .map(|client_id| format!("'{client_id}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let settings = AuthSettings::from_toml(&format!(
-            "[auth]
-             [auth.session]
-             [auth.authorization_server]
-             issuer = '{AUTH_ISSUER}'
-             trusted_clients = [{trusted_clients}]
-             [auth.provider]
-             issuer = '{issuer}'
-             client_id = 'provider-client'
-             client_secret = '{PROVIDER_SECRET}'
-             redirect_uri = '{AUTH_ISSUER}/auth/oidc/callback'"
-        ))
-        .expect("valid auth config")
-        .expect("auth settings");
-        let signing_key = STANDARD.encode(
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key"),
-        );
-        let (settings, _issuer) = settings
-            .resolve_runtime_dependencies(Path::new("config.toml"), &|name| {
-                Ok((name == "CORAL_SESSION_SIGNING_KEY").then(|| signing_key.clone()))
-            })
-            .expect("resolved runtime dependencies");
-        settings
     }
 
     struct FakeResolver {
@@ -439,28 +405,24 @@ mod tests {
         store: Arc<InMemoryStateStore>,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
-        state_with_settings(settings(issuer), store, resolver)
+        state_with(issuer, "", store, resolver)
     }
 
-    fn state_with_settings(
-        settings: ResolvedAuthSettings,
+    /// The authorize route's state for `issuer`, with `extra` settings and
+    /// client metadata resolved by `resolver`.
+    fn state_with(
+        issuer: &str,
+        extra: &str,
         store: Arc<InMemoryStateStore>,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
-        let session_tokens = SessionTokenIssuer::new(
-            Some(AUTH_ISSUER),
-            test_signing_key(),
-            Duration::from_mins(5),
-        )
-        .expect("session");
-        AuthorizationServerHttpState::with_client_metadata_resolver(
-            Arc::new(settings),
-            session_tokens,
-            store,
-            Arc::new(BTreeSet::from([RESOURCE.into()])),
-            resolver,
-        )
-        .expect("auth state")
+        let mut state = http_state(issuer, extra, store, &[RESOURCE]);
+        state.client_metadata_resolver = resolver;
+        state
+    }
+
+    fn trusting(client_id: &str) -> String {
+        format!("[auth]\ntrusted_clients = ['{client_id}']")
     }
 
     fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
@@ -529,10 +491,13 @@ mod tests {
 
     async fn response_body(response: Response) -> String {
         String::from_utf8(
-            to_bytes(response.into_body(), 16 * 1024)
-                .await
-                .expect("body")
-                .to_vec(),
+            to_bytes(
+                response.into_body(),
+                16 * 1024 + confirmation::APPROVAL_PAGE_STYLES.len(),
+            )
+            .await
+            .expect("body")
+            .to_vec(),
         )
         .expect("UTF-8 body")
     }
@@ -672,17 +637,37 @@ mod tests {
             .expect("approval cookie")
             .to_string();
         let page = response_body(response).await;
-        assert!(page.contains("Client ID hostname</dt><dd><code>client.example.test"));
-        assert!(page.contains("Redirect host and port</dt><dd><code>client.example.test:443"));
-        assert!(page.contains("method=\"post\" action=\"/oauth/authorize\""));
+        assert!(page.contains("Client ID hostname</dt>"));
+        assert!(page.contains(">client.example.test</dd>"));
+        assert!(page.contains("Redirect host and port</dt>"));
+        assert!(page.contains(">client.example.test:443</dd>"));
+        let form = page
+            .split("<form ")
+            .nth(1)
+            .and_then(|tail| tail.split("</form>").next())
+            .expect("approval form");
+        let attributes = form.split('>').next().expect("form attributes");
+        assert!(attributes.contains("method=\"post\""));
+        assert!(attributes.contains("action=\"/oauth/authorize\""));
+        // Inspect the form, not matching attribute selectors in the stylesheet.
+        let cancel = form.find("value=\"cancel\"").expect("Cancel button");
+        let proceed = form.find("value=\"continue\"").expect("Allow button");
         assert!(
-            page.find("value=\"cancel\"") < page.find("value=\"continue\""),
+            cancel < proceed,
             "Cancel must be the form's first submit button, so a bare Enter key \
              does not approve access"
         );
         assert!(!page.contains(CLIENT_STATE));
         assert!(!page.contains(CHALLENGE));
         assert!(!page.contains("<script"));
+        assert!(!page.contains(" style="));
+        assert!(!page.contains("@@"));
+        let styles = page
+            .split_once("<style>")
+            .and_then(|(_, rest)| rest.split_once("</style>"))
+            .expect("one embedded stylesheet")
+            .0;
+        assert_eq!(styles, confirmation::APPROVAL_PAGE_STYLES);
         let ticket = ticket_from_page(&page);
         assert_eq!(
             set_cookie,
@@ -712,13 +697,47 @@ mod tests {
         assert_eq!(approval.resource, RESOURCE);
     }
 
+    /// RFC 8252 §7.1: a native app such as Raycast names its own URI scheme as
+    /// the callback. The page shows that scheme, since there is no host.
     #[tokio::test]
-    async fn confirmation_page_warns_on_loopback_and_escapes_client_text() {
+    async fn app_scheme_callback_reaches_the_approval_page() {
+        const APP_CALLBACK: &str = "com.raycast:/oauth";
+        let store = Arc::new(InMemoryStateStore::new());
+        let (resolver, _calls) = fake_resolver(Ok(registration(&[APP_CALLBACK])));
+        let mut request_pairs = pairs();
+        replace(&mut request_pairs, "redirect_uri", Some(APP_CALLBACK));
+        let response = request(
+            state_with_resolver("https://provider.invalid", store.clone(), resolver),
+            &request_pairs,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = response_body(response).await;
+        assert!(page.contains("Redirect app scheme</dt>"));
+        assert!(page.contains(">com.raycast</dd>"));
+        let ticket = OAuthAuthorizationApprovalTicket::from_bytes(
+            URL_SAFE_NO_PAD
+                .decode(ticket_from_page(&page))
+                .expect("ticket")
+                .try_into()
+                .expect("ticket length"),
+        );
+        let approval = store
+            .take_authorization_approval(&ticket, &browser_binding())
+            .await
+            .expect("store")
+            .expect("approval");
+        assert_eq!(approval.redirect_uri, APP_CALLBACK);
+    }
+
+    #[tokio::test]
+    async fn confirmation_page_displays_loopback_destination_and_escapes_client_text() {
         let loopback = confirmation::response(
             &OAuthAuthorizationApprovalTicket::from_bytes([6; 32]),
             "Local Test Client",
             CLIENT_ID,
-            &Url::parse("http://127.0.0.1:14554/oauth/callback").expect("loopback redirect"),
+            &EndpointUrl::<BrowserRedirect>::parse("http://127.0.0.1:14554/oauth/callback")
+                .expect("loopback redirect"),
             &browser_binding(),
             false,
         )
@@ -730,7 +749,7 @@ mod tests {
         let page = response_body(loopback).await;
         assert!(page.contains("<bdi>Local Test Client</bdi>"));
         assert!(page.contains("127.0.0.1:14554"));
-        assert!(page.contains("Local redirect warning"));
+        assert!(!page.contains("role=\"alert\""));
         assert_eq!(
             loopback_cookie,
             format!(
@@ -742,9 +761,9 @@ mod tests {
 
         let escaped = confirmation::response(
             &OAuthAuthorizationApprovalTicket::from_bytes([7; 32]),
-            "</bdi><script>alert(\"x\")</script>&'",
+            "</bdi><script>alert(\"x\")</script>&' @@ticket@@ @@styles@@",
             CLIENT_ID,
-            &Url::parse(REDIRECT_URI).expect("redirect"),
+            &EndpointUrl::<BrowserRedirect>::parse(REDIRECT_URI).expect("redirect"),
             &browser_binding(),
             true,
         )
@@ -752,6 +771,8 @@ mod tests {
         let escaped = response_body(escaped).await;
         assert!(!escaped.contains("</bdi><script>"));
         assert!(escaped.contains("&lt;/bdi&gt;&lt;script&gt;alert(&quot;x&quot;)"));
+        assert!(escaped.contains("@@ticket@@ @@styles@@</bdi>"));
+        assert_eq!(escaped.matches("<style>").count(), 1);
     }
 
     /// Every request here carries the `Origin` and `Cookie` a browser sends,
@@ -985,7 +1006,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let page = response_body(response).await;
         assert!(page.contains("<bdi>Test Client</bdi>"));
-        assert!(page.contains("Client ID hostname</dt><dd><code>client.example.test"));
+        assert!(page.contains(">client.example.test</dd>"));
         let ticket = ticket_from_page(&page);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         assert!(
@@ -1148,7 +1169,7 @@ mod tests {
         ] {
             let resolved = registered_redirect(&[registered.to_string()], requested);
             assert_eq!(
-                resolved.as_ref().map(Url::as_str),
+                resolved.as_ref().map(|url| url.as_url().as_str()),
                 Some(requested),
                 "registered {registered}"
             );
@@ -1229,27 +1250,43 @@ mod tests {
         }
     }
 
-    /// A browser client registers the callback it will actually be sent to, and
-    /// keeps matching byte for byte.
+    /// A browser client, or a native app on its own URI scheme, registers the
+    /// callback it will actually be sent to, and keeps matching byte for byte.
     #[test]
-    fn https_registrations_still_match_exactly() {
-        let registered = [REDIRECT_URI.to_string()];
-        assert_eq!(
-            registered_redirect(&registered, REDIRECT_URI)
-                .as_ref()
-                .map(Url::as_str),
-            Some(REDIRECT_URI)
-        );
-        for requested in [
-            "https://client.example.test/callback",
-            "https://client.example.test/callback?tenant=two",
-            "https://client.example.test:8443/callback?tenant=one",
+    fn non_loopback_registrations_still_match_exactly() {
+        for (registered, mismatches) in [
+            (
+                REDIRECT_URI,
+                &[
+                    "https://client.example.test/callback",
+                    "https://client.example.test/callback?tenant=two",
+                    "https://client.example.test:8443/callback?tenant=one",
+                ][..],
+            ),
+            (
+                "com.raycast:/oauth",
+                &[
+                    "com.raycast:/other",
+                    "com.raycast:/oauth?tenant=one",
+                    "com.raycast-x:/oauth",
+                    "com.raycast://oauth",
+                ][..],
+            ),
         ] {
+            let registrations = [registered.to_string()];
             assert_eq!(
-                registered_redirect(&registered, requested),
-                None,
-                "{requested}"
+                registered_redirect(&registrations, registered)
+                    .as_ref()
+                    .map(|url| url.as_url().as_str()),
+                Some(registered)
             );
+            for requested in mismatches {
+                assert_eq!(
+                    registered_redirect(&registrations, requested),
+                    None,
+                    "{requested}"
+                );
+            }
         }
     }
 
@@ -1270,7 +1307,7 @@ mod tests {
         let response = request(auth_state.clone(), &request_pairs).await;
         assert_eq!(response.status(), StatusCode::OK);
         let page = response_body(response).await;
-        assert!(page.contains("<code>127.0.0.1:3118</code>"));
+        assert!(page.contains(">127.0.0.1:3118</dd>"));
         let ticket = ticket_from_page(&page);
 
         let response = submit(auth_state, &ticket, "cancel").await;
@@ -1456,13 +1493,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn web_configuration_skips_only_its_exact_client_with_pinned_callback_and_resource() {
+        const WEB: &str = "https://web.example.test";
+        const WEB_CLIENT: &str = "https://web.example.test/.well-known/oauth-client";
+        const WEB_CALLBACK: &str = "https://web.example.test/auth/callback";
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 200).await;
+        let build_state = |redirects: &[&str]| {
+            let (resolver, _) = fake_resolver(Ok(registration(redirects)));
+            let mut state = state_with(
+                &provider.uri(),
+                "[listeners.web]\npublic_url = 'https://web.example.test'",
+                Arc::new(InMemoryStateStore::new()),
+                resolver,
+            );
+            state.authorization_resources = Arc::new(BTreeSet::from([WEB.into(), RESOURCE.into()]));
+            state
+        };
+        let mut web_pairs = pairs();
+        replace(&mut web_pairs, "client_id", Some(WEB_CLIENT));
+        replace(&mut web_pairs, "redirect_uri", Some(WEB_CALLBACK));
+        replace(&mut web_pairs, "resource", Some(WEB));
+        let response = request(build_state(&[WEB_CALLBACK]), &web_pairs).await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert!(
+            location(&response)
+                .expect("upstream sign-in")
+                .starts_with(&provider.uri())
+        );
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+
+        for client in [
+            CLIENT_ID,
+            "https://web.example.test/another-client",
+            "https://auth.example.test/.well-known/oauth-client",
+        ] {
+            let mut untrusted = web_pairs.clone();
+            replace(&mut untrusted, "client_id", Some(client));
+            let response = request(build_state(&[WEB_CALLBACK]), &untrusted).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(
+                response_body(response)
+                    .await
+                    .contains("Allow workspace access?")
+            );
+        }
+        // A metadata document that advertises another callback does not
+        // extend the operator-designated web client's trust to it: see
+        // `web_client_provider_setup_callback_is_confirmed_like_any_client`.
+        for (field, value, error) in [
+            ("resource", Some(RESOURCE), "invalid_target"),
+            ("code_challenge", None, "invalid_request"),
+        ] {
+            let mut invalid = web_pairs.clone();
+            replace(&mut invalid, field, value);
+            let response = request(build_state(&[WEB_CALLBACK]), &invalid).await;
+            let destination = location(&response).expect("safe web error redirect");
+            assert!(destination.starts_with(WEB_CALLBACK));
+            assert!(destination.contains(&format!("error={error}")));
+        }
+        let mut failed_metadata = build_state(&[WEB_CALLBACK]);
+        failed_metadata.client_metadata_resolver = fake_resolver(Err(ClientMetadataError::Fetch)).0;
+        assert_eq!(
+            request(failed_metadata, &web_pairs).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// One workspace adding another's Coral MCP server on
+    /// the same deployment makes Reef an OAuth client of its own authorization
+    /// server. It presents the web client ID with its Provider Setup callback
+    /// and the workspace's MCP resource. The login pins — one callback, the
+    /// web resource, no consent — must not clamp that request: it is validated
+    /// against the metadata document and confirmed like any other client's.
+    #[tokio::test]
+    async fn web_client_provider_setup_callback_is_confirmed_like_any_client() {
+        const WEB: &str = "https://web.example.test";
+        const WEB_CLIENT: &str = "https://web.example.test/.well-known/oauth-client";
+        const WEB_CALLBACK: &str = "https://web.example.test/auth/callback";
+        const SETUP_CALLBACK: &str = "https://web.example.test/provider-setup/oauth/callback";
+        let store = Arc::new(InMemoryStateStore::new());
+        let build_state = |redirects: &[&str]| {
+            let (resolver, _) = fake_resolver(Ok(registration(redirects)));
+            let mut state = state_with(
+                "https://provider.invalid",
+                "[listeners.web]\npublic_url = 'https://web.example.test'",
+                store.clone(),
+                resolver,
+            );
+            state.authorization_resources = Arc::new(BTreeSet::from([WEB.into(), RESOURCE.into()]));
+            state
+        };
+        let mut setup_pairs = pairs();
+        replace(&mut setup_pairs, "client_id", Some(WEB_CLIENT));
+        replace(&mut setup_pairs, "redirect_uri", Some(SETUP_CALLBACK));
+
+        // The workspace MCP resource is accepted, and the user is asked.
+        let response = request(build_state(&[WEB_CALLBACK, SETUP_CALLBACK]), &setup_pairs).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = response_body(response).await;
+        assert!(page.contains("Allow workspace access?"));
+        let ticket = OAuthAuthorizationApprovalTicket::from_bytes(
+            URL_SAFE_NO_PAD
+                .decode(ticket_from_page(&page))
+                .expect("ticket")
+                .try_into()
+                .expect("ticket length"),
+        );
+        let approval = store
+            .take_authorization_approval(&ticket, &browser_binding())
+            .await
+            .expect("store")
+            .expect("approval");
+        assert_eq!(approval.client_id, WEB_CLIENT);
+        assert_eq!(approval.redirect_uri, SETUP_CALLBACK);
+        assert_eq!(approval.resource, RESOURCE);
+
+        // The web resource is still only one of the registered resources on
+        // this path, never a reason to skip the approval page.
+        let mut web_resource = setup_pairs.clone();
+        replace(&mut web_resource, "resource", Some(WEB));
+        let response = request(build_state(&[WEB_CALLBACK, SETUP_CALLBACK]), &web_resource).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response_body(response)
+                .await
+                .contains("Allow workspace access?")
+        );
+
+        // Metadata still has to name the callback: the web identity gains no
+        // callback its document does not advertise. The refusal is direct and
+        // leaves nothing behind: no redirect, no session, no approval ticket.
+        let response = request(build_state(&[WEB_CALLBACK]), &setup_pairs).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&response).is_none());
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+        let body = response_body(response).await;
+        assert!(body.contains(r#""error":"invalid_request""#));
+        assert!(!body.contains("name=\"ticket\""));
+    }
+
+    #[tokio::test]
     async fn trusted_client_skips_the_approval_page_and_stores_a_single_use_session() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
         let store = Arc::new(InMemoryStateStore::new());
         let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with_settings(
-            settings_with_trusted_clients(&provider.uri(), &[CLIENT_ID]),
+        let auth_state = state_with(
+            &provider.uri(),
+            &trusting(CLIENT_ID),
             store.clone(),
             resolver,
         );
@@ -1511,8 +1690,9 @@ mod tests {
     async fn trusted_client_requests_are_validated_like_any_other() {
         let store = Arc::new(InMemoryStateStore::new());
         let trusted_state = |resolver| {
-            state_with_settings(
-                settings_with_trusted_clients("https://provider.invalid", &[CLIENT_ID]),
+            state_with(
+                "https://provider.invalid",
+                &trusting(CLIENT_ID),
                 store.clone(),
                 resolver,
             )
@@ -1541,17 +1721,19 @@ mod tests {
     #[tokio::test]
     async fn only_the_listed_client_skips_the_approval_page() {
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with_settings(
-            settings_with_trusted_clients(
-                "https://provider.invalid",
-                &["https://other.example.test/oauth/client.json"],
-            ),
+        let auth_state = state_with(
+            "https://provider.invalid",
+            &trusting("https://other.example.test/oauth/client.json"),
             Arc::new(InMemoryStateStore::new()),
             resolver,
         );
         let response = request(auth_state, &pairs()).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(response_body(response).await.contains("Approve access?"));
+        assert!(
+            response_body(response)
+                .await
+                .contains("Allow workspace access?")
+        );
     }
 
     #[tokio::test]
@@ -1559,8 +1741,9 @@ mod tests {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 500).await;
         let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
-        let auth_state = state_with_settings(
-            settings_with_trusted_clients(&provider.uri(), &[CLIENT_ID]),
+        let auth_state = state_with(
+            &provider.uri(),
+            &trusting(CLIENT_ID),
             Arc::new(InMemoryStateStore::new()),
             resolver,
         );
@@ -1625,7 +1808,7 @@ mod tests {
         mount_discovery(&provider, 200).await;
         let auth_state = state(&provider.uri(), Arc::new(InMemoryStateStore::new()));
         let bind_addr = auth_state.settings.bind_addr();
-        let server = super::super::start_listener(bind_addr, auth_state)
+        let server = super::super::start_listener(bind_addr, super::super::auth_router(auth_state))
             .await
             .expect("start");
         let client = reqwest::Client::builder()

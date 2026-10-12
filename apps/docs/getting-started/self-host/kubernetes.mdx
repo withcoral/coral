@@ -1,0 +1,443 @@
+---
+title: "Deploying Coral with Kubernetes"
+sidebarTitle: "Kubernetes"
+---
+
+This guide will explain how to deploy Coral in your Kubernetes cluster. We assume that you have an ingress controller installed and that you have a cert-manager installed or equivalent to issue TLS certificates. You may choose to do your TLS termination differently according to your needs.
+
+We will use `<coral-host>` as the placeholder for the domain of your Coral deployment.
+
+- See the [Configuration Reference](/reference/configuration) for more details on the configuration options.
+
+## Common setup
+
+1. Create the namespace, secrets, services and coral-web deployment. Save this to `common.yaml`. The gRPC server of the Coral deployment is plaintext and not exposed outside the cluster.
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: coral
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: coral-secrets
+  namespace: coral
+type: Opaque
+stringData:
+  # openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -outform DER | base64 -w0
+  CORAL_SESSION_SIGNING_KEY: "..."
+  # From your OIDC provider's application settings.
+  CORAL_OIDC_CLIENT_SECRET: "..."
+  # openssl rand -hex 32
+  CORAL_WEB_SESSION_SECRET: "..."
+  # Postgres only. openssl rand -base64 32
+  CORAL_CREDENTIALS_KEY: "..."
+  # Postgres only. Connection URL to the postgres server
+  CORAL_DATABASE_URL: "postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  selector:
+    app: coral
+  ports:
+    - name: grpc
+      port: 14555
+    - name: mcp
+      port: 14556
+    - name: auth
+      port: 8779
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coral-web
+  namespace: coral
+spec:
+  selector:
+    app: coral-web
+  ports:
+    - name: http
+      port: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coral-web
+  namespace: coral
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coral-web
+  template:
+    metadata:
+      labels:
+        app: coral-web
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: coral-web
+          image: ghcr.io/withcoral/coral-web:latest
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: CORAL_ENDPOINT
+              value: http://coral:14555
+            - name: CORAL_WEB_ALLOW_INSECURE_CORAL_ENDPOINT # Plaintext connection to coral container
+              value: "1"
+            - name: CORAL_WEB_AUTH_MODE
+              value: required
+            - name: CORAL_WEB_PUBLIC_URL
+              value: https://<coral-host>
+            - name: CORAL_WEB_AUTH_ISSUER
+              value: https://auth.<coral-host>
+            - name: CORAL_WEB_SESSION_SECRET # to encrypt session cookies
+              valueFrom:
+                secretKeyRef:
+                  name: coral-secrets
+                  key: CORAL_WEB_SESSION_SECRET
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: coral
+  namespace: coral
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # ingress-nginx only: Disable buffering to support MCP and the UI stream responses.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+spec:
+  ingressClassName: nginx # Adjust to the IngressClass of your ingress controller
+  tls:
+    - hosts:
+        - <coral-host>
+        - auth.<coral-host>
+        - mcp.<coral-host>
+      secretName: coral-tls
+  rules:
+    - host: <coral-host>
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: coral-web
+                port:
+                  name: http
+    - host: auth.<coral-host>
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: coral
+                port:
+                  name: auth
+    - host: mcp.<coral-host>
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: coral
+                port:
+                  name: mcp
+```
+
+## Coral deployment
+
+Choose whether you want to use SQLite or Postgres as the backing storage.
+
+<Tabs>
+<Tab title="With SQLite">
+
+2. Create the config and coral server deployment. A PVC will be used to store the SQLite data and the credential encryption key. Save this to `coral.yaml`.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coral-config
+  namespace: coral
+data:
+  config.toml: |
+    [listeners.grpc]
+    bind = "0.0.0.0:14555"
+
+    [listeners.mcp]
+    bind = "0.0.0.0:14556"
+    public_url = "https://mcp.<coral-host>"
+
+    [listeners.auth]
+    bind = "0.0.0.0:8779"
+    public_url = "https://auth.<coral-host>"
+
+    [listeners.web]
+    public_url = "https://<coral-host>"
+
+    [auth.session]
+    signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+
+    [auth.provider]
+    issuer = "https://your-idp.example.com"
+    client_id = "..."
+    client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+    bootstrap_owner_subject = "..."
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: coral-state
+  namespace: coral
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: coral
+  template:
+    metadata:
+      labels:
+        app: coral
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65532
+      containers:
+        - name: coral
+          image: ghcr.io/withcoral/coral:latest
+          ports:
+            - name: grpc
+              containerPort: 14555
+            - name: mcp
+              containerPort: 14556
+            - name: auth
+              containerPort: 8779
+          env:
+            - name: CORAL_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: coral-config
+                  key: config.toml
+            - name: CORAL_SESSION_SIGNING_KEY # Used to sign JWT tokens
+              valueFrom:
+                secretKeyRef:
+                  name: coral-secrets
+                  key: CORAL_SESSION_SIGNING_KEY
+            - name: CORAL_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: coral-secrets
+                  key: CORAL_OIDC_CLIENT_SECRET
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/coral
+          readinessProbe:
+            grpc:
+              port: 14555
+              service: coral.readiness
+          livenessProbe:
+            grpc:
+              port: 14555
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: coral-state
+```
+
+</Tab>
+<Tab title="With Postgres">
+
+2. Create the config and coral server deployment. Save this to `coral.yaml`.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coral-config
+  namespace: coral
+data:
+  config.toml: |
+    [listeners.grpc]
+    bind = "0.0.0.0:14555"
+
+    [listeners.mcp]
+    bind = "0.0.0.0:14556"
+    public_url = "https://mcp.<coral-host>"
+
+    [listeners.auth]
+    bind = "0.0.0.0:8779"
+    public_url = "https://auth.<coral-host>"
+
+    [listeners.web]
+    public_url = "https://<coral-host>"
+
+    [database]
+    backend = "postgres"
+    url_env = "CORAL_DATABASE_URL"
+
+    [credentials]
+    key_env = "CORAL_CREDENTIALS_KEY"
+
+    [auth.session]
+    signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+
+    [auth.provider]
+    issuer = "https://your-idp.example.com"
+    client_id = "..."
+    client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+    bootstrap_owner_subject = "..."
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coral
+  namespace: coral
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coral
+  template:
+    metadata:
+      labels:
+        app: coral
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: coral
+          image: ghcr.io/withcoral/coral:latest
+          ports:
+            - name: grpc
+              containerPort: 14555
+            - name: mcp
+              containerPort: 14556
+            - name: auth
+              containerPort: 8779
+          env:
+            - name: CORAL_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: coral-config
+                  key: config.toml
+            - name: CORAL_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: coral-secrets
+                  key: CORAL_DATABASE_URL
+            - name: CORAL_CREDENTIALS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coral-secrets
+                  key: CORAL_CREDENTIALS_KEY
+            - name: CORAL_SESSION_SIGNING_KEY # Used to sign JWT tokens
+              valueFrom:
+                secretKeyRef:
+                  name: coral-secrets
+                  key: CORAL_SESSION_SIGNING_KEY
+            - name: CORAL_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: coral-secrets
+                  key: CORAL_OIDC_CLIENT_SECRET
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/coral
+          readinessProbe:
+            grpc:
+              port: 14555
+              service: coral.readiness
+          livenessProbe:
+            grpc:
+              port: 14555
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: state
+          emptyDir: {}
+```
+
+If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral deployment so Coral knows it can trust the certificate. For example, if you're using AWS RDS:
+
+- Download the CA bundle and put it in a ConfigMap:
+  ```bash
+  curl -sSo rds-ca.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+  kubectl -n coral create configmap rds-ca --from-file=rds-ca.pem
+  ```
+- Mount it on the Coral pod:
+
+  ```yaml
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/coral
+            - name: rds-ca
+              mountPath: /etc/coral/rds-ca.pem
+              subPath: rds-ca.pem
+              readOnly: true
+      volumes:
+        - name: state
+          emptyDir: {}
+        - name: rds-ca
+          configMap:
+            name: rds-ca
+  ```
+
+- Refer to the CA bundle on Coral's DB secret:
+  ```yaml
+  CORAL_DATABASE_URL: "postgres://coral:PASSWORD@<rds-endpoint>:5432/coral?sslmode=verify-full&sslrootcert=/etc/coral/rds-ca.pem"
+  ```
+
+</Tab>
+</Tabs>
+
+### Apply
+
+3. Apply your Kubernetes manifests
+
+```shell
+kubectl apply -f common.yaml
+kubectl apply -f coral.yaml
+```
+
+4. Wait for the deployments to stabilize. You should be able to open the UI in your browser in `https://<coral-host>`. After you create your first workspace you can use the UI instructions to connect an MCP client via `https://mcp.<coral-host>`.

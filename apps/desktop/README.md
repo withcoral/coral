@@ -1,131 +1,225 @@
 # Coral Desktop
 
-Coral Desktop is an Electron shell around Coral UI, Coral's main user-facing app.
+Coral Desktop supervises two local processes and shows Reef in a window:
 
-The main process bundles the Coral CLI and runs it as a supervised local
-sidecar:
+- the `coral` runtime, as a child process
+- Reef's server, in an Electron utility process, listening on loopback HTTP
 
-```shell
-coral server
-```
+The window loads Reef's loopback URL. Desktop has no preload script and no
+product logic of its own. [ADR 0012](../../docs/adr/0012-desktop-hosts-reef-as-a-loopback-server.md)
+records why.
 
-The sidecar owns the local gRPC/API runtime. In packaged builds the main
-process serves Coral UI through React Router's server build over a custom
-`coral-app://` scheme (no local network socket), serves static client assets from
-the same scheme, points the window at it, and handles the native shell concerns:
-app lifecycle, window and menu, and MCP client configuration.
+## Ports
 
-The renderer never receives a Coral endpoint. Browser interactions reach Coral
-through React Router loaders, actions, or resource routes, and the server build
-uses `CORAL_ENDPOINT` to reach the supervised sidecar.
+Every listener binds `127.0.0.1`.
 
-## Scope
+| Listener                | Port                                                                       |
+| ----------------------- | -------------------------------------------------------------------------- |
+| Runtime MCP             | Allocated on first launch and kept: agent clients store the MCP URL.       |
+| Reef                    | Allocated on first launch and kept: Run Status Page links name Reef's URL. |
+| Runtime gRPC            | Picked at each launch. Only Reef calls it.                                 |
+| Provider OAuth callback | Fixed at 8779 by the runtime's Desktop defaults.                           |
 
-- Electron shell running Coral UI in-window with a supervised Coral CLI sidecar
-  (single-instance lock, graceful startup and shutdown)
-- bundled Coral CLI sidecar staged into the app bundle
-- Coral UI documents rendered in-process from the staged React Router server build,
-  with static assets served over the custom `coral-app://` scheme and a strict
-  Content-Security-Policy
-- light and dark app icons on macOS, Linux, and Windows
-- Coral MCP configuration from Desktop Settings for supported stdio-capable
-  clients, including before they are installed
-- macOS DMG and ZIP packaging via `electron-builder`, with a signed and
-  notarized release mode
-- Linux AppImage and deb packaging (x64), unsigned
-- Windows NSIS installer packaging (x64), unsigned preview
-- GitHub Releases update metadata for packaged desktop auto-updates on macOS, on
-  the Linux AppImage, and on the Windows installer
-- macOS system theme support
+When a kept port is in use, Desktop asks before it uses a new port. After a new
+MCP port, reconfigure your agent clients. After a new Reef port, Run Status Page
+links from earlier agent runs stop working.
+
+## Background
+
+Agent clients store Coral's MCP URL, so Coral must run when no window is open.
+Desktop itself stays running for that; the runtime is not an OS service.
+[ADR 0014](../../docs/adr/0014-desktop-serves-in-the-background.md) records why.
+
+- Closing the last window keeps Coral running. This is not a setting. The
+  first time, Desktop says so in a dialog and keeps `toldStillRunning` in
+  `desktop.json`.
+- On macOS, Coral is in the Dock and the app switcher only while a window is
+  open. With no window, the menu bar item is the way to open or quit Coral.
+  A Coral that could not make its menu bar item stays in the Dock.
+- Start at login starts Desktop with no window. macOS and Windows register a
+  login item. Linux writes `coral-app.desktop` in the XDG autostart folder,
+  which names the AppImage; a package that is not an AppImage has no such
+  setting, and nor has a development build.
+- Start at login is a checkbox in the tray menu and in the Coral menu on macOS,
+  the File menu elsewhere.
+- On macOS, Quit in the Coral menu (Command+Q) only closes the windows, so it
+  does not stop Coral. Quit in the Dock menu and Q in the app switcher
+  (Command+Tab) do the same. Quit Coral in the menu bar item, or Quit
+  Completely in the Coral menu or the Dock menu, stops Coral. So does a
+  logout, a restart or a shutdown. On Windows and Linux, Quit stops Coral.
+- The Dock menu on macOS also offers Restart Coral, and the update item in a
+  package that can update itself.
+- The tray item, the menu bar item on macOS, offers Open Coral, Start at login
+  and Quit Coral. On Windows a click on it opens the window. Stock GNOME shows
+  no tray item.
+- Launching Coral again while it runs opens the window.
+
+## Lifecycle
+
+- Quit stops Reef, then closes the runtime's stdin. The runtime treats that as
+  a stop request (`CORAL_STOP_ON_STDIN_CLOSE=1`) and finishes its work. Desktop
+  kills a process that has not exited after 10 seconds. The OS closes the
+  stdin too when Desktop itself dies, so the runtime never outlives Desktop.
+- When the runtime exits unexpectedly, Desktop stops Reef, shows the failure,
+  and starts both again. When Reef exits alone, Desktop restarts only Reef.
+  A restart that does not become ready in time counts as another attempt.
+  After three restarts within a minute, Desktop waits for the user to choose
+  Restart.
+- A runtime that refuses to start is not retried. The one exception is exit
+  code 75: another runtime still holds the state directory, for example one
+  that is still finishing its work, so Desktop tries again until it is ready
+  or the start times out.
+- Provider consent opens in the system browser. When Reef answers a form with a
+  consent redirect marked `X-Coral-Authorization-Return-To` (ADR 0009), Desktop
+  opens the redirect's target in the system browser and sends the window to the
+  marked page on Reef instead. A device sign-in form targets a new tab, which
+  Desktop runs as a hidden window. That window closes after the hand-off. If
+  Reef answers it with a page, the window shows that page.
 
 ## Development
 
 ```shell
 npm install --prefix apps/desktop
-npm install --prefix apps/coral-ui
+npm install --prefix apps/reef
 npm run dev --prefix apps/desktop
 ```
 
-The desktop dev command starts the Coral UI dev server first, then launches Electron
-with `ELECTRON_RENDERER_URL` pointed at that server, so Coral UI's dependencies must
-be installed too. The dev server receives `CORAL_DESKTOP_APP=1` as the single
-desktop build marker and a fixed `CORAL_ENDPOINT` for server-side loaders. Coral UI
-uses the marker directly for server-side route composition, while Vite compiles
-only its boolean value into browser code. Electron waits for the sidecar before
-loading the first document so initial SSR does not race the local Coral process.
+`npm run dev` builds the runtime with Cargo, then starts Electron. Electron
+starts that runtime and Reef's Vite dev server, with sign-in disabled.
+Development runs on macOS and Linux. On Windows, package the app instead.
+Development keeps its data in `<appData>/com.withcoral.app.dev`, apart from an
+installed app.
 
-In development, the sidecar is started through Cargo so the app uses the local
-Rust code (run from the repo root):
+The runtime completes provider OAuth on the fixed port 8779. A development
+Desktop, an installed Desktop and a local `coral` runtime cannot run together:
+the second one to start fails on that port.
 
-```shell
-cargo run --locked -p coral-cli -- server
-```
-
-## Build
+## Packaging
 
 ```shell
-npm run build --prefix apps/desktop
+npm run stage --prefix apps/desktop
+npm run package --prefix apps/desktop
 ```
 
-The build script compiles the release Coral binary, builds Coral UI in React Router
-framework mode, stages Coral UI's server bundle under `apps/desktop/out/coral-ui-server/`,
-and stages the Coral binary under `apps/desktop/resources/coral/` for Electron
-packaging. The packaged app serves document, data, action, and route-discovery
-requests through the staged server bundle; static assets are copied from
-`apps/coral-ui/build/client/` into the app resources.
+`npm run stage` puts two things in `resources/`, which the package carries
+outside the asar:
 
-```shell
-npm run package:dir --prefix apps/desktop
-```
+- `coral/coral`: a release runtime, `coral.exe` on Windows. On macOS it is
+  built for Apple silicon, so install the `aarch64-apple-darwin` Rust target.
+  Pass `-- --runtime <path>` to stage a binary you built.
+- `reef/`: Reef's bundled `server.mjs` and its client files, built in a
+  scratch directory. It is the same Reef build that Docker ships. The bundle
+  carries every dependency, so the package has no `node_modules`.
 
-Use `npm run package:dmg --prefix apps/desktop` for the macOS drag-and-drop DMG.
-Use `npm run package:mac --prefix apps/desktop` to build the release-shaped
-universal macOS DMG and ZIP with updater metadata.
+`npm run package` builds the main process and runs electron-builder for this
+platform: an Apple silicon (arm64) dmg and zip on macOS, an AppImage on Linux,
+and an x64 NSIS installer on Windows. Pass electron-builder options after
+`--`, for example `-- --linux --dir`. These packages are unsigned, name no
+update feed and cannot update themselves.
 
-Use `npm run package:linux --prefix apps/desktop` for the x64 Linux AppImage and
-deb. The deb needs `ar` (binutils) and `xz` on PATH — `fpm` shells out to both.
-Linux packages are unsigned. The build writes `latest-linux.yml` for the AppImage,
-which replaces its own image file on update; the deb belongs to dpkg, so
-`deb.publish` is null (which keeps it out of that feed),
-`desktopUpdatesSupported()` (`src/main/auto-update.ts`) returns false there, and
-deb users install a new release themselves.
+The Windows installer installs for the current user, with no UAC prompt, into
+`%LOCALAPPDATA%\Programs\Coral`. The 0.x app installs into the same folder,
+so uninstall it first. On macOS both apps are `/Applications/Coral.app`, so
+this app replaces the 0.x one there. On Linux every name differs
+(`coral-app` against `coral-desktop`), so the two apps install side by side.
+On every platform the two apps keep separate data folders. The Start Menu
+entry is "Coral". Uninstalling keeps the user's data. Run the installer with
+`/S` to install silently.
 
-Use `npm run package:win --prefix apps/desktop` for the x64 Windows NSIS
-installer. It must run on Windows: NSIS builds its uninstaller by executing the
-freshly built installer, which off-Windows means wine. The installer is an
-unsigned preview, so SmartScreen shows an "unrecognized app" warning; ship it
-labelled as such. It installs per user under `%LOCALAPPDATA%` by default, needs no
-UAC prompt, and lets the user pick a directory. The install mode page also offers
-an all-users install, but `allowElevation: false` disables that choice unless the
-installer already runs elevated. The build writes `latest.yml` and the installer's
-blockmap, so an update downloads only the changed blocks. The missing signature
-does not stop it: app-builder-lib records a `publisherName` only when a
-certificate resolves, so `NsisUpdater` skips the Authenticode check and the
-sha512 in `latest.yml` guards the download instead.
+Desktop's icons use Reef's `public/favicon.svg` as their source. Run
+`npm run icons --prefix apps/desktop` to regenerate the PNG, ICO and ICNS files,
+and the macOS menu bar's template images (`trayTemplate.png`).
+Desktop enlarges the mark by 35% within the same tile. The macOS icons add
+transparent padding around the flat artwork.
 
-`CORAL_DESKTOP_RELEASE=1` selects release mode: it bakes the updater into the main
-process, so only builds made with it check for updates. On macOS it also requires a
-complete App Store Connect API key credential set, forces Developer ID signing,
-enables the hardened runtime with minimal Electron entitlements, and notarizes the
-app — Squirrel.Mac refuses to update an unsigned app. The AppImage needs no
-signature, and neither does the NSIS installer, so a Linux or Windows release
-build takes no credentials. Without it, packaging is deterministically unsigned and
-the updater is inert.
+The dmg window's background is `resources/dmg/background.svg`, light artwork
+with the coral symbol from withcoral.com. After you change it, run
+`npx electron scripts/render-dmg-background.mjs` in `apps/desktop` to write
+`background.png` and `background@2x.png`. Keep `dmg.contents` in
+`electron-builder.config.ts` on the arrow's ends.
 
-> Run the `--prefix apps/desktop` commands from the repo root. If you are already in
-> `apps/desktop/`, drop the flag (e.g. `npm run package:dir`).
+The Reel `desktop` suite drives the packaged Linux app. The Desktop on Windows
+workflow also drives the installed Windows app. See
+[Reel's run guide](../reef/e2e/README.md).
 
-### Verifying a Linux update by hand
+## Releases
 
-The AppImage update path only exists in a release build, so a cut release is the
-only way to exercise it. Two steps of it have no test:
+The Release workflow (`.github/workflows/release.yml`) builds signed release
+packages and publishes them to the v1 update feed, GitHub releases in
+`withcoral/coral-releases`. It never publishes to `withcoral/coral`, whose
+releases the 0.x app polls.
+[ADR 0013](../../docs/adr/0013-desktop-release-channel.md) records why.
 
-- **The relaunch.** `app.relaunch()` forks Electron's relauncher helper from the
-  mounted AppDir, and that helper waits for this process to exit before it starts
-  the new image — the same exit that makes the AppImage runtime unmount the AppDir
-  the helper is running from. Check that the app actually comes back.
-- **The destination.** Run the update once from an image named
-  `coral-desktop-linux-x86_64.AppImage` (replaced in place) and once from a renamed
-  `coral-desktop-<version>.AppImage` (new image written beside it, old one
-  unlinked, `appimage-filename-updated` carries the destination). The app must come
-  back in both.
+Each platform job stages and builds with no credentials. Then
+`xtask release-desktop-package` packages with `CORAL_DESKTOP_RELEASE=1`:
+
+- macOS: electron-builder signs every binary with the hardened runtime and
+  JIT, then notarizes the app. The runtime needs JIT as much as Electron does:
+  it runs Programs in V8, which aborts at startup without it. xtask verifies
+  the signatures and the staple, and checks JIT on the app and the runtime.
+- Windows: electron-builder signs the app, the runtime and the installer with
+  Azure Trusted Signing. xtask verifies their Authenticode signatures.
+- Linux: the AppImage is unsigned.
+
+A release build fails when a credential is missing. xtask also checks that each
+feed matches its packages and that the packed `app-update.yml` names the v1
+feed. The workflow uploads every asset to a draft release and publishes it last.
+The runtime and coral-web images ship in the same release. The workflow builds,
+tests and signs them by digest, and the last job tags them just before it
+publishes the draft, so no artifact is visible until every artifact passed.
+
+The tag, `Cargo.toml` and `package.json` must name one version.
+release-please moves them together. To cut a beta, merge a commit with the
+footer `Release-As: 1.0.0-beta.1`, then merge the release PR. Only builds that
+are themselves prereleases see prereleases, so you can test the update path
+before the swap.
+
+electron-builder signs and notarizes the app, and staples its ticket. The dmg
+that carries it is not signed; Gatekeeper checks the app inside.
+
+The workflow reads these from the `release` environment:
+
+| Name                                                                                                                                                             | Kind     |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `APPLE_CODESIGN_IDENTITY`, `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`, `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`                                                    | Secret   |
+| `APP_STORE_CONNECT_API_KEY_ID`, `APP_STORE_CONNECT_API_ISSUER_ID`, `APP_STORE_CONNECT_API_KEY_P8_BASE64`                                                         | Secret   |
+| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`                                                                                                      | Secret   |
+| `AZURE_TRUSTED_SIGNING_ENDPOINT`, `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`, `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`, `AZURE_TRUSTED_SIGNING_PUBLISHER_NAME` | Variable |
+| `RELEASE_APP_PRIVATE_KEY`                                                                                                                                        | Secret   |
+| `RELEASE_APP_ID`                                                                                                                                                 | Variable |
+
+The release GitHub App needs contents write access to `withcoral/coral-releases`.
+
+## Updates
+
+A release package checks the feed at launch and every four hours, and
+downloads a new version in the background. When the download is ready, a
+notification says so, and the update menu item becomes Restart to Update. The
+item is in the Coral menu on macOS and in the Help menu elsewhere. While the
+update waits, the Dock icon shows a badge on macOS while Coral is in the Dock,
+as do Linux launchers that support badges. The tray menu starts with Restart to Update, the tray tooltip
+names the version, and the macOS menu bar item shows a dot.
+
+- Choose Restart to Update, or select the notification, to install now.
+  Desktop stops the runtime and Reef, hands the update to the platform
+  installer, and Coral starts again. If the hand-off fails, Coral starts
+  again on the old version.
+- Otherwise the update installs the next time you quit Coral, after Desktop
+  stops the runtime and Reef. Desktop never restarts Coral by itself, so an
+  update can wait a long time while Coral runs in the background.
+
+## Data
+
+Desktop keeps everything under `<appData>/com.withcoral.app`, which is
+`%APPDATA%\com.withcoral.app` on Windows:
+
+- `runtime/`: the runtime's state. Desktop rewrites `runtime/config.toml` on
+  every launch.
+- `desktop.json`: the kept MCP and Reef ports, and the background notice. See [Ports](#ports) and [Background](#background).
+- `logs/`: `coral.log`, `reef.log` and `desktop.log`, Desktop's own record of
+  starts, failures and restarts. Help > Show logs opens this folder. A log
+  that reaches 5 MB moves to `<name>.1.log`, which replaces the previous one.
+
+On Windows, the runtime's owner-only file permissions have no effect. The data
+folder relies on the access control list that it inherits from the user's
+profile.

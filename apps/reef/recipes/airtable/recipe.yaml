@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://airtable.com/developers/agents/mcp/getting-started
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: airtable
+display_name: Airtable
+description: Bases, tables, records, comments and schemas from Airtable.
+source:
+  mcp:
+    url: https://mcp.airtable.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://airtable.com/developers/agents/mcp/getting-started
+      flow: authorization_code
+    pat:
+      method: bearer
+      label: Personal access token
+      documentation_url: https://airtable.com/developers/agents/mcp/getting-started
+      description: Create a token with the required base access and documented MCP scopes.
+icons:
+  light: logo.svg

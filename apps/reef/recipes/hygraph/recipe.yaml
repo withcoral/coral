@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://hygraph.com/docs/hygraph-ai/mcp-server-setup
+# Official logo: https://hygraph.com/icons/icon-48x48.png
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: hygraph
+display_name: Hygraph
+description: Content, schemas and projects from Hygraph.
+icons:
+  light: hygraph.png
+source:
+  mcp:
+    url: https://mcp.hygraph.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Hygraph
+      documentation_url: https://hygraph.com/docs/hygraph-ai/mcp-server-setup
+      flow: authorization_code
+  default: oauth

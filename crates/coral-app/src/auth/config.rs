@@ -18,18 +18,17 @@ use zeroize::Zeroizing;
 
 use super::OIDC_CALLBACK_PATH;
 use super::error::AuthServerError;
-use super::session::SessionTokenIssuer;
-use crate::outbound_url_policy::{Configured, EndpointUrl};
+use crate::oauth_resource::CanonicalOauthUrl;
+use coral_auth::SessionTokenIssuer;
+use coral_outbound::{Configured, EndpointUrl};
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
 const DEFAULT_TOKEN_TTL: Duration = Duration::from_hours(720);
 const MAX_TOKEN_TTL: Duration = Duration::from_hours(24 * 365);
-const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_mins(5);
-const MAX_DISCOVERY_CACHE_TTL: Duration = Duration::from_hours(1);
 const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or signing_key_file";
 
-/// Validated settings for the top-level `[auth]` configuration section.
+/// Validated authentication policy and its auth/web listener identities.
 ///
 /// [`AuthSettings::from_toml`] is the only constructor: the deserialize target
 /// is the private `RawAuthSettings`, so an unvalidated value of this type
@@ -41,34 +40,22 @@ const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or 
 /// The settings are read through the crate-internal `ResolvedAuthSettings`,
 /// which `resolve_runtime_dependencies` produces once the secrets the config
 /// only points at have actually been fetched.
-pub struct AuthSettings(RawAuthSettings);
+pub struct AuthSettings {
+    auth: RawAuthSettings,
+    bind_addr: SocketAddr,
+    authorization_server: AuthorizationServerSettings,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawAuthSettings {
-    /// Address the authorization server's HTTP listener binds to.
-    ///
-    /// This address must serve [`AuthorizationServerSettings::issuer`]'s
-    /// origin, either directly or through a TLS-terminating reverse proxy.
-    /// Published metadata derives `authorization_endpoint` and `token_endpoint`
-    /// from the issuer rather than from the bound address, so a bind that does
-    /// not serve the issuer origin advertises endpoints nothing answers on.
-    /// The relationship is deliberately not validated, because proxied
-    /// deployments legitimately bind an address that shares no host or port
-    /// with the issuer. Note that the default binds an ephemeral loopback port,
-    /// so a fixed issuer can only be served through it in flows that discover
-    /// the assigned port at runtime.
-    #[serde(
-        default = "default_bind_addr",
-        deserialize_with = "deserialize_bind_addr"
-    )]
-    http_bind_addr: SocketAddr,
-    /// Additional public-surface resource identifiers accepted by the private
-    /// gRPC API and registered with the authorization server.
+    /// Additional public-surface resource identifiers registered with the
+    /// authorization server, independent of which clients may skip consent.
     #[serde(default)]
     allowed_audiences: Vec<String>,
+    #[serde(default)]
+    trusted_clients: Vec<String>,
     session: SessionTokenSettings,
-    authorization_server: AuthorizationServerSettings,
     provider: OidcProviderSettings,
 }
 
@@ -81,20 +68,54 @@ impl AuthSettings {
     /// cross-section relationship is invalid.
     pub fn from_toml(raw: &str) -> Result<Option<Self>, AuthServerError> {
         let document: AuthConfigDocument =
-            toml::from_str(raw).map_err(|error| config_error(error.message()))?;
-        let Some(mut settings) = document.auth else {
+            crate::config_toml::decode(raw).map_err(|error| config_error(error.to_string()))?;
+        let issuer = document.listeners.auth.validate(document.auth.is_some())?;
+        let web_client = document
+            .listeners
+            .web
+            .as_ref()
+            .and_then(WebClient::from_settings);
+        let Some(mut auth) = document.auth else {
             return Ok(None);
         };
-        settings.validate()?;
-        Ok(Some(Self(settings)))
+        auth.validate()?;
+        let issuer =
+            issuer.ok_or_else(|| config_error("[auth] requires listeners.auth.public_url"))?;
+        if let Some(web) = &web_client {
+            // Do not count the derived registration as a duplicate of an
+            // explicitly listed audience. Explicit duplicates still fail in
+            // server bootstrap, and other audiences gain no client trust.
+            let registered = auth.allowed_audiences.iter().any(|value| {
+                CanonicalOauthUrl::parse(value).is_ok_and(|url| url.identifier() == web.public_url)
+            });
+            if !registered {
+                auth.allowed_audiences.push(web.public_url.clone());
+            }
+        }
+        let authorization_server = AuthorizationServerSettings {
+            issuer,
+            trusted_clients: std::mem::take(&mut auth.trusted_clients),
+            web_client,
+        };
+        Ok(Some(Self {
+            auth,
+            bind_addr: document.listeners.auth.bind.unwrap_or(DEFAULT_BIND_ADDR),
+            authorization_server,
+        }))
     }
 
-    /// Returns the additional public-surface audiences exactly as configured.
-    ///
-    /// Server bootstrap owns their URL canonicalization alongside the other
-    /// public-surface identifiers it composes.
+    /// Returns additional public-surface audiences, including the derived web
+    /// resource when configured. Server bootstrap canonicalizes explicit entries
+    /// alongside the other public-surface identifiers it composes.
     pub(crate) fn allowed_audiences(&self) -> &[String] {
-        &self.0.allowed_audiences
+        &self.auth.allowed_audiences
+    }
+
+    pub(crate) fn web_public_url(&self) -> Option<&str> {
+        self.authorization_server
+            .web_client
+            .as_ref()
+            .map(|web| web.public_url.as_str())
     }
 
     /// Fetches the secrets the config only points at — the provider client
@@ -110,19 +131,22 @@ impl AuthSettings {
         config_path: &Path,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
     ) -> Result<(ResolvedAuthSettings, SessionTokenIssuer), AuthServerError> {
-        let provider = self.0.provider.resolve(get_var)?;
-        let key = self.0.session.load_signing_key(config_path, get_var)?;
-        let access_token_ttl = Duration::from_secs(self.0.session.access_token_ttl_seconds);
+        let provider = self
+            .auth
+            .provider
+            .resolve(&self.authorization_server.issuer, get_var)?;
+        let key = self.auth.session.load_signing_key(config_path, get_var)?;
+        let access_token_ttl = Duration::from_secs(self.auth.session.access_token_ttl_seconds);
         let session_tokens = SessionTokenIssuer::new(
-            Some(&self.0.authorization_server.issuer),
+            Some(&self.authorization_server.issuer),
             key.as_slice(),
             access_token_ttl,
         )
         .map_err(AuthServerError::Config)?;
         Ok((
             ResolvedAuthSettings {
-                http_bind_addr: self.0.http_bind_addr,
-                authorization_server: self.0.authorization_server,
+                bind_addr: self.bind_addr,
+                authorization_server: self.authorization_server,
                 access_token_ttl,
                 provider,
             },
@@ -137,7 +161,7 @@ impl AuthSettings {
 /// holding one is proof that the provider secret was fetched from its source —
 /// which is why reading it cannot fail and nothing rechecks runtime readiness.
 pub(crate) struct ResolvedAuthSettings {
-    http_bind_addr: SocketAddr,
+    bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
     access_token_ttl: Duration,
     provider: ResolvedOidcProvider,
@@ -145,7 +169,7 @@ pub(crate) struct ResolvedAuthSettings {
 
 impl ResolvedAuthSettings {
     pub(crate) fn bind_addr(&self) -> SocketAddr {
-        self.http_bind_addr
+        self.bind_addr
     }
 
     pub(crate) fn authorization_server(&self) -> &AuthorizationServerSettings {
@@ -156,17 +180,26 @@ impl ResolvedAuthSettings {
         &self.provider
     }
 
+    pub(crate) fn bootstrap_owner(&self) -> Option<(&str, &str)> {
+        self.provider
+            .bootstrap_owner_subject
+            .as_deref()
+            .map(|subject| (self.provider.issuer.as_str(), subject))
+    }
+
     pub(super) fn matches_session_token_issuer(&self, issuer: &SessionTokenIssuer) -> bool {
-        self.authorization_server.issuer == issuer.issuer
-            && self.access_token_ttl == issuer.access_token_ttl
+        self.authorization_server.issuer == issuer.issuer()
+            && self.access_token_ttl == issuer.access_token_ttl()
     }
 }
 
 impl RawAuthSettings {
     fn validate(&mut self) -> Result<(), AuthServerError> {
         self.session.validate()?;
-        self.authorization_server.validate()?;
-        self.provider.validate(&self.authorization_server.issuer)?;
+        self.provider.validate()?;
+        for client_id in &mut self.trusted_clients {
+            *client_id = validate_trusted_client(client_id)?;
+        }
         Ok(())
     }
 }
@@ -174,6 +207,94 @@ impl RawAuthSettings {
 #[derive(Deserialize)]
 struct AuthConfigDocument {
     auth: Option<RawAuthSettings>,
+    #[serde(default)]
+    listeners: AuthOwnedListeners,
+}
+
+// Bootstrap validates the listener names and owns grpc/mcp configuration.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct AuthOwnedListeners {
+    auth: AuthListenerSettings,
+    web: Option<WebSettings>,
+}
+
+/// Auth-support bind and external identity. Bootstrap selects a local default
+/// when the bind is absent; authenticated instances default to ephemeral loopback
+/// and must supply a public URL. TLS can terminate at a proxy, so the public
+/// origin need not match the bind address.
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct AuthListenerSettings {
+    #[serde(deserialize_with = "deserialize_bind_addr")]
+    pub(crate) bind: Option<SocketAddr>,
+    public_url: Option<String>,
+}
+
+impl AuthListenerSettings {
+    fn validate(&self, authenticated: bool) -> Result<Option<String>, AuthServerError> {
+        if !authenticated {
+            if self
+                .bind
+                .is_some_and(|bind| !crate::bootstrap::is_loopback_ip(bind.ip()))
+            {
+                return Err(config_error(
+                    "auth-disabled listeners.auth.bind must be loopback",
+                ));
+            }
+            if self.public_url.is_some() {
+                return Err(config_error("listeners.auth.public_url requires [auth]"));
+            }
+            return Ok(None);
+        }
+        let issuer = required(
+            "listeners.auth.public_url",
+            self.public_url.as_deref().unwrap_or(""),
+        )?;
+        validate_issuer("listeners.auth.public_url", &issuer, true).map(Some)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebSettings {
+    #[serde(deserialize_with = "deserialize_web_url")]
+    pub(crate) public_url: coral_mcp::HumanInterfaceUrl,
+}
+
+fn deserialize_web_url<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<coral_mcp::HumanInterfaceUrl, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    coral_mcp::HumanInterfaceUrl::parse(&value).map_err(D::Error::custom)
+}
+
+/// One operator-designated hosted web client, not a native Desktop client or
+/// a caller-supplied client registration. HTTPS authenticates its endpoint;
+/// plain loopback HTTP must not silently acquire consent-bypass privileges.
+#[derive(Clone)]
+pub(super) struct WebClient {
+    pub(super) public_url: String,
+    client_id: String,
+    login_redirect_uri: String,
+}
+
+impl WebClient {
+    fn from_settings(settings: &WebSettings) -> Option<Self> {
+        // The typed destination already establishes URL safety and canonical
+        // origin shape. Only HTTPS adds metadata identity and client trust;
+        // loopback HTTP remains navigation with explicit OAuth registration.
+        let public_url = settings.public_url.as_str();
+        if !public_url.starts_with("https://") {
+            return None;
+        }
+        let public_url = public_url.to_owned();
+        Some(Self {
+            client_id: format!("{public_url}/.well-known/oauth-client"),
+            login_redirect_uri: format!("{public_url}/auth/callback"),
+            public_url,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -210,12 +331,9 @@ impl SessionTokenSettings {
         match (&mut self.signing_key_env, &self.signing_key_file) {
             (Some(_), Some(_)) => Err(session_config_error(CONFLICTING_KEY_SOURCES)),
             (Some(env_name), None) => {
-                *env_name = env_name.trim().to_string();
-                if env_name.is_empty() {
-                    Err(session_config_error("signing_key_env must not be empty"))
-                } else {
-                    Ok(())
-                }
+                *env_name = crate::bootstrap::env_var_name("signing_key_env", env_name)
+                    .map_err(session_config_error)?;
+                Ok(())
             }
             // An empty path would otherwise reach `load_signing_key`, where
             // joining it onto the config directory yields that directory and
@@ -274,8 +392,7 @@ impl SessionTokenSettings {
     }
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub(crate) struct AuthorizationServerSettings {
     pub(super) issuer: String,
     /// Client IDs whose authorization requests skip the approval page.
@@ -290,8 +407,8 @@ pub(crate) struct AuthorizationServerSettings {
     /// serve: a loopback redirect is claimable by any local process, and the
     /// approval page is the only thing that would have shown the user which
     /// port the authorization code is about to be handed to.
-    #[serde(default)]
     trusted_clients: Vec<String>,
+    web_client: Option<WebClient>,
 }
 
 impl AuthorizationServerSettings {
@@ -299,31 +416,38 @@ impl AuthorizationServerSettings {
         &self.issuer
     }
 
-    /// Reports whether `client_id` may skip the approval page.
+    /// Reports whether this request may skip the approval page: the web
+    /// client signing a user in, or an explicitly trusted `client_id`.
     ///
     /// The comparison is exact string equality: a request's client ID is only
     /// accepted when it is the canonical serialization of the URL it names, and
     /// validation holds the configured entries to the same spelling, so one
     /// string is the whole identity on both sides.
-    pub(super) fn is_trusted_client(&self, client_id: &str) -> bool {
-        self.trusted_clients
-            .iter()
-            .any(|trusted| trusted == client_id)
+    pub(super) fn is_trusted_client(&self, client_id: &str, redirect_uri: &str) -> bool {
+        self.web_login(client_id, redirect_uri).is_some()
+            || self
+                .trusted_clients
+                .iter()
+                .any(|trusted| trusted == client_id)
+    }
+
+    /// The web identity signing a user in: its client ID returning to its
+    /// login callback. Only that pairing skips consent, so the server pins its
+    /// resource itself, independently of what the client metadata document
+    /// advertises. The same identity returning anywhere else is an ordinary
+    /// client request, validated against its metadata document and confirmed
+    /// by the user: Reef presents it with its Provider Setup callback when a
+    /// workspace adds another workspace's MCP server on the same deployment.
+    pub(super) fn web_login(&self, client_id: &str, redirect_uri: &str) -> Option<&WebClient> {
+        self.web_client
+            .as_ref()
+            .filter(|web| web.client_id == client_id && web.login_redirect_uri == redirect_uri)
     }
 
     /// Returns the trusted client IDs for the topology check at server
     /// construction, which is where the full client-ID policy can first run.
     pub(super) fn trusted_clients(&self) -> &[String] {
         &self.trusted_clients
-    }
-
-    fn validate(&mut self) -> Result<(), AuthServerError> {
-        self.issuer = required("auth.authorization_server.issuer", &self.issuer)?;
-        self.issuer = validate_issuer("auth.authorization_server.issuer", &self.issuer, true)?;
-        for client_id in &mut self.trusted_clients {
-            *client_id = validate_trusted_client(client_id)?;
-        }
-        Ok(())
     }
 }
 
@@ -343,11 +467,7 @@ impl AuthorizationServerSettings {
 /// construction, so the resolver re-checks every entry under the real policy
 /// there.
 fn validate_trusted_client(configured: &str) -> Result<String, AuthServerError> {
-    let entry_error = |message: String| {
-        config_error(format!(
-            "auth.authorization_server.trusted_clients {message}"
-        ))
-    };
+    let entry_error = |message: String| config_error(format!("auth.trusted_clients {message}"));
     let value = configured.trim();
     if value.is_empty() {
         return Err(entry_error("entries must not be empty".to_string()));
@@ -401,40 +521,40 @@ pub(super) const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct OidcProviderSettings {
-    #[serde(rename = "type")]
-    provider_type: Option<String>,
     issuer: String,
     client_id: String,
     client_secret: Option<ProviderSecret>,
     client_secret_env: Option<String>,
-    redirect_uri: String,
     scopes: Vec<String>,
-    principal_claim: String,
     display_name_claim: String,
+    name_claim: String,
+    email_claim: String,
+    email_verified_claim: String,
+    bootstrap_owner_subject: Option<String>,
     auth_params: BTreeMap<String, String>,
     required_claims: BTreeMap<String, Value>,
-    /// How long a validated discovery document stays reusable.
-    ///
-    /// Unset means [`DEFAULT_DISCOVERY_CACHE_TTL`]. Zero keeps no document, at
-    /// the cost of an outbound discovery request per authorization request that
-    /// cannot join one already in flight.
-    discovery_cache_ttl_seconds: Option<u64>,
+    access_token: Option<AccessTokenAdmission>,
+}
+
+/// Optional login admission evidence from an upstream RS256 JWT access token.
+/// It supplements, never replaces, the verified OIDC identity. The audience is
+/// explicit because a provider's access-token audience need not be its OIDC
+/// client ID. Keys come only from that provider's validated discovery JWKS.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AccessTokenAdmission {
+    pub(super) audience: String,
+    #[serde(default)]
+    pub(super) required_claims: BTreeMap<String, Value>,
 }
 
 impl OidcProviderSettings {
-    fn validate(&mut self, authorization_server_issuer: &str) -> Result<(), AuthServerError> {
+    fn validate(&mut self) -> Result<(), AuthServerError> {
         if self.client_secret.is_some() == self.client_secret_env.is_some() {
             return Err(config_error(
                 "auth.provider must configure exactly one of client_secret or client_secret_env",
             ));
         }
-        if let Some(provider_type) = &mut self.provider_type {
-            *provider_type = provider_type.trim().to_string();
-            if provider_type != "oidc" {
-                return Err(invalid_provider("type must be `oidc`"));
-            }
-        }
-
         self.issuer = provider_required("issuer", &self.issuer)?;
         let issuer = provider_literal_endpoint("issuer", &self.issuer)?;
         if issuer.as_url().query().is_some() {
@@ -442,40 +562,6 @@ impl OidcProviderSettings {
         }
         validate_canonical_issuer(&self.issuer, &issuer)?;
         self.client_id = provider_required("client_id", &self.client_id)?;
-        self.redirect_uri = provider_required("redirect_uri", &self.redirect_uri)?;
-        let redirect_uri = provider_literal_endpoint("redirect_uri", &self.redirect_uri)?;
-        // The upstream IdP sends the browser back to a callback route under
-        // this server's origin, so a redirect URI pointing anywhere else can
-        // only fail later, at the IdP or in the browser — far from Coral's own
-        // logs.
-        let served_origin = Url::parse(authorization_server_issuer)
-            .map_err(|error| {
-                config_error(format!(
-                    "auth.authorization_server.issuer is not a valid URL: {error}"
-                ))
-            })?
-            .origin();
-        if redirect_uri.as_url().origin() != served_origin {
-            return Err(invalid_provider(format!(
-                "redirect_uri must share the origin of auth.authorization_server.issuer ({})",
-                served_origin.ascii_serialization()
-            )));
-        }
-        // The origin alone does not make the URI reachable: the router serves
-        // one callback path, so any other path is accepted here and then 404s
-        // once the provider redirects the browser to it. The served path is
-        // always exactly this constant — the issuer is validated `root_only`,
-        // so there is no issuer path prefix to join onto it. A query is
-        // rejected for the same reason — the provider appends its own `state`,
-        // and a configured one collides with it and fails the callback.
-        if redirect_uri.as_url().path() != OIDC_CALLBACK_PATH {
-            return Err(invalid_provider(format!(
-                "redirect_uri must use the path this server serves ({OIDC_CALLBACK_PATH})"
-            )));
-        }
-        if redirect_uri.as_url().query().is_some() {
-            return Err(invalid_provider("redirect_uri must not include a query"));
-        }
 
         if let Some(secret) = &mut self.client_secret {
             *secret = ProviderSecret::from_trimmed("client_secret", secret.as_str())?;
@@ -511,13 +597,7 @@ impl OidcProviderSettings {
             return Err(invalid_provider("scopes must include `openid`"));
         }
 
-        self.principal_claim = provider_claim("principal_claim", &self.principal_claim, "sub")?;
-        self.display_name_claim =
-            provider_claim("display_name_claim", &self.display_name_claim, "email")?;
-        for (key, value) in &self.required_claims {
-            validate_provider_key("required_claims", key)?;
-            validate_required_claim_value(key, value)?;
-        }
+        self.validate_identity_policy()?;
         for key in self.auth_params.keys() {
             validate_provider_key("auth_params", key)?;
             if RESERVED_PROVIDER_AUTH_PARAMS
@@ -529,14 +609,46 @@ impl OidcProviderSettings {
                 )));
             }
         }
+        Ok(())
+    }
+
+    fn validate_identity_policy(&mut self) -> Result<(), AuthServerError> {
+        self.display_name_claim =
+            provider_claim("display_name_claim", &self.display_name_claim, "email")?;
+        self.name_claim = provider_claim("name_claim", &self.name_claim, "name")?;
+        self.email_claim = provider_claim("email_claim", &self.email_claim, "email")?;
+        self.email_verified_claim = provider_claim(
+            "email_verified_claim",
+            &self.email_verified_claim,
+            "email_verified",
+        )?;
         if self
-            .discovery_cache_ttl_seconds
-            .is_some_and(|ttl| ttl > MAX_DISCOVERY_CACHE_TTL.as_secs())
+            .bootstrap_owner_subject
+            .as_deref()
+            .is_some_and(|subject| {
+                subject.len() > 255
+                    || !subject.is_ascii()
+                    || coral_workspace::UserId::parse(subject).is_err()
+                    || subject
+                        == coral_workspace::local_organization_owner()
+                            .user_id()
+                            .as_str()
+            })
         {
-            return Err(invalid_provider(format!(
-                "discovery_cache_ttl_seconds must not exceed {}",
-                MAX_DISCOVERY_CACHE_TTL.as_secs()
-            )));
+            return Err(invalid_provider(
+                "bootstrap_owner_subject must be a valid non-local OIDC subject",
+            ));
+        }
+        for (key, value) in &self.required_claims {
+            validate_provider_key("required_claims", key)?;
+            validate_required_claim_value(key, value)?;
+        }
+        if let Some(admission) = &mut self.access_token {
+            admission.audience = provider_required("access_token.audience", &admission.audience)?;
+            for (key, value) in &admission.required_claims {
+                validate_provider_key("access_token.required_claims", key)?;
+                validate_required_claim_value(key, value)?;
+            }
         }
         Ok(())
     }
@@ -548,6 +660,7 @@ impl OidcProviderSettings {
     /// not survive into the resolved value alongside the secret itself.
     fn resolve(
         self,
+        authorization_server_issuer: &str,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
     ) -> Result<ResolvedOidcProvider, AuthServerError> {
         let client_secret = match (self.client_secret, self.client_secret_env) {
@@ -576,15 +689,17 @@ impl OidcProviderSettings {
         Ok(ResolvedOidcProvider {
             issuer: self.issuer,
             client_id: self.client_id,
-            redirect_uri: self.redirect_uri,
+            // The validated issuer is a canonical origin with no trailing slash.
+            redirect_uri: format!("{authorization_server_issuer}{OIDC_CALLBACK_PATH}"),
             scopes: self.scopes,
-            principal_claim: self.principal_claim,
+            bootstrap_owner_subject: self.bootstrap_owner_subject,
             display_name_claim: self.display_name_claim,
+            name_claim: self.name_claim,
+            email_claim: self.email_claim,
+            email_verified_claim: self.email_verified_claim,
             auth_params: self.auth_params,
             required_claims: self.required_claims,
-            discovery_cache_ttl: self
-                .discovery_cache_ttl_seconds
-                .map_or(DEFAULT_DISCOVERY_CACHE_TTL, Duration::from_secs),
+            access_token: self.access_token,
             client_secret,
         })
     }
@@ -606,26 +721,20 @@ pub(super) struct ResolvedOidcProvider {
     pub(super) client_id: String,
     pub(super) redirect_uri: String,
     pub(super) scopes: Vec<String>,
-    pub(super) principal_claim: String,
+    bootstrap_owner_subject: Option<String>,
     pub(super) display_name_claim: String,
+    pub(super) name_claim: String,
+    pub(super) email_claim: String,
+    pub(super) email_verified_claim: String,
     pub(super) auth_params: BTreeMap<String, String>,
     pub(super) required_claims: BTreeMap<String, Value>,
-    discovery_cache_ttl: Duration,
+    pub(super) access_token: Option<AccessTokenAdmission>,
     client_secret: ProviderSecret,
 }
 
 impl ResolvedOidcProvider {
     pub(super) fn client_secret(&self) -> &str {
         self.client_secret.as_str()
-    }
-
-    /// How long a validated discovery document may be reused.
-    ///
-    /// A zero duration keeps no document between requests, so an authorization
-    /// request then makes its own discovery call unless it can join one already
-    /// in flight.
-    pub(super) fn discovery_cache_ttl(&self) -> Duration {
-        self.discovery_cache_ttl
     }
 }
 
@@ -667,21 +776,15 @@ impl fmt::Debug for ProviderSecret {
     }
 }
 
-fn default_bind_addr() -> SocketAddr {
-    DEFAULT_BIND_ADDR
-}
-
 fn deserialize_bind_addr<'de, D: Deserializer<'de>>(
     deserializer: D,
-) -> Result<SocketAddr, D::Error> {
+) -> Result<Option<SocketAddr>, D::Error> {
     let value = String::deserialize(deserializer)?;
     let value = value.trim();
     if value.is_empty() {
-        return Ok(DEFAULT_BIND_ADDR);
+        return Ok(Some(DEFAULT_BIND_ADDR));
     }
-    value
-        .parse()
-        .map_err(|error| D::Error::custom(format!("auth.http_bind_addr is invalid: {error}")))
+    value.parse().map(Some).map_err(D::Error::custom)
 }
 
 fn required(label: &str, value: &str) -> Result<String, AuthServerError> {
@@ -702,16 +805,8 @@ fn provider_required(field: &str, value: &str) -> Result<String, AuthServerError
     }
 }
 
-/// Parses a provider endpoint whose configured spelling is sent verbatim.
-///
-/// `issuer` and `redirect_uri` are both retained as written and later compared
-/// byte for byte — the issuer against the one in the discovery document, the
-/// redirect URI against the registration held by the provider. The parser
-/// silently rewrites a few spellings for a special scheme, so the value that
-/// passes validation is not always the value that goes on the wire:
-/// `.../auth\oidc/callback` parses as if it were written with a slash, and the
-/// backslash then travels to the provider intact. Recording the parser's syntax
-/// violations turns those into a startup error rather than a failed login.
+/// Parses the provider issuer without silently repairing its configured spelling.
+/// Discovery compares it byte for byte; syntax violations must fail at startup.
 fn provider_literal_endpoint(
     field: &str,
     value: &str,
@@ -865,8 +960,7 @@ mod tests {
     use std::fs;
 
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-    use ring::rand::SystemRandom;
-    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+
     use serde_json::json;
 
     use super::*;
@@ -876,8 +970,7 @@ mod tests {
     /// Local override of the shared fixture: the trailing slash proves
     /// `validate_issuer` normalizes it away, and the rejection table rewrites
     /// this exact string to build its nested-path case.
-    const AUTHORIZATION_SERVER: &str =
-        "[auth.authorization_server]\nissuer = 'http://localhost:9080/'\n";
+    const AUTHORIZATION_SERVER: &str = "[listeners.auth]\npublic_url = 'http://localhost:9080/'\n";
 
     fn valid(extra: &str) -> String {
         format!("[auth]\n{SESSION}{AUTHORIZATION_SERVER}{extra}\n{PROVIDER}")
@@ -900,10 +993,8 @@ mod tests {
     /// A config directory holding the session signing key the fixture names.
     fn signing_key_dir() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("tempdir");
-        let key =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key");
-        fs::write(temp.path().join("session.key"), key.as_ref()).expect("session key");
+        let key = coral_test_support::p256_pkcs8();
+        fs::write(temp.path().join("session.key"), &key).expect("session key");
         temp
     }
 
@@ -941,6 +1032,58 @@ mod tests {
     }
 
     #[test]
+    fn auth_and_web_listener_addresses_derive_oauth_identity() {
+        let raw = format!(
+            "{SESSION}{PROVIDER}\n\
+            [listeners.auth]\nbind = '127.0.0.1:9081'\npublic_url = 'https://LOGIN.example.test:443/'\n\
+            [listeners.web]\npublic_url = 'https://web.example.test'\n"
+        );
+        let settings = resolved(&raw);
+        assert_eq!(settings.bind_addr(), "127.0.0.1:9081".parse().unwrap());
+        assert_eq!(
+            settings.authorization_server().issuer(),
+            "https://login.example.test"
+        );
+        assert_eq!(
+            settings.provider().redirect_uri,
+            "https://login.example.test/auth/oidc/callback"
+        );
+        assert!(settings.authorization_server().is_trusted_client(
+            "https://web.example.test/.well-known/oauth-client",
+            "https://web.example.test/auth/callback"
+        ));
+    }
+
+    #[test]
+    fn local_auth_listener_requires_loopback_and_no_public_oauth_identity() {
+        for (raw, expected) in [
+            (
+                "[listeners.auth]\nbind = '0.0.0.0:9080'",
+                "auth-disabled listeners.auth.bind must be loopback",
+            ),
+            (
+                "[listeners.auth]\npublic_url = 'https://login.example.test'",
+                "listeners.auth.public_url requires [auth]",
+            ),
+            (
+                "[listeners.auth]\nbind = 'not-an-address'",
+                "listeners.auth.bind: invalid socket address syntax",
+            ),
+        ] {
+            assert_eq!(
+                reject(raw),
+                format!("invalid auth configuration: {expected}"),
+                "{raw}"
+            );
+        }
+        assert!(
+            AuthSettings::from_toml("[listeners.auth]\nbind = '127.0.0.1:9080'")
+                .expect("local bind")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn directly_deserializes_and_validates_auth_settings() {
         let settings = resolved(&valid(""));
         assert_eq!(settings.bind_addr(), DEFAULT_BIND_ADDR);
@@ -965,8 +1108,8 @@ mod tests {
                 "client_secret = ' inline-secret '",
             )
             .replace(
-                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                "redirect_uri = ' http://localhost:9080/auth/oidc/callback '\nprincipal_claim = ' '\ndisplay_name_claim = ' email '",
+                "client_secret = ' inline-secret '",
+                "client_secret = ' inline-secret '\ndisplay_name_claim = ' email '",
             );
         let settings = resolved(&raw);
         let provider = settings.provider();
@@ -978,39 +1121,165 @@ mod tests {
             "http://localhost:9080/auth/oidc/callback"
         );
         assert_eq!(provider.scopes, ["openid", "email", "profile"]);
-        assert_eq!(provider.principal_claim, "sub");
         assert_eq!(provider.display_name_claim, "email");
-        assert_eq!(provider.discovery_cache_ttl(), DEFAULT_DISCOVERY_CACHE_TTL);
         let debug = format!("{provider:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("inline-secret"));
     }
 
     #[test]
-    fn trusted_clients_match_exactly_and_default_to_none() {
-        let settings = resolved(&valid(""));
-        assert!(
-            !settings
-                .authorization_server()
-                .is_trusted_client("https://client.example.test/oauth/client.json")
+    fn web_origin_derives_one_registered_and_trusted_first_party_client() {
+        const WEB_CLIENT: &str = "https://coral.example.test/.well-known/oauth-client";
+        const LOGIN_CALLBACK: &str = "https://coral.example.test/auth/callback";
+        let raw = valid("") + "\n[listeners.web]\npublic_url = 'https://CORAL.example.test:443/'\n";
+        let settings = parse(&raw);
+        assert_eq!(settings.allowed_audiences(), ["https://coral.example.test"]);
+        let resolved = resolved(&raw);
+        let authorization = resolved.authorization_server();
+        assert!(authorization.is_trusted_client(WEB_CLIENT, LOGIN_CALLBACK));
+        assert_eq!(
+            authorization
+                .web_login(WEB_CLIENT, LOGIN_CALLBACK)
+                .map(|web| web.public_url.as_str()),
+            Some("https://coral.example.test")
         );
+        for untrusted in [
+            "https://coral.example.test/other-client",
+            "https://coral.example.test/.well-known/oauth-client?other=1",
+            "https://coral.example.test:8443/.well-known/oauth-client",
+            "https://coral.example.test.attacker.test/.well-known/oauth-client",
+            "http://localhost:9080/.well-known/oauth-client",
+        ] {
+            assert!(
+                !authorization.is_trusted_client(untrusted, LOGIN_CALLBACK),
+                "{untrusted}"
+            );
+        }
+        // Trust is the sign-in pairing, not the client ID alone: the same
+        // identity returning to its Provider Setup callback, or to any other
+        // callback, is an ordinary client request.
+        for callback in [
+            "https://coral.example.test/provider-setup/oauth/callback",
+            "https://coral.example.test/auth/callback/",
+            "https://coral.example.test/auth/callback?next=1",
+            "https://attacker.test/auth/callback",
+        ] {
+            assert!(
+                !authorization.is_trusted_client(WEB_CLIENT, callback),
+                "{callback}"
+            );
+            assert!(
+                authorization.web_login(WEB_CLIENT, callback).is_none(),
+                "{callback}"
+            );
+        }
+    }
+
+    #[test]
+    fn web_configuration_rejects_ambiguous_or_non_loopback_plaintext_origins() {
+        for public_url in [
+            "",
+            "http://coral.example.test",
+            "coral-app://app",
+            "https://coral.example.test/path",
+            "https://coral.example.test?x=1",
+            "https://coral.example.test/#fragment",
+            "https://user:secret@coral.example.test",
+        ] {
+            let raw = format!("[listeners.web]\npublic_url = '{public_url}'");
+            // Validate the table even without [auth]; Desktop simply omits it.
+            let error = reject(&raw);
+            assert!(
+                error.starts_with(
+                    "invalid auth configuration: listeners.web.public_url: must be a concrete HTTPS \
+                     or explicit loopback HTTP origin"
+                ),
+                "{public_url}: {error}"
+            );
+            assert!(!error.contains("secret"), "{error}");
+        }
+        for (raw, expected) in [
+            ("[listeners.web]", "missing field `public_url`"),
+            (
+                "[listeners.web]\npublic_url = 'https://coral.example.test'\nunknown = true",
+                "unknown field `unknown`",
+            ),
+        ] {
+            let error = reject(raw);
+            assert!(error.contains(expected), "{raw}: {error}");
+        }
+        assert!(
+            AuthSettings::from_toml("[listeners.grpc]\nbind = '127.0.0.1:0'")
+                .expect("Desktop config")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn loopback_web_navigation_does_not_register_an_audience_or_trust_a_client() {
+        for origin in ["http://localhost:5173", "http://127.0.0.1:49152"] {
+            let raw = valid("") + &format!("\n[listeners.web]\npublic_url = '{origin}'\n");
+            assert!(parse(&raw).allowed_audiences().is_empty());
+            assert!(!resolved(&raw).authorization_server().is_trusted_client(
+                &format!("{origin}/.well-known/oauth-client"),
+                &format!("{origin}/auth/callback")
+            ));
+        }
+    }
+
+    #[test]
+    fn web_registration_deduplicates_only_its_derived_audience_and_trusts_no_others() {
+        let raw = valid("").replace("[auth]\n", "[auth]\nallowed_audiences = ['https://CORAL.example.test/', 'https://other.example.test']\n")
+            + "\n[listeners.web]\npublic_url = 'https://coral.example.test'\n";
+        assert_eq!(parse(&raw).allowed_audiences().len(), 2);
+        let settings = resolved(&raw);
+        assert!(!settings.authorization_server().is_trusted_client(
+            "https://other.example.test/.well-known/oauth-client",
+            "https://other.example.test/auth/callback"
+        ));
+        assert!(!settings.authorization_server().is_trusted_client(
+            "http://localhost:9080/.well-known/oauth-client",
+            "http://localhost:9080/auth/callback"
+        ));
+    }
+
+    #[test]
+    fn trusted_clients_match_exactly_and_default_to_none() {
+        // A listed client is trusted for whichever registered callback it
+        // names; only the derived web client is held to one.
+        const CALLBACKS: [&str; 2] = [
+            "https://client.example.test/callback",
+            "https://client.example.test/other/callback",
+        ];
+        let settings = resolved(&valid(""));
+        for callback in CALLBACKS {
+            assert!(
+                !settings
+                    .authorization_server()
+                    .is_trusted_client("https://client.example.test/oauth/client.json", callback),
+                "{callback}"
+            );
+        }
 
         let raw = valid("").replace(
-            "issuer = 'http://localhost:9080/'",
-            "issuer = 'http://localhost:9080/'\ntrusted_clients = [' https://client.example.test/oauth/client.json ', 'http://127.0.0.1:1457/.well-known/oauth-client']",
+            "[auth]\n",
+            "[auth]\ntrusted_clients = [' https://client.example.test/oauth/client.json ', 'http://127.0.0.1:1457/.well-known/oauth-client']\n",
         );
         let settings = resolved(&raw);
         let authorization_server = settings.authorization_server();
-        assert!(
-            authorization_server.is_trusted_client("https://client.example.test/oauth/client.json")
-        );
-        assert!(
-            authorization_server
-                .is_trusted_client("http://127.0.0.1:1457/.well-known/oauth-client")
-        );
-        assert!(
-            !authorization_server.is_trusted_client("https://client.example.test/oauth/other.json")
-        );
+        for (client, trusted) in [
+            ("https://client.example.test/oauth/client.json", true),
+            ("http://127.0.0.1:1457/.well-known/oauth-client", true),
+            ("https://client.example.test/oauth/other.json", false),
+        ] {
+            for callback in CALLBACKS {
+                assert_eq!(
+                    authorization_server.is_trusted_client(client, callback),
+                    trusted,
+                    "{client} {callback}"
+                );
+            }
+        }
     }
 
     /// A request's client ID is accepted only in its canonical spelling, so an
@@ -1021,8 +1290,8 @@ mod tests {
     fn rejects_trusted_clients_that_could_never_match_a_request() {
         let with_trusted = |entry: &str| {
             valid("").replace(
-                "issuer = 'http://localhost:9080/'",
-                &format!("issuer = 'http://localhost:9080/'\ntrusted_clients = [{entry}]"),
+                "[auth]\n",
+                &format!("[auth]\ntrusted_clients = [{entry}]\n"),
             )
         };
         reject_all(vec![
@@ -1055,16 +1324,20 @@ mod tests {
     }
 
     #[test]
-    fn honors_a_configured_discovery_cache_ttl() {
-        for seconds in [0, 30, MAX_DISCOVERY_CACHE_TTL.as_secs()] {
-            let raw = valid("").replace(
-                "client_id = 'upstream-client'",
-                &format!("client_id = 'upstream-client'\ndiscovery_cache_ttl_seconds = {seconds}"),
-            );
-            assert_eq!(
-                resolved(&raw).provider().discovery_cache_ttl(),
-                Duration::from_secs(seconds)
-            );
+    fn derives_callback_from_the_canonical_authorization_server_issuer() {
+        for (issuer, callback) in [
+            (
+                "http://localhost:9080/",
+                "http://localhost:9080/auth/oidc/callback",
+            ),
+            (
+                "https://AUTH.example.test:443/",
+                "https://auth.example.test/auth/oidc/callback",
+            ),
+            ("http://[::1]:9080", "http://[::1]:9080/auth/oidc/callback"),
+        ] {
+            let raw = valid("").replace("http://localhost:9080/", issuer);
+            assert_eq!(resolved(&raw).provider().redirect_uri, callback);
         }
     }
 
@@ -1076,30 +1349,17 @@ mod tests {
                 "client_secret_env = ' PROVIDER_SECRET '",
             )
             .replace(
-                "issuer = 'https://accounts.example.test'",
-                "type = ' oidc '\nissuer = 'https://accounts.example.test'",
-            )
-            .replace(
-                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'groups']\nprincipal_claim = 'uid'\ndisplay_name_claim = 'name'",
+                "client_id = 'upstream-client'",
+                "client_id = 'upstream-client'\nscopes = ['openid', 'groups']\ndisplay_name_claim = 'name'",
             )
             + "\n[auth.provider.auth_params]\nprompt = 'select_account'\n\
                [auth.provider.required_claims]\nhd = 'example.test'\n";
         let (settings, _issuer) = resolve(&raw, &|name| {
             Ok((name == "PROVIDER_SECRET").then(|| " env-secret ".to_string()))
         });
-        // `type` is a validation discriminant that the resolved provider has no
-        // reason to carry, so the accept path is asserted where it survives. A
-        // comparison that never matched would fail here rather than passing
-        // unnoticed beside the reject table.
-        assert_eq!(
-            parse(&raw).0.provider.provider_type.as_deref(),
-            Some("oidc")
-        );
         let provider = settings.provider();
         assert_eq!(provider.client_secret(), "env-secret");
         assert_eq!(provider.scopes, ["openid", "groups"]);
-        assert_eq!(provider.principal_claim, "uid");
         assert_eq!(provider.display_name_claim, "name");
         assert_eq!(
             provider.auth_params.get("prompt").map(String::as_str),
@@ -1197,10 +1457,7 @@ mod tests {
         }
     }
 
-    /// Both endpoints reach the provider as written — the issuer to be compared
-    /// against the discovery document, the redirect URI against the
-    /// registration — so a spelling the parser would quietly rewrite has to
-    /// fail here rather than on every login.
+    /// The provider issuer is compared exactly against discovery metadata.
     #[test]
     fn rejects_invalid_provider_endpoints() {
         reject_all(vec![
@@ -1225,38 +1482,10 @@ mod tests {
             ),
             (
                 valid("").replace(
-                    "http://localhost:9080/auth/oidc/callback",
-                    r"http://localhost:9080/auth\oidc/callback",
-                ),
-                "redirect_uri is invalid: backslash",
-            ),
-            (
-                valid("").replace(
-                    "http://localhost:9080/auth/oidc/callback",
-                    "http://localhost:9080/auth/oidc/callback%1",
-                ),
-                "redirect_uri is invalid: expected 2 hex digits after %",
-            ),
-            (
-                valid("").replace(
-                    "http://localhost:9080/auth/oidc/callback",
-                    "http://localhost:9080/auth/oidc/callback^",
-                ),
-                "redirect_uri is invalid: non-URL code point",
-            ),
-            (
-                valid("").replace(
                     "https://accounts.example.test",
                     "https://accounts.example.test?q=1",
                 ),
                 "issuer must not include a query",
-            ),
-            (
-                valid("").replace(
-                    "http://localhost:9080/auth/oidc/callback",
-                    "https://remote.test/callback",
-                ),
-                "must share the origin",
             ),
         ]);
     }
@@ -1266,41 +1495,17 @@ mod tests {
         reject_all(vec![
             (
                 valid("").replace(
-                    "issuer = 'https://accounts.example.test'",
-                    "type = 'oauth'\nissuer = 'https://accounts.example.test'",
-                ),
-                "type must be `oidc`",
-            ),
-            (
-                valid("").replace(
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['email']",
+                    "client_id = 'upstream-client'",
+                    "client_id = 'upstream-client'\nscopes = ['email']",
                 ),
                 "scopes must include `openid`",
             ),
             (
                 valid("").replace(
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'two scopes']",
+                    "client_id = 'upstream-client'",
+                    "client_id = 'upstream-client'\nscopes = ['openid', 'two scopes']",
                 ),
                 "scopes must contain valid OAuth scope tokens",
-            ),
-            (
-                valid("").replace(
-                    "client_id = 'upstream-client'",
-                    &format!(
-                        "client_id = 'upstream-client'\ndiscovery_cache_ttl_seconds = {}",
-                        MAX_DISCOVERY_CACHE_TTL.as_secs() + 1
-                    ),
-                ),
-                "discovery_cache_ttl_seconds must not exceed",
-            ),
-            (
-                valid("").replace(
-                    "client_id = 'upstream-client'",
-                    "client_id = 'upstream-client'\nprincipal_claim = 'user id'",
-                ),
-                "principal_claim keys must be nonempty and contain no whitespace",
             ),
             (
                 valid("") + "\n[auth.provider.auth_params]\nCLIENT_ID = 'override'\n",
@@ -1320,6 +1525,37 @@ mod tests {
     /// A TOML datetime deserializes into a marker object rather than failing,
     /// so without this guard `expires = 2030-01-01` starts the server and then
     /// fails to match on every login.
+    #[test]
+    fn access_token_admission_is_opt_in_and_requires_an_explicit_audience() {
+        assert!(resolved(&valid("")).provider().access_token.is_none());
+        let raw = valid("")
+            + "\n[auth.provider.access_token]\naudience = ' environment-client '\n\
+            [auth.provider.access_token.required_claims]\norg_id = 'org_allowed'\n";
+        let settings = resolved(&raw);
+        let policy = settings
+            .provider()
+            .access_token
+            .as_ref()
+            .expect("access token policy");
+        assert_eq!(policy.audience, "environment-client");
+        assert_eq!(
+            policy.required_claims.get("org_id"),
+            Some(&Value::String("org_allowed".into()))
+        );
+        for suffix in [
+            "[auth.provider.access_token]",
+            "[auth.provider.access_token]\naudience = ''",
+            "[auth.provider.access_token]\naudience = 'env'\nunknown = true",
+            "[auth.provider.access_token]\naudience = 'env'\n[auth.provider.access_token.required_claims]\n' bad ' = true",
+            "[auth.provider.access_token]\naudience = 'env'\n[auth.provider.access_token.required_claims]\norg_id = { value = 'org_allowed' }",
+        ] {
+            assert!(
+                AuthSettings::from_toml(&(valid("") + "\n" + suffix)).is_err(),
+                "{suffix}"
+            );
+        }
+    }
+
     #[test]
     fn rejects_required_claims_no_id_token_could_carry() {
         reject_all(vec![
@@ -1362,7 +1598,7 @@ mod tests {
             ("[auth]\n".to_string(), "session"),
             (
                 format!("[auth]\n{SESSION}{PROVIDER}"),
-                "authorization_server",
+                "listeners.auth.public_url",
             ),
             (
                 format!("[auth]\n{SESSION}{AUTHORIZATION_SERVER}"),
@@ -1370,13 +1606,13 @@ mod tests {
             ),
             (
                 valid("").replace(
-                    "issuer = 'http://localhost:9080/'",
-                    "issuer = 'http://localhost:9080/nested'",
+                    "public_url = 'http://localhost:9080/'",
+                    "public_url = 'http://localhost:9080/nested'",
                 ),
                 "must mount at the root",
             ),
             (
-                valid("").replace("[auth.authorization_server]", "[auth.oauth]"),
+                valid("").replace("[listeners.auth]", "[auth.oauth]"),
                 "oauth",
             ),
             (
@@ -1408,41 +1644,6 @@ mod tests {
                 valid("").replace("client_secret = 'provider-secret'\n", ""),
                 "exactly one",
             ),
-            (
-                valid("").replace(
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                    "redirect_uri = 'https://elsewhere.example/auth/oidc/callback'",
-                ),
-                "must share the origin",
-            ),
-            (
-                valid("").replace(
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                    "redirect_uri = 'http://localhost:9081/auth/oidc/callback'",
-                ),
-                "must share the origin",
-            ),
-            (
-                valid("").replace(
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                    "redirect_uri = 'http://localhost:9080/callback'",
-                ),
-                "must use the path this server serves",
-            ),
-            (
-                valid("").replace(
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                    "redirect_uri = 'http://localhost:9080/'",
-                ),
-                "must use the path this server serves",
-            ),
-            (
-                valid("").replace(
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback?tenant=one'",
-                ),
-                "must not include a query",
-            ),
         ];
         for (raw, expected) in cases {
             assert!(
@@ -1456,10 +1657,8 @@ mod tests {
     fn resolves_session_key_sources_after_parsing() {
         let temp = tempfile::tempdir().expect("tempdir");
         let config_path = temp.path().join("config.toml");
-        let key =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key");
-        fs::write(temp.path().join("session.key"), key.as_ref()).expect("session key");
+        let key = coral_test_support::p256_pkcs8();
+        fs::write(temp.path().join("session.key"), &key).expect("session key");
         let settings = AuthSettings::from_toml(&valid(""))
             .expect("valid config")
             .expect("auth settings");
@@ -1467,9 +1666,9 @@ mod tests {
             .resolve_runtime_dependencies(&config_path, &|_| Ok(None))
             .expect("file key");
         assert!(settings.matches_session_token_issuer(&issuer));
-        assert_eq!(issuer.issuer, "http://localhost:9080");
+        assert_eq!(issuer.issuer(), "http://localhost:9080");
 
-        let encoded = BASE64_STANDARD.encode(key.as_ref());
+        let encoded = BASE64_STANDARD.encode(&key);
         let raw = valid("").replace(
             "signing_key_file = 'session.key'",
             "signing_key_env = 'SESSION_KEY'",
@@ -1488,10 +1687,8 @@ mod tests {
     fn session_key_sources_fail_closed_without_leaking_secrets() {
         let temp = tempfile::tempdir().expect("tempdir");
         let config_path = temp.path().join("config.toml");
-        let key =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key");
-        let encoded_key = BASE64_STANDARD.encode(key.as_ref());
+        let key = coral_test_support::p256_pkcs8();
+        let encoded_key = BASE64_STANDARD.encode(&key);
 
         let default_env = valid("").replace("signing_key_file = 'session.key'\n", "");
         let settings = AuthSettings::from_toml(&default_env)

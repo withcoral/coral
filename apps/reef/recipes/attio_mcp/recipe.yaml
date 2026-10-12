@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: attio_mcp
+# The catalog offers this beside the OpenAPI Recipe, on the one attio card.
+service: attio
+display_name: Attio
+description: Attio's hosted MCP server.
+icons:
+  light: attio.svg
+  dark: attio-dark.svg
+
+source:
+  mcp:
+    url: https://mcp.attio.com/mcp
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      # Discover OAuth settings and register a client with Attio automatically.
+      # The server asks for openid, offline_access and mcp, and access follows
+      # the user's Attio permissions, so the Recipe names no scopes. The server
+      # accepts no API key.
+      method: oauth_discovery
+      label: Sign in with Attio
+      flow: authorization_code
+      documentation_url: https://docs.attio.com/mcp/overview

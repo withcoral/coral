@@ -1,0 +1,332 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "coral/management/v1/provider.proto";
+
+// Reef-only account administration. Material is write-only. Each method applies
+// current domain authority; Workspace ownership never exposes another User's work.
+service ProviderAccountService {
+  // Complete exact-Agent Provider inspection. Never lists Agents or User accounts.
+  rpc ListAgentProviders(ListAgentProvidersRequest) returns (ListAgentProvidersResponse);
+  // The authenticated User's own Account for every separate-account Provider.
+  rpc ListUserAccounts(ListUserAccountsRequest) returns (ListUserAccountsResponse);
+  // Inspects one exact Provider Account scope.
+  rpc GetProviderAccount(GetProviderAccountRequest) returns (GetProviderAccountResponse);
+  // Starts durable secret entry or host-owned OAuth against the target's contract.
+  rpc StartProviderAccountAuthorization(StartProviderAccountAuthorizationRequest) returns (ProviderAccountAuthorization);
+  // Reads only the initiating User's durable authorization.
+  rpc GetProviderAccountAuthorization(GetProviderAccountAuthorizationRequest) returns (ProviderAccountAuthorization);
+  // Completes secret entry without returning the submitted value.
+  rpc SubmitProviderAccountSecret(SubmitProviderAccountSecretRequest) returns (ProviderAccountAuthorization);
+  // Completes setup or account OAuth from host-issued state and exchanges a code once.
+  rpc CompleteProviderSetupAuthorization(CompleteProviderSetupAuthorizationRequest) returns (CompleteProviderSetupAuthorizationResponse);
+  // Explicit cancellation; disconnection alone does not cancel.
+  rpc CancelProviderAccountAuthorization(CancelProviderAccountAuthorizationRequest) returns (ProviderAccountAuthorization);
+  // Scrubs credentials and preserves Account identity and authorization fences.
+  rpc DisconnectProviderAccount(DisconnectProviderAccountRequest) returns (google.protobuf.Empty);
+  // Inspects only the requesting User's connection workflow.
+  rpc GetAccountConnectionRequest(GetAccountConnectionRequestRequest) returns (AccountConnectionRequest);
+  // Declines a pending connection request; first terminal result wins.
+  rpc ResolveAccountConnectionRequest(ResolveAccountConnectionRequestRequest) returns (AccountConnectionRequest);
+}
+
+// Lists Provider readiness and permitted Account actions for one exact Agent.
+message ListAgentProvidersRequest {
+  // workspaces/{workspace}/agents/{agent}; Owner authority is required.
+  string parent = 1;
+}
+
+// Complete Agent-detail projection from one snapshot, not an Account inventory.
+message ListAgentProvidersResponse {
+  // Readiness, status, and actions come from the same domain snapshot.
+  repeated AgentProviderInspection providers = 1;
+}
+
+// How one Provider supplies credentials for this Agent.
+message AgentProviderInspection {
+  // Metadata and exact-Agent readiness. Agent access settings apply separately.
+  Provider provider = 1;
+  // Exact scope already selected and authorized by the domain.
+  oneof account_use {
+    // The setting supplies no credentials; readiness reports any incompatibility.
+    google.protobuf.Empty no_account = 2;
+    // Uses the Provider's shared Account; no per-Agent provisioning.
+    GetProviderAccountResponse shared_account = 3;
+    // The exact Agent's Account and permitted actions.
+    GetProviderAccountResponse separate_account = 4;
+  }
+}
+
+// Lists the authenticated User's own Accounts; never another User's.
+message ListUserAccountsRequest {
+  // workspaces/{workspace}; current Workspace access is required.
+  string parent = 1;
+}
+
+// One row per separate-account Provider, from one domain snapshot.
+message ListUserAccountsResponse {
+  // Provider order is stable; absent Accounts are not allocated.
+  repeated UserAccountInspection accounts = 1;
+}
+
+// One separate-account Provider and the authenticated User's exact Account.
+message UserAccountInspection {
+  // Exact canonical Provider name.
+  string provider = 1;
+  // The Provider's display name.
+  string provider_display_name = 2;
+  // Account status and permitted actions for the authenticated User.
+  GetProviderAccountResponse account = 3;
+  // This User's pending request while a Run waits on the connection.
+  AccountConnectionRequest pending_connection = 4;
+}
+
+// Owner selection never accepts another User identifier.
+enum ProviderAccountScope {
+  // Not a valid selection.
+  PROVIDER_ACCOUNT_SCOPE_UNSPECIFIED = 0;
+  // The authenticated User.
+  PROVIDER_ACCOUNT_SCOPE_USER = 1;
+  // One Workspace-owned Agent, requiring current Owner authority.
+  PROVIDER_ACCOUNT_SCOPE_AGENT = 2;
+  // The Provider's shared Account.
+  PROVIDER_ACCOUNT_SCOPE_SHARED = 3;
+}
+
+// Current safe credential state, not dispatch authority.
+enum ProviderAccountState {
+  // Unknown; never imply readiness.
+  PROVIDER_ACCOUNT_STATE_UNSPECIFIED = 0;
+  // Compatible usable credentials.
+  PROVIDER_ACCOUNT_STATE_READY = 1;
+  // Contract incompatibility or permanent refresh rejection.
+  PROVIDER_ACCOUNT_STATE_RECONNECT_REQUIRED = 2;
+  // Disconnected, including a record awaiting its initial connection.
+  PROVIDER_ACCOUNT_STATE_DISCONNECTED = 3;
+}
+
+// An opaque Account reference with safe readiness, never upstream account metadata.
+message ProviderAccount {
+  // UUID, not a credential or private credential generation.
+  string id = 1;
+  // Safe current state for the inspected contract.
+  ProviderAccountState state = 2;
+  // OAuth grant exactly as the service reported it; never compared with the request.
+  string granted_scope = 3;
+  // Exact scope in which the inspecting User can manage this record.
+  string management_parent = 4;
+  // Whether current authority permits managing the Account.
+  bool can_manage = 5;
+  // Present for OAuth: whether the accepted grant can refresh automatically.
+  optional bool automatic_refresh = 6;
+  // Latest successful connection; absent until credentials are first committed.
+  google.protobuf.Timestamp connected_time = 7;
+  // Configuring Coral User identifier, not a verified upstream identity.
+  string configured_by_user = 8;
+}
+
+// Inspects one exact scope; no all-Users inspection exists.
+message GetProviderAccountRequest {
+  // workspaces/{workspace}; the Workspace that owns the Account.
+  string parent = 1;
+  // Exact canonical Provider name.
+  string provider = 2;
+  // Account scope to inspect.
+  ProviderAccountScope scope = 3;
+  // Exact Agent name when scope is AGENT; empty otherwise.
+  string agent = 4;
+}
+
+// Safe connection evidence and requirements for authorization.
+message GetProviderAccountResponse {
+  // The exact Account, absent before its first authorization attempt.
+  ProviderAccount account = 1;
+  // Active credential method, never its material or destinations.
+  CredentialMethod credential_method = 2;
+  // The Credential Fields a person enters for secret entry, by field name.
+  map<string, CredentialField> credential_fields = 6;
+  // Exact requested OAuth scopes.
+  repeated string requested_scopes = 3;
+  // Current permission to start an initial connection for this exact scope.
+  bool can_connect = 4;
+  // Current permission to replace this connected Account's authorization.
+  bool can_reconnect = 5;
+}
+
+// One exact Agent caller provider.
+message AgentAccountAuthorizationTarget {
+  // workspaces/{workspace}/agents/{agent}.
+  string agent = 1;
+  // Exact Provider in the same Workspace.
+  string provider = 2;
+}
+
+// Explicitly replaces the exact Account's authorization.
+message AccountReconnectTarget {
+  // Exact canonical Provider name.
+  string provider = 1;
+  // Exact opaque Account reference.
+  string account = 2;
+}
+
+// Starts one durable authorization; exact request replay returns the same workflow.
+message StartProviderAccountAuthorizationRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Required first-party UUID.
+  string request_id = 2;
+  // Host-derived Reef callback, never a browser-selected destination.
+  string redirect_uri = 3;
+  reserved 8;
+  reserved "connection_request";
+  // Exactly one authorization target.
+  oneof target {
+    // Initial connection of this Provider's shared Account.
+    string shared_provider = 4;
+    // Initial connection of the authenticated User's exact Account.
+    string provider = 5;
+    // Initial connection of one exact Agent's Account.
+    AgentAccountAuthorizationTarget agent_account = 6;
+    // Explicit credential replacement.
+    AccountReconnectTarget reconnect = 7;
+  }
+}
+
+// Durable progress; no token, code, PKCE verifier, or account metadata.
+message ProviderAccountAuthorization {
+  // Device-code progress, in three states:
+  // - unset: not an open device-code authorization;
+  // - empty: a device-code authorization still requesting the code from the Provider;
+  // - nonempty: the code the person enters at the verification page, never the
+  //   private device code.
+  optional string user_code = 14;
+  // {parent}/accountAuthorizations/{authorization}.
+  string name = 1;
+  // Same closed progress states as setup-scoped authorization.
+  SetupAuthorizationState state = 2;
+  // Fresh checked issuance, server-only. Reef obtains it again before each navigation.
+  ProviderConsentNavigation consent_navigation = 3;
+  // This read refused issuance; progress remains readable and navigation is absent.
+  bool consent_rejected = 13;
+  // Connected Account identifier after success.
+  string account = 4;
+  // Independent host deadline.
+  google.protobuf.Timestamp expire_time = 5;
+  // Safe terminal failure code.
+  string failure_code = 6;
+  // OAuth grant exactly as the service reported it after success.
+  string granted_scope = 7;
+  // Present after successful OAuth authorization.
+  optional bool automatic_refresh = 8;
+  // The Credential Fields a person enters for secret entry, by field name;
+  // labelled as the Provider presents them when read.
+  map<string, CredentialField> credential_fields = 12;
+  // Exact accepted scope, retained through callback and replay. Never retargeted.
+  oneof target {
+    // Shared Account for this Provider.
+    string shared_provider = 9;
+    // The authenticated User's Account for this Provider.
+    string user_provider = 10;
+    // One exact Agent's Account for this Provider.
+    AgentAccountAuthorizationTarget agent_account = 11;
+  }
+}
+
+// Reads one exact authorization.
+message GetProviderAccountAuthorizationRequest {
+  // Canonical authorization name.
+  string name = 1;
+}
+
+// Write-only secret entry.
+message SubmitProviderAccountSecretRequest {
+  reserved 2;
+  reserved "secret";
+  // Canonical authorization name.
+  string name = 1;
+  // Write-only Credential Field values by field name; never returned, echoed, or logged.
+  map<string, string> credential_values = 3;
+}
+
+// Encoded OAuth callback data, passed only from the Reef server to Coral.
+message CompleteProviderSetupAuthorizationRequest {
+  // Query without a leading question mark; retain duplicates for domain validation.
+  // Contains write-only state and code, excluded from responses and telemetry.
+  string query = 1;
+}
+
+// Safe reference to the workflow that accepted the callback, including replays.
+message CompleteProviderSetupAuthorizationResponse {
+  // Exactly one workflow, resolved and authorized by Coral from the callback state.
+  oneof workflow {
+    // Canonical Setup name for configuration and setup-scoped authorization.
+    string provider_setup = 1;
+    // Canonical authorization name for an already published Provider's account.
+    string account_authorization = 2;
+  }
+}
+
+// Explicit cancellation.
+message CancelProviderAccountAuthorizationRequest {
+  // Canonical authorization name.
+  string name = 1;
+}
+
+// Disconnects one Account in the owning User's or administrative scope.
+message DisconnectProviderAccountRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Exact canonical Provider name.
+  string provider = 2;
+  // Exact opaque Account reference.
+  string account = 3;
+}
+
+// Reads the invoking User's exact request.
+message GetAccountConnectionRequestRequest {
+  // workspaces/{workspace}/accountConnections/{request}.
+  string name = 1;
+}
+
+// Durable connection progress. First terminal decision wins.
+enum AccountConnectionState {
+  // Unknown; never offer resolution based on this value.
+  ACCOUNT_CONNECTION_STATE_UNSPECIFIED = 0;
+  // Waiting for the requesting User.
+  ACCOUNT_CONNECTION_STATE_PENDING = 1;
+  // Exact Account connected.
+  ACCOUNT_CONNECTION_STATE_CONNECTED = 2;
+  // User declined.
+  ACCOUNT_CONNECTION_STATE_DECLINED = 3;
+  // Host deadline elapsed.
+  ACCOUNT_CONNECTION_STATE_EXPIRED = 4;
+  // Provider removed or route changed; never retargeted.
+  ACCOUNT_CONNECTION_STATE_ROUTE_CHANGED = 5;
+  // The expected Account authorization changed.
+  ACCOUNT_CONNECTION_STATE_AUTHORIZATION_CHANGED = 6;
+}
+
+// A User-private connection workflow. Not a Run or Invocation detail projection.
+message AccountConnectionRequest {
+  // Canonical non-authorizing name.
+  string name = 1;
+  // Exact Provider; never silently retargeted.
+  string provider = 2;
+  // Current durable state.
+  AccountConnectionState state = 3;
+  // Independent host deadline.
+  google.protobuf.Timestamp expire_time = 4;
+}
+
+// First terminal decision wins. New-account authorization uses the start method.
+message ResolveAccountConnectionRequestRequest {
+  // Canonical request name.
+  string name = 1;
+  // Exactly one explicit decision.
+  oneof decision {
+    // Decline without changing an Account.
+    google.protobuf.Empty decline = 3;
+  }
+}

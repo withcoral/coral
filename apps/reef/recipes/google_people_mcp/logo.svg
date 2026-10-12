@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" width="16" height="16" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 16 16">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: none;
+      }
+
+      .cls-2 {
+        clip-path: url(#clippath);
+      }
+    </style>
+    <clipPath id="clippath">
+      <path class="cls-1" d="M14.72,8.16c0-.46-.05-.81-.11-1.16h-6.61v2.4h3.97c-.1.62-.52,1.59-1.45,2.26v.02h-.01c-.6.42-1.42.74-2.51.74-1.89,0-3.48-1.24-4.08-2.96h-.01s.01-.01.01-.01c-.15-.45-.26-.94-.26-1.45s.1-1,.26-1.45h0c.6-1.72,2.19-2.97,4.08-2.97,1.36,0,2.27.58,2.79,1.08l1.9-1.83c-1.22-1.14-2.8-1.83-4.69-1.83-2.74,0-5.1,1.57-6.25,3.86-.48.95-.75,2.01-.75,3.14s.27,2.19.75,3.14h0c1.15,2.29,3.51,3.86,6.25,3.86,1.89,0,3.47-.63,4.63-1.69h-.01s.02-.01.02-.01c1.32-1.21,2.08-3.01,2.08-5.14Z"/>
+    </clipPath>
+  </defs>
+  <g id="_16" data-name="16">
+    <g class="cls-2">
+      <image width="16" height="16" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAB0klEQVR4AXXPNRpVQQyG4e+fzBXc3bXDqeipkA3g3tPji8CWgpU0uFS4u8PVMwnu8D7jmigOTKOVedXkXYMPDbqZyhBEApGabvVIWV6RakBi4gd+FWAgAcj4LlLmiy/diM6PZVz0DEBCRspfSg2Iz0W2dwvkghUQxajS51IEKczCBoQMKQAEyozs0yg0HUuQKYmSiYTzlcJDiS+KUmagkaFWyO3PN1v1s7b0fCyoqCELDBlKihAhyORMcoB6P6p4P9af9/JRW9tTg1+kcBHZSw7voaymcK5q/imtPm3LK4zfOQKVlNLnCwFKkfR62LDj9VU3ba7L+IP0tdjuHQh50MXvBndr7Vai3ZoOFjgqEEJ8JiAF9Lx67/27VdVvXJ8z4fDkiYekiv+wndv0OHjp8TC47AOul6GXW4uf5n5ryPX3jVft2rtu7netWxQCQrZ5q15E3Auue7oTjTs+9FYtXg2582HIzQ+D7rcGPGvV3/cszOuRPIXZyi08CO5Fuu0D78TQ62VqN5qV6sUHkb7mYB65yAMh2bLPF/Qwmvdj6OMY+cLH9hhURVMCJETUoOZYUXKFLd6kZ9Sf+oBnMfyFj2jHwE4McowvBJCxXpW8/6lY/yOQVO3ukrVKwgAAAABJRU5ErkJggg=="/>
+    </g>
+  </g>
+</svg>

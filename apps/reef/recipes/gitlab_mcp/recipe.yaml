@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.gitlab.com/user/model_context_protocol/mcp_server/
+# Resource metadata advertises the mcp scope. Dynamic registration supplies the default MCP scope.
+schema_version: 1
+id: gitlab_mcp
+service: gitlab
+display_name: GitLab.com
+description: Projects, issues, merge requests and pipelines from GitLab.
+source:
+  mcp:
+    url: https://gitlab.com/api/v4/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with GitLab
+      documentation_url: https://docs.gitlab.com/user/model_context_protocol/mcp_server/
+      flow: authorization_code
+icons:
+  light: logo.svg

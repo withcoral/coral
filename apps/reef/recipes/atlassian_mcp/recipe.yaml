@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://support.atlassian.com/atlassian-ai-gateway/docs/get-started-with-the-atlassian-remote-mcp-server/
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: atlassian_mcp
+display_name: Atlassian
+description: Jira issues, Confluence pages, service requests and repositories from Atlassian MCP.
+source:
+  mcp:
+    url: https://mcp.atlassian.com/v2/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://support.atlassian.com/atlassian-ai-gateway/docs/get-started-with-the-atlassian-remote-mcp-server/
+      flow: authorization_code
+icons:
+  light: logo.svg

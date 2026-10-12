@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: x
+display_name: X
+description: Posts, users, search results, timelines, mentions and engagement from X.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+
+source:
+  openapi:
+    url: https://api.x.com/2/openapi.json
+
+authentication:
+  options:
+    access_token:
+      method: bearer
+      label: Access token
+      description: Use the app-only or user-context token required by your Operations.
+      documentation_url: https://docs.x.com/fundamentals/authentication/overview

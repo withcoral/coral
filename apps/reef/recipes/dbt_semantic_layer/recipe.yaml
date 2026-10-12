@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.getdbt.com/docs/dbt-ai/setup-remote-mcp
+# Scopes come from account-specific OAuth resource metadata.
+# Bearer token auth requires x-dbt-prod-environment-id; omitted because headers differ from OAuth.
+schema_version: 1
+id: dbt_semantic_layer
+display_name: dbt Semantic Layer
+description: Metrics, models, semantic queries and jobs from dbt.
+source:
+  mcp:
+    url: https://{{input.hostname}}/api/ai/v1/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with dbt
+      flow: authorization_code
+      documentation_url: https://docs.getdbt.com/docs/dbt-ai/setup-remote-mcp
+  default: oauth
+inputs:
+  hostname:
+    type: hostname
+    label: dbt account hostname
+icons:
+  light: logo.svg

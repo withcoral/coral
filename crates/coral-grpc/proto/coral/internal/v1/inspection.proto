@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package coral.internal.v1;
+
+// Private MCP inspection. Reachability does not grant resource visibility.
+service TaskService {
+  // Gets an authorized Task's declared intent; Agents cannot inspect Task history.
+  rpc GetTask(GetTaskRequest) returns (Task);
+}
+
+// Identifies a Task without selecting the authenticated Principal.
+message GetTaskRequest {
+  // Required. workspaces/{workspace}/tasks/{task}.
+  string name = 1;
+}
+
+// Authorized Task intent inspection.
+message Task {
+  // Immutable resource name: workspaces/{workspace}/tasks/{task}.
+  string name = 1;
+  // Private declared intent, visible only under the Task owner's rules.
+  string intent = 2;
+}

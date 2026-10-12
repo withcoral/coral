@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://dev.twitch.tv/docs/api/reference/
+schema_version: 1
+id: twitch
+display_name: Twitch
+description: Streams, channels, videos, clips, chat and moderation from Twitch.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/DmitryScaletta/twitch-api-swagger/main/openapi.json
+authentication:
+  options:
+    access_token:
+      method: header_credentials
+      label: OAuth access token
+      documentation_url: https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/
+      fields:
+        access_token:
+          label: Access token
+        client_id:
+          label: Client ID
+          sensitive: false
+      headers:
+        authorization:
+          field: access_token
+          prefix: 'Bearer '
+        client-id:
+          field: client_id
+icons:
+  light: logo.svg

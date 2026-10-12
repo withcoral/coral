@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://confidence.spotify.com/docs/quickstarts/use-mcp
+# Requires an existing Confidence client; live endpoint DNS check failed in this environment.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+schema_version: 1
+id: confidence_exp
+display_name: Confidence Exp
+description: Experiments, results and rollouts from Confidence Exp.
+source:
+  mcp:
+    url: https://mcp.confidence.dev/mcp/experiments
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://confidence.spotify.com/docs/quickstarts/use-mcp
+      flow: authorization_code
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

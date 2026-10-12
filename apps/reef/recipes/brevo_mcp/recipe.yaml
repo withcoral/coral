@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.brevo.com/docs/mcp-protocol
+# Live protected-resource and authorization metadata advertise OAuth, dynamic registration and the all scope.
+# MCP API keys use Bearer, rather than the REST api-key header.
+schema_version: 1
+id: brevo_mcp
+service: brevo
+display_name: Brevo
+description: Contacts, campaigns, messages, deals and account settings from Brevo.
+source:
+  mcp:
+    url: https://mcp.brevo.com/v1/brevo/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Brevo
+      documentation_url: https://developers.brevo.com/docs/mcp-protocol
+      flow: authorization_code
+    mcp_key:
+      method: bearer
+      label: Paste an MCP API key
+      documentation_url: https://developers.brevo.com/docs/integration-guide
+      description: Create an API key with the MCP option enabled.
+icons:
+  light: logo.svg

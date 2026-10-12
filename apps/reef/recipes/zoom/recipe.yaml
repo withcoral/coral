@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.zoom.us/docs/mcp/zoom/
+# Official brand asset: https://st1.zoom.us/homepage/20260930-1234/primary/favicon.ico
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: zoom
+display_name: Zoom
+description: Meetings, recordings, documents and meeting content from Zoom.
+source:
+  mcp:
+    url: https://mcp.zoom.us/mcp/zoom/streamable
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://developers.zoom.us/docs/mcp/zoom/
+      description: Create a Zoom OAuth app. Add the required scopes and register the callback URL.
+      flow: authorization_code
+      client:
+        authentication: client_secret_basic
+icons:
+  light: logo.png

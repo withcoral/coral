@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.productboard.com/reference/mcp-install
+# Official logo: https://www.productboard.com/apple-touch-icon.png
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: productboard
+display_name: Productboard
+description: Customer feedback, notes and product priorities from Productboard.
+icons:
+  light: productboard.png
+source:
+  mcp:
+    url: https://mcp.productboard.com
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Productboard
+      documentation_url: https://developer.productboard.com/reference/mcp-install
+      flow: authorization_code
+  default: oauth

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://help.fathom.video/en/articles/11497793
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: fathom
+display_name: Fathom
+description: Meeting recordings, transcripts and summaries from Fathom.
+icons:
+  light: logo.png
+source:
+  mcp:
+    url: https://api.fathom.ai/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Fathom
+      documentation_url: https://help.fathom.video/en/articles/11497793
+      flow: authorization_code
+  default: oauth

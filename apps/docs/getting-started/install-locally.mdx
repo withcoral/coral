@@ -1,0 +1,92 @@
+---
+title: "Install the desktop app"
+sidebarTitle: "Desktop app"
+description: "Run Coral on your own machine, for yourself."
+---
+
+Coral ships as a desktop app on macOS, Linux, and Windows.
+
+## Install Coral
+
+Download Coral from the [releases page](https://github.com/withcoral/coral-releases/releases). The newest release is at the top. Open its **Assets** list and download the file for your platform.
+
+<Tabs>
+<Tab title="macOS">
+
+The macOS app runs on Apple silicon only.
+
+1. Download `coral-app-mac-arm64.dmg` from the [newest release](https://github.com/withcoral/coral-releases/releases).
+2. Open the DMG and drag **Coral** into your Applications folder.
+3. Launch Coral and add your first providers from the app.
+
+</Tab>
+
+<Tab title="Linux">
+
+On Linux, Coral is an x86_64 AppImage, so there's nothing to install.
+
+1. Download `coral-app-linux-x86_64.AppImage` from the [newest release](https://github.com/withcoral/coral-releases/releases).
+2. Make it executable and run it:
+
+   ```shellscript
+   chmod +x coral-app-linux-x86_64.AppImage
+   ./coral-app-linux-x86_64.AppImage
+   ```
+
+3. Add your first providers from the app.
+
+</Tab>
+
+<Tab title="Windows">
+
+The Windows app is x64 only.
+
+1. Download `coral-app-win-x64.exe` from the [newest release](https://github.com/withcoral/coral-releases/releases).
+2. Run the installer. It doesn't need administrator rights.
+3. Launch **Coral** from the Start menu and add your first providers from the app.
+
+</Tab>
+</Tabs>
+
+Coral keeps running in the background after you close the window, so your agents can still reach it.
+
+## Upgrade
+
+The desktop app updates itself. It downloads updates in the background.
+
+When an update is ready, Coral lets you know. Select **Restart to Update** to install it right away, or it installs the next time you quit.
+
+To check yourself, select **Check for Updates…** in the **Coral** menu on macOS, or in the **Help** menu on Linux and Windows.
+
+On Linux, Coral replaces the AppImage file in place, so keep it somewhere you can write to.
+
+### From Coral 0.x
+
+Coral 1.0 is a new app with its own data folder. It doesn't update the 0.x app, and it doesn't read or change that app's data. Install Coral 1.0 as described above, then add your providers again. Uninstall the 0.x app when you no longer need it.
+
+If you run the `coral` runtime yourself instead of the desktop app, see [Upgrade from Coral 0.x](/getting-started/self-host#upgrade-from-coral-0-x).
+
+## Uninstall
+
+<Tabs>
+<Tab title="macOS">
+
+Select **Coral** > **Quit Completely**, then move Coral to the trash. **Quit Coral** only closes the window.
+
+</Tab>
+
+<Tab title="Linux">
+
+Quit Coral and delete the AppImage file.
+
+</Tab>
+
+<Tab title="Windows">
+
+Quit Coral, then remove it from **Settings** > **Apps** > **Installed apps**. You
+can also run `Uninstall Coral.exe` in the installation directory.
+
+</Tab>
+</Tabs>
+
+Uninstalling keeps your data, so your providers and accounts are still there if you reinstall.

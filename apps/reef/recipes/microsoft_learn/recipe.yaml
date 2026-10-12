@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: microsoft_learn
+display_name: Microsoft Learn
+description: Documentation, articles and code samples from Microsoft Learn.
+
+icons:
+  light: logo.png
+
+# Microsoft's public Streamable HTTP server requires no authentication.
+# https://learn.microsoft.com/en-us/training/support/mcp
+source:
+  mcp:
+    url: https://learn.microsoft.com/api/mcp
+
+authentication:
+  options:
+    public:
+      method: none
+      label: Use public documentation
+      documentation_url: https://learn.microsoft.com/en-us/training/support/mcp

@@ -17,22 +17,25 @@ target
 # Added by cargo
 /target
 
+# Pi local settings
+.pi/settings.json
+
 # Claude Code local settings
 .claude/settings.local.json
 /.claude/worktrees
 
-# Local env files
+# Local env files and isolated development credentials/state
 .envrc
 /.env
+/.dev/
 
 # Local task files
 tasks/
-/.github/scripts/__pycache__
 
 # Playwright CLI validation artifacts
 .playwright-cli/
 .verify/
 
-# Universal Search benchmark run artifacts. Reviewed corpora may be committed
-# directly under benchmarks/universal-search/.
-/benchmarks/universal-search/runs/
+# Recorded UI evidence (videos, traces, logs and scenario snapshots)
+/apps/reef/e2e/runs/
+/apps/reef/e2e/generated/

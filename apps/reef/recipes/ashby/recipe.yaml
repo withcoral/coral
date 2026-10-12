@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# OAuth scopes come from the selected server's public metadata.
+schema_version: 1
+id: ashby
+display_name: Ashby
+description: Candidates, jobs, interviews and recruiting actions from Ashby.
+source:
+  mcp:
+    url: https://mcp.ashbyhq.com/mcp/v1
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Ashby
+      documentation_url: https://docs.ashbyhq.com/ashby-mcp-server-beta
+      flow: authorization_code
+      description: Enable MCP in Ashby. Connect an account with Elevated Access.
+icons:
+  light: logo.png

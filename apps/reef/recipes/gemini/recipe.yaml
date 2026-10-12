@@ -1,0 +1,56 @@
+# yaml-language-server: $schema=../schema.json
+# Official documentation: https://ai.google.dev/gemini-api/docs/api-key
+# Official OAuth documentation: https://ai.google.dev/gemini-api/docs/oauth
+# Regenerate all 86 Discovery methods with:
+# node apps/reef/scripts/google-discovery-openapi.ts 'https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta' gemini x-goog-api-key
+schema_version: 1
+id: gemini
+display_name: Gemini
+description: Models, content, embeddings, files and batch jobs from Gemini.
+source:
+  openapi:
+    file: openapi.json
+inputs:
+  project_id:
+    type: string
+    label: Google Cloud project ID
+request_headers:
+  x-goog-user-project: '{{input.project_id}}'
+authentication:
+  default: api_key
+  options:
+    api_key:
+      method: header_credentials
+      label: Paste a Gemini API key
+      documentation_url: https://ai.google.dev/gemini-api/docs/api-key
+      fields:
+        api_key:
+          label: Gemini API key
+      headers:
+        x-goog-api-key:
+          field: api_key
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in with Google
+      description: Configure your Google OAuth application before you sign in.
+      documentation_url: https://ai.google.dev/gemini-api/docs/oauth
+      authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+      token_url: https://oauth2.googleapis.com/token
+      client:
+        authentication: client_secret_post
+      scopes:
+        # Cloud project API access and quota billing, documented by the OAuth guide.
+        - https://www.googleapis.com/auth/cloud-platform
+        # Corpus and semantic retrieval access, documented by the OAuth guide.
+        - https://www.googleapis.com/auth/generative-language.retriever
+        # GCS input data reads, advertised by the complete Discovery document.
+        - https://www.googleapis.com/auth/devstorage.read_only
+      authorization_parameters:
+        access_type: offline
+        prompt: consent
+    access_token:
+      method: bearer
+      label: Paste an OAuth access token
+      documentation_url: https://ai.google.dev/gemini-api/docs/oauth
+icons:
+  light: logo.svg

@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.asana.com/docs/integrating-with-asanas-mcp-server
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: asana
+display_name: Asana
+description: Tasks, projects, teams and workspaces from Asana.
+source:
+  mcp:
+    url: https://mcp.asana.com/v2/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://developers.asana.com/docs/integrating-with-asanas-mcp-server
+      description: Create an Asana MCP app. Register the callback URL shown during setup.
+      flow: authorization_code
+      client:
+        authentication: client_secret_post
+icons:
+  light: logo.svg

@@ -1,0 +1,133 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "coral/management/v1/workspace.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+// Workspace Membership management. A Membership is the only source of Workspace authority.
+service WorkspaceMembershipService {
+  // Owner-only listing of Memberships.
+  rpc ListWorkspaceMemberships(ListWorkspaceMembershipsRequest) returns (ListWorkspaceMembershipsResponse);
+  // A Member may inspect only their own Membership.
+  rpc GetWorkspaceMembership(GetWorkspaceMembershipRequest) returns (WorkspaceMembership);
+  // Adds an eligible User as a designated Member or Owner.
+  rpc CreateWorkspaceMembership(CreateWorkspaceMembershipRequest) returns (WorkspaceMembership);
+  // Changes the designated role with an exact etag.
+  rpc UpdateWorkspaceMembership(UpdateWorkspaceMembershipRequest) returns (WorkspaceMembership);
+  // Owners remove a Membership; a Member may leave by deleting their own.
+  // The last designated Owner cannot leave, be removed, or be demoted.
+  rpc DeleteWorkspaceMembership(DeleteWorkspaceMembershipRequest) returns (google.protobuf.Empty);
+  // Safe directory of designated Owners, available to Members.
+  rpc ListWorkspaceOwners(ListWorkspaceOwnersRequest) returns (ListWorkspaceOwnersResponse);
+}
+
+// One designated Membership.
+message WorkspaceMembership {
+  reserved 8;
+  reserved "inherited_owner";
+  // workspaces/{workspace}/memberships/{user}.
+  string name = 1;
+  // Safe stable User resource name.
+  string user = 2;
+  // Designated role; unspecified and unknown values are rejected on writes.
+  WorkspaceRole role = 3;
+  // Current opaque concurrency token.
+  string etag = 4;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 5;
+  // Last change time.
+  google.protobuf.Timestamp update_time = 6;
+  // Profile visible under this Membership's inspection authority.
+  UserProfile profile = 7;
+  // Whether the Member's Organization Membership is enabled. A disabled
+  // Member keeps this Membership and its role.
+  bool enabled = 9;
+}
+
+// Owner-only page request.
+message ListWorkspaceMembershipsRequest {
+  // Canonical Workspace name.
+  string parent = 1;
+  // Zero defaults to 30; maximum 100.
+  int32 page_size = 2;
+  // Non-authorizing opaque continuation.
+  string page_token = 3;
+}
+
+// One page of designated Memberships.
+message ListWorkspaceMembershipsResponse {
+  // Current designated Memberships only.
+  repeated WorkspaceMembership memberships = 1;
+  // Empty at end.
+  string next_page_token = 2;
+}
+
+// Exact Membership inspection.
+message GetWorkspaceMembershipRequest {
+  // Canonical Membership name.
+  string name = 1;
+}
+
+// Owner's addition of an eligible User.
+message CreateWorkspaceMembershipRequest {
+  // Canonical Workspace name.
+  string parent = 1;
+  reserved 2, 4;
+  reserved "membership", "lookup_evidence";
+  // First-party UUID. Committed replays are rejected before resolving email again.
+  string request_id = 3;
+  // Exact verified email of one eligible existing User; no alias rewriting.
+  string email = 5;
+  // Designated role; unspecified and unknown values are rejected.
+  WorkspaceRole role = 6;
+}
+
+// Designated role change.
+message UpdateWorkspaceMembershipRequest {
+  // Name, etag and masked role.
+  WorkspaceMembership membership = 1;
+  // Required; only role is supported.
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+// Removes Membership and the User's current private work in this Workspace.
+// Historical work remains.
+message DeleteWorkspaceMembershipRequest {
+  // Canonical Membership name.
+  string name = 1;
+  // Required current concurrency token.
+  string etag = 2;
+}
+
+// Safe designated-Owner listing.
+message ListWorkspaceOwnersRequest {
+  // Canonical Workspace name.
+  string parent = 1;
+  // Zero defaults to 30; maximum 100.
+  int32 page_size = 2;
+  // Non-authorizing opaque continuation.
+  string page_token = 3;
+}
+
+// Designated Owners on record.
+message ListWorkspaceOwnersResponse {
+  // Safe User identifiers and profiles only.
+  repeated WorkspaceOwner owners = 1;
+  // Empty at end.
+  string next_page_token = 2;
+}
+
+// Safe designated Owner attribution.
+message WorkspaceOwner {
+  reserved 2;
+  reserved "authority_source";
+  // User resource name; no private work or Account connection metadata.
+  string user = 1;
+  // Owner's authorized name and email.
+  UserProfile profile = 3;
+  // Whether the Owner's Organization Membership is enabled. A disabled Owner
+  // is still the Owner on record.
+  bool enabled = 4;
+}

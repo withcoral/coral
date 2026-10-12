@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://support.pendo.io/hc/en-us/articles/41102236924955-Connect-to-the-Pendo-MCP-server
+# Official logo: https://www.pendo.io:443/apple-touch-icon.png
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: pendo
+display_name: Pendo
+description: Product analytics, guides and account insights from Pendo.
+icons:
+  light: pendo.png
+source:
+  mcp:
+    url: '{{input.endpoint}}'
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Pendo
+      documentation_url: https://support.pendo.io/hc/en-us/articles/41102236924955-Connect-to-the-Pendo-MCP-server
+      flow: authorization_code
+  default: oauth
+inputs:
+  endpoint:
+    type: url
+    label: MCP region
+    default: https://app.pendo.io/mcp/v0/shttp
+    enum:
+      - https://app.pendo.io/mcp/v0/shttp
+      - https://us1.app.pendo.io/mcp/v0/shttp
+      - https://app.eu.pendo.io/mcp/v0/shttp
+      - https://app.jpn.pendo.io/mcp/v0/shttp
+      - https://app.au.pendo.io/mcp/v0/shttp
+    documentation_url: https://support.pendo.io/hc/en-us/articles/41102236924955-Connect-to-the-Pendo-MCP-server

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ "${1:-}" == setup ]]; then
+  shift
+  exec bash "$root/scripts/dev/setup.sh" "$@"
+fi
+exec node "$root/scripts/dev/cli.mjs" "$@"

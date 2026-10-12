@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: integrations_sh
+display_name: integrations.sh
+description: The integrations.sh API.
+icons:
+  light: integrations_sh.svg
+  dark: integrations_sh-dark.svg
+
+source:
+  openapi:
+    url: https://integrations.sh/openapi.json
+
+authentication:
+  # Explicit: an omitted authentication block never means anonymous access.
+  options:
+    anonymous:
+      method: none
+      label: No authentication
+
+servers:
+  '#/servers':
+    base_url: https://integrations.sh

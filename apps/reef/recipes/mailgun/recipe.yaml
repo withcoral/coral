@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://documentation.mailgun.com/docs/mailgun/api-reference/authentication/
+# Choose the region that stores your domains.
+schema_version: 1
+id: mailgun
+display_name: Mailgun
+description: Messages, domains and mailing lists from Mailgun.
+source:
+  openapi:
+    url: https://documentation.mailgun.com/_bundle/docs/mailgun/api-reference/send/mailgun.json?download
+authentication:
+  options:
+    api_key:
+      method: basic_auth
+      label: API key
+      documentation_url: https://documentation.mailgun.com/docs/mailgun/api-reference/authentication/
+      fields:
+        api_key:
+          label: API key
+          sensitive: true
+      username:
+        literal: api
+      password:
+        field: api_key
+  default: api_key
+inputs:
+  region:
+    type: hostname
+    label: Mailgun region
+    default: api.mailgun.net
+    enum:
+      - api.mailgun.net
+      - api.eu.mailgun.net
+servers:
+  '#/servers':
+    base_url: https://{{input.region}}
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

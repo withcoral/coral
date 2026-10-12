@@ -1,0 +1,27 @@
+.git
+.cargo
+.context
+.agents
+.claude
+.codex
+.playwright-cli
+.verify
+.envrc
+.dev
+tasks
+target
+**/node_modules
+**/.env
+**/.env.*
+apps/reef/build
+apps/reef/server.mjs
+# Desktop build output, including a staged runtime binary
+apps/desktop/out
+apps/desktop/dist
+apps/desktop/resources/coral
+apps/desktop/resources/reef
+apps/reef/.react-router
+apps/reef/app/generated
+apps/reef/e2e/generated
+apps/reef/e2e/runs
+apps/reef/storybook-static

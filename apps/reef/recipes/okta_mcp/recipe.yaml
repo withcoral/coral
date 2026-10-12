@@ -1,0 +1,107 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://help.okta.com/mcp/en-us/content/topics/mcpserver/mcp-client-configuration-overview.htm
+# Official brand asset: https://www.okta.com/favicon.ico
+# Managed MCP is Early Access and requires the corresponding Okta subscriptions. It uses Streamable HTTP and MCP
+# 2025-11-25. Register a native OIDC app with PKCE; dynamic registration and API keys are unsupported. Scopes
+# explicitly request read/manage permissions for users, groups, apps, policies, device assurance and
+# customization; logs are read-only. The governance option adds access requests, certifications, entitlements,
+# delegates and principal settings. openid/profile identify the account and offline_access allows refresh.
+# Scope-to-tool mapping: https://help.okta.com/mcp/en-us/content/topics/mcpserver/scope-based-tool-loading.htm
+schema_version: 1
+id: okta_mcp
+service: okta
+display_name: Okta
+description: Users, groups, applications, policies and identity governance from Okta.
+source:
+  mcp:
+    url: https://{{input.org_domain}}/mcp
+authentication:
+  default: core_identity
+  options:
+    core_identity:
+      method: oauth_discovery
+      label: Sign in with Okta
+      documentation_url: https://help.okta.com/mcp/en-us/content/topics/mcpserver/oidc-pkce-browser-based.htm
+      flow: authorization_code
+      description: Enable Core Identity MCP. Register an OIDC app and grant the requested scopes.
+      scopes:
+        - openid
+        - profile
+        - offline_access
+        - okta.users.read
+        - okta.users.manage
+        - okta.groups.read
+        - okta.groups.manage
+        - okta.apps.read
+        - okta.apps.manage
+        - okta.policies.read
+        - okta.policies.manage
+        - okta.logs.read
+        - okta.deviceAssurance.read
+        - okta.deviceAssurance.manage
+        - okta.brands.read
+        - okta.brands.manage
+        - okta.templates.read
+        - okta.templates.manage
+        - okta.domains.read
+        - okta.domains.manage
+        - okta.emailDomains.read
+        - okta.emailDomains.manage
+    identity_governance:
+      method: oauth_discovery
+      label: Sign in with Okta with Identity Governance
+      documentation_url: https://help.okta.com/mcp/en-us/content/topics/mcpserver/oidc-pkce-browser-based.htm
+      flow: authorization_code
+      description: Enable Core Identity and Identity Governance MCP. Grant the requested scopes on your OIDC app.
+      scopes:
+        - openid
+        - profile
+        - offline_access
+        - okta.users.read
+        - okta.users.manage
+        - okta.groups.read
+        - okta.groups.manage
+        - okta.apps.read
+        - okta.apps.manage
+        - okta.policies.read
+        - okta.policies.manage
+        - okta.logs.read
+        - okta.deviceAssurance.read
+        - okta.deviceAssurance.manage
+        - okta.brands.read
+        - okta.brands.manage
+        - okta.templates.read
+        - okta.templates.manage
+        - okta.domains.read
+        - okta.domains.manage
+        - okta.emailDomains.read
+        - okta.emailDomains.manage
+        - okta.governance.accessRequests.read
+        - okta.governance.accessRequests.manage
+        - okta.accessRequests.request.read
+        - okta.accessRequests.request.manage
+        - okta.accessRequests.catalog.read
+        - okta.accessRequests.condition.read
+        - okta.accessRequests.condition.manage
+        - okta.governance.accessCertifications.read
+        - okta.governance.accessCertifications.manage
+        - okta.governance.entitlements.read
+        - okta.governance.entitlements.manage
+        - okta.governance.collections.read
+        - okta.governance.collections.manage
+        - okta.governance.labels.read
+        - okta.governance.labels.manage
+        - okta.governance.resourceOwner.read
+        - okta.governance.resourceOwner.manage
+        - okta.governance.delegates.read
+        - okta.governance.delegates.manage
+        - okta.governance.principalSettings.read
+        - okta.governance.principalSettings.manage
+inputs:
+  org_domain:
+    type: hostname
+    label: Okta organization hostname
+    description: Enter your organization hostname, such as your-org.okta.com.
+    documentation_url: https://help.okta.com/mcp/en-us/content/topics/mcpserver/mcpserver.htm
+icons:
+  light: logo.png

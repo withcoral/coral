@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server-1
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: clickup
+display_name: ClickUp
+description: Tasks, spaces, lists, documents and time entries from ClickUp.
+source:
+  mcp:
+    url: https://mcp.clickup.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server-1
+      flow: authorization_code
+icons:
+  light: logo.svg

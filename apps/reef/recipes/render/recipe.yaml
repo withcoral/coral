@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://render.com/docs/mcp-server
+# Official brand asset: https://render.com/icon.svg?icon.00d01gt742wgb.svg?dpl=57c9cb6f5
+schema_version: 1
+id: render
+display_name: Render
+description: Services, deployments, databases, logs and metrics from Render.
+source:
+  mcp:
+    url: https://mcp.render.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Render
+      flow: authorization_code
+      documentation_url: https://render.com/docs/mcp-server
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://render.com/docs/mcp-server
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

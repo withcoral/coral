@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema.json
+# Official documentation: https://docs.lovable.dev/integrations/lovable-mcp-server
+# Hosted clients require Lovable approval of their OAuth redirect address.
+# Scopes come from public resource and authorization-server metadata.
+schema_version: 1
+id: lovable_mcp
+service: lovable
+display_name: Lovable
+description: Projects, AI builds, files, deployments and Cloud databases from Lovable.
+source:
+  mcp:
+    url: https://mcp.lovable.dev
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Lovable
+      documentation_url: https://docs.lovable.dev/integrations/lovable-mcp-server
+      flow: authorization_code
+icons:
+  light: logo.svg

@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.pagerduty.com/developer/mcp-tooling-remote-server
+# Official brand asset: https://www.pagerduty.com/favicon/prod/icon.svg
+schema_version: 1
+id: pagerduty
+display_name: PagerDuty
+description: Incidents, services, schedules and on-call response from PagerDuty.
+source:
+  mcp:
+    url: https://mcp.pagerduty.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with PagerDuty
+      description: Configure your PagerDuty OAuth application before you sign in.
+      documentation_url: https://docs.pagerduty.com/developer/mcp-tooling-remote-server
+      flow: authorization_code
+      # Scopes come from authorization-server metadata.
+      client:
+        authentication: client_secret_basic
+icons:
+  light: logo.svg

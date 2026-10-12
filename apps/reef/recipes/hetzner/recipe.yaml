@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.hetzner.cloud/reference/cloud
+# Official brand asset: https://www.hetzner.com/_resources/themes/hetzner/images/favicons/apple-icon-57x57.png
+schema_version: 1
+id: hetzner
+display_name: Hetzner Cloud
+description: Servers, networks, volumes and load balancers from Hetzner Cloud.
+source:
+  openapi:
+    url: https://docs.hetzner.cloud/cloud.spec.json
+authentication:
+  options:
+    api_token:
+      method: bearer
+      label: API token
+      documentation_url: https://docs.hetzner.com/cloud/api/getting-started/generating-api-token/
+icons:
+  light: logo.png

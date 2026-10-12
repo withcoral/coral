@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=../schema.json
+# Official documentation: https://docs.n8n.io/connect/connect-to-n8n-mcp-server
+# Scopes are supplied by each instance through OAuth discovery.
+# Enter the source details before Coral connects to this server.
+schema_version: 1
+id: n8n
+display_name: n8n
+description: Workflows, executions and agents from n8n.
+source:
+  mcp:
+    url: '{{input.instance}}/mcp-server/http'
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      flow: authorization_code
+      documentation_url: https://docs.n8n.io/connect/connect-to-n8n-mcp-server
+    access_token:
+      method: bearer
+      label: MCP access token
+      documentation_url: https://docs.n8n.io/connect/connect-to-n8n-mcp-server
+      description: Create an access token in your instance-level MCP settings.
+  default: oauth
+inputs:
+  instance:
+    type: url
+    label: n8n instance
+    description: Enter your instance URL without a trailing slash.
+    documentation_url: https://docs.n8n.io/api/authentication
+icons:
+  light: logo.svg

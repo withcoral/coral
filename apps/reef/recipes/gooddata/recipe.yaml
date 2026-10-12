@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.gooddata.ai/docs/cloud/ai/mcp-server/
+# OAuth metadata supplies scopes when the instance has MCP SSO enabled.
+schema_version: 1
+id: gooddata
+display_name: GoodData
+description: Workspaces, analytics, metrics and semantic models from GoodData.
+source:
+  mcp:
+    url: '{{input.mcp_url}}'
+authentication:
+  options:
+    token:
+      method: bearer
+      label: Paste an API token or JWT
+      documentation_url: https://www.gooddata.ai/docs/cloud/ai/mcp-server/
+    oauth:
+      method: oauth_discovery
+      label: Sign in with GoodData
+      flow: authorization_code
+      documentation_url: https://www.gooddata.ai/docs/cloud/ai/mcp-server/
+  default: oauth
+inputs:
+  mcp_url:
+    type: url
+    label: GoodData workspace MCP URL
+    description: Enter https://your-host/api/v1/actions/workspaces/your-workspace/ai/mcp. Replace the host and workspace ID.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/Doist/todoist-mcp
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: todoist
+display_name: Todoist
+description: Tasks, projects and reminders from Todoist.
+icons:
+  light: logo.png
+source:
+  mcp:
+    url: https://ai.todoist.net/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Todoist
+      documentation_url: https://github.com/Doist/todoist-mcp
+      flow: authorization_code
+  default: oauth

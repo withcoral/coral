@@ -10,3 +10,15 @@
 # and 5 periods (5 minutes) is a generous ceiling before it is killed.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 5 }
+
+# Real Postgres fixtures each own a pool. Bound concurrent tests so a complete
+# contract run stays below the test server's connection limit.
+[profile.postgres]
+test-threads = 4
+
+# CI's runner reads these reports from disk to show slow and failing tests.
+[profile.default.junit]
+path = "junit.xml"
+
+[profile.postgres.junit]
+path = "junit.xml"

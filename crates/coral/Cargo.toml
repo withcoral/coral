@@ -1,0 +1,27 @@
+[package]
+name = "coral"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "coral"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+coral-app.workspace = true
+coral-mcp.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+assert_cmd.workspace = true
+tempfile.workspace = true

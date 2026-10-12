@@ -1,0 +1,21 @@
+version: v2
+clean: true
+plugins:
+  - local: protoc-gen-es
+    out: app/generated
+    opt:
+      - target=ts
+inputs:
+  - directory: ../../crates/coral-grpc/proto
+    paths:
+      - ../../crates/coral-grpc/proto/grpc/health/v1/health.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/workspace.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/membership.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/organization_membership.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/organization_workspace.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/agent.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/provider.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/account.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/policy.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/activity.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/saved_function.proto

@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/firecrawl/firecrawl-mcp-server
+schema_version: 1
+id: firecrawl
+display_name: Firecrawl
+description: Web search results and extracted content from Firecrawl.
+source:
+  mcp:
+    url: https://mcp.firecrawl.dev/v2/mcp
+authentication:
+  default: api_key
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://github.com/firecrawl/firecrawl-mcp-server
+    anonymous:
+      method: none
+      label: Use public access
+      description: Use the public tools with lower limits.
+icons:
+  light: logo.svg

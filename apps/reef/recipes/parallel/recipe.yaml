@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.parallel.ai/integrations/mcp/task-mcp
+# Task MCP; Parallel separately publishes Search MCP. Task usage requires account credit.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+schema_version: 1
+id: parallel
+display_name: Parallel
+description: Research tasks, results and runs from Parallel.
+source:
+  mcp:
+    url: https://task-mcp.parallel.ai/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://docs.parallel.ai/integrations/mcp/task-mcp
+      flow: authorization_code
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://docs.parallel.ai/integrations/mcp/task-mcp
+    device_code:
+      method: oauth_discovery
+      label: Sign in with a device code
+      documentation_url: https://docs.parallel.ai/integrations/mcp/task-mcp
+      flow: device_code
+  default: oauth
+icons:
+  light: logo.svg

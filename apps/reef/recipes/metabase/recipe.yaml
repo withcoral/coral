@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.metabase.com/docs/latest/ai/mcp
+# OAuth discovery reads scopes and registration details from the configured instance.
+schema_version: 1
+id: metabase
+display_name: Metabase
+description: Questions, dashboards, schemas and query results from Metabase.
+source:
+  mcp:
+    url: https://{{input.hostname}}/api/metabase-mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Metabase
+      flow: authorization_code
+      documentation_url: https://www.metabase.com/docs/latest/ai/mcp
+  default: oauth
+inputs:
+  hostname:
+    type: hostname
+    label: Metabase instance hostname
+icons:
+  light: logo.svg

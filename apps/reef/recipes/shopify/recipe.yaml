@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://shopify.dev/docs/agents/catalog/global-catalog
+schema_version: 1
+id: shopify
+display_name: Shopify Catalog
+description: Product searches, product details and shopping catalogs from Shopify.
+source:
+  mcp:
+    url: https://catalog.shopify.com/api/ucp/mcp
+authentication:
+  options:
+    public:
+      method: none
+      label: Public catalog
+icons:
+  light: logo.svg

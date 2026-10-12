@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://context7.com/docs/resources/all-clients
+# Official brand asset: https://context7.com/favicon.ico
+schema_version: 1
+id: context7
+display_name: Context7
+description: Library documentation and code examples from Context7.
+source:
+  mcp:
+    url: https://mcp.context7.com/mcp
+authentication:
+  default: oauth
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://context7.com/docs/howto/api-keys
+    anonymous:
+      method: none
+      label: Use public access
+      description: Use the public tools with lower limits.
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Context7
+      documentation_url: https://context7.com/docs/resources/all-clients
+      flow: authorization_code
+      # Scopes come from authorization-server metadata.
+icons:
+  light: logo.png

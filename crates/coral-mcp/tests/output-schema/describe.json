@@ -1,0 +1,219 @@
+{
+  "anyOf": [
+    {
+      "$ref": "#/$defs/Description"
+    },
+    {
+      "$ref": "#/$defs/ToolFailure"
+    }
+  ],
+  "description": "The MCP envelope's isError remains authoritative. Terminal Run failures\nare successful observations, not `ToolFailure` values.",
+  "title": "ToolOutput",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Description": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "call_path": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "typescript_declaration": {
+              "type": "string"
+            },
+            "provider_access": {
+              "type": "string"
+            },
+            "provider_id": {
+              "type": "string",
+              "format": "uuid",
+              "minLength": 36,
+              "maxLength": 36
+            },
+            "provider_display_name": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "deprecated": {
+              "type": "boolean"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "guidance": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hints": {
+              "$ref": "#/$defs/Hints"
+            },
+            "approval_required": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "operation"
+            }
+          },
+          "required": [
+            "kind",
+            "call_path",
+            "description",
+            "typescript_declaration",
+            "provider_access",
+            "provider_id",
+            "provider_display_name",
+            "title",
+            "deprecated",
+            "tags",
+            "guidance",
+            "hints",
+            "approval_required"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "call_path": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "typescript_declaration": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "diagnostics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Diagnostic"
+              }
+            },
+            "diagnostics_truncated": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "saved_function"
+            }
+          },
+          "required": [
+            "kind",
+            "call_path",
+            "description",
+            "typescript_declaration"
+          ]
+        }
+      ]
+    },
+    "Hints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "read_only": {
+          "type": "boolean"
+        },
+        "destructive": {
+          "type": "boolean"
+        },
+        "idempotent": {
+          "type": "boolean"
+        },
+        "open_world": {
+          "type": "boolean"
+        }
+      },
+      "description": "Effect hints the Provider declared. An absent field is undeclared, not a\nprotocol default."
+    },
+    "Diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/DiagnosticCategory"
+        },
+        "code": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "message": {
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SafeInteger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "column": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SafeInteger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "category",
+        "code",
+        "message",
+        "line",
+        "column"
+      ]
+    },
+    "DiagnosticCategory": {
+      "type": "string",
+      "enum": [
+        "message",
+        "warning",
+        "error",
+        "suggestion"
+      ]
+    },
+    "SafeInteger": {
+      "type": "integer",
+      "maximum": 9007199254740991,
+      "minimum": 0
+    },
+    "ToolFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  },
+  "type": "object"
+}

@@ -1,0 +1,22 @@
+[package]
+name = "coral-outbound"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+transport = ["dep:reqwest", "dep:tokio", "dep:zeroize"]
+
+[dependencies]
+url.workspace = true
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+wiremock.workspace = true

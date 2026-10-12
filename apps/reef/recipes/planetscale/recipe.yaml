@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://planetscale.com/blog/introducing-planetscale-mcp-server
+# Official brand asset: https://planetscale.com/icon.png
+schema_version: 1
+id: planetscale
+display_name: PlanetScale
+description: Databases, branches, schemas and query insights from PlanetScale.
+source:
+  mcp:
+    url: https://mcp.pscale.dev/mcp/planetscale
+authentication:
+  default: service_token
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with PlanetScale
+      flow: authorization_code
+      documentation_url: https://planetscale.com/docs/mcp-server
+      # Public metadata advertises confidential clients; configure your own OAuth application.
+      # Scopes come from authorization-server metadata.
+      client:
+        authentication: client_secret_basic
+    service_token:
+      method: bearer
+      label: Paste a service token
+      description: Use the token secret that starts with pscale_tkn_.
+      documentation_url: https://planetscale.com/docs/mcp/service-token
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

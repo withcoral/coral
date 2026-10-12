@@ -1,0 +1,42 @@
+name: Install npm dependencies
+description: >-
+  Installs Node and runs `npm ci` for each named app. Pull requests never use
+  the npm cache, so untrusted code cannot poison what later runs restore.
+  release.yml installs from a clean state and does not use this action.
+
+inputs:
+  apps:
+    description: Directories under apps/, separated by spaces. The first one sets the Node version.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Find the Node version and lockfiles
+      id: plan
+      shell: bash
+      env:
+        APPS: ${{ inputs.apps }}
+      run: |
+        # An app without its own .node-version uses Reef's, as ./dev does.
+        node_version_file="apps/${APPS%% *}/.node-version"
+        [ -f "$node_version_file" ] || node_version_file=apps/reef/.node-version
+        {
+          echo "node-version-file=$node_version_file"
+          echo 'lockfiles<<EOF'
+          for app in $APPS; do echo "apps/$app/package-lock.json"; done
+          echo EOF
+        } >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      with:
+        node-version-file: ${{ steps.plan.outputs.node-version-file }}
+        cache: ${{ github.event_name != 'pull_request' && 'npm' || '' }}
+        cache-dependency-path: ${{ steps.plan.outputs.lockfiles }}
+        package-manager-cache: false
+
+    - name: Install dependencies
+      shell: bash
+      env:
+        APPS: ${{ inputs.apps }}
+      run: for app in $APPS; do npm ci --prefix "apps/$app"; done

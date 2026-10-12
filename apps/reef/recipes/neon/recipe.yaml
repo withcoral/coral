@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://neon.com/guides/neon-mcp-server-github-copilot-vs-code
+schema_version: 1
+id: neon
+display_name: Neon
+description: Postgres projects, branches, databases and queries from Neon.
+source:
+  mcp:
+    url: https://mcp.neon.tech/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Neon
+      flow: authorization_code
+      documentation_url: https://neon.com/guides/neon-mcp-server-github-copilot-vs-code
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://neon.com/guides/neon-mcp-server-github-copilot-vs-code
+icons:
+  light: logo.svg

@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: unifi_protect
+display_name: UniFi Protect
+description: >-
+  Cameras, NVRs, sensors, lights, chimes, live views and alarms from the UniFi
+  Protect application on one console.
+icons:
+  light: ubiquiti.svg
+
+inputs:
+  console_id:
+    type: string
+    label: Console ID
+    description: Copy the console ID from the hosts list in UniFi Site Manager.
+    documentation_url: https://developer.ui.com/site-manager/v1.0.0/listhosts
+
+# Ubiquiti publishes its OpenAPI documents only inside the pages of
+# developer.ui.com. This third-party repository copies them from there every
+# day without changes. Each Protect release has its own path, so this URL pins
+# the latest release when the recipe was written.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/opastorello/unifi-api-docs/main/protect/v7.3.70/openapi.json
+
+authentication:
+  options:
+    api_key:
+      # A Site Manager API key, which the Cloud Connector accepts for the
+      # consoles its owner or organization can reach.
+      method: header_credentials
+      label: Paste an API key
+      description: Create an API key in UniFi Site Manager.
+      documentation_url: https://developer.ui.com/site-manager/v1.0.0/gettingstarted
+      fields:
+        api_key:
+          label: API key
+      headers:
+        x-api-key: { field: api_key }
+
+servers:
+  # The document declares only the relative server /integration. Ubiquiti's
+  # Cloud Connector forwards /v1/connector/consoles/{id}/<path> to the
+  # console's local /proxy/<path>, and needs console firmware 5.0.3 or later.
+  # Direct access to a console is not offered: consoles serve self-signed
+  # certificates from private addresses.
+  '#/servers':
+    base_url: https://api.ui.com/v1/connector/consoles/{{input.console_id}}/protect/integration
+
+help:
+  servers:
+    '#/servers':
+      label: UniFi Cloud Connector
+      documentation_url: https://developer.ui.com/network/v10.6.106/connectorget

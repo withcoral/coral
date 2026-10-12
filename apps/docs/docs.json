@@ -2,7 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "linden",
   "name": "Coral Docs",
-  "description": "Install Coral, connect sources, query them through SQL, and expose the same local runtime over MCP.",
+  "description": "Install Coral, publish providers from OpenAPI documents and MCP servers, and let your agents discover and call their operations over MCP.",
   "logo": {
     "dark": "/images/coral-wordmark-dark.svg",
     "light": "/images/coral-wordmark-light.svg"
@@ -49,8 +49,8 @@
   "navbar": {
     "links": [
       {
-        "label": "Install Coral",
-        "href": "/getting-started/installation",
+        "label": "Deploy Coral",
+        "href": "/getting-started/self-host",
         "icon": "download"
       },
       {
@@ -70,48 +70,46 @@
         "group": "Get started",
         "pages": [
           "index",
-          "getting-started/installation",
+          "getting-started/install-locally",
+          {
+            "group": "Shared server",
+            "pages": [
+              "getting-started/self-host",
+              "getting-started/self-host/docker-compose",
+              "getting-started/self-host/kubernetes"
+            ]
+          },
           "getting-started/quickstart"
         ]
       },
       {
         "group": "Guides",
         "pages": [
-          "guides/use-coral-over-mcp",
-          "guides/search-with-coral",
-          "guides/write-a-custom-source",
-          "guides/observe-with-opentelemetry",
-          "guides/self-host-with-docker",
-          "guides/deploy-on-kubernetes",
-          "guides/shared-server-access-control"
+          "guides/concepts"
         ]
       },
       {
         "group": "Reference",
         "pages": [
-          "reference/cli-reference",
-          "reference/configuration",
-          "reference/engine-configuration",
-          "reference/bundled-sources",
-          "reference/community-sources",
-          "reference/source-spec-reference"
-        ]
-      },
-      {
-        "group": "Project",
-        "pages": [
-          "project/roadmap",
-          "project/security",
-          "project/architecture",
-          "project/changelog"
+          "reference/configuration"
         ]
       }
     ]
   },
   "redirects": [
     {
-      "source": "/guides/search-the-catalog",
-      "destination": "/guides/search-with-coral",
+      "source": "/getting-started/installation",
+      "destination": "/getting-started/install-locally",
+      "permanent": true
+    },
+    {
+      "source": "/guides/self-host-with-docker",
+      "destination": "/getting-started/self-host",
+      "permanent": true
+    },
+    {
+      "source": "/guides/deploy-on-kubernetes",
+      "destination": "/getting-started/self-host",
       "permanent": true
     }
   ],

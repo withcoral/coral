@@ -1,0 +1,136 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/klaviyo/openapi
+# Official brand asset: https://www.klaviyo.com/icons/icon-48x48.png
+# accounts:read: read access to accounts.
+# campaigns:read: read access to campaigns.
+# campaigns:write: write access to campaigns.
+# catalogs:read: read access to catalogs.
+# catalogs:write: write access to catalogs.
+# conversations:read: read access to conversations.
+# conversations:write: write access to conversations.
+# coupon-codes:read: read access to coupon-codes.
+# coupon-codes:write: write access to coupon-codes.
+# coupons:read: read access to coupons.
+# coupons:write: write access to coupons.
+# custom-objects:read: read access to custom-objects.
+# custom-objects:write: write access to custom-objects.
+# data-privacy:write: write access to data-privacy.
+# events:read: read access to events.
+# events:write: write access to events.
+# flows:read: read access to flows.
+# flows:write: write access to flows.
+# forms:read: read access to forms.
+# forms:write: write access to forms.
+# images:read: read access to images.
+# images:write: write access to images.
+# lists:read: read access to lists.
+# lists:write: write access to lists.
+# metrics:read: read access to metrics.
+# metrics:write: write access to metrics.
+# profiles:read: read access to profiles.
+# profiles:write: write access to profiles.
+# push-tokens:read: read access to push-tokens.
+# push-tokens:write: write access to push-tokens.
+# reviews:read: read access to reviews.
+# reviews:write: write access to reviews.
+# segments:read: read access to segments.
+# segments:write: write access to segments.
+# subscriptions:read: read access to subscriptions.
+# subscriptions:write: write access to subscriptions.
+# tags:read: read access to tags.
+# tags:write: write access to tags.
+# templates:read: read access to templates.
+# templates:write: write access to templates.
+# tracking-settings:read: read access to tracking-settings.
+# tracking-settings:write: write access to tracking-settings.
+# web-feeds:read: read access to web-feeds.
+# web-feeds:write: write access to web-feeds.
+# webhooks:read: read access to webhooks.
+# webhooks:write: write access to webhooks.
+schema_version: 1
+id: klaviyo
+display_name: Klaviyo
+description: Profiles, lists, segments, campaigns and marketing analytics from Klaviyo.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/klaviyo/openapi/main/openapi/stable.json
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: Private API key
+      documentation_url: https://developers.klaviyo.com/en/docs/authenticate_
+      fields:
+        api_key:
+          label: Private API key
+      headers:
+        authorization:
+          field: api_key
+          prefix: 'Klaviyo-API-Key '
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      description: Create an OAuth app. Register the callback URL shown during setup.
+      documentation_url: https://developers.klaviyo.com/en/docs/set_up_oauth
+      authorization_url: https://www.klaviyo.com/oauth/authorize
+      token_url: https://a.klaviyo.com/oauth/token
+      client:
+        authentication: client_secret_basic
+      pkce: required
+      scopes:
+        - accounts:read
+        - campaigns:read
+        - campaigns:write
+        - catalogs:read
+        - catalogs:write
+        - conversations:read
+        - conversations:write
+        - coupon-codes:read
+        - coupon-codes:write
+        - coupons:read
+        - coupons:write
+        - custom-objects:read
+        - custom-objects:write
+        - data-privacy:write
+        - events:read
+        - events:write
+        - flows:read
+        - flows:write
+        - forms:read
+        - forms:write
+        - images:read
+        - images:write
+        - lists:read
+        - lists:write
+        - metrics:read
+        - metrics:write
+        - profiles:read
+        - profiles:write
+        - push-tokens:read
+        - push-tokens:write
+        - reviews:read
+        - reviews:write
+        - segments:read
+        - segments:write
+        - subscriptions:read
+        - subscriptions:write
+        - tags:read
+        - tags:write
+        - templates:read
+        - templates:write
+        - tracking-settings:read
+        - tracking-settings:write
+        - web-feeds:read
+        - web-feeds:write
+        - webhooks:read
+        - webhooks:write
+    access_token:
+      method: bearer
+      label: OAuth access token
+      documentation_url: https://developers.klaviyo.com/en/docs/set_up_oauth
+  default: api_key
+request_headers:
+  revision: 2026-07-15
+icons:
+  light: logo.png
+  dark: logo-dark.png

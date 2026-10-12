@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://help.coda.io/hc/en-us/articles/44722661982989-Connect-to-the-Coda-MCP
+# Coda recommends MCP-restricted tokens for other clients. OAuth needs an approved client. Metadata advertises
+# mcp:all.
+schema_version: 1
+id: coda_mcp
+service: coda
+display_name: Coda (Superhuman Docs)
+description: Documents, tables, rows and collaboration from Coda.
+source:
+  mcp:
+    url: https://coda.io/apis/mcp
+authentication:
+  default: token
+  options:
+    token:
+      method: bearer
+      label: Paste an MCP access token
+      documentation_url: https://help.coda.io/hc/en-us/articles/44722661982989-Connect-to-the-Coda-MCP
+      description: Create an API token with the MCP restriction and read and write access.
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Coda
+      documentation_url: https://help.coda.io/hc/en-us/articles/44722769665549-Security-recommendations-for-the-Coda-MCP
+      flow: authorization_code
+      client:
+        authentication: client_secret_post
+      description: Use an OAuth client approved by Coda.
+icons:
+  light: coda.png

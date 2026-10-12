@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.heygen.com/mcp/overview
+# Hosted MCP requires domain whitelisting. This public REST recipe uses the official OpenAPI source. API keys and OAuth tokens use different credits.
+schema_version: 1
+id: heygen
+display_name: HeyGen
+description: Videos, avatars and voices from HeyGen.
+source:
+  openapi:
+    url: https://developers.heygen.com/openapi/external-api.json
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: API key
+      documentation_url: https://developers.heygen.com/mcp/overview
+      fields:
+        api_key:
+          label: API key
+          sensitive: true
+      headers:
+        x-api-key:
+          field: api_key
+    oauth_token:
+      method: bearer
+      label: OAuth token
+      documentation_url: https://developers.heygen.com/mcp/overview
+      description: Paste a token from your approved HeyGen integration.
+  default: api_key
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

@@ -21,7 +21,7 @@ use url::Url;
 /// A redirect target already checked against a client's registration.
 ///
 /// The URL is not re-validated here. It reaches this type having passed
-/// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect) at the
+/// [`BrowserRedirect`](coral_outbound::BrowserRedirect) at the
 /// point it was matched against the registry, which is the only place with the
 /// registration to match against.
 ///
@@ -50,7 +50,7 @@ impl TrustedRedirect {
     ///
     /// The `None` arm is unreachable in practice: a stored `redirect_uri` was
     /// matched against a registration and parsed under
-    /// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect) before
+    /// [`BrowserRedirect`](coral_outbound::BrowserRedirect) before
     /// it was written, so it has already parsed once. It is checked rather than
     /// unwrapped because a store sits between the handler that wrote it and the
     /// one reading it, and a failed authorization beats a panicking handler.

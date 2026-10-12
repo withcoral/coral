@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: hubspot
+display_name: HubSpot
+description: Contacts, companies, deals, tickets, activities and marketing content from HubSpot's MCP server.
+icons:
+  light: logo.svg
+
+# HubSpot publishes its OpenAPI description as one document per API, and a
+# Recipe names one document, so this Recipe uses its hosted MCP server.
+source:
+  mcp:
+    url: https://mcp.hubspot.com
+
+authentication:
+  options:
+    oauth:
+      # HubSpot's authorization metadata has no registration endpoint and
+      # accepts only client_secret_post, so the owner creates an MCP connector
+      # in HubSpot and confirms its client id and secret. HubSpot chooses the
+      # scopes from the server's tools and the user's grant at install, so the
+      # Recipe names none.
+      method: oauth_discovery
+      label: Sign in with HubSpot
+      description: Create an MCP connector in your HubSpot account before you sign in.
+      documentation_url: https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server
+      flow: authorization_code
+      client:
+        authentication: client_secret_post

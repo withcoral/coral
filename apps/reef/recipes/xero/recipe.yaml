@@ -1,0 +1,74 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: xero
+display_name: Xero
+description: Invoices, payments, bank transactions, contacts, accounts and reports from Xero.
+icons:
+  light: xero.svg
+
+inputs:
+  tenant_id:
+    type: string
+    label: Xero organisation ID
+    description: >-
+      Enter the ID of the Xero organisation to connect. To find it, sign in to the Xero API Explorer. Run the
+      Accounting API operation Organisation > Get Organisations. Then select Show auto-generated headers and copy
+      the Xero-Tenant-Id value.
+    documentation_url: https://api-explorer.xero.com/accounting/organisation/getorganisations
+
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/XeroAPI/Xero-OpenAPI/refs/heads/master/xero_accounting.yaml
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in with Xero
+      description: Create a Xero web app with Reef's callback URL before you sign in.
+      documentation_url: https://developer.xero.com/documentation/guides/oauth2/auth-flow/
+      authorization_url: https://login.xero.com/identity/connect/authorize
+      token_url: https://identity.xero.com/connect/token
+      client:
+        # No client id: Coral has no public Xero application, so the owner
+        # creates a web app. Xero's standard flow sends its secret with Basic.
+        authentication: client_secret_basic
+      # Xero apps created on or after 2 March 2026 must request granular scopes
+      # and cannot request the broad ones (accounting.transactions,
+      # accounting.reports.read) that the OpenAPI document still names.
+      # https://developer.xero.com/faq/granular-scopes
+      scopes:
+        # Xero returns a refresh token only for offline access.
+        - offline_access
+        # Credit notes, invoices, linked transactions, purchase orders, quotes,
+        # repeating invoices and items.
+        - accounting.invoices
+        # Batch payments, overpayments, payments and prepayments.
+        - accounting.payments
+        # Bank transactions and bank transfers.
+        - accounting.banktransactions
+        - accounting.manualjournals
+        - accounting.contacts
+        # Organisation, accounts, tax rates, tracking categories and other settings.
+        - accounting.settings
+        - accounting.attachments
+        - accounting.budgets.read
+        # One scope for each report.
+        - accounting.reports.aged.read
+        - accounting.reports.balancesheet.read
+        - accounting.reports.banksummary.read
+        - accounting.reports.executivesummary.read
+        - accounting.reports.profitandloss.read
+        - accounting.reports.trialbalance.read
+        - accounting.reports.taxreports.read
+    access_token:
+      method: bearer
+      label: Paste an access token
+      description: Use a Xero access token with the scopes you need. Xero access tokens expire after 30 minutes.
+      documentation_url: https://developer.xero.com/documentation/guides/oauth2/token-types
+
+request_headers:
+  # Xero reads the organisation from this header on every request. One
+  # provider connects one organisation.
+  xero-tenant-id: '{{input.tenant_id}}'

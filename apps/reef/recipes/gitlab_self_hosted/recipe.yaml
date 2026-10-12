@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: gitlab_self_hosted
+display_name: GitLab Self-Hosted
+description: Projects, issues, merge requests, pipelines and releases from your own GitLab instance.
+icons:
+  light: gitlab.svg
+
+inputs:
+  instance:
+    type: url
+    label: GitLab instance URL
+    description: Enter your instance URL, including its installation path when needed.
+
+source:
+  openapi:
+    url: https://gitlab.com/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in with GitLab
+      description: Configure an OAuth application registered with your GitLab instance.
+      documentation_url: https://docs.gitlab.com/api/oauth2/
+      # GitLab serves OAuth from the same origin as its API, so one input
+      # drives both. No client id: the application is registered per instance.
+      authorization_url: '{{input.instance}}/oauth/authorize'
+      token_url: '{{input.instance}}/oauth/token'
+      client:
+        authentication: none
+      scopes: [read_api]
+    pat:
+      method: bearer
+      label: Paste a personal access token
+      description: Use a token from your instance with the read_api scope.
+
+servers:
+  '#/servers':
+    base_url: '{{input.instance}}'

@@ -1,0 +1,60 @@
+//! `SQLite` and Postgres persistence mechanics for Coral.
+//!
+//! This private foundation owns backend selection, connection pools, short
+//! transactions, migration execution, and bounded `SQLite` contention handling.
+//! It has no domain schemas and no generic CRUD repository.
+//!
+//! # Interface
+//!
+//! - [`Database::connect`] selects and opens one Adapter from [`DatabaseOptions`].
+//! - [`Database::migrate`] validates and applies a caller-owned migration plan.
+//! - [`Database::begin`] and [`Database::begin_read_snapshot`] start short
+//!   transactions.
+//! - [`Transaction::execute_change`] marks observable mutations; only their commits
+//!   wake [`Database::subscribe_changes`] readers. `SQLite` uses the shared application
+//!   handle; Postgres propagates invalidations across workers. Notifications are
+//!   coalescing hints, not retained Events, payloads, or authority.
+//! - [`Database::execute`], [`Database::fetch_optional`], and
+//!   [`Database::fetch_all`] execute domain-owned `SeaQuery` statements.
+//! - [`QueryExecutor`] lets one domain read run directly against a [`Database`]
+//!   or inside a caller-owned [`Transaction`] without duplicating repository
+//!   behavior.
+//! - [`DatabaseSystem`] lets a domain repository select a backend-specific query
+//!   or locking strategy without access to a connection pool.
+//! - [`Transaction::execute_sql`] and [`Transaction::execute_script`] run SQL a
+//!   domain repository wrote for the selected backend, for features the
+//!   portable statements cannot express.
+//! - [`ReadOnlyDatabase`] permits pre-migration inspection without write
+//!   authority or access to a concrete connection.
+//!
+//! # Invariants
+//!
+//! Process bootstrap resolves environment variables before it creates
+//! [`DatabaseOptions`]. Domain Modules own schemas, statements, transaction
+//! choreography, and error meaning. A migration plan must use direct DDL and
+//! must fail on unexpected objects instead of hiding drift with
+//! `IF NOT EXISTS`. No remote work belongs inside a database transaction.
+//!
+//! The `SQLite` Adapter uses WAL mode, foreign keys, and a five-second busy
+//! timeout for the supported local single-process topology. The Postgres Adapter
+//! uses a pool for remote multi-worker topology and requires `verify-full` TLS
+//! for remote TCP connections.
+
+mod backend;
+mod changes;
+mod database;
+mod error;
+mod executor;
+mod migration;
+mod options;
+mod query;
+mod transaction;
+
+pub use backend::DatabaseSystem;
+pub use changes::ChangeSubscription;
+pub use database::{Database, ReadOnlyDatabase, validate_postgres_url};
+pub use error::{Error, sqlx_error_is_serialization_conflict, sqlx_error_is_unique_violation};
+pub use executor::QueryExecutor;
+pub use options::DatabaseOptions;
+pub use query::{col, column};
+pub use transaction::{Transaction, TransactionToken};

@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=../schema.json
+# Enable the service and MCP API in your Google Cloud project.
+# OAuth scopes are advertised by the protected-resource metadata.
+# API-key headers and ADC credential acquisition are not expressible for MCP.
+schema_version: 1
+id: gemini_enterprise_mcp
+display_name: Gemini Enterprise
+description: Search, conversations and engines from Gemini Enterprise.
+icons:
+  light: logo.svg
+source:
+  mcp:
+    url: https://discoveryengine.googleapis.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Google
+      description: Configure your Google OAuth application before you sign in.
+      documentation_url: https://docs.cloud.google.com/generative-ai-app-builder/docs/reference/mcp
+      flow: authorization_code
+      client:
+        authentication: client_secret_post
+      authorization_parameters:
+        access_type: offline
+        prompt: consent
+    access_token:
+      method: bearer
+      label: Paste an OAuth access token
+      documentation_url: https://docs.cloud.google.com/mcp/authenticate-mcp

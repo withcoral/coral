@@ -1,0 +1,86 @@
+name: Reel
+
+# Records one Reel suite. ci.yml calls this workflow for each suite that a
+# change needs. Dispatch it to record a suite by hand, or to film one.
+on:
+  workflow_call:
+    inputs:
+      suite:
+        type: string
+        required: true
+      database:
+        type: string
+        default: sqlite
+      film:
+        type: boolean
+        default: false
+      # Scenarios run one at a time, so a long suite splits across runners.
+      shard:
+        description: This run's part of the suite, such as 1of4
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Product journeys, focused local-mode checks, or the packaged Desktop app
+        type: choice
+        options: [main, local-mode, desktop]
+        default: main
+      database:
+        description: Main suite database (the other suites require sqlite)
+        type: choice
+        options: [sqlite, postgres]
+        default: sqlite
+      film:
+        description: Slow down recordings for human review
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  reel:
+    name: ${{ inputs.suite }}${{ inputs.suite == 'main' && format(' ({0})', inputs.database) || '' }}${{ inputs.shard && format(' {0}', inputs.shard) || '' }}
+    # The container build compiles the runtime.
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/npm-install
+        with:
+          apps: reef
+      # Keeps the Reel image's layers and cache mounts between runs.
+      - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+        with:
+          cache-key: reel
+      - name: Record the suite
+        env:
+          # The harness checks itself once per suite, in the first shard.
+          REEL_SELF_CHECK: ${{ (!inputs.shard || startsWith(inputs.shard, '1of')) && '1' || '0' }}
+          E2E_FILM: ${{ inputs.film && '1' || '0' }}
+          REEL_SUITE: ${{ inputs.suite }}
+          REEL_DATABASE: ${{ inputs.database }}
+          REEL_SHARD: ${{ inputs.shard }}
+        run: |
+          args=(--suite "$REEL_SUITE")
+          if [ -n "$REEL_SHARD" ]; then args+=("--shard=${REEL_SHARD/of//}"); fi
+          if [ "$REEL_SUITE" = main ]; then
+            args+=(--database "$REEL_DATABASE")
+          elif [ "$REEL_DATABASE" != sqlite ]; then
+            echo 'Only the main suite selects a database'
+            exit 1
+          fi
+          npm run test:e2e --prefix apps/reef -- "${args[@]}"
+      # Recordings and traces can carry tokens and source. Never expose them
+      # automatically if this repository becomes public during the final swap.
+      - name: Retain private review evidence, including failed runs
+        if: ${{ always() && github.event.repository.private }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: reel-${{ inputs.suite }}-${{ inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/reef/e2e/runs/
+          if-no-files-found: warn
+          retention-days: 7

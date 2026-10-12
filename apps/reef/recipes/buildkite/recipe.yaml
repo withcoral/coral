@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://buildkite.com/docs/apis/mcp-server
+# Official brand asset: https://buildkite.com/_site/favicon.png
+schema_version: 1
+id: buildkite
+display_name: Buildkite
+description: Pipelines, builds, jobs and tests from Buildkite.
+source:
+  mcp:
+    url: https://mcp.buildkite.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Buildkite
+      flow: authorization_code
+      documentation_url: https://buildkite.com/docs/apis/mcp-server
+    api_token:
+      method: bearer
+      label: API access token
+      documentation_url: https://buildkite.com/docs/apis/mcp-server
+icons:
+  light: logo.png

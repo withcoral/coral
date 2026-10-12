@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: gitlab
+display_name: GitLab.com
+description: Projects, issues, merge requests, pipelines and releases from GitLab.com.
+icons:
+  light: logo.svg
+
+source:
+  openapi:
+    url: https://gitlab.com/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in with GitLab
+      authorization_url: https://gitlab.com/oauth/authorize
+      token_url: https://gitlab.com/oauth/token
+      client:
+        id: b96d8711f4201c7c4ce86765e0c2a1a07db768c90a2934346859b64f066cc4f1
+        authentication: none
+      scopes: [read_api]
+    pat:
+      method: bearer
+      label: Paste a personal access token
+      description: Use a token with the read_api scope.
+      documentation_url: https://docs.gitlab.com/user/profile/personal_access_tokens/
+
+servers:
+  '#/servers':
+    declared_url: https://{hostname}
+    variables:
+      hostname: gitlab.com
+
+# Self-hosted GitLab has its own Recipe. A gitlab.com application registration
+# must never be reused against another authority.

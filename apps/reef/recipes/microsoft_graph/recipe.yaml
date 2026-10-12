@@ -1,0 +1,105 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: microsoft_graph
+display_name: Microsoft Graph
+description: Mail, calendars, files, sites, notes, chats and meetings from Microsoft Graph.
+
+icons:
+  light: logo.png
+
+inputs:
+  tenant:
+    type: string
+    label: Microsoft Entra tenant
+    description: Use organizations for work or school accounts, or enter a tenant ID.
+    default: organizations
+
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/v1.0/openapi.yaml
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in with Microsoft
+      description: You need administrator consent for some Teams permissions. Your account permissions still apply.
+      documentation_url: https://learn.microsoft.com/en-us/graph/permissions-reference
+      # The tenant input drives the auth origin, not the API base: Microsoft serves
+      # auth from login.microsoftonline.com and the API from graph.microsoft.com.
+      authorization_url: https://login.microsoftonline.com/{{input.tenant}}/oauth2/v2.0/authorize
+      token_url: https://login.microsoftonline.com/{{input.tenant}}/oauth2/v2.0/token
+      client:
+        id: 4eedabf0-b27e-4c98-ac7b-4c7f5d504bee
+        authentication: none
+      scopes:
+        # Delegated Microsoft 365 access, not tenant administration. There is no
+        # Graph-wide read/write scope. Application-only operations need a
+        # separately obtained token through the bearer option below.
+        # https://learn.microsoft.com/en-us/graph/permissions-reference
+        # Profile and people lookup (no directory writes).
+        - https://graph.microsoft.com/User.Read
+        - https://graph.microsoft.com/User.ReadBasic.All
+        - https://graph.microsoft.com/People.Read
+        # Outlook: own and shared mailboxes, calendars and contacts. Mail write
+        # permissions do not include sending, which needs its own scopes.
+        - https://graph.microsoft.com/Mail.ReadWrite
+        - https://graph.microsoft.com/Mail.ReadWrite.Shared
+        - https://graph.microsoft.com/Mail.Send
+        - https://graph.microsoft.com/Mail.Send.Shared
+        - https://graph.microsoft.com/MailboxSettings.ReadWrite
+        - https://graph.microsoft.com/Calendars.ReadWrite
+        - https://graph.microsoft.com/Calendars.ReadWrite.Shared
+        - https://graph.microsoft.com/Contacts.ReadWrite
+        - https://graph.microsoft.com/Contacts.ReadWrite.Shared
+        # OneDrive, SharePoint, OneNote, To Do and Planner. Managing lists and
+        # document libraries needs Sites.Manage.All in addition to item writes.
+        - https://graph.microsoft.com/Files.ReadWrite.All
+        - https://graph.microsoft.com/Sites.ReadWrite.All
+        - https://graph.microsoft.com/Sites.Manage.All
+        - https://graph.microsoft.com/Notes.ReadWrite.All
+        - https://graph.microsoft.com/Tasks.ReadWrite
+        - https://graph.microsoft.com/Tasks.ReadWrite.Shared
+        # Teams chats, teams, channels and their members/settings. Channel
+        # message listing, editing and sending have distinct permissions.
+        - https://graph.microsoft.com/Chat.Create
+        - https://graph.microsoft.com/Chat.ReadWrite
+        - https://graph.microsoft.com/ChatMember.ReadWrite
+        - https://graph.microsoft.com/ChatMessage.Send
+        - https://graph.microsoft.com/Team.Create
+        - https://graph.microsoft.com/Team.ReadBasic.All
+        - https://graph.microsoft.com/TeamMember.ReadWrite.All
+        - https://graph.microsoft.com/TeamSettings.ReadWrite.All
+        - https://graph.microsoft.com/Channel.Create
+        - https://graph.microsoft.com/Channel.Delete.All
+        - https://graph.microsoft.com/Channel.ReadBasic.All
+        - https://graph.microsoft.com/ChannelMember.ReadWrite.All
+        - https://graph.microsoft.com/ChannelSettings.ReadWrite.All
+        - https://graph.microsoft.com/ChannelMessage.Read.All
+        - https://graph.microsoft.com/ChannelMessage.ReadWrite
+        - https://graph.microsoft.com/ChannelMessage.Send
+        # Teams apps, tabs, tags and Shifts (no app catalog or policy management).
+        - https://graph.microsoft.com/TeamsAppInstallation.ReadWriteForChat
+        - https://graph.microsoft.com/TeamsAppInstallation.ReadWriteForTeam
+        - https://graph.microsoft.com/TeamsAppInstallation.ReadWriteForUser
+        - https://graph.microsoft.com/TeamsTab.ReadWrite.All
+        - https://graph.microsoft.com/TeamworkTag.ReadWrite
+        - https://graph.microsoft.com/Schedule.ReadWrite.All
+        # Meetings, meeting artifacts, presence and Bookings.
+        - https://graph.microsoft.com/OnlineMeetings.ReadWrite
+        - https://graph.microsoft.com/OnlineMeetingArtifact.Read.All
+        - https://graph.microsoft.com/OnlineMeetingRecording.Read.All
+        - https://graph.microsoft.com/OnlineMeetingTranscript.Read.All
+        - https://graph.microsoft.com/Presence.Read.All
+        - https://graph.microsoft.com/Presence.ReadWrite
+        - https://graph.microsoft.com/Bookings.Manage.All
+        - offline_access
+    access_token:
+      method: bearer
+      label: Paste an access token
+      description: Use a Microsoft Graph access token with the permissions you need.
+
+servers:
+  '#/servers':
+    base_url: https://graph.microsoft.com/v1.0

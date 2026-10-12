@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.honeycomb.io/integrations/mcp/configuration-guide
+# Official brand asset: https://www.honeycomb.io/favicon-16x16.png
+schema_version: 1
+id: honeycomb
+display_name: Honeycomb
+description: Telemetry, traces, latency and errors from Honeycomb.
+source:
+  mcp:
+    url: https://mcp.honeycomb.io/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Honeycomb
+      flow: authorization_code
+      documentation_url: https://docs.honeycomb.io/integrations/mcp/configuration-guide
+icons:
+  light: logo.svg

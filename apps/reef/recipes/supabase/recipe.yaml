@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://supabase.com/docs/guides/ai-tools/mcp
+schema_version: 1
+id: supabase
+display_name: Supabase
+description: Projects, databases, logs and Edge Functions from Supabase.
+source:
+  mcp:
+    url: https://mcp.supabase.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Supabase
+      flow: authorization_code
+      documentation_url: https://supabase.com/docs/guides/ai-tools/mcp
+    pat:
+      method: bearer
+      label: Personal access token
+      documentation_url: https://supabase.com/docs/guides/ai-tools/mcp
+icons:
+  light: logo.svg

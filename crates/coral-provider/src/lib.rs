@@ -1,0 +1,843 @@
+//! Workspace-owned Provider publication, configuration, lifecycle and dispatch authority.
+//!
+//! One immutable Provider identity and namespace owns its catalog, credential route,
+//! policy address and lifecycle. Publication materializes outside the write transaction,
+//! then commits configuration, provisional credential promotion, request replay evidence
+//! and lifecycle events atomically. Retained generations survive compatible catalog
+//! updates; account-setting changes independently fence pending dispatch.
+//! Adapters supply current actors, Workspace, clock, tracing and destination policy.
+pub use coral_workspace::WorkspaceId;
+
+mod configuration;
+mod input;
+pub use input::ProviderSetupSource;
+pub mod access;
+pub mod account;
+#[cfg(test)]
+mod account_tests;
+#[cfg(test)]
+mod credential_lifecycle_tests;
+mod error;
+mod lifecycle;
+mod management;
+pub use management::ProviderSource;
+#[cfg(test)]
+mod management_tests;
+mod publication;
+mod runtime;
+pub use configuration::{ConfigurationDifference, SetupConfigurationReview};
+#[cfg(test)]
+mod configuration_tests;
+mod repository;
+mod search;
+pub use search::{
+    ActiveGeneration, ActiveProvider, EntryMaterial, GenerationEntries, HydratedOperation,
+    OperationEntry, active_generations_in_transaction, active_providers_in_transaction,
+    hydrate_operation_in_transaction, operation_material_by_relative_path_in_transaction,
+    prepare_active_generation_entries_in_transaction, prepare_operation_entries,
+};
+#[cfg(test)]
+mod search_tests;
+#[cfg(test)]
+mod setup_input_tests;
+#[cfg(test)]
+mod setup_oauth_tests;
+#[cfg(test)]
+mod setup_tests;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures_repository;
+mod types;
+#[cfg(test)]
+mod update_tests;
+
+use std::sync::Arc;
+
+use coral_db::Database;
+use coral_workspace::{
+    AuthenticatedUser, AuthoritySource, ChangeContext, WorkspaceAction, WorkspaceEvidence,
+    WorkspaceModule, WorkspaceRole,
+};
+
+pub use account::{
+    OAuthClientAuthentication, OAuthClientConfiguration, ProviderSetupInspection,
+    SetupAuthentication, SetupAuthorization, SetupAuthorizationState, SetupOAuthClient,
+};
+pub use coral_catalog::{
+    CatalogDiagnostic as PublicationDiagnostic, MCP_DISCOVERY_SNAPSHOT_MAX_BYTES,
+    McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, ProviderSetupInputDigest,
+    ProviderSetupInputKind,
+};
+pub use error::Error;
+pub mod history_repository;
+
+pub use publication::{
+    ActivatedGeneration, MaterializedPublication, PreparedPublication, ProviderPublication,
+    ProviderPublicationId, ProviderPublicationOutcome, ProviderRegenerationPublication,
+    ProviderRegenerationRequest, PublicationEvidence, Published,
+    WorkspaceProviderPublicationRequest,
+};
+pub use types::{
+    AdministrativeLifecycleEvent, InvocationOperationVerification, LifecycleAction, LifecycleActor,
+    LifecycleOutcome, ManagementRequestId, OperationAuthoringMaterial, Provider,
+    ProviderDisplayName, ProviderId, ProviderSearchCatalog, ProviderSetup, ProviderSetupId,
+    ProviderSetupState, ProviderState, ResolvedInvocationOperation,
+};
+
+pub use access::{CredentialRoute, ProviderAccess, ProviderNamespace};
+use account::setup as setup_credentials;
+use coral_catalog::{MaterializedOperation, OperationKey, ProviderSetupInput};
+use publication::materialization::{CatalogMaterializer, Materializer};
+#[cfg(test)]
+use publication::{NoopPublicationObserver, PublicationObserver, PublicationPoint};
+
+// The dev-dependency on this crate exists for the integration tests' feature.
+#[cfg(test)]
+use coral_provider as _;
+
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+/// Returns the Provider Module's domain-owned migration plan.
+#[must_use]
+pub const fn migrator() -> &'static sqlx::migrate::Migrator {
+    &MIGRATOR
+}
+
+/// Workspace Provider publication and lifecycle Module.
+#[derive(Clone)]
+pub struct ProviderModule {
+    database: Arc<Database>,
+    workspaces: WorkspaceModule,
+    materializer: Arc<dyn Materializer>,
+    preparation: configuration::preparation::Preparation,
+    outbound_policy: coral_outbound::DestinationPolicy,
+    consent: account::consent::Issuer,
+    #[cfg(test)]
+    publication_observer: Arc<dyn PublicationObserver>,
+}
+
+impl ProviderModule {
+    /// Builds the Module with the bootstrap-selected outbound policy.
+    #[must_use]
+    pub fn new(
+        outbound_policy: coral_outbound::DestinationPolicy,
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+    ) -> Self {
+        Self {
+            database,
+            workspaces,
+            materializer: Arc::new(CatalogMaterializer(outbound_policy)),
+            preparation: configuration::preparation::Preparation::new(),
+            outbound_policy,
+            consent: account::consent::Issuer::default(),
+            #[cfg(test)]
+            publication_observer: Arc::new(NoopPublicationObserver),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_test_dependencies(
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+        materializer: Arc<dyn Materializer>,
+        publication_observer: Arc<dyn PublicationObserver>,
+    ) -> Self {
+        Self {
+            database,
+            workspaces,
+            materializer,
+            preparation: configuration::preparation::Preparation::new(),
+            outbound_policy: coral_outbound::DestinationPolicy::default()
+                .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+            consent: account::consent::Issuer::default(),
+            publication_observer,
+        }
+    }
+
+    /// Pins one exact OpenAPI input in an active Workspace.
+    ///
+    /// Structural catalog validation occurs during Publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority, lifecycle, input, or persistence failure. Failure
+    /// creates neither the Setup nor its lifecycle Event.
+    pub async fn create_openapi_setup(
+        &self,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        document: OpenApiDocument,
+    ) -> Result<ProviderSetup, Error> {
+        self.create_workspace_setup(context, workspace_id, document.into())
+            .await
+    }
+
+    /// Pins one exact normalized MCP discovery snapshot in an active Workspace.
+    ///
+    /// Structural catalog validation occurs during Publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority, lifecycle, input, or persistence failure. Failure
+    /// creates neither the Setup nor its lifecycle Event.
+    pub async fn create_mcp_setup(
+        &self,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        snapshot: McpDiscoverySnapshot,
+    ) -> Result<ProviderSetup, Error> {
+        self.create_workspace_setup(context, workspace_id, snapshot.into())
+            .await
+    }
+
+    async fn create_workspace_setup(
+        &self,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        setup_input: ProviderSetupInput,
+    ) -> Result<ProviderSetup, Error> {
+        self.create_setup(
+            context,
+            &workspace_id.clone(),
+            Some(setup_input),
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Pins exact input and anonymously inspected authorization metadata atomically.
+    /// No input-acquisition path can seal an account credential.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "atomic source evidence includes its discovery headers"
+    )]
+    pub(crate) async fn create_setup(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        setup_input: Option<ProviderSetupInput>,
+        initial_request_headers: &std::collections::BTreeMap<String, String>,
+        metadata: Option<setup_credentials::InspectedAuthorization>,
+        input_url: Option<String>,
+        update_target: Option<&ProviderId>,
+    ) -> Result<ProviderSetup, Error> {
+        self.workspaces
+            .check(context.actor(), owner, WorkspaceAction::Configure)
+            .await?;
+        let source_analysis = self.preparation.analyze(setup_input.as_ref()).await?;
+        let input_url = input_url.or_else(|| input::snapshot_source_url(setup_input.as_ref()));
+        let expires_at = Some(setup_credentials::setup_deadline(
+            context.occurred_at_unix_nanos(),
+        )?);
+        let requirement = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.requirement.as_ref())
+            .map(setup_credentials::StoredRequirement::to_storage)
+            .transpose()?;
+        let setup = ProviderSetup::new(
+            ProviderSetupId::generate(),
+            owner.clone(),
+            setup_input
+                .as_ref()
+                .map_or(ProviderSetupInputKind::Mcp, ProviderSetupInput::kind),
+            setup_input
+                .as_ref()
+                .map(ProviderSetupInputDigest::of_setup_input),
+            ProviderSetupState::AwaitingConfiguration,
+            context.occurred_at_unix_nanos(),
+        )
+        .with_source(input_url, expires_at);
+        let mut transaction = self.database.begin().await?;
+        let authority_source = self
+            .check_owner_configuration_in_transaction(&mut transaction, context.actor(), owner)
+            .await?;
+        let update = if let Some(target) = update_target {
+            if !repository::hold_provider_in_transaction(&mut transaction, owner, target).await? {
+                return Err(Error::ProviderNotFound);
+            }
+            Some(
+                repository::provider_in_transaction(&mut transaction, owner, target)
+                    .await?
+                    .ok_or(Error::ProviderNotFound)?,
+            )
+        } else {
+            None
+        };
+        repository::insert_setup(
+            &mut transaction,
+            repository::NewSetup {
+                setup: &setup,
+                initial_request_headers,
+                setup_input: setup_input.as_ref(),
+                source_analysis: source_analysis.as_deref(),
+                actor_user_id: Some(context.actor().user_id()),
+                authorization_requirement: requirement.as_deref(),
+            },
+        )
+        .await?;
+        let target_id = setup.id().to_string();
+        repository::insert_lifecycle_event(
+            &mut transaction,
+            repository::NewLifecycleEvent {
+                workspace_id: Some(owner),
+                actor: LifecycleActor::User {
+                    user_id: context.actor().user_id().clone(),
+                    authority_source,
+                },
+                action: LifecycleAction::SetupCreated,
+                target_id: &target_id,
+                outcome: LifecycleOutcome::Accepted,
+                changed_field_paths: if setup_input.is_some() {
+                    &["pinned_input"]
+                } else {
+                    &["source", "authorization_requirement"]
+                },
+                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                trace_id: context.trace_id(),
+            },
+        )
+        .await?;
+        if let Some(code) = metadata.and_then(|metadata| metadata.failure_code) {
+            repository::set_setup_discovery_failure(
+                &mut transaction,
+                owner,
+                setup.id(),
+                Some(code),
+            )
+            .await?;
+        }
+        if let Some(update) = &update {
+            self.prepare_update_in_transaction(
+                &mut transaction,
+                context,
+                authority_source,
+                update,
+                setup.id(),
+            )
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(setup)
+    }
+
+    /// Inspects one safe Provider Setup projection.
+    ///
+    /// # Errors
+    ///
+    /// Requires current Workspace Owner authority. An absent Setup or a
+    /// Setup from another Workspace returns [`Error::ProviderSetupNotFound`].
+    pub async fn get_setup(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+        setup_id: &ProviderSetupId,
+    ) -> Result<ProviderSetup, Error> {
+        self.require_owner_inspection(actor, workspace_id).await?;
+        repository::setup(self.database.as_ref(), &workspace_id.clone(), setup_id)
+            .await?
+            .map(|loaded| loaded.setup)
+            .ok_or(Error::ProviderSetupNotFound)
+    }
+
+    /// Inspects one Operation in a Provider's current Materialized Catalog.
+    ///
+    /// Administrative inspection remains available while a Provider is revoked
+    /// or unavailable; those lifecycle facts gate discovery and execution only.
+    /// The private Provider Generation remains inside the Module; callers name
+    /// the stable Provider-plus-Operation-Key address only.
+    ///
+    /// # Errors
+    ///
+    /// Requires current Workspace Owner authority. An absent Provider,
+    /// Generation, Catalog, or Operation returns [`Error::OperationNotFound`].
+    pub async fn inspect_operation(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+        provider_id: &ProviderId,
+        operation_key: &OperationKey,
+    ) -> Result<MaterializedOperation, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let evidence = self
+            .workspaces
+            .check_in_transaction(
+                &mut transaction,
+                actor,
+                workspace_id,
+                WorkspaceAction::Inspect,
+            )
+            .await?;
+        require_owner(&evidence)?;
+        let generation_id = repository::active_generation_for_configuration_in_transaction(
+            &mut transaction,
+            workspace_id,
+            provider_id,
+        )
+        .await?
+        .ok_or(Error::OperationNotFound)?;
+        let operation = coral_catalog::operation_in_transaction(
+            &mut transaction,
+            &generation_id,
+            operation_key,
+        )
+        .await?
+        .ok_or(Error::OperationNotFound)?;
+        transaction.rollback().await?;
+        Ok(operation)
+    }
+
+    /// Disables one exact Workspace-owned Provider.
+    ///
+    /// Disabling preserves the Provider, its Generation, Provider Accounts,
+    /// and historical attribution while blocking new Invocation admission and
+    /// every pending pre-fence dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Requires the Provider owner's current authority and an active Provider.
+    pub async fn disable_provider(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        provider_id: &ProviderId,
+    ) -> Result<Provider, Error> {
+        self.change_provider_state(context, owner, provider_id, ProviderState::Disabled)
+            .await
+    }
+
+    /// Restores one exact disabled Workspace-owned Provider.
+    ///
+    /// Restoration reuses the same Provider and makes otherwise-ready Operations usable again.
+    ///
+    /// # Errors
+    ///
+    /// Requires the Provider owner's current authority and a disabled Provider.
+    pub async fn restore_provider(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        provider_id: &ProviderId,
+    ) -> Result<Provider, Error> {
+        self.change_provider_state(context, owner, provider_id, ProviderState::Active)
+            .await
+    }
+
+    /// Lists safe Provider-domain Administrative Lifecycle Events.
+    ///
+    /// # Errors
+    ///
+    /// Requires current Workspace Owner authority.
+    pub async fn list_lifecycle_events(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+    ) -> Result<Vec<AdministrativeLifecycleEvent>, Error> {
+        self.require_owner_inspection(actor, workspace_id).await?;
+        repository::list_lifecycle_events(&self.database, workspace_id).await
+    }
+
+    async fn change_provider_state(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        provider_id: &ProviderId,
+        next_state: ProviderState,
+    ) -> Result<Provider, Error> {
+        let mut transaction = self.database.begin().await?;
+        let workspace_id = owner;
+        let (workspace_id, authority_source) = {
+            let evidence = self
+                .workspaces
+                .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
+                .await?;
+            require_owner(&evidence)?;
+            (Some(workspace_id), evidence.authority_source())
+        };
+        if !repository::hold_provider_in_transaction(&mut transaction, owner, provider_id).await? {
+            return Err(Error::ProviderNotFound);
+        }
+        let stored = repository::provider_in_transaction(&mut transaction, owner, provider_id)
+            .await?
+            .ok_or(Error::ProviderNotFound)?;
+        stored.provider.check_etag(context)?;
+        match (stored.provider.state(), next_state) {
+            (ProviderState::Disabled, ProviderState::Disabled) => {
+                return Err(Error::ProviderAlreadyDisabled);
+            }
+            (ProviderState::Active, ProviderState::Active) => {
+                return Err(Error::ProviderAlreadyActive);
+            }
+            (ProviderState::Active, ProviderState::Disabled)
+            | (ProviderState::Disabled, ProviderState::Active) => {}
+        }
+        repository::update_provider_state(&mut transaction, owner, provider_id, next_state).await?;
+        let action = match next_state {
+            ProviderState::Active => LifecycleAction::ProviderRestored,
+            ProviderState::Disabled => LifecycleAction::ProviderDisabled,
+        };
+        let target_id = provider_id.to_string();
+        repository::insert_lifecycle_event(
+            &mut transaction,
+            repository::NewLifecycleEvent {
+                workspace_id,
+                actor: LifecycleActor::User {
+                    user_id: context.actor().user_id().clone(),
+                    authority_source,
+                },
+                action,
+                target_id: &target_id,
+                outcome: LifecycleOutcome::Accepted,
+                changed_field_paths: &["state"],
+                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                trace_id: context.trace_id(),
+            },
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(stored.provider.with_state(next_state))
+    }
+
+    async fn check_owner_inspection_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        actor: &AuthenticatedUser,
+        owner: &WorkspaceId,
+    ) -> Result<AuthoritySource, Error> {
+        let workspace_id = owner;
+        {
+            let evidence = self
+                .workspaces
+                .check_in_transaction(transaction, actor, workspace_id, WorkspaceAction::Inspect)
+                .await?;
+            require_owner(&evidence)?;
+            Ok(evidence.authority_source())
+        }
+    }
+
+    async fn check_owner_configuration_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        actor: &AuthenticatedUser,
+        owner: &WorkspaceId,
+    ) -> Result<AuthoritySource, Error> {
+        let workspace_id = owner;
+        {
+            let evidence = self
+                .workspaces
+                .check_configuration_in_transaction(transaction, actor, workspace_id)
+                .await?;
+            require_owner(&evidence)?;
+            Ok(evidence.authority_source())
+        }
+    }
+
+    async fn require_owner_inspection(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+    ) -> Result<WorkspaceEvidence, Error> {
+        let evidence = self
+            .workspaces
+            .check(actor, workspace_id, WorkspaceAction::Inspect)
+            .await?;
+        require_owner(&evidence)?;
+        Ok(evidence)
+    }
+}
+
+/// A Setup feeds Publication only while it is ready; consumption and every
+/// pre-ready or terminal state answer with their own safe failure.
+pub(crate) fn require_ready(setup: &ProviderSetup) -> Result<(), Error> {
+    match setup.state() {
+        ProviderSetupState::Ready => Ok(()),
+        ProviderSetupState::Consumed(_) => Err(Error::ProviderSetupConsumed),
+        ProviderSetupState::AwaitingConfiguration
+        | ProviderSetupState::AwaitingAuthorization
+        | ProviderSetupState::AwaitingDiscovery
+        | ProviderSetupState::Expired
+        | ProviderSetupState::Canceled => Err(Error::ProviderSetupNotReady),
+    }
+}
+
+/// Resolves current active Workspace Provider catalogs before ranking.
+///
+/// This narrow facet reads no complete Operation description. Provider lifecycle
+/// and structural Operation availability are current in the caller's read
+/// snapshot.
+///
+/// # Errors
+///
+/// Returns a shared persistence or minimal Catalog-index corruption failure.
+pub async fn provider_search_catalogs_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_filter: Option<&ProviderId>,
+) -> Result<Vec<ProviderSearchCatalog>, Error> {
+    let mut catalogs = Vec::new();
+    for active in search::active_providers(transaction, workspace_id, provider_filter).await? {
+        let operations = coral_catalog::available_search_targets_in_transaction(
+            transaction,
+            active.generation_id(),
+        )
+        .await?;
+        catalogs.push(ProviderSearchCatalog::new(active, operations));
+    }
+    Ok(catalogs)
+}
+
+/// Resolves the declared effect hints for an exact current Provider Operation.
+///
+/// This narrow transaction-compatible facet lets the Operation Policy Module
+/// validate its target and derive the hint-based default without reading
+/// Provider or Catalog persistence itself. The caller owns commit or rollback.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt Provider-package failure. `Ok(None)` means
+/// either the Provider is outside the exact Workspace or its current
+/// catalog has no matching Operation Key.
+pub async fn operation_policy_hints_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_id: &ProviderId,
+    operation_key: &OperationKey,
+) -> Result<Option<coral_catalog::OperationHints>, Error> {
+    Ok(operation_policy_hints_batch_in_transaction(
+        transaction,
+        workspace_id,
+        provider_id,
+        std::slice::from_ref(operation_key),
+    )
+    .await?
+    .remove(operation_key))
+}
+
+/// Resolves hints for a bounded selection in one Provider's current catalog.
+/// Missing Providers or keys are omitted. Definitions and schemas stay lazy.
+/// The caller owns authority and the coherent read transaction.
+/// # Errors
+/// Returns invalid-size, persistence or corrupt Provider-package failures.
+pub async fn operation_policy_hints_batch_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_id: &ProviderId,
+    operation_keys: &[OperationKey],
+) -> Result<std::collections::BTreeMap<OperationKey, coral_catalog::OperationHints>, Error> {
+    let Some(provider_id) =
+        crate::access::provider_id_in_transaction(transaction, workspace_id, provider_id).await?
+    else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let generation_id = repository::active_generation_for_configuration_in_transaction(
+        transaction,
+        workspace_id,
+        &provider_id,
+    )
+    .await?
+    .ok_or_else(|| Error::CorruptData("Provider has no current Provider Generation".to_string()))?;
+    Ok(
+        coral_catalog::operation_hints_in_transaction(transaction, &generation_id, operation_keys)
+            .await?,
+    )
+}
+
+/// Atomically resolves one active Call Path for Invocation admission.
+///
+/// The caller owns the transaction that creates the durable Invocation and its
+/// started Event. `Ok(None)` means the namespace or Operation-relative path is
+/// not currently callable and therefore no Invocation should be created.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn resolve_invocation_operation_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    namespace: &access::ProviderNamespace,
+    relative_path: &str,
+) -> Result<Option<ResolvedInvocationOperation>, Error> {
+    let Some(observed_provider) =
+        crate::access::by_namespace_in_transaction(transaction, workspace_id, namespace).await?
+    else {
+        return Ok(None);
+    };
+    if !crate::runtime::hold_active_provider_in_transaction(
+        transaction,
+        workspace_id,
+        observed_provider.id(),
+    )
+    .await?
+        || !crate::access::hold_exact_in_transaction(
+            transaction,
+            workspace_id,
+            observed_provider.id(),
+        )
+        .await?
+    {
+        return Ok(None);
+    }
+    let Some(provider_access) =
+        crate::access::exact_in_transaction(transaction, workspace_id, observed_provider.id())
+            .await?
+    else {
+        return Ok(None);
+    };
+    if provider_access.namespace() != namespace || provider_access.id() != observed_provider.id() {
+        return Ok(None);
+    }
+    let Some(generation_id) = crate::runtime::active_generation_in_transaction(
+        transaction,
+        workspace_id,
+        provider_access.id(),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let Some(operation) = coral_catalog::operation_by_relative_path_in_transaction(
+        transaction,
+        &generation_id,
+        relative_path,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let schema_graph =
+        coral_catalog::schema_graph_in_transaction(transaction, &generation_id).await?;
+    Ok(Some(ResolvedInvocationOperation::new(
+        provider_access,
+        generation_id,
+        operation,
+        schema_graph,
+    )))
+}
+
+/// Rechecks and holds exact retained Provider dispatch evidence.
+///
+/// Provider active-Generation selection may change after admission; this facet
+/// intentionally verifies the retained Generation package rather than requiring
+/// it to remain active. The Provider itself and exact Provider version
+/// and route must still be current.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure. The verification result
+/// distinguishes an exact route-version change from other authority loss.
+pub async fn verify_invocation_operation_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    retained: &ResolvedInvocationOperation,
+) -> Result<InvocationOperationVerification, Error> {
+    let provider_access = retained.provider_access();
+    if !repository::hold_active_provider_for_workspace_in_transaction(
+        transaction,
+        workspace_id,
+        provider_access.id(),
+    )
+    .await?
+        || !crate::access::hold_exact_in_transaction(
+            transaction,
+            workspace_id,
+            provider_access.id(),
+        )
+        .await?
+    {
+        return Ok(InvocationOperationVerification::AuthorityLost);
+    }
+    if crate::runtime::active_provider_in_transaction(
+        transaction,
+        workspace_id,
+        provider_access.id(),
+    )
+    .await?
+    .is_none()
+    {
+        return Ok(InvocationOperationVerification::ProviderUnavailable);
+    }
+    verify_retained_operation(transaction, workspace_id, retained).await
+}
+
+/// Verifies the retained Operation like [`verify_invocation_operation_in_transaction`]
+/// without holding the Provider. Use it only in a read snapshot, to decide
+/// whether a held recheck is needed; only the held verification admits dispatch.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn verify_invocation_operation_in_snapshot(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    retained: &ResolvedInvocationOperation,
+) -> Result<InvocationOperationVerification, Error> {
+    // The held form's Provider hold reports an inactive Provider as lost authority.
+    if crate::runtime::active_provider_in_transaction(
+        transaction,
+        workspace_id,
+        retained.provider_access().id(),
+    )
+    .await?
+    .is_none()
+    {
+        return Ok(InvocationOperationVerification::AuthorityLost);
+    }
+    verify_retained_operation(transaction, workspace_id, retained).await
+}
+
+async fn verify_retained_operation(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    retained: &ResolvedInvocationOperation,
+) -> Result<InvocationOperationVerification, Error> {
+    let provider_access = retained.provider_access();
+    match access::verify_retained_in_transaction(transaction, workspace_id, provider_access).await?
+    {
+        access::RetainedProviderVerification::Current => {}
+        access::RetainedProviderVerification::Removed => {
+            return Ok(InvocationOperationVerification::AuthorityLost);
+        }
+        access::RetainedProviderVerification::RouteChanged => {
+            return Ok(InvocationOperationVerification::CredentialRouteChanged);
+        }
+    }
+    coral_catalog::verify_generation_in_transaction(transaction, retained.provider_generation_id())
+        .await?;
+    if coral_catalog::schema_graph_in_transaction(transaction, retained.provider_generation_id())
+        .await?
+        != *retained.schema_graph()
+    {
+        return Err(Error::CorruptData(
+            "Provider Generation schema graph changed after Invocation admission".to_string(),
+        ));
+    }
+    let operation = coral_catalog::operation_in_transaction(
+        transaction,
+        retained.provider_generation_id(),
+        retained.operation().key(),
+    )
+    .await?;
+    Ok(
+        if operation.is_some_and(|operation| &operation == retained.operation()) {
+            InvocationOperationVerification::Current
+        } else {
+            InvocationOperationVerification::AuthorityLost
+        },
+    )
+}
+
+fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
+    if evidence.effective_role() == WorkspaceRole::Owner {
+        Ok(())
+    } else {
+        Err(
+            coral_workspace::Error::PermissionDenied("Workspace Owner authority is required")
+                .into(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests;

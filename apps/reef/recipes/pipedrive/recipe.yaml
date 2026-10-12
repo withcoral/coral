@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://pipedrive.readme.io/docs/run-pipedrive-api-in-postman-or-insomnia
+schema_version: 1
+id: pipedrive
+display_name: Pipedrive
+description: Deals, people, organizations, activities and sales pipelines from Pipedrive.
+source:
+  openapi:
+    url: https://developers.pipedrive.com/docs/api/v1/openapi-v2.yaml
+authentication:
+  options:
+    api_token:
+      method: header_credentials
+      label: API token
+      documentation_url: https://pipedrive.readme.io/docs/how-to-find-the-api-token
+      fields:
+        api_key:
+          label: API token
+      headers:
+        x-api-token:
+          field: api_key
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      description: Create an OAuth app. Register the callback URL shown during setup.
+      documentation_url: https://pipedrive.readme.io/docs/marketplace-oauth-authorization
+      authorization_url: https://oauth.pipedrive.com/oauth/authorize
+      token_url: https://oauth.pipedrive.com/oauth/token
+      client:
+        authentication: client_secret_basic
+      pkce: disabled
+      scopes: []
+    access_token:
+      method: bearer
+      label: OAuth access token
+      documentation_url: https://pipedrive.readme.io/docs/marketplace-oauth-authorization
+  default: api_token
+inputs:
+  api_base_url:
+    type: url
+    label: Pipedrive API base URL
+    default: https://api.pipedrive.com/api/v2
+    description: For OAuth, append /api/v2 to the api_domain returned with your token.
+    documentation_url: https://pipedrive.readme.io/docs/marketplace-oauth-authorization
+servers:
+  '#/servers':
+    base_url: '{{input.api_base_url}}'
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

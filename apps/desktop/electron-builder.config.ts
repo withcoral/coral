@@ -1,202 +1,202 @@
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 import type { Configuration } from 'electron-builder'
 
 import { APP_ID } from './src/shared/app-id.ts'
 
-// Release mode ships an active updater, so it only applies where the app can
-// replace itself: the macOS app, the Linux AppImage, and the Windows installer.
-const RELEASE_PLATFORMS: NodeJS.Platform[] = ['darwin', 'linux', 'win32']
+// `npm run stage` writes these; a package without them cannot start.
+const STAGED = [
+  join('resources', 'reef', 'server.mjs'),
+  join('resources', 'reef', 'build', 'client'),
+]
 
-const API_KEY_NOTARIZATION_ENV = [
-  'APPLE_API_KEY',
-  'APPLE_API_KEY_ID',
-  'APPLE_API_ISSUER',
-] as const
+// The v1 update feed: GitHub releases in a repository of its own. It must
+// never be withcoral/coral, whose releases the 0.x app polls: that app
+// would update itself into this one. Only a release package names a feed, so
+// only a release package can update itself.
+// docs/adr/0013-desktop-release-channel.md records why.
+//
+// electron-builder names the updater's download cache after package.json
+// `name`. `coral-app` keeps it apart from the 0.x `@withcoral/desktop`.
+export const UPDATE_FEED = {
+  provider: 'github',
+  owner: 'withcoral',
+  repo: 'coral-releases',
+} as const
 
-function hasValue(env: NodeJS.ProcessEnv, name: string): boolean {
-  return Boolean(env[name]?.trim())
-}
-
-function requireNotarizationCredentials(env: NodeJS.ProcessEnv): void {
-  // app-builder-lib only warns and returns successfully when `notarize: true`
-  // has no usable credentials. Coral's release path intentionally uses its
-  // App Store Connect API key mode, so reject an incomplete setup here.
-  const missing = API_KEY_NOTARIZATION_ENV.filter((name) => !hasValue(env, name))
-  if (missing.length > 0) {
-    throw new Error(
-      `CORAL_DESKTOP_RELEASE=1 requires a complete App Store Connect API key credential set; missing ${missing.join(', ')}`,
-    )
-  }
-
-  const keyPath = env.APPLE_API_KEY ?? ''
-  let keyMetadata
-  try {
-    keyMetadata = statSync(keyPath)
-    accessSync(keyPath, constants.R_OK)
-  } catch {
-    throw new Error('APPLE_API_KEY must point to a readable, non-empty regular file')
-  }
-  if (!keyMetadata.isFile() || keyMetadata.size === 0) {
-    throw new Error('APPLE_API_KEY must point to a readable, non-empty regular file')
-  }
-}
-
+/**
+ * The package configuration. `CORAL_DESKTOP_RELEASE=1` makes a release
+ * package: it names the v1 feed, and on macOS and Windows it must be signed.
+ * A release build fails before packaging when a credential is missing, because
+ * electron-builder skips notarization with only a warning.
+ */
 export function createConfig(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Configuration {
-  // Reject the flag up front, so the build fails on the flag rather than on a
-  // preflight it could never satisfy.
-  const releaseBuild = env.CORAL_DESKTOP_RELEASE === '1'
-  if (releaseBuild && !RELEASE_PLATFORMS.includes(platform)) {
-    throw new Error(
-      `CORAL_DESKTOP_RELEASE=1 supports ${RELEASE_PLATFORMS.join(', ')} hosts only, not ${platform}`,
-    )
-  }
-  // Signing and notarization are the macOS half of release mode; the AppImage
-  // updates itself unsigned.
-  const appleRelease = releaseBuild && platform === 'darwin'
-  if (appleRelease) requireNotarizationCredentials(env)
-
+  const release = env.CORAL_DESKTOP_RELEASE === '1'
+  const macRelease = release && platform === 'darwin'
+  const winRelease = release && platform === 'win32'
+  if (release && !['darwin', 'linux', 'win32'].includes(platform))
+    throw new Error(`A release package builds on macOS, Linux or Windows, not ${platform}`)
+  if (macRelease) requireMacCredentials(env)
+  const azure = winRelease ? requireAzureCredentials(env) : undefined
   return {
     appId: APP_ID,
     productName: 'Coral',
-    artifactName: 'coral-desktop-${os}-${arch}.${ext}',
-    forceCodeSigning: appleRelease,
-    publish: [
-      {
-        provider: 'github',
-        owner: 'withcoral',
-        repo: 'coral',
-      },
-    ],
+    artifactName: 'coral-app-${os}-${arch}.${ext}',
+    publish: release ? [UPDATE_FEED] : null,
+    // The AppImage is unsigned; Linux has no platform signature to check.
+    forceCodeSigning: macRelease || winRelease,
     directories: {
       output: 'dist',
       buildResources: 'resources',
     },
     files: ['out/**/*', 'package.json'],
     extraResources: [
-      {
-        from: 'resources/coral/',
-        to: 'coral/',
-        filter: ['**/*'],
-      },
+      { from: 'resources/coral/', to: 'coral/' },
+      { from: 'resources/reef/', to: 'reef/' },
       {
         from: 'resources/icons/',
         to: 'icons/',
-        filter: [
-          'icon.icns',
-          'icon-dark.icns',
-          'icon.ico',
-          'icon-dark.ico',
-          'icon.png',
-          'icon-dark.png',
-          'icon-mac.png',
-          'icon-dark-mac.png',
-          'icon.svg',
-        ],
-      },
-      {
-        from: '../coral-ui/build/client/',
-        to: 'app/',
-        filter: ['**/*'],
+        filter: ['icon.png', 'icon.ico', 'trayTemplate*.png'],
       },
     ],
+    beforePack: async ({ electronPlatformName }) => {
+      const runtime = join(
+        'resources',
+        'coral',
+        electronPlatformName === 'win32' ? 'coral.exe' : 'coral',
+      )
+      const missing = [runtime, ...STAGED].filter(
+        (path) => !existsSync(join(import.meta.dirname, path)),
+      )
+      if (missing.length)
+        throw new Error(`Run \`npm run stage\` first. Missing: ${missing.join(', ')}`)
+    },
+    electronFuses: {
+      runAsNode: false,
+      enableNodeOptionsEnvironmentVariable: false,
+      enableNodeCliInspectArguments: false,
+      enableEmbeddedAsarIntegrityValidation: true,
+      onlyLoadAppFromAsar: true,
+      // Flipping fuses rewrites Electron's binaries and breaks their ad-hoc
+      // signature, and Apple Silicon kills an app whose signature is invalid.
+      // Re-sign ad-hoc, so an unsigned package runs. A release package is then
+      // signed with Developer ID.
+      resetAdHocDarwinSignature: true,
+    },
     mac: {
       category: 'public.app-category.developer-tools',
-      entitlements: appleRelease ? 'resources/entitlements.mac.plist' : null,
-      entitlementsInherit: appleRelease ? 'resources/entitlements.mac.inherit.plist' : null,
-      hardenedRuntime: appleRelease,
       icon: 'resources/icons/icon.icns',
-      // identity null makes non-release builds deterministically unsigned;
-      // otherwise electron-builder auto-discovers a Developer ID certificate
-      // from the developer's keychain and signs local packages.
-      identity: appleRelease ? undefined : null,
-      notarize: appleRelease,
-      target: ['dmg', 'zip'],
+      // null keeps local packages unsigned instead of signing them with any
+      // Developer ID certificate found in the keychain. xtask imports the
+      // release identity into a keychain of its own, named by CSC_KEYCHAIN.
+      identity: macRelease ? env.CSC_NAME : null,
+      hardenedRuntime: true,
+      notarize: macRelease,
+      // Apple silicon only. `npm run stage` builds an arm64 runtime to match.
+      target: [
+        { target: 'dmg', arch: ['arm64'] },
+        { target: 'zip', arch: ['arm64'] },
+      ],
+      // V8 needs JIT under the hardened runtime: Electron's, and the runtime's,
+      // which runs Programs in V8 and aborts at startup without it. Every
+      // nested binary, the runtime included, gets `entitlementsInherit`.
+      entitlements: 'resources/entitlements.mac.plist',
+      entitlementsInherit: 'resources/entitlements.mac.plist',
+    },
+    dmg: {
+      // The mounted volume's name; the file name carries the version.
+      title: 'Coral',
+      // background@2x.png beside it serves Retina displays. The window takes
+      // the 1x image's size, 640 × 420, including Finder's window bars.
+      // Render both from background.svg with
+      // scripts/render-dmg-background.mjs.
+      background: 'resources/dmg/background.png',
+      iconSize: 96,
+      // Finder's bars leave about 360 points of visible background. Center
+      // the whole row, including its labels, in that area. The arrow matches.
+      contents: [
+        { x: 200, y: 165, type: 'file' },
+        { x: 440, y: 165, type: 'link', path: '/Applications' },
+      ],
     },
     linux: {
       category: 'Development',
-      // `coral` is the CLI's name. Claiming it for the Electron executable would
-      // put a /usr/bin/coral symlink to the desktop app in the deb payload and
-      // shadow the CLI the user installed.
-      executableName: 'coral-desktop',
-      // The directory, not icon.png: electron-builder passes a lone .png through
-      // verbatim, installing one 1024x1024 icon at a size hicolor's index.theme
-      // does not declare. A directory routes it through the size generator.
+      // `coral` is the runtime binary's name, and `coral-desktop` is the 0.x
+      // package, which apt would upgrade to this app.
+      executableName: 'coral-app',
+      // A directory, so electron-builder generates every hicolor icon size.
       icon: 'resources/icons',
-      // Debian requires a contact address for the Maintainer field, and fpm
-      // refuses to build without one — `author` carries no email.
-      maintainer: 'Coral Eng Team <eng@withcoral.com>',
+      maintainer: 'Coral <support@withcoral.com>',
       synopsis: 'Coral desktop app',
-      // Makes StartupWMClass match the WM_CLASS Electron takes from `desktopName`
-      // in package.json. Without it the launcher cannot claim its own window.
+      // Matches StartupWMClass to the WM_CLASS that Electron takes from
+      // package.json `desktopName`, so the launcher claims its own window.
       syncDesktopName: true,
-      target: [
-        { target: 'AppImage', arch: ['x64'] },
-        { target: 'deb', arch: ['x64'] },
-      ],
+      target: [{ target: 'AppImage', arch: ['x64'] }],
     },
-    deb: {
-      // Without this the package name falls back to the product name, `coral`,
-      // which would collide with a future CLI package.
-      packageName: 'coral-desktop',
-      // Keeps the deb out of latest-linux.yml. FpmTarget reports the deb with
-      // `isWriteUpdateInfo: true` whenever a publish config resolves, and
-      // writeUpdateInfoFiles() merges every reported artifact into the one feed.
-      // The sort there breaks ties by zip-vs-non-zip and then arch, which the
-      // deb and the AppImage tie on, so the top-level `path:` the updater reads
-      // would come from whichever target hashed first. A target-level null
-      // short-circuits getPublishConfigs() for the artifact event, so the feed
-      // names the AppImage and nothing else.
-      //
-      // It does not stop FpmTarget writing `resources/package-type` — that call
-      // passes the target options through but resolves against `linux.publish`
-      // and the global config only. auto-update.ts names the updater class for
-      // that reason.
-      publish: null,
-    },
+    deb: { packageName: 'coral-app' },
     win: {
-      // The file, not the directory: the lone-.png trap the linux block works
-      // around is PNG-only, and electron-builder uses an .ico with a >=256
-      // entry as is.
       icon: 'resources/icons/icon.ico',
-      // No `publish` override, so the installer inherits the GitHub provider
-      // above: electron-builder writes latest.yml and embeds app-update.yml.
-      // `verifyUpdateCodeSignature` stays at its default true — an unsigned build
-      // resolves no publisherName, so NsisUpdater skips the Authenticode check,
-      // and signing the app is then all it takes to turn it on.
       target: [{ target: 'nsis', arch: ['x64'] }],
+      // electron-builder signs Coral.exe, the runtime and the installer. The
+      // publisher name also goes into app-update.yml: the updater installs
+      // only an installer signed by that publisher.
+      azureSignOptions: azure,
     },
-    // `differentialPackage` is deliberately not set: the default builds the
-    // blockmap a differential update needs. It also relaxes app.7z compression
-    // to keep block boundaries stable, so the installer itself grows a little.
+    // Per user, with no UAC prompt, into %LOCALAPPDATA%\Programs\Coral. The
+    // 0.x app installs there too, so users uninstall it first, as on macOS,
+    // where both are Coral.app. The two apps still keep separate data folders.
+    // The Start Menu entry is "Coral".
     nsis: {
-      // The install mode page offers all-users even with `perMachine: false`.
-      // Refusing elevation disables that radio instead of walking a standard
-      // account into a UAC prompt it cannot answer.
-      allowElevation: false,
-      allowToChangeInstallationDirectory: true,
       oneClick: false,
-      // Per-user, under %LOCALAPPDATA%: the only mode that installs and updates
-      // with no UAC prompt at all. A per-machine install updates too — the NSIS
-      // script elevates a silent upgrade of one explicitly, since the mode page
-      // that would normally ask never runs — but that costs a prompt, and
-      // declining it quits the installer with the app already closed and not
-      // relaunched. NsisUpdater.doInstall() spawns detached and returns true on
-      // a pid, so that abort reaches electron-updater as neither an error nor a
-      // completion, and auto-update.ts's hand-off marker then blocks a manual
-      // relaunch of the old build until its TTL expires.
-      //
-      // `allowElevation: false` does not make this unreachable: it only disables
-      // the all-users radio for non-admin users, so a local admin can still pick
-      // per-machine at install time (as can `/allusers`).
       perMachine: false,
+      // The install mode page still offers all users; this disables that choice.
+      allowElevation: false,
     },
   }
 }
 
-const config = createConfig()
+/** The values of `names`; throws naming the first that is empty or unset. */
+function required(env: NodeJS.ProcessEnv, names: string[]): string[] {
+  return names.map((name) => {
+    const value = env[name]?.trim()
+    // A missing GitHub secret arrives as an empty string.
+    if (!value) throw new Error(`A release package needs ${name}`)
+    return value
+  })
+}
 
-export default config
+// Azure Trusted Signing authenticates with a service principal from the
+// environment, and signs with the account and profile the options name.
+function requireAzureCredentials(env: NodeJS.ProcessEnv) {
+  required(env, ['AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET'])
+  const [publisherName, endpoint, codeSigningAccountName, certificateProfileName] = required(env, [
+    'AZURE_TRUSTED_SIGNING_PUBLISHER_NAME',
+    'AZURE_TRUSTED_SIGNING_ENDPOINT',
+    'AZURE_TRUSTED_SIGNING_ACCOUNT_NAME',
+    'AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME',
+  ])
+  return { publisherName, endpoint, codeSigningAccountName, certificateProfileName }
+}
+
+// Notarization uses an App Store Connect API key. APPLE_API_KEY is the path
+// to its .p8 file, which xtask decodes from a secret.
+function requireMacCredentials(env: NodeJS.ProcessEnv) {
+  const [keyPath] = required(env, [
+    'APPLE_API_KEY',
+    'APPLE_API_KEY_ID',
+    'APPLE_API_ISSUER',
+    'CSC_NAME',
+  ])
+  try {
+    accessSync(keyPath, constants.R_OK)
+    const key = statSync(keyPath)
+    if (key.isFile() && key.size > 0) return
+  } catch {}
+  throw new Error('APPLE_API_KEY must name a readable, non-empty file')
+}
+
+export default createConfig()

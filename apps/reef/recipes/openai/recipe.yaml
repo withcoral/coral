@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: openai
+display_name: OpenAI
+description: Responses, models, files, batches, vector stores and usage from OpenAI.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+
+source:
+  openapi:
+    # OpenAI's own spec. The main branch syncs from upstream several times a day.
+    url: https://raw.githubusercontent.com/openai/openai-openapi/main/openapi.yaml
+
+authentication:
+  # OpenAI offers no OAuth sign-in for its API. The document declares two
+  # bearer schemes, ApiKeyAuth and AdminApiKeyAuth, which share one contract;
+  # only the key's kind differs.
+  options:
+    api_key:
+      method: bearer
+      label: Paste an API key
+      description: Use an admin key for organization and admin operations.
+      documentation_url: https://developers.openai.com/api/reference/overview
+
+# OpenAI-Organization and OpenAI-Project are optional and differ per account,
+# so the recipe sends neither. Each key uses its default organization and project.

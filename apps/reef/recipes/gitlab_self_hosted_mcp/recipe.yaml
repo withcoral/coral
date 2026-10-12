@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.gitlab.com/user/model_context_protocol/mcp_server/
+# The instance advertises the mcp scope and supports dynamic registration unless its administrator restricts it.
+schema_version: 1
+id: gitlab_self_hosted_mcp
+service: gitlab_self_hosted
+display_name: GitLab Self-Hosted
+description: Projects, issues, merge requests and pipelines from your GitLab instance.
+source:
+  mcp:
+    url: '{{input.instance}}/api/v4/mcp'
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with GitLab
+      documentation_url: https://docs.gitlab.com/user/model_context_protocol/mcp_server/
+      flow: authorization_code
+      description: Enable MCP on your instance. Configure a client if your administrator restricts dynamic registration.
+inputs:
+  instance:
+    type: url
+    label: GitLab instance URL
+    description: Enter your instance URL, including its installation path when needed.
+icons:
+  light: gitlab.svg

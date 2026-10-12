@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.zendesk.com/documentation/conversations/references/openapi-specification/
+# Official brand asset: https://developer.zendesk.com/favicon.svg?v=eda544f803a28e8193436df02ebc401d
+schema_version: 1
+id: zendesk_conversations
+display_name: Zendesk Conversations
+description: Messaging conversations, users, integrations and webhooks from Zendesk Conversations.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/zendesk/sunshine-conversations-api-spec/master/openapi.yaml
+authentication:
+  options:
+    api_key:
+      method: basic_auth
+      label: API key secret
+      documentation_url: https://developer.zendesk.com/documentation/conversations/references/authentication/
+      fields:
+        username:
+          label: API key ID
+          sensitive: false
+        password:
+          label: API key secret
+      username:
+        field: username
+      password:
+        field: password
+    jwt:
+      method: bearer
+      label: Signed JWT
+      documentation_url: https://developer.zendesk.com/documentation/conversations/references/authentication/
+  default: api_key
+inputs:
+  subdomain:
+    type: hostname
+    label: Zendesk subdomain
+    description: Enter the name before .zendesk.com.
+servers:
+  '#/servers':
+    base_url: https://{{input.subdomain}}.zendesk.com/sc
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

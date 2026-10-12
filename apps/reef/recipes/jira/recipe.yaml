@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: jira
+display_name: Jira Cloud
+description: >-
+  Projects, issues, comments, worklogs, versions, components, issue types,
+  priorities and related metadata from Jira Cloud.
+icons:
+  light: jira.svg
+
+inputs:
+  site:
+    type: url
+    label: Jira site URL
+    description: Enter your Jira site URL, such as https://acme.atlassian.net.
+
+source:
+  openapi:
+    url: https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json
+
+authentication:
+  options:
+    api_token:
+      method: basic_auth
+      label: Email and API token
+      documentation_url: https://developer.atlassian.com/cloud/jira/platform/basic-auth-for-rest-apis/
+      # The email belongs to each connected identity, not to Provider-wide inputs,
+      # because it authenticates the request. Unmasked on entry, still private.
+      fields:
+        email:
+          label: Atlassian account email
+          sensitive: false
+        api_token:
+          label: API token
+      username: { field: email }
+      password: { field: api_token }
+
+servers:
+  '#/servers':
+    base_url: '{{input.site}}'

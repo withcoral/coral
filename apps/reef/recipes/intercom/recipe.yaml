@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.intercom.com/docs/guides/mcp
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: intercom
+display_name: Intercom
+description: Conversations, contacts and customer support data from Intercom.
+source:
+  mcp:
+    url: '{{input.endpoint}}'
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://developers.intercom.com/docs/guides/mcp
+      flow: authorization_code
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+inputs:
+  endpoint:
+    type: url
+    label: MCP region
+    default: https://mcp.intercom.com/mcp
+    enum:
+      - https://mcp.intercom.com/mcp
+      - https://mcp.eu.intercom.com/mcp
+    documentation_url: https://developers.intercom.com/docs/guides/mcp

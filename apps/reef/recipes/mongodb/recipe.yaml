@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.mongodb.com/docs/mcp-server/get-started/
+# Official brand asset: https://www.mongodb.com/assets/images/global/favicon.ico
+schema_version: 1
+id: mongodb
+display_name: MongoDB Atlas
+description: Clusters, databases and documents from MongoDB Atlas.
+source:
+  mcp:
+    url: https://mcp.mongodb.com
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with MongoDB Atlas
+      flow: authorization_code
+      documentation_url: https://www.mongodb.com/docs/mcp-server/get-started/
+icons:
+  light: logo.svg

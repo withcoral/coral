@@ -1,0 +1,74 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "coral/management/v1/membership.proto";
+import "coral/management/v1/workspace.proto";
+
+// Organization Owner governance over every Workspace, with or without a
+// Membership there. It grants no access to anything inside a Workspace.
+service OrganizationWorkspaceService {
+  // Lists every Workspace with its state and designated Owners.
+  rpc ListOrganizationWorkspaces(ListOrganizationWorkspacesRequest) returns (ListOrganizationWorkspacesResponse);
+  // Makes one User a designated Owner of an active Workspace.
+  rpc AssignWorkspaceOwner(AssignWorkspaceOwnerRequest) returns (OrganizationWorkspace);
+  // Archives a Workspace without a Membership there.
+  rpc ArchiveOrganizationWorkspace(ArchiveOrganizationWorkspaceRequest) returns (OrganizationWorkspace);
+  // Restores a Workspace without a Membership there.
+  rpc RestoreOrganizationWorkspace(RestoreOrganizationWorkspaceRequest) returns (OrganizationWorkspace);
+}
+
+// One Workspace as an Organization Owner sees it: no configuration or work.
+message OrganizationWorkspace {
+  // Canonical immutable name: workspaces/{workspace}.
+  string name = 1;
+  // Mutable human label.
+  string display_name = 2;
+  // Current lifecycle state.
+  WorkspaceState state = 3;
+  // Opaque concurrency precondition for archive and restore.
+  string etag = 4;
+  // Designated Owners on record, including disabled Owners.
+  repeated WorkspaceOwner owners = 5;
+}
+
+// Owner-only page request.
+message ListOrganizationWorkspacesRequest {
+  // Zero defaults to 30; maximum 100.
+  int32 page_size = 1;
+  // Non-authorizing opaque continuation.
+  string page_token = 2;
+}
+
+// One page of Workspaces.
+message ListOrganizationWorkspacesResponse {
+  // Active and archived Workspaces.
+  repeated OrganizationWorkspace workspaces = 1;
+  // Empty at end.
+  string next_page_token = 2;
+}
+
+// Owner assignment. A current Member is promoted; a current Owner is unchanged.
+message AssignWorkspaceOwnerRequest {
+  // Canonical Workspace name. The Workspace must be active.
+  string name = 1;
+  // organizationMemberships/{user} with an enabled Organization Membership.
+  string owner = 2;
+  // First-party UUID. Reuse cannot assign again.
+  string request_id = 3;
+}
+
+// Explicit archive action.
+message ArchiveOrganizationWorkspaceRequest {
+  // Canonical Workspace name.
+  string name = 1;
+  // Required current etag.
+  string etag = 2;
+}
+
+// Explicit restoration action.
+message RestoreOrganizationWorkspaceRequest {
+  // Canonical Workspace name.
+  string name = 1;
+  // Required current etag.
+  string etag = 2;
+}

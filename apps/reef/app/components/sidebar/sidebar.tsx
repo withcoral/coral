@@ -1,0 +1,506 @@
+import classNames from 'classnames'
+import { useId, useRef, useState } from 'react'
+import { Form, Link, useLocation } from 'react-router'
+import type { BrowserAuth } from '@/auth/types'
+import { Button, Menu, ScrollArea } from '@/wax/components'
+import { Avatar } from '@/wax/components/avatar'
+import { Brand } from '@/wax/components/brand'
+import { Icon } from '@/wax/components/icon'
+import { Tooltip } from '@/wax/components/tooltip'
+import type { IconName } from '@/wax/components/icon'
+import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+import { SidebarBadge, SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
+import { NavigationFrame } from '@/wax/components/navigation-frame/navigation-frame'
+import { useTheme } from '@/wax/theme/theme-provider'
+import { ActionDialog, NameInput } from '@/views/management/forms'
+import type { FormContext, WorkspaceView } from '@/views/management/types'
+import type { ActionCounts } from '@/lib/activity-live-types'
+import * as styles from './sidebar.css'
+import { useSidebarState } from './use-sidebar-state'
+
+export type SidebarWorkspace = Pick<
+  WorkspaceView,
+  'displayName' | 'path' | 'effectiveRole' | 'mcpEndpoint'
+>
+
+interface SidebarProps {
+  /** Pending actions by Workspace path. Null: every count is unavailable. */
+  actionCounts?: ActionCounts | null
+  organizationOwner?: boolean
+  auth?: BrowserAuth
+  userName?: string
+  initialIsMinimized: boolean
+  workspaces?: SidebarWorkspace[]
+  workspace?: SidebarWorkspace
+  form?: FormContext
+}
+
+interface Destination {
+  to: string
+  icon: IconName
+  label: string
+  /** Only the exact path is current; child paths belong to other destinations. */
+  exact?: boolean
+  /** Another path prefix this destination owns. */
+  also?: string
+  pending?: Pending
+}
+
+interface Pending {
+  badge: string
+  tone: 'attention' | 'neutral'
+  /** The count in words, for the accessible name. */
+  text: string
+}
+
+// Both open outside Coral; Desktop hands new-window links to the browser. The
+// Slack link signs the person in with Slack and invites them to a shared
+// channel with the Coral team.
+const externalLinks: { href: string; icon: IconName; label: string }[] = [
+  {
+    href: 'https://slack.withcoral.com/connect',
+    icon: 'Slack',
+    label: 'Chat on Slack',
+  },
+  {
+    href: 'https://github.com/withcoral/coral',
+    icon: 'GitHub',
+    label: 'Star on GitHub',
+  },
+]
+
+/** Undefined shows no badge: a zero count, or a Workspace without a count. */
+function pending(count: string | null | undefined): Pending | undefined {
+  if (count === null) return { badge: '?', tone: 'neutral', text: 'Pending actions unavailable' }
+  if (!count || count === '0') return undefined
+  return {
+    badge: count.length > 3 ? '999+' : count,
+    tone: 'attention',
+    text: `${count} pending ${count === '1' ? 'action' : 'actions'}`,
+  }
+}
+
+/** The accessible name carries the count the badge shows. */
+function named(label: string, count?: Pending) {
+  return count ? `${label}. ${count.text}` : label
+}
+
+function workspaceDestinations(
+  workspace: SidebarWorkspace,
+  people: boolean,
+  count?: Pending,
+): Destination[] {
+  const owner = workspace.effectiveRole === 'owner'
+  const w = workspace.path
+  return [
+    { to: w, icon: 'Home', label: 'Overview', exact: true },
+    // Stable Run links are Activity detail, outside the Activity path.
+    {
+      to: `${w}/activity`,
+      icon: 'Activity',
+      label: 'Activity',
+      also: `${w}/runs/`,
+      pending: count,
+    },
+    { to: `${w}/providers`, icon: 'Plug', label: 'Providers' },
+    { to: `${w}/accounts`, icon: 'KeyRound', label: 'Accounts' },
+    { to: `${w}/functions`, icon: 'SquareFunction', label: 'Functions' },
+    ...(owner ? [{ to: `${w}/agents`, icon: 'Bot' as const, label: 'Agents' }] : []),
+    // A local deployment has no other people to manage.
+    ...(people ? [{ to: `${w}/members`, icon: 'Users' as const, label: 'Members' }] : []),
+  ]
+}
+
+export function Sidebar({ initialIsMinimized, ...props }: SidebarProps) {
+  const { isMinimized, toggleSidebar, hasToggled } = useSidebarState(initialIsMinimized)
+  const location = useLocation()
+  return (
+    <NavigationFrame navigationKey={location.key} label={props.workspace?.displayName ?? 'Coral'}>
+      {(mobile) => (
+        <SidebarNavigation
+          {...props}
+          isMinimized={!mobile && isMinimized}
+          toggleSidebar={toggleSidebar}
+          resized={!mobile && hasToggled}
+          mobile={mobile}
+        />
+      )}
+    </NavigationFrame>
+  )
+}
+
+function SidebarNavigation({
+  actionCounts,
+  organizationOwner,
+  auth = { mode: 'disabled' },
+  userName,
+  workspaces = [],
+  workspace,
+  form,
+  isMinimized,
+  toggleSidebar,
+  resized,
+  mobile,
+}: Omit<SidebarProps, 'initialIsMinimized'> & {
+  isMinimized: boolean
+  toggleSidebar: () => void
+  resized: boolean
+  mobile: boolean
+}) {
+  const location = useLocation()
+  const accountLabel = auth.mode === 'disabled' ? 'Local user' : userName?.trim() || 'Account'
+  const people = auth.mode === 'required'
+  const logout = useRef<HTMLFormElement>(null)
+  const create = useRef<HTMLButtonElement>(null)
+  // Desktop and the mobile drawer can mount this navigation together.
+  const treeId = useId()
+  const [createAt, setCreateAt] = useState<string | null>(null)
+  // This sidebar survives redirects. A completed creation must close its dialog,
+  // and Back must not reopen a form whose request has already committed.
+  if (createAt !== null && createAt !== location.key) setCreateAt(null)
+  const setCreate = (open: boolean) => setCreateAt(open ? location.key : null)
+  // Several Workspaces can be open. Navigating into a Workspace opens it; the
+  // headers toggle it without navigating.
+  const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(
+    () => new Set(workspace ? [workspace.path] : []),
+  )
+  const [openFor, setOpenFor] = useState(workspace?.path)
+  if (openFor !== workspace?.path) {
+    setOpenFor(workspace?.path)
+    if (workspace && !openPaths.has(workspace.path))
+      setOpenPaths(new Set(openPaths).add(workspace.path))
+  }
+  const toggle = (path: string) => {
+    const next = new Set(openPaths)
+    if (!next.delete(path)) next.add(path)
+    setOpenPaths(next)
+  }
+  // You open a Workspace only as its member, so every entry here is one of yours.
+  // The route's Workspace is fresher than the list. The list holds active
+  // Workspaces, so an archived one appears only while you have it open.
+  const tree = !workspace
+    ? workspaces
+    : workspaces.some((w) => w.path === workspace.path)
+      ? workspaces.map((w) => (w.path === workspace.path ? workspace : w))
+      : [workspace, ...workspaces]
+  const isCurrent = (d: Destination) =>
+    d.exact
+      ? location.pathname === d.to
+      : location.pathname.startsWith(d.to) ||
+        Boolean(d.also && location.pathname.startsWith(d.also))
+  const countFor = (w: SidebarWorkspace) =>
+    pending(actionCounts === null ? null : actionCounts?.[w.path])
+  const links = (destinations: Destination[]) =>
+    destinations.map((d) => (
+      <SidebarButton
+        key={d.to}
+        as={Link}
+        to={d.to}
+        icon={d.icon}
+        badge={d.pending?.badge}
+        badgeTone={d.pending?.tone}
+        aria-label={named(d.label, d.pending)}
+        title={named(d.label, d.pending)}
+        isMinimized={isMinimized}
+        isActive={isCurrent(d)}
+        aria-current={isCurrent(d) ? 'page' : undefined}
+      >
+        {d.label}
+      </SidebarButton>
+    ))
+  return (
+    <nav
+      aria-label="Coral"
+      className={classNames(
+        styles.sidebar,
+        isMinimized && styles.sidebarMinimized,
+        resized && styles.sidebarResized,
+        mobile && styles.drawerSidebar,
+      )}
+      data-sidebar-minimized={isMinimized}
+    >
+      <div className={classNames(styles.header, isMinimized && styles.minimizedColumn)}>
+        <Link
+          to="/"
+          className={classNames(styles.identity, isMinimized && styles.minimizedControl)}
+          aria-label="Coral"
+        >
+          <Brand compact={isMinimized} />
+        </Link>
+        {!mobile && (
+          <KeyboardShortcut
+            handler={(event) => {
+              event.preventDefault()
+              toggleSidebar()
+            }}
+            shortcut="$mod+Backslash"
+            tooltipContent={isMinimized ? 'Expand sidebar' : 'Collapse sidebar'}
+            tooltipSide={isMinimized ? 'right' : 'bottom'}
+          >
+            <Button.IconButton
+              ariaLabel={isMinimized ? 'Expand sidebar' : 'Collapse sidebar'}
+              name="PanelLeft"
+              onClick={toggleSidebar}
+              size="32"
+              variant="bare"
+            />
+          </KeyboardShortcut>
+        )}
+      </div>
+      {isMinimized && (
+        <div className={styles.rail} role="group" aria-label="Workspaces">
+          {tree.map((w) => {
+            const current = w.path === workspace?.path
+            const count = countFor(w)
+            // The current Workspace shows its count on Activity; the others on their tile.
+            const tileCount = current ? undefined : count
+            return (
+              <div key={w.path} className={styles.railWorkspace}>
+                <Link
+                  to={w.path}
+                  aria-label={named(w.displayName, tileCount)}
+                  title={named(w.displayName, tileCount)}
+                  className={classNames(styles.railTile, current && styles.railTileCurrent)}
+                >
+                  <Avatar name={w.displayName} seed={w.path} shape="square" size="28" />
+                  <SidebarBadge badge={tileCount?.badge} tone={tileCount?.tone} isMinimized />
+                </Link>
+                {current && (
+                  <div className={styles.railDestinations}>
+                    {links(workspaceDestinations(w, people, count))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {!isMinimized && (
+        <div className={styles.tree} role="group" aria-labelledby={`${treeId}-label`}>
+          <div className={styles.groupLabel}>
+            <span id={`${treeId}-label`}>Workspaces</span>
+            {form && (
+              <Button.IconButton
+                ref={create}
+                ariaLabel="Create workspace"
+                name="Plus"
+                onClick={() => setCreate(true)}
+                size="22"
+                variant="bare"
+              />
+            )}
+          </div>
+          <ScrollArea.Container
+            className={styles.treeScroll}
+            constrainWidth
+            height="auto"
+            scrollDirection="vertical"
+            surface="main"
+            width="calc(100% + 12px)"
+          >
+            <div className={styles.treeList}>
+              {tree.map((w, index) => {
+                const open = openPaths.has(w.path)
+                const id = `${treeId}-${index}`
+                const owner = w.effectiveRole === 'owner'
+                const actions = (Number(Boolean(w.mcpEndpoint)) + Number(owner)) as 0 | 1 | 2
+                const count = countFor(w)
+                // An open Workspace shows its count on Activity; a closed one on its name.
+                const headerCount = open ? undefined : count
+                return (
+                  <div key={w.path} className={styles.workspace}>
+                    <div className={styles.workspaceHeader}>
+                      <SidebarButton
+                        id={`${id}-header`}
+                        icon={open ? 'ChevronDown' : 'ChevronRight'}
+                        aria-expanded={open}
+                        aria-controls={open ? id : undefined}
+                        aria-label={named(w.displayName, headerCount)}
+                        title={named(w.displayName, headerCount)}
+                        badge={headerCount?.badge}
+                        badgeTone={headerCount?.tone}
+                        className={classNames(
+                          styles.headerButton,
+                          styles.headerActionsSpace[actions],
+                        )}
+                        isActive={!open && w.path === workspace?.path}
+                        onClick={() => toggle(w.path)}
+                      >
+                        {w.displayName}
+                      </SidebarButton>
+                      {actions > 0 && (
+                        <div className={styles.workspaceActions}>
+                          {w.mcpEndpoint && (
+                            <Button.CopyButton
+                              ariaLabel={`Copy ${w.displayName} MCP endpoint`}
+                              textToCopy={w.mcpEndpoint}
+                              tooltipText="Copy MCP endpoint"
+                              size="22"
+                              variant="bare"
+                            />
+                          )}
+                          {owner && (
+                            <Tooltip content="Workspace settings">
+                              <Button.Container
+                                as={Link}
+                                to={`${w.path}/settings`}
+                                ariaLabel={`${w.displayName} settings`}
+                                aria-current={
+                                  location.pathname === `${w.path}/settings` ? 'page' : undefined
+                                }
+                                size="22"
+                                variant="bare"
+                              >
+                                <Button.Icon name="Settings" />
+                              </Button.Container>
+                            </Tooltip>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {open && (
+                      <div
+                        id={id}
+                        role="group"
+                        aria-labelledby={`${id}-header`}
+                        className={styles.workspaceChildren}
+                      >
+                        {links(workspaceDestinations(w, people, count))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </ScrollArea.Container>
+        </div>
+      )}
+      {form && (
+        <ActionDialog
+          open={createAt === location.key}
+          onOpenChange={setCreate}
+          finalFocus={create}
+          title="Create workspace"
+          description="Create a workspace to manage providers and run programs. You become its first owner."
+          form={form}
+          intent="createWorkspace"
+          action="/workspaces"
+        >
+          <NameInput label="Workspace name" />
+        </ActionDialog>
+      )}
+      {!isMinimized && (
+        <div className={styles.externalLinks}>
+          {externalLinks.map((link) => (
+            <SidebarButton
+              key={link.href}
+              as="a"
+              href={link.href}
+              target="_blank"
+              rel="noreferrer"
+              icon={link.icon}
+              aria-label={link.label}
+              title={link.label}
+            >
+              {link.label}
+            </SidebarButton>
+          ))}
+        </div>
+      )}
+      <div className={classNames(styles.footer, isMinimized && styles.minimizedColumn)}>
+        {isMinimized && (
+          <Menu.Container>
+            <Menu.Trigger
+              render={
+                <Button.Container
+                  ariaLabel="Get help"
+                  title="Get help"
+                  variant="bare"
+                  className={styles.minimizedControl}
+                />
+              }
+            >
+              <Icon name="CircleQuestionMark" size="18" />
+            </Menu.Trigger>
+            <Menu.Content align="end" side="right">
+              {externalLinks.map((link) => (
+                <Menu.Item key={link.href} href={link.href} icon={link.icon}>
+                  {link.label}
+                </Menu.Item>
+              ))}
+            </Menu.Content>
+          </Menu.Container>
+        )}
+        <Menu.Container>
+          <Menu.Trigger
+            render={
+              <Button.Container
+                ariaLabel={`Open account menu for ${accountLabel}`}
+                title={accountLabel}
+                variant="bare"
+                className={classNames(
+                  styles.accountTrigger,
+                  isMinimized ? styles.minimizedControl : styles.footerAccount,
+                )}
+              />
+            }
+          >
+            <Icon name="User" size="18" />
+            {!isMinimized && <Button.Text>{accountLabel}</Button.Text>}
+          </Menu.Trigger>
+          <Menu.Content align="start" side="top">
+            <AppearanceMenu />
+            <Menu.Separator />
+            {organizationOwner && (
+              <>
+                {people && (
+                  <Menu.Item to="/organization/members" icon="Users">
+                    Members
+                  </Menu.Item>
+                )}
+                <Menu.Item to="/organization/workspaces" icon="Folders">
+                  Workspaces
+                </Menu.Item>
+              </>
+            )}
+            {auth.mode === 'required' ? (
+              <Form action="/logout" method="post" ref={logout}>
+                <input name="csrf" type="hidden" value={auth.csrfToken} />
+                <Menu.Item icon="LogOut" onClick={() => logout.current?.requestSubmit()}>
+                  Sign out
+                </Menu.Item>
+              </Form>
+            ) : (
+              <Menu.Item disabled>Local user</Menu.Item>
+            )}
+          </Menu.Content>
+        </Menu.Container>
+      </div>
+    </nav>
+  )
+}
+
+const appearanceOptions = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+] as const
+
+function AppearanceMenu() {
+  const { setTheme, themePreference } = useTheme()
+
+  return (
+    <Menu.Submenu>
+      <Menu.SubmenuTrigger icon="SunMoon">Appearance</Menu.SubmenuTrigger>
+      <Menu.SubmenuContent>
+        <Menu.RadioGroup onValueChange={setTheme} value={themePreference}>
+          {appearanceOptions.map((option) => (
+            <Menu.RadioItem closeOnClick={false} key={option.value} value={option.value}>
+              {option.label}
+            </Menu.RadioItem>
+          ))}
+        </Menu.RadioGroup>
+      </Menu.SubmenuContent>
+    </Menu.Submenu>
+  )
+}

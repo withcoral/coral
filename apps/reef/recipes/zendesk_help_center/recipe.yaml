@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.zendesk.com/api-reference/help_center/help-center-api/introduction/
+# Official brand asset: https://developer.zendesk.com/favicon.svg?v=eda544f803a28e8193436df02ebc401d
+# read: Read account resources.
+# write: Create, update and delete resources.
+# impersonate: Act as another user when account permissions allow.
+schema_version: 1
+id: zendesk_help_center
+display_name: Zendesk Help Center
+description: Articles, categories, translations and community content from Zendesk Help Center.
+source:
+  openapi:
+    url: https://developer.zendesk.com/help_center/oas.yaml
+authentication:
+  default: api_token
+  options:
+    api_token:
+      method: basic_auth
+      label: API token
+      documentation_url: https://developer.zendesk.com/api-reference/introduction/security-and-auth/
+      fields:
+        username:
+          label: Email address with /token suffix
+          sensitive: false
+        password:
+          label: API token
+      username:
+        field: username
+      password:
+        field: password
+    oauth_token:
+      method: bearer
+      label: OAuth access token
+      documentation_url: https://developer.zendesk.com/api-reference/introduction/security-and-auth/
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      description: Create an OAuth app. Register the callback URL shown during setup.
+      documentation_url: https://developer.zendesk.com/documentation/authentication/oauth-migration/
+      authorization_url: https://{{input.subdomain}}.zendesk.com/oauth/authorizations/new
+      token_url: https://{{input.subdomain}}.zendesk.com/oauth/tokens
+      client:
+        authentication: none
+      pkce: required
+      scopes:
+        - read
+        - write
+        - impersonate
+inputs:
+  subdomain:
+    type: hostname
+    label: Zendesk subdomain
+    description: Enter the name before .zendesk.com.
+servers:
+  '#/servers':
+    base_url: https://{{input.subdomain}}.zendesk.com
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

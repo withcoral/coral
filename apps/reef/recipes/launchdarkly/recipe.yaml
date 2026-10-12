@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://launchdarkly.com/docs/home/getting-started/mcp-hosted
+# Official brand asset: https://launchdarkly.com/icon.png?8354b0c15ee5b065
+schema_version: 1
+id: launchdarkly
+display_name: LaunchDarkly
+description: Feature flags and observability data from LaunchDarkly.
+source:
+  mcp:
+    url: https://mcp.launchdarkly.com/mcp/launchdarkly
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with LaunchDarkly
+      flow: authorization_code
+      documentation_url: https://launchdarkly.com/docs/home/getting-started/mcp-hosted
+icons:
+  light: logo.png
+  dark: logo-dark.png

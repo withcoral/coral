@@ -1,0 +1,26 @@
+# For details on buf.yaml configuration, visit https://buf.build/docs/configuration/v2/buf-yaml
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+    - COMMENT_ENUM
+    - COMMENT_ENUM_VALUE
+    - COMMENT_FIELD
+    - COMMENT_MESSAGE
+    - COMMENT_ONEOF
+    - COMMENT_RPC
+    - COMMENT_SERVICE
+  # Private inspection methods return resource messages directly and share
+  # those messages across surfaces without envelope-only response types.
+  except:
+    - RPC_RESPONSE_STANDARD_NAME
+    - RPC_REQUEST_RESPONSE_UNIQUE
+  # This vendored protocol must retain the canonical grpc.health.v1 names and
+  # enum values that Coral's tonic-health server exposes.
+  ignore:
+    - proto/grpc/health/v1/health.proto
+breaking:
+  use:
+    - FILE

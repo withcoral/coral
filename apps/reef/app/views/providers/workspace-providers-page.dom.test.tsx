@@ -1,0 +1,673 @@
+/** @vitest-environment happy-dom */
+
+import { act, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { expect, test } from 'vitest'
+import { renderRoute } from '@/test-support/route'
+
+import { provider, workspaceView } from './fixtures'
+import type { OperationView, ProviderView } from './types'
+import { WorkspaceProvidersPage } from './workspace-providers-page'
+
+// happy-dom lays nothing out, so the virtualizer would mount no operation
+// rows. Give the scroll port a viewport; row heights come from estimates.
+const isTable = (element: HTMLElement) => element.getAttribute('aria-label') === 'Operations'
+Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+  get() {
+    return isTable(this) ? 2000 : 0
+  },
+})
+Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+  get() {
+    return isTable(this) ? 1000 : 0
+  },
+})
+
+const github = provider('00000000-0000-4000-8000-000000000001', 'GitHub', 'github', [
+  'issues.list',
+  'repos.get',
+])
+const weather = provider('00000000-0000-4000-8000-000000000002', 'Weather', 'weather', [
+  'getForecast',
+])
+
+type Action = (request: Request) => Promise<unknown>
+
+function renderPage({
+  action,
+  entry = '/workspaces/demo/providers',
+  providers = [github, weather],
+  selectedOperation = null,
+}: {
+  action?: Action
+  entry?: string
+  providers?: ProviderView[]
+  selectedOperation?: OperationView | null
+} = {}) {
+  const page = (selected: OperationView | null, owner = providerOf(selected)) => (
+    <WorkspaceProvidersPage
+      workspace={workspaceView}
+      providers={providers}
+      selectedProvider={owner}
+      selectedOperation={selected?.relativePath ?? null}
+      form={{ csrf: 'test-csrf', requestId: 'test-request' }}
+    />
+  )
+  // Mirrors the route: the URL names the selection, and the loader hands the
+  // page the matching provider and operation.
+  let element = page(selectedOperation)
+  const { router } = renderRoute(() => element, {
+    entry,
+    action: action ? ({ request }) => action(request) : undefined,
+  })
+  // The route re-renders the page with what the URL now selects.
+  const show = async (selected: OperationView | null, owner = providerOf(selected)) => {
+    element = page(selected, owner)
+    await act(async () => router.navigate(selected?.path ?? `/workspaces/demo/providers/${owner}`))
+  }
+  return { show, router }
+}
+
+function providerOf(selected: OperationView | null) {
+  return selected ? [github, weather].find((item) => item.operations.includes(selected))!.id : null
+}
+
+const user = userEvent.setup()
+// The drawer is a modal dialog: while it is open, the page behind it leaves the
+// accessibility tree, so a query for it passes `hidden`.
+const checkbox = (name: string, hidden = false) => screen.getByRole('checkbox', { name, hidden })
+
+async function filter(label: string, value: string) {
+  const input = screen.getByLabelText(label)
+  await user.clear(input)
+  if (value) await user.type(input, value)
+}
+
+const filterOperations = (value: string) => filter('Filter operations', value)
+const filterProviders = (value: string) => filter('Filter providers', value)
+
+const table = () => screen.getByRole('table', { name: 'Operations' })
+
+// Each operation's name links to its details; nothing else in the table is a
+// link. An open drawer hides the table from the accessibility tree, so these
+// helpers read hidden rows too.
+const operationLinks = () =>
+  within(screen.getByRole('table', { name: 'Operations', hidden: true })).queryAllByRole('link', {
+    hidden: true,
+  })
+
+const rowNames = () => operationLinks().map((link) => link.textContent)
+
+/** The bolded filter matches in an operation's name. */
+const boldIn = (operation: string) =>
+  [...rowOf(operation).querySelectorAll('strong')].map((match) => match.textContent)
+
+const rowOf = (operation: string) =>
+  operationLinks()
+    .find((link) => link.textContent === operation)!
+    .closest<HTMLElement>('[role="row"]')!
+
+/** Changes an operation's policy from its row. Each toggle segment is a radio
+ * named by its policy. */
+async function choosePolicy(operation: string, to: string) {
+  await user.click(within(rowOf(operation)).getByRole('radio', { name: to }))
+}
+
+const providerGroups = () =>
+  within(table())
+    .queryAllByRole('rowgroup')
+    .map((group) => group.getAttribute('aria-label'))
+    .filter(Boolean)
+
+const bulkForm = (hidden = false) => screen.getByRole('form', { name: 'Bulk policy', hidden })
+const policyFilterMenu = () => screen.getByRole('button', { name: 'Filter operations by' })
+const choosePolicyFilter = async (name: string) => {
+  await user.click(policyFilterMenu())
+  await user.click(await screen.findByRole('menuitemradio', { name }))
+}
+
+// The Apply button counts the selection, hidden rows included.
+const applyLabel = (hidden = false) =>
+  within(bulkForm(hidden)).getByRole('button', { name: /^Apply to/, hidden }).textContent
+
+// Lets the router settle a submission's action and revalidation.
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+
+// Catches: provider tabs coming back, or a provider without operations
+// dropping out of the table and taking its settings with it.
+test('lists every provider in one table, and keeps an empty one with its settings', () => {
+  const empty = provider('00000000-0000-4000-8000-000000000003', 'Empty API', 'empty')
+  renderPage({ providers: [github, empty] })
+  expect(screen.queryByRole('tab')).not.toBeInTheDocument()
+  expect(providerGroups()).toEqual(['Empty API', 'GitHub'])
+  expect(within(table()).getByRole('rowgroup', { name: 'Empty API' })).toHaveTextContent(
+    'No operations yet. Settings remain available.',
+  )
+  expect(screen.getByLabelText('Empty API settings')).toBeInTheDocument()
+})
+
+// Catches: the page drawing its own sticky provider and group rows instead of
+// nesting Wax groups, which loses the two-level sticky stack.
+test('nests each operation group inside its provider group', () => {
+  const grouped = provider(github.id, 'GitHub', 'github', [
+    ['repos.get', 'repos'],
+    ['issues.list', 'issues'],
+  ])
+  renderPage({ providers: [grouped, weather] })
+  // Each heading row, provider or operation group, carries its level.
+  const levels = within(table())
+    .getAllByRole('row')
+    .map((row) => row.getAttribute('aria-level'))
+    .filter(Boolean)
+  expect(levels).toEqual(['1', '2', '2', '1', '2'])
+})
+
+// Catches: operation groups sorted by code point, which puts "Beta" before
+// "apple" and splits the list by case.
+test('operation groups sort alphabetically without regard to case', () => {
+  const mixed = provider(github.id, 'GitHub', 'github', [
+    'misc.first',
+    ['zebra.first', 'zebra'],
+    ['apple.first', 'apple'],
+    ['beta.first', 'Beta'],
+  ])
+  renderPage({ providers: [mixed] })
+  // Each group heading's checkbox is named after its group.
+  const boxes = screen.getAllByRole('checkbox')
+  const positions = ['apple', 'Beta', 'Other', 'zebra'].map((group) =>
+    boxes.indexOf(checkbox(`Select ${group} operations`)),
+  )
+  expect(positions).toEqual(positions.toSorted((a, b) => a - b))
+})
+
+// Catches: a policy form naming the provider's installation instead of its
+// workspace-local identifier, which the policy action looks up.
+test('policy forms submit the workspace-local provider identifier, not an installation', () => {
+  renderPage()
+  for (const owner of [github, weather]) {
+    const group = within(screen.getByRole('table', { name: 'Operations' })).getByRole('rowgroup', {
+      name: owner.displayName,
+    })
+    const forms = [...group.querySelectorAll('form')]
+      .map((form) => new FormData(form))
+      .filter((data) => data.get('intent') === 'policy')
+    expect(forms).toHaveLength(owner.operations.length)
+    for (const data of forms) {
+      expect(data.get('provider')).toBe(owner.id)
+      expect(data.has('installation')).toBe(false)
+    }
+  }
+})
+
+// Catches: the table keeping providers the rail filter took out, that filter
+// dropping the selection under those providers, or a rail entry's Show only
+// button not filling the rail filter.
+test('the rail filter narrows the table to the same providers', async () => {
+  renderPage()
+  await user.click(checkbox('Select repos.get'))
+  expect(providerGroups()).toEqual(['GitHub', 'Weather'])
+
+  await user.click(screen.getByRole('button', { name: 'Show only Weather' }))
+  expect(screen.getByLabelText('Filter providers')).toHaveValue('Weather')
+  expect(providerGroups()).toEqual(['Weather'])
+  expect(rowNames()).toEqual(['getForecast'])
+  expect(applyLabel()).toBe('Apply to 1')
+
+  await filterProviders('nothing')
+  expect(providerGroups()).toEqual([])
+  expect(screen.getByRole('table', { name: 'Operations' })).toHaveTextContent('No providers match.')
+
+  await filterProviders('')
+  expect(checkbox('Select repos.get')).toBeChecked()
+})
+
+// Catches: the filter dropping selections it hides, or Apply leaving out
+// the selected operations the filter hides.
+test('selection survives filtering', async () => {
+  renderPage()
+  await user.click(checkbox('Select getForecast'))
+  await user.click(checkbox('Select repos.get'))
+  expect(applyLabel()).toBe('Apply to 2')
+
+  await filterOperations('forecast')
+  expect(rowNames()).toEqual(['getForecast'])
+  expect(applyLabel()).toBe('Apply to 2')
+  expect(document.body).toHaveTextContent('No operations match “forecast”.')
+
+  await filterOperations('')
+  expect(checkbox('Select repos.get')).toBeChecked()
+  expect(checkbox('Select getForecast')).toBeChecked()
+
+  // The header checkbox reaches only what the filter shows; Clear selection
+  // also clears what it hides.
+  await filterOperations('forecast')
+  await user.click(within(bulkForm()).getByRole('button', { name: 'Clear selection' }))
+  expect(screen.queryByRole('form', { name: 'Bulk policy' })).not.toBeInTheDocument()
+  await filterOperations('')
+  expect(checkbox('Select repos.get')).not.toBeChecked()
+})
+
+// Catches: a later filter dropping what an earlier one selected, a provider's
+// no-match row not naming the query or the selection it hides, or the
+// selected view, from the menu or the bulk form, missing a selection the
+// searches hide.
+test('selection builds up across filters and the menu shows all of it', async () => {
+  renderPage()
+  const all = () => checkbox('Select all matching operations')
+  await filterOperations('get')
+  await user.click(all())
+  await filterOperations('list')
+  await user.click(all())
+  expect(table()).toHaveTextContent('No operations match “list”. 1 selected operation is hidden.')
+  expect(applyLabel()).toBe('Apply to 3')
+
+  await filterProviders('Weather')
+  await user.click(within(table()).getByRole('button', { name: 'Show all selected operations' }))
+  expect(policyFilterMenu()).toHaveTextContent('Selected')
+  expect(screen.getByLabelText('Filter operations')).toHaveValue('')
+  expect(screen.getByLabelText('Filter providers')).toHaveValue('')
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+
+  // An unchecked row stays in the view until the reader leaves it.
+  await user.click(checkbox('Select repos.get'))
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+
+  await choosePolicyFilter('All policies')
+  expect(applyLabel()).toBe('Apply to 2')
+  await choosePolicyFilter('Selected (2)')
+  expect(rowNames()).toEqual(['issues.list', 'getForecast'])
+
+  // The bulk form opens the same view from under any search.
+  await choosePolicyFilter('All policies')
+  await filterOperations('nothing matches')
+  await user.click(within(bulkForm()).getByRole('button', { name: 'See selected operations' }))
+  expect(screen.getByLabelText('Filter operations')).toHaveValue('')
+  expect(rowNames()).toEqual(['issues.list', 'getForecast'])
+})
+
+// Catches: the filter matching text the row does not show, such as the call
+// path's namespace, or not marking where the name matches.
+test('the operation filter matches only the name and bolds each match', async () => {
+  renderPage()
+  await filterOperations('weather')
+  expect(rowNames()).toEqual([])
+
+  await filterOperations('E')
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+  expect(boldIn('repos.get')).toEqual(['e', 'e'])
+  expect(boldIn('getForecast')).toEqual(['e', 'e'])
+})
+
+// Catches: one member's selection not rolling up to its provider and the
+// header, or the header selecting only some of the operations that match.
+test('selection rolls up to its provider and the header selects every match', async () => {
+  renderPage()
+  const all = () => checkbox('Select all matching operations')
+  await user.click(checkbox('Select repos.get'))
+  expect(checkbox('Select GitHub operations')).toBePartiallyChecked()
+  expect(all()).toBePartiallyChecked()
+  expect(applyLabel()).toBe('Apply to 1')
+
+  await user.click(checkbox('Select GitHub operations'))
+  expect(checkbox('Select GitHub operations')).toBeChecked()
+  expect(applyLabel()).toBe('Apply to 2')
+
+  await filterOperations('forecast')
+  await user.click(all())
+  await filterOperations('')
+  expect(applyLabel()).toBe('Apply to 3')
+  expect(all()).toBeChecked()
+  expect(all()).not.toBePartiallyChecked()
+
+  await filterOperations('nothing matches')
+  expect(all()).toBeDisabled()
+  expect(applyLabel()).toBe('Apply to 3')
+
+  await filterOperations('')
+  await user.click(all())
+  expect(all()).not.toBeChecked()
+  expect(screen.queryByRole('form', { name: 'Bulk policy' })).toBeNull()
+})
+
+// Catches: closing the drawer scrolling the table back to the provider heading,
+// which loses the reader's place. Operation names carry the workspace prefix,
+// as Coral's do.
+test('closing the drawer leaves the table where the reader left it', async () => {
+  const linked = github.operations[1]!
+  const { show } = renderPage({ entry: linked.path, selectedOperation: linked })
+  // The table's own scroll maths is covered beside `Table.useVirtualRows`;
+  // this counts only the scrolls the page asks of it.
+  const port = screen.getByRole('table', { name: 'Operations', hidden: true })
+  const scrolls: number[] = []
+  port.scrollTo = ((options: ScrollToOptions) => {
+    scrolls.push(options.top!)
+  }) as typeof port.scrollTo
+
+  await show(null, providerOf(linked))
+  expect(scrolls).toEqual([])
+
+  // Opening another operation's drawer reveals its row.
+  await show(weather.operations[0]!)
+  expect(scrolls).toHaveLength(1)
+})
+
+// Catches: "select all matching" taking the drawer's operation, which the
+// filter did not match, and the summary counting it as hidden.
+test('the drawer operation stays listed when the filter would hide it', async () => {
+  const linked = github.operations[1]!
+  renderPage({ entry: linked.path, selectedOperation: linked })
+  await filterOperations('forecast')
+  expect(rowNames()).toEqual(['repos.get', 'getForecast'])
+
+  await user.click(checkbox('Select all matching operations', true))
+  expect(applyLabel(true)).toBe('Apply to 1')
+  expect(checkbox('Select getForecast', true)).toBeChecked()
+  expect(checkbox('Select repos.get', true)).not.toBeChecked()
+})
+
+// Coral refuses getForecast and saves the rest.
+const mixedOutcome: Action = async (request) => {
+  const data = await request.formData()
+  const selected = data
+    .getAll('selectedOperation')
+    .map((value) => JSON.parse(String(value)) as { provider: string; operation: string })
+  return {
+    error: null,
+    message: 'ok',
+    operations: selected.map((target) =>
+      target.operation.endsWith('getForecast')
+        ? { ...target, status: 'failed', reason: 'Coral refused.' }
+        : { ...target, status: 'updated' },
+    ),
+  }
+}
+
+// Catches: a bulk save clearing every selected operation on any success, or a
+// row hiding its own refusal.
+test('a mixed bulk outcome keeps only the failed operations selected', async () => {
+  renderPage({ action: mixedOutcome })
+  await user.click(checkbox('Select getForecast'))
+  await user.click(checkbox('Select repos.get'))
+  await user.click(within(bulkForm()).getByRole('button', { name: 'Apply to 2' }))
+  await settle()
+
+  expect(applyLabel()).toBe('Apply to 1')
+  expect(checkbox('Select getForecast')).toBeChecked()
+  expect(checkbox('Select repos.get')).not.toBeChecked()
+  // The refused row says so; the saved row does not.
+  expect(rowOf('getForecast')).toHaveTextContent('Not saved')
+  expect(rowOf('repos.get')).not.toHaveTextContent('Not saved')
+})
+
+// Catches: the bulk form accepting a submission while one of its selected
+// operations already has a change in flight from its own row.
+test('a selected row change in flight holds the bulk form', async () => {
+  let release!: () => void
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  renderPage({
+    action: async (request) => {
+      await held
+      return mixedOutcome(request)
+    },
+  })
+  await user.click(checkbox('Select repos.get'))
+  await choosePolicy('repos.get', 'Disabled')
+  const apply = within(bulkForm()).getByRole('button', { name: 'Apply to 1' })
+  expect(apply).toBeDisabled()
+
+  release()
+  await settle()
+  expect(apply).toBeEnabled()
+})
+
+// Catches: two changes that arrive before React re-renders the disabled
+// toggle both reaching Coral, where the later one could win.
+test('a second change made before the page re-renders is not sent', async () => {
+  const sent: string[] = []
+  renderPage({
+    action: async (request) => {
+      sent.push(String((await request.formData()).get('access')))
+      return { error: null, message: 'ok' }
+    },
+  })
+  const disable = within(rowOf('repos.get')).getByRole('radio', { name: 'Disabled' })
+  const enable = within(rowOf('repos.get')).getByRole('radio', { name: 'Always allow' })
+  // Both clicks land in one batch, so the second sees the toggle still enabled.
+  act(() => {
+    disable.click()
+    enable.click()
+  })
+  await settle()
+  expect(sent).toEqual(['disabled'])
+})
+
+// Catches: a lost response read as a refusal or a success, when the policy
+// may or may not have been saved.
+test('a change whose response is lost says the policy is not confirmed', async () => {
+  renderPage({ action: async () => undefined })
+  await choosePolicy('repos.get', 'Disabled')
+  await settle()
+  expect(rowOf('repos.get')).toHaveTextContent('Not confirmed')
+})
+
+// Catches: a row keeping the refusal of an earlier attempt after a later one
+// saved the policy.
+test('changing a refused operation again clears its refusal', async () => {
+  let answer = mixedOutcome
+  renderPage({ action: (request) => answer(request) })
+  await choosePolicy('getForecast', 'Disabled')
+  await settle()
+  expect(rowOf('getForecast')).toHaveTextContent('Not saved')
+
+  answer = async () => ({ error: null, message: 'ok' })
+  await choosePolicy('getForecast', 'Disabled')
+  await settle()
+  expect(rowOf('getForecast')).not.toHaveTextContent('Not saved')
+})
+
+// Catches: a summary count that does not filter every provider, a selection
+// that reaches past the filter, a row that vanishes while its own change is in
+// flight, or a filter the reader cannot see and clear.
+test('a summary count filters the table to its operations until cleared', async () => {
+  const [list, get] = github.operations
+  const mixed = { ...github, operations: [{ ...list!, policy: 'enabled' as const }, get!] }
+  const blocked = {
+    ...weather,
+    readyCount: 0,
+    operations: weather.operations.map((o) => ({ ...o, available: false })),
+  }
+  // The policy change stays in flight, so only the page's own state moves.
+  renderPage({ providers: [mixed, blocked], action: () => new Promise(() => {}) })
+  const summary = (owner: string, name: string) =>
+    within(within(table()).getByRole('rowgroup', { name: owner })).getByRole('button', { name })
+
+  await user.click(summary('GitHub', '1 Always allow'))
+  expect(rowNames()).toEqual(['issues.list'])
+  expect(within(table()).getByRole('rowgroup', { name: 'Weather' })).toHaveTextContent(
+    'No matching operations.',
+  )
+  // A provider heading counts what the filter leaves of its operations.
+  expect(within(table()).getByRole('rowgroup', { name: 'GitHub' })).toHaveTextContent(
+    '1 of 2 operations',
+  )
+  expect(within(table()).getByRole('rowgroup', { name: 'Weather' })).toHaveTextContent(
+    '0 of 1 operation',
+  )
+  await user.click(checkbox('Select all matching operations'))
+  expect(applyLabel()).toBe('Apply to 1')
+  await user.click(within(bulkForm()).getByRole('button', { name: 'Clear selection' }))
+
+  await choosePolicy('issues.list', 'Disabled')
+  expect(summary('GitHub', '0 Always allow')).toBeInTheDocument()
+  expect(rowNames()).toEqual(['issues.list'])
+
+  await choosePolicyFilter('All policies')
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+
+  await user.click(summary('Weather', '1 unavailable'))
+  expect(summary('Weather', '1 unavailable')).toHaveAttribute('aria-pressed', 'true')
+  expect(rowNames()).toEqual(['getForecast'])
+  expect(policyFilterMenu()).toHaveTextContent('Unavailable')
+
+  // A count leaves the selected view, so the menu names the filter that applies.
+  await choosePolicyFilter('All policies')
+  await user.click(checkbox('Select issues.list'))
+  await user.click(checkbox('Select repos.get'))
+  await choosePolicyFilter('Selected (2)')
+  await user.click(summary('GitHub', '1 Disabled'))
+  expect(rowNames()).toEqual(['issues.list'])
+  expect(policyFilterMenu()).toHaveTextContent('Disabled')
+  await choosePolicyFilter('All policies')
+  expect(rowNames()).toEqual(['issues.list', 'repos.get', 'getForecast'])
+})
+
+// Catches: a menu choice that misses a provider, or an "All" that keeps a filter.
+test.each([
+  ['Always allow', ['issues.list']],
+  ['Needs approval', ['repos.get', 'getForecast']],
+  ['Disabled', []],
+  ['Unavailable', ['getForecast']],
+  ['All policies', ['issues.list', 'repos.get', 'getForecast']],
+])('the policy menu shows only %s operations', async (choice, names) => {
+  const [list, get] = github.operations
+  const mixed = { ...github, operations: [{ ...list!, policy: 'enabled' as const }, get!] }
+  const blocked = {
+    ...weather,
+    readyCount: 0,
+    operations: weather.operations.map((o) => ({ ...o, available: false })),
+  }
+  renderPage({ providers: [mixed, blocked] })
+  await choosePolicyFilter(choice)
+  expect(rowNames()).toEqual(names)
+  expect(policyFilterMenu()).toHaveTextContent(choice)
+})
+
+// Catches: a row that does not open its drawer, a control click that does, or
+// a name click that the link and the row both navigate, which pushes two
+// history entries.
+test('clicking a row opens its operation, but its controls do not', async () => {
+  const { router } = renderPage({ action: () => new Promise(() => {}) })
+  await user.click(within(rowOf('repos.get')).getByRole('link', { name: 'repos.get' }))
+  expect(router.state.location.pathname).toBe(github.operations[1]!.path)
+  await act(async () => router.navigate(-1))
+  expect(router.state.location.pathname).toBe('/workspaces/demo/providers')
+  await user.click(checkbox('Select issues.list'))
+  await choosePolicy('issues.list', 'Disabled')
+  expect(router.state.location.pathname).not.toMatch(/issues/)
+  await user.click(within(rowOf('issues.list')).getAllByRole('cell')[1]!)
+  expect(router.state.location.pathname).toBe(github.operations[0]!.path)
+})
+
+// Catches: the browser's find taking the shortcut, which cannot reach the
+// operations the virtualized table has not mounted.
+test('the find shortcut focuses the operation filter', async () => {
+  renderPage()
+  await user.keyboard('{Control>}f{/Control}')
+  expect(screen.getByLabelText('Filter operations')).toHaveFocus()
+})
+
+const cursorRow = () => table().querySelector<HTMLElement>('[data-active]')
+const cursorName = () => cursorRow()?.querySelector('a')?.textContent ?? null
+// Catches: the arrow keys skipping operations, stopping in a heading, losing
+// the search box's typing, or acting through a control that reads the key.
+test('arrow keys move a cursor through the listed operations', async () => {
+  // A policy change stays in flight; only the keys matter here.
+  renderPage({ action: () => new Promise(() => {}) })
+  expect(cursorName()).toBeNull()
+  await user.keyboard('{ArrowDown}')
+  expect(cursorName()).toBe('issues.list')
+  await user.keyboard('{ArrowDown}{ArrowDown}')
+  expect(cursorName()).toBe('getForecast')
+  // The last operation holds the cursor.
+  await user.keyboard('{ArrowDown}')
+  expect(cursorName()).toBe('getForecast')
+
+  // From the search box, ↑ and ↓ move through what the filter leaves.
+  await user.click(screen.getByLabelText('Filter operations'))
+  await user.keyboard('repos')
+  await user.keyboard('{ArrowUp}')
+  expect(cursorName()).toBe('repos.get')
+  expect(screen.getByLabelText('Filter operations')).toHaveValue('repos')
+
+  // A policy toggle keeps its own arrow keys.
+  await filterOperations('')
+  await user.click(within(rowOf('issues.list')).getByRole('radio', { name: 'Needs approval' }))
+  await user.keyboard('{ArrowDown}')
+  expect(cursorName()).toBe('repos.get')
+})
+
+// Catches: Space or ← and → acting on a row other than the cursor's, or ←
+// and → taking the caret keys of the search box.
+test('keys act on the cursor operation', async () => {
+  const sent: string[] = []
+  renderPage({
+    action: async (request) => {
+      const data = await request.formData()
+      sent.push(`${String(data.get('selectedOperation'))} ${String(data.get('access'))}`)
+      return { error: null, message: 'ok', operations: [] }
+    },
+  })
+  await user.keyboard('{ArrowDown}{ArrowDown}')
+  await user.keyboard(' ')
+  expect(checkbox('Select repos.get')).toBeChecked()
+  expect(checkbox('Select issues.list')).not.toBeChecked()
+
+  await user.keyboard('{ArrowLeft}')
+  await settle()
+  expect(sent).toEqual([
+    `${JSON.stringify({ provider: github.id, operation: github.operations[1]!.name })} enabled`,
+  ])
+
+  await user.click(screen.getByLabelText('Filter operations'))
+  await user.keyboard('{ArrowRight}')
+  await settle()
+  expect(sent).toHaveLength(1)
+})
+
+// Catches: Enter not opening the cursor's operation, or the open drawer
+// trapping ↑ and ↓ instead of moving to the next operation.
+test('Enter opens the cursor operation and arrows move the open drawer', async () => {
+  const { router } = renderPage()
+  await user.keyboard('{ArrowDown}{Enter}')
+  await settle()
+  expect(router.state.location.pathname).toBe(github.operations[0]!.path)
+  await user.keyboard('{ArrowDown}')
+  await settle()
+  expect(router.state.location.pathname).toBe(github.operations[1]!.path)
+})
+
+// Catches: Enter on a focused button opening the cursor's drawer instead of
+// activating the button.
+test('Enter on a focused button activates it, not the cursor operation', async () => {
+  const { router } = renderPage()
+  await user.keyboard('{ArrowDown}')
+  policyFilterMenu().focus()
+  await user.keyboard('{Enter}')
+  expect(await screen.findByRole('menuitemradio', { name: 'All policies' })).toBeInTheDocument()
+  expect(router.state.location.pathname).not.toMatch(/\/ops\//)
+})
+
+// Catches: the focused table, which scrolls and so takes a tabindex, keeping
+// Space and ← and → as if it were a control in a row.
+test('keys act on the cursor operation while the table has focus', async () => {
+  const sent: string[] = []
+  renderPage({
+    action: async (request) => {
+      const data = await request.formData()
+      sent.push(String(data.get('access')))
+      return { error: null, message: 'ok', operations: [] }
+    },
+  })
+  table().focus()
+  await user.keyboard('{ArrowDown} ')
+  expect(checkbox('Select issues.list')).toBeChecked()
+  await user.keyboard('{ArrowLeft}')
+  await settle()
+  expect(sent).toEqual(['enabled'])
+})

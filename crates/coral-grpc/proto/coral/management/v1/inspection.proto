@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package coral.management.v1;
+
+import "coral/internal/v1/inspection.proto";
+
+// Reef inspection uses the same domain owners as MCP, not broader authority.
+service TaskService {
+  // Gets the User's own Task or a Workspace-owned Agent's Task for an Owner.
+  rpc GetTask(GetTaskRequest) returns (coral.internal.v1.Task);
+}
+
+// Identifies a Task without selecting the authenticated Principal.
+message GetTaskRequest {
+  // Required. workspaces/{workspace}/tasks/{task}.
+  string name = 1;
+}

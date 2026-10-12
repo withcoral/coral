@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/use-mcp-server.html
+# OAuth discovery reads the public database resource metadata and advertised scopes.
+schema_version: 1
+id: oracle_autonomous_database
+display_name: Oracle Autonomous AI Database
+description: Database schemas, SQL results and registered tools from Oracle
+  Autonomous AI Database.
+source:
+  mcp:
+    url: https://dataaccess.adb.{{input.region}}.oraclecloudapps.com/adb/mcp/v1/databases/{{input.database_ocid}}
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Oracle
+      flow: authorization_code
+      documentation_url: https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/use-mcp-server.html
+    token:
+      method: bearer
+      label: Paste an MCP access token
+      documentation_url: https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/use-mcp-server.html
+  default: oauth
+inputs:
+  region:
+    type: hostname
+    label: OCI region identifier
+  database_ocid:
+    type: string
+    label: Database OCID
+icons:
+  light: logo.svg

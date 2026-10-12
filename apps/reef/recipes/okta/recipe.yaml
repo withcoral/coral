@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.okta.com/docs/api/
+# Official brand asset: https://www.okta.com/favicon.ico
+schema_version: 1
+id: okta
+display_name: Okta
+description: Users, groups, applications, policies and identity settings from Okta.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/okta/okta-management-openapi-spec/master/dist/current/management-minimal.yaml
+authentication:
+  default: api_token
+  options:
+    access_token:
+      method: bearer
+      label: Scoped OAuth access token
+      documentation_url: https://developer.okta.com/docs/api/
+    api_token:
+      method: header_credentials
+      label: API token
+      documentation_url: https://developer.okta.com/docs/guides/create-an-api-token/main/
+      fields:
+        api_key:
+          label: API token
+      headers:
+        authorization:
+          field: api_key
+          prefix: 'SSWS '
+inputs:
+  tenant_domain:
+    type: hostname
+    label: Okta tenant hostname
+    documentation_url: https://developer.okta.com/docs/api/
+servers:
+  '#/servers':
+    base_url: https://{{input.tenant_domain}}
+icons:
+  light: logo.png

@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Microsoft Entra tenant provisioning and delegated permissions are required.
+# Coral currently rejects the organizations issuer metadata (IssuerMismatch).
+# Paste a resource-specific delegated bearer token until discovery supports it.
+# Application-only tokens are not interchangeable with delegated user tokens.
+schema_version: 1
+id: power_bi_mcp
+display_name: Power BI
+description: Reports, semantic models and DAX queries from Power BI.
+icons:
+  light: logo.svg
+source:
+  mcp:
+    url: https://fabriciq.svc.cloud.microsoft/v1/mcp/fabriciq
+authentication:
+  default: access_token
+  options:
+    access_token:
+      method: bearer
+      label: Paste a delegated OAuth access token
+      description: Use a token for this MCP resource. Renew the token when it expires.
+      documentation_url: https://learn.microsoft.com/en-us/fabric/iq/connectors/fabric-iq-mcp
+request_headers:
+  x-variants: Fabric.Routing.FabricIQ.V1

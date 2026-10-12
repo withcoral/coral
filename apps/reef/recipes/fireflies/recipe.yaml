@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://fireflies.ai/blog/fireflies-mcp-server
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: fireflies
+display_name: Fireflies.ai
+description: Meeting transcripts, summaries and insights from Fireflies.ai.
+icons:
+  light: logo.svg
+source:
+  mcp:
+    url: https://api.fireflies.ai/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Fireflies.ai
+      documentation_url: https://fireflies.ai/blog/fireflies-mcp-server
+      flow: authorization_code
+    api_token:
+      method: bearer
+      label: API key
+      documentation_url: https://fireflies.ai/blog/fireflies-mcp-server
+  default: oauth

@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://clickhouse.com/docs/products/cloud/features/ai-ml/mcp/remote-mcp
+# Scopes come from public OAuth metadata.
+schema_version: 1
+id: clickhouse
+display_name: ClickHouse
+description: Schemas, queries, services and billing from ClickHouse.
+source:
+  mcp:
+    url: https://mcp.clickhouse.cloud/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with ClickHouse
+      flow: authorization_code
+      documentation_url: https://clickhouse.com/docs/products/cloud/features/ai-ml/mcp/remote-mcp
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

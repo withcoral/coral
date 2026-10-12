@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://mcp.storage.dev/
+# Official brand asset: https://www.tigrisdata.com/favicon.jpg
+schema_version: 1
+id: tigris
+display_name: Tigris
+description: Buckets, objects, snapshots and forks from Tigris.
+source:
+  mcp:
+    url: https://mcp.storage.dev/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Tigris
+      flow: authorization_code
+      documentation_url: https://mcp.storage.dev/
+icons:
+  light: logo.png

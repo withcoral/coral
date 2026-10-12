@@ -1,0 +1,792 @@
+//! Concurrent renewal through Run/Account interfaces and a gated HTTP token endpoint.
+use super::*;
+use axum::http::StatusCode;
+use coral_credentials::Secret;
+use coral_provider::account::{AccountModule, OAuthClient, SetupOAuthClient};
+use coral_workspace::WorkspaceId;
+
+struct TokenEndpoint {
+    url: String,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    exchanges: Arc<AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for TokenEndpoint {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+impl TokenEndpoint {
+    async fn new(refresh_status: StatusCode) -> Self {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let exchanges = Arc::new(AtomicUsize::new(0));
+        let signals = (entered.clone(), release.clone(), exchanges.clone());
+        let router = axum::Router::new().route(
+            "/token",
+            axum::routing::post(move |body: String| {
+                let (entered, release, exchanges) = signals.clone();
+                async move {
+                    let refresh = url::form_urlencoded::parse(body.as_bytes())
+                        .any(|(key, value)| key == "grant_type" && value == "refresh_token");
+                    if refresh {
+                        exchanges.fetch_add(1, Ordering::SeqCst);
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                    let status = if refresh { refresh_status } else { StatusCode::OK };
+                    let response = if status.is_success() { serde_json::json!({
+                        "access_token": if refresh { "renewed-canary" } else { "initial-canary" },
+                        "refresh_token": "refresh-canary", "token_type": "Bearer", "scope": "read",
+                        "expires_in": if refresh { 3600 } else { 0 }
+                    }) } else { serde_json::json!({"error":"invalid_grant", "error_description":"private-canary"}) };
+                    (status, [("content-type", "application/json")], response.to_string())
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        Self {
+            url,
+            entered,
+            release,
+            exchanges,
+            task,
+        }
+    }
+}
+
+async fn oauth_account(
+    fixture: &TestModules,
+    operation: &OperationFixture,
+    server: &MockServer,
+    token_url: &str,
+) -> (tempfile::TempDir, AccountModule) {
+    let (directory, accounts) = configure_user_caller(fixture, operation, &server.uri()).await;
+    let context = change(operation.user.clone(), 40, '4');
+    let workspace = &operation.workspace_id;
+    let document = serde_json::json!({
+        "openapi":"3.1.0", "info":{"title":"Renewal","version":"1"},
+        "servers":[{"url":server.uri()}], "security":[{"oauth":["read"]}],
+        "components":{"securitySchemes":{"oauth":{"type":"oauth2","flows":{"authorizationCode":{
+            "authorizationUrl":format!("{}/authorize",server.uri()), "tokenUrl":token_url, "scopes":{"read":"Forecast"}
+        }}}}},
+        "paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}
+    });
+    let setup = fixture
+        .providers
+        .prepare_openapi_fixture(
+            &context,
+            workspace,
+            OpenApiDocument::parse(&document.to_string()).unwrap(),
+        )
+        .await
+        .unwrap();
+    let review = fixture
+        .providers
+        .review_setup_configuration(&operation.user, workspace, setup.id())
+        .await
+        .unwrap();
+    let review = accounts
+        .confirm_setup_configuration(
+            &context,
+            workspace,
+            setup.id(),
+            review.revision,
+            review.confirmed.unwrap(),
+            Some(
+                SetupOAuthClient::new(
+                    "https://reef.example/callback".into(),
+                    Some("public-client".into()),
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    fixture
+        .providers
+        .regenerate_provider(
+            &context,
+            ProviderRegenerationRequest::new(
+                ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                workspace.clone(),
+                operation.provider_id.clone(),
+                setup.id().clone(),
+                review.revision,
+            )
+            .with_incompatible_configuration_confirmation(),
+        )
+        .await
+        .unwrap();
+    let authorization = accounts
+        .start_user_authorization(
+            &context,
+            workspace,
+            &operation.provider_id,
+            ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+            Some(
+                OAuthClient::new(
+                    "public-client".into(),
+                    "https://reef.example/callback".into(),
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    complete_oauth(&accounts, &context, workspace, &authorization).await;
+    (directory, accounts)
+}
+
+async fn complete_oauth(
+    accounts: &AccountModule,
+    context: &ChangeContext,
+    workspace: &WorkspaceId,
+    authorization: &coral_provider::account::Authorization,
+) {
+    let state = url::Url::parse(authorization.authorization_url.as_deref().unwrap())
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    assert_eq!(
+        accounts
+            .complete_oauth(
+                context,
+                workspace,
+                authorization.id,
+                &state,
+                Secret::new("code-canary".into()).unwrap()
+            )
+            .await
+            .unwrap()
+            .state,
+        coral_provider::account::AuthorizationState::Succeeded
+    );
+}
+
+async fn assert_waiting(runs: &RunModule, operation: &OperationFixture, run: &crate::RunId) {
+    // Observe after the waiting interval, rather than canceling an observation
+    // mid-transaction. This test controls token contention, not database cancellation.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let update = runs
+        .observe(
+            &operation.principal,
+            &operation.workspace_id,
+            run,
+            &immediate(None, 100),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        update.state(),
+        RunState::Running,
+        "contention waits rather than ending the Invocation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refresh() {
+    for deadline in [false, true] {
+        let endpoint = TokenEndpoint::new(StatusCode::OK).await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/forecast"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer renewed-canary",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"temperature":18})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let operation = fixture
+            .user_operation_at("user:stopped-refresh", "Stopped waiter", &server.uri())
+            .await;
+        let (_directory, accounts) =
+            oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+        let runs = fixture.live_runs(Some(accounts));
+        let source = "return await coral.providers.weather.getForecast({});";
+        let first = runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(source),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+            .await
+            .unwrap();
+        let second = runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                RunSubmission::new(
+                    ProgramSource::parse(source).unwrap(),
+                    RunTimeout::from_millis(if deadline { 1_000 } else { 60_000 }).unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_waiting(&runs, &operation, second.run_id()).await;
+        if !deadline {
+            runs.cancel(
+                &operation.principal,
+                &operation.workspace_id,
+                second.run_id(),
+                &immediate(None, 100),
+            )
+            .await
+            .unwrap();
+        }
+        // Production Run termination has a five-second durable shutdown grace.
+        // It must settle independently of the still-blocked token exchange.
+        let terminal = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let update = runs
+                    .observe(
+                        &operation.principal,
+                        &operation.workspace_id,
+                        second.run_id(),
+                        &immediate(None, 100),
+                    )
+                    .await
+                    .unwrap();
+                if update.state().is_terminal() {
+                    break update;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the waiter's termination does not wait for the token endpoint");
+        assert_eq!(
+            terminal.state(),
+            if deadline {
+                RunState::TimedOut
+            } else {
+                RunState::Canceled
+            }
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+        endpoint.release.notify_one();
+        let terminal = wait_for_terminal(
+            &runs,
+            &operation.principal,
+            &operation.workspace_id,
+            first.run_id(),
+        )
+        .await;
+        assert_eq!(terminal.state(), RunState::Succeeded, "{terminal:?}");
+        assert_eq!(endpoint.exchanges.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the Run/Account journey verifies both waiters and unchanged replacement state after a late exchange"
+)]
+async fn reconnect_disconnect_and_setting_changes_fence_invocations_waiting_on_a_refresh_claim() {
+    for mutation in ["reconnect", "disconnect", "setting"] {
+        let endpoint = TokenEndpoint::new(StatusCode::OK).await;
+        let server = MockServer::start().await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let operation = fixture
+            .user_operation_at("user:fenced-refresh", "Fenced refresh", &server.uri())
+            .await;
+        let (_directory, accounts) =
+            oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+        let context = change(operation.user.clone(), 40, '4');
+        let account = accounts
+            .get_account(
+                &context,
+                &operation.workspace_id,
+                &operation.provider_id,
+                &coral_provider::account::AccountScope::User,
+            )
+            .await
+            .unwrap()
+            .account
+            .unwrap();
+        let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+        let source = "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }";
+        let first = runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(source),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+            .await
+            .unwrap();
+        let second = runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(source),
+            )
+            .await
+            .unwrap();
+        assert_waiting(&runs, &operation, second.run_id()).await;
+        if mutation == "reconnect" {
+            let authorization = accounts
+                .start_reconnect(
+                    &context,
+                    &operation.workspace_id,
+                    &operation.provider_id,
+                    account.id,
+                    ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                    Some(
+                        OAuthClient::new(
+                            "public-client".into(),
+                            "https://reef.example/callback".into(),
+                        )
+                        .unwrap(),
+                    ),
+                )
+                .await
+                .unwrap();
+            complete_oauth(&accounts, &context, &operation.workspace_id, &authorization).await;
+        } else if mutation == "setting" {
+            let setup = fixture
+                .providers
+                .prepare_setup(
+                    &context,
+                    &operation.workspace_id,
+                    coral_provider::ProviderSetupSource::Current,
+                    Some(&operation.provider_id),
+                )
+                .await
+                .unwrap();
+            let review = fixture
+                .providers
+                .review_setup_configuration(&operation.user, &operation.workspace_id, setup.id())
+                .await
+                .unwrap();
+            let mut values = review.confirmed.unwrap();
+            values.authentication = Some(coral_catalog::AuthenticationConfiguration::None);
+            let review = fixture
+                .providers
+                .confirm_setup_configuration(
+                    &context,
+                    &operation.workspace_id,
+                    setup.id(),
+                    review.revision,
+                    values,
+                )
+                .await
+                .unwrap();
+            assert!(review.errors.is_empty());
+            fixture
+                .providers
+                .regenerate_provider(
+                    &context,
+                    ProviderRegenerationRequest::new(
+                        ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                        operation.workspace_id.clone(),
+                        operation.provider_id.clone(),
+                        setup.id().clone(),
+                        review.revision,
+                    )
+                    .with_account_setting(CredentialRoute::None)
+                    .with_incompatible_configuration_confirmation(),
+                )
+                .await
+                .unwrap();
+        } else {
+            accounts
+                .disconnect(
+                    &context,
+                    &operation.workspace_id,
+                    &operation.provider_id,
+                    account.id,
+                )
+                .await
+                .unwrap();
+        }
+        let winner = accounts
+            .get_account(
+                &context,
+                &operation.workspace_id,
+                &operation.provider_id,
+                &coral_provider::account::AccountScope::User,
+            )
+            .await
+            .unwrap();
+        // The waiter need not wait for the upstream exchange to discover lost authorization.
+        let terminal = wait_for_terminal(
+            &runs,
+            &operation.principal,
+            &operation.workspace_id,
+            second.run_id(),
+        )
+        .await;
+        assert!(
+            matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) }) if value.as_json() == &serde_json::json!("account_required")),
+            "{terminal:?}"
+        );
+        endpoint.release.notify_one();
+        let terminal = wait_for_terminal(
+            &runs,
+            &operation.principal,
+            &operation.workspace_id,
+            first.run_id(),
+        )
+        .await;
+        assert!(
+            matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) }) if value.as_json() == &serde_json::json!("account_required")),
+            "{terminal:?}"
+        );
+        assert_eq!(endpoint.exchanges.load(Ordering::SeqCst), 1);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert_eq!(
+            accounts
+                .get_account(
+                    &context,
+                    &operation.workspace_id,
+                    &operation.provider_id,
+                    &coral_provider::account::AccountScope::User
+                )
+                .await
+                .unwrap(),
+            winner
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn offboarding_and_rejoin_fence_a_late_refresh_without_overwriting_the_new_account() {
+    let endpoint = TokenEndpoint::new(StatusCode::OK).await;
+    let server = MockServer::start().await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let operation = fixture
+        .user_operation_at(
+            "user:offboarded-refresh",
+            "Offboarding refresh",
+            &server.uri(),
+        )
+        .await;
+    let (_directory, accounts) = oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+    let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let run = runs.start(&operation.principal, &operation.workspace_id,
+        submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+        .await
+        .unwrap();
+    let administrator = fixture.workspace_admin(&operation).await;
+    coral_administration::AccessLifecycleModule::new(
+        fixture.database.clone(),
+        fixture.workspaces.clone(),
+    )
+    .remove_workspace_member(
+        &administrator,
+        &operation.workspace_id,
+        operation.user.user_id(),
+    )
+    .await
+    .unwrap();
+    fixture
+        .workspaces
+        .set_membership(
+            &administrator,
+            &operation.workspace_id,
+            &operation.user,
+            WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    let context = change(operation.user.clone(), 40, '4');
+    let authorization = accounts
+        .start_user_authorization(
+            &context,
+            &operation.workspace_id,
+            &operation.provider_id,
+            ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+            Some(
+                OAuthClient::new(
+                    "public-client".into(),
+                    "https://reef.example/callback".into(),
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    complete_oauth(&accounts, &context, &operation.workspace_id, &authorization).await;
+    let fresh = accounts
+        .get_account(
+            &context,
+            &operation.workspace_id,
+            &operation.provider_id,
+            &coral_provider::account::AccountScope::User,
+        )
+        .await
+        .unwrap();
+    endpoint.release.notify_one();
+    let terminal = wait_for_terminal(
+        &runs,
+        &operation.principal,
+        &operation.workspace_id,
+        run.run_id(),
+    )
+    .await;
+    assert!(
+        matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) })
+        if value.as_json() == &serde_json::json!("account_required")),
+        "{terminal:?}"
+    );
+    assert_eq!(endpoint.exchanges.load(Ordering::SeqCst), 1);
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert_eq!(
+        accounts
+            .get_account(
+                &context,
+                &operation.workspace_id,
+                &operation.provider_id,
+                &coral_provider::account::AccountScope::User
+            )
+            .await
+            .unwrap(),
+        fresh
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_refresh_settles_waiting_invocations_without_retrying_the_exchange() {
+    for (status, code) in [
+        (StatusCode::SERVICE_UNAVAILABLE, "credential_refresh_failed"),
+        (StatusCode::BAD_REQUEST, "account_required"),
+    ] {
+        let endpoint = TokenEndpoint::new(status).await;
+        let server = MockServer::start().await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let operation = fixture
+            .user_operation_at("user:failed-refresh", "Failed refresh", &server.uri())
+            .await;
+        let (_directory, accounts) =
+            oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+        let context = change(operation.user.clone(), 40, '4');
+        let before = accounts
+            .get_account(
+                &context,
+                &operation.workspace_id,
+                &operation.provider_id,
+                &coral_provider::account::AccountScope::User,
+            )
+            .await
+            .unwrap()
+            .account
+            .unwrap();
+        let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+        let source = "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }";
+        let first = runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(source),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+            .await
+            .unwrap();
+        let second = runs
+            .start(
+                &operation.principal,
+                &operation.workspace_id,
+                submission(source),
+            )
+            .await
+            .unwrap();
+        assert_waiting(&runs, &operation, second.run_id()).await;
+        endpoint.release.notify_one();
+        for run in [first, second] {
+            let terminal = wait_for_terminal(
+                &runs,
+                &operation.principal,
+                &operation.workspace_id,
+                run.run_id(),
+            )
+            .await;
+            assert!(
+                matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) }) if value.as_json() == &serde_json::json!(code)),
+                "{terminal:?}"
+            );
+            assert!(!format!("{terminal:?}").contains("canary"));
+        }
+        assert_eq!(endpoint.exchanges.load(Ordering::SeqCst), 1);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let after = accounts
+            .get_account(
+                &context,
+                &operation.workspace_id,
+                &operation.provider_id,
+                &coral_provider::account::AccountScope::User,
+            )
+            .await
+            .unwrap()
+            .account
+            .unwrap();
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            assert_eq!(after, before);
+        } else {
+            assert_eq!(
+                after.state,
+                coral_provider::account::AccountState::ReconnectRequired
+            );
+            assert_eq!(
+                after.connected_at_unix_nanos,
+                before.connected_at_unix_nanos
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one refresh claim survives a catalog publication and continues both original Invocations"
+)]
+async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_each_dispatch_once()
+{
+    let endpoint = TokenEndpoint::new(StatusCode::OK).await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/forecast"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer renewed-canary",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"temperature":18})),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let operation = fixture
+        .user_operation_at(
+            "user:concurrent-refresh",
+            "Concurrent refresh",
+            &server.uri(),
+        )
+        .await;
+    let (_directory, accounts) = oauth_account(&fixture, &operation, &server, &endpoint.url).await;
+    let runs = fixture.live_runs(Some(accounts));
+    let source = "coral.emit('once'); return await coral.providers.weather.getForecast({});";
+    let first = runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(source),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+        .await
+        .unwrap();
+    let second = runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(source),
+        )
+        .await
+        .unwrap();
+    assert_waiting(&runs, &operation, second.run_id()).await;
+    let context = change(operation.user.clone(), 40, '4');
+    let setup = fixture
+        .providers
+        .prepare_setup(
+            &context,
+            &operation.workspace_id,
+            coral_provider::ProviderSetupSource::Current,
+            Some(&operation.provider_id),
+        )
+        .await
+        .unwrap();
+    let review = fixture
+        .providers
+        .review_setup_configuration(&operation.user, &operation.workspace_id, setup.id())
+        .await
+        .unwrap();
+    let mut values = review.confirmed.unwrap();
+    values.display_name = "Updated while refreshing".into();
+    let review = fixture
+        .providers
+        .confirm_setup_configuration(
+            &context,
+            &operation.workspace_id,
+            setup.id(),
+            review.revision,
+            values,
+        )
+        .await
+        .unwrap();
+    assert!(review.errors.is_empty());
+    fixture
+        .providers
+        .regenerate_provider(
+            &context,
+            ProviderRegenerationRequest::new(
+                ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
+                operation.workspace_id.clone(),
+                operation.provider_id.clone(),
+                setup.id().clone(),
+                review.revision,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(endpoint.exchanges.load(Ordering::SeqCst), 1);
+    assert!(server.received_requests().await.unwrap().is_empty());
+    endpoint.release.notify_one();
+    for run in [first, second] {
+        let terminal = wait_for_terminal(
+            &runs,
+            &operation.principal,
+            &operation.workspace_id,
+            run.run_id(),
+        )
+        .await;
+        assert_eq!(terminal.state(), RunState::Succeeded, "{terminal:?}");
+        assert!(
+            matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded { final_value: FinalValue::Present(value) })
+            if value.as_json()["data"] == serde_json::json!({"temperature":18}))
+        );
+        let mut counts = [0; 4];
+        for event in retained_events(
+            &runs,
+            &operation.principal,
+            &operation.workspace_id,
+            terminal.run_id(),
+        )
+        .await
+        {
+            match event.kind() {
+                RunEventKind::Started => counts[0] += 1,
+                RunEventKind::InvocationStarted { .. } => counts[1] += 1,
+                RunEventKind::InvocationEnded { .. } => counts[2] += 1,
+                RunEventKind::ProgramEmitted { .. } => counts[3] += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(counts, [1, 1, 1, 1]);
+        assert!(!format!("{terminal:?}").contains("canary"));
+    }
+    assert_eq!(endpoint.exchanges.load(Ordering::SeqCst), 1);
+}

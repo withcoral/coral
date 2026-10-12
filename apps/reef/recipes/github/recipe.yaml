@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=../schema.json
+# A Provider Recipe: a secret-free, pre-authored description of one Upstream
+# Service. It pre-fills Provider Setup and Provider Configuration; the owner
+# reviews the result and confirms exactly one authentication option.
+#
+# A Recipe records only facts about the Upstream Service. It selects no
+# Operations, renames nothing, and pins no descriptor — Coral's catalog is
+# inferred from the document below, and Provider Setup pins it on the way in.
+schema_version: 1
+id: github
+display_name: GitHub
+description: Issues, pull requests, repositories, actions and releases from GitHub.
+icons:
+  light: github.svg
+  dark: github-dark.svg
+
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_device_code
+      label: Sign in with GitHub
+      device_authorization_url: https://github.com/login/device/code
+      token_url: https://github.com/login/oauth/access_token
+      client:
+        # Coral's public GitHub App: an editable default the owner confirms.
+        # Callback registration and any application secret stay host-owned.
+        id: Iv23liJHis6Bs8NO1DAI
+        authentication: none
+      # GitHub Apps ignore OAuth scopes. A token gets the GitHub App's
+      # permissions, limited to what the user can access, so the Recipe names none.
+      scopes: []
+    pat:
+      method: bearer
+      label: Paste a personal access token
+      documentation_url: https://docs.github.com/authentication
+
+request_headers:
+  # Only headers GitHub itself requires. Coral's User-Agent is host-owned.
+  x-github-api-version: '2022-11-28'

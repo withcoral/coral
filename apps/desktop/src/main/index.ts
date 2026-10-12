@@ -1,363 +1,466 @@
-import { app, BrowserWindow, Menu, ipcMain, nativeTheme, shell } from 'electron'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { app, BrowserWindow, dialog, Menu, powerMonitor, shell } from 'electron'
+import { isAbsolute, join, resolve } from 'node:path'
+
 import { APP_ID } from '../shared/app-id'
-import type { DesktopUpdateState } from '../shared/types'
+import { autostartLoginItem } from './autostart'
 import {
-  configureMcpClient,
-  getMcpLaunchConfig,
-  mcpClients,
-  removeMcpClient,
-} from './mcp-config'
-import {
-  APP_ENTRY_URL,
-  APP_ORIGIN,
-  registerAppProtocol,
-  registerAppSchemePrivileges,
-} from './app-renderer'
-import { killAllTrackedChildren, startCoralSidecar, type CoralSidecar } from './sidecar'
-import {
-  checkForDesktopUpdates,
-  clearPendingDesktopUpdateIntent,
-  desktopUpdatesSupported,
-  downloadDesktopUpdate,
-  getDesktopUpdateState,
-  installAutoUpdater,
-  onDesktopUpdateStateChange,
-  quitAndInstallDesktopUpdate,
-  shouldExitForPendingDesktopUpdate,
-} from './auto-update'
-import { createShutdownCoordinator } from './shutdown'
+  BACKGROUND_ARG,
+  createBackground,
+  readToldStillRunning,
+  writeToldStillRunning,
+  type Background,
+  type LoginItem,
+  type MenuCheckbox,
+} from './background'
+import { createDockPresence } from './dock'
+import { failureMessage, failurePage, failureTitle, startingPage } from './local-pages'
+import { logSink } from './logs'
+import { spawnLauncher, type Launcher, type OutputSink } from './process'
+import { utilityLauncher } from './reef'
+import { runtimeLauncher, withLoopbackProxyBypass, type ReefEnv } from './runtime'
+import { createSupervisor, SupervisorError, type Failure, type SupervisorState } from './supervisor'
+import { installTray } from './tray'
+import { startUpdates, updatesSupported } from './updater'
+import type { UpdateMenuItem, Updates } from './updates'
+import { createMainWindow, installContentGuards } from './window'
 
-const SHUTDOWN_TIMEOUT_MS = 6000
+const PACKAGED_READINESS_TIMEOUT_MS = 30_000
+// A development launch compiles Reef's protobufs and routes on first request.
+const DEV_READINESS_TIMEOUT_MS = 120_000
 
-// Baked in by electron.vite.config.ts; the guard covers other build paths.
-declare const __CORAL_DESKTOP_COMMIT__: string
-const buildCommit = typeof __CORAL_DESKTOP_COMMIT__ === 'undefined' ? '' : __CORAL_DESKTOP_COMMIT__
+// Bootstrap: the only place that reads the process environment.
+const packaged = app.isPackaged
+const baseEnv = withLoopbackProxyBypass(process.env)
+const devRuntime = packaged ? undefined : process.env.CORAL_DESKTOP_DEV_RUNTIME
+// The AppImage runtime names the image file that an update replaces.
+const appImage = process.env.APPIMAGE
+// The login item starts Desktop with this argument, and with no window.
+const startedInBackground = process.argv.includes(BACKGROUND_ARG)
 
-let mainWindow: BrowserWindow | null = null
-let sidecar: CoralSidecar | null = null
-let sidecarPromise: Promise<CoralSidecar> | null = null
+// The data folder follows the app id, never the display name, and a
+// development build keeps its own. Set it before anything reads it: the
+// single-instance lock lives there too.
+app.setPath('userData', join(app.getPath('appData'), packaged ? APP_ID : `${APP_ID}.dev`))
+app.setAppUserModelId(APP_ID)
 
-function currentDir(): string {
-  return dirname(fileURLToPath(import.meta.url))
-}
+if (!app.requestSingleInstanceLock()) app.quit()
+else main()
 
-function rendererUrl(): string | null {
-  // Only honor the dev override in unpackaged builds so a stray env var cannot
-  // repoint the UI of a shipped app.
-  if (app.isPackaged) return null
-  return process.env.ELECTRON_RENDERER_URL ?? null
-}
+function main() {
+  const dataDir = app.getPath('userData')
+  const logsDir = join(dataDir, 'logs')
+  const echo = (prefix: string): OutputSink | undefined =>
+    packaged ? undefined : (chunk) => process.stdout.write(`[${prefix}] ${chunk}`)
+  const output = (name: string) => logSink(logsDir, name, echo(name))
+  const desktopLog = output('desktop')
+  const log = (message: string) => desktopLog(`${new Date().toISOString()} ${message}\n`)
+  const showLogs = () => void shell.openPath(logsDir)
+  const desktopFile = join(dataDir, 'desktop.json')
 
-async function rendererEntryUrl(): Promise<string> {
-  const devRendererUrl = rendererUrl()
-  if (!devRendererUrl) return APP_ENTRY_URL
-
-  // Dev uses the Vite server (HMR), whose React Router loaders call the Electron
-  // sidecar through CORAL_ENDPOINT. Wait for the sidecar before the first
-  // document request so initial SSR does not race a still-building CLI.
-  await ensureSidecar()
-  return devRendererUrl
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => {
-    switch (char) {
-      case '&':
-        return '&amp;'
-      case '<':
-        return '&lt;'
-      case '>':
-        return '&gt;'
-      case '"':
-        return '&quot;'
-      default:
-        return '&#39;'
-    }
+  const supervisor = createSupervisor({
+    dataDir,
+    // AppImage resources are read-only, so the runtime runs in the data folder.
+    runtime: runtimeLauncher(runtimeBinary(), { cwd: dataDir, baseEnv, output: output('coral') }),
+    reef: reefLauncher(dataDir, output('reef')),
+    readinessTimeoutMs: packaged ? PACKAGED_READINESS_TIMEOUT_MS : DEV_READINESS_TIMEOUT_MS,
   })
-}
 
-type IconAppearance = 'light' | 'dark'
-type IconFormat = 'icns' | 'ico' | 'mac-png' | 'png'
+  let state: SupervisorState = { status: 'stopped' }
+  let window: BrowserWindow | null = null
 
-function desktopIconPath(appearance: IconAppearance = 'light', format: IconFormat = 'png'): string {
-  const variant = appearance === 'dark' ? '-dark' : ''
-  const iconName = format === 'mac-png' ? `icon${variant}-mac.png` : `icon${variant}.${format}`
-  return app.isPackaged
-    ? join(process.resourcesPath, 'icons', iconName)
-    : join(currentDir(), '..', '..', 'resources', 'icons', iconName)
-}
-
-function currentIconAppearance(): IconAppearance {
-  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
-}
-
-function currentWindowIconPath(): string {
-  if (process.platform === 'darwin') return desktopIconPath(currentIconAppearance(), 'mac-png')
-  if (process.platform === 'win32') return desktopIconPath(currentIconAppearance(), 'ico')
-  return desktopIconPath(currentIconAppearance(), 'png')
-}
-
-function currentDockIconPath(): string {
-  return desktopIconPath(currentIconAppearance(), 'mac-png')
-}
-
-function updatePlatformIcon() {
-  if (process.platform === 'darwin' && app.dock) {
-    app.dock.setIcon(currentDockIconPath())
-  } else {
-    mainWindow?.setIcon(currentWindowIconPath())
+  // Each page appears once it has drawn, so the window never shows blank.
+  const show = () => {
+    const current = window
+    if (!current) return
+    const page =
+      state.status === 'running'
+        ? state.endpoints.reef
+        : state.status === 'failed'
+          ? failurePage(state.failure, state.restarting, logsDir)
+          : state.status === 'starting'
+            ? startingPage()
+            : null
+    // A later state's page aborts this load; that is expected, not a failure.
+    if (page)
+      void current
+        .loadURL(page)
+        .catch((error: unknown) => log(`window: ${String(error)}`))
+        .finally(() => window === current && current.show())
   }
-}
-
-function createMainWindow(): BrowserWindow {
-  const preloadPath = join(currentDir(), '..', 'preload', 'index.cjs')
-  let trustedRendererOrigin: string | null = null
-  let trustedErrorUrl: string | null = null
-
-  const window = new BrowserWindow({
-    width: 1280,
-    height: 860,
-    minWidth: 720,
-    minHeight: 520,
-    title: 'Coral',
-    icon: currentWindowIconPath(),
-    webPreferences: {
-      preload: preloadPath,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+  // On macOS, Coral is in the Dock and the app switcher only while it has a
+  // window. With no window, the menu bar item is where the person finds it,
+  // so a Coral that has no such item stays in the Dock.
+  let menuBarItem = false
+  const syncDock = createDockPresence({
+    dock: process.platform === 'darwin' ? app.dock : undefined,
+    wanted: () => window !== null || !menuBarItem,
+    log,
   })
-
-  window.webContents.on('did-fail-load', (_event, code, description, url) => {
-    console.error(`[coral-renderer] failed to load ${url}: ${code} ${description}`)
-  })
-
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      void shell.openExternal(url)
+  const openWindow = () => {
+    const opened = createMainWindow(
+      join(iconsDir(), process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    )
+    window = opened
+    syncDock()
+    const forget = () => {
+      if (window === opened) window = null
     }
-    return { action: 'deny' }
-  })
-
-  window.webContents.on('will-navigate', (event, url) => {
-    if (isTrustedNavigation(url, trustedRendererOrigin, trustedErrorUrl)) return
-    event.preventDefault()
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      void shell.openExternal(url)
-    }
-  })
-
-  window.webContents.on('will-redirect', (event, url) => {
-    if (isTrustedNavigation(url, trustedRendererOrigin, trustedErrorUrl)) return
-    event.preventDefault()
-  })
-
-  void rendererEntryUrl()
-    .then((url) => {
-      trustedRendererOrigin = urlOrigin(url)
-      trustedErrorUrl = null
-      return window.loadURL(url)
-    })
-    .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      const escapedMessage = escapeHtml(message)
-      const errorUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<main style="font-family: system-ui; padding: 24px;"><h1>Coral failed to start</h1><p>${escapedMessage}</p></main>`)}`
-      trustedRendererOrigin = null
-      trustedErrorUrl = errorUrl
-      console.error(`[coral-renderer] failed to start app renderer: ${message}`)
-      void window.loadURL(errorUrl)
-    })
-
-  window.on('closed', () => {
-    if (mainWindow === window) mainWindow = null
-  })
-
-  return window
-}
-
-function urlOrigin(value: string): string | null {
-  // Node parses a non-special scheme's origin as the opaque "null", which would
-  // make app:// indistinguishable from data:/blob:. Map our scheme to a real
-  // origin, and treat every opaque origin as untrusted.
-  if (value === APP_ORIGIN || value.startsWith(`${APP_ORIGIN}/`)) return APP_ORIGIN
-  try {
-    const { origin } = new URL(value)
-    return origin === 'null' ? null : origin
-  } catch {
-    return null
+    opened.on('closed', forget)
+    // A load still pending when the window closes settles while Electron
+    // tears down the web contents, and show() then crashes the app (seen on
+    // macOS, on Quit from the failure dialog). Electron emits `destroyed`
+    // before it runs that settlement, so show() finds the window forgotten.
+    opened.webContents.once('destroyed', forget)
+    show()
   }
-}
 
-function isTrustedNavigation(
-  targetUrl: string,
-  trustedRendererOrigin: string | null,
-  trustedErrorUrl: string | null,
-): boolean {
-  if (trustedErrorUrl && targetUrl === trustedErrorUrl) return true
-  if (!trustedRendererOrigin) return false
-  return urlOrigin(targetUrl) === trustedRendererOrigin
-}
+  supervisor.on('state', (next) => {
+    state = next
+    log(
+      next.status === 'failed'
+        ? `${next.status}: ${failureMessage(next.failure)}${next.restarting ? ' Restarting.' : ''}`
+        : next.status,
+    )
+    show()
+    if (next.status !== 'failed' || next.restarting) return
+    if (next.failure.kind === 'port-in-use') void offerNewPort(next.failure)
+    else void offerRestart(next.failure)
+  })
 
-function ensureSidecar(): Promise<CoralSidecar> {
-  // Don't spawn a fresh child once teardown has begun — it would outlive quit.
-  if (shutdownCoordinator.isShuttingDown()) {
-    return Promise.reject(new Error('Coral is shutting down.'))
+  // Set once Quit begins. Nothing starts Coral after that, so Quit's stop
+  // leaves no process behind.
+  let quitting = false
+  // Set by every Quit that Coral offers and that must stop it. On macOS, a quit
+  // that arrives without it came from the Dock or the app switcher.
+  let quitRequested = false
+  const quitCompletely = () => {
+    quitRequested = true
+    app.quit()
   }
-  if (sidecarPromise) return sidecarPromise
-  const promise = startCoralSidecar().then((started) => {
-    sidecar = started
-    // If the sidecar dies after startup, clear the cached state so the next
-    // request respawns it instead of handing back a dead process.
-    started.child.once('exit', (code, signal) => {
-      if (sidecar === started) sidecar = null
-      if (sidecarPromise === promise) sidecarPromise = null
-      if (!shutdownCoordinator.isShuttingDown()) {
-        console.error(`[coral-sidecar] exited unexpectedly (code=${code}, signal=${signal})`)
+  // Set when macOS logs the person out, restarts or shuts down. This relies
+  // on macOS posting that notice before it asks the apps to quit.
+  let sessionEnding = false
+  const restart = () =>
+    void supervisor
+      .stop()
+      .then(() => (quitting ? undefined : supervisor.start()))
+      .catch(logStartFailure)
+
+  // Coral restarts by itself after a crash, within limits; past them, or when
+  // it cannot start at all, the user decides.
+  let offering = false
+  async function offerRestart(failure: Failure) {
+    if (offering) return
+    offering = true
+    try {
+      for (;;) {
+        const { response } = await dialog.showMessageBox({
+          type: 'error',
+          message: failureTitle(failure),
+          detail: failureMessage(failure),
+          buttons: ['Restart', 'Show logs', 'Quit'],
+          defaultId: 0,
+          cancelId: 2,
+        })
+        if (response === 1) {
+          showLogs()
+          continue
+        }
+        // The user may have restarted from the menu meanwhile.
+        if (response === 0 && state.status === 'failed') restart()
+        if (response === 2) quitCompletely()
+        return
       }
+    } finally {
+      offering = false
+    }
+  }
+
+  // A persisted port anchors URLs that agent clients and links have stored, so
+  // moving it is the user's decision.
+  async function offerNewPort(failure: Extract<Failure, { kind: 'port-in-use' }>) {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      message: `Port ${failure.port} is already in use`,
+      detail:
+        failure.listener === 'mcp'
+          ? "Another app is using it. Coral can start on a different port, but you'll need to reconnect your apps to the new MCP endpoint."
+          : "Another app is using it. Coral can start on a different port, but links to earlier runs won't open anymore.",
+      buttons: ['Use Different Port', 'Quit'],
+      defaultId: 0,
+      cancelId: 1,
     })
-    return started
+    if (response === 0 && !quitting)
+      void supervisor.start({ replacePort: failure.listener }).catch(logStartFailure)
+    else quitCompletely()
+  }
+
+  // Launching Coral again is the way back to the window, and the only one on
+  // a desktop that shows no tray.
+  const openOrFocusWindow = () => {
+    if (!window) return openWindow()
+    if (window.isMinimized()) window.restore()
+    window.focus()
+  }
+  app.on('second-instance', (_event, argv) => {
+    // A login item that fires while Coral runs asks for no window.
+    if (!argv.includes(BACKGROUND_ARG)) openOrFocusWindow()
   })
-  // Drop the cached promise on failure so a later attempt can retry.
-  promise.catch(() => {
-    if (sidecarPromise === promise) sidecarPromise = null
+  // On macOS, activating a Coral that has no window opens one. The Dock icon
+  // does that for a Coral that has no menu bar item.
+  app.on('activate', () => {
+    if (!window) openWindow()
   })
-  sidecarPromise = promise
-  return promise
+  // Coral serves agent clients only while Desktop runs, so it outlives its
+  // last window (ADR 0014). Electron emits this only when the windows close
+  // by themselves, not during Quit.
+  let background: Background | undefined
+  const lastWindowClosed = () => {
+    if (quitting) return
+    if (!background) return quitCompletely()
+    // The Dock icon stays while the notice is open. The person may open the
+    // window again meanwhile.
+    void background.lastWindowClosed().then(syncDock)
+  }
+  app.on('window-all-closed', lastWindowClosed)
+  // On macOS, Quit in the Coral menu only closes the windows, so Command+Q
+  // does not stop Coral for the person's agents. Quit in the Dock and in the
+  // app switcher does the same. Quit Coral in the menu bar item, and Quit
+  // Completely in the Coral menu and the Dock, stop Coral.
+  const quitFromMenu = () => {
+    const windows = BrowserWindow.getAllWindows()
+    if (windows.length === 0) return lastWindowClosed()
+    for (const open of windows) open.close()
+  }
+
+  // Quit waits for both processes to stop, so none outlives the app.
+  let stopped = false
+  app.on('before-quit', (event) => {
+    if (stopped) return
+    event.preventDefault()
+    if (quitting) return
+    if (process.platform === 'darwin' && !quitRequested && !sessionEnding) return quitFromMenu()
+    quitting = true
+    void supervisor.stop().finally(() => {
+      stopped = true
+      app.quit()
+    })
+  })
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, quitCompletely)
+
+  // The installer replaces the app only after both processes stop. If the
+  // hand-off fails, Coral starts again.
+  const stopForUpdate = async () => {
+    quitting = true
+    await supervisor.stop()
+    stopped = true
+  }
+  const resumeAfterUpdate = () => {
+    stopped = false
+    quitting = false
+    void supervisor.start().catch(logStartFailure)
+  }
+
+  void app.whenReady().then(async () => {
+    // Sessions exist only once the app is ready, and before any web contents.
+    installContentGuards(() => (state.status === 'running' ? state.endpoints.reef : null), log)
+    // powerMonitor works only once the app is ready.
+    powerMonitor.on('shutdown', () => (sessionEnding = true))
+    // macOS passes a login item no arguments, and reports the login launch.
+    const hidden =
+      startedInBackground ||
+      (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
+    let updates: Updates | undefined
+    background = createBackground({
+      told: await readToldStillRunning(desktopFile),
+      saveTold: () => writeToldStillRunning(desktopFile),
+      tellStillRunning,
+      loginItem: loginItem(),
+      log,
+      onChange: () => menu(),
+    })
+    const { settings: backgroundSettings } = background
+    const drawTray = installTray(iconsDir(), { open: openOrFocusWindow, quit: quitCompletely }, log)
+    menuBarItem = drawTray !== undefined
+    const menu = () => {
+      const settings = backgroundSettings()
+      const version = updates?.ready()
+      installMenu({
+        restart,
+        showLogs,
+        quit: quitFromMenu,
+        quitCompletely,
+        settings,
+        update: updates?.menuItem(),
+      })
+      drawTray?.({
+        settings,
+        update: updates && version ? { version, item: updates.menuItem() } : undefined,
+      })
+    }
+    if (updatesSupported({ packaged, resourcesPath: process.resourcesPath, appImage }))
+      updates = startUpdates({
+        appImage,
+        log,
+        stopCoral: stopForUpdate,
+        resumeCoral: resumeAfterUpdate,
+        onMenuChange: menu,
+      })
+    menu()
+    // A second launch or the Dock may have opened the window already.
+    if (!hidden && !window) openWindow()
+    else syncDock()
+    void supervisor.start().catch(logStartFailure)
+  })
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
+// The window shows the failure, and the state listener logs it.
+function logStartFailure(error: unknown) {
+  if (error instanceof SupervisorError) return
+  console.error(`[coral-desktop] ${String(error)}`)
 }
 
-async function stopServices(): Promise<void> {
-  const activeSidecar = sidecar
-  const pendingSidecar = sidecar ? null : sidecarPromise
-
-  sidecar = null
-  sidecarPromise = null
-
-  const teardown = Promise.allSettled([
-    activeSidecar?.stop(),
-    pendingSidecar?.then((started) => started.stop()).catch(() => undefined),
-  ])
-
-  // Never let a stuck child — or a sidecar still mid-startup, which has no
-  // timeout in dev — block quit forever.
-  await Promise.race([teardown, delay(SHUTDOWN_TIMEOUT_MS)])
-
-  // Backstop: force-kill anything still alive, including a child spawned but not
-  // yet exposed via its (still-pending) start promise. No-op once graceful stop
-  // has already reaped them.
-  killAllTrackedChildren()
+function runtimeBinary(): string {
+  const binary = process.platform === 'win32' ? 'coral.exe' : 'coral'
+  const command = packaged ? join(process.resourcesPath, 'coral', binary) : devRuntime
+  if (!command)
+    throw new Error('Start development Desktop with `npm run dev`; it builds the runtime first')
+  return command
 }
 
-const shutdownCoordinator = createShutdownCoordinator({
-  stopServices,
-  installReadyUpdate: quitAndInstallDesktopUpdate,
-  quit: () => app.quit(),
-})
-
-function registerIpcHandlers() {
-  ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
-  ipcMain.handle('coral:configure-mcp', (_event, clientId: unknown, workspaceName: unknown) =>
-    configureMcpClient(clientId, workspaceName),
-  )
-  ipcMain.handle('coral:remove-mcp', (_event, clientId: unknown) => removeMcpClient(clientId))
-  ipcMain.handle('coral:get-mcp-launch-config', () => getMcpLaunchConfig())
-  ipcMain.handle('coral:get-update-state', () => getDesktopUpdateState())
-  ipcMain.handle('coral:download-update', () => downloadDesktopUpdate())
-  ipcMain.handle('coral:install-update', () => installReadyUpdateNow())
-  onDesktopUpdateStateChange(publishDesktopUpdateState)
+function reefLauncher(cwd: string, output: OutputSink): Launcher<ReefEnv> {
+  if (packaged)
+    return utilityLauncher(join(process.resourcesPath, 'reef', 'server.mjs'), {
+      cwd,
+      baseEnv: { ...baseEnv, NODE_ENV: 'production' },
+      output,
+    })
+  // Development runs Reef's Vite server, with hot reload, as `./dev` does.
+  const reef = resolve(import.meta.dirname, '..', '..', '..', 'reef')
+  return (env) =>
+    spawnLauncher('npm', {
+      args: [
+        'run',
+        'dev',
+        '--prefix',
+        reef,
+        '--',
+        '--host',
+        env.HOST,
+        '--port',
+        env.PORT,
+        '--strictPort',
+      ],
+      cwd,
+      baseEnv: { ...baseEnv, NODE_ENV: 'development' },
+      output,
+      processGroup: true,
+    })(env)
 }
 
-// Quit rather than calling quitAndInstall() directly: the shutdown coordinator
-// stops the sidecar first and only then hands the staged update to Squirrel.
-function installReadyUpdateNow(): void {
-  if (getDesktopUpdateState().status !== 'ready') return
-  app.quit()
+function iconsDir(): string {
+  return packaged
+    ? join(process.resourcesPath, 'icons')
+    : resolve(import.meta.dirname, '..', '..', 'resources', 'icons')
 }
 
-function publishDesktopUpdateState(state: DesktopUpdateState): void {
-  const window = mainWindow
-  if (!window) return
+// Shown once, the first time the last window closes.
+async function tellStillRunning(): Promise<void> {
+  const isMac = process.platform === 'darwin'
+  await dialog.showMessageBox({
+    type: 'info',
+    message: 'Coral is still running',
+    detail: isMac
+      ? 'It stays in the menu bar so your apps can connect. To quit, use the Coral icon in the menu bar.'
+      : 'It keeps running so your apps can connect. To quit, open Coral and choose Quit from the File menu.',
+    buttons: ['OK'],
+  })
+}
 
-  try {
-    if (window.isDestroyed() || window.webContents.isDestroyed()) return
-    window.webContents.send('coral:update-state-changed', state)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    console.error(`[coral-updater] failed to publish update state: ${message}`)
+/** This package's login item, or undefined when it cannot register one. */
+function loginItem(): LoginItem | undefined {
+  // A development build would register Electron itself.
+  if (!packaged) return undefined
+  // Electron's login item API does not cover Linux. Only an AppImage names a
+  // file that an autostart entry can start.
+  if (process.platform === 'linux')
+    return appImage && isAbsolute(appImage)
+      ? autostartLoginItem(join(app.getPath('appData'), 'autostart'), appImage)
+      : undefined
+  // Windows matches a login item by its arguments too.
+  const args = process.platform === 'win32' ? [BACKGROUND_ARG] : []
+  return {
+    enabled: () => app.getLoginItemSettings({ args }).openAtLogin,
+    set: (enabled) => app.setLoginItemSettings({ openAtLogin: enabled, args }),
   }
 }
 
-function installAboutPanel() {
-  app.setAboutPanelOptions({
-    applicationName: 'Coral',
-    applicationVersion: app.getVersion(),
-    // The panel always parenthesizes a build number, falling back to
-    // CFBundleVersion — which release-please keeps equal to the app version.
-    version: buildCommit,
-    // macOS draws the bundle icon and ignores iconPath.
-    ...(process.platform === 'darwin' ? {} : { iconPath: currentWindowIconPath() }),
-  })
-}
-
-function installMenu() {
+function installMenu(actions: {
+  restart: () => void
+  showLogs: () => void
+  /** Quit in the Coral menu on macOS. Elsewhere, Quit always stops Coral. */
+  quit: () => void
+  /** Quit Completely in the Coral menu and the Dock menu on macOS. */
+  quitCompletely: () => void
+  settings: MenuCheckbox[]
+  // Absent when this package cannot update itself.
+  update: UpdateMenuItem | undefined
+}) {
   const isMac = process.platform === 'darwin'
+  const restart: Electron.MenuItemConstructorOptions = {
+    label: 'Restart Coral',
+    click: actions.restart,
+  }
+  // On macOS, Quit Coral only closes the windows. This one stops Coral.
+  const quitCompletely: Electron.MenuItemConstructorOptions = {
+    label: 'Quit Completely',
+    click: actions.quitCompletely,
+  }
+  const { update: item } = actions
+  const update: Electron.MenuItemConstructorOptions[] = item
+    ? [{ label: item.label, enabled: item.enabled, click: () => void item.click() }]
+    : []
+  const checkboxes = actions.settings.map((setting): Electron.MenuItemConstructorOptions => ({
+    type: 'checkbox',
+    ...setting,
+  }))
   // `role: 'about'` would label itself from app.name, the package name in dev.
   const about: Electron.MenuItemConstructorOptions = {
     label: 'About Coral',
     click: () => app.showAboutPanel(),
   }
-  const updates: Electron.MenuItemConstructorOptions[] = desktopUpdatesSupported()
-    ? [
-        {
-          label: 'Check for Updates...',
-          click: () => {
-            void checkForDesktopUpdates({ interactive: true })
-          },
-        },
-      ]
-    : []
-
   const template: Electron.MenuItemConstructorOptions[] = [
-    // macOS collects About, updates, and Quit in an application menu named
-    // after the app. Windows and Linux have no such menu, so they get the
-    // File and Help entries users look in there instead.
     isMac
       ? {
           label: 'Coral',
           submenu: [
             about,
+            ...update,
             { type: 'separator' },
-            ...(updates.length > 0
-              ? ([...updates, { type: 'separator' }] satisfies Electron.MenuItemConstructorOptions[])
-              : []),
-            { role: 'quit' },
+            ...checkboxes,
+            { type: 'separator' },
+            restart,
+            quitCompletely,
+            { type: 'separator' },
+            { label: 'Quit Coral', accelerator: 'Command+Q', click: actions.quit },
           ],
         }
-      : { label: 'File', submenu: [{ role: 'quit' }] },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { type: 'separator' },
-        { role: 'selectAll' },
-      ],
-    },
+      : {
+          label: 'File',
+          submenu: [
+            ...checkboxes,
+            { type: 'separator' },
+            restart,
+            { type: 'separator' },
+            { role: 'quit' },
+          ],
+        },
+    // macOS routes copy and paste shortcuts through these menu roles.
+    { role: 'editMenu' },
     {
       label: 'View',
       submenu: [
-        // Reload/DevTools are dev-only affordances; keep them out of shipped builds.
-        ...(app.isPackaged
+        ...(packaged
           ? []
           : ([
               { role: 'reload' },
@@ -369,80 +472,30 @@ function installMenu() {
         { role: 'zoomOut' },
       ],
     },
-    ...(isMac ? [] : [{ label: 'Help', submenu: [...updates, about] }]),
+    // Close Window carries the platform's shortcut. Electron's own Window menu
+    // leaves it out on macOS, where it expects a File menu to hold it.
+    isMac
+      ? {
+          role: 'window',
+          submenu: [
+            { role: 'minimize' },
+            { role: 'zoom' },
+            { role: 'close' },
+            { type: 'separator' },
+            { role: 'front' },
+          ],
+        }
+      : { role: 'windowMenu' },
+    {
+      role: 'help',
+      submenu: [
+        { label: 'Show logs', click: actions.showLogs },
+        ...(isMac ? [] : [...update, about]),
+      ],
+    },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
-}
-
-function startApplication(): void {
-  // Windows keys toasts, taskbar grouping, and jump lists off this id, and
-  // silently drops a notification from a process that never set one. Shared with
-  // electron-builder, which stamps the same id on the shortcut. Must run before
-  // the app is ready. Inert elsewhere.
-  app.setAppUserModelId(APP_ID)
-
-  const gotLock = app.requestSingleInstanceLock()
-  if (!gotLock) {
-    app.quit()
-    return
-  }
-
-  // The marker may have appeared while this process waited for the lock. An
-  // old binary that won the race must release it without clearing the marker.
-  if (shouldExitForPendingDesktopUpdate()) {
-    console.info('[coral-updater] update installation is still in progress; exiting')
-    app.releaseSingleInstanceLock()
-    app.exit(0)
-    return
-  }
-
-  // Keep the hand-off marker visible until the updated binary owns the lock.
-  clearPendingDesktopUpdateIntent()
-
-  // Must run before the app `ready` event.
-  registerAppSchemePrivileges()
-
-  app.on('second-instance', () => {
-    if (shutdownCoordinator.isShuttingDown()) return
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  })
-
-  app.on('before-quit', shutdownCoordinator.beforeQuit)
-
-  app.whenReady().then(() => {
-    if (shutdownCoordinator.isShuttingDown()) return
-
-    updatePlatformIcon()
-    nativeTheme.on('updated', updatePlatformIcon)
-    registerIpcHandlers()
-    installAboutPanel()
-    installMenu()
-    installAutoUpdater({
-      allowUpdateQuit: shutdownCoordinator.allowQuit,
-      onInstallFailure: shutdownCoordinator.quitAfterUpdateFailure,
-    })
-    registerAppProtocol(() => ensureSidecar().then((started) => started.url))
-    void ensureSidecar().catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error(`[coral-sidecar] failed to start during boot: ${message}`)
-    })
-    mainWindow = createMainWindow()
-  })
-
-  app.on('activate', () => {
-    if (shutdownCoordinator.isShuttingDown()) return
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()
-  })
-}
-
-// Evaluate the hand-off marker before taking the single-instance lock. A
-// rapidly reopened old binary exits independently instead of waking the
-// instance that is still handing its update to the platform installer.
-if (shouldExitForPendingDesktopUpdate()) {
-  console.info('[coral-updater] update installation is still in progress; exiting')
-  app.exit(0)
-} else {
-  startApplication()
+  // The Dock's own Quit only closes the windows, as Command+Q does, so the
+  // Dock menu carries the Quit that stops Coral.
+  if (isMac) app.dock?.setMenu(Menu.buildFromTemplate([...update, restart, quitCompletely]))
 }

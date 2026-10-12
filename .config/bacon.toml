@@ -1,0 +1,12 @@
+# Run the authenticated dev backend with automatic rebuilds: bacon coral
+[jobs.coral]
+command = ["./dev", "coral"]
+need_stdout = true
+background = false
+extraneous_args = false
+scroll_anchor = "auto"
+on_change_strategy = "kill_then_restart"
+# Let the dev supervisor stop its detached Cargo/runtime process group.
+kill = ["kill", "-s", "TERM"]
+default_watch = false
+watch = ["crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", ".dev", "dev", "scripts/dev"]

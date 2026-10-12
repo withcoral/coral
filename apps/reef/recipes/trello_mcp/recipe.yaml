@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://trello.com/mcp
+# Resource metadata advertises all read/write scopes. The server supports archive actions, but not permanent
+# deletion.
+schema_version: 1
+id: trello_mcp
+service: trello
+display_name: Trello
+description: Boards, cards, lists and collaboration from Trello.
+source:
+  mcp:
+    url: https://mcp.trello.com/v1
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Trello
+      documentation_url: https://trello.com/mcp
+      flow: authorization_code
+icons:
+  light: trello.svg
+  dark: trello-dark.svg

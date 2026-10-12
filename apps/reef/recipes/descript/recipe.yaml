@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/descriptinc/descript-mcp
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: descript
+display_name: Descript
+description: Video, audio and editing projects from Descript.
+icons:
+  light: logo.png
+source:
+  mcp:
+    url: https://api.descript.com/v2/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Descript
+      documentation_url: https://github.com/descriptinc/descript-mcp
+      flow: authorization_code
+  default: oauth

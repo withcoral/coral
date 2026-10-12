@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://plus.excalidraw.com/docs/mcp
+# Requires an Excalidraw+ API key; accessible tools follow its permissions.
+schema_version: 1
+id: excalidraw_plus
+display_name: Excalidraw+
+description: Diagrams, scenes and collections from Excalidraw+.
+source:
+  mcp:
+    url: https://api.excalidraw.com/api/v1/mcp
+authentication:
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://plus.excalidraw.com/docs/mcp
+  default: api_key
+icons:
+  light: logo.svg

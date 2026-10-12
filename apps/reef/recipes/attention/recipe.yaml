@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.attention.com/mcp/overview
+schema_version: 1
+id: attention
+display_name: Attention
+description: Conversations, insights, playbooks and workspace settings from Attention.
+source:
+  mcp:
+    url: https://api.attention.tech/mcp
+authentication:
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://docs.attention.com/mcp/authentication
+icons:
+  light: logo.svg

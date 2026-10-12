@@ -1,0 +1,93 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://polar.sh/docs/integrate/mcp
+# Read/write scopes cover the advertised Polar operation catalog. Identity scopes identify the account.
+# The issuer advertises scopes, but the protected resource does not. Request them explicitly.
+schema_version: 1
+id: polar
+display_name: Polar
+description: Products, customers and subscriptions from Polar.
+source:
+  mcp:
+    url: '{{input.endpoint}}'
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://polar.sh/docs/integrate/mcp
+      flow: authorization_code
+      scopes:
+        - openid
+        - profile
+        - email
+        - user:read
+        - user:write
+        - organizations:read
+        - organizations:write
+        - custom_fields:read
+        - custom_fields:write
+        - discounts:read
+        - discounts:write
+        - checkout_links:read
+        - checkout_links:write
+        - checkouts:read
+        - checkouts:write
+        - transactions:read
+        - transactions:write
+        - payouts:read
+        - payouts:write
+        - products:read
+        - products:write
+        - benefits:read
+        - benefits:write
+        - events:read
+        - events:write
+        - meters:read
+        - meters:write
+        - files:read
+        - files:write
+        - subscriptions:read
+        - subscriptions:write
+        - customers:read
+        - customers:write
+        - members:read
+        - members:write
+        - wallets:read
+        - wallets:write
+        - disputes:read
+        - disputes:write
+        - customer_meters:read
+        - customer_sessions:write
+        - member_sessions:write
+        - customer_seats:read
+        - customer_seats:write
+        - orders:read
+        - orders:write
+        - refunds:read
+        - refunds:write
+        - payments:read
+        - metrics:read
+        - metrics:write
+        - webhooks:read
+        - webhooks:write
+        - license_keys:read
+        - license_keys:write
+        - customer_portal:read
+        - customer_portal:write
+        - notifications:read
+        - notifications:write
+        - notification_recipients:read
+        - notification_recipients:write
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+inputs:
+  endpoint:
+    type: url
+    label: Environment
+    default: https://mcp.polar.sh/mcp/polar-mcp
+    enum:
+      - https://mcp.polar.sh/mcp/polar-mcp
+      - https://mcp.polar.sh/mcp/polar-sandbox
+    documentation_url: https://polar.sh/docs/integrate/mcp

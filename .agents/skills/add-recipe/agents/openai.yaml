@@ -1,0 +1,5 @@
+interface:
+  display_name: "Add Recipe"
+  short_description: "Write a Provider Recipe for a service"
+policy:
+  allow_implicit_invocation: false

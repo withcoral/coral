@@ -1,80 +1,31 @@
 //! Builds and runs the Coral gRPC server.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use coral_api::v1::catalog_service_server::CatalogServiceServer;
-use coral_api::v1::feature_service_server::FeatureServiceServer;
-use coral_api::v1::feedback_service_server::FeedbackServiceServer;
-use coral_api::v1::function_service_server::FunctionServiceServer;
-use coral_api::v1::gui_onboarding_service_server::GuiOnboardingServiceServer;
-use coral_api::v1::query_service_server::QueryServiceServer;
-use coral_api::v1::search_service_server::SearchServiceServer;
-use coral_api::v1::source_service_server::SourceServiceServer;
-use coral_api::v1::task_service_server::TaskServiceServer;
-use coral_api::v1::trace_service_server::TraceServiceServer;
-use coral_api::v1::user_service_server::UserServiceServer;
-use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
-use coral_api::{
-    CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
-    SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_REQUEST_MAX_MESSAGE_SIZE,
-    SOURCE_RESPONSE_MAX_MESSAGE_SIZE, TRACE_RESPONSE_MAX_MESSAGE_SIZE,
-};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
-use tokio::task::{self, JoinHandle};
+use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::service::Routes;
 use tonic::transport::Server;
+use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use super::health::{AggregateHealthService, EngineReadiness};
-use super::server_config::{LoadedServerConfig, ServeSettings, SessionAuthSettings};
-use crate::EngineExtensionsProvider;
+use super::health::EngineReadiness;
+use super::server_config::{Launcher, LoadedServerConfig, ServeSettings, SessionAuthSettings};
 use crate::auth::CoralAuthorizationServer;
-use crate::catalog::discovery::CatalogDiscovery;
-use crate::catalog::service::CatalogService;
-use crate::credentials::config::CredentialStorageConfig;
-use crate::credentials::{CredentialManager, CredentialStore};
-use crate::features::service::FeatureService;
-use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
-use crate::feedback::manager::FeedbackManager;
-use crate::feedback::publisher::{
-    FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
-};
-use crate::feedback::service::FeedbackService;
-use crate::functions::service::FunctionService;
-use crate::gui_onboarding::manager::GuiOnboardingManager;
-use crate::gui_onboarding::service::GuiOnboardingService;
-use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
-use crate::query::manager::QueryManager;
-use crate::query::service::QueryService;
-use crate::search::manager::SearchManager;
-use crate::search::observed::SearchObservationHandle;
-use crate::search::service::SearchService;
-use crate::sources::manager::SourceManager;
-use crate::sources::materialization::SourceDiagnosticReporter;
-use crate::sources::service::SourceService;
-use crate::state::db::{
-    CoralDb, DatabaseConfig, InaccessibleWorkspaces, ResolvedDatabaseConfig,
-    inaccessible_workspaces, migrate_local_ownership_once, run_state_migrations,
-};
-use crate::state::{AppStateLayout, ConfigStore};
-use crate::task::manager::TaskManager;
-use crate::task::service::TaskService;
-use crate::task::store::TaskStore;
-use crate::telemetry::service::TraceService;
-use crate::telemetry::{TelemetryConfig, TraceManager};
-use crate::transport::GrpcRequestContextLayer;
-use crate::users::manager::UserManager;
-use crate::users::service::UserService;
-use crate::workspaces::authorization::{LocalPrincipalPolicy, WorkspaceAuthorizer};
-use crate::workspaces::{
-    WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
-};
+use crate::state::DatabaseConfig;
+use crate::state::{AppStateLayout, InitializedState, StateLock, initialize_state};
+use crate::telemetry::TelemetryConfig;
+use coral_auth::UserDirectory;
+use coral_db::{Database, DatabaseOptions};
+
+/// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the private listener.
+const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 
 #[derive(Clone)]
 enum ServerModeSelection {
@@ -87,15 +38,6 @@ enum ServerModeSelection {
 pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
-    engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    feedback_publisher: Arc<dyn FeedbackPublisher>,
-    feature_overrides: FeatureOverrides,
-    enable_stderr_logs: bool,
-    // Test seam: a listener the gRPC server adopts instead of binding
-    // `mode.bind_addr()` itself. Lets startup-failure tests hold the reserved
-    // port continuously rather than selecting and releasing it, closing the
-    // race where another process claims the port before the server binds.
-    grpc_listener: Option<Arc<std::net::TcpListener>>,
 }
 
 impl Default for ServerConfig {
@@ -109,11 +51,6 @@ impl ServerConfig {
         Self {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
-            engine_extensions_providers: Vec::new(),
-            feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
-            feature_overrides: FeatureOverrides::default(),
-            enable_stderr_logs: false,
-            grpc_listener: None,
         }
     }
 
@@ -132,50 +69,24 @@ impl ServerConfig {
         self
     }
 
-    fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
+    fn resolved_mode(&self, config: &LoadedServerConfig) -> Result<ServerMode, AppError> {
         match &self.mode {
-            ServerModeSelection::Explicit(mode @ ServerMode::StandaloneGrpc { .. }) => {
-                let config = LoadedServerConfig::load(layout)?;
-                config.reject_removed_auth()?;
-                Ok(mode.clone())
-            }
             ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
             ServerModeSelection::ConfiguredStandaloneGrpc => {
-                let config = LoadedServerConfig::load(layout)?;
-                let bind = config.grpc_settings()?.bind_addr;
+                let bind = config.grpc_settings()?.bind;
                 Ok(ServerMode::StandaloneGrpc { bind })
             }
         }
-    }
-
-    pub(crate) fn add_engine_extensions_provider(
-        mut self,
-        engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
-    ) -> Self {
-        self.engine_extensions_providers
-            .push(engine_extensions_provider);
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
-        self.enable_stderr_logs = enable_stderr_logs;
-        self
-    }
-
-    pub(crate) fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
-        self.feature_overrides = feature_overrides;
-        self
     }
 }
 
 /// Concrete local server mode.
 ///
-/// Each variant is a supported product mode instead of an independent
-/// transport or asset-serving knob.
+/// These variants select the private listener for process composition and tests;
+/// the runtime process always composes MCP alongside it.
 #[derive(Clone)]
 pub enum ServerMode {
-    /// Ephemeral native gRPC for CLI, MCP, and local client callers.
+    /// Ephemeral native gRPC for local process composition and lifecycle tests.
     EphemeralGrpc,
     /// Native gRPC bound to an explicit address for a standalone server.
     StandaloneGrpc {
@@ -201,15 +112,32 @@ impl ServerMode {
 #[derive(Default)]
 pub struct ServerBuilder {
     config: ServerConfig,
+    outbound_defaults: coral_outbound::DestinationPolicy,
+    launcher: Launcher,
     session_auth: Option<Box<SessionAuthSettings>>,
+}
+
+/// A server builder whose complete persistent state has passed the startup
+/// fence and completed fresh initialization.
+///
+/// This temporal type lets process composition read companion settings and
+/// install their session policy without re-running or reordering state-format
+/// checks. Call [`Self::start`] to consume it and start gRPC.
+pub struct PreparedServerBuilder {
+    builder: ServerBuilder,
+    state: InitializedState,
+    deployment_config: LoadedServerConfig,
 }
 
 impl ServerBuilder {
     #[must_use]
-    /// Creates a builder for the default ephemeral native gRPC local server.
+    /// Creates an ephemeral native gRPC server with deny/deny outbound defaults.
+    /// Local launchers explicitly supply their own outbound default overrides.
     pub fn new() -> Self {
         Self {
             config: ServerConfig::new(),
+            outbound_defaults: coral_outbound::DestinationPolicy::default(),
+            launcher: Launcher::default(),
             session_auth: None,
         }
     }
@@ -227,12 +155,37 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Creates a standalone gRPC server using `[server].bind_addr`.
+    /// Creates a standalone gRPC server using `[listeners.grpc].bind`.
     pub fn configured_standalone_grpc() -> Self {
         Self {
             config: ServerConfig::new().with_configured_standalone_grpc(),
-            session_auth: None,
+            ..Self::new()
         }
+    }
+
+    /// Supplies composition defaults. Explicit operator fields always win.
+    #[must_use]
+    pub fn with_outbound_defaults(mut self, defaults: coral_outbound::DestinationPolicy) -> Self {
+        self.outbound_defaults = defaults;
+        self
+    }
+
+    /// Marks a Desktop launch: local auth support then defaults to Desktop's
+    /// fixed Provider OAuth callback port. An explicit `listeners.auth.bind` wins.
+    #[must_use]
+    pub fn with_desktop_launch(mut self) -> Self {
+        self.launcher.desktop = true;
+        self
+    }
+
+    /// Supplies a local launcher's web origin for human handoff.
+    ///
+    /// It replaces `listeners.web.public_url` only without `[auth]`; serving
+    /// fails if both are present or if `[auth]` is configured.
+    #[must_use]
+    pub fn with_local_web_url(mut self, url: coral_mcp::HumanInterfaceUrl) -> Self {
+        self.launcher.local_web_url = Some(url);
+        self
     }
 
     #[must_use]
@@ -249,421 +202,249 @@ impl ServerBuilder {
         self
     }
 
-    /// Resolves the settings for companions served beside this gRPC server.
-    ///
-    /// Only settings are returned. The caller chooses the companion topology
-    /// and each public surface's session policy. Passing the resolved session
-    /// authentication back through [`ServerBuilder::with_session_auth`] lets
-    /// app startup prepare an authorization server against the one migrated
-    /// database without starting its transport.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] if the configuration cannot be loaded or validated.
-    pub fn serve_settings(&self) -> Result<ServeSettings, AppError> {
-        let layout = AppEnvironment::discover().app_state_layout(self.config.config_dir.clone())?;
-        LoadedServerConfig::load(&layout)?.companion_settings()
-    }
-
-    #[must_use]
-    /// Adds an engine extensions provider used for query runtime builds.
-    ///
-    /// Providers are evaluated in call order, so later providers can add or
-    /// override engine extensions produced by earlier providers.
-    pub fn add_engine_extensions_provider(
-        mut self,
-        engine_extensions_provider: Arc<dyn EngineExtensionsProvider>,
-    ) -> Self {
-        self.config = self
-            .config
-            .add_engine_extensions_provider(engine_extensions_provider);
-        self
-    }
-
     #[must_use]
     /// Configures session authentication for this server.
     ///
-    /// Startup derives the private gRPC policy from every configured public
-    /// audience and prepares the authorization server once the app database has
-    /// been opened and migrated, so the two share the single app bootstrap.
-    /// Taking that server from the returned [`RunningServer`] and running its
-    /// transport stays the caller's job.
-    ///
-    /// Without this call a standalone listener serves the built-in local
-    /// principal to every caller its address is reachable from.
+    /// Startup prepares the authorization server once the app database has
+    /// been opened and migrated, and installs private authentication against
+    /// the same current authority. Taking the authorization server from the
+    /// returned [`RunningServer`] and running its transport stays the caller's
+    /// job. Only gRPC health is unauthenticated in an authenticated deployment.
     pub fn with_session_auth(mut self, session_auth: SessionAuthSettings) -> Self {
         self.session_auth = Some(Box::new(session_auth));
         self
     }
 
-    #[must_use]
-    /// Enables or disables local stderr log rendering for this server.
+    /// Passes the complete persistent state through its one initialization
+    /// Module before any caller can read companion configuration or start a
+    /// listener.
     ///
-    /// `MCP` stdio adapters can enable this for diagnostics while keeping
-    /// stdout reserved for protocol messages. Other command surfaces should
-    /// leave it disabled and rely on OTEL export for logs.
-    pub fn with_stderr_logs(mut self, enable_stderr_logs: bool) -> Self {
-        self.config = self.config.with_stderr_logs(enable_stderr_logs);
-        self
-    }
-
-    #[must_use]
-    /// Applies process-local runtime feature overrides to this server instance.
-    pub fn with_feature_overrides(mut self, feature_overrides: FeatureOverrides) -> Self {
-        self.config = self.config.with_feature_overrides(feature_overrides);
-        self
-    }
-
-    /// Disables hosted feedback upload for tests and controlled local harnesses.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn with_noop_feedback_uploads(mut self) -> Self {
-        self.config.feedback_publisher = Arc::new(NoopFeedbackPublisher);
-        self
-    }
-
-    /// Adopts an already-bound listener for the gRPC server instead of binding
-    /// the mode's address.
+    /// # Errors
     ///
-    /// Startup-failure tests use this to reserve a port and hand the live
-    /// listener straight to the server, so the port never lapses between
-    /// selection and bind and a parallel process cannot steal it.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn with_prebound_grpc_listener(mut self, listener: std::net::TcpListener) -> Self {
-        self.config.grpc_listener = Some(Arc::new(listener));
-        self
-    }
-
-    /// Selects the one provider every request's principal is resolved through,
-    /// together with the local-principal policy that follows from it.
-    ///
-    /// The policy is not a separate choice: `coral:local` is precisely the
-    /// principal the default provider hands to every caller, so a deployment
-    /// admits it exactly when nothing else authenticates them. Deriving both
-    /// from the same match is what keeps a server that authenticates its
-    /// callers from also honoring the built-in principal, and keeps a
-    /// no-login install in full control of its own host.
-    fn resolve_authentication(&self) -> (Arc<dyn PrincipalProvider>, LocalPrincipalPolicy) {
-        match &self.session_auth {
-            Some(session_auth) => (
-                session_auth.private_api_provider(),
-                LocalPrincipalPolicy::NoLocalPrincipal,
-            ),
-            None => (
-                Arc::new(LocalPrincipalProvider),
-                LocalPrincipalPolicy::ImplicitOwner,
-            ),
-        }
+    /// Returns [`AppError`] when the state root or configured database is
+    /// retired or malformed, or when fresh-state initialization fails.
+    pub async fn prepare(self) -> Result<PreparedServerBuilder, AppError> {
+        let environment = AppEnvironment::discover();
+        let layout = environment.app_state_layout(self.config.config_dir.clone())?;
+        let deployment_config = LoadedServerConfig::load(&layout)?;
+        let state = initialize_state(
+            layout,
+            deployment_config.raw(),
+            resolve_database_config,
+            || deployment_config.validate(),
+        )
+        .await?;
+        Ok(PreparedServerBuilder {
+            builder: self,
+            state,
+            deployment_config,
+        })
     }
 
     /// Starts the Coral gRPC server on TCP.
     ///
-    /// By default, Coral keeps a real local gRPC boundary here so the public
-    /// client talks to the same typed transport contract the server exposes.
+    /// This convenience Interface prepares state and then starts the server.
+    /// Process composition that needs companion settings should call
+    /// [`Self::prepare`] and use the returned [`PreparedServerBuilder`].
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if the config directory cannot be determined,
-    /// required directories cannot be created, the config or credential backends
-    /// fail to initialize, or the gRPC server cannot be started.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the composition root constructs every app manager in one place, so it grows by one line per service the server gains"
-    )]
+    /// Returns [`AppError`] if state preparation, configuration, credential
+    /// initialization, or gRPC startup fails.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        let (principal_provider, local_principal) = self.resolve_authentication();
-        let session_auth = self.session_auth;
-        let env = AppEnvironment::discover();
-        let layout = env.app_state_layout(self.config.config_dir.clone())?;
-        let mode = self.config.resolved_mode(&layout)?;
-        let grpc_listener = self.config.grpc_listener.clone();
-        layout.ensure()?;
-        let feature_store = FeatureStore::from_layout(layout.clone());
-        let features = feature_store.load_with_overrides(&self.config.feature_overrides)?;
-        let config_store = ConfigStore::new(layout.clone());
-        let (coral_db, authorization_server) =
-            bootstrap_database(&layout, &config_store, session_auth).await?;
-        let (telemetry_config, active_trace_store) =
-            init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
-        apply_local_principal_policy(&coral_db, local_principal).await?;
-        let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let credential_config = CredentialStorageConfig::load(&layout)?;
-        let credential_store =
-            CredentialStore::with_preference(layout.clone(), credential_config.storage);
-        let credential_manager = CredentialManager::new(credential_store);
-        let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
-        let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
-        let diagnostic_reporter = SourceDiagnosticReporter::default();
-        let database_sources_enabled = features.enabled(Feature::DatabaseSources);
-        let source_manager = SourceManager::with_diagnostic_reporter(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            workspace_lifecycle_lock.clone(),
-            diagnostic_reporter.clone(),
-        )
-        .with_pool_registry(Arc::clone(&workspace_pool_registry))
-        .with_database_sources_enabled(database_sources_enabled);
-        let workspace_manager = WorkspaceManager::new(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            active_trace_store_dir.clone(),
-            workspace_lifecycle_lock.clone(),
-            Arc::clone(&coral_db),
-            diagnostic_reporter.clone(),
-        )
-        .with_pool_registry(Arc::clone(&workspace_pool_registry));
-        let feedback_manager =
-            FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
-        let task_activity = crate::task::activity::TaskActivityRecorder::new(Arc::clone(&coral_db));
-        let body_capture_max_bytes = telemetry_config
-            .trace_history
-            .http_body_recording_max_bytes();
-        let query_runtime_context = env
-            .query_runtime_context()
-            .with_body_capture_max_bytes(body_capture_max_bytes);
+        self.prepare().await?.start().await
+    }
+}
 
-        let query_manager = QueryManager::with_diagnostic_reporter(
-            config_store.clone(),
-            workspace_manager.clone(),
-            credential_manager,
-            query_runtime_context,
-            layout.clone(),
-            workspace_lifecycle_lock.clone(),
-            self.config.engine_extensions_providers,
-            diagnostic_reporter.clone(),
-            workspace_pool_registry,
-        )
-        .with_database_sources_enabled(database_sources_enabled)
-        .with_task_activity_recorder(task_activity);
-        let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
-        let search_observations =
-            observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
-        let search_manager = SearchManager::with_diagnostic_reporter(
-            layout,
-            &config_store,
-            workspace_manager.clone(),
-            observed_values_search_enabled,
-            diagnostic_reporter,
-            CatalogDiscovery::new(query_manager.clone()),
-            workspace_lifecycle_lock,
-        );
-        let workspace_authorizer = deployment_authorizer(&coral_db, local_principal);
-        let trace_components = trace_components_for_store(
-            active_trace_store,
-            workspace_manager.clone(),
-            workspace_authorizer.clone(),
-        );
+impl PreparedServerBuilder {
+    /// Resolves settings for transports served beside the prepared gRPC server.
+    ///
+    /// State preparation has already completed, so this read cannot bypass or
+    /// repeat any part of the state-format sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when companion configuration is invalid.
+    pub fn serve_settings(&self) -> Result<ServeSettings, AppError> {
+        self.deployment_config
+            .serve_settings(self.builder.outbound_defaults, &self.builder.launcher)
+    }
+
+    /// Supplies composition defaults without changing the operator snapshot.
+    #[must_use]
+    pub fn with_outbound_defaults(mut self, defaults: coral_outbound::DestinationPolicy) -> Self {
+        self.builder.outbound_defaults = defaults;
+        self
+    }
+
+    /// Installs the session policy resolved from this prepared state.
+    #[must_use]
+    pub fn with_session_auth(mut self, session_auth: SessionAuthSettings) -> Self {
+        self.builder.session_auth = Some(Box::new(session_auth));
+        self
+    }
+
+    /// Starts the prepared Coral gRPC server on TCP.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if configuration, credential initialization, or
+    /// gRPC startup fails.
+    pub async fn start(self) -> Result<RunningServer, AppError> {
+        let Self {
+            builder,
+            state,
+            deployment_config,
+        } = self;
+        let session_auth = match builder.session_auth {
+            Some(auth) => Some(auth),
+            None => deployment_config
+                .serve_settings(builder.outbound_defaults, &builder.launcher)?
+                .take_session_auth()
+                .map(Box::new),
+        };
+        let policy = deployment_config.outbound_policy(builder.outbound_defaults)?;
+        let config = builder.config;
+        let vault = open_credential_vault(&deployment_config, state.credential_key_path())?;
+        let (coral_db, state_lock) = state.into_parts();
+        let mode = config.resolved_mode(&deployment_config)?;
+        if session_auth.is_none() && !super::is_loopback_ip(mode.bind_addr().ip()) {
+            return Err(AppError::FailedPrecondition(
+                "auth-disabled private gRPC bind must be loopback".to_owned(),
+            ));
+        }
+        let workspace_authentication = session_auth
+            .as_ref()
+            .map(|auth| auth.workspace_authentication(coral_db.clone()));
+        let private_authentication = session_auth
+            .as_ref()
+            .map(|auth| auth.principal_authentication(coral_db.clone()));
+        if session_auth.is_none() {
+            coral_workspace::OrganizationModule::new(coral_db.clone())
+                .provision_login(&coral_workspace::ChangeContext::new(
+                    coral_workspace::local_organization_owner(),
+                    0,
+                    coral_workspace::TraceId::current_or_new(),
+                ))
+                .await
+                .map_err(|_error| {
+                    AppError::FailedPrecondition("local authority initialization failed".to_owned())
+                })?;
+        }
+        // Coral publishes its Client ID Metadata Document at Reef's public HTTPS
+        // origin, which is what upstream authorization servers accept as client_id.
+        let client_id_metadata_document = session_auth
+            .as_ref()
+            .and_then(|auth| auth.web_public_url())
+            .map(|origin| format!("{origin}/.well-known/oauth-client"));
+        let client_bootstrap_policy = deployment_config.mcp_oauth_client_bootstrap()?;
+        let authorization_server = session_auth
+            .map(|session_auth| build_authorization_server(*session_auth, &coral_db, policy))
+            .transpose()?;
+        let reconcile_interval = deployment_config.search_reconcile_interval()?;
+        init_server_telemetry(deployment_config.raw())?;
         let mut server = start_server(
-            ServerDependencies {
-                database: Arc::clone(&coral_db),
-                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
-                source: source_manager,
-                workspace: workspace_manager,
-                users: UserManager::new(Arc::clone(&coral_db), workspace_authorizer.clone()),
-                workspace_authorizer,
-                query: query_manager,
-                search: search_manager,
-                search_observations,
-                feedback: feedback_manager,
-                task: task_manager,
-                feature_store,
-                active_features: features,
-            },
-            trace_components,
-            principal_provider,
+            Arc::clone(&coral_db),
             mode,
-            grpc_listener,
+            private_authentication,
+            Some(vault),
+            client_id_metadata_document,
+            client_bootstrap_policy,
+            policy,
+            reconcile_interval,
+            state_lock,
         )
         .await?;
         server.authorization_server = authorization_server;
+        server.workspace_authentication = workspace_authentication;
         Ok(server)
     }
 }
 
-/// Opens and migrates the one app database, and prepares the components that
-/// must exist before this server has a listener.
-///
-/// The authorization server is built here because it is the other component
-/// that needs the migrated database at startup. Building it now means a failure
-/// aborts app startup instead of leaving a public surface running beside a
-/// login path that was never prepared.
-async fn bootstrap_database(
-    layout: &AppStateLayout,
-    config_store: &ConfigStore,
-    session_auth: Option<Box<SessionAuthSettings>>,
-) -> Result<(Arc<CoralDb>, Option<Box<CoralAuthorizationServer>>), AppError> {
-    let coral_db = init_database(layout).await?;
-    run_state_migrations(&coral_db, config_store, layout).await?;
-    let coral_db = Arc::new(coral_db);
-    let authorization_server = session_auth
-        .map(|session_auth| build_authorization_server(*session_auth, &coral_db))
-        .transpose()?;
-    Ok((coral_db, authorization_server))
-}
-
-/// Settles what this deployment's local-principal policy means for the
-/// durable ownership already on disk.
-///
-/// Placed after [`bootstrap_database`] because the workspaces it reasons about
-/// only exist once the schema migration and the legacy cutover have run, and
-/// after [`init_server_telemetry`] because the shared-deployment warning is
-/// only worth emitting into an installed subscriber.
-///
-/// A shared deployment keeps serving whatever it can: workspaces nobody can
-/// reach are an operator's job to fix, not a reason to deny every other
-/// workspace its server.
-async fn apply_local_principal_policy(
-    coral_db: &CoralDb,
-    local_principal: LocalPrincipalPolicy,
-) -> Result<(), AppError> {
-    match local_principal {
-        LocalPrincipalPolicy::ImplicitOwner => {
-            let report = migrate_local_ownership_once(coral_db).await?;
-            if report.performed {
-                tracing::info!(
-                    workspaces_claimed = report.workspaces_claimed,
-                    "gave the built-in local user ownership of this install's existing workspaces"
-                );
-            }
-        }
-        LocalPrincipalPolicy::NoLocalPrincipal => {
-            if let Some(warning) =
-                inaccessible_workspaces_warning(&inaccessible_workspaces(coral_db).await?)
-            {
-                tracing::warn!("{warning}");
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Describes, by category, the workspaces this deployment currently serves to
-/// nobody, or `None` when every workspace has a reachable owner.
-///
-/// The two categories need different operator actions - appoint an owner
-/// versus transfer ownership off the local principal - so a single warning
-/// names both rather than collapsing them into one count.
-fn inaccessible_workspaces_warning(report: &InaccessibleWorkspaces) -> Option<String> {
-    let mut categories = Vec::new();
-    if !report.without_owner.is_empty() {
-        categories.push(format!(
-            "with no owner at all: {}",
-            report.without_owner.join(", ")
-        ));
-    }
-    if !report.local_owner_only.is_empty() {
-        categories.push(format!(
-            "owned only by the built-in local user: {}",
-            report.local_owner_only.join(", ")
-        ));
-    }
-    (!categories.is_empty()).then(|| {
-        format!(
-            "no authenticated caller can manage these workspaces until an operator grants ownership - {}",
-            categories.join("; ")
-        )
-    })
-}
-
-/// Prepares the one access decision every workspace-scoped service shares.
-///
-/// It is built once so the directory and the workspace control plane cannot
-/// drift onto different policies, and it carries the local-principal policy
-/// [`ServerBuilder::resolve_authentication`] settled for this deployment rather
-/// than re-deciding it per request.
-fn deployment_authorizer(
-    coral_db: &Arc<CoralDb>,
-    local_principal: LocalPrincipalPolicy,
-) -> WorkspaceAuthorizer {
-    WorkspaceAuthorizer::with_local_principal_policy(Arc::clone(coral_db), local_principal)
-}
-
 /// Prepares the authorization server this instance's logins are provisioned by.
 ///
-/// It never opens a database of its own: the app bootstrap owns the single pool
-/// and attaches it here, which is what lets the OIDC callback record a verified
-/// login before issuing an authorization code for it.
+/// It never opens a database of its own: application bootstrap constructs the
+/// User directory over the single pool and attaches that Module here, which is
+/// what lets the OIDC callback record a verified login before issuing a code.
 fn build_authorization_server(
     session_auth: SessionAuthSettings,
-    coral_db: &Arc<CoralDb>,
+    coral_db: &Arc<Database>,
+    policy: coral_outbound::DestinationPolicy,
 ) -> Result<Box<CoralAuthorizationServer>, AppError> {
+    let mut directory = UserDirectory::new(Arc::clone(coral_db));
+    if let Some((issuer, subject)) = session_auth.settings.bootstrap_owner() {
+        directory = directory.with_bootstrap_owner(issuer, subject);
+    }
     Ok(Box::new(
         session_auth
-            .into_authorization_server()?
-            .with_database(Arc::clone(coral_db)),
+            .into_authorization_server(policy)?
+            .with_user_directory(directory)
+            .with_client_database(coral_db.clone())
+            .with_readiness(EngineReadiness::from_database(coral_db.clone())),
     ))
 }
 
-fn init_server_telemetry(
-    layout: &AppStateLayout,
-    enable_stderr_logs: bool,
-) -> Result<
-    (
-        TelemetryConfig,
-        Option<crate::telemetry::InstalledLocalTraceStore>,
-    ),
-    AppError,
-> {
-    let config = TelemetryConfig::load(layout)?;
-    let local_trace_store_dir = config
-        .trace_history
-        .enabled
-        .then(|| layout.local_trace_store_dir());
-    let installed_trace_store =
-        crate::telemetry::init_tracing(&config, enable_stderr_logs, local_trace_store_dir)?;
-    let active_trace_store = config
-        .trace_history
-        .enabled
-        .then_some(installed_trace_store)
-        .flatten();
-    Ok((config, active_trace_store))
+fn init_server_telemetry(raw: &str) -> Result<(), AppError> {
+    let config = TelemetryConfig::from_toml(raw)?;
+    crate::telemetry::init_tracing(&config)
 }
 
-fn trace_components_for_store(
-    active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
-    workspaces: WorkspaceManager,
-    workspace_authorizer: WorkspaceAuthorizer,
-) -> TraceServerComponents {
-    active_trace_store.map_or_else(TraceServerComponents::default, |store| {
-        TraceServerComponents {
-            local_trace_store_dir: Some(store.dir.clone()),
-            service: Some(TraceService::new(
-                TraceManager::new(store.dir, store.retention),
-                workspaces,
-                workspace_authorizer,
-            )),
+/// Opens the host credential vault from the source the deployment selects:
+/// the named environment variable, else the key file at `key_path`.
+///
+/// A key file beside a configured variable is refused rather than ignored.
+/// The two may differ, and sealing new credentials under one key while the
+/// stored ones need the other would only surface later as unreadable
+/// credentials. The operator moves the file's key into the secret, or drops
+/// the setting, and says so by removing the file.
+fn open_credential_vault(
+    deployment_config: &LoadedServerConfig,
+    key_path: &Path,
+) -> Result<coral_credentials::CredentialVault, AppError> {
+    let Some(key_env) = deployment_config.credential_key_env()? else {
+        return coral_credentials::CredentialVault::open(key_path).map_err(|_error| {
+            AppError::FailedPrecondition("credential storage initialization failed".into())
+        });
+    };
+    // Only a confirmed absence lets the secret stand in: an entry of any kind
+    // is the conflict, and a path that cannot be inspected is not known to be
+    // empty.
+    match std::fs::symlink_metadata(key_path) {
+        Ok(_entry) => {
+            return Err(AppError::FailedPrecondition(format!(
+                "credentials.key_env is configured but a key file exists at '{}'; encode that file's key into `{key_env}` and remove the file, or remove credentials.key_env",
+                key_path.display()
+            )));
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(AppError::FailedPrecondition(format!(
+                "credentials.key_env is configured but the key file path '{}' cannot be inspected: {error}",
+                key_path.display()
+            )));
+        }
+    }
+    let encoded = Zeroizing::new(AppEnvironment::required_env_var(
+        "credentials.key_env",
+        &key_env,
+    )?);
+    coral_credentials::CredentialVault::from_encoded_key(&encoded).map_err(|_error| {
+        AppError::FailedPrecondition(format!(
+            "environment variable `{key_env}` must contain the standard base64 encoding of a {}-byte credential key",
+            coral_credentials::CredentialVault::KEY_LEN
+        ))
     })
 }
 
-async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
-    let database_config = resolve_database_config(layout)?;
-    let coral_db = CoralDb::open(database_config).await?;
-    coral_db.migrate().await?;
-    Ok(coral_db)
-}
-
-fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseConfig, AppError> {
-    match DatabaseConfig::load(layout)? {
-        DatabaseConfig::Sqlite { path } => Ok(ResolvedDatabaseConfig::Sqlite { path }),
-        DatabaseConfig::Postgres { url_env } => {
-            let url = AppEnvironment::env_var(&url_env)
-                .map_err(|_error| {
-                    AppError::FailedPrecondition(format!(
-                        "database backend 'postgres' requires environment variable `{url_env}` to contain valid UTF-8"
-                    ))
-                })?
-                .ok_or_else(|| {
-                    AppError::FailedPrecondition(format!(
-                        "database backend 'postgres' requires environment variable `{url_env}`"
-                    ))
-                })?;
-            Ok(ResolvedDatabaseConfig::Postgres { url })
-        }
+fn resolve_database_config(
+    layout: &AppStateLayout,
+    raw: &str,
+) -> Result<DatabaseOptions, AppError> {
+    match DatabaseConfig::from_toml(raw, layout)? {
+        DatabaseConfig::Sqlite { path } => Ok(DatabaseOptions::Sqlite { path }),
+        DatabaseConfig::Postgres { url_env } => Ok(DatabaseOptions::Postgres {
+            url: AppEnvironment::required_env_var("database backend 'postgres'", &url_env)?,
+        }),
     }
 }
 
@@ -673,24 +454,30 @@ fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseCo
 /// handle sends shutdown to the background task as a best-effort fallback, but
 /// does not wait for the task to finish.
 pub struct RunningServer {
+    accounts: Option<coral_provider::account::AccountModule>,
+    device_recovery: Option<JoinHandle<()>>,
+    search_index: coral_search::SearchIndex,
+    search_reconcile: JoinHandle<()>,
+    mcp_origin: Arc<std::sync::OnceLock<String>>,
     endpoint_uri: String,
     local_addr: SocketAddr,
-    local_trace_store_dir: Option<PathBuf>,
+    database: Arc<Database>,
     authorization_server: Option<Box<CoralAuthorizationServer>>,
-    search: SearchManager,
-    search_observations: Mutex<Option<SearchObservationHandle>>,
+    workspace_authentication: Option<crate::WorkspaceAuthentication>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task_finished: watch::Receiver<bool>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
+    /// Keeps other runtimes off this server's state root. Declared last so
+    /// that it is released after every other field.
+    _state_lock: StateLock,
 }
 
 impl RunningServer {
     #[must_use]
     /// Returns the endpoint URI for this server.
     ///
-    /// This is part of the narrow sibling-facing bootstrap seam used by the
-    /// thin local client and by integration tests that need explicit control
-    /// over server configuration.
+    /// Process composition and integration tests use this to reach the
+    /// listener whose lifecycle they control.
     pub fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
     }
@@ -701,11 +488,14 @@ impl RunningServer {
         self.local_addr
     }
 
+    /// Returns the initialized persistence foundation for application-owned
+    /// companion composition.
+    ///
+    /// The caller may use this handle only to construct transport-neutral
+    /// domain Modules. Persistence queries remain owned by those Modules.
     #[must_use]
-    /// Returns the process-installed local trace store directory, when local
-    /// trace history is enabled for this process.
-    pub fn local_trace_store_dir(&self) -> Option<&std::path::Path> {
-        self.local_trace_store_dir.as_deref()
+    pub fn database(&self) -> Arc<Database> {
+        Arc::clone(&self.database)
     }
 
     /// Takes the authorization server prepared from this server's session
@@ -717,6 +507,11 @@ impl RunningServer {
     #[must_use]
     pub fn take_authorization_server(&mut self) -> Option<CoralAuthorizationServer> {
         self.authorization_server.take().map(|server| *server)
+    }
+
+    /// Takes public Workspace authentication composed over this server's database.
+    pub fn take_workspace_authentication(&mut self) -> Option<crate::WorkspaceAuthentication> {
+        self.workspace_authentication.take()
     }
 
     /// Waits until the background server task exits.
@@ -740,6 +535,16 @@ impl RunningServer {
     }
 
     async fn shutdown_inner(&self) -> Result<(), AppError> {
+        if let Some(worker) = &self.device_recovery {
+            worker.abort();
+        }
+        self.search_reconcile.abort();
+        if let Some(accounts) = &self.accounts
+            && let Err(error) = accounts.stop_device_authorizations().await
+        {
+            // Workers are already stopped; unreleased leases expire on their own.
+            tracing::warn!(%error, "device authorization lease release failed");
+        }
         if let Some(shutdown_tx) = self
             .shutdown_tx
             .lock()
@@ -754,38 +559,52 @@ impl RunningServer {
         }
 
         let task = self.task.lock().expect("task mutex poisoned").take();
-        let task_result = match task {
+        match task {
             Some(task) => match task.await {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(error)) => Err(AppError::from(error)),
                 Err(error) => Err(AppError::from(error)),
             },
             None => Ok(()),
-        };
-        let search_observations_result = self.shutdown_search_observations().await;
-        task_result?;
-        search_observations_result?;
-        Ok(())
+        }
+    }
+}
+
+impl RunningServer {
+    /// Shares the bootstrap-owned credential subsystem with companion runtime composition.
+    #[must_use]
+    pub fn provider_accounts(&self) -> Option<coral_provider::account::AccountModule> {
+        self.accounts.clone()
     }
 
-    async fn shutdown_search_observations(&self) -> Result<(), AppError> {
-        let search_observations = self
-            .search_observations
-            .lock()
-            .expect("search observation mutex poisoned")
-            .take();
-        if let Some(search_observations) = search_observations {
-            let shutdown_result =
-                task::spawn_blocking(move || search_observations.shutdown()).await;
-            drain_search_before_shutdown(self.search.clone()).await;
-            shutdown_result??;
-        }
-        Ok(())
+    /// Shares the process's one search index with companion runtime
+    /// composition, so every notification and reconcile pass in the process
+    /// goes through the same in-process mutex.
+    #[must_use]
+    pub fn search_index(&self) -> coral_search::SearchIndex {
+        self.search_index.clone()
+    }
+
+    /// Publishes the canonical MCP origin after the companion listener binds.
+    /// Bootstrap supplies the validated public origin or actual local listener address.
+    /// # Panics
+    /// Panics if bootstrap attempts to publish a second origin.
+    pub fn publish_mcp_origin(&self, origin: String) {
+        self.mcp_origin
+            .set(origin)
+            .expect("MCP origin published once at bootstrap");
     }
 }
 
 impl Drop for RunningServer {
     fn drop(&mut self) {
+        if let Some(worker) = &self.device_recovery {
+            worker.abort();
+        }
+        self.search_reconcile.abort();
+        if let Some(accounts) = &self.accounts {
+            accounts.abort_device_authorizations();
+        }
         if let Some(shutdown_tx) = self
             .shutdown_tx
             .lock()
@@ -801,149 +620,90 @@ impl Drop for RunningServer {
     }
 }
 
-#[derive(Default)]
-struct TraceServerComponents {
-    service: Option<TraceService>,
-    local_trace_store_dir: Option<PathBuf>,
-}
-
-struct ServerDependencies {
-    /// The app database, which the readiness probe answers out of.
-    database: Arc<CoralDb>,
-    gui_onboarding: GuiOnboardingManager,
-    source: SourceManager,
-    workspace: WorkspaceManager,
-    users: UserManager,
-    workspace_authorizer: WorkspaceAuthorizer,
-    query: QueryManager,
-    search: SearchManager,
-    search_observations: Option<SearchObservationHandle>,
-    feedback: FeedbackManager,
-    task: TaskManager,
-    feature_store: FeatureStore,
-    // The resolution `start` performed, carried forward so the feature service
-    // can report what this server is running rather than only what config says.
-    active_features: Features,
-}
-
-/// Builds the gRPC routes for every application service, and returns the probe
-/// the health service reads readiness from.
-fn application_routes(
-    dependencies: ServerDependencies,
-    trace_service: Option<TraceService>,
-) -> (Routes, EngineReadiness) {
-    let ServerDependencies {
-        database,
-        gui_onboarding,
-        source,
-        workspace,
-        users,
-        workspace_authorizer,
-        query,
-        search,
-        search_observations,
-        feedback,
-        task,
-        feature_store,
-        active_features,
-    } = dependencies;
-    let (source, query) = match search_observations.as_ref() {
-        Some(search_observations) => (
-            source.with_search_observation_handle(search_observations.clone()),
-            query.with_search_observation_handle(search_observations.clone()),
-        ),
-        None => (source, query),
-    };
-    let readiness = EngineReadiness::from_database(database);
-    let source_service = SourceService::new(
-        source,
-        query.clone(),
-        workspace.clone(),
-        workspace_authorizer.clone(),
-    );
-    let workspace_service = WorkspaceService::new(workspace, workspace_authorizer.clone());
-    let user_service = UserService::new(users);
-    let catalog_service =
-        CatalogService::new(query.clone(), task.clone(), workspace_authorizer.clone());
-    let function_service = FunctionService::new(query.clone(), workspace_authorizer.clone());
-    let query_service = QueryService::new(query, task.clone(), workspace_authorizer.clone());
-    let search_service = SearchService::new(search, task.clone(), workspace_authorizer.clone());
-    let feedback_service =
-        FeedbackService::new(feedback, task.clone(), workspace_authorizer.clone());
-    let feature_service =
-        FeatureService::new(feature_store, active_features, workspace_authorizer.clone());
-    let task_service = TaskService::new(task, workspace_authorizer);
-    let gui_onboarding_service = GuiOnboardingService::new(gui_onboarding);
-    let mut routes = Routes::default()
-        .add_service(GuiOnboardingServiceServer::new(gui_onboarding_service))
-        .add_service(
-            SourceServiceServer::new(source_service)
-                .max_decoding_message_size(SOURCE_REQUEST_MAX_MESSAGE_SIZE)
-                .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
-        )
-        .add_service(WorkspaceServiceServer::new(workspace_service))
-        .add_service(UserServiceServer::new(user_service))
-        .add_service(
-            CatalogServiceServer::new(catalog_service)
-                .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
-        )
-        .add_service(FeedbackServiceServer::new(feedback_service))
-        .add_service(FeatureServiceServer::new(feature_service))
-        .add_service(FunctionServiceServer::new(function_service))
-        .add_service(TaskServiceServer::new(task_service))
-        .add_service(
-            QueryServiceServer::new(query_service)
-                .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
-        )
-        .add_service(
-            SearchServiceServer::new(search_service)
-                .max_encoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE),
-        );
-    if let Some(trace_service) = trace_service {
-        routes = routes.add_service(
-            TraceServiceServer::new(trace_service)
-                .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
-        );
-    }
-    (routes, readiness)
-}
-
-async fn start_server(
-    dependencies: ServerDependencies,
-    trace_components: TraceServerComponents,
-    principal_provider: Arc<dyn PrincipalProvider>,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "process composition passes each prepared dependency once"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "process composition builds each Module once, in dependency order"
+)]
+pub(crate) async fn start_server(
+    database: Arc<Database>,
     mode: ServerMode,
-    grpc_listener: Option<Arc<std::net::TcpListener>>,
+    authentication: Option<coral_auth::PrincipalAuthentication>,
+    vault: Option<coral_credentials::CredentialVault>,
+    client_id_metadata_document: Option<String>,
+    client_bootstrap_policy: coral_provider::account::ClientBootstrapPolicy,
+    policy: coral_outbound::DestinationPolicy,
+    reconcile_interval: std::time::Duration,
+    state_lock: StateLock,
 ) -> Result<RunningServer, AppError> {
-    let TraceServerComponents {
-        service: trace_service,
-        local_trace_store_dir,
-    } = trace_components;
-    // `RunningServer` owns both for shutdown; the routes only borrow them.
-    let search = dependencies.search.clone();
-    let search_observations = dependencies.search_observations.clone();
-    let (application_routes, readiness) = application_routes(dependencies, trace_service);
-    let routes = Routes::from(
-        application_routes
-            .into_axum_router()
-            .layer(GrpcRequestContextLayer::new(principal_provider)),
-    )
-    // Health must not depend on principal selection: it is the readiness signal
-    // an orchestrator reaches without a credential.
-    .add_service(tonic_health::pb::health_server::HealthServer::new(
-        AggregateHealthService::new(readiness),
-    ));
-
-    let listener = match grpc_listener {
-        // A test handed us a live listener; adopt it so the reserved port never
-        // lapses. `from_std` requires the socket be non-blocking.
-        Some(prebound) => {
-            let prebound = prebound.try_clone()?;
-            prebound.set_nonblocking(true)?;
-            TcpListener::from_std(prebound)?
+    let readiness = EngineReadiness::from_database(Arc::clone(&database));
+    let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+    let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
+    let providers =
+        coral_provider::ProviderModule::new(policy, database.clone(), workspaces.clone());
+    let accounts = vault.map(|vault| {
+        let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
+            .with_client_bootstrap_policy(client_bootstrap_policy);
+        match client_id_metadata_document {
+            Some(document) => accounts.with_client_id_metadata_document(document),
+            None => accounts,
         }
-        None => TcpListener::bind(mode.bind_addr()).await?,
-    };
+    });
+    let mut runs = coral_run::RunModule::new(
+        policy,
+        database.clone(),
+        workspaces.clone(),
+        coral_run::IsolateLimits::default(),
+    )
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    if let Some(accounts) = &accounts {
+        runs = runs.with_accounts(accounts.clone());
+    }
+    let saved_functions =
+        coral_functions::SavedFunctionInspection::new(database.clone(), workspaces.clone());
+    // State initialization already ran the search checks and stream. The
+    // reconcile task's first pass runs in the background, so neither boot nor
+    // a request waits for it.
+    let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
+    let mcp_origin = Arc::new(std::sync::OnceLock::new());
+    let routes = coral_grpc::routes(
+        coral_grpc::Dependencies {
+            organization: coral_workspace::OrganizationModule::new(database.clone()),
+            provider_readiness: coral_search::UniversalSearchModule::new(
+                database.clone(),
+                workspaces.clone(),
+            ),
+            policies: coral_policy::OperationPolicyModule::new(
+                database.clone(),
+                workspaces.clone(),
+            ),
+            access_lifecycle: coral_administration::AccessLifecycleModule::new(
+                database.clone(),
+                workspaces.clone(),
+            ),
+            provider_workflow: coral_administration::ProviderWorkflow::new(
+                database.clone(),
+                providers.clone(),
+                search_index.clone(),
+            ),
+            workspaces,
+            providers,
+            accounts: accounts.clone(),
+            tasks,
+            saved_functions,
+            runs,
+        },
+        coral_grpc::TransportContext {
+            authentication,
+            mcp_origin: mcp_origin.clone(),
+            readiness: readiness.probe(),
+        },
+    );
+
+    let listener = TcpListener::bind(mode.bind_addr()).await?;
     let local_addr = listener.local_addr()?;
     let endpoint_uri = format!("http://{local_addr}");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -955,16 +715,36 @@ async fn start_server(
         }
     };
 
+    let device_recovery = accounts.clone().map(|accounts| {
+        tokio::spawn(async move {
+            loop {
+                if let Ok(elapsed) =
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    && let Ok(now) = i64::try_from(elapsed.as_nanos())
+                    && let Err(error) = accounts.recover_device_authorizations(now).await
+                {
+                    tracing::warn!(%error, "device authorization recovery failed");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        })
+    });
+    let search_reconcile = search_index.spawn_reconcile_task();
     Ok(RunningServer {
+        device_recovery,
+        search_index,
+        search_reconcile,
+        accounts,
+        mcp_origin,
         endpoint_uri,
         local_addr,
-        local_trace_store_dir,
+        database,
         authorization_server: None,
-        search,
-        search_observations: Mutex::new(search_observations),
+        workspace_authentication: None,
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task_finished,
         task: Mutex::new(Some(task)),
+        _state_lock: state_lock,
     })
 }
 
@@ -987,1646 +767,40 @@ fn start_grpc_server(
     })
 }
 
-async fn drain_search_before_shutdown(search: SearchManager) {
-    if let Err(error) = search.drain_before_shutdown().await {
-        tracing::debug!(
-            error = ?error,
-            "failed to prepare search state before shutdown"
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::indexing_slicing,
-        reason = "JSON row assertions intentionally fail loudly in tests"
-    )]
-
-    use std::future::Future as _;
-    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-    use std::path::Path;
-    use std::sync::{Arc, Mutex};
-    use std::task::Poll;
     use std::time::Duration;
 
-    use coral_api::v1::gui_onboarding_service_client::GuiOnboardingServiceClient;
-    use coral_api::v1::query_service_client::QueryServiceClient;
-    use coral_api::v1::source_service_client::SourceServiceClient;
-    use coral_api::v1::task_service_client::TaskServiceClient;
-    use coral_api::v1::trace_service_client::TraceServiceClient;
-    use coral_api::v1::{
-        EndTaskRequest, ExecuteSqlRequest, GetGuiOnboardingStateRequest, ImportSourceRequest,
-        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, TraceView, Workspace,
-        import_source_response,
-    };
-    use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
-    use coral_engine::QueryRuntimeContext;
     use tempfile::TempDir;
-    use tokio::sync::{oneshot, watch};
-    use tonic::transport::Endpoint;
-    use tonic::{Code, Request};
 
-    use super::{
-        RunningServer, ServerBuilder, ServerDependencies, ServerMode, SessionAuthSettings,
-        TraceServerComponents, inaccessible_workspaces_warning, start_server,
-    };
-    use crate::auth::session::test_signing_key;
-    use crate::bootstrap::AppError;
-    use crate::catalog::discovery::CatalogDiscovery;
-    use crate::credentials::{CredentialManager, CredentialStore};
-    use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
-    use crate::feedback::manager::FeedbackManager;
-    use crate::gui_onboarding::manager::GuiOnboardingManager;
-    use crate::identity::LOCAL_PRINCIPAL_ID;
-    use crate::query::manager::QueryManager;
-    use crate::search::manager::SearchManager;
-    use crate::search::observed::{
-        ObservedValuesQueueJob, ObservedValuesSurfaceKind, SearchObservationHandle,
-        SqliteObservedValuesStore,
-    };
-    use crate::sources::manager::SourceManager;
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos as _, InaccessibleWorkspaces,
-        LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID, ResolvedDatabaseConfig, run_state_migrations,
-    };
-    use crate::state::{AppStateLayout, ConfigStore};
-    use crate::task::manager::TaskManager;
-    use crate::task::store::TaskStore;
-    use crate::telemetry::{TraceManager, service::TraceService};
-    use crate::test_support::{create_workspace, test_workspace};
-    use crate::transport::workspace_to_proto;
-    use crate::users::manager::UserManager;
-    use crate::workspaces::authorization::{LocalPrincipalPolicy, WorkspaceAuthorizer};
-    use crate::workspaces::{MemberRole, WorkspaceManager};
-    use crate::{
-        AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
-        PrincipalKind,
-    };
-
-    fn workspace() -> Workspace {
-        workspace_to_proto(&test_workspace())
-    }
-
-    /// Creates the workspace a `ServerBuilder` fixture runs in, in the state
-    /// the server is about to open.
-    ///
-    /// It has to happen up front: the server owns its state once it is
-    /// serving, and the RPCs under test are the ones that need the workspace
-    /// to already be there. Call it after any config file the fixture writes,
-    /// because the state migrations read that config.
-    async fn create_test_workspace_in(config_dir: &Path) {
-        let layout = AppStateLayout::discover(Some(config_dir.to_path_buf())).expect("layout");
-        layout.ensure().expect("layout dirs");
-        let config_store = ConfigStore::new(layout.clone());
-        drop(test_db(&layout, &config_store).await);
-    }
-
-    fn disable_internal_tracing(config_dir: &Path) {
-        std::fs::create_dir_all(config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r"
-version = 1
-
-[trace_history]
-enabled = false
-",
-        )
-        .expect("write telemetry config");
-    }
-
-    fn configure_observed_values_search(config_dir: &Path, enabled: bool) {
-        std::fs::create_dir_all(config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            format!(
-                r"
-version = 1
-
-[features]
-observed_values_search = {enabled}
-
-[trace_history]
-enabled = false
-"
-            ),
-        )
-        .expect("write feature config");
-    }
-
-    fn has_search_observation_handle(server: &RunningServer) -> bool {
-        server
-            .search_observations
-            .lock()
-            .expect("search observation mutex")
-            .is_some()
-    }
-
-    async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
-        let config = DatabaseConfig::load(layout).expect("db config");
-        let DatabaseConfig::Sqlite { path } = config else {
-            panic!("default test config should be sqlite");
-        };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-            .await
-            .expect("open sqlite");
-        db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, config_store, layout)
-            .await
-            .expect("run state migrations");
-        let db = Arc::new(db);
-        create_workspace(&db, &test_workspace()).await;
-        db
-    }
-
-    fn test_user_manager(db: &Arc<CoralDb>) -> UserManager {
-        UserManager::new(Arc::clone(db), WorkspaceAuthorizer::new(Arc::clone(db)))
-    }
-
-    /// The policy these fixtures run under: they serve `LocalPrincipalProvider`,
-    /// which only a single-user deployment admits.
-    fn local_authorizer(db: &Arc<CoralDb>) -> WorkspaceAuthorizer {
-        WorkspaceAuthorizer::trusting_local_principal(Arc::clone(db))
-    }
+    use super::ServerBuilder;
 
     #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "server lifecycle test requires full runtime assembly"
-    )]
-    async fn wait_for_exit_preserves_task_error_and_shutdown_cleanup() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("layout dirs");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let db = test_db(&layout, &config_store).await;
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-            db,
+    async fn the_search_reconcile_task_runs_beside_the_server_until_shutdown() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
+        )
+        .unwrap();
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path())
+            .start()
+            .await
+            .unwrap();
+        assert!(
+            !server.search_reconcile.is_finished(),
+            "the task runs a pass each interval until it is stopped"
         );
-        let query_manager = QueryManager::new_for_tests(
-            config_store.clone(),
-            workspace_manager.clone(),
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout.clone(),
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
-        let lifecycle_lock = workspace_manager.lifecycle_lock();
-        let search = SearchManager::new(
-            layout.clone(),
-            &config_store,
-            workspace_manager,
-            true,
-            CatalogDiscovery::new(query_manager),
-            lifecycle_lock,
-        );
-        let workspace = test_workspace();
-        let store = SqliteObservedValuesStore::new(layout.clone());
-        let generation = store
-            .capture_epoch(&workspace, "github")
-            .expect("generation");
-        store
-            .enqueue_if_current(
-                &workspace,
-                &ObservedValuesQueueJob {
-                    source_name: "github".to_string(),
-                    source_scope_id: "scope".to_string(),
-                    surface_kind: ObservedValuesSurfaceKind::Table,
-                    surface_name: "issues".to_string(),
-                    payload_json: r#"{"values":[{"column_name":"title","display_value":"Payment outage","search_text":"payment outage","value_key":"payment-outage"}]}"#
-                        .to_string(),
-                },
-                generation,
-            )
-            .expect("enqueue observed value");
-        let search_observations = SearchObservationHandle::new(layout);
-        let (task_gate_tx, task_gate_rx) = oneshot::channel();
-        let (task_finished_tx, task_finished) = watch::channel(false);
-        let task = tokio::spawn(async move {
-            drop(task_gate_rx.await);
-            let should_panic = true;
-            assert!(!should_panic, "server task panicked");
-            task_finished_tx.send_replace(true);
-            Ok::<(), tonic::transport::Error>(())
-        });
-        let server = RunningServer {
-            endpoint_uri: "http://127.0.0.1:0".to_string(),
-            local_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-            local_trace_store_dir: None,
-            authorization_server: None,
-            search,
-            search_observations: Mutex::new(Some(search_observations)),
-            shutdown_tx: Mutex::new(None),
-            task_finished,
-            task: Mutex::new(Some(task)),
-        };
 
-        let mut canceled_wait = Box::pin(server.wait_for_exit());
-        std::future::poll_fn(|cx| {
-            assert!(canceled_wait.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
+        server.shutdown_inner().await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !server.search_reconcile.is_finished() {
+                tokio::task::yield_now().await;
+            }
         })
-        .await;
-        drop(canceled_wait);
-        task_gate_tx.send(()).expect("release server task");
-
-        for _ in 0..2 {
-            tokio::time::timeout(Duration::from_secs(1), server.wait_for_exit())
-                .await
-                .expect("server task completion should wake waiters");
-        }
-        let result = server.shutdown_inner().await;
-
-        assert!(matches!(
-            result,
-            Err(AppError::TaskJoin(error)) if error.is_panic()
-        ));
-        assert!(
-            server
-                .search_observations
-                .lock()
-                .expect("search observation mutex")
-                .is_none()
-        );
-        assert_eq!(
-            store
-                .projected_value_count(&workspace)
-                .expect("projected value count"),
-            1
-        );
-        assert_eq!(
-            store
-                .pending_queue_job_count(&workspace)
-                .expect("pending queue depth"),
-            0
-        );
-    }
-
-    #[tokio::test]
-    async fn standalone_grpc_binds_the_requested_loopback_address() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-        let server = ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start explicit loopback server");
-
-        assert!(server.endpoint_uri().starts_with("http://127.0.0.1:"));
-        server.shutdown().await.expect("shutdown server");
-    }
-
-    #[test]
-    fn configured_standalone_grpc_resolves_configured_bind() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[server]\nbind_addr = '127.0.0.2:14555'\n",
-        )
-        .expect("write config");
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let builder = ServerBuilder::configured_standalone_grpc();
-
-        let ServerMode::StandaloneGrpc { bind } = builder
-            .config
-            .resolved_mode(&layout)
-            .expect("resolve configured bind")
-        else {
-            panic!("configured server must use standalone gRPC mode");
-        };
-        assert_eq!(bind, SocketAddr::from(([127, 0, 0, 2], 14555)));
-    }
-
-    #[test]
-    fn explicit_standalone_grpc_rejects_removed_static_auth_config() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[server.auth]\ntoken_env = 'CORAL_SERVER_AUTH_TOKEN'\n",
-        )
-        .expect("config file");
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let builder =
-            ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 14555)));
-
-        assert!(
-            builder.config.resolved_mode(&layout).is_err(),
-            "removed standalone auth config must fail closed"
-        );
-    }
-
-    /// Writes a config whose `[auth]` marks the instance authenticated.
-    ///
-    /// The signing key the section names is never created: startup only asks
-    /// whether authentication is configured, so nothing here resolves.
-    fn configure_session_auth(config_dir: &Path) {
-        std::fs::create_dir_all(config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r"
-[trace_history]
-enabled = false
-
-[auth.authorization_server]
-issuer = 'https://auth.example.test'
-
-[auth.session]
-signing_key_file = 'session.key'
-
-[auth.provider]
-issuer = 'https://accounts.example.test'
-client_id = 'upstream-client'
-client_secret = 'test-secret'
-redirect_uri = 'https://auth.example.test/auth/oidc/callback'
-",
-        )
-        .expect("write auth config");
-    }
-
-    /// Writes a config an authenticated `coral serve` resolves completely: a
-    /// real signing key and an authenticated MCP HTTP surface, so session auth
-    /// can be taken from it and handed back to the builder.
-    fn configure_serve_session_auth(config_dir: &Path) {
-        std::fs::create_dir_all(config_dir).expect("create config dir");
-        std::fs::write(config_dir.join("session.key"), test_signing_key())
-            .expect("write session key");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r"
-[trace_history]
-enabled = false
-
-[server.mcp_http]
-enabled = true
-bind = '127.0.0.1:0'
-public_url = 'https://mcp.example.test'
-
-[auth.authorization_server]
-issuer = 'https://auth.example.test'
-
-[auth.session]
-signing_key_file = 'session.key'
-
-[auth.provider]
-issuer = 'https://accounts.example.test'
-client_id = 'upstream-client'
-client_secret = 'test-secret'
-redirect_uri = 'https://auth.example.test/auth/oidc/callback'
-",
-        )
-        .expect("write auth config");
-    }
-
-    fn serve_session_auth(config_dir: &Path) -> (ServerBuilder, SessionAuthSettings) {
-        let builder = ServerBuilder::ephemeral_grpc().with_config_dir(config_dir);
-        let session_auth = builder
-            .serve_settings()
-            .expect("resolve serve settings")
-            .take_session_auth()
-            .expect("configured session auth");
-        (builder, session_auth)
-    }
-
-    #[tokio::test]
-    async fn session_auth_prepares_an_authorization_server_on_the_app_database() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_serve_session_auth(&config_dir);
-        let (builder, session_auth) = serve_session_auth(&config_dir);
-
-        let mut grpc = builder
-            .with_session_auth(session_auth)
-            .start()
-            .await
-            .expect("start authenticated gRPC server");
-
-        let authorization_server = grpc
-            .take_authorization_server()
-            .expect("authorization server prepared during startup");
-        assert!(
-            authorization_server.has_database(),
-            "logins have nowhere to be provisioned without the app database"
-        );
-        // Transferring it out is what hands over its lifecycle, so a second
-        // caller must not receive a second server over the same state.
-        assert!(
-            grpc.take_authorization_server().is_none(),
-            "the authorization server transfers at most once"
-        );
-        authorization_server
-            .start()
-            .await
-            .expect("start the prepared authorization server")
-            .shutdown()
-            .await
-            .expect("shutdown authorization server");
-        grpc.shutdown().await.expect("shutdown gRPC server");
-    }
-
-    /// The private API is reached through every public surface in front of it,
-    /// so a token minted for any of them authenticates — and the MCP surface's
-    /// audiences are the per-workspace resources under its public base, an
-    /// unenumerable family the base itself is not a member of. Which surface a
-    /// token came through says nothing about the caller: the identity in the
-    /// token is a person's, so that is who authenticates.
-    #[tokio::test]
-    async fn session_auth_admits_a_token_minted_for_any_fronting_surface() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_serve_session_auth(&config_dir);
-        let (builder, session_auth) = serve_session_auth(&config_dir);
-        let user_id = "1f0d2b8a-6d51-4f6e-9a0d-3c8f21b4e7a5";
-        let mint = |audience: &str| {
-            session_auth
-                .session_tokens
-                .issue_access_token(user_id, "https://client.example/client.json", audience)
-                .expect("session token")
-                .access_token
-        };
-        let workspace_token = mint("https://mcp.example.test/workspace/analytics");
-        let base_token = mint("https://mcp.example.test");
-        let (private_api, _) = builder
-            .with_session_auth(session_auth)
-            .resolve_authentication();
-
-        let bearer_metadata = |token: &str| {
-            let mut metadata = tonic::metadata::MetadataMap::new();
-            metadata.insert(
-                "authorization",
-                tonic::metadata::MetadataValue::try_from(format!("Bearer {token}"))
-                    .expect("authorization metadata"),
-            );
-            metadata
-        };
-        let principal = private_api
-            .principal_for_metadata(&bearer_metadata(&workspace_token))
-            .await
-            .expect("token minted for a workspace's MCP resource");
-        assert_eq!(principal.id().as_str(), user_id);
-        assert_eq!(principal.kind(), PrincipalKind::User);
-
-        private_api
-            .principal_for_metadata(&bearer_metadata(&base_token))
-            .await
-            .expect_err("the MCP base is the family's root, not an audience of its own");
-    }
-
-    /// The built-in `coral:local` principal is what the default provider hands
-    /// out, so admitting it must track whether anything else authenticates
-    /// callers. Getting this backwards on a no-login install locks the only
-    /// user out of their own workspaces.
-    #[test]
-    fn only_an_unauthenticated_deployment_admits_the_local_principal() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_serve_session_auth(&config_dir);
-        let (with_session_auth, session_auth) = serve_session_auth(&config_dir);
-        let policy = |builder: ServerBuilder| builder.resolve_authentication().1;
-
-        assert_eq!(
-            policy(ServerBuilder::new()),
-            LocalPrincipalPolicy::ImplicitOwner,
-            "a deployment with no login configured keeps full control of its host"
-        );
-        assert_eq!(
-            policy(with_session_auth.with_session_auth(session_auth)),
-            LocalPrincipalPolicy::NoLocalPrincipal,
-            "session authentication is an identity system the local principal bypasses"
-        );
-    }
-
-    /// Writes a legacy config whose only workspace exists in `config.toml`, so
-    /// the workspace under test comes into being during the very startup that
-    /// is supposed to give it an owner.
-    fn configure_legacy_workspace(config_dir: &Path) {
-        std::fs::create_dir_all(config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r"
-version = 1
-
-[trace_history]
-enabled = false
-
-[workspaces.legacy]
-",
-        )
-        .expect("write legacy workspace config");
-    }
-
-    /// Adds a legacy workspace to a config another fixture already wrote.
-    fn append_legacy_workspace(config_dir: &Path) {
-        let path = config_dir.join("config.toml");
-        let mut config = std::fs::read_to_string(&path).expect("read config");
-        config.push_str("\n[workspaces.legacy]\n");
-        std::fs::write(&path, config).expect("append legacy workspace");
-    }
-
-    /// Opens the state a server just wrote, to read what its startup did.
-    async fn open_started_state(config_dir: &Path) -> CoralDb {
-        let layout = AppStateLayout::discover(Some(config_dir.to_path_buf())).expect("layout");
-        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
-        else {
-            panic!("default test config should be sqlite");
-        };
-        CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-            .await
-            .expect("open sqlite")
-    }
-
-    async fn local_role_for(db: &CoralDb, workspace_id: &str) -> Option<MemberRole> {
-        let mut session = db;
-        session
-            .workspace_members()
-            .role_for_user_id(workspace_id, LOCAL_PRINCIPAL_ID)
-            .await
-            .expect("read the local principal's role")
-    }
-
-    async fn local_ownership_migrated(db: &CoralDb) -> bool {
-        let mut session = db;
-        session
-            .state_migrations()
-            .has_completed(LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID)
-            .await
-            .expect("read the migration marker")
-    }
-
-    /// The upgrade adopts the workspaces the legacy cutover imports, which it
-    /// can only do by running after it. Ordering them the other way round
-    /// leaves this install's one workspace ownerless forever, because the
-    /// marker retires the upgrade whether or not it found anything.
-    #[tokio::test]
-    async fn local_ownership_migration_adopts_the_workspaces_cutover_just_imported() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_legacy_workspace(&config_dir);
-
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir.clone())
-            .start()
-            .await
-            .expect("start a deployment with no login configured");
-        server.shutdown().await.expect("shutdown gRPC server");
-
-        let db = open_started_state(&config_dir).await;
-        assert_eq!(
-            local_role_for(&db, "legacy").await,
-            Some(MemberRole::Owner),
-            "a workspace that only existed in config.toml must come out of startup owned"
-        );
-        assert!(local_ownership_migrated(&db).await);
-    }
-
-    /// A shared deployment leaves ownership entirely alone - it neither claims
-    /// the upgrade nor provisions the local user - and keeps serving, because
-    /// workspaces awaiting an owner are an operator's task rather than grounds
-    /// to deny every other workspace its server.
-    #[tokio::test]
-    async fn local_ownership_is_untouched_by_a_shared_deployment_that_still_serves() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_serve_session_auth(&config_dir);
-        append_legacy_workspace(&config_dir);
-        let (builder, session_auth) = serve_session_auth(&config_dir);
-
-        let server = builder
-            .with_session_auth(session_auth)
-            .start()
-            .await
-            .expect("an ownerless workspace must not refuse a shared server its startup");
-        server.shutdown().await.expect("shutdown gRPC server");
-
-        let db = open_started_state(&config_dir).await;
-        assert!(
-            !local_ownership_migrated(&db).await,
-            "claiming the marker here would retire the upgrade for a later single-user start"
-        );
-        assert_eq!(local_role_for(&db, "legacy").await, None);
-        let mut session = &db;
-        assert!(
-            session
-                .users()
-                .get_by_user_id(LOCAL_PRINCIPAL_ID)
-                .await
-                .expect("read the local user")
-                .is_none(),
-            "a shared deployment must not even provision the local principal"
-        );
-    }
-
-    /// The one warning has to say which of the two operator situations each
-    /// workspace is in, and stay silent when there is nothing to fix.
-    #[test]
-    fn local_ownership_warning_reports_each_inaccessible_category_separately() {
-        assert_eq!(
-            inaccessible_workspaces_warning(&InaccessibleWorkspaces::default()),
-            None,
-            "a deployment every workspace of which has a reachable owner has nothing to say"
-        );
-
-        let both = inaccessible_workspaces_warning(&InaccessibleWorkspaces {
-            without_owner: vec!["orphan".to_string()],
-            local_owner_only: vec!["adopted".to_string()],
-        })
-        .expect("a warning covering both categories");
-        assert!(both.contains("with no owner at all: orphan"), "{both}");
-        assert!(
-            both.contains("owned only by the built-in local user: adopted"),
-            "{both}"
-        );
-
-        let ownerless_only = inaccessible_workspaces_warning(&InaccessibleWorkspaces {
-            without_owner: vec!["orphan".to_string()],
-            local_owner_only: Vec::new(),
-        })
-        .expect("a warning for the category that has workspaces");
-        assert!(
-            !ownerless_only.contains("built-in local user"),
-            "an empty category must not be named: {ownerless_only}"
-        );
-
-        let local_only = inaccessible_workspaces_warning(&InaccessibleWorkspaces {
-            without_owner: Vec::new(),
-            local_owner_only: vec!["adopted".to_string()],
-        })
-        .expect("a warning for the category that has workspaces");
-        assert!(
-            !local_only.contains("no owner at all"),
-            "an empty category must not be named: {local_only}"
-        );
-    }
-
-    #[tokio::test]
-    async fn start_without_session_auth_prepares_no_authorization_server() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-
-        let mut grpc = ServerBuilder::ephemeral_grpc()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start unauthenticated gRPC server");
-
-        assert!(grpc.take_authorization_server().is_none());
-        grpc.shutdown().await.expect("shutdown gRPC server");
-    }
-
-    /// Both standalone entry points bind a real address, so neither may serve
-    /// the local principal to it while the configuration asks for session
-    /// authentication.
-    /// The regression guard for the CLI: `bootstrap()` starts this server on a
-    /// host whose config may well be a `coral server` config.
-    #[tokio::test]
-    async fn ephemeral_grpc_starts_with_configured_auth() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_session_auth(&config_dir);
-
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("configured auth must not block the local ephemeral server");
-
-        server.shutdown().await.expect("shutdown server");
-    }
-
-    #[test]
-    fn explicit_standalone_grpc_does_not_parse_the_configured_bind() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[server]\nbind_addr = 'not-an-address'\n",
-        )
-        .expect("config file");
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let explicit_bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 14555));
-        let builder = ServerBuilder::standalone_grpc(explicit_bind);
-
-        let ServerMode::StandaloneGrpc { bind } = builder
-            .config
-            .resolved_mode(&layout)
-            .expect("explicit bind overrides configured bind")
-        else {
-            panic!("explicit standalone mode must remain selected");
-        };
-        assert_eq!(bind, explicit_bind);
-    }
-
-    #[test]
-    fn resolves_mcp_http_config_without_starting_grpc() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:14556'\n",
-        )
-        .expect("config file");
-
-        let settings = ServerBuilder::configured_standalone_grpc()
-            .with_config_dir(config_dir)
-            .serve_settings()
-            .expect("resolve MCP HTTP config");
-        let config = settings.mcp_http().expect("enabled MCP HTTP config");
-
-        assert_eq!(
-            config.bind_addr(),
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 14556))
-        );
-    }
-
-    #[tokio::test]
-    async fn configured_standalone_grpc_starts_with_configured_bind() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("create config dir");
-        // Keep this server-start test from populating process-global tracing
-        // state and making telemetry unit tests depend on execution order.
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[server]\nbind_addr = '127.0.0.1:0'\n\n[trace_history]\nenabled = false\n",
-        )
-        .expect("write config");
-
-        let server = ServerBuilder::configured_standalone_grpc()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start configured standalone server");
-
-        let endpoint = server
-            .endpoint_uri()
-            .strip_prefix("http://")
-            .expect("endpoint scheme")
-            .parse::<SocketAddr>()
-            .expect("socket address endpoint");
-        assert_eq!(server.local_addr(), endpoint);
-        assert!(endpoint.ip().is_loopback());
-        assert_ne!(endpoint.port(), 0);
-        server.shutdown().await.expect("shutdown server");
-    }
-
-    #[tokio::test]
-    async fn standalone_grpc_binds_the_requested_non_loopback_address() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-        let server = ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start explicit non-loopback server");
-
-        assert!(server.endpoint_uri().starts_with("http://0.0.0.0:"));
-        server.shutdown().await.expect("shutdown server");
-    }
-
-    #[tokio::test]
-    async fn server_builder_leaves_observation_handle_detached_by_default() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
-
-        assert!(!has_search_observation_handle(&server));
-        server.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn server_builder_attaches_observation_handle_when_config_enabled() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_observed_values_search(&config_dir, true);
-
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
-
-        assert!(has_search_observation_handle(&server));
-        server.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn server_builder_process_overrides_control_observation_handle() {
-        let temp = TempDir::new().expect("temp dir");
-        let disabled_config_dir = temp.path().join("disabled-config");
-        configure_observed_values_search(&disabled_config_dir, false);
-        let mut enable_override = FeatureOverrides::default();
-        enable_override.set(Feature::ObservedValuesSearch, true);
-
-        let enabled_server = ServerBuilder::new()
-            .with_config_dir(disabled_config_dir)
-            .with_feature_overrides(enable_override)
-            .start()
-            .await
-            .expect("start process-enabled server");
-
-        assert!(has_search_observation_handle(&enabled_server));
-        enabled_server.shutdown().await.expect("shutdown");
-
-        let enabled_config_dir = temp.path().join("enabled-config");
-        configure_observed_values_search(&enabled_config_dir, true);
-        let mut disable_override = FeatureOverrides::default();
-        disable_override.set(Feature::ObservedValuesSearch, false);
-
-        let disabled_server = ServerBuilder::new()
-            .with_config_dir(enabled_config_dir)
-            .with_feature_overrides(disable_override)
-            .start()
-            .await
-            .expect("start process-disabled server");
-
-        assert!(!has_search_observation_handle(&disabled_server));
-        disabled_server.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn trace_service_is_unregistered_when_local_store_is_disabled() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
-        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
-            .expect("endpoint")
-            .connect()
-            .await
-            .expect("connect");
-        let mut trace_client = TraceServiceClient::new(channel);
-
-        let status = trace_client
-            .list_traces(Request::new(ListTracesRequest {
-                page_size: 10,
-                page_token: String::new(),
-                workspace: None,
-                view: TraceView::Unspecified as i32,
-            }))
-            .await
-            .expect_err("trace service should be disabled");
-
-        assert_eq!(status.code(), Code::Unimplemented);
-        server.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn database_config_failure_aborts_startup_after_cutover() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("create config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r#"
-version = 1
-
-[trace_history]
-enabled = false
-
-[database]
-backend = "unsupported"
-"#,
-        )
-        .expect("write config");
-
-        let result = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await;
-
-        assert!(
-            result.is_err(),
-            "unsupported database config should abort startup after database cutover"
-        );
-    }
-
-    #[tokio::test]
-    async fn task_lifecycle_through_server_persists() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-        create_test_workspace_in(&config_dir).await;
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
-        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
-            .expect("endpoint")
-            .connect()
-            .await
-            .expect("connect");
-        let mut task_client = TaskServiceClient::new(channel);
-
-        let task = task_client
-            .start_task(Request::new(StartTaskRequest {
-                workspace: Some(workspace()),
-                intent: "find the HR onboarding form".to_string(),
-            }))
-            .await
-            .expect("start task")
-            .into_inner()
-            .task
-            .expect("task");
-        uuid::Uuid::parse_str(&task.task_id).expect("task id is a UUID");
-
-        let task_end = task_client
-            .end_task(Request::new(EndTaskRequest {
-                workspace: Some(workspace()),
-                task_id: task.task_id.clone(),
-                task_status: TaskStatus::Success as i32,
-            }))
-            .await
-            .expect("end task")
-            .into_inner()
-            .task_end
-            .expect("task end");
-        assert_eq!(task_end.task_id, task.task_id);
-        assert_eq!(task_end.task_status, TaskStatus::Success as i32);
-        server.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn shutdown_drains_observed_values_queue() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_observed_values_search(&config_dir, true);
-        create_test_workspace_in(&config_dir).await;
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        layout.ensure().expect("layout dirs");
-        let workspace = test_workspace();
-        let store = SqliteObservedValuesStore::new(layout);
-        let generation = store
-            .capture_epoch(&workspace, "github")
-            .expect("generation");
-        store
-            .enqueue_if_current(
-                &workspace,
-                &ObservedValuesQueueJob {
-                    source_name: "github".to_string(),
-                    source_scope_id: "scope".to_string(),
-                    surface_kind: ObservedValuesSurfaceKind::Table,
-                    surface_name: "issues".to_string(),
-                    payload_json: r#"{"values":[{"column_name":"title","display_value":"Payment outage","search_text":"payment outage","value_key":"payment-outage"}]}"#
-                        .to_string(),
-                },
-                generation,
-            )
-            .expect("enqueue observed value");
-
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
-        server.shutdown().await.expect("shutdown");
-
-        assert_eq!(
-            store
-                .projected_value_count(&workspace)
-                .expect("projected value count"),
-            1
-        );
-        assert_eq!(
-            store
-                .pending_queue_job_count(&workspace)
-                .expect("pending queue depth"),
-            0
-        );
-    }
-
-    #[tokio::test]
-    async fn shutdown_leaves_observed_values_queue_untouched_when_feature_is_disabled() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        disable_internal_tracing(&config_dir);
-        create_test_workspace_in(&config_dir).await;
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        layout.ensure().expect("layout dirs");
-        let workspace = test_workspace();
-        let store = SqliteObservedValuesStore::new(layout);
-        let generation = store
-            .capture_epoch(&workspace, "github")
-            .expect("generation");
-        store
-            .enqueue_if_current(
-                &workspace,
-                &ObservedValuesQueueJob {
-                    source_name: "github".to_string(),
-                    source_scope_id: "scope".to_string(),
-                    surface_kind: ObservedValuesSurfaceKind::Table,
-                    surface_name: "issues".to_string(),
-                    payload_json: r#"{"values":[{"column_name":"title","display_value":"Payment outage","search_text":"payment outage","value_key":"payment-outage"}]}"#
-                        .to_string(),
-                },
-                generation,
-            )
-            .expect("enqueue observed value");
-
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .start()
-            .await
-            .expect("start server");
-        server.shutdown().await.expect("shutdown");
-
-        assert_eq!(
-            store
-                .projected_value_count(&workspace)
-                .expect("projected value count"),
-            0
-        );
-        assert_eq!(
-            store
-                .pending_queue_job_count(&workspace)
-                .expect("pending queue depth"),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn trace_service_lists_empty_store() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        layout.ensure().expect("layout dirs");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let db = test_db(&layout, &config_store).await;
-        let source_manager = SourceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
-        );
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
-        let query_manager = QueryManager::new_for_tests(
-            config_store.clone(),
-            workspace_manager.clone(),
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout.clone(),
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
-        let search_observations = SearchObservationHandle::new(layout.clone());
-        let lifecycle_lock = workspace_manager.lifecycle_lock();
-        let search_manager = SearchManager::new(
-            layout.clone(),
-            &config_store,
-            workspace_manager.clone(),
-            true,
-            CatalogDiscovery::new(query_manager.clone()),
-            lifecycle_lock,
-        );
-        let trace_service = TraceService::new(
-            TraceManager::new(temp.path().join("trace-store"), Duration::from_mins(1)),
-            workspace_manager.clone(),
-            local_authorizer(&db),
-        );
-        let server = start_server(
-            ServerDependencies {
-                database: Arc::clone(&db),
-                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
-                source: source_manager,
-                workspace: workspace_manager,
-                users: test_user_manager(&db),
-                workspace_authorizer: local_authorizer(&db),
-                query: query_manager,
-                search: search_manager,
-                search_observations: Some(search_observations),
-                feedback: feedback_manager,
-                task: task_manager,
-                feature_store: FeatureStore::from_layout(layout.clone()),
-                active_features: Features::default(),
-            },
-            TraceServerComponents {
-                service: Some(trace_service),
-                local_trace_store_dir: None,
-            },
-            Arc::new(LocalPrincipalProvider),
-            ServerMode::EphemeralGrpc,
-            None,
-        )
         .await
-        .expect("start server");
-        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
-            .expect("endpoint")
-            .connect()
-            .await
-            .expect("connect");
-        let mut trace_client = TraceServiceClient::new(channel);
-
-        let response = trace_client
-            .list_traces(Request::new(ListTracesRequest {
-                page_size: 10,
-                page_token: String::new(),
-                workspace: None,
-                view: TraceView::Unspecified as i32,
-            }))
-            .await
-            .expect("list traces")
-            .into_inner();
-
-        assert!(response.traces.is_empty());
-        assert!(response.next_page_token.is_empty());
-        server.shutdown().await.expect("shutdown");
-    }
-
-    #[test]
-    fn server_builder_accepts_engine_extensions_providers() {
-        let _builder = ServerBuilder::new()
-            .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
-            .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
-    }
-
-    /// The provider startup derives is what the ephemeral gRPC listener is
-    /// actually wrapped in, so an authenticated server must refuse a call that
-    /// carries no credential rather than falling back to the local principal.
-    #[tokio::test]
-    async fn server_builder_applies_the_resolved_provider_to_ephemeral_grpc() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_serve_session_auth(&config_dir);
-        let (builder, session_auth) = serve_session_auth(&config_dir);
-        let server = builder
-            .with_session_auth(session_auth)
-            .start()
-            .await
-            .expect("start server");
-        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
-            .expect("endpoint")
-            .connect()
-            .await
-            .expect("connect");
-
-        let status = SourceServiceClient::new(channel.clone())
-            .list_sources(Request::new(ListSourcesRequest {
-                workspace: Some(workspace()),
-            }))
-            .await
-            .expect_err("request should be rejected");
-
-        assert_eq!(status.code(), Code::Unauthenticated);
-
-        let status = GuiOnboardingServiceClient::new(channel)
-            .get_gui_onboarding_state(Request::new(GetGuiOnboardingStateRequest {}))
-            .await
-            .expect_err("onboarding request should be rejected");
-        assert_eq!(status.code(), Code::Unauthenticated);
-        server.shutdown().await.expect("shutdown");
-    }
-
-    fn loopback_sockets_available() -> bool {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).is_ok()
-    }
-
-    #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one end-to-end scenario built over the full ServerDependencies set, which grows by a line per manager the server gains"
-    )]
-    async fn file_tilde_sources_resolve_from_app_owned_runtime_context() {
-        if !loopback_sockets_available() {
-            return;
-        }
-
-        let temp = TempDir::new().expect("temp dir");
-        let fake_home = temp.path().join("fake-home");
-        let config_dir = temp.path().join("coral-config");
-        let data_dir = fake_home.join("fixture-data");
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
-        std::fs::write(
-            data_dir.join("messages.jsonl"),
-            r#"{"type":"user","text":"hello"}
-{"type":"assistant","text":"world"}
-"#,
-        )
-        .expect("write fixture");
-
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let db = test_db(&layout, &config_store).await;
-        let source_manager = SourceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
-        );
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
-        let query_manager = QueryManager::new_for_tests(
-            config_store.clone(),
-            workspace_manager.clone(),
-            credential_manager,
-            QueryRuntimeContext {
-                home_dir: Some(fake_home.clone()),
-                ..QueryRuntimeContext::default()
-            },
-            layout.clone(),
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
-        let search_observations = SearchObservationHandle::new(layout.clone());
-        let lifecycle_lock = workspace_manager.lifecycle_lock();
-        let search_manager = SearchManager::new(
-            layout.clone(),
-            &config_store,
-            workspace_manager.clone(),
-            true,
-            CatalogDiscovery::new(query_manager.clone()),
-            lifecycle_lock,
-        );
-        let running = start_server(
-            ServerDependencies {
-                database: Arc::clone(&db),
-                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
-                source: source_manager,
-                workspace: workspace_manager,
-                users: test_user_manager(&db),
-                workspace_authorizer: local_authorizer(&db),
-                query: query_manager,
-                search: search_manager,
-                search_observations: Some(search_observations),
-                feedback: feedback_manager,
-                task: task_manager,
-                feature_store: FeatureStore::from_layout(layout.clone()),
-                active_features: Features::default(),
-            },
-            TraceServerComponents::default(),
-            Arc::new(LocalPrincipalProvider),
-            ServerMode::EphemeralGrpc,
-            None,
-        )
-        .await
-        .expect("start server");
-        let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
-            .expect("endpoint")
-            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .connect()
-            .await
-            .expect("connect");
-        let mut source_client = SourceServiceClient::new(channel.clone());
-        let mut query_client = QueryServiceClient::new(channel)
-            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-
-        let mut import_stream = source_client
-            .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(workspace()),
-                manifest_yaml: r#"
-name: tilde_demo
-version: 0.1.0
-dsl_version: 3
-backend: file
-tables:
-  - name: messages
-    description: Fixture messages
-    format: jsonl
-    source:
-      location: file://~/fixture-data/
-      glob: "**/*.jsonl"
-    columns:
-      - name: type
-        type: Utf8
-      - name: text
-        type: Utf8
-"#
-                .to_string(),
-                variables: Vec::new(),
-                secrets: Vec::new(),
-                oauth_credential_retrievals: Vec::new(),
-            }))
-            .await
-            .expect("create source")
-            .into_inner();
-        let imported = import_stream
-            .message()
-            .await
-            .expect("import source stream")
-            .and_then(|response| match response.event {
-                Some(import_source_response::Event::Source(source)) => Some(source),
-                _ => None,
-            })
-            .expect("import source response");
-        assert_eq!(imported.name, "tilde_demo");
-
-        let response = query_client
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(workspace()),
-                sql: "SELECT text FROM tilde_demo.messages ORDER BY text".to_string(),
-                guide_read_context: None,
-                task_attribution: None,
-            }))
-            .await
-            .expect("execute sql")
-            .into_inner();
-        let result = coral_client::decode_execute_sql_response(&response).expect("decode");
-        let rows = coral_client::batches_to_json_rows(result.batches()).expect("rows");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["text"], "hello");
-        assert_eq!(rows[1]["text"], "world");
-    }
-
-    /// an `ExecuteSql` response larger than
-    /// the previous tonic 4 MB default must round-trip cleanly. Before the
-    /// fix, this query failed with `h2 protocol error … PROTOCOL_ERROR`.
-    #[tokio::test]
-    async fn execute_sql_response_above_default_4mb_limit_round_trips() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let db = test_db(&layout, &config_store).await;
-        let source_manager = SourceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
-        );
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
-        let query_manager = QueryManager::new_for_tests(
-            config_store.clone(),
-            workspace_manager.clone(),
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout.clone(),
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
-        let search_observations = SearchObservationHandle::new(layout.clone());
-        let lifecycle_lock = workspace_manager.lifecycle_lock();
-        let search_manager = SearchManager::new(
-            layout.clone(),
-            &config_store,
-            workspace_manager.clone(),
-            true,
-            CatalogDiscovery::new(query_manager.clone()),
-            lifecycle_lock,
-        );
-        let running = start_server(
-            ServerDependencies {
-                database: Arc::clone(&db),
-                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
-                source: source_manager,
-                workspace: workspace_manager,
-                users: test_user_manager(&db),
-                workspace_authorizer: local_authorizer(&db),
-                query: query_manager,
-                search: search_manager,
-                search_observations: Some(search_observations),
-                feedback: feedback_manager,
-                task: task_manager,
-                feature_store: FeatureStore::from_layout(layout.clone()),
-                active_features: Features::default(),
-            },
-            TraceServerComponents::default(),
-            Arc::new(LocalPrincipalProvider),
-            ServerMode::EphemeralGrpc,
-            None,
-        )
-        .await
-        .expect("start server");
-        let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
-            .expect("endpoint")
-            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .connect()
-            .await
-            .expect("connect");
-        let mut query_client = QueryServiceClient::new(channel)
-            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-
-        // No underscore separator — DataFusion's SQL parser is conservative
-        // about numeric literal formats.
-        let sql = "SELECT repeat('x', 5000000) AS pad";
-        let response = query_client
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(workspace()),
-                sql: sql.to_string(),
-                guide_read_context: None,
-                task_attribution: None,
-            }))
-            .await
-            .expect("execute_sql >4MB response")
-            .into_inner();
-
-        // Prove the payload actually crossed the old 4 MB ceiling — without
-        // this check the test could silently start passing for the wrong
-        // reason if `repeat` ever returned a smaller value.
-        assert!(
-            response.arrow_ipc_stream.len() > 4 * 1024 * 1024,
-            "regression payload was {} bytes; expected >4MB",
-            response.arrow_ipc_stream.len()
-        );
-
-        let result = coral_client::decode_execute_sql_response(&response).expect("decode");
-        assert_eq!(result.row_count(), 1);
-    }
-
-    /// an invalid column against a wide manifest must surface as a clean `tonic::Status`,
-    /// not a transport-level `h2 protocol error`. Pre-fix, `DataFusion`'s
-    /// "Valid fields are …" error enumerating ~600 field names
-    /// overflowed HTTP/2 trailers; the CLI saw `PROTOCOL_ERROR` instead
-    /// of the intended status.
-    ///
-    /// Also verifies the behavior change: wrapped `SchemaError` now maps
-    /// to `Code::InvalidArgument` (via `find_root()`), not `Code::Internal`.
-    #[tokio::test]
-    async fn invalid_column_on_wide_manifest_returns_clean_status() {
-        use std::fmt::Write as _;
-
-        use crate::bootstrap::MAX_STATUS_DETAIL_BYTES;
-
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        let data_dir = temp.path().join("wide-data");
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
-        // No rows needed — the test cares only about schema width.
-        let location = format!("file://{}/", data_dir.display());
-
-        let mut manifest = String::new();
-        manifest.push_str("name: wide_demo\n");
-        manifest.push_str("version: 0.1.0\n");
-        manifest.push_str("dsl_version: 3\n");
-        manifest.push_str("backend: file\n");
-        manifest.push_str("tables:\n");
-        manifest.push_str("  - name: wide\n");
-        manifest.push_str("    description: Wide fixture\n");
-        manifest.push_str("    format: jsonl\n");
-        manifest.push_str("    source:\n");
-        writeln!(manifest, "      location: {location}").expect("write to String");
-        manifest.push_str("      glob: \"**/*.jsonl\"\n");
-        manifest.push_str("    columns:\n");
-        for i in 0..600 {
-            writeln!(manifest, "      - name: col_{i:04}\n        type: Utf8")
-                .expect("write to String");
-        }
-
-        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let credential_store = CredentialStore::new(layout.clone());
-        let credential_manager = CredentialManager::new(credential_store);
-        let db = test_db(&layout, &config_store).await;
-        let source_manager = SourceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-        );
-        let feedback_manager = FeedbackManager::new(layout.clone());
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
-        );
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
-        let query_manager = QueryManager::new_for_tests(
-            config_store.clone(),
-            workspace_manager.clone(),
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout.clone(),
-            vec![Arc::new(NoopEngineExtensionsProvider)],
-        );
-        let search_observations = SearchObservationHandle::new(layout.clone());
-        let lifecycle_lock = workspace_manager.lifecycle_lock();
-        let search_manager = SearchManager::new(
-            layout.clone(),
-            &config_store,
-            workspace_manager.clone(),
-            true,
-            CatalogDiscovery::new(query_manager.clone()),
-            lifecycle_lock,
-        );
-        let running = start_server(
-            ServerDependencies {
-                database: Arc::clone(&db),
-                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
-                source: source_manager,
-                workspace: workspace_manager,
-                users: test_user_manager(&db),
-                workspace_authorizer: local_authorizer(&db),
-                query: query_manager,
-                search: search_manager,
-                search_observations: Some(search_observations),
-                feedback: feedback_manager,
-                task: task_manager,
-                feature_store: FeatureStore::from_layout(layout.clone()),
-                active_features: Features::default(),
-            },
-            TraceServerComponents::default(),
-            Arc::new(LocalPrincipalProvider),
-            ServerMode::EphemeralGrpc,
-            None,
-        )
-        .await
-        .expect("start server");
-        let channel = Endpoint::from_shared(running.endpoint_uri().to_string())
-            .expect("endpoint")
-            .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-            .connect()
-            .await
-            .expect("connect");
-        let mut source_client = SourceServiceClient::new(channel.clone());
-        let mut query_client = QueryServiceClient::new(channel)
-            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
-
-        let mut import_stream = source_client
-            .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(workspace()),
-                manifest_yaml: manifest,
-                variables: Vec::new(),
-                secrets: Vec::new(),
-                oauth_credential_retrievals: Vec::new(),
-            }))
-            .await
-            .expect("import wide source")
-            .into_inner();
-        let imported = import_stream
-            .message()
-            .await
-            .expect("import wide source stream")
-            .and_then(|response| match response.event {
-                Some(import_source_response::Event::Source(source)) => Some(source),
-                _ => None,
-            })
-            .expect("import wide source response");
-        assert_eq!(imported.name, "wide_demo");
-
-        let status = query_client
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(workspace()),
-                sql: "SELECT bogus_column FROM wide_demo.wide LIMIT 0".to_string(),
-                guide_read_context: None,
-                task_attribution: None,
-            }))
-            .await
-            .expect_err("expected gRPC Status, not a transport-level PROTOCOL_ERROR");
-
-        assert_eq!(
-            status.code(),
-            tonic::Code::InvalidArgument,
-            "wrapped schema error should map to InvalidArgument via find_root(); message = {:?}",
-            status.message()
-        );
-        assert!(
-            status.message().len() <= MAX_STATUS_DETAIL_BYTES,
-            "status message was {} bytes; truncator should have clipped it to <= {MAX_STATUS_DETAIL_BYTES}",
-            status.message().len(),
-        );
-        assert!(
-            status.message().contains("No column named"),
-            "missing expected schema-error head in: {:?}",
-            status.message()
-        );
+        .expect("shutdown aborts the reconcile task");
     }
 }

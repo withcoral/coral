@@ -1,7 +1,6 @@
 //! Client ID Metadata Document fetching and validation.
 
-use std::collections::BTreeSet;
-use std::fmt;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -9,44 +8,23 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::oauth_resource::CanonicalOauthUrl;
-use crate::outbound_url_policy::{
-    BrowserRedirect, ClientMetadata, Configured, EndpointUrl, OutboundUrlPolicyError,
-    client_metadata_http_client, read_bounded_body,
+use coral_outbound::{
+    ClientMetadata, Configured, EndpointUrl, OutboundUrlPolicyError, PUBLIC_METADATA_TIMEOUT,
+    read_bounded_body,
 };
 
 const CLIENT_METADATA_MAX_BYTES: usize = 5 * 1024;
-const MAX_CLIENT_NAME_BYTES: usize = 255;
-
-/// The client properties needed after a metadata document has been validated.
-#[derive(Clone)]
-pub(super) struct OAuthClientRegistration {
-    pub(super) redirect_uris: Vec<String>,
-    pub(super) client_name: String,
-}
-
-impl fmt::Debug for OAuthClientRegistration {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("OAuthClientRegistration")
-            .field("redirect_uri_count", &self.redirect_uris.len())
-            .finish_non_exhaustive()
-    }
-}
-
-/// A replaceable async boundary for resolving a metadata-URL client ID.
-#[async_trait::async_trait]
-pub(super) trait ClientMetadataResolver: Send + Sync {
-    async fn resolve(
-        &self,
-        client_id: &str,
-    ) -> Result<OAuthClientRegistration, ClientMetadataError>;
-}
+pub(super) use coral_auth::oauth_clients::{
+    ClientMetadataError, ClientMetadataResolver, OAuthClientRegistration,
+};
+use coral_auth::oauth_clients::{valid_client_name, validate_oauth_redirect_uri};
 
 /// Production resolver backed by the hardened client-metadata HTTP client.
 #[derive(Clone)]
 pub(super) struct HttpClientMetadataResolver {
     issuer: EndpointUrl<Configured>,
     allowed_loopback_client_ids: BTreeSet<String>,
+    configured_reef_metadata: BTreeMap<String, EndpointUrl<Configured>>,
     fetcher: Arc<dyn MetadataFetcher>,
 }
 
@@ -54,13 +32,12 @@ impl HttpClientMetadataResolver {
     pub(super) fn new(
         issuer: &str,
         authorization_resources: &BTreeSet<String>,
+        policy: coral_outbound::DestinationPolicy,
     ) -> Result<Self, ClientMetadataError> {
-        let http =
-            client_metadata_http_client().map_err(|_error| ClientMetadataError::ClientBuild)?;
         Self::with_fetcher(
             issuer,
             authorization_resources,
-            Arc::new(ReqwestMetadataFetcher { http }),
+            Arc::new(ReqwestMetadataFetcher::new(policy)?),
         )
     }
 
@@ -76,6 +53,7 @@ impl HttpClientMetadataResolver {
         Ok(Self {
             issuer,
             allowed_loopback_client_ids,
+            configured_reef_metadata: derive_configured_reef_metadata(authorization_resources)?,
             fetcher,
         })
     }
@@ -106,10 +84,13 @@ impl HttpClientMetadataResolver {
     /// URL policy and the canonical-identity rule cannot come to disagree
     /// about which IDs this server honors — the divergence that otherwise lets
     /// a configured trusted client pass startup and then silently never match.
-    fn accepted_metadata_url(
-        &self,
-        client_id: &str,
-    ) -> Result<EndpointUrl<ClientMetadata>, ClientIdRejection> {
+    fn accepted_metadata_url(&self, client_id: &str) -> Result<MetadataUrl, ClientIdRejection> {
+        // Look up the exact bytes before parsing caller input. The fetched URL
+        // is constructed from operator configuration, never from a request.
+        // This grants neither an origin-wide exception nor consent bypass.
+        if let Some(metadata_url) = self.configured_reef_metadata.get(client_id) {
+            return Ok(MetadataUrl::ConfiguredReef(metadata_url.clone()));
+        }
         let metadata_url = EndpointUrl::<ClientMetadata>::parse(
             client_id,
             &self.issuer,
@@ -127,8 +108,38 @@ impl HttpClientMetadataResolver {
         if metadata_url.as_url().as_str() != client_id {
             return Err(ClientIdRejection::NotCanonical);
         }
-        Ok(metadata_url)
+        Ok(MetadataUrl::PublicClient(metadata_url))
     }
+}
+
+/// Keep operator-selected Reef requests separate from untrusted CIMD fetches.
+/// Only the former may use private HTTPS destinations; both validate TLS and
+/// apply the same response, timeout, and no-redirect constraints.
+enum MetadataUrl {
+    ConfiguredReef(EndpointUrl<Configured>),
+    PublicClient(EndpointUrl<ClientMetadata>),
+}
+
+fn derive_configured_reef_metadata(
+    authorization_resources: &BTreeSet<String>,
+) -> Result<BTreeMap<String, EndpointUrl<Configured>>, ClientMetadataError> {
+    let mut metadata = BTreeMap::new();
+    for value in authorization_resources {
+        let resource = CanonicalOauthUrl::parse(value)
+            .map_err(|_error| ClientMetadataError::InvalidConfiguration)?;
+        if resource.identifier() != value {
+            return Err(ClientMetadataError::InvalidConfiguration);
+        }
+        // Reef's configured resource is an origin. A Workspace MCP resource
+        // or any other path-scoped resource cannot grant private fetch access.
+        if resource.url().scheme() == "https" && resource.url().path() == "/" {
+            let client_id = format!("{value}/.well-known/oauth-client");
+            let endpoint = EndpointUrl::<Configured>::parse(&client_id)
+                .map_err(|_error| ClientMetadataError::InvalidConfiguration)?;
+            metadata.insert(client_id, endpoint);
+        }
+    }
+    Ok(metadata)
 }
 
 /// Why a client ID is not one this server accepts.
@@ -194,22 +205,47 @@ impl ClientMetadataResolver for HttpClientMetadataResolver {
 trait MetadataFetcher: Send + Sync {
     async fn fetch(
         &self,
-        metadata_url: &EndpointUrl<ClientMetadata>,
+        metadata_url: &MetadataUrl,
     ) -> Result<reqwest::Response, ClientMetadataError>;
 }
 
 struct ReqwestMetadataFetcher {
-    http: reqwest::Client,
+    public_http: coral_outbound::Client,
+    configured_http: reqwest::Client,
+}
+
+impl ReqwestMetadataFetcher {
+    fn new(policy: coral_outbound::DestinationPolicy) -> Result<Self, ClientMetadataError> {
+        let public_http = coral_outbound::Client::new(policy, PUBLIC_METADATA_TIMEOUT)
+            .map_err(|_error| ClientMetadataError::ClientBuild)?;
+        let configured_http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .connect_timeout(PUBLIC_METADATA_TIMEOUT)
+            .timeout(PUBLIC_METADATA_TIMEOUT)
+            .build()
+            .map_err(|_error| ClientMetadataError::ClientBuild)?;
+        Ok(Self {
+            public_http,
+            configured_http,
+        })
+    }
 }
 
 #[async_trait::async_trait]
 impl MetadataFetcher for ReqwestMetadataFetcher {
     async fn fetch(
         &self,
-        metadata_url: &EndpointUrl<ClientMetadata>,
+        metadata_url: &MetadataUrl,
     ) -> Result<reqwest::Response, ClientMetadataError> {
-        metadata_url
-            .get(&self.http)
+        let request = match metadata_url {
+            MetadataUrl::ConfiguredReef(url) => url.get(&self.configured_http),
+            MetadataUrl::PublicClient(url) => self
+                .public_http
+                .get(url.as_url())
+                .map_err(|_error| ClientMetadataError::Fetch)?,
+        };
+        request
             .send()
             .await
             .map_err(|_error| ClientMetadataError::Fetch)
@@ -253,19 +289,18 @@ fn validate_document(
     if document.client_id != client_id {
         return Err(ClientMetadataError::InvalidMetadata);
     }
-    if document.client_name.trim().is_empty()
-        || document.client_name.trim() != document.client_name
-        || document.client_name.len() > MAX_CLIENT_NAME_BYTES
-        || document.client_name.chars().any(char::is_control)
-    {
+    if !valid_client_name(&document.client_name) {
         return Err(ClientMetadataError::InvalidMetadata);
     }
-    if document.redirect_uris.is_empty()
-        || document
-            .redirect_uris
-            .iter()
-            .any(|uri| validate_oauth_redirect_uri(uri).is_err())
-    {
+    // A client publishes one document for every authorization server, so it
+    // may list redirects this server cannot use. Such an entry can never match
+    // a request; drop it rather than refuse the client's usable redirects.
+    let redirect_uris: Vec<String> = document
+        .redirect_uris
+        .into_iter()
+        .filter(|uri| validate_oauth_redirect_uri(uri).is_ok())
+        .collect();
+    if redirect_uris.is_empty() {
         return Err(ClientMetadataError::InvalidMetadata);
     }
     if document
@@ -291,28 +326,9 @@ fn validate_document(
         return Err(ClientMetadataError::InvalidMetadata);
     }
     Ok(OAuthClientRegistration {
-        redirect_uris: document.redirect_uris,
+        redirect_uris,
         client_name: document.client_name,
     })
-}
-
-fn validate_oauth_redirect_uri(uri: &str) -> Result<(), String> {
-    if uri.trim() != uri {
-        return Err("redirect URI has surrounding whitespace".to_string());
-    }
-    let url = EndpointUrl::<BrowserRedirect>::parse(uri)
-        .map_err(|error| format!("OAuth client redirect URI is invalid: {error}"))?;
-    if url.as_url().query_pairs().any(|(key, _value)| {
-        matches!(
-            key.to_ascii_lowercase().as_str(),
-            "code" | "state" | "error" | "error_description"
-        )
-    }) {
-        return Err(
-            "OAuth client redirect URI must not contain OAuth response parameters".to_string(),
-        );
-    }
-    Ok(())
 }
 
 fn map_body_error(error: &OutboundUrlPolicyError) -> ClientMetadataError {
@@ -322,32 +338,10 @@ fn map_body_error(error: &OutboundUrlPolicyError) -> ClientMetadataError {
     }
 }
 
-/// Sanitized client metadata resolution failures.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub(super) enum ClientMetadataError {
-    #[error("OAuth client_id is not a valid metadata document URL")]
-    InvalidClientId,
-    #[error("OAuth client metadata resolver configuration is invalid")]
-    InvalidConfiguration,
-    #[error("failed to build the OAuth client metadata HTTP client")]
-    ClientBuild,
-    #[error("OAuth client metadata fetch failed")]
-    Fetch,
-    #[error("OAuth client metadata endpoint returned a redirect")]
-    Redirect,
-    #[error("OAuth client metadata endpoint returned an unsuccessful status")]
-    HttpStatus,
-    #[error("OAuth client metadata document exceeded 5120 bytes")]
-    BodyTooLarge,
-    #[error("OAuth client metadata document was not valid JSON")]
-    InvalidJson,
-    #[error("OAuth client metadata document is not supported")]
-    InvalidMetadata,
-}
-
 #[cfg(test)]
 #[expect(clippy::indexing_slicing, reason = "metadata JSON fixture mutation")]
 mod tests {
+    use crate::auth::test_config::loopback_policy;
     use std::convert::Infallible;
     use std::sync::Arc;
 
@@ -361,6 +355,7 @@ mod tests {
 
     use super::*;
 
+    const MAX_CLIENT_NAME_BYTES: usize = 255;
     const CLIENT_ID: &str =
         "https://client.example.test/oauth/client.json?token=client-query-secret";
     const PUBLIC_ISSUER: &str = "https://auth.example.test";
@@ -375,7 +370,7 @@ mod tests {
     impl MetadataFetcher for LocalFetcher {
         async fn fetch(
             &self,
-            _metadata_url: &EndpointUrl<ClientMetadata>,
+            _metadata_url: &MetadataUrl,
         ) -> Result<reqwest::Response, ClientMetadataError> {
             self.http
                 .get(&self.endpoint)
@@ -391,7 +386,7 @@ mod tests {
     impl MetadataFetcher for PanicFetcher {
         async fn fetch(
             &self,
-            _metadata_url: &EndpointUrl<ClientMetadata>,
+            _metadata_url: &MetadataUrl,
         ) -> Result<reqwest::Response, ClientMetadataError> {
             panic!("invalid client IDs must be rejected before fetching")
         }
@@ -498,7 +493,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             "http://127.42.0.1:4000".to_string(),
             "http://localhost:5000/mcp".to_string(),
-            "https://coral-ui.example.test".to_string(),
+            "https://coral-web.example.test".to_string(),
         ]);
 
         assert_eq!(
@@ -522,11 +517,146 @@ mod tests {
             .mount(&server)
             .await;
 
-        let resolver =
-            HttpClientMetadataResolver::new(LOOPBACK_ISSUER, &BTreeSet::from([resource]))
-                .expect("local resolver");
+        let resolver = HttpClientMetadataResolver::new(
+            LOOPBACK_ISSUER,
+            &BTreeSet::from([resource]),
+            loopback_policy(),
+        )
+        .expect("local resolver");
         let registration = resolver.resolve(&client_id).await.expect("local CIMD");
         assert_eq!(registration.redirect_uris.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolves_exact_https_client_id_derived_from_a_private_reef_origin() {
+        let server = MockServer::start().await;
+        let resource = "https://100.90.118.86";
+        let client_id = format!("{resource}/.well-known/oauth-client");
+        let mut metadata = document();
+        metadata["client_id"] = json!(client_id);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let resolver = HttpClientMetadataResolver::with_fetcher(
+            PUBLIC_ISSUER,
+            &BTreeSet::from([resource.to_string()]),
+            Arc::new(LocalFetcher {
+                endpoint: server.uri(),
+                http: reqwest::Client::new(),
+            }),
+        )
+        .expect("private Reef resolver");
+
+        resolver
+            .check_trusted_client_id(&client_id)
+            .expect("configured private Reef client is eligible for trust");
+        let registration = resolver
+            .resolve(&client_id)
+            .await
+            .expect("private Reef CIMD");
+        assert_eq!(registration.redirect_uris.len(), 2);
+    }
+
+    #[test]
+    fn private_https_permission_is_exact_not_host_wide_or_resource_path_derived() {
+        let resource = "https://reef.internal.test";
+        let client_id = format!("{resource}/.well-known/oauth-client");
+        let resolver = HttpClientMetadataResolver::new(
+            PUBLIC_ISSUER,
+            &BTreeSet::from([
+                resource.to_string(),
+                "https://mcp.internal.test/workspaces/one/mcp".to_string(),
+            ]),
+            coral_outbound::DestinationPolicy::default(),
+        )
+        .expect("resolver");
+        assert!(matches!(
+            resolver.accepted_metadata_url(&client_id),
+            Ok(MetadataUrl::ConfiguredReef(_))
+        ));
+        for candidate in [
+            "https://reef.internal.test/other",
+            "https://reef.internal.test/.well-known/oauth-client?extra=1",
+            "https://reef.internal.test:8443/.well-known/oauth-client",
+            "https://reef.internal.test.attacker.test/.well-known/oauth-client",
+            "https://mcp.internal.test/.well-known/oauth-client",
+            "https://unregistered.internal.test/.well-known/oauth-client",
+        ] {
+            assert!(
+                matches!(
+                    resolver.accepted_metadata_url(candidate),
+                    Ok(MetadataUrl::PublicClient(_))
+                ),
+                "{candidate} must keep public DNS restrictions"
+            );
+        }
+        for candidate in [
+            "http://reef.internal.test/.well-known/oauth-client",
+            "https://REEF.internal.test/.well-known/oauth-client",
+            "https://reef.internal.test:443/.well-known/oauth-client",
+            "https://reef.internal.test/a/../.well-known/oauth-client",
+            "https://reef.internal.test/.well-known/oauth-client#fragment",
+            "https://user:secret@reef.internal.test/.well-known/oauth-client",
+            "https://reef.internal.test/.well-known/oauth-client\n",
+            "https://100.90.118.86/.well-known/oauth-client",
+        ] {
+            assert!(
+                resolver.accepted_metadata_url(candidate).is_err(),
+                "{candidate}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_fetcher_keeps_redirect_and_response_validation() {
+        let destination = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(document()))
+            .expect(0)
+            .mount(&destination)
+            .await;
+        let server = MockServer::start().await;
+        let endpoint = EndpointUrl::<Configured>::parse(&server.uri()).expect("test endpoint");
+        let fetcher = ReqwestMetadataFetcher::new(loopback_policy()).expect("production fetcher");
+        let mut wrong_id = document();
+        wrong_id["client_id"] = json!("https://other.test/client");
+        for (template, expected) in [
+            (
+                ResponseTemplate::new(302).insert_header("Location", destination.uri()),
+                ClientMetadataError::Redirect,
+            ),
+            (ResponseTemplate::new(503), ClientMetadataError::HttpStatus),
+            (
+                ResponseTemplate::new(200)
+                    .set_body_bytes(vec![b'x'; CLIENT_METADATA_MAX_BYTES + 1]),
+                ClientMetadataError::BodyTooLarge,
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(wrong_id),
+                ClientMetadataError::InvalidMetadata,
+            ),
+        ] {
+            server.reset().await;
+            Mock::given(method("GET"))
+                .respond_with(template)
+                .mount(&server)
+                .await;
+            // The transport Adapter also supports explicit loopback HTTP,
+            // allowing this test to exercise the real configured client without
+            // weakening TLS verification for HTTPS in production.
+            let response = fetcher
+                .fetch(&MetadataUrl::ConfiguredReef(endpoint.clone()))
+                .await
+                .expect("bounded response");
+            assert_eq!(
+                registration_from_response(CLIENT_ID, response)
+                    .await
+                    .expect_err("invalid metadata"),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
@@ -709,6 +839,25 @@ mod tests {
         }
     }
 
+    /// Raycast's published document lists `raycast://`, which this server
+    /// cannot use, beside callbacks it can. The client still resolves.
+    #[test]
+    fn unusable_redirect_uris_are_dropped_rather_than_rejecting_the_client() {
+        let mut value = document();
+        value["redirect_uris"] = json!([
+            "com.raycast:/oauth",
+            "raycast://mcp-oauth-callback",
+            "http://client.example.test/callback",
+            "https://client.example.test/callback?state=x",
+            "http://127.0.0.1/callback",
+        ]);
+        let registration = validate_document(CLIENT_ID, parsed(value)).expect("usable redirects");
+        assert_eq!(
+            registration.redirect_uris,
+            ["com.raycast:/oauth", "http://127.0.0.1/callback"]
+        );
+    }
+
     #[test]
     fn optional_metadata_fields_match_cloud_compatible_public_code_semantics() {
         for (field, value, expected) in [
@@ -751,7 +900,11 @@ mod tests {
         let rendered = format!("{registration:?}");
         assert!(!rendered.contains("callback"));
         assert!(!rendered.contains("body-secret"));
-        HttpClientMetadataResolver::new(PUBLIC_ISSUER, &BTreeSet::new())
-            .expect("hardened production client");
+        HttpClientMetadataResolver::new(
+            PUBLIC_ISSUER,
+            &BTreeSet::new(),
+            coral_outbound::DestinationPolicy::default(),
+        )
+        .expect("hardened production client");
     }
 }

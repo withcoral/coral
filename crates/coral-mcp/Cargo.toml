@@ -10,35 +10,36 @@ publish = false
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
+chrono.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
-futures.workspace = true
-regex.workspace = true
-rmcp.workspace = true
+coral-run.workspace = true
+coral-outbound.workspace = true
+coral-functions.workspace = true
+coral-search.workspace = true
+coral-task.workspace = true
+coral-workspace.workspace = true
+rmcp = { workspace = true, features = ["elicitation"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
-tonic.workspace = true
 tower.workspace = true
-tracing.workspace = true
-tracing-opentelemetry.workspace = true
-opentelemetry.workspace = true
-url.workspace = true
 uuid.workspace = true
 
-coral-api.workspace = true
-coral-app.workspace = true
-coral-client.workspace = true
-coral-telemetry.workspace = true
-
 [dev-dependencies]
-coral-spec.workspace = true
-jsonschema.workspace = true
-opentelemetry_sdk = { workspace = true, features = ["testing"] }
-tempfile.workspace = true
+coral-search = { workspace = true, features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
-tonic-types.workspace = true
+coral-catalog.workspace = true
+jsonschema.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
+reqwest.workspace = true
+coral-policy.workspace = true
+coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-test-support.workspace = true
+sqlx.workspace = true

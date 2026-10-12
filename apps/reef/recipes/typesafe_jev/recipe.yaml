@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: typesafe_jev
+display_name: TypeSafe Jev
+description: Typed answers and models from TypeSafe Jev.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+
+# TypeSafe serves its own OpenAPI document.
+source:
+  openapi:
+    url: https://api.typesafe.ai/openapi.json
+
+authentication:
+  options:
+    api_key:
+      method: bearer
+      label: Paste an API key
+      description: Create an API key on the Keys page of the TypeSafe console.
+      documentation_url: https://docs.typesafe.ai/introduction/quickstart
+
+# The document declares no servers, so the API host is configured explicitly.
+servers:
+  '#/servers':
+    base_url: https://api.typesafe.ai

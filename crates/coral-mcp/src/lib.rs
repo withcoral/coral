@@ -1,145 +1,87 @@
-//! `MCP` server adapters for Coral.
-//!
-//! This crate adapts the local Coral client from `coral-client` to the
-//! official Rust `MCP` SDK over stdio and Streamable HTTP.
-//!
-//! # Primary Entry Points
-//!
-//! - [`run_stdio_with_client`] serves `MCP` messages on stdio using an
-//!   existing [`coral_client::AppClient`], typically bootstrapped by
-//!   `coral-cli`.
-//! - [`http::start_auth_disabled`] serves the same MCP surface over
-//!   Streamable HTTP, loopback-only unless configuration routed operator
-//!   consent through [`http::McpHttpConfig::allow_unauthenticated_non_loopback`].
-//!
-//! The default MCP surface is intentionally small:
-//!
-//! - tools: `start_task`, `sql`, `search`, paginated `list_catalog`,
-//!   `describe`, `list_columns`, `end_task`, and optionally `feedback`
-//! - resources: `coral://guide`, `coral://tables`
-//!
-//! Protocol lifecycle and initialization should stay inside the SDK integration
-//! rather than being reimplemented locally.
+//! Workspace Streamable HTTP Adapter. Authentication fixes a canonical Principal
+//! on every HTTP request; domain Modules own current authority and visibility.
+//! MCP session identifiers and client metadata never grant authority.
 
-#![allow(
-    unused_crate_dependencies,
-    reason = "Library test targets inherit package dependencies that are consumed by sibling targets."
-)]
-
-mod error;
-mod extensions;
-mod guide_block;
-pub mod http;
+mod arguments;
+mod authentication;
+mod http;
+mod human_interface;
+mod instructions;
+mod projection;
+mod prompts;
 mod server;
-mod surface;
-mod telemetry;
+mod urls;
 
 #[cfg(test)]
-mod tests;
-
-use coral_client::AppClient;
-use rmcp::ServiceExt;
-
-pub use error::McpError;
-pub(crate) use extensions::McpToolRouter;
-pub use extensions::{
-    McpSurface, McpSurfaceError, McpSurfaceProvider, McpSurfaceProviderError, McpToolContext,
-    McpToolRoute,
+use {
+    coral_catalog as _, coral_policy as _, coral_provider as _, coral_test_support as _,
+    jsonschema as _, opentelemetry as _, opentelemetry_sdk as _, reqwest as _, sqlx as _,
+    tracing as _, tracing_opentelemetry as _, tracing_subscriber as _,
 };
-pub(crate) use server::CoralMcpServerFactory;
-pub use server::CoralToolset;
 
-/// A successful SQL query example for MCP initialize instructions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpQueryExample {
-    sql: String,
-    sources: Vec<String>,
-    row_count: Option<u64>,
+use std::num::NonZeroUsize;
+
+use coral_run::RunModule;
+use coral_task::{TaskCommands, TaskModule};
+use coral_workspace::{AuthenticatedPrincipal, WorkspaceModule};
+
+pub use authentication::{AuthenticationError, OauthProtectedResource, WorkspaceAuthenticator};
+pub use http::{
+    McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer, start_authenticated,
+    start_local,
+};
+pub use human_interface::{HumanInterfaceUrl, HumanInterfaceUrlError};
+pub use server::SUPPORTED_PROTOCOL_VERSIONS;
+pub use urls::{WORKSPACE_MCP_ROUTE, parse_workspace_mcp_path, workspace_mcp_path};
+
+/// Default target size of one encoded `exec`, `wait` or `cancel` result.
+const RUN_UPDATE_PAGE_BYTES: NonZeroUsize =
+    NonZeroUsize::new(64 << 20).expect("the default page target is positive");
+
+/// Domain Modules required by the MCP Adapter, independent of authentication mode,
+/// and the projection settings: the human interface where projections send
+/// people to act, and the Run Update page target.
+#[derive(Clone)]
+pub struct McpModules {
+    pub(crate) workspaces: WorkspaceModule,
+    pub(crate) tasks: TaskModule,
+    pub(crate) commands: TaskCommands,
+    pub(crate) runs: RunModule,
+    pub(crate) human_interface: HumanInterfaceUrl,
+    pub(crate) run_update_page_bytes: NonZeroUsize,
 }
-
-impl McpQueryExample {
-    /// Creates a query example from SQL text.
+impl McpModules {
+    /// Receives initialized Modules, including Task commands assembled by bootstrap.
     #[must_use]
-    pub fn new(sql: impl Into<String>) -> Self {
+    pub const fn new(
+        workspaces: WorkspaceModule,
+        tasks: TaskModule,
+        commands: TaskCommands,
+        runs: RunModule,
+        human_interface: HumanInterfaceUrl,
+    ) -> Self {
         Self {
-            sql: sql.into(),
-            sources: Vec::new(),
-            row_count: None,
+            workspaces,
+            tasks,
+            commands,
+            runs,
+            human_interface,
+            run_update_page_bytes: RUN_UPDATE_PAGE_BYTES,
         }
     }
 
-    /// Adds installed source names used by this query.
+    /// Selects the target size of one encoded `exec`, `wait` or `cancel`
+    /// result. Pages fill up to it; paging never splits a value, so a single
+    /// larger output item or terminal outcome arrives whole on its own page.
     #[must_use]
-    pub fn with_sources(mut self, sources: impl IntoIterator<Item = String>) -> Self {
-        self.sources = sources
-            .into_iter()
-            .map(|source| source.trim().to_string())
-            .filter(|source| !source.is_empty())
-            .collect();
-        self.sources.sort_unstable();
-        self.sources.dedup();
+    pub const fn with_run_update_page_bytes(mut self, bytes: NonZeroUsize) -> Self {
+        self.run_update_page_bytes = bytes;
         self
-    }
-
-    /// Adds the number of rows returned by this query.
-    #[must_use]
-    pub fn with_row_count(mut self, row_count: u64) -> Self {
-        self.row_count = Some(row_count);
-        self
-    }
-
-    /// SQL text for this query example.
-    #[must_use]
-    pub fn sql(&self) -> &str {
-        &self.sql
-    }
-
-    /// Installed source names used by this query.
-    #[must_use]
-    pub fn sources(&self) -> &[String] {
-        &self.sources
-    }
-
-    /// Number of rows returned by this query, when known.
-    #[must_use]
-    pub fn row_count(&self) -> Option<u64> {
-        self.row_count
     }
 }
 
-/// MCP runtime options.
-#[derive(Debug, Clone, Default)]
-pub struct McpOptions {
-    /// Expose the feedback submission tool.
-    pub feedback_enabled: bool,
-    /// Advertise observed-value search behavior across MCP discovery surfaces.
-    pub observed_values_search_enabled: bool,
-    /// Optional W3C traceparent used to parent each MCP request span.
-    pub trace_parent: Option<String>,
-    /// Installed source names to include in MCP initialize instructions.
-    pub source_names: Vec<String>,
-    /// Successful SQL examples to include in MCP initialize instructions.
-    pub query_examples: Vec<McpQueryExample>,
-    /// Workspace scoped to this MCP server instance.
-    pub workspace: Option<coral_api::v1::Workspace>,
-    /// Static public MCP tool surface and initialize instructions.
-    pub surface: McpSurface,
-}
-
-/// Runs the `MCP` stdio server using an existing Coral client.
-///
-/// # Errors
-///
-/// Returns [`McpError`] if `options` names no workspace, or if the stdio server
-/// cannot complete its `MCP` lifecycle. Stdio's launcher resolves the workspace
-/// before it gets here, so the missing one is reported as the failed
-/// precondition it is rather than served against an invented name.
-pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
-    options.surface.validate(options.feedback_enabled)?;
-    let handler = CoralMcpServerFactory::new(app, options)
-        .map_err(|error| tonic::Status::failed_precondition(error.to_string()))?
-        .create();
-    let server = Box::pin(handler.serve((tokio::io::stdin(), tokio::io::stdout()))).await?;
-    let _ = server.waiting().await?;
-    Ok(())
+#[derive(Clone)]
+pub(crate) struct McpRuntime {
+    modules: McpModules,
+    principal: AuthenticatedPrincipal,
 }

@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://upstash.com/docs/agent-resources/mcp
+# Official brand asset: https://upstash.com/icons/favicon-32x32.png
+schema_version: 1
+id: upstash
+display_name: Upstash
+description: Redis, QStash, Vector, Search and storage resources from Upstash.
+source:
+  mcp:
+    url: https://mcp.upstash.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Upstash
+      flow: authorization_code
+      documentation_url: https://upstash.com/docs/agent-resources/mcp
+icons:
+  light: logo.svg

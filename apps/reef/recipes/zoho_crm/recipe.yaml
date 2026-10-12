@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.zoho.com/crm/developer/docs/mcp/setup/vscode.html
+# These four prebuilt URLs are published by Zoho for all MCP clients. OAuth scopes each connection to its user.
+# Use the published URLs, rather than a private custom Zoho MCP URL containing an API key.
+# Data Operations (default) provides CRUD, Insights is read-only, and the other servers customize modules and workflows.
+# The selected server advertises its OAuth scopes.
+schema_version: 1
+id: zoho_crm
+display_name: Zoho CRM
+description: Records, modules, fields and workflows from Zoho CRM.
+source:
+  mcp:
+    url: '{{input.server_url}}'
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Zoho
+      documentation_url: https://www.zoho.com/crm/developer/docs/mcp/overview.html
+      flow: authorization_code
+inputs:
+  server_url:
+    type: url
+    label: Zoho CRM server
+    description: Select a prebuilt server for records, insights, modules or workflows.
+    documentation_url: https://www.zoho.com/crm/developer/docs/mcp/setup/vscode.html
+    default: https://zoho-crm-data-operations-60065097786.zohomcp.in/mcp/fe46ddbc48fec3713c8754cea8ec9ac5/message
+    enum:
+      - https://zoho-crm-data-operations-60065097786.zohomcp.in/mcp/fe46ddbc48fec3713c8754cea8ec9ac5/message
+      - https://zoho-crm-data-insights-60065097786.zohomcp.in/mcp/d17dfe13292e0414a929516bb8f8e797/message
+      - https://zoho-crm-module-customization-60065097786.zohomcp.in/mcp/8057776f5d548a33b892c533d4278d17/message
+      - https://zoho-crm-automation-60065097786.zohomcp.in/mcp/c139be028c224f75a9077e6473a62f3b/message
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

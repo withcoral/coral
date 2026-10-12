@@ -1,0 +1,848 @@
+syntax = "proto3";
+
+package coral.management.v1;
+
+// Reef's view of a User's activity: browsing history, reviewing pending actions,
+// and deciding or cancelling them. Agents cannot call it. Every call checks the
+// caller's current access; resource names in requests grant nothing.
+service ActivityService {
+  // Streams hints that activity changed, with no content.
+  rpc WatchActivity(WatchActivityRequest) returns (stream WatchActivityResponse);
+  // Lists top-level activity (Tasks and standalone Runs), newest first.
+  rpc BrowseActivityRoots(BrowseActivityRootsRequest) returns (BrowseActivityRootsResponse);
+  // Lists one Run's Operations, Events and Final Value in order, as summaries.
+  rpc BrowseRunEntries(BrowseRunEntriesRequest) returns (BrowseRunEntriesResponse);
+  // Gets one Event of a Run by its sequence number.
+  rpc InspectRunEvent(InspectRunEventRequest) returns (InspectRunEventResponse);
+  // Gets an Agent's name and label for its history, even after the Agent is deleted.
+  rpc InspectAgentHistory(InspectAgentHistoryRequest) returns (InspectAgentHistoryResponse);
+  // Gets one Run with a page of its Events and its current pending actions.
+  rpc InspectRun(InspectRunRequest) returns (InspectRunResponse);
+  // Gets one Operation call: its arguments, its outcome and any approval or connection requests.
+  rpc InspectInvocation(InspectInvocationRequest) returns (InspectInvocationResponse);
+  // Gets one approval request and whether it can still be decided. Use DecideApproval to decide it.
+  rpc InspectApproval(InspectApprovalRequest) returns (InspectApprovalResponse);
+  // Lists pending requests that wait on the caller, most urgent first: the caller's
+  // own, plus Agent approvals in Workspaces the caller owns. A connection request
+  // shared by several Runs appears once.
+  rpc BrowseRequiredActions(BrowseRequiredActionsRequest) returns (BrowseRequiredActionsResponse);
+  // Counts pending requests. A connection request shared by several Runs counts once.
+  rpc CountRequiredActions(CountRequiredActionsRequest) returns (CountRequiredActionsResponse);
+  // Approves or declines one request. The first decision wins; the response gives
+  // the resulting state, which may not be the caller's decision.
+  rpc DecideApproval(DecideApprovalRequest) returns (DecideApprovalResponse);
+  // Cancels a whole Run; single Operation calls cannot be cancelled. The Run may
+  // already have ended another way; the response gives its current state.
+  rpc CancelActivityRun(CancelActivityRunRequest) returns (CancelActivityRunResponse);
+  // Gets one Task and a page of its interactions in order.
+  rpc InspectTask(InspectTaskRequest) returns (InspectTaskResponse);
+  // Gets one interaction exactly as recorded, not rebuilt from current definitions.
+  rpc InspectTaskInteraction(InspectTaskInteractionRequest) returns (InspectTaskInteractionResponse);
+}
+
+// Watches the calling User's activity. The request has no options.
+message WatchActivityRequest {}
+
+// A hint to reread activity. It carries no content and has no replay cursor:
+// after a reconnect, read everything again. Changes that arrive while the reader
+// is busy merge into one message.
+message WatchActivityResponse {
+  // True for the first message, after a committed change, and when a pending
+  // action expires. False is a heartbeat: access still holds, so don't reread.
+  bool changed = 1;
+}
+
+// Names the Agent whose history to label.
+message InspectAgentHistoryRequest {
+  // workspaces/{workspace}/agents/{agent}.
+  string name = 1;
+}
+// An Agent's retained name and label. Use the Agent management calls to change it.
+message InspectAgentHistoryResponse {
+  // workspaces/{workspace}/agents/{agent}; never changes.
+  string name = 1;
+  // Label to show beside the Agent's history.
+  string display_name = 2;
+  // True if the Agent was deleted. Agent management calls no longer work for it.
+  bool deleted = 3;
+}
+
+// Narrows a list to one Workspace or one Agent. Leave both empty to list the
+// calling User's own activity in every Workspace they can access.
+message ActivityScope {
+  // Optional workspaces/{workspace}.
+  string workspace = 1;
+  // Optional workspaces/{workspace}/agents/{agent}. Its Workspace must match workspace.
+  string agent = 2;
+}
+
+// Summary of one Task (a goal).
+message ActivityTask {
+  // Net payload bytes returned to the caller across the Task's children.
+  // A child that could not be measured adds nothing.
+  optional int64 context_impact_bytes = 10;
+  // True while a child Run is running. context_impact_bytes then sums only the
+  // finished children and changes when the Run ends.
+  bool context_impact_partial = 11;
+  // workspaces/{workspace}/tasks/{task}.
+  string name = 1;
+  // workspaces/{workspace}; never changes.
+  string workspace = 2;
+  // The goal as stated when the Task started. Not used to group activity.
+  string intent = 3;
+  // open, success or failure, as declared by the caller. Not a Run outcome.
+  string outcome = 4;
+  // When the Task started.
+  int64 started_at_unix_nanos = 5;
+  // When the Task first declared an outcome. Absent while open.
+  optional int64 ended_at_unix_nanos = 6;
+  // Principal who started the Task. Not the person reviewing it.
+  string actor = 8;
+  // workspaces/{workspace}/agents/{agent} if an Agent started it; empty for a User.
+  string agent = 9;
+}
+
+// A set of already-loaded records to refresh.
+message ActivityRecords {
+  // Up to page_size resource names. Records that are gone are left out, not replaced.
+  repeated string names = 1;
+}
+
+// A scroll position in a chronological list.
+message ActivityViewport {
+  // Position of the first row to return if anchor is empty or gone.
+  uint64 offset = 1;
+  // Optional resource name of a row the reader can see now. The window keeps it in view.
+  string anchor = 2;
+  // Rows to return before anchor; less than page_size.
+  uint32 preceding = 3;
+}
+
+// Selects one Task and a page of its interactions. List filters do not apply.
+message InspectTaskRequest {
+  reserved 6;
+  reserved "retained";
+
+  // workspaces/{workspace}/tasks/{task}.
+  string name = 1;
+  // Last interaction name from the previous page.
+  string after = 2;
+  // 1 to 100; zero means 50.
+  uint32 page_size = 3;
+  // Optional list scope the Task must belong to. Leave empty to select the Task on its own.
+  ActivityScope scope = 4;
+  // Start the page at this interaction or accepted Run. Cannot be combined with after.
+  string anchor = 5;
+  // Return the rows around a scroll position. Cannot be combined with after or anchor.
+  ActivityViewport viewport = 7;
+}
+
+// Summary of one tool call in a Task.
+message ActivityInteraction {
+  // Position in the Task, in chronological order. Absent when read on its own.
+  optional uint64 position = 11;
+  // Bytes of the discovery response returned to the caller. Absent if not measured.
+  optional int64 context_impact_bytes = 10;
+  // workspaces/{workspace}/tasks/{task}/interactions/{interaction}.
+  string name = 1;
+  // search, describe, save, delete or submit.
+  string kind = 2;
+  // What this call was for. The Task's intent is separate.
+  string intent = 3;
+  // unknown, succeeded or rejected: whether the tool accepted the call, not how a Run ended.
+  string outcome = 4;
+  // When the call started.
+  int64 started_at_unix_nanos = 5;
+  // When the call finished, if known.
+  optional int64 completed_at_unix_nanos = 6;
+  // Summary of the Run this call started, if the caller can see it. No source or output.
+  ActivityRun run = 7;
+  // Name of the Run this call started, kept even when run is unavailable.
+  string accepted_run = 8;
+  // workspaces/{workspace}/agents/{agent} if an Agent made the call; empty for a User.
+  string agent = 9;
+}
+
+// One Task and a page of its interactions.
+message InspectTaskResponse {
+  // Feedback given when the Task ended. Only returned here, never in lists.
+  optional string feedback = 7;
+  // The Task.
+  ActivityTask task = 1;
+  // Interaction summaries, without discovery responses.
+  repeated ActivityInteraction interactions = 2;
+  // Pass as after to get the next page; empty on the last page.
+  string next_after = 3;
+  // Number of interactions the caller can see, including ones outside this page.
+  int64 total = 4;
+  // Position of the first returned interaction.
+  uint64 offset = 5;
+  // The viewport anchor is gone; the page starts at offset instead.
+  bool anchor_unavailable = 6;
+}
+
+// Selects one Task interaction.
+message InspectTaskInteractionRequest {
+  // workspaces/{workspace}/tasks/{task}/interactions/{interaction}.
+  string name = 1;
+}
+
+// Summary of one Run.
+message ActivityRun {
+  // Payload bytes returned to the caller, minus Operation Result bytes.
+  // Absent until the Run ends, or if it could not be measured.
+  optional int64 context_impact_bytes = 11;
+  // workspaces/{workspace}/runs/{run}.
+  string name = 1;
+  // workspaces/{workspace}.
+  string workspace = 2;
+  // Lifecycle state. New values may be added; treat unknown values as unspecified.
+  ActivityRunState state = 3;
+  // When the Run was accepted.
+  int64 started_at_unix_nanos = 4;
+  // When the Run ended. Absent while running.
+  optional int64 ended_at_unix_nanos = 5;
+  // Time elapsed so far, measured once per read.
+  int64 duration_nanos = 6;
+  // Someone must act before the Run can continue. Says nothing about who may act.
+  bool requires_action = 7;
+  // workspaces/{workspace}/tasks/{task} if the caller can see the Task; otherwise empty.
+  string task = 8;
+  // workspaces/{workspace}/agents/{agent} if an Agent started the Run; empty for a User.
+  // Browsing the Run's children uses this, not the list scope, and still checks access.
+  string agent = 9;
+  // Principal who started the Run. Not the reviewer or the Account owner.
+  string actor = 10;
+  // The intent given when the Run was submitted from a Task; empty for standalone Runs.
+  string intent = 12;
+  // Label for who started the Run: "You", the Agent's name, or "Unavailable agent".
+  string actor_label = 13;
+  // The Workspace's current display name.
+  string workspace_label = 14;
+  // Pending actions. Set in the action queue and in InspectRun; absent elsewhere.
+  // Absent does not mean there are no actions.
+  ActivityActionPage action_page = 15;
+}
+// Summary of one Operation call.
+message ActivityInvocation {
+  // The Operation Result bytes kept for this call, as a negative number. Absent until
+  // the call ends, or if unknown.
+  optional int64 context_impact_bytes = 17;
+  // workspaces/{workspace}/invocations/{invocation}.
+  string name = 1;
+  // workspaces/{workspace}.
+  string workspace = 2;
+  // workspaces/{workspace}/runs/{run} that made the call.
+  string run = 3;
+  // workspaces/{workspace}/providers/{provider} at the time of the call.
+  string provider = 4;
+  // Operation key at the time of the call.
+  string operation = 5;
+  // Path the Program called, such as providers.github.getIssue.
+  string call_path = 6;
+  // Lifecycle state.
+  ActivityInvocationState state = 7;
+  // How the call ended. Unspecified until it ends. Does not say whether the upstream succeeded.
+  ActivityInvocationOutcome outcome = 8;
+  // When the call was accepted, before any approval or connection wait.
+  int64 started_at_unix_nanos = 9;
+  // When the call ended. Absent while pending or dispatching.
+  optional int64 ended_at_unix_nanos = 10;
+  // Time elapsed so far, including waits, measured once per read.
+  int64 duration_nanos = 11;
+  // Someone must approve or connect an Account before the call can continue.
+  bool requires_action = 12;
+  // workspaces/{workspace}/tasks/{task} if the caller can see the Task; otherwise empty.
+  string task = 13;
+  // Principal who started the Run. Not the reviewer.
+  string actor = 14;
+  // When the request was sent upstream. Absent if it has not been sent.
+  optional int64 dispatched_at_unix_nanos = 15;
+  // workspaces/{workspace}/agents/{agent} if an Agent made the call; empty for a User.
+  string agent = 16;
+}
+// Selects one Run. List filters do not apply.
+message InspectRunRequest {
+  // workspaces/{workspace}/runs/{run}.
+  string name = 1;
+  // Return Events after this sequence number; zero starts at the first Event.
+  uint64 event_after = 2;
+  // Events per page, 1 to 100; zero means 50.
+  uint32 page_size = 3;
+  // next_action from a previous action_page, to get the next up to 100 pending actions.
+  // Empty starts at the first. Independent of the Event page.
+  string action_after = 4;
+  // Optional workspaces/{workspace}/accountConnections/{request} the reader came from.
+  // The response confirms it only if it belongs to this Run. A newer request is never
+  // substituted.
+  string account_connection = 5;
+}
+// Source of a Saved Function as it was when the Run was accepted.
+message ActivitySourceSnapshot {
+  // Saved Function name at the time. It may have changed or been deleted since.
+  string saved_function = 1;
+  // Path the Program called it by.
+  string path = 2;
+  // TypeScript source as accepted.
+  string source = 3;
+}
+// One stack frame in code the author wrote.
+message ActivityErrorFrame {
+  // Program or Saved Function name.
+  string source = 1;
+  // Line number, starting at 1.
+  uint32 line = 2;
+  // Column number, starting at 1.
+  uint32 column = 3;
+}
+// An error the Program saw, size-limited. Contains no host internals or telemetry.
+message ActivityProgramError {
+  // Error name set by the Program. Do not use it to classify the failure.
+  string name = 1;
+  // Error message set by the Program.
+  string message = 2;
+  // Stack frames in the author's code.
+  repeated ActivityErrorFrame frames = 3;
+  // Operation Error code set by Coral, or empty. Safe to classify on.
+  string operation_code = 4;
+  // W3C trace ID set by Coral for the failed Operation call, or empty.
+  string operation_trace_id = 5;
+  // The error's cause, if any.
+  ActivityProgramError cause = 6;
+  // Members of an AggregateError. Separate from cause.
+  repeated ActivityProgramError errors = 7;
+  // Some content was cut to fit size limits.
+  bool truncated = 8;
+  // The cause existed but did not fit.
+  bool cause_omitted = 9;
+  // Number of AggregateError members left out.
+  uint32 omitted_errors = 10;
+  // This error refers back to one of its own causes.
+  bool circular = 11;
+}
+// Run lifecycle states.
+enum ActivityRunState {
+  // State unknown to this client.
+  ACTIVITY_RUN_STATE_UNSPECIFIED = 0;
+  // Accepted and not finished, including while waiting on a person.
+  ACTIVITY_RUN_STATE_RUNNING = 1;
+  // The Program finished.
+  ACTIVITY_RUN_STATE_SUCCEEDED = 2;
+  // The Program failed. See ActivityRunFailed.
+  ACTIVITY_RUN_STATE_FAILED = 3;
+  // Someone cancelled the Run.
+  ACTIVITY_RUN_STATE_CANCELED = 4;
+  // The Run hit its deadline.
+  ACTIVITY_RUN_STATE_TIMED_OUT = 5;
+  // The Run stopped unexpectedly after it started, and was not retried.
+  ACTIVITY_RUN_STATE_INTERRUPTED = 6;
+}
+// Operation call lifecycle states. They say nothing about upstream success.
+enum ActivityInvocationState {
+  // State unknown to this client.
+  ACTIVITY_INVOCATION_STATE_UNSPECIFIED = 0;
+  // Accepted but not yet sent upstream.
+  ACTIVITY_INVOCATION_STATE_PENDING = 1;
+  // Sending started; the call has not ended yet.
+  ACTIVITY_INVOCATION_STATE_DISPATCHING = 2;
+  // The call ended. See ActivityInvocationOutcome.
+  ACTIVITY_INVOCATION_STATE_ENDED = 3;
+}
+// How an Operation call ended.
+enum ActivityInvocationOutcome {
+  // Not ended, or an outcome unknown to this client.
+  ACTIVITY_INVOCATION_OUTCOME_UNSPECIFIED = 0;
+  // The upstream returned a complete response. It may still be an error response.
+  ACTIVITY_INVOCATION_OUTCOME_UPSTREAM_OUTCOME = 1;
+  // Coral could not get a complete response. See ActivityCoralFailure.
+  ACTIVITY_INVOCATION_OUTCOME_CORAL_FAILURE = 2;
+  // The Run ended before the call was sent.
+  ACTIVITY_INVOCATION_OUTCOME_RUN_TERMINATED = 3;
+  // The call was sent, but no complete response was saved. It may have had an effect.
+  ACTIVITY_INVOCATION_OUTCOME_INDETERMINATE = 4;
+}
+// Severity the Program gave a log message.
+enum ActivityLogLevel {
+  // Severity unknown to this client.
+  ACTIVITY_LOG_LEVEL_UNSPECIFIED = 0;
+  // Debug.
+  ACTIVITY_LOG_LEVEL_DEBUG = 1;
+  // Info.
+  ACTIVITY_LOG_LEVEL_INFO = 2;
+  // Warning.
+  ACTIVITY_LOG_LEVEL_WARN = 3;
+  // Error.
+  ACTIVITY_LOG_LEVEL_ERROR = 4;
+}
+// Whether a User or an Agent did something. Says nothing about authority.
+enum ActivityPrincipalKind {
+  // Kind unknown to this client.
+  ACTIVITY_PRINCIPAL_KIND_UNSPECIFIED = 0;
+  // A signed-in person.
+  ACTIVITY_PRINCIPAL_KIND_USER = 1;
+  // An Agent owned by a Workspace.
+  ACTIVITY_PRINCIPAL_KIND_AGENT = 2;
+}
+// An event or outcome that carries no data.
+message ActivityEmpty {}
+// The Program made an Operation call.
+message ActivityInvocationStarted {
+  // workspaces/{workspace}/invocations/{invocation}.
+  string invocation = 1;
+}
+// An Operation call ended.
+message ActivityInvocationEnded {
+  // workspaces/{workspace}/invocations/{invocation}.
+  string invocation = 1;
+  // How it ended. Does not say whether the upstream succeeded.
+  ActivityInvocationOutcome outcome = 2;
+}
+// The Program emitted a value.
+message ActivityProgramEmitted {
+  // The value as JSON. null is a real value.
+  string value_json = 1;
+}
+// The Program logged a message.
+message ActivityProgramLogged {
+  // Severity, from the console method the Program used.
+  ActivityLogLevel level = 1;
+  // The message, cut to its size limit.
+  string message = 2;
+}
+// Someone asked to cancel the Run. The Run may still have ended another way.
+message ActivityCancellationRequested {
+  // Principal who asked.
+  string actor = 1;
+  // Whether that was a User or an Agent.
+  ActivityPrincipalKind actor_kind = 2;
+}
+// The Run ended.
+message ActivityRunEnded {
+  // Final state.
+  ActivityRunState state = 1;
+}
+// One Run Event. Events never change once written.
+message ActivityRunEvent {
+  // Position in the Run, starting at 1.
+  uint64 sequence = 1;
+  // When it happened. Set even when the kind is unknown to this client.
+  int64 occurred_at_unix_nanos = 2;
+  // What happened. Absent for a kind unknown to this client.
+  oneof payload {
+    // The Run started.
+    ActivityEmpty started = 3;
+    // The Program made an Operation call.
+    ActivityInvocationStarted invocation_started = 4;
+    // An Operation call ended.
+    ActivityInvocationEnded invocation_ended = 5;
+    // The Program emitted a value.
+    ActivityProgramEmitted program_emitted = 6;
+    // The Program logged a message.
+    ActivityProgramLogged program_logged = 7;
+    // Someone asked to cancel the Run.
+    ActivityCancellationRequested cancellation_requested = 8;
+    // The Run ended.
+    ActivityRunEnded ended = 9;
+  }
+}
+// Link to an approval or connection request. It may no longer be pending.
+message ActivityRequestReference {
+  // Absent for a request kind unknown to this client.
+  oneof request {
+    // workspaces/{workspace}/approvals/{approval}.
+    string approval = 1;
+    // workspaces/{workspace}/accountConnections/{request}.
+    string account_connection = 2;
+  }
+}
+// One page of a Run's pending actions.
+message ActivityActionPage {
+  // Up to 100 pending requests. A connection request several calls wait on appears once.
+  repeated ActivityActionSummary actions = 1;
+  // Number of pending requests for this Run, including ones not on this page.
+  int64 total = 2;
+  // Pass to InspectRun.action_after for the next page; empty on the last page.
+  // Still works if the last request on this page has since been resolved.
+  string next_action = 3;
+}
+// Summary of one pending action. Never includes arguments, source, comments or Account details.
+message ActivityActionSummary {
+  // The request to act on.
+  ActivityRequestReference request = 1;
+  // Path the Program called. Empty if a shared connection request covers several paths.
+  string call_path = 2;
+  // The Provider's current display name, or "Unavailable provider" if it was removed.
+  string provider_label = 3;
+  // When this Run stops waiting: the request's deadline or the Run's, whichever is first.
+  int64 deadline_at_unix_nanos = 4;
+}
+// One Run in full. Use BrowseRunEntries for its child summaries.
+message InspectRunResponse {
+  // Run summary.
+  ActivityRun run = 1;
+  // TypeScript the caller submitted, as accepted.
+  string submitted_source = 2;
+  // Source of each Saved Function the Run used, as accepted.
+  repeated ActivitySourceSnapshot linked_functions = 3;
+  // A page of Events in order: output, logs, cancellation requests and so on.
+  repeated ActivityRunEvent events = 4;
+  // Pass as event_after for the next page. Equals the request's event_after if the page is empty.
+  uint64 next_event_after = 5;
+  // More Events follow this page.
+  bool has_more_events = 6;
+  // How the Run ended. Absent while running, or for an outcome unknown to this client.
+  oneof terminal {
+    // The Program finished.
+    ActivityRunSucceeded succeeded = 7;
+    // The Program failed.
+    ActivityRunFailed failed = 8;
+    // Someone cancelled the Run.
+    ActivityEmpty canceled = 9;
+    // The Run hit its deadline.
+    ActivityEmpty timed_out = 10;
+    // The Run stopped unexpectedly after it started, and was not retried.
+    ActivityEmpty interrupted = 11;
+  }
+  // The Task tool call that submitted this Run, if the caller can see it. Absent for standalone Runs.
+  ActivityInteraction submission = 12;
+  // The request's account_connection, if it belongs to this Run and its invoking User
+  // can still see it; otherwise empty. Read its detail through the Accounts service.
+  string account_connection = 13;
+}
+// The Program finished.
+message ActivityRunSucceeded {
+  // The Final Value as JSON. Absent if the Program returned undefined; null is a real value.
+  optional string final_value_json = 1;
+}
+// Why a Run failed.
+enum ActivityRunFailureCode {
+  // A reason unknown to this client.
+  ACTIVITY_RUN_FAILURE_CODE_UNSPECIFIED = 0;
+  // The Program threw or its Promise rejected.
+  ACTIVITY_RUN_FAILURE_CODE_PROGRAM_REJECTED = 1;
+  // The Program returned a value Coral cannot store.
+  ACTIVITY_RUN_FAILURE_CODE_INVALID_PROGRAM_VALUE = 2;
+  // A value or the total output was too large.
+  ACTIVITY_RUN_FAILURE_CODE_RESOURCE_LIMIT_EXCEEDED = 3;
+  // The Program ran out of memory.
+  ACTIVITY_RUN_FAILURE_CODE_MEMORY_LIMIT_EXCEEDED = 4;
+  // The Program failed for another reason.
+  ACTIVITY_RUN_FAILURE_CODE_PROGRAM_EXECUTION_FAILED = 5;
+  // Whoever started the Run lost the access it needed.
+  ACTIVITY_RUN_FAILURE_CODE_RUN_AUTHORITY_LOST = 6;
+}
+// Why a Run failed, in full.
+message ActivityRunFailed {
+  // Failure reason set by Coral. Safe to classify on, unlike the Program's own text.
+  ActivityRunFailureCode code = 1;
+  // Short description.
+  string message = 2;
+  // The error the Program saw, if one was kept.
+  ActivityProgramError error = 3;
+}
+// Selects one approval request to read. To decide it, use DecideApproval.
+message InspectApprovalRequest {
+  // workspaces/{workspace}/approvals/{approval}.
+  string name = 1;
+}
+// One approval request in full.
+message InspectApprovalResponse {
+  // workspaces/{workspace}/approvals/{approval}.
+  string name = 1;
+  // workspaces/{workspace}/runs/{run} that is waiting.
+  string run = 2;
+  // workspaces/{workspace}/invocations/{invocation} that needs approval.
+  string invocation = 3;
+  // workspaces/{workspace}/providers/{provider} at the time of the call.
+  string provider = 4;
+  // Path the Program called.
+  string call_path = 5;
+  // Arguments of this call, as JSON.
+  string arguments_json = 6;
+  // pending, approved, declined, expired or closed. Use actionable to decide whether to
+  // offer a decision.
+  string state = 7;
+  // When the request expires. Never later than the Run's deadline.
+  int64 deadline_at_unix_nanos = 8;
+  // Principal whose decision won; empty if the request expired or closed.
+  string approver = 9;
+  // When the request was decided. Absent while pending.
+  optional int64 decided_at_unix_nanos = 10;
+  // The decider's comment, if any. Only returned here.
+  optional string comment = 11;
+  // True if the caller can decide the request now. A pending state alone is not enough.
+  bool actionable = 12;
+  // The Provider's current display name, or "Unavailable provider" if it was removed.
+  string provider_label = 13;
+  // Label for who decided: "You", their name, or "Unavailable user". Empty if nobody decided.
+  string approver_label = 14;
+  // Label for who started the Run: "You", the Agent's name, or "Unavailable agent".
+  string actor_label = 15;
+}
+// Selects which pending requests to count.
+message CountRequiredActionsRequest {
+  // Optional workspaces/{workspace}. Empty counts every Workspace the caller can access.
+  string workspace = 1;
+}
+// Number of pending requests. A failed read is an error, never a zero count.
+message CountRequiredActionsResponse {
+  // Pending requests. A connection request shared by several Runs counts once.
+  int64 action_count = 1;
+}
+// Selects a page of pending requests that wait on the caller.
+message BrowseRequiredActionsRequest {
+  // Optional workspaces/{workspace}. Empty lists every Workspace the caller can access.
+  string workspace = 1;
+  // next_after from the previous page. Empty starts at the most urgent request.
+  string after = 2;
+  // 1 to 100; zero means 50.
+  uint32 page_size = 3;
+}
+// A page of pending requests, most urgent first. Never includes arguments, comments,
+// source or Account details.
+message BrowseRequiredActionsResponse {
+  // Pending requests across the whole scope, not just this page.
+  int64 action_count = 1;
+  // This page, ordered by deadline.
+  repeated ActivityRequiredAction actions = 2;
+  // Pass as after to get the next page; empty on the last page. Still works if the
+  // last request on this page has since been resolved.
+  string next_after = 3;
+}
+// One pending request with a Run that waits on it.
+message ActivityRequiredAction {
+  // The request to act on.
+  ActivityActionSummary action = 1;
+  // A Run that waits on the request. For a shared connection request, the Run whose
+  // deadline comes first. Its action_page is absent.
+  ActivityRun run = 2;
+}
+// Approves or declines one request, after the caller has reviewed its arguments.
+message DecideApprovalRequest {
+  // workspaces/{workspace}/approvals/{approval}.
+  string name = 1;
+  // approve or decline.
+  string decision = 2;
+  // Optional comment, up to 1024 UTF-8 bytes.
+  optional string comment = 3;
+}
+// The request's state after the decision. Another decision may have won first.
+message DecideApprovalResponse {
+  // pending, approved, declined, expired or closed.
+  string state = 1;
+}
+// Cancels one Run.
+message CancelActivityRunRequest {
+  // workspaces/{workspace}/runs/{run}.
+  string name = 1;
+}
+// The Run's state after the request. It may have ended another way first.
+message CancelActivityRunResponse {
+  // Current state.
+  ActivityRunState state = 1;
+}
+// Selects one Operation call. List filters do not apply.
+message InspectInvocationRequest {
+  // workspaces/{workspace}/invocations/{invocation}.
+  string name = 1;
+}
+// One Operation call in full, with its arguments and outcome.
+message InspectInvocationResponse {
+  // Call summary.
+  ActivityInvocation invocation = 1;
+  // Arguments as the Program passed them, as JSON. Never includes credentials Coral added.
+  string arguments_json = 2;
+  // How the call ended. Absent while in progress, or for an outcome unknown to this client.
+  oneof outcome {
+    // The complete upstream response as JSON, including the HTTP status or MCP isError flag.
+    string upstream_outcome_json = 3;
+    // Coral could not get a complete response.
+    ActivityCoralFailure coral_failure = 4;
+    // The Run ended before the call was sent.
+    ActivityEmpty run_terminated = 5;
+    // The call was sent, but no complete response was saved. It may have had an effect.
+    ActivityEmpty indeterminate = 7;
+  }
+  // Approval and connection requests this call waited on, whether or not they are still pending.
+  repeated ActivityRequestReference requests = 6;
+}
+
+// Why Coral could not get a complete upstream response. Not a judgment of upstream success.
+message ActivityCoralFailure {
+  // Failure code, such as approval_declined.
+  string code = 1;
+  // Short description.
+  string message = 2;
+}
+// The Search a Task ran, as accepted. Today's catalog may differ.
+message ActivitySearchContext {
+  // Search text. Absent when browsing the catalog without a query.
+  optional string query = 1;
+  // workspaces/{workspace}/providers/{provider} searched. Absent when not filtered.
+  optional string provider = 2;
+  // Page size used, including the default when the caller gave none.
+  uint32 limit = 3;
+  // Page cursor the caller passed. Absent for the first page.
+  optional string cursor = 4;
+}
+// The description a Task asked for.
+message ActivityDescribeContext {
+  // Path the caller asked to describe.
+  string call_path = 1;
+  // Types of that path's declaration the caller asked for, in the order
+  // given. Empty for a plain description.
+  repeated string types = 2;
+}
+// A discovery call and the response the caller got, as JSON. This is the one place
+// this service returns a raw response.
+message ActivityDiscovery {
+  // What was asked. Absent for a kind unknown to this client.
+  oneof context {
+    // One page of Search results.
+    ActivitySearchContext search = 1;
+    // One description.
+    ActivityDescribeContext describe = 3;
+  }
+  // The response exactly as returned then. Later pages are not fetched.
+  string response_json = 2;
+}
+
+// A tool call that was rejected before any Run started.
+message ActivityRejection {
+  // Failure code.
+  string code = 1;
+  // The message the caller saw.
+  string message = 2;
+}
+
+// One Task interaction in full.
+message InspectTaskInteractionResponse {
+  // Interaction summary.
+  ActivityInteraction interaction = 1;
+  // What the call produced. Absent if its outcome is unknown.
+  oneof evidence {
+    // The discovery request and response as recorded, not rebuilt from today's catalog.
+    ActivityDiscovery discovery = 2;
+    // workspaces/{workspace}/runs/{run} the call started.
+    string run = 3;
+    // Saved Function the call saved or deleted. It may have changed or been deleted since.
+    string saved_function = 5;
+    // Why the call was rejected.
+    ActivityRejection rejection = 6;
+  }
+}
+
+// Selects a page of top-level activity.
+message BrowseActivityRootsRequest {
+  // The User's own activity, or one Agent's.
+  ActivityScope scope = 1;
+  // Return the page before this Task or Run name. Cannot be combined with after or anchor.
+  string before = 2;
+  // Return the page after this Task or Run name.
+  string after = 3;
+  // 1 to 100; zero means 50.
+  uint32 page_size = 4;
+  // Start the page at this Task or Run, followed by older ones. Cannot be combined with
+  // before or after. The anchor must be in scope.
+  string anchor = 5;
+  // Refresh only these Tasks and Runs. Cannot be combined with before, after or anchor.
+  ActivityRecords retained = 6;
+}
+// One top-level entry: a Task, or a Run started outside any Task.
+message ActivityRoot {
+  // Exactly one is set.
+  oneof record {
+    // A Task.
+    ActivityTask task = 1;
+    // A Run started outside any Task.
+    ActivityRun run = 2;
+  }
+}
+// A page of top-level activity.
+message BrowseActivityRootsResponse {
+  reserved 2;
+  reserved "total";
+
+  // Tasks and Runs, newest first.
+  repeated ActivityRoot roots = 1;
+  // Newer entries exist before this page.
+  bool has_before = 3;
+  // Older entries exist after this page.
+  bool has_after = 4;
+  // The anchor, or every record in retained, is gone.
+  bool anchor_unavailable = 5;
+}
+// Selects a page of one Run's children, as summaries.
+message BrowseRunEntriesRequest {
+  // workspaces/{workspace}/runs/{run}.
+  string name = 1;
+  // Return children after this Event sequence number.
+  uint64 after = 2;
+  // 1 to 100; zero means 50.
+  uint32 page_size = 3;
+  // Optional list scope the Run must belong to. Leave empty to select the Run on its own.
+  ActivityScope scope = 4;
+  // Start the page at this Operation call, Event ({run}/events/{sequence}) or Final
+  // Value ({run}/final). Cannot be combined with after.
+  string anchor = 5;
+  // Return the rows around a scroll position. Cannot be combined with after or anchor.
+  ActivityViewport viewport = 6;
+}
+// Summary of one Run Event. Contains no output or log text.
+message ActivityEventSummary {
+  // Payload bytes the Event returned to the caller. For run.ended, includes the Final Value.
+  optional int64 context_impact_bytes = 4;
+  // Position in the Run, starting at 1.
+  uint64 sequence = 1;
+  // Event kind, such as program.logged.
+  string kind = 2;
+  // When it happened.
+  int64 occurred_at_unix_nanos = 3;
+}
+// One child row of a Run, in order.
+message ActivityRunEntry {
+  // Exactly one is set. An Operation call appears once, not again at its end Event.
+  oneof record {
+    // An Operation call.
+    ActivityInvocation invocation = 1;
+    // An Event, without its payload.
+    ActivityEventSummary event = 2;
+  }
+}
+// A page of one Run's children.
+message BrowseRunEntriesResponse {
+  // Run summary.
+  ActivityRun run = 1;
+  // Children in order.
+  repeated ActivityRunEntry entries = 2;
+  // Pass as after to get the next page.
+  uint64 next_after = 3;
+  // More children follow this page.
+  bool has_more = 4;
+  // The Run has a Final Value, including null. Read it with InspectRun.
+  bool has_final_value = 5;
+  // The Task tool call that submitted this Run, if the caller can see it. Summary only.
+  ActivityInteraction submission = 6;
+  // Number of children the caller can see, including ones outside this page.
+  int64 total = 7;
+  // Position of the first returned child.
+  uint64 offset = 8;
+  // The viewport anchor is gone; the page starts at offset instead.
+  bool anchor_unavailable = 9;
+}
+// Selects one Event.
+message InspectRunEventRequest {
+  // workspaces/{workspace}/runs/{run}.
+  string run = 1;
+  // Event sequence number, 1 or more.
+  uint64 sequence = 2;
+}
+// One Event in full.
+message InspectRunEventResponse {
+  // Payload bytes the Event returned to the caller. For run.ended, includes the Final Value.
+  optional int64 context_impact_bytes = 3;
+  // The Event as recorded.
+  ActivityRunEvent event = 1;
+  // Summary of its Run, with a Task link if the caller can see the Task.
+  ActivityRun run = 2;
+}

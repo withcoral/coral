@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.brevo.com/docs/api-clients
+schema_version: 1
+id: brevo
+display_name: Brevo
+description: Contacts, campaigns, transactional messages and CRM resources from Brevo.
+source:
+  openapi:
+    url: https://api.brevo.com/v3/swagger_definition_v3.yml
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: API key
+      documentation_url: https://developers.brevo.com/docs/getting-started
+      fields:
+        api_key:
+          label: API key
+      headers:
+        api-key:
+          field: api_key
+icons:
+  light: logo.svg

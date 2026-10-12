@@ -1,19 +1,6 @@
-//! Implementation of `grpc.health.v1.Health` for the gRPC surface.
-//!
-//! The service separates the two questions orchestrators ask, because they
-//! demand opposite failure responses. The empty service name — the gRPC
-//! convention for overall server health, and what off-the-shelf probers query by
-//! default — answers process liveness from a constant: a live process must not
-//! report `NotServing` just because its engine is degraded, or a liveness prober
-//! restarts the container instead of removing it from rotation. Service
-//! readiness is a separate registered service, [`READINESS_SERVICE_NAME`], so a
-//! readiness probe can ask for it explicitly.
-//!
-//! Readiness asks whether this service can serve at all: it is up, and the
-//! database it reads and writes answers. It deliberately says nothing about any
-//! one workspace's catalog. A catalog answer would be a stronger signal, but it
-//! is a signal about a workspace and its sources rather than about this
-//! instance, and a probe that pulls a replica out of rotation cannot act on it.
+//! Application-owned readiness: database reachability with a bounded, cached,
+//! single-flight probe shared with listener composition. Transport modules only
+//! project its boolean answer. Workspace catalog readiness is a domain concern.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -22,17 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
 
-use tonic_health::pb::health_check_response::ServingStatus;
-use tonic_health::pb::health_server::Health;
-use tonic_health::pb::{HealthCheckRequest, HealthCheckResponse};
-
-use crate::state::db::CoralDb;
-
-/// Health service name reporting whether the service can reach its database.
-///
-/// Readiness lives under its own name so the default (empty-name) check stays a
-/// constant-time liveness answer. Probes that want service health ask for this.
-pub const READINESS_SERVICE_NAME: &str = "coral.readiness";
+use coral_db::Database;
 
 /// How long one readiness answer is reused.
 ///
@@ -50,10 +27,6 @@ const READINESS_CACHE_TTL: Duration = Duration::from_secs(2);
 /// how long an answer is waited for — the check itself runs to completion in
 /// the background — so a slow database converges to ready over successive polls
 /// rather than restarting a doomed check on every one.
-///
-/// Keep it below coral-mcp's `READINESS_TIMEOUT`, the client-side deadline the
-/// authenticated `/readyz` applies to this RPC, so the answer comes from here
-/// rather than from the client giving up. Changing either means revisiting both.
 const READINESS_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 type ReadinessFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
@@ -66,7 +39,7 @@ type ReadinessFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 /// from degenerating into a port check: the alternative — probing a data-plane
 /// RPC from outside — either needs a token or an authentication bypass.
 #[derive(Clone)]
-pub(super) struct EngineReadiness {
+pub struct EngineReadiness {
     probe: Arc<dyn Fn() -> ReadinessFuture + Send + Sync>,
     cached: Arc<Mutex<Option<(Instant, bool)>>>,
     /// The check currently running, shared by everyone waiting on it.
@@ -96,22 +69,28 @@ impl EngineReadiness {
     /// one that can reach it is as ready as an instance-wide probe can
     /// establish.
     ///
-    /// Readiness asks nothing about a workspace. Resolving a workspace's
+    /// Readiness asks nothing about a Workspace. Resolving a Workspace's
     /// catalog would report more, but what it reports is a property of that
-    /// workspace and the sources it names — which workspaces exist at all is a
-    /// tenancy question, and a source outside this deployment failing is not
+    /// Workspace and its Providers — which Workspaces exist at all is a
+    /// tenancy question, and an Upstream Service failing is not
     /// this replica being unfit to serve. Neither is something a probe that
     /// empties a fleet can act on.
-    pub(super) fn from_database(database: Arc<CoralDb>) -> Self {
+    #[must_use]
+    pub fn from_database(database: Arc<Database>) -> Self {
         Self::new(Arc::new(move || {
             let database = Arc::clone(&database);
             Box::pin(async move { database.ping().await.is_ok() })
         }))
     }
 
-    #[cfg(test)]
-    pub(super) fn fixed(ready: bool) -> Self {
-        Self::new(Arc::new(move || Box::pin(std::future::ready(ready))))
+    /// Returns the callback used by HTTP listener composition.
+    #[must_use]
+    pub fn probe(&self) -> coral_mcp::ReadinessProbe {
+        let readiness = self.clone();
+        Arc::new(move || {
+            let readiness = readiness.clone();
+            Box::pin(async move { readiness.is_ready().await })
+        })
     }
 
     /// Reads the cached answer while it is fresh, else waits on one probe.
@@ -126,7 +105,7 @@ impl EngineReadiness {
     /// reports ready — whereas cancelling it would discard the work and restart
     /// from nothing every time, and a database slower than the deadline could
     /// never report ready at all.
-    async fn is_ready(&self) -> bool {
+    pub async fn is_ready(&self) -> bool {
         if let Some(ready) = self.fresh_answer() {
             return ready;
         }
@@ -203,110 +182,36 @@ impl EngineReadiness {
     }
 }
 
-pub(super) struct AggregateHealthService {
-    readiness: EngineReadiness,
-}
-
-impl AggregateHealthService {
-    pub(super) fn new(readiness: EngineReadiness) -> Self {
-        Self { readiness }
-    }
-}
-
-impl std::fmt::Debug for AggregateHealthService {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("AggregateHealthService")
-            .finish_non_exhaustive()
-    }
-}
-
-pub(super) type HealthWatchStream = Pin<
-    Box<
-        dyn tonic::codegen::tokio_stream::Stream<Item = Result<HealthCheckResponse, tonic::Status>>
-            + Send,
-    >,
->;
-
-#[tonic::async_trait]
-impl Health for AggregateHealthService {
-    async fn check(
-        &self,
-        request: tonic::Request<HealthCheckRequest>,
-    ) -> Result<tonic::Response<HealthCheckResponse>, tonic::Status> {
-        let status = match request.get_ref().service.as_str() {
-            // Process liveness: answered from a constant so a degraded service
-            // never tells a liveness prober to restart the process.
-            "" => ServingStatus::Serving,
-            READINESS_SERVICE_NAME if self.readiness.is_ready().await => ServingStatus::Serving,
-            READINESS_SERVICE_NAME => ServingStatus::NotServing,
-            _ => return Err(tonic::Status::not_found("service not registered")),
-        };
-        Ok(tonic::Response::new(HealthCheckResponse {
-            status: status as i32,
-        }))
-    }
-
-    type WatchStream = HealthWatchStream;
-
-    async fn watch(
-        &self,
-        _request: tonic::Request<HealthCheckRequest>,
-    ) -> Result<tonic::Response<Self::WatchStream>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "health watch is not supported",
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use tempfile::TempDir;
-    use tonic_health::pb::HealthCheckRequest;
-    use tonic_health::pb::health_check_response::ServingStatus;
-    use tonic_health::pb::health_server::Health as _;
-
-    use super::{
-        AggregateHealthService, EngineReadiness, READINESS_PROBE_TIMEOUT, READINESS_SERVICE_NAME,
-    };
-    use crate::state::AppStateLayout;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
+    use super::{EngineReadiness, READINESS_PROBE_TIMEOUT};
+    use coral_test_support::TestDatabase;
 
     /// One instance's own migrated database, with the readiness probe the
     /// server mounts over it.
     struct ReadinessFixture {
-        _temp: TempDir,
-        db: Arc<CoralDb>,
+        database: TestDatabase,
         readiness: EngineReadiness,
     }
 
     async fn readiness_fixture() -> ReadinessFixture {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
-        else {
-            panic!("the default test database is sqlite")
-        };
-        let db = Arc::new(
-            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-                .await
-                .expect("open sqlite"),
-        );
-        db.migrate().await.expect("migrate sqlite");
+        let database = TestDatabase::new(&crate::state::current_migrator())
+            .await
+            .expect("migrated database");
+        coral_search::prepare_storage(database.database().as_ref())
+            .await
+            .expect("prepare search storage");
         ReadinessFixture {
-            _temp: temp,
-            readiness: EngineReadiness::from_database(Arc::clone(&db)),
-            db,
+            readiness: EngineReadiness::from_database(database.database()),
+            database,
         }
     }
 
-    /// A fresh install owns no workspace and no source. Readiness is a question
+    /// A fresh install owns no Workspace or Provider. Readiness is a question
     /// about this service, not about what has been put in it, so an empty
     /// instance whose database answers is ready to serve.
     #[tokio::test]
@@ -322,56 +227,12 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_database_reports_unready() {
         let fixture = readiness_fixture().await;
-        fixture.db.close_for_tests().await;
+        fixture.database.database().close().await;
 
         assert!(
             !fixture.readiness.is_ready().await,
             "a server that cannot reach its database is not ready to serve"
         );
-    }
-
-    async fn check(service: &str, ready: bool) -> Result<i32, tonic::Status> {
-        AggregateHealthService::new(EngineReadiness::fixed(ready))
-            .check(tonic::Request::new(HealthCheckRequest {
-                service: service.to_string(),
-            }))
-            .await
-            .map(|response| response.into_inner().status)
-    }
-
-    #[tokio::test]
-    async fn liveness_stays_serving_while_the_service_is_unready() {
-        for ready in [true, false] {
-            assert_eq!(
-                check("", ready).await.expect("liveness check"),
-                ServingStatus::Serving as i32,
-                "liveness must not follow service readiness"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn the_readiness_service_reports_service_readiness() {
-        assert_eq!(
-            check(READINESS_SERVICE_NAME, true)
-                .await
-                .expect("readiness check"),
-            ServingStatus::Serving as i32
-        );
-        assert_eq!(
-            check(READINESS_SERVICE_NAME, false)
-                .await
-                .expect("readiness check"),
-            ServingStatus::NotServing as i32
-        );
-    }
-
-    #[tokio::test]
-    async fn other_service_names_are_not_registered() {
-        let error = check("coral.v1.QueryService", true)
-            .await
-            .expect_err("unknown services must not resolve");
-        assert_eq!(error.code(), tonic::Code::NotFound);
     }
 
     #[tokio::test]
@@ -391,34 +252,6 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "the unauthenticated readiness check must not hit the database per request"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_caller_racing_probe_completion_reuses_the_answer_it_missed() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counted = Arc::clone(&calls);
-        let readiness = EngineReadiness::new(Arc::new(move || {
-            counted.fetch_add(1, Ordering::SeqCst);
-            Box::pin(std::future::ready(true))
-        }));
-
-        // Leaves the cache fresh and the slot empty — the state a caller sees
-        // when it reads the cache just before a probe records its answer and
-        // then reaches the slot just after that probe vacates it. Calling
-        // `in_flight_probe` directly is that interleaving without the timing.
-        assert!(readiness.is_ready().await);
-        let mut answer = readiness.in_flight_probe();
-
-        assert_eq!(
-            *answer.borrow_and_update(),
-            Some(true),
-            "the racing caller must be handed the answer already in the cache"
-        );
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "losing the race to a finished probe must not buy a second database round trip"
         );
     }
 

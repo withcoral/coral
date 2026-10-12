@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.klaviyo.com/en/docs/connect_to_the_klaviyo_mcp_server
+# Official brand asset: https://www.klaviyo.com/icons/icon-48x48.png
+# Klaviyo exposes all tools by default and selects account permissions during consent. Resource and issuer
+# metadata advertise no scopes. Omit read-only=true to retain write tools.
+schema_version: 1
+id: klaviyo_mcp
+service: klaviyo
+display_name: Klaviyo
+description: Profiles, campaigns, flows and marketing actions from Klaviyo.
+source:
+  mcp:
+    url: https://mcp.klaviyo.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Klaviyo
+      documentation_url: https://developers.klaviyo.com/en/docs/connect_to_the_klaviyo_mcp_server
+      flow: authorization_code
+icons:
+  light: logo.png
+  dark: logo-dark.png

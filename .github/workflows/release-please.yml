@@ -1,9 +1,15 @@
 name: release-please
+
+# Opens the release PR that moves the runtime (Cargo.toml) and Desktop
+# (apps/desktop/package.json) to one version, and publishes the release that
+# starts release.yml. release-please-config.json lists the files it moves.
 on:
   push:
     branches: [main]
+
 permissions:
   contents: read
+
 concurrency:
   group: release-please
   cancel-in-progress: false
@@ -11,13 +17,15 @@ concurrency:
 jobs:
   release-please:
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
     environment: release
     permissions:
       contents: write
       pull-requests: write
     steps:
+      # A release created with GITHUB_TOKEN would not start release.yml.
       - name: Create GitHub App token
-        id: github-app-token
+        id: token
         uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
         with:
           app-id: ${{ vars.RELEASE_APP_ID }}
@@ -25,68 +33,40 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-          repositories: coral
+          repositories: ${{ github.event.repository.name }}
 
       - name: Run release-please
         id: rp
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
-          token: ${{ steps.github-app-token.outputs.token }}
+          token: ${{ steps.token.outputs.token }}
 
-      # When release-please opens or updates a release PR, Cargo.toml's
-      # [workspace.package].version changes but Cargo.lock's entries for
-      # our workspace crates still point at the old version. `make
-      # rust-checks` uses --locked, so we regenerate the lockfile on the
-      # PR branch to keep it in sync.
-      - name: Check out release PR branch
-        if: steps.rp.outputs.pr
+      # The release PR moves the workspace version in Cargo.toml, but not the
+      # workspace crates' entries in Cargo.lock, which --locked builds check.
+      - name: Check out the release PR branch
+        if: ${{ steps.rp.outputs.pr }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
-          token: ${{ steps.github-app-token.outputs.token }}
           persist-credentials: false
 
       - name: Install Rust toolchain
-        if: steps.rp.outputs.pr
+        if: ${{ steps.rp.outputs.pr }}
         run: rustup show
 
-      - name: Sync Cargo.lock to new workspace version
-        if: steps.rp.outputs.pr
+      - name: Sync Cargo.lock to the new version
+        if: ${{ steps.rp.outputs.pr }}
+        env:
+          PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
+          GH_APP_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -euo pipefail
           cargo update --workspace
           if git diff --quiet -- Cargo.lock; then
-            echo "Cargo.lock already up to date."
+            echo "Cargo.lock is up to date."
             exit 0
           fi
           git config user.name "release-please[bot]"
           git config user.email "release-please[bot]@users.noreply.github.com"
-          git add Cargo.lock
-          git commit -m "chore: sync Cargo.lock"
-
-      # release-please updates CHANGELOG.md on the release PR, so this
-      # is the right place to regenerate the docs page that mirrors it.
-      # The MDX and nav update land in the same PR and merge together,
-      # so docs on `main` do not lag CHANGELOG.md.
-      - name: Regenerate changelog docs
-        if: steps.rp.outputs.pr
-        run: |
-          set -euo pipefail
-          make docs-generate
-          if git diff --quiet -- apps/docs/project/changelog.mdx apps/docs/docs.json; then
-            echo "Changelog docs already up to date."
-            exit 0
-          fi
-          git config user.name "release-please[bot]"
-          git config user.email "release-please[bot]@users.noreply.github.com"
-          git add apps/docs/project/changelog.mdx apps/docs/docs.json
-          git commit -m "chore: regenerate changelog docs"
-
-      - name: Push regenerated changes
-        if: steps.rp.outputs.pr
-        env:
-          PR_BRANCH: ${{ fromJSON(steps.rp.outputs.pr || '{}').headBranchName }}
-          GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
-        run: |
-          set -euo pipefail
+          git commit -m "chore: sync Cargo.lock" -- Cargo.lock
           git push "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${PR_BRANCH}"

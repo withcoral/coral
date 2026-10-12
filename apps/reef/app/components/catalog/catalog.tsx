@@ -1,0 +1,182 @@
+import classNames from 'classnames'
+import { useCallback, useRef, type MouseEvent, type ReactNode } from 'react'
+import { Link } from 'react-router'
+
+import { Button, Inputs, ScrollArea, Typography } from '@/wax/components'
+import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+
+import * as styles from './catalog.css'
+
+export { railItem } from './catalog.css'
+
+/**
+ * A catalog page: a filterable rail of groups on the left and the grouped table
+ * of their members on the right. Providers and Functions share it.
+ */
+export function CatalogLayout({ rail, children }: { rail: ReactNode; children: ReactNode }) {
+  return (
+    <div className={styles.layout}>
+      {rail}
+      <main className={styles.main}>
+        <div className={styles.stack}>{children}</div>
+      </main>
+    </div>
+  )
+}
+
+export interface FilterFieldProps {
+  id?: string
+  /** The visible label, accessible name, and placeholder. */
+  label: string
+  value: string
+  onChange: (value: string) => void
+  className?: string
+}
+
+/** The filter's input; its placeholder names it. */
+export function FilterField({ className, ...filter }: FilterFieldProps) {
+  return (
+    <div className={classNames(styles.filterField, className)}>
+      <FilterInput {...filter} />
+    </div>
+  )
+}
+
+function FilterInput({
+  id,
+  label,
+  value,
+  onChange,
+  ref,
+}: FilterFieldProps & { ref?: React.Ref<HTMLInputElement> }) {
+  return (
+    <Inputs.TextInput
+      ref={ref}
+      id={id}
+      ariaLabel={label}
+      value={value}
+      onChange={onChange}
+      placeholder={label}
+      type="search"
+    />
+  )
+}
+
+/** The rail: its filter, then one entry per group, or `emptyMessage` when none match. */
+export function CatalogRail({
+  label,
+  filter,
+  empty,
+  emptyMessage,
+  children,
+}: {
+  /** Names the rail and its list for assistive technology. */
+  label: string
+  filter: FilterFieldProps
+  empty: boolean
+  emptyMessage: string
+  children: ReactNode
+}) {
+  return (
+    <aside className={styles.rail} aria-label={label}>
+      <FilterField {...filter} />
+      <ScrollArea.Container
+        className={styles.railScroll}
+        constrainWidth
+        fade="none"
+        height="auto"
+        scrollDirection="vertical"
+      >
+        <nav className={styles.railList} aria-label={label}>
+          {children}
+          {empty && <Typography.BodySmall as="p">{emptyMessage}</Typography.BodySmall>}
+        </nav>
+      </ScrollArea.Container>
+    </aside>
+  )
+}
+
+/**
+ * One rail entry. A plain click selects it in place; a modified click is the
+ * browser's, so a new tab gets the address.
+ */
+export function CatalogRailItem({
+  to,
+  current,
+  onSelect,
+  leading,
+  name,
+  count,
+  trailing,
+}: {
+  to: string
+  current: boolean
+  onSelect: () => void
+  leading?: ReactNode
+  name: string
+  /** A count beside the name; omit it when `trailing` shows something in its place. */
+  count?: number
+  trailing?: ReactNode
+}) {
+  return (
+    <div className={styles.railItem} data-current={current ? 'page' : undefined}>
+      <Button.Container
+        as={Link}
+        aria-current={current ? 'page' : undefined}
+        className={styles.railLink}
+        onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
+          event.preventDefault()
+          onSelect()
+        }}
+        to={to}
+        replace
+        preventScrollReset
+        variant="bare"
+      >
+        {leading}
+        <span className={styles.railName}>{name}</span>
+        {count !== undefined && <span className={styles.railCount}>{count}</span>}
+      </Button.Container>
+      {trailing}
+    </div>
+  )
+}
+
+/**
+ * The one row above the table: `leading` controls at the start, then any
+ * other controls and the filter's input at the end.
+ */
+export function CatalogToolbar({
+  filter,
+  leading,
+  children,
+}: {
+  filter: FilterFieldProps & {
+    /** A shortcut, such as "$mod+f", that focuses the filter from anywhere on the page. */
+    shortcut?: string
+  }
+  /** Controls at the start of the row, such as actions on the selection. */
+  leading?: ReactNode
+  children?: ReactNode
+}) {
+  const { shortcut, ...field } = filter
+  const input = useRef<HTMLInputElement>(null)
+  const focusFilter = useCallback((event: KeyboardEvent) => {
+    event.preventDefault()
+    input.current?.focus()
+    input.current?.select()
+  }, [])
+  return (
+    <div className={styles.toolbar}>
+      <div className={styles.toolbarGroup}>{leading}</div>
+      <div className={styles.toolbarGroup}>
+        {children}
+        <div className={classNames(styles.toolbarFilter, field.className)}>
+          <FilterInput {...field} ref={input} />
+          {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
+        </div>
+      </div>
+    </div>
+  )
+}

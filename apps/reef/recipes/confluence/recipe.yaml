@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.atlassian.com/cloud/confluence/rest/v2/intro/
+# Official brand asset: https://www.atlassian.com/favicon.ico
+schema_version: 1
+id: confluence
+display_name: Confluence
+description: Pages, spaces, comments, attachments and content properties from Confluence Cloud.
+source:
+  openapi:
+    url: https://dac-static.atlassian.com/cloud/confluence/openapi-v2.v3.json
+authentication:
+  options:
+    api_token:
+      method: basic_auth
+      label: Unscoped API token
+      documentation_url: https://developer.atlassian.com/cloud/confluence/basic-auth-for-rest-apis/
+      fields:
+        username:
+          label: Atlassian account email
+          sensitive: false
+        password:
+          label: Unscoped API token
+      username:
+        field: username
+      password:
+        field: password
+inputs:
+  tenant_domain:
+    type: hostname
+    label: Confluence site hostname
+    documentation_url: https://developer.atlassian.com/cloud/confluence/rest/v2/intro/
+servers:
+  '#/servers':
+    base_url: https://{{input.tenant_domain}}/wiki/api/v2
+icons:
+  light: logo.svg

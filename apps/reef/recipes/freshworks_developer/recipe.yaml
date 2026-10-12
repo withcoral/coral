@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.freshworks.com/docs/agentic-dev-tools/mcp-server/
+# Official brand asset: https://www.freshworks.com/favicon.ico
+# OAuth scope choices come from discovered provider metadata or app settings.
+schema_version: 1
+id: freshworks_developer
+display_name: Freshworks Developer
+description: App builds, submissions and marketplace development workflows from Freshworks Developer.
+source:
+  mcp:
+    url: https://mcp.freshworks.dev/mcp
+authentication:
+  options:
+    api_key:
+      method: bearer
+      label: Developer API key
+      documentation_url: https://developers.freshworks.com/docs/agentic-dev-tools/mcp-server/
+      description: Create an API key in the Freshworks Application Management Portal.
+icons:
+  light: logo.png

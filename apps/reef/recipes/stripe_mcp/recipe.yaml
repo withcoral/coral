@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.stripe.com/mcp
+# Official brand asset: https://images.stripeassets.com/fzn2n1nzq965/1hgcBNd12BfT9VLgbId7By/01d91920114b124fb4cf6d448f9f06eb/favicon.svg
+schema_version: 1
+id: stripe_mcp
+service: stripe
+display_name: Stripe
+description: Payments, customers, subscriptions and billing from Stripe.
+source:
+  mcp:
+    url: https://mcp.stripe.com
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Stripe
+      flow: authorization_code
+      documentation_url: https://docs.stripe.com/mcp
+    agent_key:
+      method: bearer
+      label: Agent API key
+      documentation_url: https://docs.stripe.com/keys
+      description: Create an agent API key with the permissions that you need.
+icons:
+  light: logo.svg

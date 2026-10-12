@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.incident.io/ai/remote-mcp
+schema_version: 1
+id: incident_io
+display_name: incident.io
+description: Incidents, alerts, schedules and escalations from incident.io.
+source:
+  mcp:
+    url: https://mcp.incident.io/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with incident.io
+      flow: authorization_code
+      documentation_url: https://docs.incident.io/ai/remote-mcp
+      client:
+        id: incident-mcp
+        authentication: none
+      # Permissions are selected in incident.io; no scopes are requested.
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://docs.incident.io/ai/remote-mcp
+icons:
+  light: logo.svg

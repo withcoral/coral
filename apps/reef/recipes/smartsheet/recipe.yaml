@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.smartsheet.com/api/smartsheet/introduction
+# ADMIN_SHEETS: Modify sheet structure, including column definition, publish state, etc.
+# ADMIN_SIGHTS: Modify dashboards structure.
+# ADMIN_USERS: Add and remove users from your Smartsheet organization account; create groups and manage membership.
+# ADMIN_WEBHOOKS: Create, delete, and update webhooks; get all webhooks; reset shared secret.
+# ADMIN_WORKSPACES: Create and manage workspaces and folders, including sharing.
+# CREATE_SHEETS: Create new sheets.
+# CREATE_SIGHTS: Create new dashboards.
+# DELETE_SHEETS: Delete sheets.
+# DELETE_SIGHTS: Delete dashboards.
+# READ_CONTACTS: Retrieve contacts.
+# READ_EVENTS: Retrieve events.
+# READ_SHEETS: Read all sheet data, including attachments, discussions, and cell data.
+# READ_SIGHTS: Read all dashboards data.
+# READ_USERS: Retrieve users and groups for your Smartsheet organization account.
+# SHARE_SHEETS: Share sheets, including sending sheets as attachments.
+# SHARE_SIGHTS: Share dashboards.
+# WRITE_SHEETS: Insert and modify sheet data, including attachments, discussions, and cell data.
+schema_version: 1
+id: smartsheet
+display_name: Smartsheet
+description: Sheets, rows, reports, dashboards and workspaces from Smartsheet.
+source:
+  openapi:
+    url: https://developers.smartsheet.com/_spec/api/smartsheet/openapi.yaml
+authentication:
+  options:
+    api_token:
+      method: bearer
+      label: API access token
+      documentation_url: https://help.smartsheet.com/articles/2482389-generate-API-key
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      description: Create an OAuth app. Select your API region. Register the callback URL shown during setup.
+      documentation_url: https://developers.smartsheet.com/api/smartsheet/guides/advanced-topics/oauth
+      authorization_url: https://app.{{input.region}}/b/authorize
+      token_url: https://api.{{input.region}}/2.0/token
+      client:
+        authentication: client_secret_post
+      pkce: disabled
+      scopes:
+        - ADMIN_SHEETS
+        - ADMIN_SIGHTS
+        - ADMIN_USERS
+        - ADMIN_WEBHOOKS
+        - ADMIN_WORKSPACES
+        - CREATE_SHEETS
+        - CREATE_SIGHTS
+        - DELETE_SHEETS
+        - DELETE_SIGHTS
+        - READ_CONTACTS
+        - READ_EVENTS
+        - READ_SHEETS
+        - READ_SIGHTS
+        - READ_USERS
+        - SHARE_SHEETS
+        - SHARE_SIGHTS
+        - WRITE_SHEETS
+  default: api_token
+inputs:
+  region:
+    type: hostname
+    label: API region
+    documentation_url: https://help.smartsheet.com/articles/2483732-access-smartsheet-amazon-quick
+    default: smartsheet.com
+    enum:
+      - smartsheet.com
+      - smartsheet.eu
+      - smartsheet.au
+servers:
+  '#/servers':
+    base_url: https://api.{{input.region}}/2.0
+icons:
+  light: logo.png

@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://learn.hex.tech/docs/api-integrations/mcp-server
+# Beta on Team and Enterprise; Explorer role or higher. EU and single-tenant accounts use their own endpoint.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+# Official logo: https://hex.tech/favicon.svg
+schema_version: 1
+id: hex
+display_name: Hex
+description: Projects, queries and data apps from Hex.
+source:
+  mcp:
+    url: https://{{input.hostname}}/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://learn.hex.tech/docs/api-integrations/mcp-server
+      flow: authorization_code
+    device_code:
+      method: oauth_discovery
+      label: Sign in with a device code
+      documentation_url: https://learn.hex.tech/docs/api-integrations/mcp-server
+      flow: device_code
+  default: oauth
+icons:
+  light: hex.svg
+inputs:
+  hostname:
+    type: hostname
+    label: Hex workspace hostname
+    description: Enter app.hex.tech, eu.hex.tech, hc.hex.tech or your single-tenant hostname.
+    default: app.hex.tech
+    documentation_url: https://learn.hex.tech/docs/api-integrations/mcp-server

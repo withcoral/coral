@@ -1,0 +1,39 @@
+import { Form } from 'react-router'
+import { Button } from '@/wax/components'
+
+/** One click to your own account: POSTs to the provider's connect route. */
+export function ConnectButton({
+  action,
+  csrf,
+  requestId,
+  label,
+  ariaLabel,
+  primary = true,
+  disabled,
+}: {
+  action: string
+  csrf: string
+  /** Replays one authorization if the same click is submitted twice. */
+  requestId?: string
+  label: string
+  ariaLabel?: string
+  primary?: boolean
+  disabled?: boolean
+}) {
+  // The provider's sign-in is another site, so the browser loads the response itself.
+  return (
+    <Form method="post" action={action} reloadDocument>
+      <input type="hidden" name="csrf" value={csrf} />
+      <input type="hidden" name="intent" value="connect" />
+      {requestId && <input type="hidden" name="requestId" value={requestId} />}
+      <Button.TextButton
+        type="submit"
+        variant={primary ? 'primary' : 'secondary'}
+        disabled={disabled}
+        aria-label={ariaLabel}
+      >
+        {label}
+      </Button.TextButton>
+    </Form>
+  )
+}

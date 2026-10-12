@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/
+# Scopes come from public OAuth metadata.
+schema_version: 1
+id: cloudflare_api
+display_name: Cloudflare
+description: DNS, Workers, storage, security and account resources from Cloudflare.
+source:
+  mcp:
+    url: https://mcp.cloudflare.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Cloudflare
+      flow: authorization_code
+      documentation_url: https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/
+    api_token:
+      method: bearer
+      label: Paste an API token
+      documentation_url: https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/
+  default: oauth
+icons:
+  light: logo.svg

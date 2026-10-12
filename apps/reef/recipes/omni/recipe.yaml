@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.omni.co/ai/mcp/authentication
+# OAuth and API keys use different official URLs; choose the matching URL in provider setup.
+# Scopes come from public OAuth metadata.
+schema_version: 1
+id: omni
+display_name: Omni
+description: Models, topics, queries and workbooks from Omni.
+source:
+  mcp:
+    url: '{{input.mcp_url}}'
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Omni
+      flow: authorization_code
+      documentation_url: https://docs.omni.co/ai/mcp/authentication
+    api_key:
+      method: bearer
+      label: Paste an API key
+      documentation_url: https://docs.omni.co/ai/mcp/authentication
+  default: oauth
+inputs:
+  mcp_url:
+    type: url
+    label: Omni MCP URL
+    default: https://callbacks.omniapp.co/callback/mcp
+    description: For API keys, enter your instance URL ending in /mcp/https.
+icons:
+  light: logo.svg

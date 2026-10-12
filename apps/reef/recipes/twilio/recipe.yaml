@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.twilio.com/docs/openapi
+schema_version: 1
+id: twilio
+display_name: Twilio
+description: Messages, calls, recordings, numbers and account resources from Twilio.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/twilio/twilio-oai/main/spec/json/twilio_api_v2010.json
+authentication:
+  default: api_key
+  options:
+    api_key:
+      method: basic_auth
+      label: API key secret
+      documentation_url: https://www.twilio.com/docs/usage/requests-to-twilio
+      fields:
+        username:
+          label: API key SID
+          sensitive: false
+        password:
+          label: API key secret
+      username:
+        field: username
+      password:
+        field: password
+    account_token:
+      method: basic_auth
+      label: Auth token
+      documentation_url: https://www.twilio.com/docs/usage/requests-to-twilio
+      fields:
+        username:
+          label: Account SID
+          sensitive: false
+        password:
+          label: Auth token
+      username:
+        field: username
+      password:
+        field: password
+icons:
+  light: logo.svg

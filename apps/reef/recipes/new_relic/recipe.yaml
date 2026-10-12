@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.newrelic.com/docs/agentic-ai/mcp/setup/
+# Official brand asset: https://newrelic.com/themes/custom/erno/assets/images/metadata/favicon-16x16.png
+schema_version: 1
+id: new_relic
+display_name: New Relic
+description: Telemetry, entities, alerts and deployments from New Relic.
+source:
+  mcp:
+    url: https://mcp.newrelic.com/mcp/
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with New Relic
+      flow: authorization_code
+      documentation_url: https://docs.newrelic.com/docs/agentic-ai/mcp/setup/
+icons:
+  light: logo.svg

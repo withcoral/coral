@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.databricks.com/aws/en/agents/mcp-tools/authentication-networking
+# Owner registers the OAuth client; ai-gateway grants MCP access and offline_access grants refresh tokens.
+schema_version: 1
+id: databricks
+display_name: Databricks
+description: Registered tools, catalogs and data services from Databricks.
+source:
+  mcp:
+    url: '{{input.mcp_url}}'
+authentication:
+  options:
+    pat:
+      method: bearer
+      label: Paste a personal access token
+      documentation_url: https://docs.databricks.com/aws/en/agents/mcp-tools/authentication-networking
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Databricks
+      flow: authorization_code
+      documentation_url: https://docs.databricks.com/aws/en/agents/mcp-tools/authentication-networking
+      description: Configure your OAuth application before you sign in.
+      client:
+        authentication: none
+      scopes:
+        - ai-gateway
+        - offline_access
+  default: pat
+inputs:
+  mcp_url:
+    type: url
+    label: Databricks MCP service URL
+    description: Enter the complete URL of your registered AI Gateway MCP service. Include its endpoint path.
+icons:
+  light: logo.svg

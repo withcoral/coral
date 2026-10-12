@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://mcp.sentry.dev/
+schema_version: 1
+id: sentry_mcp
+service: sentry
+display_name: Sentry
+description: Issues, performance and projects from Sentry.
+source:
+  mcp:
+    url: https://mcp.sentry.dev/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Sentry (MCP)
+      flow: authorization_code
+      documentation_url: https://mcp.sentry.dev/
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

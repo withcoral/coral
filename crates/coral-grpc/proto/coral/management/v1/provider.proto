@@ -1,0 +1,894 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// Provider Setup: pinned inputs, setup-scoped credentials, and safe progress.
+// Reef audience only. No descriptor, credential material, or private Generation
+// is ever returned.
+service ProviderSetupService {
+  // Pins one exact input, acquiring a remote source once; never refetched at Publication.
+  rpc CreateProviderSetup(CreateProviderSetupRequest) returns (ProviderSetup);
+  // Inspects safe Setup progress for the inspecting User.
+  rpc GetProviderSetup(GetProviderSetupRequest) returns (ProviderSetup);
+  // Confirms secret-free configuration before account authorization.
+  rpc ConfirmProviderSetupConfiguration(ConfirmProviderSetupConfigurationRequest) returns (ProviderSetup);
+  // Seals one bearer or header secret for this Setup and User; creates no runtime Account.
+  // For a ready Setup, authorization fields report this submission's grant,
+  // not a later concurrent grant.
+  rpc AuthorizeProviderSetup(AuthorizeProviderSetupRequest) returns (ProviderSetup);
+  // Starts or restarts the setup-scoped OAuth Authorization for a Setup awaiting
+  // authorization, or for a ready Setup whose contract is OAuth and which holds
+  // no material. The request names the OAuth application: automatic bootstrap
+  // under the operator's client bootstrap policy, as OAuthApplication.automatic
+  // describes (MCP only), or an explicit public client identifier used as given.
+  rpc StartProviderSetupAuthorization(StartProviderSetupAuthorizationRequest) returns (ProviderSetup);
+  // Retries authenticated discovery with the sealed credential, without new consent.
+  rpc RetryProviderSetupDiscovery(RetryProviderSetupDiscoveryRequest) returns (ProviderSetup);
+  // Abandons an unconsumed Setup and scrubs any sealed material.
+  rpc CancelProviderSetup(CancelProviderSetupRequest) returns (ProviderSetup);
+}
+
+// Workspace-owned Providers. Every mutation requires current Owner authority.
+service ProviderService {
+  // Reads safe OAuth application settings without its secret.
+  rpc GetProviderOAuthClient(GetProviderOAuthClientRequest) returns (ProviderOAuthClient);
+  // Replaces only the write-only application secret, not account authorization.
+  rpc RotateProviderOAuthClientSecret(RotateProviderOAuthClientSecretRequest) returns (google.protobuf.Empty);
+  // Builds outside the write transaction and atomically commits one exact request outcome.
+  rpc PublishProvider(PublishProviderRequest) returns (ProviderPublication);
+  // Lists the Workspace's Providers with caller-specific readiness.
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+  // Inspects one exact Workspace Provider.
+  rpc GetProvider(GetProviderRequest) returns (Provider);
+  // Reads source provenance for the current Workspace Owner only.
+  rpc GetProviderSource(GetProviderSourceRequest) returns (ProviderSource);
+  // Changes display metadata without changing identity or namespace.
+  rpc UpdateProvider(UpdateProviderRequest) returns (Provider);
+  // Blocks new Invocations and later pre-dispatch work without deleting credentials.
+  rpc DisableProvider(DisableProviderRequest) returns (Provider);
+  // Restores otherwise-current Provider access.
+  rpc RestoreProvider(RestoreProviderRequest) returns (Provider);
+  // Removes current configuration and credentials, preserving retained history.
+  rpc DeleteProvider(DeleteProviderRequest) returns (google.protobuf.Empty);
+  // Lists current catalog metadata, including unavailable Operations.
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+}
+
+// Reversible lifecycle, separate from caller-specific readiness.
+enum ProviderState {
+  // Not supplied or not recognized by this client.
+  PROVIDER_STATE_UNSPECIFIED = 0;
+  // Permits otherwise-authorized admission and dispatch.
+  PROVIDER_STATE_ACTIVE = 1;
+  // Blocks admission and pending dispatch without deleting current configuration.
+  PROVIDER_STATE_DISABLED = 2;
+}
+
+// Effect hints the upstream definition declared. An unset hint is undeclared;
+// Coral never assumes a protocol default.
+message OperationHints {
+  // The Operation declares that it changes nothing.
+  optional bool read_only = 1;
+  // The Operation declares that it may destroy data.
+  optional bool destructive = 2;
+  // The Operation declares that repeating a call has no further effect.
+  optional bool idempotent = 3;
+  // The Operation declares that it reaches entities outside the Provider.
+  optional bool open_world = 4;
+}
+
+// Derived for the exact inspecting caller; never a stored readiness flag.
+enum ProviderBlocker {
+  // Not supplied or not recognized by this client.
+  PROVIDER_BLOCKER_UNSPECIFIED = 0;
+  // Workspace lifecycle prevents use.
+  PROVIDER_BLOCKER_WORKSPACE_ARCHIVED = 1;
+  // Provider lifecycle prevents use.
+  PROVIDER_BLOCKER_PROVIDER_DISABLED = 2;
+  // The inspected Agent needs its own Account before discovery; not a configuration
+  // failure. A User's own Account is never reported here.
+  PROVIDER_BLOCKER_CALLER_ACCOUNT_REQUIRED = 4;
+  // No Operation passes structural availability and current policy.
+  PROVIDER_BLOCKER_NO_OPERATIONS_READY = 5;
+  // An Owner must connect the Provider's shared Account.
+  PROVIDER_BLOCKER_SHARED_ACCOUNT_REQUIRED = 6;
+  // The Provider requires credentials but its setting supplies none.
+  PROVIDER_BLOCKER_ACCOUNT_SETTING_INCOMPATIBLE = 7;
+}
+
+// One Provider at workspaces/{workspace}/providers/{provider}.
+message Provider {
+  // Canonical resource name containing the immutable Workspace and Provider IDs.
+  string name = 1;
+  // Mutable human-facing display name, not the Program namespace.
+  string display_name = 2;
+  // Current reversible lifecycle state.
+  ProviderState state = 3;
+  // Concurrency token for current configuration and lifecycle.
+  string etag = 5;
+  // Immutable Program namespace, unique in the Workspace.
+  string namespace = 6;
+  // Current account-selection setting, never credential material.
+  CredentialRoute credential_route = 7;
+  // Independent authority version for credential-route changes.
+  int64 account_setting_version = 8;
+  // Derived configuration and inspected-Agent blockers from one read snapshot.
+  repeated ProviderBlocker blockers = 9;
+}
+
+// Lists Providers owned by one authorized Workspace.
+message ListProvidersRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Maximum results, bounded to 100; zero selects the default.
+  int32 page_size = 2;
+  // Opaque continuation from the preceding page in this scope.
+  string page_token = 3;
+}
+
+// One scoped page of current Providers.
+message ListProvidersResponse {
+  // Providers visible to the inspecting User.
+  repeated Provider providers = 1;
+  // Empty when no further page remains.
+  string next_page_token = 2;
+}
+
+// Inspects one current Provider without a Generation selector.
+message GetProviderRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+}
+
+// Inspects source provenance without returning a descriptor or credentials.
+message GetProviderSourceRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+}
+
+// Latest successfully published source, including canonical no-change publications.
+message ProviderSource {
+  // Empty for an uploaded document: refreshing requires a new upload.
+  string url = 1;
+  // Protocol of the current published input.
+  ProviderSetupInputKind kind = 2;
+}
+
+// Reversibly disables the exact current Provider.
+message DisableProviderRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+  // Required current Provider concurrency token.
+  string etag = 2;
+}
+
+// Restores the exact disabled Provider without reconnecting an account.
+message RestoreProviderRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+  // Required current Provider concurrency token.
+  string etag = 2;
+}
+
+// Removes current configuration and releases the namespace; retained history survives.
+message DeleteProviderRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+  // Required current Provider concurrency token.
+  string etag = 2;
+}
+
+// Reads the Provider's current administrative catalog.
+message ListOperationsRequest {
+  // Exact Provider resource.
+  string parent = 1;
+  // Maximum results, bounded to 100; zero selects the default.
+  int32 page_size = 2;
+  // Opaque continuation from the preceding page for this Provider.
+  string page_token = 3;
+}
+
+// Safe complete catalog metadata, including structurally unavailable Operations.
+message ProviderOperation {
+  // {provider}/operations/{encoded Operation Key}; not a separate entity identity.
+  string name = 1;
+  // Operation path relative to the immutable Provider namespace.
+  string relative_path = 2;
+  // Safe upstream-authored summary.
+  string summary = 3;
+  reserved 4;
+  reserved "effect";
+  // Structural invocability, independent of credentials and approval.
+  bool available = 5;
+  // Safe structural diagnostics for unavailable Operations.
+  repeated ProviderDiagnostic diagnostics = 6;
+  // Safe upstream-authored grouping metadata.
+  repeated string tags = 7;
+  // Safe complete upstream-authored description.
+  string description = 8;
+  // Declared effect hints; a declared read-only hint sets the policy default.
+  OperationHints hints = 9;
+}
+
+// One page of administrative Operation metadata.
+message ListOperationsResponse {
+  // Current Operations in canonical order.
+  repeated ProviderOperation operations = 1;
+  // Empty when no further page remains.
+  string next_page_token = 2;
+}
+
+// Whether a Setup pinned an OpenAPI document or an MCP discovery snapshot.
+enum ProviderSetupInputKind {
+  // Not supplied or not recognized by this client.
+  PROVIDER_SETUP_INPUT_KIND_UNSPECIFIED = 0;
+  // One exact OpenAPI document.
+  PROVIDER_SETUP_INPUT_KIND_OPENAPI = 1;
+  // One exact normalized MCP discovery snapshot.
+  PROVIDER_SETUP_INPUT_KIND_MCP = 2;
+}
+
+// Current one-way Setup state. Only a ready Setup feeds Publication.
+enum ProviderSetupState {
+  // Not supplied or not recognized by this client.
+  PROVIDER_SETUP_STATE_UNSPECIFIED = 0;
+  // The accepted source needs a setup-scoped Authorization before discovery.
+  PROVIDER_SETUP_STATE_AWAITING_AUTHORIZATION = 1;
+  // A sealed setup-scoped credential exists; discovery is not pinned yet.
+  PROVIDER_SETUP_STATE_AWAITING_DISCOVERY = 2;
+  // The exact input is pinned; one Publication attempt is available.
+  PROVIDER_SETUP_STATE_READY = 3;
+  // One terminal Publication consumed the Setup.
+  PROVIDER_SETUP_STATE_CONSUMED = 4;
+  // The host deadline elapsed before the Setup was consumed.
+  PROVIDER_SETUP_STATE_EXPIRED = 5;
+  // The configuring User abandoned the Setup.
+  PROVIDER_SETUP_STATE_CANCELED = 6;
+  // The owner must confirm authentication and destinations before sign-in.
+  PROVIDER_SETUP_STATE_AWAITING_CONFIGURATION = 7;
+}
+
+// Secret-free credential method selected by the exact pinned input.
+enum CredentialMethod {
+  reserved 3;
+  reserved "CREDENTIAL_METHOD_HEADER_API_KEY";
+  // Not supplied or not recognized by this client.
+  CREDENTIAL_METHOD_UNSPECIFIED = 0;
+  // No upstream credential.
+  CREDENTIAL_METHOD_NONE = 1;
+  // One opaque HTTP bearer credential.
+  CREDENTIAL_METHOD_BEARER = 2;
+  // Authorization-code OAuth with a public client and S256 PKCE.
+  CREDENTIAL_METHOD_OAUTH_AUTHORIZATION_CODE = 4;
+  // Credential Field values, and constants, sent in named HTTP headers.
+  CREDENTIAL_METHOD_HEADER_CREDENTIALS = 5;
+  // A username and password, sent as HTTP Basic.
+  CREDENTIAL_METHOD_BASIC_AUTH = 6;
+  // Credential Field values, and constants, sent as query parameters.
+  CREDENTIAL_METHOD_QUERY_CREDENTIALS = 7;
+  // Device-code OAuth with server-owned polling.
+  CREDENTIAL_METHOD_OAUTH_DEVICE_CODE = 8;
+}
+
+// Safe state of one setup-scoped OAuth Authorization.
+enum SetupAuthorizationState {
+  // Not supplied or not recognized by this client.
+  SETUP_AUTHORIZATION_STATE_UNSPECIFIED = 0;
+  // Waiting for the OAuth callback.
+  SETUP_AUTHORIZATION_STATE_PENDING = 1;
+  // Host token exchange is underway.
+  SETUP_AUTHORIZATION_STATE_EXCHANGING = 2;
+  // The credential is sealed for this Setup.
+  SETUP_AUTHORIZATION_STATE_SUCCEEDED = 3;
+  // Authorization failed safely; the Setup can be restarted.
+  SETUP_AUTHORIZATION_STATE_FAILED = 4;
+  // The Setup was canceled while the Authorization was open.
+  SETUP_AUTHORIZATION_STATE_CANCELED = 5;
+  // The Authorization deadline elapsed.
+  SETUP_AUTHORIZATION_STATE_EXPIRED = 6;
+}
+
+// How Coral established the OAuth client for a Setup.
+enum ClientBootstrap {
+  // Not supplied or not recognized by this client.
+  CLIENT_BOOTSTRAP_UNSPECIFIED = 0;
+  // Client ID Metadata Document at Coral's public HTTPS origin.
+  CLIENT_BOOTSTRAP_CLIENT_ID_METADATA_DOCUMENT = 1;
+  // Dynamic Client Registration against the issuer.
+  CLIENT_BOOTSTRAP_DYNAMIC_CLIENT_REGISTRATION = 2;
+  // A manually supplied, pre-registered client identifier.
+  CLIENT_BOOTSTRAP_MANUAL = 3;
+}
+
+// Issuance-time evidence from Provider authorization, not a configurable endpoint
+// or permanent navigation permission. Read authorization again before reuse.
+message ProviderConsentNavigation {
+  // Initial browser navigation screened by Coral; browser DNS and later redirects can differ.
+  string url = 1;
+}
+
+// Safe progress of one setup-scoped OAuth Authorization; never material.
+message ProviderSetupAuthorization {
+  // Device-code progress, in three states:
+  // - unset: not an open device-code authorization;
+  // - empty: a device-code authorization still requesting the code from the Provider;
+  // - nonempty: the code the person enters at the verification page, never the
+  //   private device code.
+  optional string user_code = 9;
+  // Durable current state.
+  SetupAuthorizationState state = 1;
+  // Fresh checked issuance while pending; not an unvalidated configuration URL.
+  ProviderConsentNavigation consent_navigation = 2;
+  // This read refused issuance; not a durable OAuth failure. Navigation is absent.
+  bool consent_rejected = 8;
+  // Exact scope request the flow was started with.
+  repeated string requested_scopes = 3;
+  // How the OAuth client was established.
+  ClientBootstrap client_bootstrap = 4;
+  // Host deadline for the Authorization.
+  google.protobuf.Timestamp expire_time = 5;
+  // Stable safe failure code; empty unless failed.
+  string failure_code = 6;
+  // The public client identifier the flow runs through; never a secret.
+  string client_id = 7;
+}
+
+// OAuth application configuration. Secret values are accepted only as write-only input.
+message OAuthApplication {
+  reserved 3, 6;
+  reserved "client_secret";
+  // Exactly one mode.
+  oneof mode {
+    // Coral establishes a public client itself, following the operator's
+    // client bootstrap policy. The default, automatic policy presents Coral's
+    // Client ID Metadata Document when the server supports it and the
+    // document's address resolves to public addresses, otherwise it registers
+    // dynamically; when the document is the server's only offer and its
+    // address is non-public or cannot be resolved, the start answers
+    // CLIENT_METADATA_NOT_PUBLIC or CLIENT_METADATA_UNRESOLVED before any
+    // browser handoff. The prefer-document policy presents the document
+    // whatever its address resolves to, and the registration-only policy
+    // never presents it. Only an MCP Setup that discovered its authorization
+    // server can bootstrap; with nothing the policy admits, the start answers
+    // CLIENT_BOOTSTRAP_UNAVAILABLE.
+    google.protobuf.Empty automatic = 1;
+    // A pre-registered public client identifier, used as given and never
+    // replaced by automatic bootstrap.
+    string client_id = 2;
+  }
+  // Token endpoint authentication. Unspecified retains public-client behavior.
+  OAuthClientAuthentication authentication = 7;
+  // Unspecified uses S256. Only HTTP confidential clients can disable PKCE.
+  OAuthPkcePolicy pkce = 4;
+  // Generic non-secret options; cannot override protocol-controlled fields.
+  map<string, string> authorization_parameters = 5;
+}
+
+// Token endpoint authentication. Only confidential methods accept a secret.
+message OAuthClientAuthentication {
+  // Unset retains public-client behavior.
+  oneof method {
+    // Public client without an application secret.
+    google.protobuf.Empty none = 1;
+    // Form-encoded application credentials in the HTTP Basic header.
+    OAuthClientSecret client_secret_basic = 2;
+    // Application credentials in the token request body.
+    OAuthClientSecret client_secret_post = 3;
+  }
+}
+
+// Write-only secret for one confidential authentication method.
+message OAuthClientSecret {
+  // Empty retains the same client's saved secret. Readback always omits the value.
+  string secret = 1;
+}
+
+// Authorization-code protection.
+enum OAuthPkcePolicy {
+  // Defaults to S256.
+  O_AUTH_PKCE_POLICY_UNSPECIFIED = 0;
+  // Generates a verifier and S256 challenge for every flow.
+  O_AUTH_PKCE_POLICY_S256 = 1;
+  // Allowed only for confidential HTTP Providers.
+  O_AUTH_PKCE_POLICY_DISABLED = 2;
+}
+
+// Exact Provider whose application the owner inspects.
+message GetProviderOAuthClientRequest {
+  // Canonical Provider name.
+  string name = 1;
+}
+
+// Safe application state; never returns a client secret.
+message ProviderOAuthClient {
+  // Selected secret-free application contract.
+  OAuthApplication application = 1;
+  // Whether the configured client has sealed secret material.
+  bool secret_configured = 2;
+  // Stable application failure code, without upstream descriptions.
+  string failure_code = 3;
+}
+
+// Write-only replacement for the current application's secret.
+message RotateProviderOAuthClientSecretRequest {
+  // Canonical Provider name.
+  string name = 1;
+  // Must match the currently configured application.
+  string client_id = 2;
+  // Write-only replacement, never returned to the caller.
+  string client_secret = 3;
+}
+
+// Terminal Publication outcome.
+enum ProviderPublicationOutcome {
+  // Not supplied or not recognized by this client.
+  PROVIDER_PUBLICATION_OUTCOME_UNSPECIFIED = 0;
+  // Provider and catalog published atomically.
+  PROVIDER_PUBLICATION_OUTCOME_SUCCEEDED = 1;
+  // A safe structural or domain failure consumed the Setup and published nothing.
+  PROVIDER_PUBLICATION_OUTCOME_FAILED = 2;
+}
+
+// Authentication, OAuth application configuration, and declaration-scoped server choices.
+// Readback omits application secret values.
+message ProviderConfiguration {
+  // Non-secret service headers, independent of account credentials.
+  map<string, string> request_headers = 19;
+  reserved 1, 2, 3, 4, 5, 7, 8, 12;
+  reserved "header", "authorization_url", "token_url", "scopes", "application", "oauth_client_id", "header_api_key";
+  // How Coral authenticates with the Upstream Service, with only the settings
+  // that method uses. Unset means the owner still needs to choose.
+  oneof authentication {
+    // No upstream credential.
+    google.protobuf.Empty none = 10;
+    // One secret, sent as a bearer token.
+    google.protobuf.Empty bearer = 11;
+    // Authorization-code OAuth.
+    OAuthAuthorizationCodeAuthentication oauth_authorization_code = 13;
+    // Credential Field values, and constants, sent in named headers.
+    HeaderCredentialsAuthentication header_credentials = 14;
+    // A username and password, which Coral encodes as HTTP Basic.
+    BasicAuthentication basic_auth = 16;
+    // Credential Field values, and constants, sent as query parameters. OpenAPI only.
+    QueryCredentialsAuthentication query_credentials = 17;
+    // Device-code OAuth.
+    OAuthDeviceCodeAuthentication oauth_device_code = 18;
+  }
+  // How Add provider asks for each Credential Field the method sends, by field
+  // name. Presentation never affects which accounts remain compatible.
+  map<string, CredentialField> credential_fields = 15;
+  // Choices for independently inherited declarations.
+  repeated ProviderServerChoice servers = 6;
+  // The Provider's name, confirmed by the owner. Suggested from the source's
+  // own title; confirmation rejects an empty name.
+  string display_name = 9;
+}
+
+// Settings for credentials sent in named headers.
+message HeaderCredentialsAuthentication {
+  // Lowercase header name to what Coral sends in it.
+  map<string, HeaderBinding> headers = 1;
+}
+
+// What Coral sends in one credential header.
+message HeaderBinding {
+  // Exactly one source.
+  oneof source {
+    // One Credential Field's value, after an exact prefix.
+    FieldHeaderValue field = 1;
+    // A constant the Upstream Service requires beside the credentials.
+    string literal = 2;
+  }
+}
+
+// A Credential Field's value in a header.
+message FieldHeaderValue {
+  // Credential Field name.
+  string field = 1;
+  // Literal text sent before the value, such as "Token token="; empty for none.
+  string prefix = 2;
+}
+
+// Settings for HTTP Basic authentication.
+message BasicAuthentication {
+  // Sent as the username.
+  CredentialSource username = 1;
+  // Sent as the password.
+  CredentialSource password = 2;
+}
+
+// Settings for credentials sent as query parameters.
+message QueryCredentialsAuthentication {
+  // Query parameter name, exactly as sent, to what Coral sends in it.
+  map<string, CredentialSource> parameters = 1;
+}
+
+// Where one part of a credential comes from.
+message CredentialSource {
+  // Exactly one source.
+  oneof source {
+    // Credential Field name.
+    string field = 1;
+    // A constant, such as the Basic username "api"; may be empty.
+    string literal = 2;
+  }
+}
+
+// How one Credential Field is asked for; none of it reaches the Upstream Service.
+message CredentialField {
+  // Short name of the box a person fills in.
+  string label = 1;
+  // Help text; empty for none.
+  string description = 2;
+  // Masks the value while it is typed.
+  bool sensitive = 3;
+}
+
+// Encoding used only for outgoing scope requests.
+enum OAuthScopeFormat {
+  // Treated as space-separated.
+  O_AUTH_SCOPE_FORMAT_UNSPECIFIED = 0;
+  // Standard OAuth space-separated scopes.
+  O_AUTH_SCOPE_FORMAT_SPACE = 1;
+  // Comma-separated scopes, as some services require.
+  O_AUTH_SCOPE_FORMAT_COMMA = 2;
+}
+
+// Settings for authorization-code OAuth.
+message OAuthAuthorizationCodeAuthentication {
+  // OAuth authorization endpoint.
+  string authorization_url = 1;
+  // OAuth token endpoint.
+  string token_url = 2;
+  // Exact requested scopes.
+  repeated string scopes = 3;
+  // Separator used when requesting scopes; unspecified uses spaces.
+  OAuthScopeFormat scope_format = 6;
+  // Application settings and write-only secret, configured independently of account consent.
+  OAuthApplication application = 4;
+  // Resolved public identifier for review; never a client secret.
+  string oauth_client_id = 5;
+}
+
+// Device-code OAuth settings. PKCE and authorization parameters do not apply.
+message OAuthDeviceCodeAuthentication {
+  // OAuth device authorization endpoint.
+  string device_authorization_url = 1;
+  // OAuth token endpoint.
+  string token_url = 2;
+  // Exact requested scopes.
+  repeated string scopes = 3;
+  // Separator used when requesting scopes; unspecified uses spaces.
+  OAuthScopeFormat scope_format = 6;
+  // Manual public or confidential application. PKCE is ignored; parameters must be empty.
+  OAuthApplication application = 4;
+  // Resolved public identifier for review; never a client secret.
+  string oauth_client_id = 5;
+}
+
+// One selected server declaration.
+message ProviderServerChoice {
+  // Document declaration pointer.
+  string declaration = 1;
+  // Declared template or custom absolute base URL.
+  string url = 2;
+  // Selects a custom replacement instead of a declared template.
+  bool custom = 3;
+  // Only declared variable names are accepted.
+  map<string, string> variables = 4;
+}
+
+// One declared variable field.
+message ProviderServerVariable {
+  // Declared name, scoped to this server.
+  string name = 1;
+  // Declared default.
+  string default_value = 2;
+  // Whether values are constrained to the declared enum.
+  bool enumerated = 3;
+  // Exact declared enum values.
+  repeated string values = 4;
+}
+
+// One server alternative from the document.
+message ProviderServerOption {
+  // Exact URL template.
+  string url = 1;
+  // Declared variables.
+  repeated ProviderServerVariable variables = 2;
+}
+
+// Operations inheriting one server declaration.
+message ProviderServerGroup {
+  // Location of the declaration in the document.
+  string declaration = 1;
+  // Operation Keys affected by this declaration.
+  repeated string operations = 2;
+  // Available declared alternatives.
+  repeated ProviderServerOption options = 3;
+}
+
+// Safe comparison of a saved field with replacement input declarations.
+message ProviderConfigurationDifference {
+  // Domain field path.
+  string field = 1;
+  // Saved choice; absent when no saved declaration exists.
+  optional string saved = 2;
+  // New default; absent when missing, ambiguous, or removed.
+  optional string document = 3;
+}
+
+// One Operation excluded from the callable catalog and its safe structural reasons.
+message UnavailableProviderOperation {
+  // Operation Key in the previewed catalog.
+  string key = 1;
+  // Blocking diagnostics from catalog materialization.
+  repeated string reasons = 2;
+}
+
+// One Operation in a previewed catalog, with the labels the setup steps list it by.
+// Availability is not repeated here; unavailable_operations carries it by Key.
+message ReviewedProviderOperation {
+  // Operation Key in the previewed catalog.
+  string key = 1;
+  // Operation-relative Call Path projection.
+  string relative_path = 2;
+  // Safe summary; empty when the Provider authored none.
+  string summary = 3;
+  // Provider-authored grouping tags in source order: OpenAPI tags; empty for MCP.
+  repeated string tags = 4;
+}
+
+// Configuration and catalog diagnostics before final Publication.
+message ProviderConfigurationReview {
+  // Confirmation concurrency precondition.
+  int64 revision = 1;
+  // Document suggestions, not confirmed values.
+  ProviderConfiguration suggested = 2;
+  // Last accepted settings; absent until explicit confirmation.
+  ProviderConfiguration confirmed = 3;
+  // Safe classification of document authentication declarations.
+  string authentication_status = 4;
+  // Main and Operation-specific server controls.
+  repeated ProviderServerGroup servers = 5;
+  // Resolved destinations by Operation Key.
+  map<string, string> destinations = 6;
+  // Operations that final validation currently marks unavailable.
+  repeated UnavailableProviderOperation unavailable_operations = 7;
+  // Safe structural diagnostic code.
+  string diagnostic = 8;
+  // Recoverable field errors without submitted values.
+  map<string, string> errors = 9;
+  // Saved values have been confirmed against this exact input.
+  bool configuration_confirmed = 10;
+  // Methods supported for this input, not inferred by presentation adapters.
+  repeated CredentialMethod authentication_methods = 11;
+  // Authorization is needed to acquire the MCP catalog.
+  bool discovery_authorization_required = 12;
+  // Discovered, read-only MCP OAuth issuer.
+  optional string issuer = 13;
+  // Discovered, read-only MCP OAuth resource.
+  optional string resource = 14;
+  // Safe domain comparison with saved Update choices.
+  repeated ProviderConfigurationDifference differences = 15;
+  // When present, whether this confirmed Update requires interruption acceptance.
+  // Absent until compatibility is evaluated, including when the preview is rejected.
+  optional bool interrupts_access = 16;
+  // This Setup targets an existing Provider.
+  bool updating = 17;
+  // The host can currently bootstrap an OAuth client for this Setup.
+  bool automatic_client_available = 18;
+  // Every previewed Operation with the labels the operations step groups and lists by.
+  repeated ReviewedProviderOperation operations = 19;
+  // Discovered, read-only device endpoint; empty when not advertised.
+  string device_authorization_url = 20;
+}
+
+// Confirms one revision without fetching the source again.
+message ConfirmProviderSetupConfigurationRequest {
+  reserved 5;
+  reserved "client_secret";
+  // Exact owner-scoped Setup resource name.
+  string name = 1;
+  // Revision displayed by the configuration review.
+  int64 expected_revision = 2;
+  // Owner's explicit settings, never account credentials.
+  ProviderConfiguration configuration = 3;
+  // Reef derives the callback from its validated origin for public client registration.
+  string redirect_uri = 4;
+}
+
+// Safe Setup progress at workspaces/{workspace}/providerSetups/{setup}.
+message ProviderSetup {
+  reserved 5;
+  reserved "credential_header";
+  // Only reports presence, never the application secret.
+  bool client_secret_configured = 17;
+  // Present after successful OAuth authorization.
+  optional bool automatic_refresh = 18;
+  // Canonical immutable name.
+  string name = 1;
+  // Input kind pinned or being prepared.
+  ProviderSetupInputKind input_kind = 2;
+  // Current one-way state.
+  ProviderSetupState state = 3;
+  // Credential method the pinned input selects.
+  CredentialMethod credential_method = 4;
+  // The Credential Fields a person enters for secret entry, by field name.
+  map<string, CredentialField> credential_fields = 19;
+  // The inspecting User holds live setup-scoped credentials for this Setup.
+  bool authorized = 6;
+  // Exact provisional grant identity for explicit shared/self retention or replacement.
+  // Not a runtime Account; never credential material. Reef server only.
+  string provisional_grant_id = 7;
+  // OAuth grant exactly as the service reported it; empty for secrets.
+  string granted_scope = 8;
+  // Host deadline for the sealed material; absent when nothing is sealed.
+  google.protobuf.Timestamp credential_expire_time = 9;
+  // Publication that consumed the Setup; empty until consumed.
+  string publication = 10;
+  // When the Setup was accepted.
+  google.protobuf.Timestamp create_time = 11;
+  // User-supplied remote source, when the Setup was prepared from one.
+  string input_url = 12;
+  // The inspecting User's setup-scoped OAuth Authorization, when one exists.
+  ProviderSetupAuthorization authorization = 13;
+  // Configuration review precedes sign-in, including for complete documents.
+  ProviderConfigurationReview configuration = 16;
+  // Safe diagnostic of the last failed discovery attempt while awaiting discovery.
+  ProviderDiagnostic discovery_failure = 14;
+  // Host deadline for a pre-ready Setup; absent once ready without material.
+  google.protobuf.Timestamp expire_time = 15;
+}
+
+// Starts the setup-scoped OAuth Authorization.
+message StartProviderSetupAuthorizationRequest {
+  reserved 3, 6;
+  reserved "client_id", "client_secret";
+  // Canonical Setup name.
+  string name = 1;
+  // Reef derives this from its validated origin, never from a browser field.
+  string redirect_uri = 2;
+  // The OAuth application; absent means automatic.
+  OAuthApplication application = 4;
+  // Exact reviewed configuration; stale sign-in forms cannot authorize replacement settings.
+  int64 configuration_revision = 5;
+  // Explicit replacement only: exact reviewed live provisional grant identity.
+  string replacement_grant = 7;
+}
+
+// Retries discovery for a Setup awaiting discovery.
+message RetryProviderSetupDiscoveryRequest {
+  // Canonical Setup name.
+  string name = 1;
+  // Explicit Update choice: borrow this Provider's compatible shared or own Account.
+  bool use_existing_account = 2;
+  // Required reviewed configuration when borrowing an Account.
+  int64 configuration_revision = 3;
+}
+
+// Abandons a Setup.
+message CancelProviderSetupRequest {
+  // Canonical Setup name.
+  string name = 1;
+}
+
+// Pins one input. Inline inputs are accepted as-is; remote sources are fetched once.
+message CreateProviderSetupRequest {
+  // Non-secret service headers for MCP URL discovery and subsequent requests.
+  map<string, string> request_headers = 9;
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Exactly one source.
+  oneof input {
+    // One exact OpenAPI document (JSON or YAML text).
+    string openapi_document = 2;
+    // One exact normalized MCP discovery snapshot.
+    string mcp_snapshot = 3;
+    // An OpenAPI document URL fetched once without redirects.
+    string openapi_url = 4;
+    // A Streamable HTTP MCP server URL discovered once.
+    string mcp_url = 5;
+    // Update only: reuse the exact current catalog input without network discovery.
+    google.protobuf.Empty current = 8;
+  }
+  // Obsolete initial credential input. Nonempty values are rejected.
+  // Use AuthorizeProviderSetup after configuration confirmation instead.
+  string discovery_credential = 6;
+  // Existing Provider whose saved configuration pre-fills Update review.
+  string provider = 7;
+}
+
+// Reads one Setup.
+message GetProviderSetupRequest {
+  // Canonical Setup name.
+  string name = 1;
+}
+
+// Seals one secret for a bearer or header credential contract.
+message AuthorizeProviderSetupRequest {
+  reserved 2;
+  reserved "secret";
+  // Canonical Setup name.
+  string name = 1;
+  // Write-only Credential Field values by field name; excluded from every
+  // response and telemetry projection.
+  map<string, string> credential_values = 4;
+  // Exact reviewed configuration; stale secret submissions must not seal new settings.
+  int64 configuration_revision = 3;
+}
+
+// Selects how every Invocation through the Provider obtains credentials.
+message CredentialRoute {
+  // Route kinds; exactly one applies.
+  enum Kind {
+    // Not supplied; invalid in writes.
+    KIND_UNSPECIFIED = 0;
+    // No Account.
+    KIND_NONE = 1;
+    // The Provider's shared Account.
+    KIND_FIXED = 2;
+    // The invoking Principal's exact Account.
+    KIND_CALLER = 3;
+  }
+  // Route kind.
+  Kind kind = 1;
+}
+
+// Safe stable diagnostic; never an upstream URL, header, or body.
+message ProviderDiagnostic {
+  // Stable snake_case code.
+  string code = 1;
+  // Coral-authored message.
+  string message = 2;
+}
+
+// One synchronous Publication attempt from one ready Setup.
+message PublishProviderRequest {
+  // workspaces/{workspace}; must own the Setup.
+  string parent = 1;
+  // Canonical Setup name.
+  string setup = 2;
+  // Required first-party UUID; exact replay returns the committed result.
+  string request_id = 3;
+  // Creation only: immutable Workspace-unique Program namespace.
+  string namespace = 4;
+  // Creation: required. Update: explicit replacement setting, absent to retain it.
+  CredentialRoute credential_route = 5;
+  // Set only to regenerate this exact Provider from the Setup; creation otherwise.
+  string provider = 7;
+  // Regeneration only: required current Provider etag.
+  string etag = 8;
+  // Explicitly accepts interruption of existing account or route compatibility.
+  bool allow_incompatible_configuration = 9;
+  // Regeneration only: exact configuration and preview acknowledged by the owner.
+  int64 configuration_revision = 10;
+  // Exact reviewed provisional grant. Creation retains shared/self authorization.
+  // Update explicitly replaces or establishes the shared Account atomically.
+  // Part of exact replay content, independent of the credential route.
+  string account_grant = 11;
+}
+
+// Terminal Publication result; exposes no private Generation.
+message ProviderPublication {
+  // {parent}/providerPublications/{publication}.
+  string name = 1;
+  // Terminal outcome.
+  ProviderPublicationOutcome outcome = 2;
+  // Safe failure diagnostic when the outcome is FAILED.
+  ProviderDiagnostic diagnostic = 3;
+  // Published Provider name when the outcome is SUCCEEDED.
+  string provider = 4;
+}
+
+// Changes only the mutable display metadata; identity and namespace are immutable.
+message UpdateProviderRequest {
+  // Canonical Workspace Provider name.
+  string name = 1;
+  // Required current Provider concurrency token.
+  string etag = 2;
+  // Nonblank display name; never changes the Program namespace.
+  string display_name = 3;
+}

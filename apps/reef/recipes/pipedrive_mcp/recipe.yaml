@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://support.pipedrive.com/en/article/mcp-claude
+# Resource metadata advertises the complete read/write MCP scope set.
+schema_version: 1
+id: pipedrive_mcp
+service: pipedrive
+display_name: Pipedrive
+description: Deals, contacts, activities, products and sales actions from Pipedrive.
+source:
+  mcp:
+    url: https://mcp.pipedrive.ai/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Pipedrive
+      documentation_url: https://support.pipedrive.com/en/article/mcp-claude
+      flow: authorization_code
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

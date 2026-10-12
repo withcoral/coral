@@ -1,0 +1,125 @@
+{
+  "protocolVersion": "2025-11-25",
+  "serverInfo": {
+    "name": "architecture-corpus",
+    "title": "MCP architecture corpus",
+    "version": "1.0.0"
+  },
+  "server": {
+    "transport": "streamable_http",
+    "url": "https://mcp.example.test/mcp"
+  },
+  "capabilities": {
+    "tools": {},
+    "resources": {},
+    "tasks": {
+      "list": {},
+      "cancel": {},
+      "requests": { "tools": { "call": {} } }
+    }
+  },
+  "tools": [
+    {
+      "name": "list_issues",
+      "title": "List issues",
+      "description": "Lists repository issues with provider-owned cursor state.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["owner", "repo"],
+        "properties": {
+          "owner": { "type": "string", "minLength": 1 },
+          "repo": { "type": "string", "minLength": 1 },
+          "after": { "type": ["string", "null"] },
+          "providerAnnotated": { "type": "string", "readOnly": true },
+          "binaryToken": { "type": "string", "format": "binary" },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List repository issues",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "delete_file",
+      "description": "Deletes one file.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["owner", "repo", "path", "message", "branch"],
+        "properties": {
+          "owner": { "type": "string" },
+          "repo": { "type": "string" },
+          "path": { "type": "string" },
+          "message": { "type": "string" },
+          "branch": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get-structured-content",
+      "description": "Returns text and structured content together.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["location"],
+        "properties": {
+          "location": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["temperature", "conditions", "providerSecret"],
+        "properties": {
+          "temperature": { "type": "number" },
+          "conditions": { "type": "string", "enum": ["sunny", "cloudy", "rain"] },
+          "providerSecret": { "type": "string", "writeOnly": true }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get-tiny-image",
+      "description": "Returns ordered text, image, and text content blocks.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "simulate-research-query",
+      "description": "Requires the upstream MCP Task lifecycle.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "execution": {
+        "taskSupport": "required"
+      }
+    }
+  ]
+}

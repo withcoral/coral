@@ -1,0 +1,137 @@
+"use strict";
+
+(() => {
+  const invoke = globalThis.__coralOperationInvoke;
+  const appendEmission = globalThis.__coralProgramEmit;
+  const appendLog = globalThis.__coralProgramLog;
+  Reflect.deleteProperty(globalThis, "__coralOperationInvoke");
+  Reflect.deleteProperty(globalThis, "__coralProgramEmit");
+  Reflect.deleteProperty(globalThis, "__coralProgramLog");
+
+  const nativeStringify = JSON.stringify;
+  const nativeString = String;
+  const NativeError = Error;
+  const NativeTypeError = TypeError;
+  const defineProperties = Object.defineProperties;
+  const setPrototypeOf = Object.setPrototypeOf;
+
+  class OperationError extends NativeError {
+    constructor() {
+      throw new NativeTypeError("OperationError cannot be constructed");
+    }
+  }
+  Object.defineProperty(OperationError.prototype, "name", { value: "OperationError" });
+  Object.freeze(OperationError.prototype);
+  Object.freeze(OperationError);
+
+  const callablePath = (path) =>
+    new Proxy(function coralOperationPath() {}, {
+      get(_target, property) {
+        if (typeof property !== "string" || property === "then") {
+          return undefined;
+        }
+        return callablePath(`${path}.${property}`);
+      },
+      apply(_target, _receiver, args) {
+        if (args.length > 1) {
+          return invoke(path);
+        }
+        let encoded = "{}";
+        if (args.length === 1) {
+          try {
+            encoded = nativeStringify(args[0]);
+          } catch (_error) {
+            return invoke(path);
+          }
+          if (typeof encoded !== "string") {
+            return invoke(path);
+          }
+        }
+        return invoke(path, encoded);
+      },
+    });
+
+  const emit = (value) => {
+    let encoded;
+    try {
+      encoded = nativeStringify(value);
+    } catch (_error) {
+      return appendEmission();
+    }
+    if (typeof encoded !== "string") {
+      return appendEmission();
+    }
+    return appendEmission(encoded);
+  };
+
+  const logMessage = (values) => {
+    let message = "";
+    for (let index = 0; index < values.length; index += 1) {
+      if (index > 0) message += " ";
+      message += nativeString(values[index]);
+    }
+    return message;
+  };
+  const writeLog = (level, values) => {
+    appendLog(level, logMessage(values));
+  };
+  const console = Object.create(null);
+  for (const name of ["debug", "info", "log", "warn", "error"]) {
+    Object.defineProperty(console, name, {
+      value: (...values) => writeLog(name === "log" ? "info" : name, values),
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
+  Object.preventExtensions(console);
+  Object.defineProperty(globalThis, "console", {
+    value: console,
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+
+  const coral = Object.create(null);
+  Object.defineProperties(coral, {
+    OperationError: {
+      value: OperationError,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    },
+    providers: {
+      value: callablePath("coral.providers"),
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    },
+    emit: {
+      value: emit,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    },
+  });
+  Object.preventExtensions(coral);
+  Object.defineProperty(globalThis, "coral", {
+    value: coral,
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+
+  // Returned only to the host; Programs cannot mint Coral Failures.
+  return (code, message, traceId, stack) => {
+    const error = new NativeError(message);
+    setPrototypeOf(error, OperationError.prototype);
+    defineProperties(error, {
+      code: { __proto__: null, value: code },
+      stack: { __proto__: null, value: stack, writable: true, configurable: true },
+    });
+    if (traceId !== undefined) {
+      defineProperties(error, { traceId: { __proto__: null, value: traceId } });
+    }
+    return error;
+  };
+})();

@@ -1,0 +1,204 @@
+name: Desktop
+
+# Desktop's checks and its Linux, macOS and Windows packages. ci.yml calls
+# this workflow. The packages are unsigned and publish nowhere; release.yml
+# builds the signed ones. The Reel desktop suite, which drives a packaged
+# Linux app, runs from reel.yml.
+#
+# The macOS and Windows jobs cost the most, so ci.yml asks for them only when
+# Desktop's own files change. The nightly run catches a runtime or Reef change
+# that breaks them.
+on:
+  workflow_call:
+    inputs:
+      all-platforms:
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      all-platforms:
+        description: Also package for macOS and install on Windows
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  check:
+    name: Checks
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/npm-install
+        with:
+          apps: desktop
+      - run: npm run check --prefix apps/desktop
+      - run: npm test --prefix apps/desktop
+
+  package-linux:
+    name: Linux package
+    needs: check
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: desktop-linux
+
+      - uses: ./.github/actions/npm-install
+        with:
+          apps: desktop reef
+      - name: Stage a release runtime and Desktop's Reef bundle
+        run: npm run stage --prefix apps/desktop
+      - name: Package the AppImage
+        run: npm run package --prefix apps/desktop -- --linux
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-app-linux-unsigned
+          path: apps/desktop/dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+  # Packages only: nothing installs or drives the macOS app.
+  package-macos:
+    name: macOS package
+    needs: check
+    if: ${{ inputs.all-platforms || github.event_name == 'schedule' }}
+    runs-on: blacksmith-6vcpu-macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: desktop-macos
+      - name: Add the Apple silicon target
+        run: rustup target add aarch64-apple-darwin
+
+      - uses: ./.github/actions/npm-install
+        with:
+          apps: desktop reef
+      - name: Validate macOS entitlements
+        run: plutil -lint apps/desktop/resources/entitlements.*.plist
+      - name: Stage an arm64 release runtime and Desktop's Reef bundle
+        run: npm run stage --prefix apps/desktop
+      - name: Package the unsigned arm64 dmg and zip
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run package --prefix apps/desktop -- --mac
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-app-macos-unsigned
+          path: |
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # Builds the Windows installer, installs it silently for the current user, and
+  # drives the installed app with the Reel desktop suite.
+  windows:
+    name: Windows install
+    if: ${{ inputs.all-platforms || github.event_name == 'schedule' }}
+    runs-on: blacksmith-8vcpu-windows-2025
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: desktop-windows
+
+      - uses: ./.github/actions/npm-install
+        with:
+          apps: desktop reef
+
+      # The supervisor's process handling differs most on Windows: no signals,
+      # and a stop that closes the runtime's stdin.
+      - name: Test Desktop on Windows
+        run: npm test --prefix apps/desktop
+
+      - name: Stage a release runtime and Desktop's Reef bundle
+        run: npm run stage --prefix apps/desktop
+      - name: Package the NSIS installer
+        run: npm run package --prefix apps/desktop -- --win
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-app-windows-unsigned
+          path: apps/desktop/dist/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Install for the current user, silently
+        run: |
+          Start-Process -FilePath apps/desktop/dist/coral-app-win-x64.exe -ArgumentList '/S' -Wait
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\Coral\Coral.exe'
+          if (-not (Test-Path $app)) { throw "The installer did not install $app" }
+          "DESKTOP_APP=$app" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Playwright drives Electron through Node's inspector, which the shipped
+      # fuses turn off. Turn on only that fuse, in this runner's installed copy.
+      - name: Let Playwright drive the installed app
+        working-directory: apps/desktop
+        run: npm exec -- electron-fuses write --app "$env:DESKTOP_APP" EnableNodeCliInspectArguments=on
+
+      # The consent scenario opens Chromium as the person's own browser.
+      - name: Install Playwright's Chromium
+        working-directory: apps/reef
+        run: npx playwright install chromium
+
+      # Reel refuses to start when Desktop data already exists, and leaves the
+      # last scenario's data in place for the uninstall check.
+      - name: Record the desktop suite against the installed app
+        env:
+          E2E_DESKTOP_EXECUTABLE: ${{ env.DESKTOP_APP }}
+        run: npm run test:e2e:native --prefix apps/reef -- --suite desktop
+
+      - name: Uninstall silently, and keep the user's data
+        run: |
+          $uninstaller = Join-Path $env:LOCALAPPDATA 'Programs\Coral\Uninstall Coral.exe'
+          Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait
+          # The uninstaller runs from a copy of itself, so wait for the app to go.
+          $deadline = (Get-Date).AddMinutes(2)
+          while (Test-Path $env:DESKTOP_APP) {
+            if ((Get-Date) -gt $deadline) { throw "The uninstaller left $env:DESKTOP_APP" }
+            Start-Sleep -Seconds 1
+          }
+          $config = Join-Path $env:APPDATA 'com.withcoral.app\runtime\config.toml'
+          if (-not (Test-Path $config)) { throw "Uninstalling removed the user's data: $config" }
+
+      # Recordings and traces can carry tokens and source. Never expose them
+      # automatically if this repository becomes public during the final swap.
+      - name: Retain private review evidence, including failed runs
+        if: ${{ always() && github.event.repository.private }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: reel-desktop-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/reef/e2e/runs/
+          if-no-files-found: warn
+          retention-days: 7

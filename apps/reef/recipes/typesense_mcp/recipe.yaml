@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://typesense.org/docs/guide/typesense-cloud/mcp-server.html
+# Official brand asset: https://typesense.org/favicon.png
+# This MCP source requires Typesense Cloud; the API source also supports self-hosted clusters. Resource metadata
+# advertises all cluster and data read/write permissions.
+schema_version: 1
+id: typesense_mcp
+service: typesense
+display_name: Typesense
+description: Cloud clusters, collections, documents and search from Typesense.
+source:
+  mcp:
+    url: https://cloud.typesense.org/mcp/v1
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Typesense Cloud
+      documentation_url: https://typesense.org/docs/guide/typesense-cloud/mcp-server.html
+      flow: authorization_code
+      description: Connect your Typesense Cloud account.
+    management_key:
+      method: bearer
+      label: Paste a Cloud management API key
+      documentation_url: https://typesense.org/docs/guide/typesense-cloud/mcp-server.html
+      description: Use a Cloud management key. Cluster API keys do not authenticate this server.
+icons:
+  light: logo.png

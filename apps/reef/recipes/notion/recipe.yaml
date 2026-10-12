@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: notion
+display_name: Notion
+description: Notion's MCP server.
+icons:
+  light: logo.svg
+
+# Notion publishes no complete OpenAPI document, so this Recipe uses its hosted
+# MCP server over Streamable HTTP.
+source:
+  mcp:
+    url: https://mcp.notion.com/mcp
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      # Discover OAuth settings and register a client with Notion automatically.
+      # Notion offers a single scope, "default", so the Recipe names none.
+      method: oauth_discovery
+      label: Sign in with Notion
+      flow: authorization_code
+      documentation_url: https://developers.notion.com/guides/mcp/build-mcp-client

@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server
+schema_version: 1
+id: postman
+display_name: Postman
+description: Collections, workspaces, environments and API specifications from Postman.
+source:
+  mcp:
+    url: https://mcp.postman.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Postman
+      flow: authorization_code
+      documentation_url: https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://learning.postman.com/latest-v-12/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server
+icons:
+  light: logo.png

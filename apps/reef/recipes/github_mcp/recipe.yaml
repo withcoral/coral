@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: github_mcp
+# The catalog offers this beside the OpenAPI Recipe, on the one github card.
+service: github
+display_name: GitHub
+description: GitHub's hosted MCP server.
+icons:
+  light: github.svg
+  dark: github-dark.svg
+
+source:
+  mcp:
+    url: https://api.githubcopilot.com/mcp/
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      # MCP authorization metadata supplies the issuer, resource and endpoints,
+      # so unlike the OpenAPI GitHub Recipe this one names only the flow.
+      method: oauth_discovery
+      label: Sign in with GitHub
+      flow: device_code
+      client:
+        id: Iv23liJHis6Bs8NO1DAI
+        authentication: none
+      # GitHub Apps ignore OAuth scopes. A token gets the GitHub App's
+      # permissions, limited to what the user can access. An empty list
+      # also stops Coral requesting every scope the server advertises.
+      scopes: []
+    pat:
+      method: bearer
+      label: Paste a personal access token
+      documentation_url: https://docs.github.com/authentication

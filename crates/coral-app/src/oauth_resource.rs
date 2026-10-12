@@ -11,7 +11,7 @@
 
 use url::{Position, Url};
 
-use crate::outbound_url_policy::{EndpointUrl, OutboundUrlPolicyError, ResourceIdentifier};
+use coral_outbound::{EndpointUrl, OutboundUrlPolicyError, ResourceIdentifier};
 
 /// An OAuth resource identifier in its canonical form.
 ///
@@ -79,6 +79,9 @@ pub enum OauthUrlError {
     /// Carries a query string.
     #[error("must not include a query")]
     Query,
+    /// A Workspace MCP origin includes a non-root path.
+    #[error("must be an origin URL without a path")]
+    Origin,
 }
 
 impl OauthUrlError {

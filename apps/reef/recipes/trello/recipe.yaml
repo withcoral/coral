@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: trello
+display_name: Trello
+description: Boards, lists, cards and members from Trello.
+icons:
+  light: trello.svg
+  dark: trello-dark.svg
+
+source:
+  openapi:
+    url: https://dac-static.atlassian.com/cloud/trello/swagger.v3.json
+
+authentication:
+  options:
+    api_key_and_token:
+      # Trello authenticates by query string. The host owns these parameter
+      # positions and keeps their values out of URLs shown or logged anywhere.
+      method: query_credentials
+      label: API key and token
+      documentation_url: https://developer.atlassian.com/cloud/trello/guides/rest-api/authorization/
+      fields:
+        api_key:
+          label: Application API key
+          sensitive: false
+        api_token:
+          label: User API token
+      parameters:
+        key: { field: api_key }
+        token: { field: api_token }

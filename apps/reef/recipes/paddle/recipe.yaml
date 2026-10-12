@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.paddle.com/sdks/specs/openapi/
+schema_version: 1
+id: paddle
+display_name: Paddle
+description: Products, prices, customers, subscriptions and transactions from Paddle.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/PaddleHQ/paddle-openapi/main/v1/openapi.yaml
+authentication:
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://developer.paddle.com/api-reference/about/authentication
+inputs:
+  api_url:
+    type: url
+    label: API environment
+    default: https://api.paddle.com
+    enum:
+      - https://api.paddle.com
+      - https://sandbox-api.paddle.com
+servers:
+  '#/servers':
+    base_url: '{{input.api_url}}'
+icons:
+  light: logo.svg

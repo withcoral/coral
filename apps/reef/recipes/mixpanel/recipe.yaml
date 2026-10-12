@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.mixpanel.com/docs/mcp
+# Official logo: https://raw.githubusercontent.com/mixpanel/docs/main/favicon.png
+# OAuth scopes come from server discovery; the Recipe names none.
+# Mixpanel requires the Bearer Basic prefix for its encoded service account credential.
+# Coral MCP does not support the provider header-credential alternative.
+schema_version: 1
+id: mixpanel
+display_name: Mixpanel
+description: Events, funnels and retention reports from Mixpanel.
+icons:
+  light: logo.svg
+source:
+  mcp:
+    url: '{{input.endpoint}}'
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Mixpanel
+      documentation_url: https://docs.mixpanel.com/docs/mcp
+      flow: authorization_code
+  default: oauth
+inputs:
+  endpoint:
+    type: url
+    label: MCP region
+    default: https://mcp.mixpanel.com/mcp
+    enum:
+      - https://mcp.mixpanel.com/mcp
+      - https://mcp-eu.mixpanel.com/mcp
+      - https://mcp-in.mixpanel.com/mcp
+    documentation_url: https://docs.mixpanel.com/docs/mcp

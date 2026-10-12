@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://vercel.com/docs/rest-api
+# Official brand asset: https://assets.vercel.com/image/upload/q_auto/front/favicon/vercel/apple-touch-icon-57x57.png
+schema_version: 1
+id: vercel
+display_name: Vercel
+description: Projects, deployments, domains and teams from Vercel.
+source:
+  openapi:
+    url: https://openapi.vercel.sh/
+authentication:
+  options:
+    api_token:
+      method: bearer
+      label: API token
+      documentation_url: https://vercel.com/docs/rest-api#authentication
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

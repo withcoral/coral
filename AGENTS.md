@@ -1,316 +1,181 @@
-# AGENTS.md
+# Repository guidance
 
-## Repo Map
+## Canonical context
 
-- `crates/coral-api`: protobuf contract and generated Rust bindings.
-- `crates/coral-app`: local server composition, state, workspaces, source
-  lifecycle, and workspace-scoped catalog discovery behavior.
-- `crates/coral-cli`: terminal adapter.
-- `crates/coral-client`: intentionally thin transport bootstrap plus
-  Arrow IPC decode/render helpers.
-- `crates/coral-engine`: engine-side backend compilation, runtime registration,
-  and query execution.
-- `crates/coral-mcp`: MCP tool core with stdio and Streamable HTTP transport
-  adapters over `coral-client`.
-- `crates/coral-spec`: declarative source-spec parsing, validation,
-  input discovery, and normalized source-definition models.
-- `crates/coral-telemetry`: cross-crate telemetry helpers that are independent
-  of app bootstrap, query runtime, and adapter surfaces.
-- `apps/coral-ui`: React Router/Wax frontend shell, npm package `coral-ui`. It is
-  validated independently and is not built by Rust crate build scripts.
-- `apps/desktop`: Electron shell around Coral UI and the local Coral sidecar.
-- `apps/docs`: Mintlify documentation site.
-- `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
-  canonical in-repo home for maintained Coral agent skills.
+- Use `GLOSSARY.md` as the product glossary.
+- Issues live in `withcoral/coral`. Always pass `--repo withcoral/coral` to
+  `gh`; this checkout also has an unrelated `upstream` remote.
+- The PR title becomes the squash commit that release-please reads. Use
+  Conventional Commits, `type(scope): summary`, and keep the title current as
+  the branch changes. Only `feat`, `fix`, `perf`, and breaking (`type!:`)
+  titles open a release PR and reach the changelog, so give a user-visible
+  change one of those.
+- Tracker conventions, triage labels, and domain-document rules are under
+  `docs/agents/`.
 
-## Rules
+## Durable boundaries
 
-- Run `make rust-checks` before submitting PRs that include changes to Rust code.
-- For Postgres-backed database changes, run `make postgres-tests`. Keep this as
-  the single entry point for local and CI Postgres coverage; do not duplicate
-  its Cargo test invocations in workflows or contributor instructions. The
-  target uses `CORAL_TEST_POSTGRES_URL` when supplied. Otherwise it starts a
-  local Docker Postgres and creates a fresh database inside the reusable
-  container. Docker chooses an available localhost port by default; use
-  `make postgres-url` to print the server URL or
-  `LOCAL_POSTGRES_PORT=55432 make postgres-start` when you need a stable port.
-  Use `make postgres-start` when you only need the server,
-  `make postgres-stop` when finished, and `make postgres-clean` to remove the
-  reusable container.
-- Run `make schema-check` before submitting PRs that touch generated manifest
-  schemas or the Rust helpers that generate them. Use
-  `make schema-generate` to refresh generated schema files. The Validate
-  workflow enforces this through its `schema-freshness` job when schema inputs
-  change.
-- Coral UI changes must pass `npm run check --prefix apps/coral-ui`,
-  `npm run typecheck --prefix apps/coral-ui`, `npm test --prefix apps/coral-ui`, and
-  `npm run build --prefix apps/coral-ui`, followed by
-  `npm run test:server --prefix apps/coral-ui`, before submitting. The production
-  server smoke test consumes the build output and runs on every Coral UI CI job.
-- Desktop changes must pass `npm run check --prefix apps/desktop` and
-  `npm test --prefix apps/desktop` before submitting.
-- Do not add Vitest coverage to `apps/coral-ui` for new work. The app is exempt
-  from the repo test-writing expectation. Existing tests stay and must keep
-  passing. Add a test there only when the user asks for it, or to lock an
-  explicit architectural invariant such as `app/routes.test.ts` and
-  `app/__tests__/architecture.test.ts`. Never extract a single-use helper into
-  its own module so that a test has something to assert against. The
-  architecture test rejects any test file under `app/components`, `app/views`,
-  and `app/wax/components` at zero violations, and holds `allowedTests`, the
-  recorded list of every other test file the app carries. A new test anywhere
-  under `app/` fails until someone adds its path to that list.
-- Use Storybook and Chromatic for Coral UI component visual states.
-- Coral UI styling uses vanilla-extract; do not introduce Tailwind.
-- Run `make perf-check` before submitting PRs that could affect CLI startup,
-  local server bootstrap, source registration, or `coral.tables` catalog query
-  latency. CI installs the bundled `github` source with fake credentials and
-  fails when release `coral sql "select * from coral.tables"` has a hyperfine
-  mean above 750 ms.
-- Pull requests do not automatically build macOS Desktop packages. Use manual
-  dispatch for an unsigned packaging preflight when a distribution-sensitive
-  change warrants one. Validation artifacts stay unsigned and must not be
-  reused for a release; Desktop release publishing must rebuild from a clean
-  checkout with signing and notarization.
-- The `Validate` workflow intentionally skips draft pull request runs, starts
-  again on `ready_for_review`, and still triggers on `converted_to_draft` so the
-  replacement skipped run cancels any in-progress validation for the PR branch.
-  Keep that draft gate aligned between the initial change detector and final
-  aggregate `validate` job.
-- Keep Release Please branch updates coalesced and cheap to supersede. The
-  `release-please` workflow may create multiple local regeneration commits, but
-  must push them together through its final push step. `Validate` intentionally
-  gives `release-please--*` pull requests a 120-second settle period before
-  checkout and change detection so concurrency cancellation stops intermediate
-  branch states before expensive jobs fan out.
-- `make rust-checks` is the Rust-only local gate and should keep using
-  `--all-features`.
-- Coral UI is built by its own repository and CI orchestration; the CLI does
-  not embed browser assets.
-- Use `make docker-build` to compile the current checkout in a native Linux
-  BuildKit stage and package that binary as `coral:local`. Set
-  `DOCKER_IMAGE=coral:test` to change the local tag or `DOCKER_NO_CACHE=1` to
-  bypass Docker layer caching. Keep the exported-binary layout and runtime
-  platform aligned with the `docker-publish` workflow; local Docker-exporter
-  loads disable provenance because that exporter cannot load attestation
-  manifests. Local builds must not download a published Coral binary.
-- Use `make coral-ui-docker-build` to build Coral UI from the current checkout and
-  `make coral-ui-docker-smoke` to run the configuration matrix against an
-  already-built Coral UI image. Use the self-contained `make coral-ui-docker-test`
-  for both. That matrix is peer-free: it asserts which runtime configurations boot
-  and which fail fast, while readiness against a live Coral is covered by the
-  mocked health client in `apps/coral-ui/app/routes/readyz.server.test.ts`.
-- Use `make coral-docker-stub-test` to build the Coral image with a stub binary
-  and exercise `docker/entrypoint.sh` (config seeding, seed-once semantics, and
-  the unwritable-volume failure). The entrypoint is pure shell up to its closing
-  exec, so this needs no Rust build; the real binary is covered by
-  `make rust-checks` and the real image by the release smoke in
-  `.github/workflows/docker-publish.yml`. Coral UI's runtime stage must remain COPY-only and
-  non-root; build and dependency stages run on the build platform. Local builds
-  follow the Docker daemon's architecture, while CI builds and verifies
-  linux/amd64 only. TLS termination belongs to the operator and is
-  not provisioned by the image or its smoke harness.
-- Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
-- Keep server topology orchestration private to `coral-cli` while CLI commands
-  are its only consumers. Do not extract the orchestration into a shared
-  orchestration crate unless it gains a non-CLI consumer; the combined topology
-  is provisional and may be removed rather than promoted.
-- Keep transport contract concerns in `coral-api`, source-spec concerns in
-  `coral-spec`, app/state concerns in `coral-app`, and query/runtime
-  concerns in `coral-engine`.
-- Keep app-owned runtime package assembly in `coral-app`. `coral-engine`
-  should compile generic runtime components, not interpret DSL v4 authored
-  manifests, materialized fingerprints, semantic IR, or projection catalogs.
-- Keep Coral UI Coral access behind React Router server loaders, actions, or
-  resource routes using `apps/coral-ui/app/lib/coral-request.server.ts`. Do not
-  expose a generic renderer-to-Coral transport or Desktop sidecar proxy; add an
-  explicit server route when browser-triggered Coral behavior is needed.
-- Keep Coral UI data access in React Router loaders and actions. Presentation
-  (`app/components`, `app/views`, `app/wax/components`) renders loader data and
-  submits through fetchers: it must not import `*.server` modules, open a network
-  connection, reach `window.coralDesktop`, or await inside `useEffect`. The
-  architecture test enforces all four at zero violations. An effect that awaits
-  is the specific mistake to watch for — it rebuilds the router's caching,
-  pending state, and revalidation in component state, worse each time.
-- The packaged Coral UI server resolves its external runtime packages from the
-  Electron app. Keep every `apps/coral-ui` production dependency represented in
-  `apps/desktop` production dependencies; the desktop config tests enforce this
-  packaging contract.
-- Use `CORAL_DESKTOP_APP=1` as Coral UI's single external desktop build marker.
-  React Router route composition may read it from `process.env`, while
-  `apps/coral-ui/vite.config.ts` exposes only its compiled boolean value as
-  `import.meta.env.CORAL_DESKTOP_APP`. Do not add a parallel
-  `VITE_CORAL_DESKTOP_APP` marker or expose broader `CORAL_*` values to browser
-  code.
-- For DSL v4 materialization, the user owns when a source is generated or
-  regenerated. Coral materializes at source add, queries only from the
-  installed materialized package, and never silently refreshes descriptors,
-  projections, or persisted artifacts. Treat fingerprints, producer versions,
-  identity metadata, and raw-document hashes as advisory provenance: report
-  mismatches through tracing, but load readable, structurally compatible
-  artifacts. Isolate source-local compatibility failures without hiding
-  operational failures.
-- A DSL v4 source declares top-level `inputs:` and exactly one singular
-  `surface:`. The source `name` is its SQL namespace. Do not add surface ids,
-  namespace suffixes, or multiple surfaces to one manifest; represent distinct
-  provider interfaces as distinct source specs instead.
-- Keep cross-crate W3C trace-context propagation helpers in
-  `coral-telemetry`; do not make `coral-app`, `coral-client`, `coral-engine`,
-  or `coral-mcp` depend on each other just to share telemetry carrier logic.
-- Keep shared Arrow IPC decoding and result rendering in `coral-client`.
-- Treat `coral-app` as an internal composition root even if sibling crates use
-  its bootstrap seam today.
-- If a caller needs explicit local server control, prefer `coral-client::local`
-  over widening the default client surface.
-- Keep process environment access owned by the right crate. `coral-app` owns
-  runtime/bootstrap env reads, `coral-cli` owns CLI-surface env reads, and
-  other crates should receive explicit values from callers instead of reading
-  ambient process environment directly.
-- Keep docs lean and readable. For CLI or MCP changes, update `apps/docs/` only
-  when the change affects a public surface or captures important user-facing or
-  contributor-facing knowledge. Do not document every implementation detail.
-  When docs are warranted, choose the best existing location first and make the
-  amount of space match the feature's user-facing weight and visibility.
-- Keep stable bundled sources under `sources/core/**`; put preview DSL v4 source
-  specs under `sources/v4/[source]/manifest.yaml` with distinct manifest names
-  (defined in the manifest's `name` field) such as `<name>_v4`. When a provider
-  has distinct interfaces, use sibling source directories such as `github` and
-  `github_mcp`. Do not bundle
-  `sources/v4` into the binary; install preview v4 sources with
-  `coral source add --file`. Do not replace or migrate an existing v3 source
-  merely because a preview v4 spec exists.
-- Changes to `scripts/install.sh` must keep the `Validate` workflow's
-  install-script matrix in sync with every OS/architecture target that the
-  installer supports.
-- Keep general repository automation in `xtask`; reserve `scripts/` for the
-  bash Coral installer and installer-specific support.
-- Keep `xtask` organized by workflow: docs generation lives under
-  `xtask/src/docs/`, shared source-manifest discovery lives in
-  `xtask/src/sources.rs`, command-latency checks live in `xtask/src/perf.rs`,
-  benchmark dispatch lives under
-  `xtask/src/benchmarks/`, and the isolated benchmark package and fixtures live
-  under `xtask/benchmarks/`. Skill export lives in `xtask/src/skills.rs`.
-  Release signing and notarization automation lives in `xtask/src/release.rs`.
-  The DSL v4 inference report lives in `xtask/src/metadata_report.rs`.
-- Use `cargo run --locked -p xtask -- benchmark list-columns` to measure the
-  complete MCP `list_columns` response for the checked-in synthetic wide-table
-  fixture with the `o200k_base` tokenizer. The benchmark must call the real MCP
-  tool in-process, report without enforcing a token budget, and keep
-  benchmark-only code out of production crates.
-- Use `cargo run --locked -p xtask -- v4-metadata-report` before and after a
-  change to DSL v4 row-path, pagination, or lookup-key inference, and diff the
-  two reports. It imports every non-MCP v4 source under `sources/v4` and emits
-  one CSV row per operation, so an unintended reshape in a source nobody was
-  thinking about shows up as a diff hunk. Pass `--cache-dir` so a before/after pair fetches
-  each descriptor once. It is deliberately not wired into CI: it fetches
-  multi-megabyte vendor descriptors over the network, and vendor descriptors
-  change under us, so a green run proves nothing about the commit that produced
-  it.
-- Universal Search relevance benchmarking also lives in the isolated
-  `coral-benchmarks` package. Keep real catalog inventories, generated
-  questions, collected queries, responses, focused corpora, and replay reports
-  under ignored run directories. Only synthetic, deliberately non-sensitive
-  benchmark fixtures may be checked in. Use frozen-query replay rather than
-  rerunning agents while tuning ranking weights, and do not run agent
-  collection in CI.
-- The Electron desktop app version is tied to the CLI release version through
-  release-please. The release workflow builds the macOS desktop app from
-  `apps/desktop`, uploads its DMG/ZIP/update metadata to the same GitHub
-  Release as the CLI artifacts, and the website should link to the
-  `releases/latest/download` DMG rather than storing desktop binaries itself.
-- `make docs-check` intentionally skips the aggregate community source catalog.
-  Any PR may leave that generated page stale so unrelated changes do not fail
-  on aggregate community catalog drift; keep docs freshness strict for bundled
-  sources under `sources/core/**`, `apps/docs/docs.json`, and the changelog.
-- The live docs site deploys from the long-lived `docs` branch, not `main`, so
-  the published catalog matches the latest released binary. `main` still owns
-  docs freshness, but merging to `main` no longer publishes the site by itself:
-  the release workflow advances `docs` after release artifacts are published.
-  See `apps/docs/AGENTS.md` for the full publishing model.
-- Keep checked-in generated files marked in `.gitattributes` with
-  `linguist-generated` so GitHub collapses them by default in PR diffs.
-- Source inputs that carry credentials must be `kind: secret`, never
-  `kind: variable`. This includes API keys, bearer tokens, access tokens,
-  passwords, private keys, authorization header values, and admin/read keys,
-  even when the credential is read-only or the source also supports anonymous
-  access.
-- When source credential retrieval or auth guidance changes, keep the source
-  spec docs and maintained Coral source-spec skills aligned in the same change.
-  OAuth source-spec behavior needs both reader-facing docs and agent-facing
-  author/review guidance because `credential.methods` controls setup while
-  `auth` still controls runtime requests.
-- Keep maintained Coral agent skills in `plugins/coral/skills`. External
-  distribution repos or packages should mirror from that directory rather than
-  becoming a separate source of truth. Use
-  `cargo run --locked -p xtask -- export-skills --dest <path>` for local
-  export checks and distribution syncs.
-- Keep `plugins/coral` conformant with Agent Plugins 1.0: portable metadata
-  belongs in root `plugin.json`, skills are discovered from `skills/`, and MCP
-  servers are declared in root `mcp.json`. Keep the legacy `.codex-plugin`,
-  `.mcp.json`, and `.app.json` package files for pre-0.147 Codex compatibility.
-  Put current Codex-only metadata under `extensions.com.openai`, and align shared
-  metadata and MCP invocation across both representations.
-- Coral skills must include `agents/openai.yaml`. Keep
-  `interface.display_name` in the form `Coral` or `Coral <Title Case Suffix>`,
-  keep the top-level `SKILL.md` heading equal to that display name, and set
-  non-empty `short_description` and `default_prompt` values. The default prompt
-  should mention the skill token, such as `$coral-create-source-spec`.
-- When proposing or updating a PR title, use Conventional Commits:
-  `type(scope): summary`.
-- When using a scope, prefer one that matches the primary area changed,
-  usually the crate name minus the `coral-` prefix, `docs`,
-  `sources/core/<name>`, or `sources/community/<name>`.
-- Keep the PR title up to date as the branch evolves. If the change shifts in
-  scope or intent, update the title to match the current final shape of the
-  branch.
-- Use `!` only for breaking changes, placing it immediately before the colon:
-  `type!: summary` or `type(scope)!: summary`. Local WIP commit messages can
-  stay pragmatic unless the user explicitly asks for polished commit history.
-- If you add a source using dummy credentials in order to test a change, always
-  configure Coral to store those credentials on the filesystem. Do not store
-  dummy credentials in the OS keychain.
+- Keep transport and presentation adapters thin. Put domain behavior behind a
+  transport-neutral interface.
+- Read process environment only at process bootstrap. Pass explicit values to
+  domain code.
+- Route untrusted outbound HTTP through `coral-outbound::Client`. Pass the
+  bootstrap-resolved operator destination policy to domain modules. Identity and
+  inbound listener selection do not determine outbound permissions. See
+  [ADR 0008](docs/adr/0008-outbound-network-permissions.md) for composition defaults.
+- Keep cross-crate W3C propagation, safe telemetry fields, and export filtering
+  in `coral-telemetry`. Domain modules own signal timing. Application bootstrap
+  owns exporter configuration.
+- Keep generated files marked `linguist-generated` in `.gitattributes`.
 
-## Meta Changes
+### Persistence
 
-A meta change modifies how contributors or agents should work in this repo, not
-only runtime behavior. Examples include repo layout, crate ownership, source
-directory conventions, docs generation behavior, CLI/MCP surface rules, PR
-title/scope guidance, verification commands, and agent-facing review or
-source-authoring instructions.
+- Keep domain database queries, table identifiers, row mapping, and persistence
+  encoding in `repository.rs`, `*_repository.rs`, or `repository/` modules.
+  Keep authorization decisions, lifecycle rules, and outcome selection in domain
+  code outside those files. Domain code owns transaction choreography; repository
+  facets join its transaction and retain scoping, locking, and conditional-write
+  predicates needed for atomicity. Return typed evidence rather than raw rows or
+  query expressions to domain callers.
+- Mark observable mutations with `Transaction::execute_change` in the owning
+  repository (or through its existing lifecycle/Run evidence write). Reads, row
+  locks, and worker-lease renewals use `execute`, or `fetch_optional_returning`
+  for a lock that returns its row; they must not wake activity observers or Run
+  waits. Time-dependent visibility also needs an observation deadline.
+- Open read-only work with `Database::begin_read_snapshot` and non-holding
+  checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
+  behind every other writer.
+- Give each independently identified entity one stable ID as its sole primary
+  key. Use a composite primary key only when the tuple is the domain identity.
+- For Workspace-owned data, every externally influenced read or write must
+  match both the Workspace and entity identity, even when the entity ID is
+  globally unique.
+- Each domain crate owns its tables' migrations in `crates/<crate>/migrations`.
+  `crates/coral-app/src/state/migrations.rs` merges them into the one shared
+  chain.
+- Change a schema only by adding a migration. Never edit, rename, or delete a
+  migration or search stream step that is on `main`: databases created from an
+  earlier `main` must keep booting. `scripts/check-migrations.sh` checks this.
+  Keep the fence that rejects state written by Coral 0.x.
+- Keep schemas portable across SQLite and Postgres and fail on schema drift;
+  do not use `IF NOT EXISTS` to hide unexpected state.
+- The search-owned backend streams in `crates/coral-search/streams` are the one
+  sanctioned exception to the single shared migration chain. Postgres and
+  SQLite retrieve and rank search results with different features: generated
+  `tsvector` columns, `pg_trgm` indexes and statistics tables on Postgres, and
+  an FTS5 table that triggers fill on SQLite. No one backend-agnostic set of
+  objects can serve both. Each stream holds only what its backend's text
+  search needs. It runs at boot after the chain, one step per transaction with
+  its row in `search_migrations`, and fails on objects that already exist.
+- Run shared repository behavior tests against SQLite and Postgres. Use
+  `make postgres-tests` for Rust repository tests. For Reel's Postgres product
+  evidence, use the E2E scope and cadence under Validation.
+  Both own disposable databases through `scripts/postgres.ts`.
 
-For meta changes:
+### Reef and Desktop
 
-- Update the nearest relevant `AGENTS.md` in the same change.
-- Update `apps/docs/`, generated docs, or docs tooling only when the changed
-  behavior is user-facing or docs-authoring-facing, and use the smallest useful
-  edit in the best existing location.
-- Preserve provenance: keep observed repo facts, project direction, local
-  preferences, and generated context separate instead of merging them into one
-  untraceable rule.
-- Treat repeated human steering as a defect in the operating loop. Identify the
-  failure class, update durable context or tooling when that can prevent
-  recurrence, and verify the new rule before resuming unrelated work.
-- Include explicit validation showing the guidance matches the implemented
-  behavior.
-- Mention in the PR description what agent or contributor behavior changed.
+- Wax (`apps/reef/app/wax`) owns reusable visual behavior and styling. Extend
+  its primitives when a UI needs a missing capability; app-specific modules
+  compose Wax and own layout, not a parallel set of controls or theme values.
+- Do not show status or meaning with color alone. Pair color with a distinct
+  icon shape or text, so color-blind users can read it (WCAG 1.4.1).
+- Browser access to Coral belongs in React Router server loaders, actions, and
+  explicit resource routes. Live updates are the one exception:
+  `apps/reef/app/lib/activity-stream.ts` holds the only streaming connection,
+  to a same-origin resource route. Loaders supply initial data; streams only
+  push later changes. Reef's `.oxlintrc.json` and
+  `app/__tests__/architecture.test.ts` enforce the rest of this boundary.
+- Add or extend Reef Vitest coverage when a change fixes a reproducible bug,
+  introduces branching behavior (validation, state transitions, or error handling),
+  or affects security or an architecture invariant. Name the failure the test
+  catches and assert observable behavior through the owning module's interface.
+  For bug fixes, verify that the regression test fails without the fix.
+- Keep tests beside the behavior they protect. Exercise existing module boundaries;
+  do not extract single-use helpers solely to test them or assert implementation
+  details. Use Storybook and Chromatic for visual states and browser tests for
+  behavior that depends on browser APIs or a complete user journey. `npm test`
+  runs every story's `play` function in Chromium, so an assertion there is a
+  test; give each behavior one home, a story or a Vitest test, and query by role
+  and label with Testing Library in both. Styling and
+  static markup changes alone do not need Vitest coverage. Vitest coverage does
+  not replace required product-journey or local/remote parity evidence.
+- Use vanilla-extract, not Tailwind.
+- Reef has one build for every deployment. Do not add a Desktop build marker
+  or branch Reef on its host. Desktop's window behavior belongs in the
+  `apps/desktop` main process.
+- Reef copy follows simplified technical English (ASD-STE100): address the
+  reader as "you", give one instruction per sentence in the imperative, keep
+  sentences under 20 words with one idea each, use the active voice and the
+  present tense, and say what happens next rather than what a thing is. Use one
+  word for one thing: provider, workspace, organization, operation, program,
+  account, sign in. These words are lowercase in the interface; the glossary
+  and code keep their capitals.
 
-## What Counts As a Breaking Change for a CLI?
+### Tests
 
-For a CLI, the user interface is the API.
+- Test each rule once, at its owner: the crate or module that implements it.
+  Transport and route tests assert their contract (status, reason, projection)
+  and leave domain rules to the owner's tests.
+- Assert a denial's exact error variant and that the denial changed nothing. A
+  bare error check also passes on a database failure.
+- Assert deltas and domain properties, not totals. Event counts, byte sizes, and
+  page sizes move whenever unrelated behavior changes.
+- Extend the nearest shared helper (`coral-test-support` or the crate's test
+  harness) and write near-duplicate cases as one table test. After a TDD loop,
+  fold the tracer tests into that table before you open the PR.
+- Inject faults through the owning crate's API or
+  `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
+  Production `#[cfg(test)]` hooks only synchronize timing; every tested path is
+  one production runs.
 
-A change is breaking if it can break existing:
+### Credentials
 
-- commands people run manually
-- scripts and CI jobs
-- documented workflows
-- integrations that parse output
+- Tests that use dummy credentials must select filesystem credential storage.
+  Do not write test credentials to the OS keychain.
 
-Treat these as stable contract surfaces:
+## Validation
 
-- command/subcommand names
-- flags and positional arguments
-- exit codes
-- structured output (for example JSON)
-- config file keys, format, and location
-- environment variables and precedence rules
+Use focused unit/integration tests during implementation. Run the applicable
+required gates below after the change stabilizes, then report what ran:
 
-If any of those change incompatibly, it is a breaking change.
+| Change                   | Required gate                                                                                                                                                                                |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dev scripts              | `./dev test`                                                                                                                                                                                 |
+| Rust                     | `make rust-checks`                                                                                                                                                                           |
+| Postgres-backed behavior | `make postgres-tests`                                                                                                                                                                        |
+| Reef                     | `npm run check --prefix apps/reef`, `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, `npm run build --prefix apps/reef`, then `npm run test:server --prefix apps/reef` |
+| Desktop                  | `npm run check --prefix apps/desktop`, `npm test --prefix apps/desktop`, then the Reel `desktop` suite: `npm run test:e2e --prefix apps/reef -- --suite desktop`                             |
+| Runtime or Reef image    | `make docker-test`                                                                                                                                                                           |
+
+### E2E scope and cadence
+
+- Give each scenario a cross-process journey or local/remote parity claim that
+  lower-level tests cannot prove. Test form state, copy, and status tables in
+  Vitest or server tests.
+- Treat E2E as an acceptance gate, not the default edit–test loop. Batch changes
+  before running affected scenarios; use a focused browser test during debugging
+  when lower-level tests cannot reproduce the failure.
+- Select affected scenarios for browser-dependent changes. Read
+  [Reel's run guide](apps/reef/e2e/README.md) for file/folder filters and suite
+  selection. Run database and deployment variants required by the affected
+  behavior or the issue's acceptance criteria.
+- Reserve full-suite runs for the final integration checkpoint or explicit
+  acceptance requirements. With multiple agents, designate one integration agent
+  to own full-suite validation of the combined changes.
+- After a failure, rerun the failing selection while fixing it. Repeat required
+  broader validation at the final checkpoint after fixes.
+- Preserve required product-journey and local/remote parity evidence. Report
+  scenario selection, database, deployment suite, and unrun required checks;
+  a focused pass is not a full-suite pass.
+
+## Maintaining agent guidance
+
+- Keep an `AGENTS.md` rule only when it is durable, non-obvious, and changes a
+  contributor's decision.
+- Do not copy repo maps, temporary implementation details, generic engineering
+  advice, or facts that a nearby manifest already makes clear.
+- Link to a canonical spec or tool instead of copying its full contract.
+- When a rule becomes stale or enforced clearly by code, tests, or tooling,
+  delete it.
+- If a change creates a new durable contributor constraint, update the nearest
+  relevant `AGENTS.md` and validate that the guidance matches the behavior.

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://axiom.co/docs/console/intelligence/mcp-server
+# Official brand asset: https://axiom.co/favicon.ico
+schema_version: 1
+id: axiom
+display_name: Axiom
+description: Datasets, logs, traces and events from Axiom.
+source:
+  mcp:
+    url: https://mcp.axiom.co/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Axiom
+      flow: authorization_code
+      documentation_url: https://axiom.co/docs/console/intelligence/mcp-server
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

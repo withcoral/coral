@@ -1,0 +1,129 @@
+---
+title: "Concepts"
+description: "Build the right mental model for Coral"
+---
+
+## Organizations
+
+Each Coral deployment contains exactly one **organization**.
+
+An organization is the top level container for [workspaces](#workspaces). Any organization member can create a workspace.
+
+Organizations have owners. They can:
+
+- Manage organization membership
+- See every workspace and its owners
+- Assign a workspace owner, including themselves
+- Archive and restore workspaces
+
+Organization owners have no access inside a workspace. To work in one, they need a workspace membership like anyone else.
+
+The [desktop app](/getting-started/install-locally) has one user, who doesn't sign in. That user is the organization owner. Membership and sign-in apply to a [shared server](/getting-started/self-host).
+
+## Workspaces
+
+A **workspace** is a container for providers, the people and agents that use them, and everything they run.
+
+Workspaces have owners. They can perform some operations at the workspace level:
+
+- Manage [members](#principals)
+- Manage [providers](#providers) and [accounts](#account-setting)
+- Manage [policy](#operation-policy)
+
+Workspace [members](#principals) share its [providers](#providers) and policy.
+
+## Providers
+
+A **provider** is a workspace-owned set of [operations](#operations) for an upstream service such as GitHub or Linear. Add one from Coral's provider catalog, or from your own OpenAPI document or MCP server.
+
+Each provider carries:
+
+- an immutable **namespace**, unique in the workspace, that prefixes every [call path](#operations)
+- an [**account setting**](#account-setting)
+- per-operation [**policy**](#operation-policy)
+
+You can add a provider multiple times, each under its own namespace, to give the same operations a different account setting and policy.
+
+## Operations
+
+An **operation** is a single action exposed by a [provider](#providers). It has named inputs and returns one result.
+
+[Programs](#programs) call an operation by its **call path**, which always begins with the [provider](#providers) namespace:
+
+```ts
+await coral.providers.github.actions.addRepoAccess({ repo, user });
+```
+
+## Account setting
+
+An **account** holds the credentials that Coral sends to the upstream service. It belongs to one [provider](#providers), and Coral never reuses it for another provider.
+
+An **account setting** decides whose account a provider uses.
+
+- **No account**, the service doesn't require credentials.
+- **Individual accounts**, each user connects their own account. For agents, the workspace owner will have to connect an account.
+  - Choose this setting when you want each user to access the provider as themselves. For example, GMail should be set up this way: every user should only be able to access their own emails.
+- **One shared account**, all principals (users and agents) use the provider's single shared account.
+  - Choose this setting when the provider is something everyone is allowed to access. For example, Datadog: everyone should see the same dashboards and alerts, and the account is owned by the team rather than by any one person.
+
+You can add the same provider multiple times, with different account settings. For example, you could have one GitHub provider with a shared readonly account used by every user, and another GitHub provider with individual accounts, so that users can create PRs as themselves through Coral.
+
+## Operation policy
+
+**Policy** is set by workspace owners on a [provider](#providers), and decides whether an [operation](#operations) is:
+
+- Always allow, the operation runs
+- Needs approval, the call pauses until a person decides. A user approves their own calls. A [workspace](#workspaces) owner approves an agent's calls.
+- Disabled, the operation cannot be called, and is hidden from the agent altogether
+
+## Principals
+
+A **principal** is an authenticated actor that Coral attributes work to. It is a human user or an autonomous agent.
+
+- A **user** signs in through OAuth and can be part of many workspaces.
+- An **agent** belongs to one [workspace](#workspaces) only, and uses its own API key.
+
+Coral attributes a [run](#runs) to the principal that submitted it, even when a workspace owner approves an operation or the provider uses a [shared account](#account-setting).
+
+## Programs
+
+A **program** is TypeScript that a [principal](#principals) submits for Coral to execute.
+
+A program reaches upstream services (e.g. GitHub, Linear) only through [operations](#operations):
+
+```ts
+const issues = await coral.providers.github.issues.list({ state: "open" });
+coral.emit({ open: issues.data.length });
+```
+
+It can also call the principal's [saved functions](#saved-functions) under `coral.functions`.
+
+It never sees your credentials.
+
+Submitting a program creates a [run](#runs).
+
+## Runs
+
+A **run** is one execution of a [program](#programs).
+
+A run executes on the Coral server, not in your agent. If your agent disconnects, the run continues, and its operations still take effect.
+
+Coral never retries an [operation](#operations).
+
+## Coral UI
+
+The **Coral UI** is Coral's web interface. The desktop app and a shared server both include it.
+
+Use the Coral UI to add [providers](#providers), connect [accounts](#account-setting), set [policy](#operation-policy), approve operations, and inspect [runs](#runs). Your agents do not use the Coral UI. They reach a workspace through its MCP endpoint.
+
+## Saved functions
+
+A **saved function** is reusable TypeScript that a [principal](#principals) saves at a path under `coral.functions` in one [workspace](#workspaces).
+
+```ts
+await coral.functions.triage.staleIssues({ days: 30 });
+```
+
+A [program](#programs) calls one the same way it calls an [operation](#operations). It can hold local types, helpers, and top-level setup, but no packages and no Node APIs.
+
+A user's saved functions are private to that user.

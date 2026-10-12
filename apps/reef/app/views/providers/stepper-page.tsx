@@ -1,0 +1,181 @@
+import { useState, type ReactNode } from 'react'
+import {
+  attemptPath,
+  attemptProgress,
+  reviseAttempt,
+  type CreationAttempt,
+} from '@/lib/provider-publication-attempt/model'
+import { Banner, Button, Typography } from '@/wax/components'
+import { PageLayout } from '@/wax/components/page-layout'
+import { AddProviderEntry } from './add-provider'
+import { recipeNamespace } from '@/lib/provider-recipes/choice'
+import { NAMESPACE, suggestedNamespace } from './fields'
+import { ConfigurationStep } from './configuration-step'
+import { OperationsStep } from './operations-step'
+import { AccountStep } from './account-step'
+import { StepPage } from './step-frame'
+import type { StepperPageProps } from './types'
+import * as styles from './providers.css'
+
+/** Remount the steps whenever the attempt or its source changes. */
+export function StepperPage(props: StepperPageProps) {
+  const source = JSON.stringify([
+    props.basePath,
+    props.recipe?.kind ?? props.setup?.kind,
+    // Bundled documents can share a file name, so the recipe tells them apart.
+    // A typed URL matches the source label of the Setup it becomes.
+    props.recipe && 'document' in props.recipe
+      ? `${props.recipe.id}/${props.recipe.document}`
+      : (props.recipe?.url ?? props.setup?.sourceLabel),
+  ])
+  return (
+    <StepperAttemptPage
+      key={`${attemptPath(props.basePath, props.attempt)}:${source}`}
+      {...props}
+    />
+  )
+}
+
+/** Configuration comes first, followed by account choices and final review. */
+function StepperAttemptPage({
+  basePath,
+  cancelPath,
+  setup,
+  attempt,
+  callbackUrl,
+  takenNamespaces = [],
+  recipe = null,
+  recipes = [],
+  recipeConfiguration = null,
+  recipeDocumentationUrl = null,
+  form,
+  result,
+  pending = false,
+}: StepperPageProps) {
+  const [answers, setAnswers] = useState({
+    // A typed URL's host names the provider only until the read lands; then the
+    // Setup's document does, unless a recipe suggested a name.
+    displayName: attempt.suggestedName || (setup ? undefined : recipe?.displayName),
+    // A recipe or the source host suggests the namespace; the person confirms it in Configuration.
+    namespace:
+      attempt.kind === 'workspace'
+        ? (result?.configurationDraft?.namespace ??
+          (attempt.namespace ||
+            (recipe?.id ? recipeNamespace(recipe) : '') ||
+            suggestedNamespace(setup?.sourceHost.split('.')[0] ?? '')))
+        : '',
+  })
+  const local: CreationAttempt =
+    attempt.state === 'frozen' ? attempt : { ...attempt, namespace: answers.namespace }
+  const { stage, terminal } = attemptProgress(local, setup, result)
+  const configurationPath = attemptPath(basePath, reviseAttempt(local, 'configuration'))
+  // Back from the account question returns to the operations, the step before
+  // it. Withdrawing the acceptance is what sends the attempt back there.
+  const operationsPath = attemptPath(basePath, {
+    ...reviseAttempt(local),
+    operationsAccepted: false,
+  })
+  const setNamespace = (namespace: string) => setAnswers((current) => ({ ...current, namespace }))
+  const key = `${setup?.id}:${setup?.configuration?.revision}`
+  // One step is on screen at a time, and the stage says which. Deciding it once
+  // keeps the header and the step from disagreeing about where the person is.
+  const content = !setup ? undefined : stage === 'configuration' ? (
+    <ConfigurationStep
+      key={key}
+      setup={setup}
+      form={form}
+      pending={pending}
+      result={result}
+      callbackUrl={callbackUrl}
+      namespace={local.namespace}
+      onNamespace={setNamespace}
+      takenNamespaces={takenNamespaces}
+      suggestedName={answers.displayName ?? local.suggestedName}
+      recipe={recipeConfiguration}
+    />
+  ) : stage === 'discovery' || stage === 'operations' ? (
+    // Discovery is this same step without a list yet: it asks for the sign-in
+    // that produces one, in the panel the list will fill.
+    <OperationsStep
+      key={key}
+      attempt={local}
+      setup={setup}
+      basePath={basePath}
+      backPath={configurationPath}
+      discovering={stage === 'discovery'}
+      form={form}
+      pending={pending}
+      result={result}
+      callbackUrl={callbackUrl}
+    />
+  ) : stage === 'account' || stage === 'publish' ? (
+    // The account question and the button that acts on it are one step: the
+    // answer states what Add commits rather than moving to a page that only
+    // restates it. Remounted per stage, so the question's own state does not
+    // outlive the answer.
+    <AccountStep
+      key={`${key}:${stage}`}
+      attempt={local}
+      setup={setup}
+      basePath={basePath}
+      form={form}
+      result={result}
+      pending={pending}
+      callbackUrl={callbackUrl}
+      backPath={operationsPath}
+      documentationUrl={recipeDocumentationUrl}
+      disabled={local.kind === 'workspace' && !NAMESPACE.test(local.namespace)}
+    />
+  ) : undefined
+  const providerName = setup?.configuration?.confirmed
+    ? setup.configuration.values.displayName
+    : local.suggestedName || setup?.configuration?.values.displayName || recipe?.displayName
+  // One page for every state. A step heads its content with its title and actions.
+  const page = (body: ReactNode) => (
+    <PageLayout
+      variant="wide"
+      breadcrumbs={[
+        { id: 'providers', type: 'link', text: 'Providers', to: cancelPath },
+        { id: 'add', type: 'text', text: `Add ${providerName || 'provider'}` },
+      ]}
+    >
+      {body}
+    </PageLayout>
+  )
+  if (terminal)
+    return page(
+      <Banner
+        variant="warning"
+        action={
+          <Button.InternalLink to={basePath} size="small">
+            Start over
+          </Button.InternalLink>
+        }
+      >
+        {terminal}
+      </Banner>,
+    )
+  if (content)
+    return page(
+      <div className={styles.setupPage}>
+        <StepPage.Provider value>{content}</StepPage.Provider>
+      </div>,
+    )
+  return page(
+    <div className={styles.setupPage}>
+      {setup ? null : (
+        <section className={styles.stack} aria-label="Source">
+          <Typography.HeadingSmall as="h2">Source</Typography.HeadingSmall>
+          <AddProviderEntry
+            form={form}
+            pending={pending}
+            result={result}
+            newPath={basePath}
+            recipes={recipes}
+            initialRecipe={recipe}
+          />
+        </section>
+      )}
+    </div>,
+  )
+}

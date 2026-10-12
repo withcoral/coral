@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://help.lucid.co/hc/en-us/articles/42578801807508
+# OAuth scopes come from server discovery; the Recipe names none.
+# Team and Enterprise API keys use Lucid's documented Bearer token binding.
+schema_version: 1
+id: lucid
+display_name: Lucid
+description: Diagrams, documents and repositories from Lucid.
+icons:
+  light: logo.png
+source:
+  mcp:
+    url: https://mcp.lucid.app/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Lucid
+      documentation_url: https://help.lucid.co/hc/en-us/articles/42578801807508
+      flow: authorization_code
+    api_token:
+      method: bearer
+      label: API key
+      documentation_url: https://developer.lucid.co/reference/using-the-key
+  default: oauth

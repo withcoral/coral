@@ -1,0 +1,103 @@
+import type { ReactNode } from 'react'
+import { Banner, Button, Typography } from '@/wax/components'
+import type { Segment } from '@/wax/components/breadcrumbs/breadcrumbs'
+import { PageLayout } from '@/wax/components/page-layout'
+import type { Crumb, WorkspaceView } from './types'
+import * as styles from './management.css'
+
+export function ManagementLayout({
+  breadcrumbs,
+  actions,
+  children,
+}: {
+  breadcrumbs: Segment[]
+  /** Page actions, which sit beside the breadcrumb. */
+  actions?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <PageLayout breadcrumbs={breadcrumbs} actions={actions}>
+      {children}
+    </PageLayout>
+  )
+}
+
+/**
+ * One line under the breadcrumb for the current page's status and context.
+ * Renders nothing when a page has neither.
+ */
+export function PageIntro({ status, children }: { status?: ReactNode; children?: ReactNode }) {
+  if (!status && !children) return null
+  return (
+    <div className={styles.pageIntro}>
+      {status}
+      {children}
+    </div>
+  )
+}
+
+/** Links to each parent page, ending on the current page as text. */
+export function trail(parents: Crumb[], current: string): Segment[] {
+  return [
+    ...parents.map((p, i) => ({
+      id: `parent-${i}`,
+      type: 'link' as const,
+      text: p.label,
+      to: p.to,
+    })),
+    { id: 'current', type: 'text' as const, text: current },
+  ]
+}
+
+export function Section({
+  id,
+  title,
+  description,
+  actions,
+  children,
+}: {
+  id?: string
+  title: string
+  description?: string
+  actions?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <section className={styles.section} aria-label={title} id={id}>
+      <div className={styles.sectionHeading}>
+        <div className={styles.intro}>
+          <Typography.HeadingSmall as="h2">{title}</Typography.HeadingSmall>
+          {description && <Typography.Body as="p">{description}</Typography.Body>}
+        </div>
+        {actions && <div className={styles.headerActions}>{actions}</div>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+/** Says the Workspace is archived and what that blocks. Only an Owner gets the restore link. */
+export function ArchivedBanner({
+  workspace,
+  children,
+}: {
+  workspace: WorkspaceView
+  /** What the archive blocks on this page. */
+  children: ReactNode
+}) {
+  return (
+    <Banner
+      variant="warning"
+      title="This workspace is archived"
+      action={
+        workspace.effectiveRole === 'owner' ? (
+          <Button.InternalLink to={`${workspace.path}/settings`} size="small">
+            Restore in settings
+          </Button.InternalLink>
+        ) : undefined
+      }
+    >
+      {children}
+    </Banner>
+  )
+}

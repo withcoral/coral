@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://dev.frontapp.com/docs/tools
+# Official brand asset: https://front.com/apple-icon.png
+schema_version: 1
+id: front
+display_name: Front
+description: Conversations, inboxes, contacts, teammates and messages from Front.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/frontapp/front-api-specs/main/core-api/core-api.json
+authentication:
+  options:
+    api_token:
+      method: bearer
+      label: API token
+      documentation_url: https://dev.frontapp.com/docs/authentication
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      description: Create an OAuth app. Register the callback URL shown during setup.
+      documentation_url: https://dev.frontapp.com/docs/oauth
+      authorization_url: https://app.frontapp.com/oauth/authorize
+      token_url: https://app.frontapp.com/oauth/token
+      client:
+        authentication: client_secret_basic
+      pkce: disabled
+      scopes: []
+  default: api_token
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

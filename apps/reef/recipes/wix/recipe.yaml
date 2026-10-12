@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://dev.wix.com/docs/overview/ai-the-wix-platform/the-wix-mcp
+# OAuth scopes come from server discovery; the Recipe names none.
+# Coral MCP does not support the provider header-credential alternative.
+schema_version: 1
+id: wix
+display_name: Wix
+description: Sites, content and business data from Wix.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+source:
+  mcp:
+    url: https://mcp.wix.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Wix
+      documentation_url: https://dev.wix.com/docs/overview/ai-the-wix-platform/the-wix-mcp
+      flow: authorization_code
+  default: oauth

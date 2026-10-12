@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.beehiiv.com/support/article/39255979546263-getting-started-with-the-beehiiv-mcp
+# Resource metadata advertises read and write scopes.
+schema_version: 1
+id: beehiiv_mcp
+service: beehiiv
+display_name: beehiiv
+description: Publications, subscribers, posts and newsletter actions from beehiiv.
+source:
+  mcp:
+    url: https://mcp.beehiiv.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with beehiiv
+      documentation_url: https://www.beehiiv.com/support/article/39255979546263-getting-started-with-the-beehiiv-mcp
+      flow: authorization_code
+      description: Connect your workspace. Use a paid plan for write operations.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

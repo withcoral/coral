@@ -1,0 +1,158 @@
+//! Non-consuming Run observation: one authorized snapshot per read, with
+//! bounded waiting on committed changes and required-action expiry.
+
+use std::time::Duration;
+
+use coral_db::Transaction;
+use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
+
+use crate::lifecycle::RunRecord;
+use crate::{
+    Error, RequiredAction, RunCursor, RunEvent, RunId, RunModule, RunObservation, RunUpdate,
+    duration_until, required_actions, run_repository,
+};
+
+/// Minimum spacing between one waiter's rereads.
+const OBSERVE_MIN_REREAD_GAP: Duration = Duration::from_millis(50);
+/// Reread cadence for a waiter whose change notifications are unavailable.
+const OBSERVE_FALLBACK_POLL: Duration = Duration::from_millis(500);
+
+impl RunModule {
+    /// Returns a non-consuming observation of an authorized Run, optionally waiting.
+    ///
+    /// Independent callers can replay authored Emissions/Logs from the same cursor.
+    /// A terminal outcome appears on the final output page, without draining internal Events. Required
+    /// actions are a current snapshot; their content revision grants no authority.
+    /// Every read rechecks visibility, including while waiting. Waits reread after
+    /// committed changes and action expiries, and poll slowly if notification fails.
+    ///
+    /// # Errors
+    ///
+    /// An absent Run, inaccessible Workspace, cross-Principal Run, or Agent
+    /// history access returns [`Error::RunNotFound`]. Invalid cursors and
+    /// persistence corruption are also rejected.
+    pub async fn observe(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+        observation: &RunObservation,
+    ) -> Result<RunUpdate, Error> {
+        validate_cursor(run_id, observation)?;
+        let deadline = tokio::time::Instant::now() + observation.wait();
+        // Subscribe before the first snapshot so a commit during it still wakes this wait.
+        // A wake-up is only a hint: the database stays authoritative, so an unavailable
+        // notification path degrades to slow polling instead of failing the wait.
+        let mut changes = if observation.wait().is_zero() {
+            None
+        } else {
+            self.database.subscribe_changes().ok()
+        };
+        loop {
+            let update = self
+                .observe_snapshot(actor, workspace_id, run_id, observation)
+                .await?;
+            let read_at = tokio::time::Instant::now();
+            if observation.is_ready(&update) || read_at >= deadline {
+                return Ok(update);
+            }
+            // Expiry changes action visibility without a commit.
+            let now = self.now()?;
+            let expiry = update
+                .required_actions()
+                .iter()
+                .map(|action| read_at + duration_until(action.deadline_at_unix_nanos, now))
+                .min();
+            let wake = expiry.map_or(deadline, |expiry| expiry.min(deadline));
+            match &mut changes {
+                Some(subscription) => tokio::select! {
+                    result = subscription.changed() => if result.is_err() { changes = None },
+                    () = tokio::time::sleep_until(wake) => {}
+                },
+                None => {
+                    tokio::time::sleep_until(wake.min(read_at + OBSERVE_FALLBACK_POLL)).await;
+                }
+            }
+            // Busy Runs commit often. Coalesce their wake-ups into bounded rereads.
+            tokio::time::sleep_until(deadline.min(read_at + OBSERVE_MIN_REREAD_GAP)).await;
+        }
+    }
+
+    async fn observe_snapshot(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+        observation: &RunObservation,
+    ) -> Result<RunUpdate, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let include_workspace_agents = self
+            .visibility_scope_in_transaction(&mut transaction, actor, workspace_id)
+            .await?;
+        let run = run_repository::find_visible_in_transaction(
+            &mut transaction,
+            workspace_id,
+            run_id,
+            actor.principal(),
+            include_workspace_agents,
+        )
+        .await?
+        .ok_or(Error::RunNotFound)?;
+        let actions =
+            required_actions::snapshot(&mut transaction, &run, actor.principal(), self.now()?)
+                .await?;
+        let update = read_update(&mut transaction, run, observation, actions).await?;
+        transaction.commit().await?;
+        Ok(update)
+    }
+}
+
+async fn read_update(
+    transaction: &mut Transaction<'_>,
+    run: RunRecord,
+    observation: &RunObservation,
+    actions: Vec<RequiredAction>,
+) -> Result<RunUpdate, Error> {
+    let after_sequence = observation.cursor().map_or(0, RunCursor::event_sequence);
+    let last_sequence = run.next_event_sequence - 1;
+    if after_sequence > last_sequence {
+        return Err(Error::InvalidInput("Run cursor is invalid".to_string()));
+    }
+    let (events, has_more) = run_repository::output_page_in_transaction(
+        transaction,
+        &run.workspace_id,
+        &run.id,
+        after_sequence,
+        observation.event_limit(),
+        run.value_limits,
+    )
+    .await?;
+    // A complete output page acknowledges hidden records through this snapshot.
+    // A partial page stops at its last delivered occurrence, never beyond omitted output.
+    let next_sequence = if has_more {
+        events.last().map_or(after_sequence, RunEvent::sequence)
+    } else {
+        last_sequence
+    };
+    let mut update = RunUpdate::new(
+        run.id.clone(),
+        run.state,
+        events,
+        RunCursor::new(run.id, next_sequence, required_actions::revision(&actions)),
+        has_more,
+        run.terminal_outcome,
+        run.value_limits,
+    )?;
+    update.required_actions = actions;
+    Ok(update)
+}
+
+pub(crate) fn validate_cursor(run_id: &RunId, observation: &RunObservation) -> Result<(), Error> {
+    if observation
+        .cursor()
+        .is_some_and(|cursor| cursor.run_id() != run_id)
+    {
+        return Err(Error::InvalidInput("Run cursor is invalid".to_string()));
+    }
+    Ok(())
+}

@@ -1,0 +1,381 @@
+//! Exact Workspace Operation policy for Coral.
+//!
+//! This private domain Module is the transport-neutral Interface for deciding
+//! and changing one Operation Access State addressed by an exact Workspace,
+//! Provider, and Operation Key. It supports only `enabled`,
+//! `approval_required`, and `disabled`; no Principal, Account, Credential
+//! Route, ordered, pattern, or glob dimensions enter the Interface.
+//!
+//! # Interface
+//!
+//! - [`OperationPolicyModule::decision`] returns the current exact decision.
+//! - [`OperationPolicyModule::decisions`] reads a Provider's bounded selection in one snapshot.
+//! - [`OperationPolicyModule::set_access_state`] creates or changes one exact
+//!   rule for a Workspace Owner.
+//! - [`OperationPolicyModule::set_access_states`] atomically changes 1–100 distinct
+//!   exact decisions in one Workspace with their lifecycle evidence.
+//! - [`discovery_decision_in_transaction`] reads one exact current decision
+//!   without a lock or a policy write, as when Run inspects an approval.
+//! - [`exact_operation_rules_in_transaction`] reads every exact rule of one
+//!   Workspace, so discovery decides all its Operations from one read.
+//! - [`invocation_decision_in_transaction`] locks and rechecks an exact retained
+//!   decision inside Run-owned admission and dispatch-fence transactions.
+//! - [`OperationPolicyModule::list_lifecycle_events`] exposes safe policy-domain
+//!   Administrative Lifecycle Events.
+//!
+//! # Invariants
+//!
+//! The current active Provider catalog proves that the exact target exists.
+//! Without an exact rule, the Operation's declared hints supply the default:
+//! only a declared read-only Operation is enabled. OpenAPI Operations declare
+//! no hints in v1 and are therefore approval-required. A
+//! policy change and its safe lifecycle Event commit in one transaction.
+//!
+//! The Module reads no process environment. Adapters supply authenticated User,
+//! timestamp, trace, and exact target values explicitly. Persistence rows and
+//! transport envelopes do not cross the Interface.
+
+mod error;
+pub mod history_repository;
+mod repository;
+mod types;
+
+use std::sync::Arc;
+
+use coral_catalog::OperationHints;
+use coral_db::Database;
+use coral_workspace::{
+    AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
+};
+
+pub use error::Error;
+pub use types::{
+    AdministrativeLifecycleEvent, ExactOperationRules, LifecycleAction, LifecycleOutcome,
+    OperationAccessState, OperationPolicyDecision, OperationPolicyTarget,
+};
+
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+/// Returns the Operation Policy Module's domain-owned migration plan.
+#[must_use]
+pub const fn migrator() -> &'static sqlx::migrate::Migrator {
+    &MIGRATOR
+}
+
+/// Exact Workspace Operation-policy Module.
+#[derive(Clone)]
+pub struct OperationPolicyModule {
+    database: Arc<Database>,
+    workspaces: WorkspaceModule,
+}
+
+impl OperationPolicyModule {
+    /// Builds the Module from initialized persistence and Workspace authority.
+    #[must_use]
+    pub const fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
+        Self {
+            database,
+            workspaces,
+        }
+    }
+
+    /// Returns the effective decision for one exact current Operation target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority, absent-target, corrupt-data, or persistence error.
+    pub async fn decision(
+        &self,
+        actor: &AuthenticatedUser,
+        target: &OperationPolicyTarget,
+    ) -> Result<OperationPolicyDecision, Error> {
+        self.decisions(actor, std::slice::from_ref(target))
+            .await?
+            .pop()
+            .ok_or(Error::InvalidBatch)
+    }
+
+    /// Returns 1–100 distinct current decisions from one Provider in request order.
+    /// Authority, current catalog hints and explicit rules share one read snapshot.
+    /// # Errors
+    /// Rejects invalid batches, absent targets, lost authority and persistence failures.
+    pub async fn decisions(
+        &self,
+        actor: &AuthenticatedUser,
+        targets: &[OperationPolicyTarget],
+    ) -> Result<Vec<OperationPolicyDecision>, Error> {
+        let first = targets.first().ok_or(Error::InvalidBatch)?;
+        let mut seen = std::collections::HashSet::new();
+        if targets.len() > 100
+            || targets.iter().any(|target| {
+                target.workspace_id() != first.workspace_id()
+                    || target.provider_id() != first.provider_id()
+                    || !seen.insert(target)
+            })
+        {
+            return Err(Error::InvalidBatch);
+        }
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        self.workspaces
+            .check_in_transaction(
+                &mut transaction,
+                actor,
+                first.workspace_id(),
+                WorkspaceAction::Inspect,
+            )
+            .await?;
+        let keys: Vec<_> = targets
+            .iter()
+            .map(|target| target.operation_key().clone())
+            .collect();
+        let hints = coral_provider::operation_policy_hints_batch_in_transaction(
+            &mut transaction,
+            first.workspace_id(),
+            first.provider_id(),
+            &keys,
+        )
+        .await?;
+        let explicit = repository::access_states_in_transaction(
+            &mut transaction,
+            first.workspace_id(),
+            first.provider_id(),
+            &keys,
+        )
+        .await?;
+        let decisions = targets
+            .iter()
+            .map(|target| {
+                let hints = hints
+                    .get(target.operation_key())
+                    .ok_or(Error::OperationNotFound)?;
+                Ok(resolved_decision(
+                    target,
+                    *hints,
+                    explicit.get(target.operation_key()).copied(),
+                ))
+            })
+            .collect::<Result<_, Error>>()?;
+        transaction.rollback().await?;
+        Ok(decisions)
+    }
+
+    /// Creates or changes one exact Operation Access State.
+    ///
+    /// Repeating an already explicit state is a no-op and writes no duplicate
+    /// lifecycle evidence.
+    ///
+    /// # Errors
+    ///
+    /// Requires an active Workspace and Workspace Owner authority.
+    pub async fn set_access_state(
+        &self,
+        context: &ChangeContext,
+        target: OperationPolicyTarget,
+        access_state: OperationAccessState,
+    ) -> Result<OperationPolicyDecision, Error> {
+        self.set_access_states(context, vec![(target, access_state)])
+            .await?
+            .pop()
+            .ok_or(Error::InvalidBatch)
+    }
+
+    /// Atomically changes 1–100 distinct exact decisions in one Workspace.
+    /// A rejected target leaves every decision and lifecycle Event unchanged.
+    /// Repeating explicit states is a no-op, including their lifecycle evidence.
+    /// # Errors
+    /// Rejects empty, oversized, duplicate, cross-Workspace, absent or unauthorized targets.
+    pub async fn set_access_states(
+        &self,
+        context: &ChangeContext,
+        updates: Vec<(OperationPolicyTarget, OperationAccessState)>,
+    ) -> Result<Vec<OperationPolicyDecision>, Error> {
+        let workspace = updates.first().ok_or(Error::InvalidBatch)?.0.workspace_id();
+        let mut seen = std::collections::HashSet::new();
+        if updates.len() > 100
+            || updates
+                .iter()
+                .any(|(target, _)| target.workspace_id() != workspace || !seen.insert(target))
+        {
+            return Err(Error::InvalidBatch);
+        }
+        let mut transaction = self.database.begin().await?;
+        let evidence = self
+            .workspaces
+            .check_configuration_in_transaction(&mut transaction, context.actor(), workspace)
+            .await?;
+        let mut decisions = Vec::with_capacity(updates.len());
+        for (target, access_state) in updates {
+            operation_hints_in_transaction(&mut transaction, &target).await?;
+            if repository::access_state_in_transaction(&mut transaction, &target).await?
+                != Some(access_state)
+            {
+                repository::upsert_access_state(
+                    &mut transaction,
+                    &target,
+                    access_state,
+                    context.occurred_at_unix_nanos(),
+                )
+                .await?;
+                repository::insert_lifecycle_event(
+                    &mut transaction,
+                    repository::NewLifecycleEvent {
+                        target: &target,
+                        actor_user_id: context.actor().user_id(),
+                        authority_source: evidence.authority_source(),
+                        changed_field_paths: &["access_state"],
+                        occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                        trace_id: context.trace_id(),
+                    },
+                )
+                .await?;
+            }
+            decisions.push(OperationPolicyDecision::new(target, access_state, true));
+        }
+        transaction.commit().await?;
+        Ok(decisions)
+    }
+
+    /// Lists safe Operation-policy Administrative Lifecycle Events.
+    ///
+    /// # Errors
+    ///
+    /// Requires current Workspace Owner authority.
+    pub async fn list_lifecycle_events(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace_id: &coral_workspace::WorkspaceId,
+    ) -> Result<Vec<AdministrativeLifecycleEvent>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let evidence = self
+            .workspaces
+            .check_in_transaction(
+                &mut transaction,
+                actor,
+                workspace_id,
+                WorkspaceAction::Inspect,
+            )
+            .await?;
+        if evidence.effective_role() != WorkspaceRole::Owner {
+            return Err(coral_workspace::Error::PermissionDenied(
+                "Workspace Owner authority is required",
+            )
+            .into());
+        }
+        let events =
+            repository::list_lifecycle_events_in_transaction(&mut transaction, workspace_id)
+                .await?;
+        transaction.rollback().await?;
+        Ok(events)
+    }
+}
+
+async fn operation_hints_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    target: &OperationPolicyTarget,
+) -> Result<OperationHints, Error> {
+    coral_provider::operation_policy_hints_in_transaction(
+        transaction,
+        target.workspace_id(),
+        target.provider_id(),
+        target.operation_key(),
+    )
+    .await?
+    .ok_or(Error::OperationNotFound)
+}
+
+/// Reads one exact current Operation decision without holding it.
+///
+/// The caller owns a coherent read transaction and supplies declared hints
+/// from current structurally available Provider authoring material. This facet
+/// does not lock or write policy and does not independently resolve Provider
+/// persistence.
+///
+/// # Errors
+///
+/// Returns a corrupt-data or persistence failure.
+pub async fn discovery_decision_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    target: &OperationPolicyTarget,
+    current_hints: OperationHints,
+) -> Result<OperationPolicyDecision, Error> {
+    let explicit = repository::access_state_in_transaction(transaction, target).await?;
+    Ok(resolved_decision(target, current_hints, explicit))
+}
+
+/// Reads every exact Operation rule of one Workspace for Universal Search.
+///
+/// Discovery reads the rules once per request instead of one decision per
+/// Operation. The caller owns a coherent read transaction and supplies declared
+/// hints from current structurally available Provider authoring material.
+/// This facet does not lock or write policy.
+///
+/// # Errors
+///
+/// Returns a corrupt-data or persistence failure.
+pub async fn exact_operation_rules_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<ExactOperationRules, Error> {
+    repository::exact_rules_in_transaction(transaction, workspace_id).await
+}
+
+/// Rechecks and holds one exact Operation policy decision for Invocation work.
+///
+/// The caller owns the transaction that either admits an Invocation or writes
+/// its dispatch fence and supplies declared hints from the exact retained
+/// Provider Generation. Holding an explicit rule serializes the decision with
+/// a concurrent policy change on both supported persistence Adapters.
+///
+/// # Errors
+///
+/// Returns an absent-target, corrupt-data, or persistence failure.
+pub async fn invocation_decision_in_transaction(
+    transaction: &mut coral_db::Transaction<'_>,
+    target: &OperationPolicyTarget,
+    retained_hints: OperationHints,
+) -> Result<OperationPolicyDecision, Error> {
+    let _held = repository::hold_access_state_in_transaction(transaction, target).await?;
+    let explicit = repository::access_state_in_transaction(transaction, target).await?;
+    Ok(resolved_decision(target, retained_hints, explicit))
+}
+
+/// Reads the same decision as [`invocation_decision_in_transaction`] without
+/// holding the rule. Use it only in a read snapshot, to decide whether a held
+/// recheck is needed; the held decision stays authoritative.
+///
+/// # Errors
+///
+/// Returns an absent-target, corrupt-data, or persistence failure.
+pub async fn invocation_decision_in_snapshot(
+    transaction: &mut coral_db::Transaction<'_>,
+    target: &OperationPolicyTarget,
+    retained_hints: OperationHints,
+) -> Result<OperationPolicyDecision, Error> {
+    let explicit = repository::access_state_in_transaction(transaction, target).await?;
+    Ok(resolved_decision(target, retained_hints, explicit))
+}
+
+fn resolved_decision(
+    target: &OperationPolicyTarget,
+    hints: OperationHints,
+    explicit: Option<OperationAccessState>,
+) -> OperationPolicyDecision {
+    OperationPolicyDecision::new(
+        target.clone(),
+        explicit.unwrap_or_else(|| default_access_state(hints)),
+        explicit.is_some(),
+    )
+}
+
+/// Only an Operation that declares it changes nothing runs without approval.
+/// An undeclared hint is not evidence, so it takes the cautious default.
+pub(crate) const fn default_access_state(hints: OperationHints) -> OperationAccessState {
+    if hints.declares_read_only() {
+        OperationAccessState::Enabled
+    } else {
+        OperationAccessState::ApprovalRequired
+    }
+}
+
+#[cfg(test)]
+mod tests;

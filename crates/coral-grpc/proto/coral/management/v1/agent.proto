@@ -1,0 +1,181 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "coral/management/v1/workspace.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+// Workspace-owned Agent administration, never Agent-callable.
+service AgentService {
+  // Atomic Agent, Registration and one-time credential issuance.
+  rpc CreateAgent(CreateAgentRequest) returns (IssuedAgentCredential);
+  // Owner-only safe current Agent listing.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  // Exact safe Agent inspection.
+  rpc GetAgent(GetAgentRequest) returns (Agent);
+  // Changes enabled state without removing history.
+  rpc UpdateAgent(UpdateAgentRequest) returns (Agent);
+  // Deletes current authority and authoring, retaining historical attribution.
+  rpc DeleteAgent(DeleteAgentRequest) returns (google.protobuf.Empty);
+}
+
+// Single host-owned Registration lifecycle.
+service AgentRegistrationService {
+  // Requires current Workspace Owner authority.
+  rpc GetAgentRegistration(GetAgentRegistrationRequest) returns (AgentRegistration);
+  // Replaces only masked enablement or expiration, not identity or Workspace.
+  rpc UpdateAgentRegistration(UpdateAgentRegistrationRequest) returns (AgentRegistration);
+  // Returns a fresh credential once. Repeated requests never rotate again.
+  rpc RotateAgentCredential(RotateAgentCredentialRequest) returns (IssuedAgentCredential);
+}
+
+// Agent lifecycle, separate from Registration enablement and expiration.
+enum AgentState {
+  // Not supplied; invalid in Agent state updates.
+  AGENT_STATE_UNSPECIFIED = 0;
+  // Can act while the Workspace and Registration also permit it.
+  AGENT_STATE_ENABLED = 1;
+  // Cannot start new work or dispatch upstream.
+  AGENT_STATE_DISABLED = 2;
+}
+
+// Independent reasons Coral access is blocked, not Operation or client readiness.
+enum AgentAccessBlocker {
+  // Unknown; clients must not imply access is enabled.
+  AGENT_ACCESS_BLOCKER_UNSPECIFIED = 0;
+  // Restore the Workspace first.
+  AGENT_ACCESS_BLOCKER_WORKSPACE_ARCHIVED = 1;
+  // Explicit Agent disablement.
+  AGENT_ACCESS_BLOCKER_AGENT_DISABLED = 2;
+  // Independent API access suspension.
+  AGENT_ACCESS_BLOCKER_API_SUSPENDED = 3;
+  // Access expiration reached.
+  AGENT_ACCESS_BLOCKER_EXPIRED = 4;
+}
+
+// Safe current Agent, not a personal ownership grant.
+message Agent {
+  // Immutable workspaces/{workspace}/agents/{agent}.
+  string name = 1;
+  // Human label.
+  string display_name = 2;
+  // Safe creating User attribution, not ownership.
+  string created_by = 3;
+  // Current lifecycle; unspecified and unknown values are rejected on writes.
+  AgentState state = 4;
+  // Current opaque concurrency token.
+  string etag = 5;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 6;
+  // Last change time.
+  google.protobuf.Timestamp update_time = 7;
+  // Authorized creator attribution, including departed or disabled creators.
+  UserProfile creator_profile = 8;
+  // All current Coral-access blockers, in priority order.
+  repeated AgentAccessBlocker access_blockers = 9;
+}
+
+// Safe Registration configuration; no credential or verifier.
+message AgentRegistration {
+  // Immutable singleton workspaces/{workspace}/agents/{agent}/registration.
+  string name = 1;
+  // Immutable Registration identity, unchanged by rotation.
+  string uid = 2;
+  // Agent lifecycle additionally gates authentication.
+  bool enabled = 3;
+  // Unset means no expiration; a past timestamp expires it immediately.
+  google.protobuf.Timestamp expire_time = 4;
+  // Current opaque concurrency token.
+  string etag = 5;
+  // Creation time.
+  google.protobuf.Timestamp create_time = 6;
+  // Last change time, including rotation.
+  google.protobuf.Timestamp update_time = 7;
+}
+
+// Sole credential-bearing response. Never cache, log, or persist in Reef.
+message IssuedAgentCredential {
+  // Safe Agent attribution.
+  Agent agent = 1;
+  // Safe Registration configuration.
+  AgentRegistration registration = 2;
+  // One-time bearer credential; lost responses require explicit fresh rotation.
+  string credential = 3;
+}
+
+// Atomic creation request.
+message CreateAgentRequest {
+  // Exact owning Workspace.
+  string parent = 1;
+  // Human label.
+  string display_name = 2;
+  // Optional expiration.
+  google.protobuf.Timestamp expire_time = 3;
+  // Required first-party UUID, preventing repeated issuance.
+  string request_id = 4;
+}
+
+// Safe bounded listing.
+message ListAgentsRequest {
+  // Exact owning Workspace.
+  string parent = 1;
+  // Zero defaults to 30; maximum 100.
+  int32 page_size = 2;
+  // Non-authorizing opaque continuation.
+  string page_token = 3;
+}
+
+// Current Agents, including disabled but excluding deleted Agents.
+message ListAgentsResponse {
+  // Safe Agent metadata only.
+  repeated Agent agents = 1;
+  // Empty at end.
+  string next_page_token = 2;
+}
+
+// Exact Agent lookup.
+message GetAgentRequest {
+  // Canonical Agent name.
+  string name = 1;
+}
+
+// Agent state change.
+message UpdateAgentRequest {
+  // Name, etag and masked state.
+  Agent agent = 1;
+  // Required; only state is supported.
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+// Destructive current Agent cleanup.
+message DeleteAgentRequest {
+  // Canonical Agent name.
+  string name = 1;
+  // Required current etag.
+  string etag = 2;
+}
+
+// Exact Registration lookup.
+message GetAgentRegistrationRequest {
+  // workspaces/{workspace}/agents/{agent}/registration.
+  string name = 1;
+}
+
+// Registration partial update.
+message UpdateAgentRegistrationRequest {
+  // Name, etag and masked fields.
+  AgentRegistration registration = 1;
+  // Required; enabled and expire_time are supported. Masked absent expiration clears it.
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+// Explicit credential replacement, never reactivation.
+message RotateAgentCredentialRequest {
+  // Exact singleton Registration name.
+  string name = 1;
+  // Required current etag.
+  string etag = 2;
+  // Required first-party UUID. Committed repetition cannot reissue a secret.
+  string request_id = 3;
+}

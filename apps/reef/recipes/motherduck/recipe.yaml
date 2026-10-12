@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://motherduck.com/docs/sql-reference/mcp/
+# Scopes come from public OAuth metadata.
+schema_version: 1
+id: motherduck
+display_name: MotherDuck
+description: Databases, queries, shares and data guides from MotherDuck.
+source:
+  mcp:
+    url: https://api.motherduck.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with MotherDuck
+      flow: authorization_code
+      documentation_url: https://motherduck.com/docs/sql-reference/mcp/
+    token:
+      method: bearer
+      label: Paste a MotherDuck token
+      documentation_url: https://motherduck.com/docs/sql-reference/mcp/
+  default: oauth
+icons:
+  light: logo.svg

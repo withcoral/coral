@@ -10,7 +10,6 @@ use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::env;
@@ -20,46 +19,53 @@ const DEVELOPER_ID_G2_CA_URL: &str =
 const DEVELOPER_ID_G2_CA_SHA256: &str =
     "F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A";
 
-#[derive(Debug, clap::Args)]
-pub(crate) struct MacosSignNotarizeArgs {
-    /// macOS Rust target being packaged, for diagnostics only.
-    #[arg(long)]
-    target: String,
-
-    /// Built, unsigned Coral binary to sign in place.
-    #[arg(long)]
-    binary: PathBuf,
-
-    /// Destination ZIP archive to submit for notarization.
-    #[arg(long)]
-    zip: PathBuf,
-
-    /// Destination legacy tar.gz archive.
-    #[arg(long)]
-    tar: PathBuf,
-
-    /// Temporary directory for signing assets and keychain state.
-    #[arg(long)]
-    work_dir: PathBuf,
-
-    /// Code signing identifier embedded in the binary signature.
-    #[arg(long, default_value = "com.withcoral.coral")]
-    identifier: String,
+/// A Developer ID identity in a keychain of its own, and the App Store
+/// Connect key that notarizes with it. Dropping it deletes the keychain and
+/// the decoded secrets.
+#[derive(Debug)]
+pub(crate) struct MacosSigning {
+    env: SigningEnv,
+    session: SigningSession,
+    /// The decoded App Store Connect API key (.p8).
+    key_path: PathBuf,
 }
 
-pub(crate) fn macos_sign_notarize(args: &MacosSignNotarizeArgs) -> Result<bool> {
-    if !cfg!(target_os = "macos") {
-        bail!("release-macos-sign-notarize must run on macOS");
-    }
-    if !args.target.ends_with("-apple-darwin") {
-        bail!("target must be a macOS target, got '{}'", args.target);
-    }
-    if !args.binary.is_file() {
-        bail!("binary does not exist: {}", args.binary.display());
+impl MacosSigning {
+    /// The environment that has electron-builder sign with this identity and
+    /// notarize with this key.
+    pub(crate) fn electron_builder_env(&self) -> Vec<(&'static str, OsString)> {
+        vec![
+            (
+                "CSC_KEYCHAIN",
+                self.session.keychain_path.clone().into_os_string(),
+            ),
+            (
+                "CSC_NAME",
+                electron_builder_identity(&self.env.apple_codesign_identity).into(),
+            ),
+            ("APPLE_API_KEY", self.key_path.clone().into_os_string()),
+            (
+                "APPLE_API_KEY_ID",
+                self.env.app_store_connect_api_key_id.clone().into(),
+            ),
+            (
+                "APPLE_API_ISSUER",
+                self.env.app_store_connect_api_issuer_id.clone().into(),
+            ),
+        ]
     }
 
+    /// Deletes the keychain and the decoded secrets.
+    pub(crate) fn close(&mut self) -> Result<()> {
+        self.session.cleanup()
+    }
+}
+
+/// Decodes the Apple secrets into `work_dir` and imports the signing identity
+/// into a temporary keychain at the front of the search list.
+pub(crate) fn open_macos_signing(work_dir: &Path) -> Result<MacosSigning> {
     let env = SigningEnv::read()?;
-    let mut session = SigningSession::create(&args.work_dir)?;
+    let session = SigningSession::create(work_dir)?;
 
     let certificate_path = session.work_dir.join("developer_id_application.p12");
     let key_path = session
@@ -89,202 +95,19 @@ pub(crate) fn macos_sign_notarize(args: &MacosSignNotarizeArgs) -> Result<bool> 
     session.prepend_keychain_to_search_list()?;
     find_signing_identity(&session.keychain_path)?;
 
-    sign_binary(&args.binary, &env.apple_codesign_identity, &args.identifier)?;
-    let zip = output_path(&args.zip)?;
-    let tar = output_path(&args.tar)?;
-    package_archives(&args.binary, &zip, &tar, &session.work_dir)?;
-    submit_and_verify_notarization(
-        &zip,
-        &args.binary,
-        &key_path,
-        &env.app_store_connect_api_key_id,
-        &env.app_store_connect_api_issuer_id,
-        &session.work_dir,
-    )?;
-
-    session.cleanup()?;
-    Ok(true)
+    Ok(MacosSigning {
+        env,
+        session,
+        key_path,
+    })
 }
 
-#[derive(Debug, clap::Args)]
-pub(crate) struct DesktopMacosPackageArgs {
-    /// Release tag (vX.Y.Z) the desktop app version must match exactly.
-    #[arg(long)]
-    tag: String,
-
-    /// Temporary directory for the App Store Connect API key.
-    #[arg(long)]
-    work_dir: PathBuf,
-}
-
-/// Package, sign, notarize, and verify the prepared universal macOS desktop app.
-///
-/// Owns everything the release workflow needs beyond providing secrets:
-/// version/tag agreement, credential preflight, decoding the App Store
-/// Connect key to the file path `@electron/notarize` expects, packaging the
-/// prepared desktop build, and post-build verification.
-pub(crate) fn desktop_macos_package(args: &DesktopMacosPackageArgs) -> Result<bool> {
-    if !cfg!(target_os = "macos") {
-        bail!("release-desktop-macos-package must run on macOS");
-    }
-
-    let env = DesktopReleaseEnv::read()?;
-
-    // The updater compares the app's embedded version against release tags;
-    // a manual tag on a commit whose desktop version was never bumped would
-    // publish latest-mac.yml with a stale version.
-    let manifest = fs::read_to_string("apps/desktop/package.json")
-        .context("reading apps/desktop/package.json")?;
-    ensure_version_matches_tag(&desktop_package_version(&manifest)?, &args.tag)?;
-
-    fs::create_dir_all(&args.work_dir)
-        .with_context(|| format!("creating {}", args.work_dir.display()))?;
-    let _work_dir = WorkDirGuard {
-        path: args.work_dir.clone(),
-    };
-    // electron-builder's notarization (@electron/notarize) expects
-    // APPLE_API_KEY to be a *path* to the App Store Connect .p8 key, not its
-    // contents.
-    let key_path = args.work_dir.join("app-store-connect-api-key.p8");
-    write_base64_secret(
-        "APP_STORE_CONNECT_API_KEY_P8_BASE64",
-        &env.app_store_connect_api_key_p8_base64,
-        &key_path,
-    )?;
-
-    run_command(
-        Command::new("npm")
-            .arg("run")
-            .arg("package:mac:prepared")
-            .arg("--prefix")
-            .arg("apps/desktop")
-            .env("CORAL_DESKTOP_RELEASE", "1")
-            .env("APPLE_API_KEY", &key_path),
-        "packaging desktop app",
-    )?;
-
-    let dist_dir = Path::new("apps/desktop/dist");
-    let app_bundle = find_coral_app(dist_dir)?;
-    run_command(
-        Command::new("codesign")
-            .arg("--verify")
-            .arg("--deep")
-            .arg("--strict")
-            .arg("--verbose=2")
-            .arg(&app_bundle),
-        "verifying desktop app signature",
-    )?;
-    run_command(
-        Command::new("xcrun")
-            .arg("stapler")
-            .arg("validate")
-            .arg(&app_bundle),
-        "validating desktop notarization staple",
-    )?;
-    // Same artifact assertions as the Desktop package workflow's mac leg.
-    run_command(
-        Command::new("node")
-            .arg("apps/desktop/scripts/verify-dist.mjs")
-            .arg(dist_dir)
-            .arg("mac"),
-        "verifying desktop dist artifacts",
-    )?;
-
-    Ok(true)
-}
-
-#[derive(Debug)]
-struct DesktopReleaseEnv {
-    app_store_connect_api_key_p8_base64: String,
-}
-
-impl DesktopReleaseEnv {
-    fn read() -> Result<Self> {
-        // Preflight the signing and notarization credentials: app-builder-lib
-        // warns and skips notarization when credentials cannot be constructed,
-        // which would otherwise only surface at staple validation after the
-        // full build. Missing GitHub secrets arrive as empty strings, so
-        // require non-empty values.
-        for name in [
-            "CSC_LINK",
-            "CSC_KEY_PASSWORD",
-            "APPLE_API_KEY_ID",
-            "APPLE_API_ISSUER",
-        ] {
-            required_non_empty_env(name)?;
-        }
-        Ok(Self {
-            app_store_connect_api_key_p8_base64: required_non_empty_env(
-                "APP_STORE_CONNECT_API_KEY_P8_BASE64",
-            )?,
-        })
-    }
-}
-
-fn required_non_empty_env(name: &str) -> Result<String> {
-    let value = required_env(name)?;
-    if value.trim().is_empty() {
-        bail!("{name} is empty");
-    }
-    Ok(value)
-}
-
-fn desktop_package_version(manifest: &str) -> Result<String> {
-    let value: Value = serde_json::from_str(manifest).context("parsing desktop package.json")?;
-    value
-        .get("version")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .context("desktop package.json has no version")
-}
-
-fn ensure_version_matches_tag(version: &str, tag: &str) -> Result<()> {
-    if format!("v{version}") == tag {
-        return Ok(());
-    }
-    bail!("desktop version v{version} does not match release tag {tag}");
-}
-
-fn find_coral_app(root: &Path) -> Result<PathBuf> {
-    fn walk(dir: &Path) -> Option<PathBuf> {
-        let entries = fs::read_dir(dir).ok()?;
-        let mut subdirs = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            if path.file_name().is_some_and(|name| name == "Coral.app") {
-                return Some(path);
-            }
-            subdirs.push(path);
-        }
-        subdirs.iter().find_map(|subdir| walk(subdir))
-    }
-    walk(root).with_context(|| format!("could not find Coral.app under {}", root.display()))
-}
-
-#[derive(Debug)]
-struct WorkDirGuard {
-    path: PathBuf,
-}
-
-impl Drop for WorkDirGuard {
-    fn drop(&mut self) {
-        drop(remove_dir_all_if_present(&self.path));
-    }
-}
-
-fn remove_dir_all_if_present(path: &Path) -> Result<()> {
-    fs::remove_dir_all(path)
-        .or_else(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Ok(())
-            } else {
-                Err(error)
-            }
-        })
-        .with_context(|| format!("removing {}", path.display()))
+/// The identity as electron-builder accepts it: without the certificate
+/// type, which it refuses and finds by itself.
+fn electron_builder_identity(identity: &str) -> &str {
+    identity
+        .strip_prefix("Developer ID Application:")
+        .map_or(identity, str::trim_start)
 }
 
 #[derive(Debug)]
@@ -317,7 +140,12 @@ impl SigningEnv {
 }
 
 fn required_env(name: &str) -> Result<String> {
-    env::required_var(name)
+    let value = env::required_var(name)?;
+    // A missing GitHub secret arrives as an empty string.
+    if value.trim().is_empty() {
+        bail!("{name} is empty");
+    }
+    Ok(value)
 }
 
 #[derive(Debug)]
@@ -596,221 +424,7 @@ fn find_signing_identity(keychain_path: &Path) -> Result<()> {
     )
 }
 
-fn sign_binary(binary: &Path, identity: &str, identifier: &str) -> Result<()> {
-    make_executable(binary)?;
-    run_command(
-        Command::new("codesign")
-            .arg("--force")
-            .arg("--sign")
-            .arg(identity)
-            .arg("--timestamp")
-            .arg("--options")
-            .arg("runtime")
-            .arg("--identifier")
-            .arg(identifier)
-            .arg(binary),
-        "signing macOS binary",
-    )?;
-    run_command(
-        Command::new("codesign")
-            .arg("--verify")
-            .arg("--strict")
-            .arg("--verbose=2")
-            .arg(binary),
-        "verifying macOS signature",
-    )?;
-    run_command(
-        Command::new("codesign")
-            .arg("-dv")
-            .arg("--verbose=4")
-            .arg(binary),
-        "displaying macOS signature",
-    )
-}
-
-fn make_executable(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let mut permissions = fs::metadata(path)
-            .with_context(|| format!("reading metadata for {}", path.display()))?
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions)
-            .with_context(|| format!("marking {} executable", path.display()))?;
-    }
-    Ok(())
-}
-
-fn package_archives(binary: &Path, zip: &Path, tar: &Path, work_dir: &Path) -> Result<()> {
-    create_parent_dir(zip)?;
-    create_parent_dir(tar)?;
-
-    let staging = work_dir.join("package");
-    fs::create_dir_all(&staging).with_context(|| format!("creating {}", staging.display()))?;
-    let staged_binary = staging.join("coral");
-    fs::copy(binary, &staged_binary).with_context(|| {
-        format!(
-            "copying signed binary from {} to {}",
-            binary.display(),
-            staged_binary.display()
-        )
-    })?;
-    make_executable(&staged_binary)?;
-
-    let mut zip_command = Command::new("ditto");
-    zip_command.current_dir(&staging).args(macos_zip_args(zip));
-    run_command(&mut zip_command, "creating macOS ZIP archive")?;
-
-    run_command(
-        Command::new("tar")
-            .current_dir(&staging)
-            .arg("czf")
-            .arg(tar)
-            .arg("coral"),
-        "creating legacy macOS tar.gz archive",
-    )
-}
-
-fn create_parent_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    }
-    Ok(())
-}
-
-fn output_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    Ok(std::env::current_dir()
-        .context("resolving current directory")?
-        .join(path))
-}
-
-fn macos_zip_args(zip: &Path) -> Vec<OsString> {
-    vec![
-        OsString::from("-c"),
-        OsString::from("-k"),
-        OsString::from("coral"),
-        zip.as_os_str().to_os_string(),
-    ]
-}
-
-fn submit_and_verify_notarization(
-    archive: &Path,
-    binary: &Path,
-    key_path: &Path,
-    key_id: &str,
-    issuer_id: &str,
-    work_dir: &Path,
-) -> Result<()> {
-    let notary_result_path = work_dir.join("notary-result.json");
-    let output = run_command_output_allow_failure(
-        Command::new("xcrun")
-            .arg("notarytool")
-            .arg("submit")
-            .arg(archive)
-            .arg("--key")
-            .arg(key_path)
-            .arg("--key-id")
-            .arg(key_id)
-            .arg("--issuer")
-            .arg(issuer_id)
-            .arg("--wait")
-            .arg("--output-format")
-            .arg("json"),
-        "submitting macOS ZIP for notarization",
-    )?;
-    fs::write(&notary_result_path, &output.stdout)
-        .with_context(|| format!("writing {}", notary_result_path.display()))?;
-    print_output(&output);
-
-    let submission = parse_notary_submission(&output.stdout)
-        .with_context(|| format!("parsing {}", notary_result_path.display()))?;
-    if !output.status.success() {
-        fetch_notary_log_if_possible(&submission, key_path, key_id, issuer_id, work_dir)?;
-        bail!(
-            "notarytool submit failed with {}; status={:?}",
-            output.status,
-            submission.status
-        );
-    }
-    if submission.status.as_deref() != Some("Accepted") {
-        fetch_notary_log_if_possible(&submission, key_path, key_id, issuer_id, work_dir)?;
-        bail!(
-            "notarization did not finish Accepted; id={:?} status={:?}",
-            submission.id,
-            submission.status
-        );
-    }
-
-    run_command(
-        Command::new("codesign")
-            .arg("-vvvv")
-            .arg("-R=notarized")
-            .arg("--check-notarization")
-            .arg(binary),
-        "verifying notarization ticket",
-    )
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct NotarySubmission {
-    id: Option<String>,
-    status: Option<String>,
-}
-
-fn parse_notary_submission(raw: &[u8]) -> Result<NotarySubmission> {
-    let value: Value = serde_json::from_slice(raw).context("parsing notarytool JSON")?;
-    Ok(NotarySubmission {
-        id: value
-            .get("id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        status: value
-            .get("status")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-    })
-}
-
-fn fetch_notary_log_if_possible(
-    submission: &NotarySubmission,
-    key_path: &Path,
-    key_id: &str,
-    issuer_id: &str,
-    work_dir: &Path,
-) -> Result<()> {
-    let Some(submission_id) = &submission.id else {
-        return Ok(());
-    };
-    let notary_log_path = work_dir.join("notary-log.json");
-    let output = run_command_output_allow_failure(
-        Command::new("xcrun")
-            .arg("notarytool")
-            .arg("log")
-            .arg("--key")
-            .arg(key_path)
-            .arg("--key-id")
-            .arg(key_id)
-            .arg("--issuer")
-            .arg(issuer_id)
-            .arg(submission_id)
-            .arg(&notary_log_path),
-        "fetching notarization log",
-    )?;
-    print_output(&output);
-    if notary_log_path.is_file() {
-        let log = fs::read_to_string(&notary_log_path)
-            .with_context(|| format!("reading {}", notary_log_path.display()))?;
-        println!("{log}");
-    }
-    Ok(())
-}
-
-fn run_command(command: &mut Command, label: &str) -> Result<()> {
+pub(crate) fn run_command(command: &mut Command, label: &str) -> Result<()> {
     let output = run_command_output_allow_failure(command, label)?;
     print_output(&output);
     if !output.status.success() {
@@ -819,7 +433,7 @@ fn run_command(command: &mut Command, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_command_output(command: &mut Command, label: &str) -> Result<Output> {
+pub(crate) fn run_command_output(command: &mut Command, label: &str) -> Result<Output> {
     let output = run_command_output_allow_failure(command, label)?;
     if !output.status.success() {
         print_output(&output);
@@ -828,7 +442,10 @@ fn run_command_output(command: &mut Command, label: &str) -> Result<Output> {
     Ok(output)
 }
 
-fn run_command_output_allow_failure(command: &mut Command, label: &str) -> Result<Output> {
+pub(crate) fn run_command_output_allow_failure(
+    command: &mut Command,
+    label: &str,
+) -> Result<Output> {
     command
         .output()
         .with_context(|| format!("{label}: failed to start {}", display_program(command)))
@@ -849,48 +466,27 @@ fn print_output(output: &Output) {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::{OsStr, OsString};
     use std::fs;
-    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{
-        NotarySubmission, desktop_package_version, ensure_version_matches_tag, macos_zip_args,
-        output_path, parse_keychain_list, parse_notary_submission, remove_dir_all_if_present,
-        write_base64_secret,
-    };
+    use super::{electron_builder_identity, parse_keychain_list, write_base64_secret};
 
     #[test]
-    fn desktop_package_version_reads_manifest() {
-        assert_eq!(
-            desktop_package_version(r#"{"name":"@withcoral/desktop","version":"0.5.2"}"#)
-                .expect("read version"),
-            "0.5.2"
-        );
-        desktop_package_version(r#"{"name":"@withcoral/desktop"}"#)
-            .expect_err("manifest without version");
-    }
-
-    #[test]
-    fn ensure_version_matches_tag_requires_exact_agreement() {
-        ensure_version_matches_tag("0.5.2", "v0.5.2").expect("matching version");
-        ensure_version_matches_tag("0.5.2", "v0.5.3").expect_err("mismatched version");
-        ensure_version_matches_tag("0.5.2", "0.5.2").expect_err("tag without v prefix");
-    }
-
-    #[test]
-    fn remove_dir_all_if_present_is_idempotent() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "coral-desktop-work-dir-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("create work dir");
-        remove_dir_all_if_present(&path).expect("remove existing work dir");
-        remove_dir_all_if_present(&path).expect("removing an absent work dir succeeds");
+    fn electron_builder_identity_drops_the_certificate_type_prefix() {
+        // electron-builder refuses a name with the prefix; codesign accepts both.
+        for (identity, expected) in [
+            (
+                "Developer ID Application: With Coral Ltd (TEAM123456)",
+                "With Coral Ltd (TEAM123456)",
+            ),
+            ("With Coral Ltd (TEAM123456)", "With Coral Ltd (TEAM123456)"),
+            (
+                "0123456789ABCDEF0123456789ABCDEF01234567",
+                "0123456789ABCDEF0123456789ABCDEF01234567",
+            ),
+        ] {
+            assert_eq!(electron_builder_identity(identity), expected);
+        }
     }
 
     #[test]
@@ -907,53 +503,6 @@ mod tests {
                 "/Users/test/Library/Keychains/login.keychain-db",
                 "/tmp/coral-signing.keychain-db"
             ]
-        );
-    }
-
-    #[test]
-    fn parse_notary_submission_extracts_status() {
-        let parsed = parse_notary_submission(
-            br#"{"id":"5555aa62-22c0-4d53-af6e-f487beef695d","status":"Accepted"}"#,
-        )
-        .expect("parse notary JSON");
-        assert_eq!(
-            parsed,
-            NotarySubmission {
-                id: Some("5555aa62-22c0-4d53-af6e-f487beef695d".to_string()),
-                status: Some("Accepted".to_string())
-            }
-        );
-    }
-
-    #[test]
-    fn zip_archive_keeps_binary_at_root() {
-        let args = macos_zip_args(Path::new("coral-aarch64-apple-darwin.zip"));
-        assert_eq!(
-            args.first().map(OsString::as_os_str),
-            Some(OsStr::new("-c"))
-        );
-        assert_eq!(args.get(1).map(OsString::as_os_str), Some(OsStr::new("-k")));
-        assert_eq!(
-            args.get(2).map(OsString::as_os_str),
-            Some(OsStr::new("coral"))
-        );
-        assert!(
-            !args.iter().any(|arg| arg == OsStr::new("--keepParent")),
-            "zip creation must not nest coral under the staging directory"
-        );
-    }
-
-    #[test]
-    fn output_path_resolves_relative_paths_from_process_cwd() {
-        let cwd = std::env::current_dir().expect("current directory");
-        assert_eq!(
-            output_path(Path::new("coral-aarch64-apple-darwin.zip")).expect("resolve output path"),
-            cwd.join("coral-aarch64-apple-darwin.zip")
-        );
-        assert_eq!(
-            output_path(Path::new("/tmp/coral-aarch64-apple-darwin.zip"))
-                .expect("resolve absolute output path"),
-            Path::new("/tmp/coral-aarch64-apple-darwin.zip")
         );
     }
 

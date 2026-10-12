@@ -1,0 +1,72 @@
+import type { ReactNode } from 'react'
+
+import { Breadcrumbs, type Segment } from '@/wax/components/breadcrumbs/breadcrumbs'
+
+import * as ScrollArea from '@/wax/components/scroll-area'
+import * as styles from './page-layout.css'
+
+export interface PageLayoutProps {
+  children: ReactNode
+  /** Notices and context above the content. No divider is added. */
+  header?: ReactNode
+  /** Navigation in a separate top bar above the scrolling content. The current segment titles the page. */
+  breadcrumbs?: Segment[]
+  /** Page-level actions at the end of the top bar. */
+  actions?: ReactNode
+  /** Standard pages are centered; wide pages fill the width. Split pages bound their own scrolling. */
+  variant?: 'standard' | 'wide' | 'split'
+}
+
+/**
+ * The shared page frame. Standard content is centered and capped at 960px;
+ * wide and split pages fill the width from the left edge.
+ * Split pages provide a bounded body for independent pane scrolling.
+ * All variants use the same page gutters, header spacing, and mobile treatment.
+ */
+export function PageLayout({
+  children,
+  header,
+  breadcrumbs,
+  actions,
+  variant = 'standard',
+}: PageLayoutProps) {
+  const frame = (
+    <div className={styles.frame({ variant })}>
+      {header && <div className={styles.header}>{header}</div>}
+      {variant === 'split' ? <div className={styles.splitBody}>{children}</div> : children}
+    </div>
+  )
+  return (
+    <div className={styles.container}>
+      {breadcrumbs && <TopBar breadcrumbs={breadcrumbs} actions={actions} />}
+      {variant === 'split' ? (
+        <div className={styles.scrollContainer}>{frame}</div>
+      ) : (
+        <ScrollArea.Container
+          className={styles.scrollContainer}
+          constrainWidth
+          // The frame centres short pages against the viewport's height, which
+          // only resolves when the scroll content is at least as tall as it.
+          fillContent
+          scrollDirection="vertical"
+          tabIndex={0}
+        >
+          {frame}
+        </ScrollArea.Container>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Coral's navigation bar keeps breadcrumbs separate from page content. Pages
+ * have no other title: the current segment is the page's h1.
+ */
+export function TopBar({ breadcrumbs, actions }: { breadcrumbs: Segment[]; actions?: ReactNode }) {
+  return (
+    <header className={styles.topBar}>
+      <Breadcrumbs items={breadcrumbs} heading />
+      {actions && <div className={styles.topBarActions}>{actions}</div>}
+    </header>
+  )
+}

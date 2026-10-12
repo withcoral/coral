@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.paddle.com/sdks/ai/paddle-mcp/
+# Live OAuth issuer advertises identity scopes; resource metadata does not. openid/profile/email identify the
+# account; offline_access keeps the connection signed in. Sandbox supports API keys only and remains available
+# through the API recipe.
+schema_version: 1
+id: paddle_mcp
+service: paddle
+display_name: Paddle
+description: Products, prices, customers, subscriptions and transactions from Paddle.
+source:
+  mcp:
+    url: https://mcp.paddle.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Paddle
+      documentation_url: https://developer.paddle.com/sdks/ai/paddle-mcp/
+      flow: authorization_code
+      scopes:
+        - openid
+        - profile
+        - email
+        - offline_access
+    api_key:
+      method: bearer
+      label: Paste a live API key
+      documentation_url: https://developer.paddle.com/sdks/ai/paddle-mcp/
+icons:
+  light: logo.svg

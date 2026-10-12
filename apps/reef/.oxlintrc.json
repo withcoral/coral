@@ -1,0 +1,112 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "react-hooks"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off"
+  },
+  "overrides": [
+    {
+      "files": [".storybook/**"],
+      "rules": {
+        "no-underscore-dangle": "off",
+        "no-shadow": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": ["**/*.stories.{ts,tsx}"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": ["app/wax/**/*.{ts,tsx}"],
+      "excludeFiles": ["app/wax/css.ts", "app/wax/theme/layers.css.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@vanilla-extract/css",
+                "message": "Import from '@/wax/css' instead, so wax rules land in the wax cascade layer."
+              },
+              {
+                "name": "@vanilla-extract/recipes",
+                "message": "Import from '@/wax/css' instead, so wax rules land in the wax cascade layer."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["app/routes/**/*.{ts,tsx}"],
+      "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "react-hooks", "import"],
+      "rules": {
+        "import/no-cycle": "error"
+      }
+    },
+    {
+      "files": ["app/**/*.{ts,tsx}"],
+      "excludeFiles": [
+        "app/**/*.server.ts",
+        "app/**/*.server.tsx",
+        "app/lib/activity-stream.ts",
+        "app/**/*.test.{ts,tsx}"
+      ],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          {
+            "name": "fetch",
+            "message": "Use a loader, action or fetcher. Live updates go through app/lib/activity-stream.ts."
+          },
+          {
+            "name": "EventSource",
+            "message": "Live updates go through app/lib/activity-stream.ts."
+          },
+          {
+            "name": "WebSocket",
+            "message": "Live updates go through app/lib/activity-stream.ts."
+          },
+          {
+            "name": "XMLHttpRequest",
+            "message": "Use a loader, action or fetcher. Live updates go through app/lib/activity-stream.ts."
+          }
+        ],
+        "no-restricted-properties": [
+          "error",
+          {
+            "object": "globalThis",
+            "property": "fetch",
+            "message": "Use a loader, action or fetcher. Live updates go through app/lib/activity-stream.ts."
+          },
+          {
+            "object": "window",
+            "property": "fetch",
+            "message": "Use a loader, action or fetcher. Live updates go through app/lib/activity-stream.ts."
+          },
+          {
+            "object": "self",
+            "property": "fetch",
+            "message": "Use a loader, action or fetcher. Live updates go through app/lib/activity-stream.ts."
+          }
+        ]
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "build/**",
+    "dist/**",
+    "coverage/**",
+    "node_modules/**",
+    ".react-router/**",
+    "storybook-static/**",
+    "public/**"
+  ]
+}

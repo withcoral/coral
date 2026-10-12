@@ -1,0 +1,56 @@
+# yaml-language-server: $schema=../schema.json
+# Official brand asset: https://www.digitalocean.com/_do-www-marketing/a5991e74/_next/static/media/favicon.91372345.svg
+# DigitalOcean advertises read and write in its WWW-Authenticate challenge.
+schema_version: 1
+id: digitalocean
+display_name: DigitalOcean
+description: Cloud resources and account tools from DigitalOcean.
+source:
+  mcp:
+    url: https://{{input.product}}.mcp.digitalocean.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with DigitalOcean
+      documentation_url: https://docs.digitalocean.com/reference/mcp/configure-mcp/
+      flow: authorization_code
+      scopes:
+        - read
+        - write
+    api_token:
+      method: bearer
+      label: Paste a personal access token
+      documentation_url: https://docs.digitalocean.com/reference/mcp/configure-mcp/
+inputs:
+  product:
+    type: string
+    label: Product
+    description: Select the product you want to connect.
+    default: droplets
+    enum:
+      - accounts
+      - apps
+      - databases
+      - docr
+      - doks
+      - droplets
+      - functions
+      - spaces
+      - networking
+      - nfs
+      - volumes
+      - marketplace
+      - dedicated-inference
+      - inference-modelcatalog
+      - genai-evaluation
+      - genai-batchinference
+      - signals
+      - genai-custom-models
+      - genai-inferencerouter
+      - vector-databases
+      - insights
+    documentation_url: https://docs.digitalocean.com/reference/mcp/configure-mcp/
+icons:
+  light: logo.svg

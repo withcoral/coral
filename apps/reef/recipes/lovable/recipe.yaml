@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.lovable.dev/api-reference/introduction
+# Pin the documented stable public API version.
+# BearerAuth appears in the spec, but public API docs require workspace API keys; no dashboard session auth is offered.
+schema_version: 1
+id: lovable
+display_name: Lovable
+description: Projects, deployments, analytics and workspace access from Lovable.
+source:
+  openapi:
+    url: https://api.lovable.dev/v1/openapi.yaml
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: Paste a workspace API key
+      documentation_url: https://docs.lovable.dev/api-reference/introduction
+      fields:
+        api_key:
+          label: Workspace API key
+      headers:
+        lovable-api-key:
+          field: api_key
+  default: api_key
+request_headers:
+  lovable-version: 2026-09-11
+icons:
+  light: logo.svg

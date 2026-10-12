@@ -1,12 +1,16 @@
 //! User confirmation page and submission parsing for OAuth authorization.
 
+use std::sync::LazyLock;
+
 use axum::body::to_bytes;
 use axum::extract::Request;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use coral_outbound::{BrowserRedirect, EndpointUrl};
 use ring::rand::{SecureRandom as _, SystemRandom};
+use sha2::{Digest as _, Sha256};
 use url::{Host, Url, form_urlencoded};
 use zeroize::Zeroizing;
 
@@ -38,11 +42,19 @@ const LOOPBACK_APPROVAL_COOKIE_NAME: &str = "coral_oauth_approval";
 /// What the directive would defend against is an injected form exfiltrating
 /// data. This page renders no script, takes no user input beyond a hidden
 /// ticket, escapes every interpolated value, and already denies every other
-/// fetch through `default-src 'none'`, so the exposure it leaves is small and
+/// external fetch through `default-src 'none'`, so the exposure is small and
 /// bounded — where a wrong `form-action` breaks the feature outright.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'sha256-0PbDgjoCL88AVvueAxjotflAHscckqVkV5U4VvqSUfY='";
+/// Hash the embedded stylesheet once, so editing CSS needs no export step or
+/// manually synchronized policy. Fonts come from the device, not the network.
+static CONTENT_SECURITY_POLICY: LazyLock<String> = LazyLock::new(|| {
+    let hash = STANDARD.encode(Sha256::digest(APPROVAL_PAGE_STYLES.as_bytes()));
+    format!(
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'sha256-{hash}'"
+    )
+});
 
-pub(super) const APPROVAL_PAGE_STYLES: &str = r#":root{color-scheme:light dark;--surface-backdrop:light-dark(#f0f0f0,#212121);--surface-card:light-dark(#fff,rgba(255,255,255,.05));--content-primary:light-dark(#202020,#eee);--content-secondary:light-dark(#646464,#b4b4b4);--stroke-primary:light-dark(rgba(0,0,0,.059),rgba(255,255,255,.071));--warning-background:light-dark(rgba(217,119,6,.12),rgba(251,191,36,.12));--warning-content:light-dark(#92400e,#fcd34d);--button-primary:light-dark(#81d66d,#b2eaa5);--button-primary-hover:light-dark(#398125,#88cc78);--button-primary-content:light-dark(#25411e,#141b13);--button-secondary:light-dark(rgba(0,0,0,.024),rgba(255,255,255,.05));--button-secondary-hover:light-dark(rgba(0,0,0,.059),rgba(255,255,255,.106))}*{box-sizing:border-box}body{background:var(--surface-backdrop);color:var(--content-primary);display:grid;font-family:"Encode Sans Semi Expanded",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;line-height:1.6;margin:0;min-height:100vh;padding:24px;place-items:center}main{background:var(--surface-card);border:1px solid var(--stroke-primary);border-radius:16px;box-shadow:0 16px 48px rgba(0,0,0,.12);max-width:480px;padding:32px;width:100%}h1{font-size:23px;font-weight:500;letter-spacing:-.23px;line-height:1.35;margin:0 0 12px}p{margin:0}dl{align-items:baseline;border-block:1px solid var(--stroke-primary);display:grid;gap:4px 24px;grid-template-columns:max-content 1fr;margin:24px 0;padding:20px 0}dt{color:var(--content-secondary);font-size:11.5px;font-weight:500;letter-spacing:.23px}dd{margin:0;min-width:0}code{font-family:"DM Mono","SFMono-Regular","SF Mono",Consolas,"Liberation Mono",Menlo,monospace;font-size:13px;overflow-wrap:anywhere}aside{background:var(--warning-background);border-radius:10px;color:var(--warning-content);margin:0 0 24px;padding:16px}aside h2{font-size:13px;font-weight:500;margin:0 0 4px}form{display:flex;gap:12px;justify-content:flex-end}button{border:0;border-radius:8px;color:var(--content-primary);cursor:pointer;font:500 13px/1.45 "Encode Sans Semi Expanded",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.325px;padding:6px 10px;transition:.2s ease background-color,.2s ease color}button:focus-visible{outline:1px solid var(--button-primary);outline-offset:2px}button[value="cancel"]{background:var(--button-secondary)}button[value="cancel"]:hover{background:var(--button-secondary-hover)}button[value="continue"]{background:var(--button-primary);color:var(--button-primary-content)}button[value="continue"]:hover{background:var(--button-primary-hover)}@media (max-width:420px){body{padding:16px}main{padding:24px}dl{grid-template-columns:1fr}dd{text-align:left}form{flex-direction:column-reverse}button{width:100%}}"#;
+pub(super) const APPROVAL_PAGE_STYLES: &str = include_str!("approval.css");
+const APPROVAL_PAGE: &str = include_str!("approval.html");
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ApprovalDecision {
@@ -131,7 +143,7 @@ pub(super) async fn parse_submission(
 
 /// Renders the approval page for one pending authorization.
 ///
-/// `Cancel` comes before `Continue` in the form because the first submit button
+/// `Cancel` comes before `Allow` in the form because the first submit button
 /// is the one a browser presses for a bare Enter key, and the safe decision is
 /// the better default for a keystroke nobody aimed at either button. Source
 /// order keeps `Cancel` as the submit default. The fixed, hash-pinned
@@ -140,39 +152,61 @@ pub(super) fn response(
     ticket: &OAuthAuthorizationApprovalTicket,
     client_name: &str,
     client_id: &str,
-    redirect_uri: &Url,
+    redirect_uri: &EndpointUrl<BrowserRedirect>,
     browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
     secure_cookie: bool,
 ) -> Option<Response> {
-    let client_host = Url::parse(client_id)
-        .ok()?
-        .host()
-        .as_ref()
-        .map(display_host)?;
-    let redirect_host = redirect_uri.host().as_ref().map(display_host)?;
-    let redirect_destination = format!("{redirect_host}:{}", redirect_uri.port_or_known_default()?);
-    let warning = is_loopback(redirect_uri).then(|| {
-        format!(
-            "<aside role=\"alert\"><h2>Local redirect warning</h2><p>This redirect targets <code>{}</code> on this device. Continue only if you started this sign-in from a trusted local Coral client.</p></aside>",
-            escape_html(&redirect_destination)
-        )
-    });
+    // Resolution already validated the identity. A URL has a metadata host;
+    // an opaque registration has no verified origin or branding to display.
+    let (client_identity_label, client_identity) = Url::parse(client_id)
+        .ok()
+        .and_then(|url| url.host().as_ref().map(display_host))
+        .map_or_else(
+            || ("Client ID", client_id.to_owned()),
+            |host| ("Client ID hostname", host),
+        );
+    // An app-scheme callback names the app the operating system opens, not a
+    // host and port.
+    let (redirect_label, redirect_destination) =
+        if let Some(scheme) = redirect_uri.private_use_scheme() {
+            ("Redirect app scheme", scheme.to_owned())
+        } else {
+            let redirect_uri = redirect_uri.as_url();
+            let redirect_host = redirect_uri.host().as_ref().map(display_host)?;
+            (
+                "Redirect host and port",
+                format!("{redirect_host}:{}", redirect_uri.port_or_known_default()?),
+            )
+        };
     let encoded_ticket = Zeroizing::new(URL_SAFE_NO_PAD.encode(ticket.as_bytes()));
-    let body = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Approve Coral access</title><style>{}</style></head><body><main><h1>Approve access?</h1><p><bdi>{}</bdi> is requesting access to Coral.</p><dl><dt>Client ID hostname</dt><dd><code>{}</code></dd><dt>Redirect host and port</dt><dd><code>{}</code></dd></dl>{}<form method=\"post\" action=\"/oauth/authorize\" autocomplete=\"off\"><input type=\"hidden\" name=\"ticket\" value=\"{}\"><button type=\"submit\" name=\"decision\" value=\"cancel\">Cancel</button><button type=\"submit\" name=\"decision\" value=\"continue\">Continue</button></form></main></body></html>",
-        APPROVAL_PAGE_STYLES,
-        escape_html(client_name),
-        escape_html(&client_host),
-        escape_html(&redirect_destination),
-        warning.unwrap_or_default(),
-        escape_html(&encoded_ticket),
-    );
+    // Read slots only from the trusted template. Never rescan substituted client
+    // text: a client named "@@ticket@@" must remain literal, not become the approval ticket.
+    let mut body = String::with_capacity(APPROVAL_PAGE.len() + APPROVAL_PAGE_STYLES.len());
+    for (index, segment) in APPROVAL_PAGE.split("@@").enumerate() {
+        if index % 2 == 0 {
+            body.push_str(segment);
+        } else {
+            match segment {
+                "styles" => body.push_str(APPROVAL_PAGE_STYLES),
+                "client_name" => body.push_str(&escape_html(client_name)),
+                "client_identity" => body.push_str(&escape_html(&client_identity)),
+                "client_identity_label" => body.push_str(client_identity_label),
+                "redirect_label" => body.push_str(redirect_label),
+                "redirect_destination" => body.push_str(&escape_html(&redirect_destination)),
+                "ticket" => body.push_str(&escape_html(&encoded_ticket)),
+                _ => return None,
+            }
+        }
+    }
     let mut response = (
         StatusCode::OK,
         approval_page_security_headers(),
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                CONTENT_SECURITY_POLICY.as_str(),
+            ),
             (header::X_FRAME_OPTIONS, "DENY"),
         ],
         body,
@@ -271,20 +305,6 @@ fn display_host(host: &Host<&str>) -> String {
         Host::Domain(host) => host.to_string(),
         Host::Ipv4(host) => host.to_string(),
         Host::Ipv6(host) => format!("[{host}]"),
-    }
-}
-
-fn is_loopback(url: &Url) -> bool {
-    match url.host() {
-        Some(Host::Domain(host)) => {
-            let host = host.trim_end_matches('.').to_ascii_lowercase();
-            host == "localhost" || host.ends_with(".localhost")
-        }
-        Some(Host::Ipv4(host)) => host.is_loopback(),
-        Some(Host::Ipv6(host)) => {
-            host.is_loopback() || host.to_ipv4_mapped().is_some_and(|host| host.is_loopback())
-        }
-        None => false,
     }
 }
 

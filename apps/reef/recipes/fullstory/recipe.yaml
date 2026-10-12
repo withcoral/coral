@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.fullstory.com/mcp/introduction/
+# Official logo: https://avatars.githubusercontent.com/u/33756472?v=4
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: fullstory
+display_name: Fullstory
+description: Behavioral data, sessions and insights from Fullstory.
+icons:
+  light: fullstory.png
+source:
+  mcp:
+    url: '{{input.endpoint}}'
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Fullstory
+      documentation_url: https://developer.fullstory.com/mcp/faq/index.html
+      flow: authorization_code
+    api_token:
+      method: bearer
+      label: API key
+      documentation_url: https://developer.fullstory.com/mcp/authentication/
+  default: oauth
+inputs:
+  endpoint:
+    type: url
+    label: MCP region
+    default: https://api.na1.fullstory.com/mcp/fullstory
+    enum:
+      - https://api.na1.fullstory.com/mcp/fullstory
+      - https://api.eu1.fullstory.com/mcp/fullstory
+    documentation_url: https://developer.fullstory.com/mcp/faq/index.html

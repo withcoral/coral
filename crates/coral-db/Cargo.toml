@@ -1,0 +1,27 @@
+[package]
+name = "coral-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# Test-only connection controls. `coral-test-support` enables this; production crates never do.
+test-support = []
+
+[dependencies]
+sea-query.workspace = true
+sea-query-sqlx.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+coral-test-support.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

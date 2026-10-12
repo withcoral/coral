@@ -12,15 +12,6 @@
       "program": "${workspaceFolder}/target/debug/coral"
     },
     {
-      // Example of how to debug a specific command. Adapt this to fit your needs.
-      "name": "Debug executable 'coral sql'",
-      "type": "lldb",
-      "request": "launch",
-      "preLaunchTask": "rust: cargo build",
-      "program": "${workspaceFolder}/target/debug/coral",
-      "args": ["sql", "select * from linear.projects"]
-    },
-    {
       "name": "Attach to running process",
       "type": "lldb",
       "request": "attach",

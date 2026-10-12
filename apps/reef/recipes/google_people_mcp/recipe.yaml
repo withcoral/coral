@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: google_people_mcp
+display_name: Google People
+description: Contacts, directory profiles and your profile from Google People.
+icons:
+  light: logo.svg
+
+# Google Workspace Developer Preview Program enrollment is required.
+# Enable the product API and MCP API in your Google Cloud project.
+# Configure a web application OAuth client with Coral's callback URL.
+# https://developers.google.com/workspace/guides/configure-mcp-servers
+source:
+  mcp:
+    url: https://people.googleapis.com/mcp/v1
+
+authentication:
+  # Google issues access tokens through OAuth; it offers no API key for user data.
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Google
+      description: Join the Workspace developer preview. Configure your Google OAuth application before you sign in.
+      documentation_url: https://developers.google.com/workspace/guides/configure-mcp-servers
+      flow: authorization_code
+      client:
+        authentication: client_secret_post
+      # The protected-resource metadata advertises the supported scopes.
+      authorization_parameters:
+        access_type: offline
+        prompt: consent
+    access_token:
+      method: bearer
+      label: Paste an OAuth access token
+      documentation_url: https://developers.google.com/workspace/guides/configure-mcp-servers

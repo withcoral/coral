@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://cloud.ouraring.com/docs/authentication
+# Register an OAuth application. Personal access tokens are deprecated; OAuth token paste is supported. Webhook management requires client headers, independently of user-data OAuth.
+# Scopes cover email, profile, daily summaries, heart rate, workouts, tags, sessions, SpO2 and heart health.
+# Official logo: https://ouraring.com/assets/icons/apple-touch-icon.png
+schema_version: 1
+id: oura
+display_name: Oura
+description: Sleep, activity and health data from Oura.
+source:
+  openapi:
+    url: https://cloud.ouraring.com/v2/static/json/openapi-1.41.json
+authentication:
+  options:
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in
+      documentation_url: https://cloud.ouraring.com/docs/authentication
+      authorization_url: https://cloud.ouraring.com/oauth/authorize
+      token_url: https://api.ouraring.com/oauth/token
+      client:
+        authentication: client_secret_basic
+      scopes:
+        - email
+        - personal
+        - daily
+        - heartrate
+        - workout
+        - tag
+        - session
+        - spo2
+        - heart_health
+    oauth_token:
+      method: bearer
+      label: OAuth token
+      documentation_url: https://cloud.ouraring.com/docs/authentication
+      description: Paste an OAuth access token for user data.
+    webhook_client:
+      method: header_credentials
+      label: Webhook application
+      documentation_url: https://cloud.ouraring.com/docs/authentication
+      description: Use your application credentials to manage webhook subscriptions.
+      fields:
+        client_id:
+          label: Client ID
+          sensitive: false
+        client_secret:
+          label: Client secret
+          sensitive: true
+      headers:
+        x-client-id:
+          field: client_id
+        x-client-secret:
+          field: client_secret
+  default: oauth
+icons:
+  light: oura.png

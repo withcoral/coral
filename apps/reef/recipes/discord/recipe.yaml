@@ -1,0 +1,86 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: discord
+display_name: Discord
+description: Messages, channels, servers and members from Discord.
+# Official symbols from https://discord.com/branding, unchanged.
+# Light: https://cdn.prod.website-files.com/6257adef93867e50d84d30e2/66e3d80db9971f10a9757c99_Symbol.svg
+# Dark: https://cdn.prod.website-files.com/6257adef93867e50d84d30e2/66e3d7f4ef6498ac018f2c55_Symbol.svg
+icons:
+  light: logo.svg
+
+source:
+  openapi:
+    # Official standard API v10 document, not openapi_preview.json.
+    # Discord still labels the specification itself a public preview:
+    # https://github.com/discord/discord-api-spec
+    url: https://raw.githubusercontent.com/discord/discord-api-spec/main/specs/openapi.json
+
+authentication:
+  default: bot_token
+  options:
+    bot_token:
+      method: header_credentials
+      label: Paste a bot token
+      description: Add your bot to each Discord server you want to access.
+      documentation_url: https://docs.discord.com/developers/reference#authentication
+      fields:
+        token:
+          label: Bot token
+      headers:
+        authorization:
+          field: token
+          prefix: 'Bot '
+    access_token:
+      method: bearer
+      label: Paste an OAuth access token
+      documentation_url: https://docs.discord.com/developers/topics/oauth2
+    oauth:
+      method: oauth_authorization_code
+      label: Sign in with Discord
+      description: Configure your Discord application first. Get Discord approval for restricted scopes before you sign in.
+      documentation_url: https://docs.discord.com/developers/topics/oauth2
+      authorization_url: https://discord.com/oauth2/authorize
+      token_url: https://discord.com/api/oauth2/token
+      # The owner supplies a client id and secret; no shared Coral application.
+      client:
+        authentication: client_secret_basic
+      # Match the documented confidential-client flow, which does not specify PKCE.
+      pkce: disabled
+      # Follow the OAuth reference when it differs from the preview specification.
+      # activities.read/write are unavailable; applications.commands.update
+      # requires the client-credentials grant, which Recipes cannot acquire.
+      scopes:
+        - applications.builds.read # Read application builds.
+        - applications.builds.upload # Upload builds; partner approval required.
+        - applications.commands # Install commands.
+        - applications.commands.permissions.update # Change command permissions.
+        - applications.entitlements # Read application entitlements.
+        - applications.store.update # Read and change store data.
+        - bot # Install the bot in a server.
+        - connections # Read linked accounts.
+        - dm_channels.read # Read DM details; partner approval required.
+        - email # Read email.
+        - gdm.join # Join group DMs.
+        - guilds # List servers.
+        - guilds.join # Join servers.
+        - guilds.members.read # Read server membership.
+        - identify # Read profile.
+        - identify.premium # Read Nitro tier; partner approval required.
+        - messages.read # Read messages through local RPC.
+        - relationships.read # Read relationships; Social SDK approval required.
+        - role_connections.write # Change role connection metadata.
+        - rpc # Control local client; partner approval required.
+        - rpc.activities.write # Change local activity; partner approval required.
+        - rpc.notifications.read # Receive local notifications; partner approval required.
+        - rpc.voice.read # Read local voice state; partner approval required.
+        - rpc.voice.write # Change local voice settings; partner approval required.
+        - voice # Connect to voice; partner approval required.
+        - webhook.incoming # Create a webhook.
+      # RPC/voice scopes do not add those transports to this REST Provider.
+      # Recipes cannot capture the extra webhook credential in the token response
+      # or inject it into webhook URL paths.
+
+servers:
+  '#/servers':
+    declared_url: https://discord.com/api/v10

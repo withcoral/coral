@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://developer.wordpress.com/docs/mcp/connect-custom-mcp-client/
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: wordpress_com
+display_name: WordPress.com
+description: Site content, posts and settings from WordPress.com.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+source:
+  mcp:
+    url: https://public-api.wordpress.com/wpcom/v2/mcp/v1
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with WordPress.com
+      documentation_url: https://developer.wordpress.com/docs/mcp/connect-custom-mcp-client/
+      flow: authorization_code
+  default: oauth

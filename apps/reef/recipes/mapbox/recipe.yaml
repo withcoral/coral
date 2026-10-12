@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://docs.mapbox.com/location-ai/mcp-servers/mcp-server/
+# Hosted OAuth source; local stdio access-token mode is a separate unsupported transport.
+# Scopes are advertised by OAuth issuer metadata; Coral discovers them.
+schema_version: 1
+id: mapbox
+display_name: Mapbox
+description: Maps, locations and routes from Mapbox.
+source:
+  mcp:
+    url: https://mcp.mapbox.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in
+      documentation_url: https://docs.mapbox.com/location-ai/mcp-servers/mcp-server/
+      flow: authorization_code
+  default: oauth
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

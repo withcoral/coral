@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: linear
+display_name: Linear
+description: Linear's MCP server.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+
+source:
+  mcp:
+    url: https://mcp.linear.app/mcp
+
+authentication:
+  default: oauth
+  options:
+    oauth:
+      # Discover OAuth settings and register a client with Linear automatically.
+      method: oauth_discovery
+      label: Sign in with Linear
+      flow: authorization_code
+      documentation_url: https://linear.app/docs/mcp
+    api_key:
+      method: bearer
+      label: Paste an API key or access token
+      documentation_url: https://linear.app/docs/mcp#faq

@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.pulumi.com/docs/ai/mcp-server/
+# Official brand asset: https://www.pulumi.com/images/favicon.ico
+schema_version: 1
+id: pulumi
+display_name: Pulumi
+description: Cloud resources and infrastructure workflows from Pulumi.
+source:
+  mcp:
+    url: https://mcp.ai.pulumi.com/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Pulumi
+      flow: authorization_code
+      documentation_url: https://www.pulumi.com/docs/ai/mcp-server/
+icons:
+  light: logo.png

@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=../schema.json
+# Microsoft Entra tenant provisioning and delegated permissions are required.
+# Coral currently rejects the organizations issuer metadata (IssuerMismatch).
+# Paste a resource-specific delegated bearer token until discovery supports it.
+# Application-only tokens are not interchangeable with delegated user tokens.
+schema_version: 1
+id: azure_cloud_mcp
+display_name: Azure
+description: Azure resource tools from your Azure MCP Server deployment.
+icons:
+  light: logo.svg
+inputs:
+  endpoint:
+    type: url
+    label: Azure MCP server URL
+    description: Enter the HTTPS URL from your official Azure MCP Server deployment.
+    documentation_url: https://learn.microsoft.com/en-us/azure/developer/azure-mcp-server/how-to/deploy-remote-mcp-server-on-behalf-of
+source:
+  mcp:
+    url: '{{input.endpoint}}'
+authentication:
+  default: access_token
+  options:
+    access_token:
+      method: bearer
+      label: Paste a delegated OAuth access token
+      description: Use a token for this MCP resource. Renew the token when it expires.
+      documentation_url: https://learn.microsoft.com/en-us/azure/developer/azure-mcp-server/how-to/deploy-remote-mcp-server-on-behalf-of

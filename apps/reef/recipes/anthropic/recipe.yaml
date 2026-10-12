@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/anthropics/anthropic-sdk-python
+# Official SDK .stats.yml provenance: commit 41aa767464881bb51937f42fe9c426ae3081fd9f, dated 2026-09-02.
+# API endpoint destinations in this document are https://api.anthropic.com.
+schema_version: 1
+id: anthropic
+display_name: Claude
+description: Messages, models, files, batches and workspace administration from Anthropic.
+source:
+  openapi:
+    url: https://storage.googleapis.com/stainless-sdk-openapi-specs/anthropic/anthropic-465bff21a179090915396565d1ae8f705cf8596e2ec920eb121072f25b8a7d68.yml
+authentication:
+  options:
+    api_key:
+      method: header_credentials
+      label: Paste an API key
+      documentation_url: https://github.com/anthropics/anthropic-sdk-python
+      fields:
+        api_key:
+          label: API key
+      headers:
+        x-api-key:
+          field: api_key
+  default: api_key
+request_headers:
+  anthropic-version: 2023-06-01
+icons:
+  light: logo.svg

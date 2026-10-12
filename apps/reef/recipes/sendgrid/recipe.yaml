@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://github.com/twilio/sendgrid-oai
+# Official brand asset: https://sendgrid.com/aem-static/content/dam/twilio-com/core-assets/social/favicon-32x32.png
+schema_version: 1
+id: sendgrid
+display_name: Twilio SendGrid
+description: Transactional email and mail delivery settings from Twilio SendGrid.
+source:
+  openapi:
+    url: https://raw.githubusercontent.com/twilio/sendgrid-oai/main/spec/json/tsg_mail_v3.json
+authentication:
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://www.twilio.com/docs/sendgrid/api-reference/mail-send/mail-send
+      description: Create an API key with Mail Send permission.
+inputs:
+  api_base_url:
+    type: url
+    label: API region
+    default: https://api.sendgrid.com
+    enum:
+      - https://api.sendgrid.com
+      - https://api.eu.sendgrid.com
+servers:
+  '#/servers':
+    base_url: '{{input.api_base_url}}'
+icons:
+  light: logo.png

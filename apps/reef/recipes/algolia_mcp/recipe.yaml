@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://www.algolia.com/doc/guides/model-context-protocol/productivity-mcp
+# Productivity MCP is read-only; use the API recipe to change indices or records. Resource metadata advertises
+# the public scope.
+schema_version: 1
+id: algolia_mcp
+service: algolia
+display_name: Algolia
+description: Search results, recommendations and analytics from Algolia.
+source:
+  mcp:
+    url: https://mcp.algolia.com/mcp
+authentication:
+  default: oauth
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Algolia
+      documentation_url: https://www.algolia.com/doc/guides/model-context-protocol/productivity-mcp
+      flow: authorization_code
+      description: Enable Productivity MCP in your Algolia account.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg

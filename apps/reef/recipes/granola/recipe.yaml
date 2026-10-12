@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://help.granola.ai/article/granola-mcp
+# OAuth scopes come from server discovery; the Recipe names none.
+schema_version: 1
+id: granola
+display_name: Granola
+description: Meeting notes, transcripts and summaries from Granola.
+icons:
+  light: logo.svg
+  dark: logo-dark.svg
+source:
+  mcp:
+    url: https://mcp.granola.ai/mcp
+authentication:
+  options:
+    oauth:
+      method: oauth_discovery
+      label: Sign in with Granola
+      documentation_url: https://help.granola.ai/article/granola-mcp
+      flow: authorization_code
+  default: oauth
