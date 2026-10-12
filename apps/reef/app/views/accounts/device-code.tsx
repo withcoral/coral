@@ -14,7 +14,7 @@ export function DeviceCodePanel({ code }: { code: string }) {
   return (
     <div className={styles.panel} aria-busy={!code}>
       <Typography.BodySmall variant="tertiary" aria-live="polite">
-        {code ? 'Enter this code' : 'Coral is requesting your code'}
+        {code ? 'Enter this code' : 'Requesting your code…'}
       </Typography.BodySmall>
       <div className={styles.row}>
         {code ? (
@@ -64,9 +64,7 @@ export function DeviceCodeDialog({
         <Dialog.Backdrop />
         <Dialog.Popup>
           <Dialog.Title>Enter your sign-in code</Dialog.Title>
-          <Dialog.Description>
-            Open the sign-in page. Enter this code there. Coral waits for you to finish.
-          </Dialog.Description>
+          <Dialog.Description>Open the sign-in page. Enter this code there.</Dialog.Description>
           <DeviceCodePanel code={code} />
           <Dialog.Actions>
             <Button.TextButton type="button" variant="secondary" onClick={() => setOpen(false)}>

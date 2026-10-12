@@ -110,7 +110,7 @@ export function OAuthApplicationBlock({
             />
             <Typography.BodySmall as="p" variant="tertiary">
               {automaticAllowed
-                ? `Leave empty. Coral then identifies itself to ${registrar} when you sign in.`
+                ? `Leave empty to register automatically with ${registrar}.`
                 : `From your application's registration with ${registrar}.`}
             </Typography.BodySmall>
           </div>
@@ -136,7 +136,7 @@ export function OAuthApplicationBlock({
                   <Typography.BodySmall as="p" variant="tertiary">
                     {setup.clientSecretConfigured
                       ? 'Leave this field empty to keep the saved secret for the same client ID.'
-                      : 'Enter the application secret. Coral stores it securely.'}
+                      : `From your application's registration with ${registrar}.`}
                   </Typography.BodySmall>
                 </div>
               )}

@@ -17,8 +17,7 @@ export type AccountLabel = (typeof accountLabels)[AccountChoice]
 const audiences = {
   workspace: {
     shareTitle: 'Share this account with the workspace?',
-    shareBody:
-      'You share this account with everyone in this workspace. Coral uses it when a program calls this provider.',
+    shareBody: 'You share this account with everyone in this workspace.',
     free: 'Coral sends no credentials when a program calls this provider, so everyone in this workspace can use it as soon as you add it.',
     sharedCallers: 'Everyone in this workspace calls the provider with',
     others: 'Other people connect theirs when they first use the provider.',
@@ -35,8 +34,7 @@ const audiences = {
   },
   local: {
     shareTitle: 'Share this account with your agents?',
-    shareBody:
-      'You and your agents use this account. Coral uses it when a program calls this provider.',
+    shareBody: 'You and your agents use this account.',
     free: 'Coral sends no credentials when a program calls this provider, so you and your agents can use it as soon as you add it.',
     sharedCallers: 'You and your agents call the provider with',
     others: 'You connect a separate account for each agent that uses it.',

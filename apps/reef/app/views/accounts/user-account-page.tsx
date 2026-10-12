@@ -58,7 +58,7 @@ export function UserAccountPage({
       ) : v.oauth ? (
         <>
           <Typography.BodySmall as="p">
-            Sign in to {v.providerName}. Coral then returns you here.
+            Sign in to {v.providerName} to connect your account.
           </Typography.BodySmall>
           <ConnectButton
             action={v.path}

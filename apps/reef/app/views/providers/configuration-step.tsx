@@ -339,7 +339,7 @@ export function ConfigurationStep({
                   Sign-in
                   <RequiredMark />
                 </Typography.BodySmallStrong>
-                <Tooltip content="Coral uses this method each time it signs in to this provider.">
+                <Tooltip content="How accounts sign in to this provider.">
                   <span className={styles.helpIcon} tabIndex={0} aria-label="Sign-in help">
                     <Icon name="Info" size="14" />
                   </span>

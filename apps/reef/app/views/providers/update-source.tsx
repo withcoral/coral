@@ -49,7 +49,7 @@ export function UpdateSource({
             </div>
             {pending && (
               <Typography.BodySmall as="p" role="status">
-                Coral is reading operations. Large catalogs can take a moment.
+                Reading operations. Large catalogs can take a moment.
               </Typography.BodySmall>
             )}
             {result?.error && (

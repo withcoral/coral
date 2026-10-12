@@ -85,7 +85,7 @@ export function AuthorizationPage({
           </form>
         ))}
       {v.state === 'exchanging' && (
-        <Banner variant="info">Coral is completing sign-in. Check the connection again.</Banner>
+        <Banner variant="info">Completing sign-in. Check the connection again.</Banner>
       )}
       {v.state === 'succeeded' && v.automaticRefresh === false && (
         <Banner variant="info">

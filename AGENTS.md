@@ -106,10 +106,13 @@
 - Reef copy follows simplified technical English (ASD-STE100): address the
   reader as "you", give one instruction per sentence in the imperative, keep
   sentences under 20 words with one idea each, use the active voice and the
-  present tense, and say what happens next rather than what a thing is. Use one
-  word for one thing: provider, workspace, organization, operation, program,
-  account, sign in. These words are lowercase in the interface; the glossary
-  and code keep their capitals.
+  present tense. Do not narrate what Coral does behind the scenes ("Coral then
+  returns you here.", "Coral reads it once.", "Coral is updating this page.").
+  Name a consequence only when the reader must act on it or would otherwise
+  lose something, and show progress as a short status ("Completing sign-in…").
+  Use one word for one thing: provider, workspace, organization, operation,
+  program, account, sign in. These words are lowercase in the interface; the
+  glossary and code keep their capitals.
 
 ### Tests
 

@@ -221,7 +221,7 @@ it('waits for a start still in flight when you reopen the dialog', async () => {
   }
   await render()
   const popup = within(await open())
-  await popup.findByText('Coral is starting the connection.')
+  await popup.findByText('Starting the connection…')
   await userEvent.keyboard('{Escape}')
   await vi.waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   await open()
@@ -253,10 +253,10 @@ it('keeps the code through a failed check while it waits', async () => {
   const popup = within(await open())
   await popup.findByText('WDJB-MJHT')
   await act(() => vi.advanceTimersByTimeAsync(2000))
-  await popup.findByText('Coral could not check the connection. Coral tries again in a moment.')
+  await popup.findByText('Coral could not check the connection. Trying again in a moment.')
   expect(popup.getByText('WDJB-MJHT')).toBeTruthy()
   await act(() => vi.advanceTimersByTimeAsync(2000))
-  await vi.waitFor(() => expect(popup.queryByText(/Coral tries again in a moment/)).toBeNull())
+  await vi.waitFor(() => expect(popup.queryByText(/Trying again in a moment/)).toBeNull())
   expect(checked).toBe(3)
 })
 
@@ -292,7 +292,7 @@ it('stops checking and reloads the page when your sign-in lapsed', async () => {
   // After the start's own reload, so only the lapsed sign-in can reload the page.
   const loads = pageLoads
   await act(() => vi.advanceTimersByTimeAsync(2000))
-  await popup.findByText('Your sign-in expired. Coral opens the sign-in page.')
+  await popup.findByText('Your sign-in expired. Opening the sign-in page…')
   // The page's own read meets the lapsed sign-in, and Reef then starts sign-in.
   await vi.waitFor(() => expect(pageLoads).toBeGreaterThan(loads))
   // The reload also rereads the dialog's last check once; the polling stops.

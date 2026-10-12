@@ -139,7 +139,7 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
       await page.getByRole('button', { name: 'Read operations', exact: true }).click()
       await page
         .getByRole('status')
-        .getByText('Coral is reading operations. Large catalogs can take a moment.', {
+        .getByText('Reading operations. Large catalogs can take a moment.', {
           exact: true,
         })
         .waitFor()

@@ -27,17 +27,17 @@ export type SourceTab = 'catalog' | 'custom'
 const SOURCE_VERB = { mcp: 'Connect', openapi: 'Read' } as const
 const DOCUMENT_FILE_TYPES = '.json,.yaml,.yml,application/json,application/yaml'
 
-/** What each kind calls its address, and what Coral does with it. */
+/** What each kind calls its address, and what that address points to. */
 const SOURCE_URL = {
   mcp: {
     label: 'MCP server URL',
     placeholder: 'https://example.com/mcp',
-    help: 'A streamable HTTP endpoint. Coral connects once to list its operations.',
+    help: 'A streamable HTTP endpoint.',
   },
   openapi: {
     label: 'OpenAPI URL',
     placeholder: 'https://example.com/openapi.json',
-    help: 'A JSON or YAML document. Coral reads it once.',
+    help: 'A JSON or YAML document.',
   },
 } as const
 
@@ -45,7 +45,7 @@ const SOURCE_URL = {
 const BUNDLED_DOCUMENT = {
   label: 'OpenAPI document',
   placeholder: '',
-  help: 'A document that comes with this provider. Coral reads it once.',
+  help: 'A document that comes with this provider.',
 } as const
 
 function validUrl(value: string) {

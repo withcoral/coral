@@ -1915,7 +1915,7 @@ export const ReadingSavedSource: Story = {
   ),
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('button', { name: 'Reading operations…' })).toBeDisabled()
-    await expect(canvas.getByRole('status')).toHaveTextContent('Coral is reading operations.')
+    await expect(canvas.getByRole('status')).toHaveTextContent('Reading operations.')
   },
 }
 export const ReplaceProviderSource: Story = {

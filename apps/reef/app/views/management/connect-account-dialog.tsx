@@ -122,7 +122,7 @@ export function ConnectAccountDialog({
             </Dialog.Description>
             {start.state !== 'idle' || !start.data ? (
               <Typography.BodySmall as="p" aria-live="polite">
-                Coral is starting the connection.
+                Starting the connection…
               </Typography.BodySmall>
             ) : start.data.error || !start.data.progress ? (
               <>
@@ -209,14 +209,14 @@ function AuthorizationStep({
   if (signedOut)
     return (
       <Typography.BodySmall as="p" aria-live="polite">
-        Your sign-in expired. Coral opens the sign-in page.
+        Your sign-in expired. Opening the sign-in page…
       </Typography.BodySmall>
     )
   if (succeeded)
     return (
       <>
         <Typography.BodySmall as="p" aria-live="polite">
-          Account connected. Coral is updating this page.
+          Account connected.
         </Typography.BodySmall>
         <Dialog.Actions>{closeButton}</Dialog.Actions>
       </>
@@ -234,13 +234,13 @@ function AuthorizationStep({
       </>
     ) : (
       <Typography.BodySmall as="p" aria-live="polite">
-        Coral is starting the connection.
+        Starting the connection…
       </Typography.BodySmall>
     )
   // Coral checks again on the next tick while it waits.
   const recheck = failed && waiting && (
     <Typography.BodySmall as="p" variant="tertiary" aria-live="polite">
-      {failed} Coral tries again in a moment.
+      {failed} Trying again in a moment.
     </Typography.BodySmall>
   )
   if (v.state === 'failed' || v.state === 'expired' || v.state === 'canceled')
@@ -267,7 +267,7 @@ function AuthorizationStep({
     return (
       <>
         <Typography.BodySmall as="p" aria-live="polite">
-          Coral is completing sign-in.
+          Completing sign-in…
         </Typography.BodySmall>
         {recheck}
         <Dialog.Actions>{closeButton}</Dialog.Actions>
@@ -303,7 +303,7 @@ function AuthorizationStep({
         </>
       ) : (
         <Typography.BodySmall as="p">
-          Sign in to {v.providerName} to approve access. Coral then returns you to this page.
+          Sign in to {v.providerName} to approve access.
         </Typography.BodySmall>
       )}
       <Dialog.Actions>

@@ -90,11 +90,7 @@ export function SignInProgress({
           <ContinueSignIn setup={setup} form={form} pending={pending} extra={extra} />
         </div>
       )}
-      {a.state === 'exchanging' && (
-        <Typography.Body as="p">
-          Coral is completing your sign-in. This page updates automatically.
-        </Typography.Body>
-      )}
+      {a.state === 'exchanging' && <Typography.Body as="p">Completing sign-in…</Typography.Body>}
     </>
   )
 }
@@ -138,8 +134,7 @@ export function ContinueSignIn({
  * for. The account question is a later and separate decision; this sign-in only
  * reads the list.
  */
-const DISCOVERY_ONLY =
-  'Coral uses this sign-in only to read the operations. It is not shared with anyone.'
+const DISCOVERY_ONLY = 'This sign-in only reads the operations. It is not shared with anyone.'
 
 /**
  * The operations panel with nothing to list yet: why it is empty, and the one
@@ -268,9 +263,7 @@ export function DiscoveryPrompt({
               action in one spot instead of growing a second row. */}
           {a?.state === 'pending' && <ContinueSignIn setup={setup} form={form} pending={pending} />}
           {a?.state === 'exchanging' && (
-            <Typography.Body as="p">
-              Coral is completing your sign-in. This page updates automatically.
-            </Typography.Body>
+            <Typography.Body as="p">Completing sign-in…</Typography.Body>
           )}
         </div>
       }
