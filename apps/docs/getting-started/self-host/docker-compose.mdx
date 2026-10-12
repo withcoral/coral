@@ -7,6 +7,21 @@ This guide will explain how to set up Coral using Docker Compose with your choic
 
 We will use `<coral-host>` as the placeholder for the domain of your Coral deployment.
 
+## Before you start
+
+- **Hostnames.** Coral serves the UI, its auth server and its MCP server on three public HTTPS URLs. This guide uses `<coral-host>`, `auth.<coral-host>` and `mcp.<coral-host>`. If you only have one hostname, see [Using a single hostname](#using-a-single-hostname).
+- **OIDC client.** Create an OAuth/OIDC client at your identity provider and register this redirect URI:
+
+  ```text
+  https://auth.<coral-host>/auth/oidc/callback
+  ```
+
+  Coral derives the redirect URI from `listeners.auth.public_url`; there is no separate setting for it.
+
+- **Images.** `latest` is the newest stable release. To pin a version, use a tag from the [releases page](https://github.com/withcoral/coral/releases) without the leading `v`, such as `ghcr.io/withcoral/coral:1.0.0`. The images are built for `linux/amd64` only. On an arm64 host, such as an Apple Silicon Mac, add `platform: linux/amd64` to both services to run them under emulation.
+
+## Deploy
+
 1. Create a compose file with the following contents on your working directory:
 
 - See the [Configuration Reference](/reference/configuration) for more details on the configuration options.
@@ -47,7 +62,7 @@ services:
         issuer = "https://your-idp.example.com"
         client_id = "..."
         client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
-        bootstrap_owner_subject = "..."   # your OIDC subject; becomes organization owner
+        bootstrap_owner_subject = "..."   # `sub` claim of the organization owner; see "Choosing the organization owner"
   coral-web:
     image: ghcr.io/withcoral/coral-web:latest
     depends_on:
@@ -107,7 +122,7 @@ services:
         issuer = "https://your-idp.example.com"
         client_id = "..."
         client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
-        bootstrap_owner_subject = "..."
+        bootstrap_owner_subject = "..."   # `sub` claim of the organization owner; see "Choosing the organization owner"
 
         [database]
         backend = "postgres"
@@ -176,6 +191,8 @@ CORAL_DATABASE_URL=postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=v
 
 3. Start Coral with `docker compose up -d`
 
+   Both images have a built-in health check, which is what `condition: service_healthy` waits for. If `coral-web` reports `dependency coral failed to start`, the cause is in the `coral` container: run `docker compose logs coral`.
+
 4. Start your reverse proxy for TLS termination. If you don't have one, you can use Caddy by merging it into the compose file:
 
 ```yaml
@@ -218,4 +235,32 @@ mcp.<coral-host> {
 }
 ```
 
-5. You should be able to open the UI in your browser in `https://<coral-host>`. After you create your first workspace you can use the UI instructions to connect an MCP client via `https://mcp.<coral-host>`.
+5. You should be able to open the UI in your browser in `https://<coral-host>`. After you create your first workspace you can use the UI instructions to connect an MCP client. Each workspace has its own MCP endpoint:
+
+   ```text
+   https://mcp.<coral-host>/workspaces/<workspace-id>/mcp
+   ```
+
+## Choosing the organization owner
+
+`bootstrap_owner_subject` is the `sub` claim that your identity provider issues for the user who becomes the organization owner. It is not an email address. With Google it is a numeric account ID; other providers usually show it as the user ID in their admin console. You can also read it from the `sub` claim of an ID token issued to that user.
+
+- Set it before that user signs in to Coral for the first time. Coral assigns the role at a user's first sign-in and does not change the role of a user who has already signed in.
+- If you do not know the value yet, remove the line. An empty string is not valid and stops Coral from starting. Without an owner, organization admin operations are disabled.
+
+## Using a single hostname
+
+Each `public_url` is an origin: a scheme, a host and an optional port, with no path. Coral cannot be served under a path prefix. If you only have one hostname, as with Tailscale Serve, give each listener its own HTTPS port:
+
+| Setting                                              | Example value                |
+| ---------------------------------------------------- | ---------------------------- |
+| `listeners.web.public_url`, `CORAL_WEB_PUBLIC_URL`   | `https://<coral-host>`       |
+| `listeners.auth.public_url`, `CORAL_WEB_AUTH_ISSUER` | `https://<coral-host>:8443`  |
+| `listeners.mcp.public_url`                           | `https://<coral-host>:10000` |
+
+The redirect URI to register is then `https://<coral-host>:8443/auth/oidc/callback`.
+
+## Troubleshooting
+
+- **`coral-web` cannot reach the auth server.** `coral-web` calls the auth server at `CORAL_WEB_AUTH_ISSUER`, its public URL, from inside the compose network. That hostname must resolve and route from the containers, not only from your browser.
+- **`/.well-known/openid-configuration` returns 404 on the auth server.** This is expected. Coral's auth server is an OAuth authorization server for the UI and MCP clients, not an OpenID provider. Its metadata is at `/.well-known/oauth-authorization-server`.

@@ -21,23 +21,23 @@ You can override the location of the config folder with the `CORAL_CONFIG_DIR` e
 
 ### `[listeners.mcp]`
 
-| Key          | Description                                                   | Required                  | Default       |
-| ------------ | ------------------------------------------------------------- | ------------------------- | ------------- |
-| `bind`       | Bind address and port for Coral's MCP server                  | No                        | `127.0.0.1:0` |
-| `public_url` | Public URL of the MCP Server. Must be https or loopback http. | Yes, when auth is enabled | N/A           |
+| Key          | Description                                                                                                | Required                  | Default       |
+| ------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------- | ------------- |
+| `bind`       | Bind address and port for Coral's MCP server                                                               | No                        | `127.0.0.1:0` |
+| `public_url` | Public URL of the MCP Server. Must be https or loopback http. May include a port; must not include a path. | Yes, when auth is enabled | N/A           |
 
 ### `[listeners.auth]`
 
-| Key          | Description                                                    | Required                  | Default                                                        |
-| ------------ | -------------------------------------------------------------- | ------------------------- | -------------------------------------------------------------- |
-| `bind`       | Bind address and port for Coral's auth server                  | No                        | `127.0.0.1:0` for a shared server and `127.0.0.1:8779` for the desktop app |
-| `public_url` | Public URL of the Auth Server. Must be https or loopback http. | Yes, when auth is enabled | N/A                                                            |
+| Key          | Description                                                                                                 | Required                  | Default                                                                    |
+| ------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------- |
+| `bind`       | Bind address and port for Coral's auth server                                                               | No                        | `127.0.0.1:0` for a shared server and `127.0.0.1:8779` for the desktop app |
+| `public_url` | Public URL of the Auth Server. Must be https or loopback http. May include a port; must not include a path. | Yes, when auth is enabled | N/A                                                                        |
 
 ### `[listeners.web]`
 
-| Key          | Description                                                     | Required                                 | Default |
-| ------------ | --------------------------------------------------------------- | ---------------------------------------- | ------- |
-| `public_url` | Public URL of the coral-web UI. Must be https or loopback http. | Not if `CORAL_LOCAL_WEB_URL` is provided | N/A     |
+| Key          | Description                                                                                                  | Required                                 | Default |
+| ------------ | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------- | ------- |
+| `public_url` | Public URL of the coral-web UI. Must be https or loopback http. May include a port; must not include a path. | Not if `CORAL_LOCAL_WEB_URL` is provided | N/A     |
 
 ### `[credentials]`
 
@@ -105,20 +105,22 @@ Controls telemetry export to an OpenTelemetry endpoint.
 
 ### `[auth.provider]`
 
-| Key                       | Description                                                                                   | Required                                                                 | Default                          |
-| ------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------- |
-| `issuer`                  | URL of the OIDC issuer. Must be https.                                                        | Yes, if `[auth]` section is present                                      | N/A                              |
-| `client_id`               | Client ID used to connect to the OIDC issuer.                                                 | Yes, if `[auth]` section is present                                      | N/A                              |
-| `client_secret`           | Client secret used to connect to the OIDC issuer.                                             | Yes, if `[auth]` section is present and if `client_secret_env` is absent | N/A                              |
-| `client_secret_env`       | Name of the environment variable holding the client secret used to connect to the OIDC issuer | Yes, if `[auth]` section is present and if `client_secret` is absent     | N/A                              |
-| `scopes`                  | Array of scopes to request to the OIDC Issuer. Must include `openid`                          | No                                                                       | `["openid", "email", "profile"]` |
-| `display_name_claim`      | Name of the claim from the OIDC token used for user display names                             | No                                                                       | `email`                          |
-| `name_claim`              | Name of the claim from the OIDC token used for user names                                     | No                                                                       | `name`                           |
-| `email_claim`             | Name of the claim from the OIDC token used for user emails                                    | No                                                                       | `email`                          |
-| `email_verified_claim`    | Name of the claim from the OIDC token used to check if user email is verified                 | No                                                                       | `email_verified`                 |
-| `bootstrap_owner_subject` | Value of the `sub` claim of the user that will have Coral's organization owner role.          | No, but Org owner admin operations will be disabled if left undefined    | N/A                              |
-| `auth_params`             | Extra parameters that will be passed in the OIDC authorization request                        | No                                                                       | `{}`                             |
-| `required_claims`         | Claim values that must be present on the OIDC ID token to allow login into Coral.             | No                                                                       | `{}`                             |
+| Key                       | Description                                                                                                                | Required                                                                                                                  | Default                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| `issuer`                  | URL of the OIDC issuer. Must be https.                                                                                     | Yes, if `[auth]` section is present                                                                                       | N/A                              |
+| `client_id`               | Client ID used to connect to the OIDC issuer.                                                                              | Yes, if `[auth]` section is present                                                                                       | N/A                              |
+| `client_secret`           | Client secret used to connect to the OIDC issuer.                                                                          | Yes, if `[auth]` section is present and if `client_secret_env` is absent                                                  | N/A                              |
+| `client_secret_env`       | Name of the environment variable holding the client secret used to connect to the OIDC issuer                              | Yes, if `[auth]` section is present and if `client_secret` is absent                                                      | N/A                              |
+| `scopes`                  | Array of scopes to request to the OIDC Issuer. Must include `openid`                                                       | No                                                                                                                        | `["openid", "email", "profile"]` |
+| `display_name_claim`      | Name of the claim from the OIDC token used for user display names                                                          | No                                                                                                                        | `email`                          |
+| `name_claim`              | Name of the claim from the OIDC token used for user names                                                                  | No                                                                                                                        | `name`                           |
+| `email_claim`             | Name of the claim from the OIDC token used for user emails                                                                 | No                                                                                                                        | `email`                          |
+| `email_verified_claim`    | Name of the claim from the OIDC token used to check if user email is verified                                              | No                                                                                                                        | `email_verified`                 |
+| `bootstrap_owner_subject` | Value of the `sub` claim of the user that will have Coral's organization owner role. Applied at that user's first sign-in. | No, but Org owner admin operations will be disabled if left undefined. Omit the key rather than set it to an empty string | N/A                              |
+| `auth_params`             | Extra parameters that will be passed in the OIDC authorization request                                                     | No                                                                                                                        | `{}`                             |
+| `required_claims`         | Claim values that must be present on the OIDC ID token to allow login into Coral.                                          | No                                                                                                                        | `{}`                             |
+
+Register `<listeners.auth.public_url>/auth/oidc/callback` as the redirect URI at the OIDC issuer.
 
 ### `[auth.provider.access_token]`
 
