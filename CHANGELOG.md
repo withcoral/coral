@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/withcoral/coral/compare/v1.0.0-beta.11...v1.0.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* release Coral v1 ([#2321](https://github.com/withcoral/coral/issues/2321))
+
+### Features
+
+* release Coral v1 ([#2321](https://github.com/withcoral/coral/issues/2321)) ([24daeff](https://github.com/withcoral/coral/commit/24daeff0eebdf304ed28ed569be2b3c107c203a2))
+
 ## 1.0.0-beta.11 (2026-10-09)
 
 ### Features
