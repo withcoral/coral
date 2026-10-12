@@ -155,12 +155,14 @@ export function CatalogToolbar({
   filter: FilterFieldProps & {
     /** A shortcut, such as "$mod+f", that focuses the filter from anywhere on the page. */
     shortcut?: string
+    /** Takes the rest of the row, for a toolbar in a narrow column such as a card. */
+    fill?: boolean
   }
   /** Controls at the start of the row, such as actions on the selection. */
   leading?: ReactNode
   children?: ReactNode
 }) {
-  const { shortcut, ...field } = filter
+  const { shortcut, fill, ...field } = filter
   const input = useRef<HTMLInputElement>(null)
   const focusFilter = useCallback((event: KeyboardEvent) => {
     event.preventDefault()
@@ -169,10 +171,17 @@ export function CatalogToolbar({
   }, [])
   return (
     <div className={styles.toolbar}>
-      <div className={styles.toolbarGroup}>{leading}</div>
+      {/* An empty group would still take a gap, and push the controls off the table's edge. */}
+      {leading && <div className={styles.toolbarGroup}>{leading}</div>}
       <div className={styles.toolbarGroup}>
         {children}
-        <div className={classNames(styles.toolbarFilter, field.className)}>
+        <div
+          className={classNames(
+            styles.toolbarFilter,
+            fill && styles.toolbarFilterFill,
+            field.className,
+          )}
+        >
           <FilterInput {...field} ref={input} />
           {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
         </div>

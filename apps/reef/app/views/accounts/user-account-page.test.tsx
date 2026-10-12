@@ -39,17 +39,21 @@ it('signs in to the provider with one button and keeps the run to return to', ()
   const html = render({})
   // The breadcrumb titles the page; the content adds no heading of its own.
   expect(html.match(/<h1[^>]*>[^<]*<\/h1>/g)).toEqual([expect.stringContaining('>Linear</h1>')])
-  expect(html).toContain('>Connect Linear<')
+  expect(html).toContain('>Linear account</h2>')
+  expect(html).toContain('Sign in to Linear to connect it.')
+  expect(html).toContain('>Connect<')
   expect(html).toContain('name="intent" value="connect"')
   expect(html).not.toContain('name="credential.token"')
   expect(render({ oauth: false })).toContain('name="intent" value="secret"')
   expect(html).toContain('href="/workspaces/w/runs/r"')
-  expect(html).toContain('Requested permissions: read')
+  expect(html).toContain('Coral asks for 1 permission.')
+  expect(html).toContain('>read<')
 })
 
 it('manages a connected account here: granted permissions, reconnect, and disconnect', () => {
   const html = render({ ...connected, returnTo: null })
-  expect(html).toContain('Granted permissions: read write')
+  expect(html).toContain('The service granted 1 of 1 requested permissions.')
+  expect(html).toContain('Granted')
   expect(html).not.toContain('Configured by Coral user')
   expect(html).toContain('>Reconnect<')
   expect(html).toContain('>Disconnect<')
@@ -58,7 +62,7 @@ it('manages a connected account here: granted permissions, reconnect, and discon
 
 it('does not offer the Accounts page twice as a run to return to', () => {
   const html = render({ state: 'needs_reconnect', returnTo: view.accountsPath })
-  expect(html).toContain('>Reconnect Linear<')
+  expect(html).toContain('>Reconnect<')
   expect(html).not.toContain('Return to run')
 })
 
@@ -68,7 +72,25 @@ it('removes credentials that need reconnecting and replays a repeated connect', 
     state: 'needs_reconnect',
     account: { ...connected.account!, state: 'reconnect' },
   })
-  expect(html).toContain('>Reconnect Linear<')
+  expect(html).toContain('Coral cannot use this account. Sign in to Linear to reconnect it.')
+  expect(html).toContain('>Reconnect<')
   expect(html).toContain('>Disconnect<')
   expect(html).toContain('name="requestId" value="test-request"')
+})
+
+it.each([
+  ['OAuth explains an empty request', true, true],
+  ['a secret keeps quiet', false, false],
+])('with no requested permissions, %s', (_, oauth, shown) => {
+  const html = render({
+    ...connected,
+    oauth,
+    scopes: [],
+    account: { ...connected.account!, grantedScope: '' },
+  })
+  // The section alone: no table follows an empty request.
+  expect(html.split('aria-label="Permissions"').length - 1).toBe(shown ? 1 : 0)
+  expect(
+    html.includes('Coral asks for no permissions. Linear decides what this account can access.'),
+  ).toBe(shown)
 })

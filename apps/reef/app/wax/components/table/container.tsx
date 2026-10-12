@@ -166,6 +166,7 @@ export function Container({
           aria-label={ariaLabel}
           className={classNames(
             styles.container({ density, layout, variant }),
+            variant === 'card' && styles.cardTable,
             layout === 'scroll' && styles.scrollTable,
             readingKey && styles.anchoredTable,
             maxHeight !== undefined && styles.scrollRows,

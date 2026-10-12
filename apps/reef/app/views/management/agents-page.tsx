@@ -25,6 +25,7 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
   const createTrigger = useRef<HTMLButtonElement>(null)
   const notice = dialogResult ?? result
   const agentsPath = `${w.path}/agents`
+  const table = Table.useRowCursor()
   // The key shows once, in a dialog whose only exit is copying it.
   const [savedKey, setSavedKey] = useState<string | null>(null)
   const key = notice?.credential && notice.credential !== savedKey ? notice.credential : null
@@ -40,6 +41,7 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
     <ManagementLayout
       breadcrumbs={trail([], 'Agents')}
       actions={agents.length > 0 ? createButton : undefined}
+      bounded
     >
       <ActionDialog
         open={createOpen}
@@ -75,8 +77,10 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
         />
       ) : (
         <Table.Container
+          ref={table}
           ariaLabel="Agents"
-          layout="fixed"
+          // The rows scroll under the heading, so the table never outgrows the page.
+          layout="scroll"
           columns={[
             { label: 'Name', width: { fill: 3 } },
             { label: 'Status', width: { fill: 1.2 } },
@@ -87,11 +91,9 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
           <Table.Head />
           <Table.Body>
             {agents.map((a) => (
-              <Table.Row key={a.name}>
+              <Table.Row key={a.name} to={a.path}>
                 <Table.Cell wrap>
-                  <Button.InternalLink to={a.path} variant="link" size="small" wrap>
-                    {a.displayName}
-                  </Button.InternalLink>
+                  <Table.RowLink to={a.path}>{a.displayName}</Table.RowLink>
                 </Table.Cell>
                 <Table.Cell wrap>
                   <Status blockers={a.accessBlockers} />

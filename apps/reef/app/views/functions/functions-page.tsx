@@ -55,7 +55,7 @@ function catalog(functions: SavedFunctionSummaryView[]) {
 /** A row in a namespace lines its name up under the group label, one step in. */
 function FunctionRow({ member: { summary, name }, grouped }: { member: Member; grouped: boolean }) {
   return (
-    <Table.Row>
+    <Table.Row to={summary.href} preventScrollReset>
       <Table.Cell>
         <span className={grouped ? styles.groupedName : styles.name}>
           <Button.Container

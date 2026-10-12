@@ -1,11 +1,17 @@
-import { Banner, Button, Inputs, Typography } from '@/wax/components'
+import type { ReactNode } from 'react'
+import { Banner, Button, Inputs, Table, Typography } from '@/wax/components'
+import * as CardFrame from '@/wax/components/card'
+import { PageLayout } from '@/wax/components/page-layout'
+import { SettingsLayout, SettingsRemoval } from '@/wax/components/settings-layout'
 import { CredentialFields } from '@/views/management/credential-fields'
 import { Fields } from '@/views/management/forms'
-import { ManagementLayout, trail } from '@/views/management/layout'
-import { AccountSummary } from './accounts-page'
+import { Section, trail } from '@/views/management/layout'
+import { SavedAt } from '@/views/functions/saved-at'
 import { ConnectButton } from './connect-button'
 import { DisconnectAccount } from './disconnect-account'
-import type { UserAccountView } from './types'
+import { PermissionsTable, permissionRows, permissionSummary } from './permissions-table'
+import type { CredentialFieldView } from '@/views/providers/types'
+import type { AccountView, UserAccountView } from './types'
 import * as styles from './accounts.css'
 
 /** Your own account for one provider. A waiting run, Accounts, and MCP clients open it. */
@@ -16,81 +22,173 @@ export function UserAccountPage({
   view: UserAccountView
   pending?: boolean
 }) {
+  const connected = v.state === 'connected'
   const verb = v.state === 'needs_reconnect' ? 'Reconnect' : 'Connect'
   const returnsToRun = v.returnTo && v.returnTo !== v.accountsPath
+  const blocked = !v.canConnect && !connected
+  const stored = v.account && v.account.state !== 'disconnected' ? v.account : undefined
+  // A secret has no grant, so its rows list only what the provider asks for.
+  const permissions = permissionRows(v.scopes, stored?.grantedScope || undefined)
+  const description = blocked ? undefined : guidance(v)
   return (
-    <ManagementLayout
+    <PageLayout
+      variant="wide"
       breadcrumbs={trail([{ label: 'Accounts', to: v.accountsPath }], v.providerName)}
     >
-      <Typography.BodySmall as="p">
-        Upstream account name and identity are unavailable.
-      </Typography.BodySmall>
-      {v.scopes.length > 0 && (
-        <Typography.BodySmall as="p">
-          Requested permissions: {v.scopes.join(', ')}
-        </Typography.BodySmall>
-      )}
-      {v.state === 'not_connected' && (
-        <Typography.BodySmall as="p">No connected account.</Typography.BodySmall>
-      )}
-      {v.account && (
-        <div role="group" aria-label={`Account ${v.account.id}`} className={styles.account}>
-          <AccountSummary account={v.account} personal />
-        </div>
-      )}
-      {!v.canConnect && v.state !== 'connected' ? (
-        <Banner variant="info">
-          You cannot connect this account now. Check the workspace and provider state.
-        </Banner>
-      ) : v.state === 'connected' ? (
-        <div className={styles.actions}>
-          {v.canConnect && (
-            <ConnectButton
-              action={v.path}
-              csrf={v.form.csrf}
-              requestId={v.form.requestId}
-              label="Reconnect"
-              primary={false}
-              disabled={pending}
+      <SettingsLayout
+        header={
+          <>
+            <div className={styles.heading}>
+              <div className={styles.headingText}>
+                <Typography.HeadingLarge as="h2">{`${v.providerName} account`}</Typography.HeadingLarge>
+                {description && <Typography.Body as="p">{description}</Typography.Body>}
+              </div>
+              {/* OAuth connects in one click. A secret needs the form below. */}
+              {v.canConnect && (v.oauth || connected) && (
+                <ConnectButton
+                  action={v.path}
+                  csrf={v.form.csrf}
+                  requestId={v.form.requestId}
+                  label={connected ? 'Reconnect' : verb}
+                  primary={!connected}
+                  disabled={pending}
+                />
+              )}
+            </div>
+          </>
+        }
+        aside={stored && <AccountDetails account={stored} />}
+        removal={
+          // You can remove stored credentials whether or not they still work.
+          v.canDisconnect &&
+          v.account && (
+            <SettingsRemoval
+              title="Disconnect"
+              description="Remove your stored credentials. Coral stops unsent calls that use this account."
+              action={<DisconnectAccount form={v.form} action={v.path} />}
             />
-          )}
-        </div>
-      ) : v.oauth ? (
-        <>
-          <Typography.BodySmall as="p">
-            Sign in to {v.providerName} to {verb.toLowerCase()} your account.
+          )
+        }
+      >
+        {blocked && (
+          <Banner variant="info">
+            You cannot connect this account now. Check the workspace and provider state.
+          </Banner>
+        )}
+        {!blocked && !v.oauth && !connected && (
+          // The button sits beside the last input at its height, so a one-field form reads as one line.
+          <form method="post" action={v.path} className={styles.credentialForm}>
+            <Fields form={v.form} intent="secret" />
+            <div className={styles.credentialInputs}>
+              <CredentialFields fields={v.credentialFields}>
+                {(input) => <Inputs.CredentialInput {...input} />}
+              </CredentialFields>
+            </div>
+            <Button.TextButton type="submit" size="36">
+              {verb}
+            </Button.TextButton>
+          </form>
+        )}
+        {stored && !v.oauth && v.credentialFields.length > 0 && (
+          <StoredCredentials fields={v.credentialFields} />
+        )}
+        {/* OAuth always says what it asks for. An empty request (a GitHub App) gets a sentence, not an empty table. */}
+        {(permissions.length > 0 || v.oauth) && (
+          <Section
+            title="Permissions"
+            description={
+              permissions.length > 0
+                ? permissionSummary(permissions)
+                : `Coral asks for no permissions. ${v.providerName} decides what this account can access.`
+            }
+          >
+            {permissions.length > 0 && <PermissionsTable rows={permissions} />}
+          </Section>
+        )}
+        {returnsToRun && (
+          <div className={styles.actions}>
+            <Button.InternalLink to={v.returnTo!} variant="secondary">
+              Return to run
+            </Button.InternalLink>
+          </div>
+        )}
+      </SettingsLayout>
+    </PageLayout>
+  )
+}
+
+/** What you do next. A working account needs nothing, so it gets no sentence. */
+function guidance(v: UserAccountView): string | undefined {
+  if (v.state === 'connected') return undefined
+  const lead = v.state === 'needs_reconnect' ? 'Coral cannot use this account. ' : ''
+  return v.oauth
+    ? `${lead}Sign in to ${v.providerName} to ${v.state === 'needs_reconnect' ? 'reconnect' : 'connect'} it.`
+    : `${lead}Enter the credentials from ${v.providerName}. Coral does not show them again.`
+}
+
+/** What Coral knows about your stored account, beside the permissions. */
+function AccountDetails({ account }: { account: AccountView }) {
+  return (
+    <CardFrame.Container as="aside" className={styles.details} aria-label="Details">
+      <Typography.BodyLargeStrong as="h2">Details</Typography.BodyLargeStrong>
+      <dl className={styles.facts}>
+        {account.connectedAt && (
+          <Fact label="Last connected">
+            <SavedAt at={account.connectedAt} />
+          </Fact>
+        )}
+        {account.automaticRefresh === false && (
+          <Fact label="Refresh">Manual. Reconnect when access expires.</Fact>
+        )}
+        {/* Coral's own record, for support. It is not your identity at the provider. */}
+        <Fact label="Coral account ID">
+          <Typography.BodySmall as="span" variant="tertiary" className={styles.reference}>
+            {account.id}
           </Typography.BodySmall>
-          <ConnectButton
-            action={v.path}
-            csrf={v.form.csrf}
-            requestId={v.form.requestId}
-            label={`${verb} ${v.providerName}`}
-            disabled={pending}
-          />
-        </>
-      ) : (
-        <form method="post" action={v.path} className={styles.stack}>
-          <Fields form={v.form} intent="secret" />
-          <CredentialFields fields={v.credentialFields}>
-            {(input) => <Inputs.CredentialInput {...input} />}
-          </CredentialFields>
-          <Typography.BodySmall as="p">
-            Enter the credentials from {v.providerName}. Coral does not show them again.
-          </Typography.BodySmall>
-          <Button.TextButton type="submit">{`${verb} ${v.providerName}`}</Button.TextButton>
-        </form>
-      )}
-      {/* You can remove stored credentials whether or not they still work. */}
-      {v.canDisconnect && v.account && (
-        <div className={styles.actions}>
-          <DisconnectAccount form={v.form} action={v.path} />
-        </div>
-      )}
-      {returnsToRun && (
-        <Button.InternalLink to={v.returnTo!} variant="secondary">
-          Return to run
-        </Button.InternalLink>
-      )}
-    </ManagementLayout>
+        </Fact>
+      </dl>
+    </CardFrame.Container>
+  )
+}
+
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className={styles.fact}>
+      <Typography.BodySmallStrong as="dt">{label}</Typography.BodySmallStrong>
+      <Typography.BodySmall as="dd" className={styles.factValue}>
+        {children}
+      </Typography.BodySmall>
+    </div>
+  )
+}
+
+/** Names what Coral stores for a secret account. Coral never shows the values. */
+function StoredCredentials({ fields }: { fields: CredentialFieldView[] }) {
+  return (
+    <Section
+      title="Credentials"
+      description="Coral stores these credentials and does not show them. Reconnect to replace them."
+    >
+      <Table.Container
+        ariaLabel="Credentials"
+        variant="card"
+        density="compact"
+        staticRows
+        columns={[
+          { label: 'Credential', width: 'minmax(160px, 1fr)' },
+          { label: 'Status', width: 'minmax(120px, 1fr)' },
+        ]}
+      >
+        <Table.Head />
+        <Table.Body>
+          {fields.map((field) => (
+            <Table.Row key={field.name}>
+              <Table.Cell>{field.label}</Table.Cell>
+              <Table.Cell>Stored</Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Container>
+    </Section>
   )
 }

@@ -278,6 +278,30 @@ export const AgentListing: Story = {
     ).toHaveAttribute('href', agent.settingsPath)
   },
 }
+// The table scrolls its rows under its heading; the page stays the viewport's height.
+export const ManyAgents: Story = {
+  render: () => (
+    <AgentsPage
+      workspace={workspace}
+      agents={Array.from({ length: 40 }, (_, i) => ({
+        ...agent,
+        name: `${agent.name}-${i}`,
+        displayName: `${agent.displayName} ${i + 1}`,
+      }))}
+      nextPage="next"
+      form={form}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/agents' },
+  // The app shell bounds the page's height; the story needs a bound of its own.
+  decorators: [
+    (Story) => (
+      <div style={{ height: '100vh' }}>
+        <Story />
+      </div>
+    ),
+  ],
+}
 export const NoAgents: Story = {
   render: () => <AgentsPage workspace={workspace} agents={[]} nextPage="" form={form} />,
   parameters: { initialEntry: '/workspaces/demo/agents' },

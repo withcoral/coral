@@ -847,7 +847,7 @@ export async function publishWorkspaceProvider(
  * It imitates Desktop: Reef names that path in `X-Coral-Authorization-Return-To`
  * on the consent redirect, and Desktop's main process reads, then strips, it.
  */
-export async function connectKeepingProgress(page: Page, name: string | RegExp = /^Connect /) {
+export async function connectKeepingProgress(page: Page, name: string | RegExp = /^Connect$/) {
   const [posted] = await Promise.all([
     page.waitForResponse(
       (response) =>
@@ -869,4 +869,16 @@ export async function openYourAccount(page: Page) {
     .first()
     .click()
   await page.waitForURL((url) => /\/accounts\/[^/?#]+$/.test(url.pathname))
+}
+
+/** Waits until your account page shows a stored account: its Details card and Reconnect. */
+export async function waitForYourAccount(page: Page) {
+  await page.getByRole('complementary', { name: 'Details', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Reconnect', exact: true }).waitFor()
+}
+
+/** Waits until your account page offers Connect and shows no stored account. */
+export async function waitForNoAccount(page: Page) {
+  await page.getByRole('button', { name: 'Connect', exact: true }).waitFor()
+  expect(await page.getByRole('complementary', { name: 'Details', exact: true }).count()).toBe(0)
 }

@@ -155,6 +155,9 @@ export const container = recipe({
   },
 })
 
+// Marks a card table, so its last row can follow the card's rounded corners.
+export const cardTable = style({})
+
 const rowGroup = {
   display: 'grid',
   gridColumn: '1 / -1',
@@ -234,6 +237,11 @@ export const row = style({
     },
     [`${body} > &:last-child, ${group} > &:last-child`]: {
       borderBottom: 'none',
+    },
+    // The card's radius less its border, so a highlight's corners match the card's.
+    [`${cardTable} ${body}:last-child > &:last-child`]: {
+      borderEndEndRadius: 9,
+      borderEndStartRadius: 9,
     },
     [`${head} > &`]: {
       minHeight: tableVars.headingHeight.value,
@@ -418,6 +426,7 @@ export const cellText = recipe({
   },
   defaultVariants: {
     actions: false,
+    control: false,
     mono: false,
     wrap: false,
   },
@@ -442,6 +451,11 @@ export const cellText = recipe({
     actions: {
       false: {},
       true: { display: 'flex', justifyContent: 'center', overflow: 'visible' },
+    },
+    // A control draws its focus ring outside its box, which a clip would cut.
+    control: {
+      false: {},
+      true: { overflow: 'visible' },
     },
   },
 })
@@ -555,4 +569,24 @@ export const addRow = style({
 export const loadMoreStatus = style({
   alignItems: 'center',
   display: 'inline-flex',
+})
+
+// The row's own link: the row's hover already shows it opens, so the text keeps
+// its colour. The cell clips overflow, so the row draws the focus, not the link.
+export const rowLink = style({
+  color: 'inherit',
+  minWidth: 0,
+  outline: 'none',
+  overflow: 'hidden',
+  textDecoration: 'none',
+  textOverflow: 'ellipsis',
+})
+// A row with `to` shows its link's keyboard focus as the keyboard cursor.
+export const linkRow = style({
+  selectors: {
+    [`&:has(${rowLink}:focus-visible)`]: {
+      backgroundColor: theme.surface.onMainContentSubtle,
+      boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
+    },
+  },
 })

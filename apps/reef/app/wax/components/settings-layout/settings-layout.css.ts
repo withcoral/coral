@@ -11,6 +11,8 @@ export const page = style({
   gap: 48,
   // The two columns and the gap between them; removal's rule spans the same.
   maxWidth: 848,
+  // Centred in a wide page, so the cards and their aside read as one column.
+  marginInline: 'auto',
   minWidth: 0,
   width: '100%',
   '@media': { [`screen and (max-width: ${breakpoints.mobile})`]: { gap: 32 } },
