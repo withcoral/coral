@@ -128,14 +128,11 @@ test('Update completes protected MCP discovery without replacing the shared acco
       await page.getByRole('button', { name: 'Read operations', exact: true }).click()
       await page.getByLabel('Token', { exact: true }).fill(secret)
       await page.getByRole('button', { name: 'List operations', exact: true }).click()
-      await page
-        .getByRole('radio', { name: 'Keep the existing shared account', exact: true })
-        .check()
-      await page.getByRole('button', { name: 'Review changes', exact: true }).click()
-      expect(await page.getByRole('checkbox').count()).toBe(0)
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
-      await waitForPublication(page)
-      expect(new URL(page.url()).pathname).toBe(providerPath)
+      await page.getByRole('radio', { name: 'Keep the current account', exact: true }).check()
+      // Keeping the shared account needs no consent, so Save publishes at once.
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+      await page.goto(providerPath)
       await waitForProviderStatus(page, { path: providerPath }, 'Ready', {
         available: 1,
         total: 1,

@@ -58,9 +58,11 @@ test('Local provider OAuth completes on Coral’s loopback callback listener', a
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)
       await openProviderSettings(page)
-      await page.getByText('All callers use one shared account.', { exact: true }).waitFor()
       await page
-        .getByRole('region', { name: 'Shared account', exact: true })
+        .getByText('You and your agents use this shared account.', { exact: true })
+        .waitFor()
+      await page
+        .getByRole('region', { name: 'One shared account', exact: true })
         .getByText('Connected', { exact: true })
         .waitFor()
       expect(upstream.counts.tokens).toBe(1)

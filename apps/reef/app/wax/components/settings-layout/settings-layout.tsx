@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import * as CardFrame from '@/wax/components/card'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './settings-layout.css'
@@ -49,5 +50,61 @@ export function SettingsRemoval({ title, description, action }: SettingsRemovalP
       </div>
       {action}
     </section>
+  )
+}
+
+export interface SettingsAsideProps {
+  /** Heads the panel and names it for assistive technology. */
+  title: string
+  /** Usually `SettingsFacts`, then any actions. */
+  children: ReactNode
+}
+
+export interface SettingsWideColumnsProps {
+  /** Content as wide as the page allows, such as a long list. */
+  children: ReactNode
+  /** The settings aside, at the width it has on a settings page. */
+  aside: ReactNode
+}
+
+/** A wide main column with a settings aside beside it; narrow screens stack them. */
+export function SettingsWideColumns({ children, aside }: SettingsWideColumnsProps) {
+  return (
+    <div className={styles.wideColumns}>
+      <div className={styles.wideMain}>{children}</div>
+      {aside}
+    </div>
+  )
+}
+
+/** The panel beside a settings page's cards: what the resource is, at a glance. */
+export function SettingsAside({ title, children }: SettingsAsideProps) {
+  return (
+    <CardFrame.Container as="aside" className={styles.aside} aria-label={title}>
+      <Typography.BodyLargeStrong as="h2">{title}</Typography.BodyLargeStrong>
+      {children}
+    </CardFrame.Container>
+  )
+}
+
+/** A list of labelled facts in a settings aside. */
+export function SettingsFacts({ children }: { children: ReactNode }) {
+  return <dl className={styles.facts}>{children}</dl>
+}
+
+export interface SettingsFactProps {
+  label: string
+  children: ReactNode
+}
+
+/** One labelled fact, its label over its value. */
+export function SettingsFact({ label, children }: SettingsFactProps) {
+  return (
+    <div className={styles.fact}>
+      <Typography.BodySmallStrong as="dt">{label}</Typography.BodySmallStrong>
+      <Typography.BodySmall as="dd" className={styles.factValue}>
+        {children}
+      </Typography.BodySmall>
+    </div>
   )
 }

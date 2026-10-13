@@ -868,8 +868,16 @@ impl ProviderModule {
             {
                 crate::configuration::effective_contract(self.outbound_policy, &loaded)?
             }
+            // A Setup canceled or expired before its first confirmation keeps
+            // the saved values it started with, but never had a preview.
             (_, Some(coral_catalog::ProviderSetupInput::OpenApi(_)), _)
-                if !configuration.configuration_confirmed =>
+                if !configuration.configuration_confirmed
+                    || (loaded.configuration_preview.is_none()
+                        && matches!(
+                            loaded.setup.state(),
+                            crate::ProviderSetupState::Canceled
+                                | crate::ProviderSetupState::Expired
+                        )) =>
             {
                 configuration
                     .confirmed

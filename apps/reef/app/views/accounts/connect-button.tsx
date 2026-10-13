@@ -1,5 +1,6 @@
 import { Form } from 'react-router'
 import { Button } from '@/wax/components'
+import type { ButtonSize } from '@/wax/components/button/button.css'
 
 /** One click to your own account: POSTs to the provider's connect route. */
 export function ConnectButton({
@@ -10,6 +11,7 @@ export function ConnectButton({
   ariaLabel,
   primary = true,
   disabled,
+  size,
 }: {
   action: string
   csrf: string
@@ -19,6 +21,7 @@ export function ConnectButton({
   ariaLabel?: string
   primary?: boolean
   disabled?: boolean
+  size?: ButtonSize
 }) {
   // The provider's sign-in is another site, so the browser loads the response itself.
   return (
@@ -30,6 +33,7 @@ export function ConnectButton({
         type="submit"
         variant={primary ? 'primary' : 'secondary'}
         disabled={disabled}
+        size={size}
         aria-label={ariaLabel}
       >
         {label}

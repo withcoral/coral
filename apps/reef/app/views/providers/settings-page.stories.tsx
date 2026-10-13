@@ -16,7 +16,6 @@ const provider: ProviderSettingsView = {
   account: 'caller',
   enabled: true,
   operationsReady: true,
-  operations: { total: 342, groups: 18, readOnly: 198, destructive: 137, blocked: 7 },
   connection: 'connected',
   canConnect: true,
   canReconnect: true,

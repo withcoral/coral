@@ -17,7 +17,7 @@ use crate::types::{
     SavedFunctionDeclarationFieldProjection, SavedFunctionDiagnostic, SavedFunctionId,
     SavedFunctionPath, SavedFunctionSave,
 };
-use crate::{Error, SavedFunctionInspection};
+use crate::{Error, SavedFunctionDeletion, SavedFunctionInspection};
 
 pub(crate) struct SavedFunctionReference {
     path: SavedFunctionPath,
@@ -120,6 +120,7 @@ pub struct SavedFunctionModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     inspection: SavedFunctionInspection,
+    deletion: SavedFunctionDeletion,
     compiler: Arc<dyn SavedFunctionCompiler>,
 }
 
@@ -136,6 +137,7 @@ impl SavedFunctionModule {
     ) -> Result<Self, Error> {
         Ok(Self {
             inspection: SavedFunctionInspection::new(database.clone(), workspaces.clone()),
+            deletion: SavedFunctionDeletion::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
             compiler: Arc::new(V8SavedFunctionCompiler::new(isolate_limits)?),
@@ -150,6 +152,7 @@ impl SavedFunctionModule {
     ) -> Self {
         Self {
             inspection: SavedFunctionInspection::new(database.clone(), workspaces.clone()),
+            deletion: SavedFunctionDeletion::new(database.clone(), workspaces.clone()),
             database,
             workspaces,
             compiler,
@@ -412,12 +415,7 @@ impl SavedFunctionModule {
         workspace_id: &WorkspaceId,
         path: &SavedFunctionPath,
     ) -> Result<SavedFunctionId, Error> {
-        let mut transaction = self.database.begin().await?;
-        let id = self
-            .delete_in_transaction(&mut transaction, context, workspace_id, path)
-            .await?;
-        transaction.commit().await?;
-        Ok(id)
+        self.deletion.delete(context, workspace_id, path).await
     }
 
     /// Stages deletion and lifecycle evidence in the caller's transaction.
@@ -431,19 +429,9 @@ impl SavedFunctionModule {
         workspace_id: &WorkspaceId,
         path: &SavedFunctionPath,
     ) -> Result<SavedFunctionId, Error> {
-        let authority = self
-            .authorize_active_in_transaction(transaction, context.actor(), workspace_id)
-            .await?;
-        let function = repository::find_current_in_transaction(
-            transaction,
-            workspace_id,
-            context.actor().principal(),
-            path,
-        )
-        .await?
-        .ok_or(Error::SavedFunctionNotFound)?;
-        authority.require_current_at(now_unix_nanos()?)?;
-        delete_current_with_event(transaction, context, workspace_id, &function).await
+        self.deletion
+            .delete_in_transaction(transaction, context, workspace_id, path)
+            .await
     }
 
     /// Lists the current User's safe Saved Function lifecycle evidence.
@@ -663,7 +651,7 @@ pub async fn delete_current_for_access_removal_in_transaction(
     Ok(())
 }
 
-async fn delete_current_with_event(
+pub(crate) async fn delete_current_with_event(
     transaction: &mut Transaction<'_>,
     context: &SavedFunctionChangeContext,
     workspace_id: &WorkspaceId,

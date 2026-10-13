@@ -148,3 +148,69 @@ async fn get_returns_authoring_material_and_conceals_other_owners_as_not_found()
         );
     }
 }
+
+#[tokio::test]
+async fn delete_removes_only_the_callers_own_function() {
+    let f = Fixture::new().await;
+    save(&f, &f.owner, "reports.total", "export default () => 1;").await;
+    let parent = format!("workspaces/{}", f.workspace.id());
+    let delete = async |user: &AuthenticatedUser, path: &str, audience: &str| {
+        f.saved_functions()
+            .delete_saved_function(request(
+                management::DeleteSavedFunctionRequest {
+                    parent: parent.clone(),
+                    path: path.into(),
+                },
+                &f.token(user, audience),
+                audience,
+            ))
+            .await
+    };
+    let exists = async || {
+        f.saved_functions
+            .get(
+                &AuthenticatedPrincipal::user(f.owner.clone()),
+                f.workspace.id(),
+                &SavedFunctionPath::parse("reports.total").unwrap(),
+            )
+            .await
+            .is_ok()
+    };
+
+    for (user, path, audience, expected) in [
+        (
+            &f.member,
+            "reports.total",
+            "reef",
+            (tonic::Code::NotFound, "NOT_FOUND"),
+        ),
+        (
+            &f.owner,
+            "reports..total",
+            "reef",
+            (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
+        ),
+        (
+            &f.owner,
+            "reports.total",
+            "mcp",
+            (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
+        ),
+    ] {
+        let status = delete(user, path, audience).await.unwrap_err();
+        assert_eq!(
+            (status.code(), error_reason(&status).as_str()),
+            expected,
+            "{path} via {audience}"
+        );
+        assert!(exists().await, "a refused delete keeps the function");
+    }
+
+    delete(&f.owner, "reports.total", "reef").await.unwrap();
+    assert!(!exists().await);
+    let again = delete(&f.owner, "reports.total", "reef").await.unwrap_err();
+    assert_eq!(
+        (again.code(), error_reason(&again).as_str()),
+        (tonic::Code::NotFound, "NOT_FOUND")
+    );
+}

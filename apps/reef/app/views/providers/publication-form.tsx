@@ -24,6 +24,8 @@ type PublicationProps = {
   disabled?: boolean
   /** The step before this one; absent when there is nothing to go back to. */
   backPath?: string
+  /** Where Start over goes after a failure; the attempt's start by default. */
+  startOverPath?: string
   /** What the submission commits, when the step states it above the actions. */
   children?: ReactNode
   /**
@@ -49,6 +51,7 @@ export function usePublication({
   pending,
   disabled = false,
   backPath,
+  startOverPath = basePath,
   children,
   submitNow = false,
 }: PublicationProps) {
@@ -65,6 +68,7 @@ export function usePublication({
   const submission = freezeAttempt(attempt, setup, form.requestId)
   const { canRevise } = attemptProgress(attempt, setup, result)
   return {
+    formId,
     actions: !result?.failed && (
       <>
         {/* One way back: after a retry it revises the whole attempt, otherwise
@@ -116,7 +120,7 @@ export function usePublication({
             variant="error"
             title={updating ? 'Not updated' : 'Not added'}
             action={
-              <Button.InternalLink to={basePath} size="small">
+              <Button.InternalLink to={startOverPath} size="small">
                 Start over
               </Button.InternalLink>
             }

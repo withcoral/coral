@@ -664,6 +664,8 @@ pub(crate) async fn start_server(
     }
     let saved_functions =
         coral_functions::SavedFunctionInspection::new(database.clone(), workspaces.clone());
+    let saved_function_deletion =
+        coral_functions::SavedFunctionDeletion::new(database.clone(), workspaces.clone());
     // State initialization already ran the search checks and stream. The
     // reconcile task's first pass runs in the background, so neither boot nor
     // a request waits for it.
@@ -700,6 +702,7 @@ pub(crate) async fn start_server(
             accounts: accounts.clone(),
             tasks,
             saved_functions,
+            saved_function_deletion,
             runs,
         },
         coral_grpc::TransportContext {

@@ -9,7 +9,7 @@ import { createActors } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
-import { breadcrumb } from '../../../support/providers.ts'
+import { breadcrumb, waitForNoAccount, waitForYourAccount } from '../../../support/providers.ts'
 
 test('Account inspection preserves User privacy and exact Agent targeting', async (context) => {
   const { owner, alice, bob } = await createActors(context)
@@ -75,10 +75,10 @@ test('Account inspection preserves User privacy and exact Agent targeting', asyn
           page.waitForResponse((response) =>
             (response.headers().location ?? '').includes('/account-authorizations/'),
           ),
-          page.getByRole('button', { name: /^Connect / }).click(),
+          page.getByRole('button', { name: 'Connect', exact: true }).click(),
         ])
-        // The connection returns to the account page, which shows it ready.
-        await page.getByText('Ready', { exact: true }).waitFor()
+        // The connection returns to the account page, which shows the stored account.
+        await waitForYourAccount(page)
         privateAuthorizationPath = new URL(entered.headers().location, page.url()).pathname
         const account = (await inspect(alice.accessToken)).account!
         aliceAccount = account.id
@@ -139,7 +139,7 @@ test('Account inspection preserves User privacy and exact Agent targeting', asyn
         'Workspace ownership does not expose Alice’s account or authorization',
         async () => {
           await page.goto(userPath)
-          await page.getByText('No connected account.', { exact: true }).waitFor()
+          await waitForNoAccount(page)
           expect(await page.content()).not.toContain(aliceAccount)
           expect((await page.request.get(privateAuthorizationPath)).status()).toBe(404)
           expect((await inspect(owner.accessToken)).account).toBeUndefined()
@@ -188,7 +188,7 @@ test('Account inspection preserves User privacy and exact Agent targeting', asyn
       await step('Bob cannot inspect or replace Alice’s account', async () => {
         expect((await page.request.get(privateAuthorizationPath)).status()).toBe(404)
         await page.goto(userPath)
-        await page.getByText('No connected account.', { exact: true }).waitFor()
+        await waitForNoAccount(page)
         const csrf = await page.locator('input[name="csrf"]').first().inputValue()
         const response = await page.request.post(userPath, {
           headers: { Origin: new URL(page.url()).origin },

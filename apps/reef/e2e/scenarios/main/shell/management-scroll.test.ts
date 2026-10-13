@@ -74,7 +74,9 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       await page.keyboard.press('Escape')
       await expect.poll(() => settings.count()).toBe(0)
     })
-    await step('Long Agents content shares one main scroll area', async () => {
+    const agents = page.getByRole('table', { name: 'Agents', exact: true })
+    const filter = page.getByRole('searchbox', { name: 'Filter agents', exact: true })
+    await step('Long Agents rows scroll inside the table under its filter', async () => {
       await page.setViewportSize({ width: 1000, height: 700 })
       // Home may have opened another Workspace in the tree; use the new one.
       await page
@@ -92,13 +94,21 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
           .getByRole('button', { name: 'Create agent', exact: true })
           .click()
         await copyNewAgentKey(page)
-        await page.getByRole('table', { name: 'Agents', exact: true }).waitFor()
+        await agents.waitFor()
       }
       await page.setViewportSize({ width: 1000, height: 300 })
       const sidebarTop = await page
         .getByRole('navigation', { name: 'Coral', exact: true })
         .evaluate((element) => element.getBoundingClientRect().top)
-      await page.mouse.move(800, 200)
+      const filterTop = await filter.evaluate((element) => element.getBoundingClientRect().top)
+      // Wheel over the first row, so the rows' own scroller takes it.
+      const firstRow = (await agents
+        .getByRole('rowgroup')
+        .last()
+        .getByRole('row')
+        .first()
+        .boundingBox())!
+      await page.mouse.move(firstRow.x + firstRow.width / 2, firstRow.y + firstRow.height / 2)
       await page.mouse.wheel(0, 3000)
       await expect
         .poll(() =>
@@ -108,11 +118,39 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
             .evaluate((element) => element.getBoundingClientRect().bottom <= innerHeight),
         )
         .toBe(true)
+      // The page itself did not scroll: the filter and the sidebar stay put.
+      expect(await filter.evaluate((element) => element.getBoundingClientRect().top)).toBe(
+        filterTop,
+      )
+      expect(await filter.evaluate((element) => element.getBoundingClientRect().top >= 0)).toBe(
+        true,
+      )
       expect(
         await page
           .getByRole('navigation', { name: 'Coral', exact: true })
           .evaluate((element) => element.getBoundingClientRect().top),
       ).toBe(sidebarTop)
+    })
+    await step('The find shortcut, ↓ and Enter open one filtered agent', async () => {
+      await page.keyboard.press('ControlOrMeta+f')
+      await expect
+        .poll(() => filter.evaluate((input) => input === document.activeElement))
+        .toBe(true)
+      await page.keyboard.type('agent 3')
+      // Each row links its name once.
+      await expect.poll(() => agents.locator('[data-row-link]').count()).toBe(1)
+      await page.keyboard.press('ArrowDown')
+      await expect
+        .poll(() =>
+          agents
+            .getByRole('link', { name: 'Scroll agent 3', exact: true })
+            .evaluate((link) => link === document.activeElement),
+        )
+        .toBe(true)
+      await page.keyboard.press('Enter')
+      await breadcrumb(page, 'Scroll agent 3').waitFor()
+      await breadcrumb(page).getByRole('link', { name: 'Agents', exact: true }).click()
+      await agents.waitFor()
     })
     await step(
       'Agent settings bottom action is reachable without automatic scrolling',

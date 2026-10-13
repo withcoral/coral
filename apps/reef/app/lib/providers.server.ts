@@ -279,7 +279,8 @@ export async function providerView(
   }
 }
 
-function accountChoice(route: CredentialRoute | undefined): AccountChoice {
+/** Whose account a provider's calls use, from its credential route. */
+export function accountChoice(route: CredentialRoute | undefined): AccountChoice {
   switch (route?.kind) {
     case CredentialRoute_Kind.FIXED:
       return 'fixed'
@@ -291,31 +292,6 @@ function accountChoice(route: CredentialRoute | undefined): AccountChoice {
 }
 
 /**
- * Counts a provider's catalog for its settings: groups as the operations view
- * groups them, the hints providers declared, and unavailable operations.
- */
-export function operationSummary(
-  operations: readonly ProviderOperation[],
-): ProviderSettingsView['operations'] {
-  const groups = new Set<string>()
-  let grouped = false
-  const summary = { total: operations.length, groups: 0, readOnly: 0, destructive: 0, blocked: 0 }
-  for (const operation of operations) {
-    // The operations view lists ungrouped operations under Other.
-    const group = operationGroup(operation)
-    if (group) grouped = true
-    groups.add(group || 'Other')
-    if (operation.hints?.readOnly === true) summary.readOnly += 1
-    if (operation.hints?.destructive === true) summary.destructive += 1
-    if (!operation.available) summary.blocked += 1
-  }
-  // A catalog where no operation has a group is a flat list, whatever a
-  // provider calls its own groups.
-  summary.groups = grouped ? groups.size : 0
-  return summary
-}
-
-/**
  * Settings from the provider read alone; it holds no configuration or source.
  * The shared account's state comes from its blocker; your own account's is
  * unknown here. The settings loader replaces both with the account read where
@@ -324,7 +300,6 @@ export function operationSummary(
 export function providerSettingsView(
   provider: Provider,
   workspacePath: string,
-  operations: readonly ProviderOperation[],
 ): ProviderSettingsView {
   const account = accountChoice(provider.credentialRoute)
   return {
@@ -336,7 +311,6 @@ export function providerSettingsView(
     path: providerPath(workspacePath, provider.name),
     enabled: enabled(provider.state),
     operationsReady: !provider.blockers.includes(ProviderBlocker.NO_OPERATIONS_READY),
-    operations: operationSummary(operations),
     account,
     // Blockers report the shared account, but not a User's own account.
     connection:
