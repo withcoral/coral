@@ -262,8 +262,17 @@ export const FilterYourAccounts: Story = {
     await expect(providers()).toEqual(['GitHub'])
   },
 }
+/** The table keeps its shape with no accounts, and points to the providers. */
 export const NoSeparateAccounts: Story = {
   render: () => <UserAccountsPage view={{ ...personal, accounts: [] }} />,
+  play: async ({ canvas }) => {
+    const table = within(canvas.getByRole('table', { name: 'Accounts' }))
+    await expect(table.getByText('No accounts yet')).toBeVisible()
+    await expect(table.getByRole('link', { name: 'View providers' })).toHaveAttribute(
+      'href',
+      `${personal.workspace.path}/providers`,
+    )
+  },
 }
 export const ExactPolicy: Story = {
   render: () => (

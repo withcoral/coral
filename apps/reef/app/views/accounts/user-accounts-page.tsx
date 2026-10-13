@@ -5,6 +5,7 @@ import { Deadline } from '@/wax/components/deadline'
 import { Pill } from '@/wax/components/pill'
 import type { PillColor } from '@/wax/components/pill/pill'
 import { CatalogToolbar } from '@/components/catalog'
+import { EmptyPage } from '@/components/empty-page'
 import { ManagementLayout, trail } from '@/views/management/layout'
 import type { PersonalAccountState, UserAccountRow, UserAccountsView } from './types'
 import { accountStates } from './account-states'
@@ -42,67 +43,76 @@ export function UserAccountsPage({
 
   return (
     <ManagementLayout breadcrumbs={trail([], 'Accounts')}>
-      {v.accounts.length ? (
-        <>
-          <CatalogToolbar
-            filter={{
-              id: FILTER_ID,
-              label: 'Filter accounts',
-              shortcut: '$mod+f',
-              value: input,
-              onChange: setInput,
-            }}
-          >
-            <StatusFilterMenu value={state} onChange={setState} />
-          </CatalogToolbar>
-          <Table.Container
-            ariaLabel="Accounts"
-            ref={table}
-            variant="card"
-            layout="fixed"
-            columns={[
-              { label: 'Provider', width: { fill: 2 } },
-              { label: 'Status', width: { fill: 2 } },
-              // Fixed, so filtering out the widest button does not move the other columns.
-              { ariaLabel: 'Actions', width: 104, align: 'right' },
-            ]}
-          >
-            <Table.Head />
-            {shown.length === 0 && <Table.Status>No accounts match.</Table.Status>}
-            <Table.Body>
-              {shown.map((row) => (
-                <Table.Row key={row.provider} to={row.detailPath}>
-                  <Table.Cell>
-                    <Table.RowLink to={row.detailPath} aria-label={`${row.name} account details`}>
-                      {row.name}
-                    </Table.RowLink>
-                  </Table.Cell>
-                  <Table.Cell>
-                    <span className={styles.accountStatus}>
-                      <Pill color={states[row.state].color}>{states[row.state].label}</Pill>
-                      {row.waitingUntil && (
-                        <span className={styles.actions}>
-                          <Typography.BodySmallStrong>
-                            A connection request is waiting.
-                          </Typography.BodySmallStrong>
-                          <Deadline at={row.waitingUntil} />
-                        </span>
-                      )}
+      {/* The empty state sits in the table, so the page keeps its shape at the first account. */}
+      <CatalogToolbar
+        filter={{
+          id: FILTER_ID,
+          label: 'Filter accounts',
+          shortcut: '$mod+f',
+          value: input,
+          onChange: setInput,
+        }}
+      >
+        <StatusFilterMenu value={state} onChange={setState} />
+      </CatalogToolbar>
+      <Table.Container
+        ariaLabel="Accounts"
+        ref={table}
+        variant="card"
+        layout="fixed"
+        columns={[
+          { label: 'Provider', width: { fill: 2 } },
+          { label: 'Status', width: { fill: 2 } },
+          // Fixed, so filtering out the widest button does not move the other columns.
+          { ariaLabel: 'Actions', width: 104, align: 'right' },
+        ]}
+      >
+        <Table.Head />
+        {v.accounts.length === 0 ? (
+          <Table.Status>
+            <EmptyPage
+              fullSize={false}
+              iconName="KeyRound"
+              title="No accounts yet"
+              description="Your accounts show here when a provider uses individual accounts."
+              action={
+                <Button.InternalLink to={`${v.workspace.path}/providers`} variant="secondary">
+                  View providers
+                </Button.InternalLink>
+              }
+            />
+          </Table.Status>
+        ) : (
+          shown.length === 0 && <Table.Status>No accounts match.</Table.Status>
+        )}
+        <Table.Body>
+          {shown.map((row) => (
+            <Table.Row key={row.provider} to={row.detailPath}>
+              <Table.Cell>
+                <Table.RowLink to={row.detailPath} aria-label={`${row.name} account details`}>
+                  {row.name}
+                </Table.RowLink>
+              </Table.Cell>
+              <Table.Cell>
+                <span className={styles.accountStatus}>
+                  <Pill color={states[row.state].color}>{states[row.state].label}</Pill>
+                  {row.waitingUntil && (
+                    <span className={styles.actions}>
+                      <Typography.BodySmallStrong>
+                        A connection request is waiting.
+                      </Typography.BodySmallStrong>
+                      <Deadline at={row.waitingUntil} />
                     </span>
-                  </Table.Cell>
-                  <Table.Cell control>
-                    <AccountAction row={row} view={v} pending={pending} />
-                  </Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table.Container>
-        </>
-      ) : (
-        <Typography.BodySmall as="p">
-          No provider in this workspace uses individual accounts.
-        </Typography.BodySmall>
-      )}
+                  )}
+                </span>
+              </Table.Cell>
+              <Table.Cell control>
+                <AccountAction row={row} view={v} pending={pending} />
+              </Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Container>
     </ManagementLayout>
   )
 }
