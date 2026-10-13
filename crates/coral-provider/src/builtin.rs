@@ -2,6 +2,7 @@
 //!
 //! Every Workspace gets one when it is created, with its own Generation of the
 //! Coral-defined catalog. It has no Setup, no Publication and no Accounts.
+use coral_catalog::PreparedBuiltinCatalog;
 use coral_db::Transaction;
 use coral_workspace::{ChangeContext, WorkspaceId};
 
@@ -11,9 +12,19 @@ use crate::{
     ProviderCallRoot, ProviderDisplayName, ProviderId, ProviderModule, ProviderState, access,
 };
 
+/// Prepares the Built-in Provider's catalog. Call it before beginning the
+/// transaction that [`ProviderModule::install_builtin_in_transaction`] joins.
+///
+/// # Errors
+///
+/// Returns an invalid built-in definition.
+pub fn prepare_builtin_catalog() -> Result<PreparedBuiltinCatalog, Error> {
+    Ok(coral_catalog::prepare_builtin_catalog()?)
+}
+
 impl ProviderModule {
-    /// Creates the Workspace's Built-in Provider in the caller's transaction,
-    /// with the acting Owner as its recorded actor.
+    /// Creates the Workspace's Built-in Provider from `catalog` in the caller's
+    /// transaction, with the acting Owner as its recorded actor.
     ///
     /// Workspace creation calls this in the transaction that creates the
     /// Workspace. It joins that transaction and never commits.
@@ -22,13 +33,14 @@ impl ProviderModule {
     ///
     /// Returns an authority failure unless the actor is a Workspace Owner,
     /// [`Error::ProviderCallRootConflict`] when the Workspace already has a
-    /// Built-in Provider, or a catalog or persistence failure. An error may
-    /// follow writes; do not commit the transaction after one.
+    /// Built-in Provider, or a persistence failure. An error may follow writes;
+    /// do not commit the transaction after one.
     pub async fn install_builtin_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        catalog: PreparedBuiltinCatalog,
     ) -> Result<Provider, Error> {
         let authority = self
             .check_owner_configuration_in_transaction(transaction, context.actor(), workspace_id)
@@ -49,6 +61,7 @@ impl ProviderModule {
         };
         let generation = coral_catalog::publish_builtin_generation_in_transaction(
             transaction,
+            catalog,
             context.occurred_at_unix_nanos(),
         )
         .await?;

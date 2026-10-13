@@ -28,7 +28,12 @@ async fn only_users_with_effective_owner_authority_discover_and_call_the_builtin
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .install_builtin_in_transaction(
+            &mut transaction,
+            &context,
+            workspace.id(),
+            crate::prepare_builtin_catalog().unwrap(),
+        )
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -107,7 +112,12 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_adm
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     let builtin = providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .install_builtin_in_transaction(
+            &mut transaction,
+            &context,
+            workspace.id(),
+            crate::prepare_builtin_catalog().unwrap(),
+        )
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -127,7 +137,12 @@ async fn a_workspace_has_one_builtin_provider_beside_an_owner_provider_named_adm
     let mut transaction = database.begin().await.unwrap();
     assert!(matches!(
         providers
-            .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+            .install_builtin_in_transaction(
+                &mut transaction,
+                &context,
+                workspace.id(),
+                crate::prepare_builtin_catalog().unwrap(),
+            )
             .await,
         Err(Error::ProviderCallRootConflict)
     ));
@@ -166,6 +181,7 @@ async fn a_member_cannot_install_the_builtin_provider() {
             &mut transaction,
             &change_context(member, 11, '2'),
             workspace.id(),
+            crate::prepare_builtin_catalog().unwrap(),
         )
         .await;
     assert!(
@@ -177,8 +193,6 @@ async fn a_member_cannot_install_the_builtin_provider() {
         ),
         "{denied:?}"
     );
-    transaction.rollback().await.unwrap();
-    let mut transaction = database.begin_read_snapshot().await.unwrap();
     assert!(
         crate::active_providers_in_transaction(&mut transaction, workspace.id())
             .await
@@ -217,7 +231,12 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
         .unwrap();
     let mut transaction = database.begin().await.unwrap();
     let builtin = providers
-        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .install_builtin_in_transaction(
+            &mut transaction,
+            &context,
+            workspace.id(),
+            crate::prepare_builtin_catalog().unwrap(),
+        )
         .await
         .unwrap();
     transaction.commit().await.unwrap();

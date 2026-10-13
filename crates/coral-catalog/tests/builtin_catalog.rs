@@ -17,12 +17,20 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
     let database = fixture.database();
     let mut transaction = database.begin().await.unwrap();
-    let first = coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, 1)
-        .await
-        .unwrap();
-    let second = coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, 2)
-        .await
-        .unwrap();
+    let first = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        coral_catalog::prepare_builtin_catalog().unwrap(),
+        1,
+    )
+    .await
+    .unwrap();
+    let second = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        coral_catalog::prepare_builtin_catalog().unwrap(),
+        2,
+    )
+    .await
+    .unwrap();
     transaction.commit().await.unwrap();
     assert_ne!(first, second, "each Workspace gets its own Generation");
 
@@ -108,12 +116,20 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
     let database = fixture.database();
     let mut transaction = database.begin().await.unwrap();
-    let first = coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, 1)
-        .await
-        .unwrap();
-    let second = coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, 2)
-        .await
-        .unwrap();
+    let first = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        coral_catalog::prepare_builtin_catalog().unwrap(),
+        1,
+    )
+    .await
+    .unwrap();
+    let second = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        coral_catalog::prepare_builtin_catalog().unwrap(),
+        2,
+    )
+    .await
+    .unwrap();
     transaction.commit().await.unwrap();
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();

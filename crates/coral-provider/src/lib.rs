@@ -66,10 +66,11 @@ pub use account::{
     OAuthClientAuthentication, OAuthClientConfiguration, ProviderSetupInspection,
     SetupAuthentication, SetupAuthorization, SetupAuthorizationState, SetupOAuthClient,
 };
+pub use builtin::prepare_builtin_catalog;
 pub use coral_catalog::{
     CatalogDiagnostic as PublicationDiagnostic, MCP_DISCOVERY_SNAPSHOT_MAX_BYTES,
-    McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, ProviderSetupInputDigest,
-    ProviderSetupInputKind,
+    McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, PreparedBuiltinCatalog,
+    ProviderSetupInputDigest, ProviderSetupInputKind,
 };
 pub use error::Error;
 pub mod history_repository;

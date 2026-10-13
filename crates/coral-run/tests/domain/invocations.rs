@@ -165,6 +165,7 @@ async fn builtin_scope(
             &mut transaction,
             &change(owner_user, 11, '2'),
             &workspace_id,
+            coral_provider::prepare_builtin_catalog().unwrap(),
         )
         .await
         .expect("install the Built-in Provider");

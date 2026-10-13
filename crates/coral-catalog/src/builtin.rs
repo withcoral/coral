@@ -27,10 +27,17 @@ pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral admin";
 const CATALOG_IDENTITY_PREFIX: &str = "coral-admin-catalog:";
 pub(crate) const MATERIALIZER_VERSION: &str = "coral-admin-catalog-v1";
 
+/// The Built-in Provider's catalog package and the identity its Generation
+/// pins, prepared outside a write transaction.
+pub struct PreparedBuiltinCatalog {
+    pub(crate) catalog: PreparedProviderCatalog,
+    pub(crate) identity: String,
+}
+
 /// Returns the identity a Generation of `catalog` pins: the prefix and the
 /// catalog's fingerprint. A Coral version that changes the catalog pins a
 /// different identity.
-pub(crate) fn catalog_identity(catalog: &PreparedProviderCatalog) -> String {
+fn catalog_identity(catalog: &PreparedProviderCatalog) -> String {
     format!(
         "{CATALOG_IDENTITY_PREFIX}{}",
         catalog.fingerprint().as_str()
@@ -198,8 +205,8 @@ fn definition(operation: BuiltinOperation) -> Definition {
     }
 }
 
-/// Prepares the complete Built-in Provider catalog package.
-pub(crate) fn prepare() -> Result<PreparedProviderCatalog, CatalogDiagnostic> {
+/// Prepares the complete Built-in Provider catalog package and its identity.
+pub(crate) fn prepare() -> Result<PreparedBuiltinCatalog, CatalogDiagnostic> {
     let mut schemas = SchemaGraphAccumulator::new(SchemaSemantics::JsonSchema2020_12);
     let mut drafts = Vec::new();
     for operation in BuiltinOperation::ALL {
@@ -263,13 +270,17 @@ pub(crate) fn prepare() -> Result<PreparedProviderCatalog, CatalogDiagnostic> {
             "[]".to_string(),
         ));
     }
-    Ok(PreparedProviderCatalog::new(
+    let catalog = PreparedProviderCatalog::new(
         BUILTIN_PROVIDER_DISPLAY_NAME.to_string(),
         schema_graph,
         schema_graph_json,
         operations,
         declaration_fields,
-    ))
+    );
+    Ok(PreparedBuiltinCatalog {
+        identity: catalog_identity(&catalog),
+        catalog,
+    })
 }
 
 /// Names every schema of the built-in graph for projection.
