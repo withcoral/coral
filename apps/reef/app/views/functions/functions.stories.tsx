@@ -115,9 +115,10 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 const listPath = '/workspaces/demo/functions'
-const detail = (f: SavedFunctionView) => (
+const form = { csrf: 'csrf', requestId: 'request' }
+const detail = (f: SavedFunctionView, canDelete = true) => (
   <FunctionsPage workspace={workspace} functions={summaries}>
-    <FunctionDrawer listPath={listPath} savedFunction={f} />
+    <FunctionDrawer listPath={listPath} savedFunction={f} form={form} canDelete={canDelete} />
   </FunctionsPage>
 )
 
@@ -185,8 +186,25 @@ export const Detail: Story = {
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
   play: async () => {
     await expect(await screen.findByRole('dialog', { name: 'finance.monthlyTotals' })).toBeVisible()
-    // Reef only reads Saved Functions until it can author them.
-    await expect(screen.queryByRole('button', { name: /save|replace|delete|run/i })).toBeNull()
+    // Reef reads and deletes Saved Functions, but cannot author or run them.
+    await expect(screen.queryByRole('button', { name: /save|replace|run/i })).toBeNull()
+    // Delete asks first, and names what breaks.
+    await userEvent.click(screen.getByRole('button', { name: 'Delete function' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Delete function' })
+    await expect(confirm).toHaveAccessibleDescription(
+      'Programs and functions that call coral.functions.finance.monthlyTotals will fail. You cannot undo this.',
+    )
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    await expect(screen.queryByRole('dialog', { name: 'Delete function' })).toBeNull()
+  },
+}
+export const ArchivedWorkspace: Story = {
+  render: () => detail(savedFunction, false),
+  parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
+  play: async () => {
+    await expect(await screen.findByRole('dialog', { name: 'finance.monthlyTotals' })).toBeVisible()
+    // An archived workspace accepts no changes, so delete is absent.
+    await expect(screen.queryByRole('button', { name: 'Delete function' })).toBeNull()
   },
 }
 export const Diagnostics: Story = {

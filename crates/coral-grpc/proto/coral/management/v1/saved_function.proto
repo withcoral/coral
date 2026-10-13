@@ -1,9 +1,10 @@
 syntax = "proto3";
 package coral.management.v1;
 
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
-// Read-only inspection of the calling User's own current Saved Functions.
+// Inspection and deletion of the calling User's own current Saved Functions.
 //
 // A Saved Function Path names a definition only for its owning Principal in
 // one Workspace, so requests carry the Workspace and path rather than a
@@ -14,6 +15,9 @@ service SavedFunctionService {
   rpc ListSavedFunctions(ListSavedFunctionsRequest) returns (ListSavedFunctionsResponse);
   // Returns one of the caller's own functions with its source and saved diagnostics.
   rpc GetSavedFunction(GetSavedFunctionRequest) returns (SavedFunction);
+  // Deletes one of the caller's own functions and records its lifecycle Event.
+  // Coral keeps no reverse references: Programs that call the path fail at admission.
+  rpc DeleteSavedFunction(DeleteSavedFunctionRequest) returns (google.protobuf.Empty);
 }
 
 // Lists the caller's own current Saved Functions in one Workspace.
@@ -46,6 +50,14 @@ message SavedFunctionSummary {
 
 // Reads one of the caller's own current Saved Functions.
 message GetSavedFunctionRequest {
+  // workspaces/{workspace}.
+  string parent = 1;
+  // Saved Function Path relative to coral.functions.
+  string path = 2;
+}
+
+// Deletes one of the caller's own current Saved Functions.
+message DeleteSavedFunctionRequest {
   // workspaces/{workspace}.
   string parent = 1;
   // Saved Function Path relative to coral.functions.

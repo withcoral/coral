@@ -13138,6 +13138,16 @@ pub struct GetSavedFunctionRequest {
     #[prost(string, tag = "2")]
     pub path: ::prost::alloc::string::String,
 }
+/// Deletes one of the caller's own current Saved Functions.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteSavedFunctionRequest {
+    /// workspaces/{workspace}.
+    #[prost(string, tag = "1")]
+    pub parent: ::prost::alloc::string::String,
+    /// Saved Function Path relative to coral.functions.
+    #[prost(string, tag = "2")]
+    pub path: ::prost::alloc::string::String,
+}
 /// One current Saved Function with its authoring material.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SavedFunction {
@@ -13234,7 +13244,7 @@ pub mod saved_function_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    /// Read-only inspection of the calling User's own current Saved Functions.
+    /// Inspection and deletion of the calling User's own current Saved Functions.
     ///
     /// A Saved Function Path names a definition only for its owning Principal in
     /// one Workspace, so requests carry the Workspace and path rather than a
@@ -13377,6 +13387,34 @@ pub mod saved_function_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Deletes one of the caller's own functions and records its lifecycle Event.
+        /// Coral keeps no reverse references: Programs that call the path fail at admission.
+        pub async fn delete_saved_function(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteSavedFunctionRequest>,
+        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SavedFunctionService/DeleteSavedFunction",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SavedFunctionService",
+                        "DeleteSavedFunction",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -13406,8 +13444,14 @@ pub(crate) mod saved_function_service_server {
             &self,
             request: tonic::Request<super::GetSavedFunctionRequest>,
         ) -> std::result::Result<tonic::Response<super::SavedFunction>, tonic::Status>;
+        /// Deletes one of the caller's own functions and records its lifecycle Event.
+        /// Coral keeps no reverse references: Programs that call the path fail at admission.
+        async fn delete_saved_function(
+            &self,
+            request: tonic::Request<super::DeleteSavedFunctionRequest>,
+        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
     }
-    /// Read-only inspection of the calling User's own current Saved Functions.
+    /// Inspection and deletion of the calling User's own current Saved Functions.
     ///
     /// A Saved Function Path names a definition only for its owning Principal in
     /// one Workspace, so requests carry the Workspace and path rather than a
@@ -13573,6 +13617,55 @@ pub(crate) mod saved_function_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetSavedFunctionSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SavedFunctionService/DeleteSavedFunction" => {
+                    #[allow(non_camel_case_types)]
+                    struct DeleteSavedFunctionSvc<T: SavedFunctionService>(pub Arc<T>);
+                    impl<
+                        T: SavedFunctionService,
+                    > tonic::server::UnaryService<super::DeleteSavedFunctionRequest>
+                    for DeleteSavedFunctionSvc<T> {
+                        type Response = ();
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DeleteSavedFunctionRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SavedFunctionService>::delete_saved_function(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DeleteSavedFunctionSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
