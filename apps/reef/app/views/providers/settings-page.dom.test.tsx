@@ -30,7 +30,6 @@ const provider: ProviderSettingsView = {
   account: 'caller',
   enabled: true,
   operationsReady: true,
-  operations: { total: 12, groups: 4, readOnly: 8, destructive: 3, blocked: 1 },
   connection: 'connected',
   canConnect: true,
   canReconnect: true,
@@ -197,12 +196,14 @@ test('a failed save keeps the draft and shows the error inline', async () => {
 // provider offering a connection control.
 test('each account setting explains whose account calls use', async () => {
   await render({ provider: { account: 'caller', connection: 'not_connected' } })
-  expect(text()).toContain('Each caller uses their own account.')
-  expect(byLabel('Your account')?.textContent).toContain('Not connected')
+  expect(text()).toContain(
+    'Each person connects their own account. Workspace owners connect accounts for agents.',
+  )
+  expect(byLabel('Individual accounts')?.textContent).toContain('Not connected')
   // The account's actions sit inside its card.
-  expect(byLabel('Your account')?.textContent).toContain('Change account setting')
+  expect(byLabel('Individual accounts')?.textContent).toContain('Change account setting')
   expect(
-    named('link', 'Connect your account')?.closest('[aria-label="Your account"]'),
+    named('link', 'Connect your account')?.closest('[aria-label="Individual accounts"]'),
   ).not.toBeNull()
   expect(named('link', 'Connect your account')?.getAttribute('href')).toBe(
     // Your own account has its page under Accounts.
@@ -211,8 +212,8 @@ test('each account setting explains whose account calls use', async () => {
   act(() => roots.pop()!.unmount())
 
   await render({ provider: { account: 'fixed', connection: 'connected' } })
-  expect(text()).toContain('All callers use one shared account.')
-  expect(byLabel('Shared account')?.textContent).toContain('Connected')
+  expect(text()).toContain('People and agents use this shared account.')
+  expect(byLabel('One shared account')?.textContent).toContain('Connected')
   expect(named('link', 'Manage shared account')?.getAttribute('href')).toBe(
     `${provider.path}/accounts?scope=shared`,
   )
@@ -263,7 +264,7 @@ test('an archived workspace is read-only with a notice', async () => {
   expect(document.querySelector('[aria-label="Configuration"]')).toBeNull()
   for (const name of ['Change account setting', 'Remove provider'])
     expect(named('button', name)).toBeUndefined()
-  for (const name of ['Refresh operations', 'Replace source', 'Connect your account'])
+  for (const name of ['Check for updates', 'Replace source', 'Connect your account'])
     expect(named('link', name)).toBeUndefined()
   // Owners still read the source where Coral lets them.
   expect(text()).toContain('https://gitlab.com/api/v4/openapi.json')
@@ -297,7 +298,7 @@ test('the source panel shows the kind, the address, or why it cannot', async () 
   expect(
     document.querySelector('[aria-label="Source"] [aria-label="Copy source URL"]'),
   ).not.toBeNull()
-  expect(named('link', 'Refresh operations')?.getAttribute('href')).toBe(`${provider.path}/update`)
+  expect(named('link', 'Check for updates')?.getAttribute('href')).toBe(`${provider.path}/update`)
   expect(named('link', 'Replace source')?.getAttribute('href')).toBe(
     `${provider.path}/update?replaceSource=1`,
   )
@@ -309,7 +310,9 @@ test('the source panel shows the kind, the address, or why it cannot', async () 
 
   await render({ source: { state: 'failed' } })
   expect(panel()).toContain('Coral could not read the source.')
-  expect(text()).toContain('Each caller uses their own account.')
+  expect(text()).toContain(
+    'Each person connects their own account. Workspace owners connect accounts for agents.',
+  )
 })
 
 // Catches: removal without confirmation, or a confirmation that does not name
@@ -331,7 +334,7 @@ test('removal asks for confirmation that names the provider and its consequences
 test('the account card shows a reconnect and hides refused connects', async () => {
   await render({ provider: { account: 'caller', connection: 'needs_reconnect' } })
   // The same words as your account's own page under Accounts.
-  expect(byLabel('Your account')?.textContent).toContain('Needs reconnect')
+  expect(byLabel('Individual accounts')?.textContent).toContain('Needs reconnect')
   expect(named('link', 'Reconnect your account')?.getAttribute('href')).toBe(
     // Your own account has its page under Accounts.
     `/workspaces/demo/accounts/${provider.id}`,
@@ -383,7 +386,7 @@ test('settings have no separate status section', async () => {
 // without a way to open it.
 test('an unreadable account says so and still links to it', async () => {
   await render({ provider: { account: 'caller', connection: 'unknown' } })
-  const card = byLabel('Your account')!
+  const card = byLabel('Individual accounts')!
   expect(card.textContent).not.toMatch(/Connected|Not connected|Needs reconnect/)
   expect(text()).toContain('Coral could not read your account. Open it to see its state.')
   expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(
@@ -393,27 +396,6 @@ test('an unreadable account says so and still links to it', async () => {
 
 // The card opens the provider's operations.
 // The breadcrumb links the provider too; the card is the link outside it.
-function operationsCard() {
-  return [...document.querySelectorAll(`a[href="${provider.path}"]`)].find(
-    (link) => !link.closest('nav'),
-  )!.textContent
-}
-
-// Catches: settings hiding how many operations the provider offers and what
-// they can do, or padding the summary with counts of nothing.
-test('a card under the name summarises the operations', async () => {
-  await render()
-  expect(operationsCard()).toContain('12 operations')
-  expect(operationsCard()).toContain('4 groups · 8 read-only · 3 destructive · 1 blocked')
-  act(() => roots.pop()!.unmount())
-
-  await render({
-    provider: { operations: { total: 3, groups: 0, readOnly: 3, destructive: 0, blocked: 0 } },
-  })
-  expect(operationsCard()).toContain('3 read-only')
-  expect(operationsCard()).not.toMatch(/group|write|blocked|unknown/)
-})
-
 // Catches: configuration pushed above the account people come here to manage.
 test('the account comes before configuration, and removal comes last', async () => {
   await render()

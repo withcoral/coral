@@ -9,6 +9,7 @@ import {
   SettingsFacts,
   SettingsLayout,
   SettingsRemoval,
+  SettingsWideColumns,
 } from './index'
 
 const meta = {
@@ -52,5 +53,21 @@ export const WithoutAside: Story = {
     <SettingsLayout header={<Typography.HeadingLarge as="h2">Settings</Typography.HeadingLarge>}>
       <Card title="Agent" description="Disabling the agent blocks new runs." />
     </SettingsLayout>
+  ),
+}
+/** A long list takes the free width; the aside keeps its settings width. */
+export const WideColumns: Story = {
+  render: () => (
+    <SettingsWideColumns
+      aside={
+        <SettingsAside title="Source">
+          <SettingsFacts>
+            <SettingsFact label="Type">OpenAPI document</SettingsFact>
+          </SettingsFacts>
+        </SettingsAside>
+      }
+    >
+      <Card title="Operations" description="Every operation the source offers." />
+    </SettingsWideColumns>
   ),
 }

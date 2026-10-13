@@ -57,9 +57,9 @@ export async function bearerDiscovery(context: TestContext) {
         total: 1,
       })
       await openProviderSettings(page)
-      await page.getByText('All callers use one shared account.', { exact: true }).waitFor()
+      await page.getByText('People and agents use this shared account.', { exact: true }).waitFor()
       await page
-        .getByRole('region', { name: 'Shared account', exact: true })
+        .getByRole('region', { name: 'One shared account', exact: true })
         .getByText('Connected', { exact: true })
         .waitFor()
       const api = managementClients(accessToken)

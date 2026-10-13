@@ -3,7 +3,7 @@ import { Tooltip } from '@/wax/components/tooltip'
 import type { TreeNode } from '@/wax/components/tree'
 
 import { countLabel } from './configuration-details'
-import type { OperationNodeView, ReviewOperationView, SetupView } from './types'
+import type { LiveOperationView, OperationNodeView, ReviewOperationView, SetupView } from './types'
 
 /** The path under its group node, so `actions.listRunners` reads `listRunners` beneath `actions`. */
 function leafLabel(o: OperationNodeView) {
@@ -74,11 +74,21 @@ function blockedMarker(reasons: readonly string[]) {
  * their calls go. Whatever cannot run is lifted into one group above them all,
  * because that is the part of the list a person has to act on.
  */
-export function reviewOperationNodes(setup: SetupView): TreeNode[] {
+export function reviewOperationNodes(
+  setup: SetupView,
+  /** The live provider's operations. A refresh groups what it adds and removes. */
+  previous?: readonly LiveOperationView[],
+): TreeNode[] {
   const review = setup.configuration
   if (!review) return []
+  const known = previous && new Set(previous.map((o) => o.relativePath))
+  const read = new Set(review.operations.map((o) => o.relativePath))
+  const removed = previous?.filter((o) => !read.has(o.relativePath)) ?? []
+  const added = known ? review.operations.filter((o) => !known.has(o.relativePath)) : []
   const blocked = review.operations.filter((o) => !o.available)
-  const runnable = review.operations.filter((o) => o.available)
+  const runnable = review.operations.filter(
+    (o) => o.available && !(known && !known.has(o.relativePath)),
+  )
   const byPath = new Map(review.operations.map((o) => [o.relativePath, o]))
   const decorate = (node: TreeNode): TreeNode => {
     const operation = byPath.get(node.id)
@@ -107,6 +117,39 @@ export function reviewOperationNodes(setup: SetupView): TreeNode[] {
     }
   }
   const nodes = operationNodes(runnable).map(groupNode)
+  // What a refresh adds, above the provider's own groups, so the change is the
+  // first thing you see. One that cannot run stays in Cannot run.
+  const fresh = added.filter((o) => o.available)
+  if (fresh.length > 0)
+    nodes.unshift({
+      id: 'group:new',
+      label: 'New',
+      detail: countLabel(fresh.length, 'operation'),
+      children: fresh.map((o) =>
+        decorate({
+          id: o.relativePath,
+          label: o.relativePath,
+          searchTerms: [o.relativePath, o.summary, o.group],
+          marker: 'solid',
+        }),
+      ),
+    })
+  // What a refresh removes, after New: it has no page or destination any more.
+  if (removed.length > 0)
+    nodes.splice(fresh.length > 0 ? 1 : 0, 0, {
+      id: 'group:removed',
+      label: 'Removed',
+      dimmed: true,
+      detail: countLabel(removed.length, 'operation'),
+      children: removed.map((o) => ({
+        id: `removed:${o.relativePath}`,
+        label: o.relativePath,
+        detail: o.summary,
+        searchTerms: [o.relativePath, o.summary],
+        dimmed: true,
+        marker: 'hollow',
+      })),
+    })
   if (blocked.length === 0) return nodes
   // Its own group, above the rest: a tag says what an Operation is for, and
   // these are grouped by the one thing the person still has to settle.

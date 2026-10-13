@@ -1,5 +1,5 @@
 import { RequestHeaders } from './request-headers'
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Form } from 'react-router'
 import { Banner, Button, Card, Inputs, Table, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
@@ -80,6 +80,7 @@ export function ConfigurationStep({
   takenNamespaces = [],
   suggestedName,
   recipe = null,
+  editing,
 }: {
   setup: SetupView
   form: FormContext
@@ -95,8 +96,34 @@ export function ConfigurationStep({
   suggestedName?: string
   /** What the chosen recipe fills in; it applies only before the first confirmation. */
   recipe?: RecipeConfigurationView | null
+  /**
+   * Edits a provider's saved configuration: Cancel joins the button, and the step
+   * reports whether the fields differ from what it first showed.
+   */
+  editing?: {
+    cancel: ReactNode
+    onDirtyChange: (dirty: boolean) => void
+    /** Save publishes. Next confirms, when the operations follow it. */
+    confirm: 'Save' | 'Next'
+  }
 }) {
   const formId = useId()
+  const formRef = useRef<HTMLFormElement>(null)
+  const baseline = useRef<string | null>(null)
+  const onDirtyChange = editing?.onDirtyChange
+  // Every field, controlled or not, posts through the form, so the posted
+  // values are the one thing to compare.
+  const checkDirty = () => {
+    if (!onDirtyChange || !formRef.current) return
+    const current = JSON.stringify(
+      [...new FormData(formRef.current)].filter(
+        ([name]) => !['csrf', 'requestId', 'intent'].includes(name),
+      ),
+    )
+    baseline.current ??= current
+    onDirtyChange(current !== baseline.current)
+  }
+  useEffect(checkDirty)
   const clientSecretId = useId()
   const fieldId = useId()
   const ids = {
@@ -242,20 +269,46 @@ export function ConfigurationStep({
         document.getElementById(blocked.field)?.focus()
       }}
     >
-      {pending ? 'Confirming…' : 'Next'}
+      {editing?.confirm === 'Save'
+        ? pending
+          ? 'Saving…'
+          : 'Save'
+        : pending
+          ? 'Confirming…'
+          : 'Next'}
     </Button.TextButton>
   )
   const confirm =
     blocked && !pending ? <Tooltip content={blocked.message}>{nextButton}</Tooltip> : nextButton
   return (
-    <StepFrame title="Setup" actions={confirm}>
-      {review.updating && review.interruptsAccess === null && (
+    <StepFrame
+      title={editing ? 'Edit configuration' : 'Setup'}
+      actions={
+        editing ? (
+          <>
+            {editing.cancel}
+            {confirm}
+          </>
+        ) : (
+          confirm
+        )
+      }
+    >
+      {!editing && review.updating && review.interruptsAccess === null && (
         <Typography.BodySmall as="p">
           Confirm the configuration to check account access.
         </Typography.BodySmall>
       )}
-      <Form id={formId} method="post" reloadDocument className={styles.stack} aria-busy={pending}>
-        <ConfigurationDifferences setup={setup} />
+      <Form
+        ref={formRef}
+        id={formId}
+        method="post"
+        reloadDocument
+        className={styles.stack}
+        aria-busy={pending}
+        onInput={checkDirty}
+      >
+        {!editing && <ConfigurationDifferences setup={setup} />}
         <Fields form={form} intent="configure" />
         <input type="hidden" name="setup" value={setup.id} />
         <input type="hidden" name="configurationRevision" value={review.revision} />

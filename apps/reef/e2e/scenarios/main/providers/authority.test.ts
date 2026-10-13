@@ -132,7 +132,7 @@ test('Members get 403 on Owner-only pages; malformed identifiers get 404', async
           0,
         )
         expect(
-          await page.getByRole('link', { name: 'Refresh operations', exact: true }).count(),
+          await page.getByRole('link', { name: 'Check for updates', exact: true }).count(),
         ).toBe(0)
         expect(
           await page.getByRole('button', { name: 'Edit configuration', exact: true }).count(),

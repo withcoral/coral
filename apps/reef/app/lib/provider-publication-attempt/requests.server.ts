@@ -10,10 +10,12 @@ import {
   setupName,
   setupView,
 } from './setup.server'
+import type { AccountChoice } from '@/views/providers/types'
 import {
   InvalidAttempt,
   parseAttempt,
   reconcileAttempt,
+  attemptParams,
   attemptPath,
   type AttemptKind,
   type CreationAttempt,
@@ -23,7 +25,14 @@ import {
 
 type PublicationTarget =
   | { kind: 'workspace'; parent: string; workspacePath: string }
-  | { kind: 'update'; parent: string; provider: string; successPath: string }
+  | {
+      kind: 'update'
+      parent: string
+      provider: string
+      successPath: string
+      /** The provider's account setting now, which Save keeps. */
+      account: AccountChoice
+    }
 
 /** HTTP decoding errors are Reef errors; Coral still owns authorization and validation. */
 export function requestAttempt(
@@ -169,6 +178,15 @@ export async function attemptAction(
     target.basePath,
     attempt,
     target.kind === 'update' ? target.successPath : target.basePath,
+    target.kind === 'update'
+      ? {
+          account: target.account,
+          // Save sends the request identity of the configuration form, so the
+          // same request decoding protects it.
+          publish: (frozen) =>
+            publishFrozen(api, target, requestAttempt(target.kind, attemptParams(frozen), '', 400)),
+        }
+      : undefined,
   )
 }
 
@@ -180,7 +198,14 @@ async function publishAttempt(
 ) {
   const fields = new URLSearchParams()
   for (const [key, value] of form) if (typeof value === 'string') fields.append(key, value)
-  const attempt = requestAttempt(target.kind, fields, '', 400)
+  return publishFrozen(api, target, requestAttempt(target.kind, fields, '', 400))
+}
+
+async function publishFrozen(
+  api: ManagementApi,
+  target: PublicationTarget & { basePath: string },
+  attempt: PublicationAttempt,
+) {
   if (attempt.state !== 'frozen')
     throw new Response('Invalid publication attempt', {
       status: 400,

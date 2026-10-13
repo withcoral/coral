@@ -19,17 +19,17 @@ import {
   openCustomSource,
   openProviderSettings,
   programRunner,
+  saveConfirmedSettingsChange,
   signInToReadOperations,
   waitForPublication,
 } from '../../../../support/providers.ts'
 import { withOwner } from '../../../../support/topology.ts'
 
-const applied = (page: Page) => waitForPublication(page)
-const apply = async (page: Page) => {
+// Every change returns to the provider's settings, where it opens.
+const save = async (page: Page) => {
   expect(new URL(page.url()).searchParams.has('operationsAccepted')).toBe(false)
-  expect(await page.getByRole('link', { name: 'Next', exact: true }).count()).toBe(0)
-  await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
-  await applied(page)
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await page.waitForURL((url) => url.pathname.endsWith('/settings'))
 }
 
 /** Failed incompatible shared updates preserve the active configuration and account. */
@@ -63,7 +63,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
     const providerPath = new URL(page.url()).pathname
     await step('Refresh the saved source using the existing shared account', async () => {
       await openProviderSettings(page)
-      await page.getByRole('link', { name: 'Refresh operations', exact: true }).click()
+      await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
       await page.getByText(active.mcpUrl, { exact: true }).waitFor()
       expect(await page.getByRole('button', { name: 'Change source', exact: true }).count()).toBe(0)
       expect(
@@ -75,24 +75,30 @@ export async function sharedAccountAtomicity(context: TestContext) {
       await page
         .getByRole('button', { name: 'Use the existing shared account', exact: true })
         .click()
-      await page.getByText('Keep existing accounts.', { exact: true }).waitFor()
-      await apply(page)
+      // Keeping the shared account needs no consent, so Save publishes at once.
+      await save(page)
       expect(active.counts.consents).toBe(1)
       expect(active.counts.tokens).toBe(1)
     })
     await step('A changed issuer needs review before any new sign-in', async () => {
       active.knobs.issuerPath = '/new-issuer'
       await openProviderSettings(page)
-      await page.getByRole('link', { name: 'Refresh operations', exact: true }).click()
+      await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
       await page.getByRole('button', { name: 'Read operations', exact: true }).click()
-      await page.getByRole('heading', { name: 'Configuration', exact: true }).waitFor()
+      await page.getByRole('heading', { name: 'Edit configuration', exact: true }).waitFor()
       expect(await page.getByRole('button', { name: /^Sign in/ }).count()).toBe(0)
       expect(active.counts.consents).toBe(1)
       const setupName = `${parent}/providerSetups/${new URL(page.url()).searchParams.get('setup')}`
       expect(
         (await api.setups.getProviderSetup({ name: setupName })).configuration?.interruptsAccess,
       ).toBe(true)
-      await page.getByRole('button', { name: 'Cancel changes', exact: true }).click()
+      // The read is unsaved, so Cancel asks first.
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await page
+        .getByRole('dialog', { name: 'Discard your changes?' })
+        .getByRole('button', { name: 'Discard changes', exact: true })
+        .click()
+      await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
       active.knobs.issuerPath = undefined
     })
     const provider = (await api.providers.listProviders({ parent })).providers[0]
@@ -164,21 +170,23 @@ export async function sharedAccountAtomicity(context: TestContext) {
         if (failure === 'authorization') {
           await page.getByRole('button', { name: 'Sign in again', exact: true }).waitFor()
           expect((await api.setups.getProviderSetup({ name: setupName })).authorized).toBe(false)
-          await page.getByRole('button', { name: 'Cancel changes', exact: true }).click()
+          // The confirmed configuration is unsaved, so Cancel asks first.
+          await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+          await page
+            .getByRole('dialog', { name: 'Discard your changes?' })
+            .getByRole('button', { name: 'Discard changes', exact: true })
+            .click()
+          await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
         } else {
           await page.getByText(/Granted permissions:.*additional\.permission/).waitFor()
-          await page
-            .getByRole('radio', { name: 'Use this sign-in as the shared account', exact: true })
-            .check()
+          await page.getByRole('radio', { name: 'Use this account', exact: true }).check()
           expect((await api.setups.getProviderSetup({ name: setupName })).authorized).toBe(true)
-          await page.getByRole('button', { name: 'Review changes', exact: true }).click()
+          // A new shared account replaces the old one, so Save asks first.
+          await page.getByRole('button', { name: 'Save', exact: true }).click()
           await page
-            .getByRole('checkbox', {
-              name: 'Replace the shared account authorization',
-              exact: true,
-            })
-            .check()
-          await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
+            .getByRole('dialog', { name: 'Save changes?' })
+            .getByRole('button', { name: 'Save', exact: true })
+            .click()
           await page.getByText('Not updated', { exact: true }).waitFor()
           expect((await api.setups.getProviderSetup({ name: setupName })).authorized).toBe(false)
         }
@@ -202,15 +210,8 @@ export async function sharedAccountAtomicity(context: TestContext) {
     await step('Change account settings without restoring the old authorization', async () => {
       await page.goto(`${providerPath}/settings`)
       await page.getByRole('button', { name: 'Change account setting', exact: true }).click()
-      await page.getByRole('radio', { name: 'Individual accounts', exact: true }).check()
-      await page.getByRole('button', { name: 'Review changes', exact: true }).click()
-      await page
-        .getByRole('checkbox', {
-          name: 'Remove existing shared account credentials',
-          exact: true,
-        })
-        .check()
-      await apply(page)
+      await page.getByRole('radio', { name: 'Use individual accounts', exact: true }).check()
+      await saveConfirmedSettingsChange(page)
       expect((await inspectAccount()).account).toBeUndefined()
       expect(
         (
@@ -221,26 +222,18 @@ export async function sharedAccountAtomicity(context: TestContext) {
           })
         ).account,
       ).toBeUndefined()
-      await openProviderSettings(page)
       await page.getByRole('button', { name: 'Change account setting', exact: true }).click()
-      await page.getByRole('radio', { name: 'One shared account', exact: true }).check()
-      await page.getByRole('button', { name: 'Next', exact: true }).click()
-      expect(
-        await page.getByRole('button', { name: 'Review changes', exact: true }).isDisabled(),
-      ).toBe(true)
-      await page.getByRole('button', { name: /^Sign in(?: with .+)?$/ }).click()
+      await page.getByRole('radio', { name: 'Connect an account', exact: true }).check()
+      // A new shared account is connected from a confirmation, as in Add provider.
+      expect(await page.getByRole('button', { name: 'Save', exact: true }).count()).toBe(0)
+      await page.getByRole('button', { name: 'Connect the shared account', exact: true }).click()
+      await page
+        .getByRole('dialog')
+        .getByRole('button', { name: 'Sign in and share the account', exact: true })
+        .click()
       await approveConsent()
-      await page
-        .getByRole('radio', { name: 'Use this sign-in as the shared account', exact: true })
-        .check()
-      await page.getByRole('button', { name: 'Review changes', exact: true }).click()
-      await page
-        .getByRole('checkbox', {
-          name: 'Remove existing individual account credentials',
-          exact: true,
-        })
-        .check()
-      await apply(page)
+      await page.getByRole('radio', { name: 'Use this account', exact: true }).check()
+      await saveConfirmedSettingsChange(page)
       const changed = await api.providers.getProvider({ name: provider.name })
       expect(changed.name).toBe(provider.name)
       expect(changed.namespace).toBe(provider.namespace)

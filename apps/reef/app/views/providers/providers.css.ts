@@ -118,6 +118,16 @@ export const list = style({
   padding: 0,
 })
 
+export const removalDetails = style({ display: 'flex', flexDirection: 'column', gap: 8 })
+export const bulletList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  margin: 0,
+  paddingLeft: 20,
+  listStyle: 'disc',
+})
+
 export const longValue = style({ overflowWrap: 'anywhere' })
 
 export const emptyProviders = style({ display: 'flex', height: '100%' })
@@ -510,6 +520,12 @@ export const emptyActions = style({
 export const operationsScroll = style({ padding: 4 })
 // An empty panel keeps roughly the height it will have once it holds rows, and
 // centres its message in that room rather than resting on the search bar.
+export const operationsSkeleton = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 14,
+  padding: 16,
+})
 export const operationsEmpty = style({
   alignItems: 'center',
   display: 'flex',
@@ -544,18 +560,11 @@ export const settingsUrlRow = style({
 })
 export const settingsUrlText = style({ flex: '0 1 auto', minWidth: 0, ...utils.boxClamp(1) })
 // One action under the facts: what it does, then its button.
-export const settingsSourceAction = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-  margin: 0,
-  minWidth: 0,
-})
 export const settingsSourceActions = style({
   borderTop: `1px solid ${theme.stroke.secondary}`,
   display: 'flex',
-  flexDirection: 'column',
-  gap: 16,
+  flexWrap: 'wrap',
+  gap: 8,
   paddingTop: 16,
 })
 

@@ -37,9 +37,9 @@ test('Secret entry with one shared account, then each person’s own account', a
       })
       await waitForProviderStatus(page, { path: ledgerPath }, 'Ready', { available: 1, total: 1 })
       await openProviderSettings(page)
-      await page.getByText('All callers use one shared account.', { exact: true }).waitFor()
+      await page.getByText('People and agents use this shared account.', { exact: true }).waitFor()
       await page
-        .getByRole('region', { name: 'Shared account', exact: true })
+        .getByRole('region', { name: 'One shared account', exact: true })
         .getByText('Connected', { exact: true })
         .waitFor()
     })
@@ -69,7 +69,12 @@ test('Secret entry with one shared account, then each person’s own account', a
         .getByText('coral.providers.ledger_theirs.listEntries', { exact: true })
         .waitFor()
       await page.goto(`${theirs.path}/settings`)
-      await page.getByText('Each caller uses their own account.', { exact: true }).waitFor()
+      await page
+        .getByText(
+          'Each person connects their own account. Workspace owners connect accounts for agents.',
+          { exact: true },
+        )
+        .waitFor()
     })
     await step('The secret appears in no response', async () => {
       expect((await page.content()).includes(secret)).toBe(false)
@@ -81,7 +86,8 @@ test('Secret entry with one shared account, then each person’s own account', a
       // The confirmation names the namespace it releases.
       await page
         .getByRole('dialog')
-        .getByText('its namespace coral.providers.ledger,', { exact: false })
+        .getByRole('listitem')
+        .filter({ hasText: 'The namespace coral.providers.ledger' })
         .waitFor()
       await page
         .getByRole('dialog')
@@ -92,7 +98,12 @@ test('Secret entry with one shared account, then each person’s own account', a
       await expect.poll(() => rail.getByRole('link', { name: / settings$/ }).count()).toBe(1)
       // The provider left is the one where each caller uses their own account.
       await openProviderSettings(page)
-      await page.getByText('Each caller uses their own account.', { exact: true }).waitFor()
+      await page
+        .getByText(
+          'Each person connects their own account. Workspace owners connect accounts for agents.',
+          { exact: true },
+        )
+        .waitFor()
     })
   })
 })

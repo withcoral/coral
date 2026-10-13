@@ -60,6 +60,23 @@ export interface SettingsAsideProps {
   children: ReactNode
 }
 
+export interface SettingsWideColumnsProps {
+  /** Content as wide as the page allows, such as a long list. */
+  children: ReactNode
+  /** The settings aside, at the width it has on a settings page. */
+  aside: ReactNode
+}
+
+/** A wide main column with a settings aside beside it; narrow screens stack them. */
+export function SettingsWideColumns({ children, aside }: SettingsWideColumnsProps) {
+  return (
+    <div className={styles.wideColumns}>
+      <div className={styles.wideMain}>{children}</div>
+      {aside}
+    </div>
+  )
+}
+
 /** The panel beside a settings page's cards: what the resource is, at a glance. */
 export function SettingsAside({ title, children }: SettingsAsideProps) {
   return (

@@ -433,3 +433,33 @@ async fn explicit_shared_replacement_publishes_configuration_and_account_togethe
             .authorized
     );
 }
+
+// Catches: Edit configuration's Cancel failing, because a canceled Update that
+// never confirmed its saved values had no preview to inspect.
+#[tokio::test]
+async fn an_update_canceled_before_confirmation_stays_inspectable() {
+    let h = harness().await;
+    let (actor, workspace) = workspace_owner(&h, "cancel-update-owner").await;
+    let context = change_context(actor.clone(), 10, '2');
+    let provider = shared(&h, &context, workspace.id()).await;
+    let candidate = h
+        .providers
+        .prepare_setup(
+            &context,
+            workspace.id(),
+            ProviderSetupSource::Current,
+            Some(provider.id()),
+        )
+        .await
+        .unwrap();
+    h.accounts
+        .cancel_setup(&context, workspace.id(), candidate.id())
+        .await
+        .unwrap();
+    let inspected = h
+        .providers
+        .inspect_setup(&actor, workspace.id(), candidate.id(), 11)
+        .await
+        .unwrap();
+    assert_eq!(inspected.setup.state(), ProviderSetupState::Canceled);
+}

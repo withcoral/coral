@@ -96,4 +96,36 @@ describe('reviewOperationNodes', () => {
     const nodes = reviewOperationNodes(setupWith([operation('logs.list', 'logs')]))
     expect(nodes[0].children?.[0].detail).toBe('Does logs.list')
   })
+
+  // Catches: a refresh hiding what it adds or drops, a new operation that
+  // cannot run listed as runnable, or a first read showing everything as new.
+  it.each([
+    ['without live operations', undefined, ['group:unavailable', 'group:logs']],
+    [
+      'with live operations',
+      [
+        { relativePath: 'logs.list', summary: 'Does logs.list' },
+        { relativePath: 'logs.purge', summary: 'Does logs.purge' },
+      ],
+      ['group:unavailable', 'group:new', 'group:removed', 'group:logs'],
+    ],
+  ])('groups what a refresh changes %s', (_case, previous, groups) => {
+    const nodes = reviewOperationNodes(
+      setupWith([
+        operation('logs.list', 'logs'),
+        operation('logs.tail', 'logs'),
+        operation('logs.send', 'logs', { available: false, reasons: ['No server matched.'] }),
+      ]),
+      previous,
+    )
+    expect(nodes.map((node) => node.id)).toEqual(groups)
+    const children = (id: string) =>
+      nodes.find((node) => node.id === id)?.children?.map((child) => child.id)
+    // A new operation that cannot run stays under Cannot run, not New.
+    expect(children('group:unavailable')).toEqual(['logs.send'])
+    if (!previous) return
+    expect(children('group:new')).toEqual(['logs.tail'])
+    expect(children('group:removed')).toEqual(['removed:logs.purge'])
+    expect(children('group:logs')).toEqual(['logs.list'])
+  })
 })

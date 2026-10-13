@@ -187,9 +187,9 @@ test('Authenticated update rejects loopback MCP discovery and preserves the exis
       const drawer = await openOperation(page, 'hello')
       await drawer.getByText('coral.providers.existing.hello', { exact: true }).waitFor()
       await page.goto(`${providerPath}/settings`)
-      await page.getByText('All callers use one shared account.', { exact: true }).waitFor()
+      await page.getByText('People and agents use this shared account.', { exact: true }).waitFor()
       await page
-        .getByRole('region', { name: 'Shared account', exact: true })
+        .getByRole('region', { name: 'One shared account', exact: true })
         .getByText('Connected', { exact: true })
         .waitFor()
     })

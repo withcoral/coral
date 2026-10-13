@@ -146,12 +146,13 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
           await page.goto(`${providerPath}/update`)
           await chooseFile(page, 'weather-updated.json', document('Updated weather'))
           await page.getByRole('button', { name: 'Read', exact: true }).click()
-          await page.getByText('Forecasts · unchanged', { exact: true }).waitFor()
+          await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
           expect(
             await page.getByRole('textbox', { name: 'Display name', exact: true }).count(),
           ).toBe(0)
-          await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
-          await page.waitForURL((url) => url.pathname === providerPath)
+          await page.getByRole('button', { name: 'Save', exact: true }).click()
+          await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+          await page.getByRole('heading', { level: 2, name: 'Forecasts', exact: true }).waitFor()
           const updated = await api.providers.getProvider({ name: providerName })
           expect(updated.displayName).toBe('Forecasts')
           expect(updated.namespace).toBe('weather')

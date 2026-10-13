@@ -10,7 +10,7 @@ import {
   operationCount,
 } from './configuration-details'
 import { reviewOperationNodes } from './tree-model'
-import type { SetupView } from './types'
+import type { LiveOperationView, SetupView } from './types'
 import * as styles from './providers.css'
 
 /** Every group node, so the list opens closed and one control can open it all. */
@@ -27,11 +27,26 @@ function groupIds(nodes: readonly TreeNode[]) {
  * signed into shows why in place of the rows, in the frame the rows will fill,
  * so the step does not change shape when they arrive.
  */
-function OperationsBrowser({ setup, empty }: { setup: SetupView; empty?: ReactNode }) {
-  const nodes = useMemo(() => reviewOperationNodes(setup), [setup])
+export function OperationsBrowser({
+  setup,
+  previous,
+  empty,
+}: {
+  /** Absent before a source is read; `empty` then fills the panel. */
+  setup?: SetupView
+  previous?: readonly LiveOperationView[]
+  empty?: ReactNode
+}) {
+  const nodes = useMemo(
+    () => (setup ? reviewOperationNodes(setup, previous) : []),
+    [setup, previous],
+  )
   const groups = useMemo(() => groupIds(nodes), [nodes])
   const [query, setQuery] = useState('')
-  const [collapsed, setCollapsed] = useState<readonly string[]>(groups)
+  // New and Removed open at the start: they are what a refresh changes.
+  const [collapsed, setCollapsed] = useState<readonly string[]>(() =>
+    groups.filter((id) => id !== 'group:new' && id !== 'group:removed'),
+  )
   const search = query.trim().toLowerCase()
   const shown = useMemo(() => filterNodes(nodes, search), [nodes, search])
   const open = search ? [] : collapsed
@@ -126,9 +141,12 @@ export function OperationsSummary({
  */
 export function OperationsSection({
   setup,
+  previous,
   discovery,
 }: {
   setup: SetupView
+  /** The live provider's operations, so a refresh can group what changes. */
+  previous?: readonly LiveOperationView[]
   /** Shown inside the panel when Coral cannot read the list yet. */
   discovery?: ReactNode
 }) {
@@ -150,7 +168,7 @@ export function OperationsSection({
       {discovery ? (
         <OperationsBrowser setup={setup} empty={discovery} />
       ) : browsable ? (
-        <OperationsBrowser setup={setup} />
+        <OperationsBrowser setup={setup} previous={previous} />
       ) : (
         destinations.size > 0 && (
           <>

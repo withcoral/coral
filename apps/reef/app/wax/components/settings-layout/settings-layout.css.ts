@@ -40,6 +40,17 @@ export const columns = style({
   rowGap: 32,
   '@media': { '(max-width: 1040px)': { gridTemplateColumns: 'minmax(0, 480px)' } },
 })
+// A wide list beside the same aside: the main column takes the free width.
+export const wideColumns = style({
+  alignItems: 'start',
+  display: 'grid',
+  columnGap: 32,
+  gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 320px)',
+  minWidth: 0,
+  rowGap: 24,
+  '@media': { '(max-width: 1040px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
+})
+export const wideMain = style({ minWidth: 0 })
 export const main = style({
   display: 'flex',
   flexDirection: 'column',
