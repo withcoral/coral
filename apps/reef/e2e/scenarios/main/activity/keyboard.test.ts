@@ -2,7 +2,12 @@ import { expect, test } from 'vitest'
 import type { Locator, Page } from 'playwright'
 import { withOwnerSession } from '../../../support/actors.ts'
 import { managementClients } from '../../../support/management.ts'
-import { createWorkspace, observeRun, programRunner } from '../../../support/providers.ts'
+import {
+  breadcrumb,
+  createWorkspace,
+  observeRun,
+  programRunner,
+} from '../../../support/providers.ts'
 
 // Traversal order, gaps, expansion rules, key ownership, the draft guard, and
 // live cursor identity are keyboard.test.tsx cases. This scenario keeps what
@@ -193,15 +198,19 @@ test('A first key press on Activity still expands, right after the sidebar opens
       await page.goto(`/workspaces/${workspace}`)
       // Hydration first: a click that lands before it opens nothing.
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-      await page
-        .getByRole('navigation', { name: 'Coral', exact: true })
-        .getByRole('link', {
-          name: /^Activity(\. \d+ pending actions?|\. Pending actions unavailable)?$/,
-        })
-        .click()
+      const tab = page.getByRole('navigation', { name: 'Coral', exact: true }).getByRole('link', {
+        name: /^Activity(\. \d+ pending actions?|\. Pending actions unavailable)?$/,
+      })
+      await tab.click()
+      // The Workspace page's Activity glimpse shows the same Task in a table of
+      // the same name, so wait for the Activity route itself before the keys.
+      await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/activity`)
+      await breadcrumb(page, 'Activity').waitFor()
       await table.getByRole('link', { name: intent, exact: true }).waitFor()
       // The sidebar tab click opened a plain list: no selection, expansion, or anchor.
       expect(new URL(page.url()).search).toBe('')
+      // The click left the tab focused, which is what the first key must get past.
+      expect(await tab.evaluate((link) => link === document.activeElement)).toBe(true)
     })
     await step('↓ then Space work on the very first press, with nothing else clicked', async () => {
       const before = await table.getByRole('row').count()

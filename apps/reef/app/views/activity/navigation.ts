@@ -39,6 +39,15 @@ export function revealHref(row: ActivityRow, options: { select?: boolean; reques
   return `${path}?${next}`
 }
 
+/**
+ * The record an open detail shows. A Run's final value shows its Run's detail, so
+ * the loader selects the Run; only the URL still names the final value's row.
+ */
+export function shownRecord(selected: string | null, search: string | URLSearchParams) {
+  const record = new URLSearchParams(search).get('record')
+  return selected && record === `${selected}/final` ? record : selected
+}
+
 /** Pin server-resolved review identity and its exact child window without another read. */
 export function activitySelection(page: ActivityPage, search: string): URLSearchParams {
   const query = new URLSearchParams(search)

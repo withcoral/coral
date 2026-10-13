@@ -731,6 +731,53 @@ it('loads older records through the Activity loader, keeps them on a failure, an
   }
 })
 
+// Catches: opening a Run's final value scrolling the table up to the Run's heading,
+// because the loader selects the Run for a final value's detail.
+it('reveals the final value the URL names, not the Run its detail selects', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => new Promise(() => {})),
+  )
+  const final = `${listed(1).name}/final`
+  const latest = createRef<ReturnType<typeof useActivityReader>>()
+  function RevealReader() {
+    const value = useActivityReader(useLoaderData<ActivityPage>())
+    useLayoutEffect(() => {
+      latest.current = value
+    })
+    return null
+  }
+  const router = createMemoryRouter(
+    [
+      {
+        path: '/activity',
+        element: <RevealReader />,
+        loader: ({ request }) => ({
+          ...page,
+          rows: [listed(1), listed(2)],
+          selected:
+            new URL(request.url).searchParams.get('record')?.replace(/\/final$/, '') ?? null,
+        }),
+      },
+    ],
+    { initialEntries: ['/activity?tree=1'] },
+  )
+  const container = document.body.appendChild(document.createElement('div'))
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(<RouterProvider router={router} />))
+    await act(async () => {
+      await router.navigate(latest.current!.navigation.recordHref(final))
+    })
+    expect(latest.current!.page.selected).toBe(listed(1).name)
+    expect(latest.current!.revealRecord).toBe(final)
+  } finally {
+    await act(async () => root.unmount())
+    router.dispose()
+    container.remove()
+  }
+})
+
 // Catches: a page the previous list still loads blocking the next list's first load,
 // as when you open another workspace's Activity while a page loads.
 it('loads a page for a new list while the previous list still loads one', async () => {

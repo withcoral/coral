@@ -52,6 +52,21 @@ const tool = (parent: string, id: string, position?: number): ActivityRow & { ki
   position,
 })
 
+const output = (parent: string, position: number, label: string, name?: string) =>
+  ({
+    kind: 'output',
+    name: name ?? `${parent}/events/${position + 2}`,
+    workspace,
+    run: parent,
+    label,
+    startedAt,
+    eventKind: 'program.emitted',
+    agent: '',
+    position,
+  }) satisfies ActivityRow
+/** A Run's final value: the loader names it apart from its `run.ended` Event. */
+const final = (parent: string) => output(parent, 1, 'final value', `${parent}/final`)
+
 type Records = Partial<ActivityPage> & {
   rows: ActivityRow[]
   /** A selected record's detail; a Task's detail is its own. */
@@ -77,7 +92,8 @@ function renderActivity({
     const { rows, branches = {}, details = {}, ...rest } = records
     const query = new URLSearchParams(location.search)
     const expanded = query.getAll('expand')
-    const selected = query.get('record')
+    // A final value's detail is its Run's, so the loader selects the Run.
+    const selected = query.get('record')?.replace(/\/final$/, '') ?? null
     const all = [...rows, ...Object.values(branches).flatMap((branch) => branch.rows)]
     const selectedRow = all.find((row) => row.name === selected) ?? rest.selectedRow ?? null
     const page = activityPage({
@@ -468,6 +484,64 @@ it('Escape closes the detail and leaves the cursor on the last record it showed'
   expect(screen.getByRole('table', { name: 'Activity records' })).toHaveFocus()
   await user.keyboard('{ArrowUp}')
   expect(cursor()).toBe('Task a')
+})
+
+/** Task a holds Runs one and two, each ending in its final value; Task b follows. */
+function finalValues() {
+  const a = task('a')
+  const [one, two] = [run(a.name, 'one', 0), run(a.name, 'two', 1)]
+  const rendered = renderActivity({
+    rows: [a, task('b')],
+    entry: `${expand(a.name, one.name, two.name)}&record=${final(two.name).name}`,
+    branches: {
+      [a.name]: branch([one, two]),
+      [one.name]: branch([output(one.name, 0, 'emission one'), final(one.name)]),
+      [two.name]: branch([output(two.name, 0, 'emission two'), final(two.name)]),
+    },
+  })
+  return { ...rendered, two }
+}
+
+// Catches: a final value's detail stepping from its Run's heading, because the
+// loader selects the Run for it: ↓ wrapped to the Run's first record and ↑
+// skipped the Run's own records.
+it.each<[string, string, (two: string) => string]>([
+  ['↓ goes to the record after the Run', '{ArrowDown}', () => task('b').name],
+  ['↑ goes to the Run’s previous record', '{ArrowUp}', (two) => `${two}/events/2`],
+])('from a Run’s final value, %s', async (_, key, expected) => {
+  const { user, router, two } = finalValues()
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  await user.keyboard(key)
+  expect(recordIn(router)).toBe(expected(two.name))
+})
+
+// Catches: a cursor that Escape leaves on the Run heading rather than on its final value.
+it('Escape from a Run’s final value leaves the cursor on the final value', async () => {
+  const { user, router } = finalValues()
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  await user.keyboard('{Escape}')
+  await vi.waitFor(() => expect(recordIn(router)).toBeNull())
+  await vi.waitFor(() => expect(cursor()).toBe('final value'))
+  await user.keyboard('{ArrowUp}')
+  expect(cursor()).toBe('emission two')
+})
+
+// Catches: a cursor that follows the newly shown record but is then cleared in the
+// same render, because the record it left also left the loaded window.
+it('the cursor follows the detail even when the record it left leaves the table', async () => {
+  const a = task('a')
+  const b = task('b')
+  const { router, user } = renderActivity({
+    rows: [a, b],
+    entry: `${expand(a.name)}&record=${tool(a.name, '0').name}`,
+    branches: { [a.name]: branch([tool(a.name, '0', 0)]) },
+  })
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  // One navigation shows Task b and drops Task a's loaded children.
+  await act(() => router.navigate(`/activity?record=${b.name}`, { replace: true }))
+  await user.keyboard('{Escape}')
+  await vi.waitFor(() => expect(recordIn(router)).toBeNull())
+  await vi.waitFor(() => expect(cursor()).toBe('Task b'))
 })
 
 // The approval review's unsent comment guards stepping to another record.

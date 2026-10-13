@@ -6,6 +6,7 @@ import {
   activitySelection,
   branchCoordinate,
   selectionKeys,
+  shownRecord,
 } from '@/views/activity/navigation'
 import type { ActivityPage } from '@/views/activity/types'
 import { readingWindow, type ActivityViewport } from './activity-live-types'
@@ -412,10 +413,11 @@ export function useActivityReader(initial: ActivityPage) {
   )?.[1]
   // A new list reveals what its URL names. Inside a list, a new selection is revealed
   // only when it is off screen: the table does not move a record that is in view.
+  const shown = shownRecord(initial.selected, query)
   const revealRecord = state.joined
-    ? (initial.selected ?? undefined)
-    : initial.selected && (Object.keys(initial.anchors ?? {}).length || query.has('anchor'))
-      ? initial.selected
+    ? (shown ?? undefined)
+    : shown && (Object.keys(initial.anchors ?? {}).length || query.has('anchor'))
+      ? shown
       : (initialAnchor ??
         initialOffset?.rows.find((row) => row.position === initialOffset.offset)?.name)
   return {

@@ -33,6 +33,7 @@ import {
   type ActivityStop,
   revealHref,
   selectionKeys,
+  shownRecord,
   stepStop,
   useActivityNavigation,
 } from './navigation'
@@ -450,14 +451,16 @@ export function Activity({
   // A glimpse has no keyboard cursor; the full list's table owns the keys.
   const stops = useMemo(() => (glimpse ? [] : activityStops(page, roots)), [glimpse, page, roots])
   const [cursor, setCursor] = useState<string | null>(null)
+  const shown = shownRecord(page.selected, search)
   // The cursor follows the open detail, so it rests on the last record the detail showed.
   const [followedSelection, setFollowedSelection] = useState<string | null>(null)
-  if (followedSelection !== page.selected) {
-    setFollowedSelection(page.selected)
-    if (page.selected) setCursor(stopOf(stops, page.selected)?.identity ?? null)
+  if (followedSelection !== shown) {
+    setFollowedSelection(shown)
+    if (shown) setCursor(stopOf(stops, shown)?.identity ?? null)
   }
   // A record that leaves the table takes the cursor with it: no neighbour inherits it.
-  if (cursor !== null && !stops.some((stop) => stop.identity === cursor)) setCursor(null)
+  // A cursor that just followed the detail comes from these stops, so it stays.
+  else if (cursor !== null && !stops.some((stop) => stop.identity === cursor)) setCursor(null)
   const [cursorStore] = useState(() => new CursorStore())
   useLayoutEffect(() => cursorStore.set(cursor), [cursorStore, cursor])
   // Rows navigate with the reader's latest position, read when the click happens.
@@ -540,10 +543,10 @@ export function Activity({
     const dialog = (event.target as Element).closest('[role="dialog"], [role="alertdialog"]')
     if (dialog !== event.currentTarget) return
     if (!cursorKeyApplies(event.nativeEvent, { overControls: true, inDialog: true })) return
-    const shown = stopOf(stops, page.selected)
-    if (!shown) return
+    const shownStop = shown && stopOf(stops, shown)
+    if (!shownStop) return
     event.preventDefault()
-    const next = stepStop(stops, shown.identity, step)
+    const next = stepStop(stops, shownStop.identity, step)
     if (next)
       void navigate(nav.recordHref(next.row.name), { replace: true, preventScrollReset: true })
   }
@@ -756,7 +759,7 @@ export function Activity({
                 {page.unavailable ? (
                   <Typography.Body>This history is unavailable.</Typography.Body>
                 ) : (
-                  <div key={page.selected} ref={scrollToTop} className={styles.detail}>
+                  <div key={shown} ref={scrollToTop} className={styles.detail}>
                     <ActivityDetail page={page} />
                   </div>
                 )}
