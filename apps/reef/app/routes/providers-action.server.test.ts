@@ -171,5 +171,5 @@ it('updates the Coral provider it names with its etag and reviewed catalog', asy
     etag: 'coral-etag',
     catalog: 'coral-admin-catalog:reviewed',
   })
-  expect(result.data).toMatchObject({ error: null, message: 'Coral is updated.' })
+  expect(result.data).toMatchObject({ error: null, message: 'Coral provider updated.' })
 })

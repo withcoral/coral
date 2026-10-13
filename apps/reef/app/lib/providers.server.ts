@@ -42,7 +42,14 @@ export async function builtinCatalogUpdate(
   api: ManagementApi,
   name: string,
 ): Promise<BuiltinUpdateView | null> {
-  const update = await api.providers.getBuiltinCatalogUpdate({ name })
+  let update
+  try {
+    update = await api.providers.getBuiltinCatalogUpdate({ name })
+  } catch (error) {
+    // An older Coral reports Unimplemented; it offers no update to review.
+    if (error instanceof ConnectError && error.code === Code.Unimplemented) return null
+    throw error
+  }
   if (!update.available) return null
   return {
     catalog: update.catalog,
@@ -359,7 +366,7 @@ const reasons: Record<string, string> = {
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
   BUILTIN_PROVIDER_MANAGED: 'Ask your Coral administrator to make this change.',
   BUILTIN_CATALOG_MISMATCH:
-    'This update changed. Reload the page. Review the update before you try again.',
+    'This update is out of date. Reload the page. Review the update before you try again.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',
   SETUP_CONSUMED: 'This attempt is complete. Start over to try again.',

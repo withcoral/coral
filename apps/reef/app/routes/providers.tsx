@@ -139,7 +139,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
           catalog: field(form, 'catalog'),
         })
         return data(
-          { error: null, credential: null, message: 'Coral is updated.' },
+          { error: null, credential: null, message: 'Coral provider updated.' },
           { headers: privateHeaders },
         )
       }
