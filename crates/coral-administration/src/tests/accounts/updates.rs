@@ -160,6 +160,7 @@ async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.db.database(),
         f.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let connected = connected_account(&f, &providers, initially_shared).await;
     let pending = f
@@ -292,6 +293,7 @@ async fn publication_before_offboarding_preserves_shared_accounts_but_retires_ca
                     .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
                 f.db.database(),
                 f.workspaces.clone(),
+                coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
             );
             connected_account(&f, &providers, initially_shared).await;
             let update = candidate(&f, &providers, shared, "candidate-secret").await;

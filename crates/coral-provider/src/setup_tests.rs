@@ -150,6 +150,7 @@ async fn configuration_confirmation_pins_input_and_invalid_edits_preserve_author
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         harness.database.clone(),
         harness.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let reloaded = restarted
         .review_setup_configuration(&actor, &owner, setup.id())
@@ -2471,6 +2472,7 @@ async fn public_setup_refuses_local_source_and_mcp_urls_before_sending() {
         DestinationPolicy::default(),
         h.providers.database.clone(),
         h.providers.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = change_context(actor, 2, '2');
     let owner = workspace.id().clone();
@@ -2506,6 +2508,7 @@ async fn public_configuration_preview_reports_a_loopback_destination() {
         DestinationPolicy::default(),
         h.providers.database.clone(),
         h.providers.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let review = providers
         .review_setup_configuration(&actor, &workspace.id().clone(), setup.id())

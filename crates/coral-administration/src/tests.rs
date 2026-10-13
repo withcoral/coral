@@ -1,5 +1,6 @@
 mod accounts;
 mod agents;
+mod builtin_catalog;
 mod owner_transfer;
 mod providers;
 mod provisional;
@@ -903,6 +904,7 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let published = providers
         .publish_openapi_fixture(

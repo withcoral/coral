@@ -38,9 +38,11 @@ impl BuiltinCall {
     ) -> Option<Result<Self, Rejection>> {
         match target.operation().execution_binding() {
             ExecutionBinding::Builtin(binding) => Some(match binding.operation() {
-                BuiltinOperation::CreateProvider => {
+                Some(BuiltinOperation::CreateProvider) => {
                     CreateProvider::parse(arguments).map(Self::CreateProvider)
                 }
+                // A newer Coral published an Operation this version does not perform.
+                None => Err(CoralFailure::OperationUnavailable.into()),
             }),
             ExecutionBinding::Http(_) | ExecutionBinding::Mcp(_) => None,
         }

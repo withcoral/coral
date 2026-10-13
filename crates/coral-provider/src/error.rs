@@ -97,6 +97,9 @@ pub enum Error {
     /// Coral defines and manages the Built-in Provider; an Owner cannot change it.
     #[error("Coral manages the Built-in Provider")]
     BuiltinProviderManaged,
+    /// Only the Built-in Provider takes the catalog Coral serves.
+    #[error("only the Built-in Provider takes Coral's catalog")]
+    NotBuiltinProvider,
     /// The Provider version cannot advance further.
     #[error("Provider version overflowed")]
     ProviderAccountSettingVersionOverflow,

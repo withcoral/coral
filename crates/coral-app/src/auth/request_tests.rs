@@ -310,6 +310,10 @@ struct Fixture {
     server: coral_mcp::RunningMcpHttpServer,
 }
 impl Fixture {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixture wires every Module that the HTTP contract reaches"
+    )]
     async fn new() -> Self {
         let fixture =
             coral_test_support::TestDatabase::new(&coral_test_support::combined_migrator(&[
@@ -364,7 +368,12 @@ impl Fixture {
             loopback_policy(),
             database.clone(),
             workspaces.clone(),
-            ProviderModule::new(loopback_policy(), database.clone(), workspaces.clone()),
+            ProviderModule::new(
+                loopback_policy(),
+                database.clone(),
+                workspaces.clone(),
+                coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
+            ),
             coral_run::IsolateLimits::default(),
         )
         .unwrap();

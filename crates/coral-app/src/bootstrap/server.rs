@@ -649,8 +649,14 @@ pub(crate) async fn start_server(
     let readiness = EngineReadiness::from_database(Arc::clone(&database));
     let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
     let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
-    let providers =
-        coral_provider::ProviderModule::new(policy, database.clone(), workspaces.clone());
+    let builtin_catalog = coral_catalog::BuiltinCatalog::running()
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let providers = coral_provider::ProviderModule::new(
+        policy,
+        database.clone(),
+        workspaces.clone(),
+        builtin_catalog,
+    );
     let accounts = vault.map(|vault| {
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
             .with_client_bootstrap_policy(client_bootstrap_policy);

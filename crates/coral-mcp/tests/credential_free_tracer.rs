@@ -253,6 +253,7 @@ impl Tracer {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             db.clone(),
             workspaces.clone(),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let policies = OperationPolicyModule::new(db.clone(), workspaces.clone());
         let saved_functions = SavedFunctionModule::new(

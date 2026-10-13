@@ -35,6 +35,7 @@ async fn rejected_regeneration(change: InterveningChange) {
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let fixture = WorkspaceRegenerationFixture::new(
         &workspaces,
@@ -284,6 +285,7 @@ async fn competing_regeneration_requests_consume_one_setup_once() {
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let fixture = WorkspaceRegenerationFixture::new(
         &workspaces,

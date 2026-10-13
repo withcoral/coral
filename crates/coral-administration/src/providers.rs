@@ -1,4 +1,5 @@
-//! The Provider workflow owns the one transaction for publication, removal, and rename.
+//! The Provider workflow owns the one transaction for publication, removal,
+//! rename, and a Built-in Provider catalog update.
 //!
 //! Provider prepares a publication outside any transaction, then writes its
 //! terminal result in the transaction this workflow begins. The workflow commits
@@ -128,6 +129,36 @@ impl ProviderWorkflow {
         self.search
             .index_active_generation(workspace.clone(), id.clone());
         Ok(provider)
+    }
+
+    /// Updates the Workspace's Built-in Provider to the catalog this process
+    /// serves, as the acting Owner, then tells Universal Search.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of
+    /// [`ProviderModule::update_builtin_catalog_in_transaction`]. Failure
+    /// writes nothing.
+    pub async fn update_builtin_catalog(
+        &self,
+        context: &ChangeContext,
+        workspace: &WorkspaceId,
+        id: &ProviderId,
+    ) -> Result<(), Error> {
+        let mut transaction = self.database.begin().await?;
+        let activated = self
+            .providers
+            .update_builtin_catalog_in_transaction(&mut transaction, context, workspace, id)
+            .await?;
+        transaction.commit().await?;
+        if let Some(activated) = activated {
+            self.search
+                .index_active_generation(workspace.clone(), id.clone());
+            if let Some(replaced) = activated.replaced() {
+                self.search.remove_generation(replaced.clone());
+            }
+        }
+        Ok(())
     }
 
     async fn publish<T>(

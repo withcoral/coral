@@ -409,7 +409,7 @@ impl OperationRow {
                     ));
                 }
                 if binding.input_schema() != &input_schema
-                    || binding.operation().key() != key.as_str()
+                    || binding.operation_key() != key.as_str()
                 {
                     return Err(Error::CorruptData(
                         "built-in Operation binding disagrees with its index".to_string(),

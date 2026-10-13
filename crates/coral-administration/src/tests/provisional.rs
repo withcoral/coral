@@ -32,6 +32,7 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
                 .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let key = tempfile::tempdir().unwrap();
         let accounts = AccountModule::new(

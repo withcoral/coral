@@ -5055,6 +5055,7 @@ async fn consent_issuance_rechecks_dns_on_setup_reads_account_reads_and_request_
             coral_outbound::DestinationPolicy::default(),
             h.database.clone(),
             h.workspaces.clone(),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         h.providers.consent =
             crate::account::consent::Issuer::with_resolver(Arc::new(ChangingDns(public.clone())));

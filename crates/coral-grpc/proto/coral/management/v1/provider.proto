@@ -55,6 +55,12 @@ service ProviderService {
   rpc DeleteProvider(DeleteProviderRequest) returns (google.protobuf.Empty);
   // Lists current catalog metadata, including unavailable Operations.
   rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+  // Compares the Built-in Provider's catalog with the one the serving Coral
+  // defines. Requires Owner authority.
+  rpc GetBuiltinCatalogUpdate(GetBuiltinCatalogUpdateRequest) returns (BuiltinCatalogUpdate);
+  // Updates the Built-in Provider to the catalog the serving Coral defines, as
+  // the calling Owner. The Provider keeps its state.
+  rpc UpdateBuiltinCatalog(UpdateBuiltinCatalogRequest) returns (Provider);
 }
 
 // Reversible lifecycle, separate from caller-specific readiness.
@@ -214,6 +220,32 @@ message ProviderOperation {
   string description = 8;
   // Declared effect hints; a declared read-only hint sets the policy default.
   OperationHints hints = 9;
+}
+
+// Names the Workspace's Built-in Provider.
+message GetBuiltinCatalogUpdateRequest {
+  // Canonical name of the Built-in Provider.
+  string name = 1;
+}
+
+// How the serving Coral's catalog differs from the Built-in Provider's.
+message BuiltinCatalogUpdate {
+  // Whether the catalogs differ, so an Owner can update.
+  bool available = 1;
+  // Operations the update adds.
+  repeated ProviderOperation added = 2;
+  // Operations the update removes.
+  repeated ProviderOperation removed = 3;
+  // Operations the update changes, as they will be.
+  repeated ProviderOperation changed = 4;
+}
+
+// Applies the serving Coral's catalog to the Built-in Provider.
+message UpdateBuiltinCatalogRequest {
+  // Canonical name of the Built-in Provider.
+  string name = 1;
+  // Required current Provider concurrency token.
+  string etag = 2;
 }
 
 // One page of administrative Operation metadata.

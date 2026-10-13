@@ -107,6 +107,7 @@ async fn deleting_an_agent_keeps_authorization_history_and_sibling_accounts() {
         coral_outbound::DestinationPolicy::default(),
         database,
         workspaces,
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     )
     .list_lifecycle_events(&owner, &scope)
     .await

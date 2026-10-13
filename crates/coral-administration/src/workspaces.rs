@@ -48,15 +48,13 @@ impl WorkspaceWorkflow {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`coral_provider::prepare_builtin_catalog`],
-    /// [`WorkspaceModule::create_in_transaction`] and
+    /// Returns the errors of [`WorkspaceModule::create_in_transaction`] and
     /// [`ProviderModule::install_builtin_in_transaction`]. Failure writes nothing.
     pub async fn create_workspace(
         &self,
         context: &ChangeContext,
         display_name: WorkspaceDisplayName,
     ) -> Result<Workspace, Error> {
-        let catalog = coral_provider::prepare_builtin_catalog()?;
         let mut transaction = self.database.begin().await?;
         let workspace = self
             .workspaces
@@ -64,7 +62,7 @@ impl WorkspaceWorkflow {
             .await?;
         let provider = self
             .providers
-            .install_builtin_in_transaction(&mut transaction, context, workspace.id(), catalog)
+            .install_builtin_in_transaction(&mut transaction, context, workspace.id())
             .await?;
         transaction.commit().await?;
         self.search

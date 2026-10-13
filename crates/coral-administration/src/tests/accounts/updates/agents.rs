@@ -86,6 +86,7 @@ async fn agent_update(shared: bool, removal_first: bool) {
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,
         f.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let update = candidate(&f, &providers, shared, "candidate-secret").await;
     let result = if removal_first {

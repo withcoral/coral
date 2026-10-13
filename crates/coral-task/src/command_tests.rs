@@ -86,7 +86,12 @@ impl Fixture {
             loopback,
             database.clone(),
             workspaces.clone(),
-            coral_provider::ProviderModule::new(loopback, database.clone(), workspaces.clone()),
+            coral_provider::ProviderModule::new(
+                loopback,
+                database.clone(),
+                workspaces.clone(),
+                coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
+            ),
             coral_run::IsolateLimits::default(),
         )
         .unwrap();
@@ -120,6 +125,7 @@ impl Fixture {
             coral_outbound::DestinationPolicy::default(),
             database.clone(),
             WorkspaceModule::new(database),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         )
         .publish_openapi_fixture(
             &ChangeContext::new(self.user.clone(), 15, coral_test_support::trace('2')),

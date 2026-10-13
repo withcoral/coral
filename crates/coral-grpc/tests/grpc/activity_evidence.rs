@@ -17,6 +17,7 @@ async fn historical_account_selection_verifies_the_original_run_reference() {
         coral_outbound::DestinationPolicy::default(),
         f.database.database(),
         f.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = super::super::change(&f.owner);
     let setup = providers.prepare_openapi_fixture(&context, f.workspace.id(), coral_catalog::OpenApiDocument::parse(&json!({
@@ -428,6 +429,7 @@ async fn invocation_wire_preserves_mcp_is_error_as_native_data_not_coral_failure
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.database.database(),
         f.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = super::super::change(&f.owner);
     let setup = providers.prepare_mcp_fixture(&context, f.workspace.id(), coral_catalog::McpDiscoverySnapshot::parse(&json!({
@@ -1051,6 +1053,7 @@ async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.database.database(),
         f.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = super::super::change(&f.owner);
     let setup = providers.prepare_openapi_fixture(&context, f.workspace.id(),

@@ -28,6 +28,7 @@ impl Fixture {
             coral_outbound::DestinationPolicy::default(),
             database.clone(),
             workspaces.clone(),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let index = SearchIndex::new(database.clone(), std::time::Duration::from_mins(5));
         let creator =

@@ -2,8 +2,9 @@
 //! Call Root's allow-list.
 //!
 //! Every path that changes an existing Provider names its change here. An
-//! Owner-added Provider permits every change. The Built-in Provider, which
-//! Coral manages, permits only disabling and restoring it, so a new kind of
+//! Owner-added Provider permits every change except a Coral catalog update.
+//! The Built-in Provider, which Coral manages, permits only disabling and
+//! restoring it and updating it to the catalog Coral serves, so a new kind of
 //! change is denied for it until someone allows it below. Its Operations'
 //! policy belongs to `coral-policy` and stays open.
 use coral_db::Transaction;
@@ -27,6 +28,8 @@ pub(crate) enum ProviderChange {
     AuthorizeAccount,
     /// Disable or restore the Provider.
     SetState,
+    /// Update the Built-in Provider to the catalog Coral serves.
+    UpdateBuiltinCatalog,
     /// Remove the Provider.
     Delete,
 }
@@ -36,17 +39,17 @@ impl ProviderChange {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::BuiltinProviderManaged`] when the Call Root does not
-    /// permit this change.
+    /// Returns [`Error::BuiltinProviderManaged`] when the Built-in Provider
+    /// does not permit this change, or [`Error::NotBuiltinProvider`] for a
+    /// Coral catalog update of another Provider.
     pub(crate) fn permit(self, call_root: &ProviderCallRoot) -> Result<(), Error> {
-        let permitted = match call_root {
-            ProviderCallRoot::Owner(_) => true,
-            ProviderCallRoot::Builtin => matches!(self, Self::SetState),
-        };
-        if permitted {
-            Ok(())
-        } else {
-            Err(Error::BuiltinProviderManaged)
+        match (call_root, self) {
+            (ProviderCallRoot::Owner(_), Self::UpdateBuiltinCatalog) => {
+                Err(Error::NotBuiltinProvider)
+            }
+            (ProviderCallRoot::Owner(_), _)
+            | (ProviderCallRoot::Builtin, Self::SetState | Self::UpdateBuiltinCatalog) => Ok(()),
+            (ProviderCallRoot::Builtin, _) => Err(Error::BuiltinProviderManaged),
         }
     }
 }

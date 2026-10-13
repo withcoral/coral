@@ -54,6 +54,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
             coral_outbound::DestinationPolicy::default(),
             database.clone(),
             workspaces.clone(),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         ),
         IsolateLimits::default(),
     )

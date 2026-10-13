@@ -9,6 +9,7 @@ import {
 } from '@/lib/management.server'
 import type { ManagementApi } from '@/lib/management.server'
 import {
+  builtinCatalogUpdate,
   providerName,
   providerView,
   listAllProviders,
@@ -59,6 +60,12 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const providers = await Promise.all(
       listed.map((provider) => providerView(api, provider, w.path, personalAccounts)),
     )
+    // Only an owner can update Coral, so only an owner reads its update.
+    const builtin = providers.find((provider) => provider.builtin)
+    const builtinUpdate =
+      builtin && w.effectiveRole === 'owner'
+        ? await builtinCatalogUpdate(api, providerName(w.name, builtin.id))
+        : null
     const selectedProvider = params.provider ? uuidOr404(params.provider) : null
     if (selectedProvider && !providers.some((i) => i.id === selectedProvider))
       throw new Response('Not found', { status: 404, headers: privateHeaders })
@@ -74,6 +81,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       {
         workspace: w,
         providers,
+        builtinUpdate,
         recipes: RECIPE_CHOICES,
         selectedProvider,
         selectedOperation,
@@ -121,6 +129,16 @@ export async function action({ request, context, params }: Route.ActionArgs) {
                 ? 'Provider disabled. Coral blocks unsent operation calls. Calls already sent can finish.'
                 : 'Provider enabled. Other access restrictions still apply.',
           },
+          { headers: privateHeaders },
+        )
+      }
+      case 'updateBuiltinCatalog': {
+        await api.providers.updateBuiltinCatalog({
+          name: providerName(w.name, field(form, 'provider')),
+          etag: field(form, 'etag'),
+        })
+        return data(
+          { error: null, credential: null, message: 'Coral is updated.' },
           { headers: privateHeaders },
         )
       }
@@ -186,6 +204,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       disableProvider: 'Coral could not disable the provider. ',
       enableProvider: 'Coral could not enable the provider. ',
       removeProvider: 'Coral could not remove the provider. ',
+      updateBuiltinCatalog: 'Coral could not update the Coral provider. ',
       policy: 'Coral could not save operation policy. ',
     }
     return providerFailure(error, failures[intent])

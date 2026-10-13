@@ -19,6 +19,7 @@ pub(super) async fn prepare_accounts(
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,
         workspaces,
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let provider = providers
         .publish_openapi_fixture(
@@ -266,6 +267,7 @@ async fn shared_account_survives_its_provisioner_but_pending_replacement_is_canc
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.db.database(),
         f.workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = change(&f.member);
     let setup = providers

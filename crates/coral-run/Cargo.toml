@@ -35,6 +35,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
+coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 axum = { workspace = true, features = ["http1", "tokio"] }
 coral-credentials.workspace = true

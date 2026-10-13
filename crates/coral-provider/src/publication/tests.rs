@@ -730,6 +730,7 @@ async fn regeneration_materialization_holds_no_transaction_and_preserves_indepen
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let fixture = WorkspaceRegenerationFixture::new(
         &workspaces,
@@ -821,6 +822,7 @@ async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let fixture = WorkspaceRegenerationFixture::new(
         &workspaces,
@@ -913,6 +915,7 @@ async fn regeneration_request_id_reuse_returns_conflict_without_changing_state()
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let fixture = WorkspaceRegenerationFixture::new(
         &workspaces,
@@ -1014,6 +1017,7 @@ async fn exact_regeneration_crossing_terminal_commit_replays_the_committed_resul
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let fixture = WorkspaceRegenerationFixture::new(
         &workspaces,
@@ -1432,6 +1436,7 @@ async fn request_id_reuse_with_different_content_fails_without_materializing() {
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let owner = organization_user(
         fixture.database(),
@@ -1642,6 +1647,7 @@ async fn concurrent_publications_consume_one_setup_at_most_once() {
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let owner = organization_user(
         fixture.database(),
@@ -1769,6 +1775,7 @@ async fn operational_materialization_failure_leaves_setup_reusable() {
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let owner = organization_user(
         fixture.database(),
@@ -2110,6 +2117,7 @@ async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspac
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let owner = organization_user(
         fixture.database(),
@@ -2359,6 +2367,7 @@ async fn interrupted_publications_leave_no_outcome_or_replay_the_committed_one()
             DestinationPolicy::default(),
             database.clone(),
             workspaces.clone(),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let fixture = WorkspaceRegenerationFixture::new(
             &workspaces,
@@ -2655,6 +2664,7 @@ async fn concurrent_workspace_publication_exact_replay_returns_one_terminal_resu
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let setup = default_providers
         .prepare_openapi_fixture(
@@ -2768,6 +2778,7 @@ async fn concurrent_workspace_publications_record_one_terminal_namespace_conflic
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let first_setup = default_providers
         .prepare_openapi_fixture(

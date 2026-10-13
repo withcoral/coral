@@ -15,12 +15,7 @@ async fn search_and_describe_hide_builtin_operations_from_a_member() {
     let mut transaction = database.begin().await.unwrap();
     fixture
         .providers
-        .install_builtin_in_transaction(
-            &mut transaction,
-            &context,
-            &workspace,
-            coral_provider::prepare_builtin_catalog().unwrap(),
-        )
+        .install_builtin_in_transaction(&mut transaction, &context, &workspace)
         .await
         .unwrap();
     transaction.commit().await.unwrap();

@@ -32,6 +32,7 @@ async fn test_modules() -> (
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         db.database(),
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     (db, workspaces, providers)
 }

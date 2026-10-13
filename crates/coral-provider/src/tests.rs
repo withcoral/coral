@@ -215,6 +215,7 @@ pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, ProviderMo
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,
         workspaces.clone(),
+        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     (fixture, workspaces, providers)
 }
@@ -271,6 +272,7 @@ impl Harness {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let vault_dir = tempfile::tempdir().expect("create the test vault directory");
         let accounts = accounts_for(&providers, vault_dir.path());

@@ -1256,6 +1256,7 @@ fn encode_sha256(digest: impl IntoIterator<Item = u8>) -> String {
 }
 
 /// Fully prepared catalog package produced outside a write transaction.
+#[derive(Clone)]
 pub struct PreparedProviderCatalog {
     display_name: String,
     schema_graph: SchemaGraph,

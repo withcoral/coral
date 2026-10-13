@@ -15,8 +15,8 @@
 mod binding;
 mod builtin;
 pub use builtin::{
-    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinExecutionBinding, BuiltinOperation,
-    PreparedBuiltinCatalog,
+    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinCatalog, BuiltinCatalogChanges, BuiltinExecutionBinding,
+    BuiltinOperation,
 };
 mod configuration;
 pub use configuration::{
@@ -239,38 +239,49 @@ pub async fn publish_generation_in_transaction(
     .await
 }
 
-/// Prepares the Built-in Provider's Coral-defined catalog outside a write
-/// transaction, for [`publish_builtin_generation_in_transaction`].
-///
-/// # Errors
-///
-/// Returns an invalid built-in definition.
-pub fn prepare_builtin_catalog() -> Result<PreparedBuiltinCatalog, Error> {
-    builtin::prepare().map_err(|diagnostic| Error::InvalidInput(diagnostic.message().to_string()))
-}
-
-/// Publishes one Workspace's own Generation of the Built-in Provider's
-/// Coral-defined catalog. The caller owns the transaction and commits the
-/// Provider that selects it atomically with this facet.
+/// Publishes one Workspace's own Generation of `catalog`. The caller owns
+/// the transaction and commits the Provider that selects it atomically with
+/// this facet.
 ///
 /// # Errors
 ///
 /// Returns a persistence failure.
 pub async fn publish_builtin_generation_in_transaction(
     transaction: &mut Transaction<'_>,
-    prepared: PreparedBuiltinCatalog,
+    catalog: &BuiltinCatalog,
     created_at_unix_nanos: i64,
 ) -> Result<ProviderGenerationId, Error> {
-    let PreparedBuiltinCatalog { catalog, identity } = prepared;
+    let identity = catalog.identity();
     repository::publish_generation(
         transaction,
-        repository::GenerationInput::Builtin(&identity),
+        repository::GenerationInput::Builtin(identity),
         &ProviderSetupInputDigest::of_bytes(identity.as_bytes()),
-        catalog,
+        catalog.prepared(),
         builtin::MATERIALIZER_VERSION,
         created_at_unix_nanos,
     )
     .await
+}
+
+/// Compares `catalog` with a Workspace's Built-in Generation.
+///
+/// `None` means the Generation already holds this catalog.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn builtin_catalog_changes_in_transaction(
+    transaction: &mut Transaction<'_>,
+    catalog: &BuiltinCatalog,
+    generation_id: &ProviderGenerationId,
+) -> Result<Option<BuiltinCatalogChanges>, Error> {
+    if &repository::generation_fingerprint(transaction, generation_id).await?
+        == catalog.fingerprint()
+    {
+        return Ok(None);
+    }
+    let stored = repository::load_catalog_operations(transaction, generation_id).await?;
+    Ok(Some(builtin::changes(catalog.operations(), &stored)))
 }
 
 /// Reads confirmed secret-free OpenAPI configuration for Update review.

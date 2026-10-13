@@ -135,6 +135,7 @@ impl TestModules {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let policies = OperationPolicyModule::new(database.clone(), workspaces.clone());
         let clock = Arc::new(TestClock::new());
