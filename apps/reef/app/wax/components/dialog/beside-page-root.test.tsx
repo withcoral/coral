@@ -103,3 +103,24 @@ it('a confirmation inside the drawer stays a modal dialog of its own', async () 
   await resize(640)
   expect(drawer).toHaveFocus()
 })
+
+// Catches: a popup that wraps the caller's ref and drops the cleanup a React 19
+// callback ref returns, so the caller never releases what it set up.
+it('a callback ref on the drawer popup gets its cleanup', async () => {
+  const cleanup = vi.fn()
+  const ref = vi.fn(() => cleanup)
+  const { unmount } = render(
+    <Dialog.BesidePageRoot open>
+      <Dialog.Portal>
+        <Dialog.Popup ref={ref}>
+          <Dialog.Title>Record</Dialog.Title>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.BesidePageRoot>,
+  )
+  await screen.findByRole('dialog', { name: 'Record' })
+  expect(ref).toHaveBeenCalledWith(screen.getByRole('dialog', { name: 'Record' }))
+  unmount()
+  expect(cleanup).toHaveBeenCalledOnce()
+  expect(ref).not.toHaveBeenCalledWith(null)
+})

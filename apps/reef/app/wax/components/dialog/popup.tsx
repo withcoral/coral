@@ -30,11 +30,19 @@ export function Popup({
   const besidePage = useContext(BesidePageContext)
   const register = besidePage?.register
   // A root beside the page focuses the popup when it becomes modal.
+  // React 19 runs a returned cleanup instead of passing null, so the caller's
+  // own cleanup runs here, or its ref is cleared as React would.
   const registered = useCallback(
-    (element: HTMLDivElement | null) => {
+    (element: HTMLDivElement) => {
       register?.(element)
-      if (typeof ref === 'function') ref(element)
-      else if (ref) ref.current = element
+      const cleanup = typeof ref === 'function' ? ref(element) : undefined
+      if (ref && typeof ref !== 'function') ref.current = element
+      return () => {
+        register?.(null)
+        if (typeof cleanup === 'function') cleanup()
+        else if (typeof ref === 'function') ref(null)
+        else if (ref) ref.current = null
+      }
     },
     [register, ref],
   )
