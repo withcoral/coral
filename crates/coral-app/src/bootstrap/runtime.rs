@@ -467,6 +467,12 @@ fn mcp_modules(
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let saved_functions =
         SavedFunctionModule::new(Arc::clone(&database), workspaces.clone(), isolate_limits)?;
+    // createProvider publishes through the workflow Reef uses, Universal Search included.
+    let provider_workflow = coral_administration::ProviderWorkflow::new(
+        Arc::clone(&database),
+        providers.clone(),
+        search_index.clone(),
+    );
     let runs = RunModule::new(
         policy,
         database,
@@ -474,6 +480,7 @@ fn mcp_modules(
         providers,
         isolate_limits,
     )?
+    .with_provider_publisher(Arc::new(provider_workflow))
     .with_human_interface(human_interface.clone());
     let runs = match accounts {
         Some(accounts) => runs.with_accounts(accounts),

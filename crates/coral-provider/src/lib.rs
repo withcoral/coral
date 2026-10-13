@@ -40,12 +40,17 @@ pub use search::{
     hydrate_operation_in_transaction, operation_material_by_relative_path_in_transaction,
     prepare_active_generation_entries_in_transaction, prepare_operation_entries,
 };
+mod program_setup;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]
 mod setup_input_tests;
 #[cfg(test)]
 mod setup_oauth_tests;
+pub use program_setup::{
+    PublishabilityRejection, PublishedProvider, SetupPublishability, abandon_setup_in_transaction,
+    published_provider_in_transaction,
+};
 #[cfg(test)]
 mod setup_tests;
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -79,7 +84,8 @@ pub use publication::{
     ActivatedGeneration, MaterializedPublication, PreparedPublication, ProviderPublication,
     ProviderPublicationId, ProviderPublicationOutcome, ProviderRegenerationPublication,
     ProviderRegenerationRequest, PublicationEvidence, Published,
-    WorkspaceProviderPublicationRequest,
+    WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
+    publication_for_request_in_transaction,
 };
 pub use types::{
     AdministrativeLifecycleEvent, InvocationOperationVerification, LifecycleAction, LifecycleActor,

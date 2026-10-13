@@ -363,7 +363,7 @@ impl AccountModule {
             .providers
             .check_owner_configuration_in_transaction(&mut tx, context.actor(), owner)
             .await?;
-        if !cancel_in_transaction(&mut tx, context, owner, id, authority).await? {
+        if !end_in_transaction(&mut tx, SetupActor::User { context, authority }, owner, id).await? {
             return Err(Error::ProviderSetupNotApplicable);
         }
         tx.commit().await?;
@@ -400,7 +400,13 @@ impl AccountModule {
         let mut loaded = providers::setup(&mut *tx, owner, id)
             .await?
             .ok_or(Error::ProviderSetupNotFound)?;
-        settle_deadlines(tx, context, owner, authority, &mut loaded).await?;
+        settle_deadlines(
+            tx,
+            SetupActor::User { context, authority },
+            owner,
+            &mut loaded,
+        )
+        .await?;
         Ok((authority, loaded))
     }
 
@@ -1073,12 +1079,11 @@ async fn end_authorization(
 /// transaction, so every read and mutation observes the same terminal facts.
 pub(super) async fn settle_deadlines(
     tx: &mut Transaction<'_>,
-    context: &ChangeContext,
+    actor: SetupActor<'_>,
     owner: &WorkspaceId,
-    authority: AuthoritySource,
     loaded: &mut LoadedSetup,
 ) -> Result<(), Error> {
-    let now = context.occurred_at_unix_nanos();
+    let now = actor.now();
     let id = loaded.setup.id().clone();
     if now >= setup_deadline(loaded.setup.created_at_unix_nanos())? {
         super::oauth_client_secret_repository::delete(
@@ -1105,17 +1110,15 @@ pub(super) async fn settle_deadlines(
         {
             scrub(tx, owner, &id).await?;
             end_open_authorization(tx, owner, &id, SetupAuthorizationState::Expired, None).await?;
-            super::event(
-                tx,
-                context,
-                owner,
-                authority,
-                LifecycleAction::SetupExpired,
-                false,
-                &id.to_string(),
-                LifecycleOutcome::Accepted,
-            )
-            .await?;
+            actor
+                .record(
+                    tx,
+                    owner,
+                    LifecycleAction::SetupExpired,
+                    &id.to_string(),
+                    LifecycleOutcome::Accepted,
+                )
+                .await?;
             *loaded = providers::setup(&mut *tx, owner, &id)
                 .await?
                 .ok_or(Error::ProviderSetupNotFound)?;
@@ -1131,17 +1134,15 @@ pub(super) async fn settle_deadlines(
             .is_some_and(|deadline| now >= deadline)
     {
         end_open_authorization(tx, owner, &id, SetupAuthorizationState::Expired, None).await?;
-        super::event(
-            tx,
-            context,
-            owner,
-            authority,
-            LifecycleAction::AccountAuthorizationCompleted,
-            false,
-            &id.to_string(),
-            LifecycleOutcome::Failed,
-        )
-        .await?;
+        actor
+            .record(
+                tx,
+                owner,
+                LifecycleAction::AccountAuthorizationCompleted,
+                &id.to_string(),
+                LifecycleOutcome::Failed,
+            )
+            .await?;
     }
     Ok(())
 }
@@ -1162,23 +1163,32 @@ pub(super) async fn retire_for_access_removal(
     setups.sort();
     setups.dedup();
     for id in setups {
-        cancel_in_transaction(tx, context, &owner, &id, authority).await?;
+        end_in_transaction(tx, SetupActor::User { context, authority }, &owner, &id).await?;
     }
     Ok(())
 }
 
-/// All cancellation paths retire provisional grants, application secrets and open
-/// OAuth flows under the same Setup lock used by callback/discovery completion.
-pub(super) async fn cancel_in_transaction(
+/// Ends an open Setup for `actor`: a User's cancel, or Coral abandoning one that
+/// nobody will finish. Every ending retires provisional grants, application
+/// secrets and open OAuth flows under the same Setup lock used by
+/// callback/discovery completion. Returns whether the Setup ended here:
+/// canceled, or expired at a deadline that had already passed, which an ending
+/// must not overwrite. An ended Setup stays as it is.
+pub(crate) async fn end_in_transaction(
     tx: &mut Transaction<'_>,
-    context: &ChangeContext,
+    actor: SetupActor<'_>,
     owner: &WorkspaceId,
     id: &ProviderSetupId,
-    authority: AuthoritySource,
 ) -> Result<bool, Error> {
     if !providers::lock_setup_for_publication(tx, owner, id).await? {
         return Err(Error::ProviderSetupNotFound);
     }
+    let mut loaded = providers::setup(&mut *tx, owner, id)
+        .await?
+        .ok_or(Error::ProviderSetupNotFound)?;
+    let before = loaded.setup.state();
+    settle_deadlines(tx, actor, owner, &mut loaded).await?;
+    let expired = loaded.setup.state() != before;
     let from = [
         ProviderSetupState::AwaitingConfiguration,
         ProviderSetupState::AwaitingAuthorization,
@@ -1196,17 +1206,72 @@ pub(super) async fn cancel_in_transaction(
     .await?;
     end_open_authorization(tx, owner, id, SetupAuthorizationState::Canceled, None).await?;
     if changed {
-        super::event(
-            tx,
-            context,
-            owner,
-            authority,
-            LifecycleAction::SetupCanceled,
-            false,
-            &id.to_string(),
-            LifecycleOutcome::Accepted,
-        )
-        .await?;
+        actor
+            .record(
+                tx,
+                owner,
+                LifecycleAction::SetupCanceled,
+                &id.to_string(),
+                LifecycleOutcome::Accepted,
+            )
+            .await?;
     }
-    Ok(changed)
+    Ok(changed || expired)
+}
+
+/// Who acts on a Setup: a User with the authority they exercised, or Coral
+/// itself for a Setup that nobody will finish. Lifecycle evidence names it.
+#[derive(Clone, Copy)]
+pub(crate) enum SetupActor<'a> {
+    User {
+        context: &'a ChangeContext,
+        authority: AuthoritySource,
+    },
+    Coral {
+        now: i64,
+    },
+}
+
+impl SetupActor<'_> {
+    const fn now(&self) -> i64 {
+        match self {
+            Self::User { context, .. } => context.occurred_at_unix_nanos(),
+            Self::Coral { now } => *now,
+        }
+    }
+
+    async fn record(
+        &self,
+        tx: &mut Transaction<'_>,
+        owner: &WorkspaceId,
+        action: LifecycleAction,
+        target: &str,
+        outcome: LifecycleOutcome,
+    ) -> Result<(), Error> {
+        match self {
+            Self::User { context, authority } => {
+                super::event(
+                    tx, context, owner, *authority, action, false, target, outcome,
+                )
+                .await
+            }
+            Self::Coral { now } => {
+                providers::insert_scoped_lifecycle_event(
+                    tx,
+                    providers::NewLifecycleEvent {
+                        workspace_id: Some(owner),
+                        actor: crate::LifecycleActor::Coral,
+                        action,
+                        target_id: target,
+                        outcome,
+                        changed_field_paths: &["state"],
+                        occurred_at_unix_nanos: *now,
+                        trace_id: &coral_telemetry::TraceId::current_or_new(),
+                    },
+                    None,
+                )
+                .await
+            }
+        }
+    }
 }

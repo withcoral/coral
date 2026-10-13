@@ -64,6 +64,17 @@ macro_rules! provider_setup_fixtures {
                     namespace: &str,
                     route: providers::CredentialRoute,
                 ) -> Result<providers::Provider, providers::Error>;
+                /// Confirms an existing OpenAPI Setup's configuration from `document`,
+                /// as the Owner does in Reef, and attempts its Publication.
+                async fn publish_setup_fixture(
+                    &self,
+                    context: &ChangeContext,
+                    workspace: &WorkspaceId,
+                    setup: &providers::ProviderSetupId,
+                    document: &OpenApiDocument,
+                    namespace: &str,
+                    route: providers::CredentialRoute,
+                ) -> Result<providers::ProviderPublication, providers::Error>;
             }
             impl ConfiguredProviderFixtures for providers::ProviderModule {
                 async fn prepare_update_fixture(
@@ -265,25 +276,18 @@ macro_rules! provider_setup_fixtures {
                     route: providers::CredentialRoute,
                 ) -> Result<providers::Provider, providers::Error> {
                     let setup = self
-                        .prepare_openapi_fixture(context, workspace, document)
+                        .create_openapi_setup(context, workspace, document.clone())
                         .await?;
-                    let publication =
-                        self
-                            .publish_workspace_provider(
-                                context,
-                                providers::WorkspaceProviderPublicationRequest::new(
-                                    providers::ManagementRequestId::parse(
-                                        &$crate::fixture_request_id(),
-                                    )
-                                    .expect("request"),
-                                    workspace.clone(),
-                                    setup.id().clone(),
-                                    providers::ProviderNamespace::parse(namespace)
-                                        .expect("namespace"),
-                                    route,
-                                ),
-                            )
-                            .await?;
+                    let publication = self
+                        .publish_setup_fixture(
+                            context,
+                            workspace,
+                            setup.id(),
+                            &document,
+                            namespace,
+                            route,
+                        )
+                        .await?;
                     Ok(publication
                         .published_provider()
                         .unwrap_or_else(|| {
@@ -294,6 +298,42 @@ macro_rules! provider_setup_fixtures {
                             )
                         })
                         .clone())
+                }
+                async fn publish_setup_fixture(
+                    &self,
+                    context: &ChangeContext,
+                    workspace: &WorkspaceId,
+                    setup: &providers::ProviderSetupId,
+                    document: &OpenApiDocument,
+                    namespace: &str,
+                    route: providers::CredentialRoute,
+                ) -> Result<providers::ProviderPublication, providers::Error> {
+                    let confirmed = self
+                        .confirm_setup_configuration(
+                            context,
+                            workspace,
+                            setup,
+                            0,
+                            fixture_configuration(document),
+                        )
+                        .await?;
+                    assert!(
+                        confirmed.errors.is_empty(),
+                        "fixture configuration: {:?}",
+                        confirmed.errors
+                    );
+                    self.publish_workspace_provider(
+                        context,
+                        providers::WorkspaceProviderPublicationRequest::new(
+                            providers::ManagementRequestId::parse(&$crate::fixture_request_id())
+                                .expect("request"),
+                            workspace.clone(),
+                            setup.clone(),
+                            providers::ProviderNamespace::parse(namespace).expect("namespace"),
+                            route,
+                        ),
+                    )
+                    .await
                 }
             }
             fn fixture_configuration(document: &OpenApiDocument) -> ProviderConfiguration {

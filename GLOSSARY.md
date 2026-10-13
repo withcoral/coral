@@ -229,8 +229,11 @@ Operations Coral itself performs, with no upstream dispatch. Its Call Root is `c
 Operation Access State, Approval Requests, and Operation Invocation records with every other Provider. Only a User with
 effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals cannot. An
 Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
-has no Provider Accounts. Its Operations never return a secret or an OAuth URL to the Program. A Reef link one returns
-may name a Provider Setup; that Setup's identity grants nothing, and only a Workspace Owner can act on the Setup.
+has no Provider Accounts. Coral publishes a Setup itself when the selected route and Setup readiness allow it,
+including a ready credential-requiring Setup on the `caller` route. When a person must finish the Setup, the Operation
+returns the Reef page and does not wait; Coral ends a Setup it prepared that nobody will finish. Its
+Operations never return a secret or an OAuth URL to the Program. A Reef link one returns may name a Provider Setup;
+that Setup's identity grants nothing, and only a Workspace Owner can act on the Setup.
 _Avoid_: admin API, administrative calls, coral.admin surface, system provider
 _In Reef_: "Coral", with the Coral logo, listed first
 
@@ -299,8 +302,10 @@ application key. It belongs to that one account and is never a Provider-wide set
 _Avoid_: credential input, secret (a field need not be sensitive), credential parameter
 
 **Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
-shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). Programs cannot
-select the route or account, and Coral never falls back to another route or credential. A User's missing,
+shared Provider Account (`fixed`), or the invoking Principal's exact Provider Account (`caller`). A Program cannot
+choose the route or account for an Invocation, and Coral never falls back to another route or credential. A route is
+Provider configuration: an Owner chooses it in Reef, or an Owner's Program chooses it for the Provider that
+`coral.admin.createProvider` creates. A User's missing,
 disconnected, expired, or incompatible `caller` Account does not hide Operations from discovery. The User connects a
 missing or disconnected Account during Invocation, before approval and dispatch, and reconnects an expired or
 incompatible one the same way; Coral never replaces a connected Account's credentials on its own. Before discovery, a

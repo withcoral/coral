@@ -604,6 +604,7 @@ dependencies = [
 name = "coral-administration"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "coral-catalog",
  "coral-credentials",
  "coral-db",

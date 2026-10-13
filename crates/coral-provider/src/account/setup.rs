@@ -828,8 +828,16 @@ impl ProviderModule {
         let mut loaded = providers::setup(&mut tx, owner, id)
             .await?
             .ok_or(Error::ProviderSetupNotFound)?;
-        super::setup_oauth::settle_deadlines(&mut tx, &context, owner, authority, &mut loaded)
-            .await?;
+        super::setup_oauth::settle_deadlines(
+            &mut tx,
+            super::setup_oauth::SetupActor::User {
+                context: &context,
+                authority,
+            },
+            owner,
+            &mut loaded,
+        )
+        .await?;
         let row = load(&mut tx, owner, id).await?;
         let active_contract = crate::configuration::update_contract(&mut tx, &loaded).await?;
         let client_secret_configured =

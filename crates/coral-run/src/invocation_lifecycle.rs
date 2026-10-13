@@ -20,13 +20,26 @@ pub(super) enum InvocationState {
 pub(super) struct UnfinishedInvocation {
     pub(super) id: InvocationId,
     pub(super) state: InvocationState,
+    pub(super) call_path: String,
 }
 
 impl UnfinishedInvocation {
-    fn termination_result(&self) -> Result<InvocationResultKind, Error> {
+    /// How the Invocation ends with its Run, and the Operation Result recovery
+    /// can still establish. A lost send is indeterminate. A lost
+    /// `createProvider` is not: Coral's own Publication shows what happened.
+    async fn settle_for_termination(
+        &self,
+        transaction: &mut Transaction<'_>,
+        run: &RunRecord,
+    ) -> Result<(InvocationResultKind, Option<String>), Error> {
         match self.state {
-            InvocationState::Pending => Ok(InvocationResultKind::RunTerminated),
-            InvocationState::Dispatching => Ok(InvocationResultKind::Indeterminate),
+            InvocationState::Pending => Ok((InvocationResultKind::RunTerminated, None)),
+            InvocationState::Dispatching
+                if crate::builtin::names_create_provider(&self.call_path) =>
+            {
+                crate::builtin::recover_create_provider(transaction, run, &self.id).await
+            }
+            InvocationState::Dispatching => Ok((InvocationResultKind::Indeterminate, None)),
             InvocationState::Ended => Err(Error::CorruptData(
                 "Invocation has invalid nonterminal state".into(),
             )),
@@ -171,12 +184,14 @@ pub(super) async fn end_nonterminal_for_run(
     )
     .await?;
     for (offset, invocation) in invocations.into_iter().enumerate() {
-        let result_kind = invocation.termination_result()?;
+        let (result_kind, result_json) =
+            invocation.settle_for_termination(transaction, run).await?;
         if !invocation_repository::end_for_termination(
             transaction,
             run,
             &invocation,
             result_kind,
+            result_json.as_deref(),
             ended_at_unix_nanos,
         )
         .await?

@@ -76,6 +76,18 @@ pub struct SetupConfigurationReview {
     /// The prepared catalog's contract; absent when the preview has a structural diagnostic.
     #[serde(skip)]
     pub(crate) preview_contract: Option<Contract>,
+    /// The confirmed configuration's contract, including a protected MCP
+    /// source's before its sign-in; absent until confirmed.
+    #[serde(skip)]
+    confirmed_contract: Option<Contract>,
+}
+
+impl SetupConfigurationReview {
+    /// The confirmed configuration's contract; `None` until it is confirmed
+    /// with a catalog or a protected MCP source's discovered authority.
+    pub(crate) fn confirmed_contract(&self) -> Option<&Contract> {
+        self.confirmed_contract.as_ref()
+    }
 }
 
 impl ProviderModule {
@@ -152,6 +164,18 @@ impl ProviderModule {
         owner: &WorkspaceId,
         id: &ProviderSetupId,
     ) -> Result<SetupConfigurationReview, Error> {
+        self.reviewed_setup(actor, owner, id)
+            .await
+            .map(|(_loaded, review)| review)
+    }
+
+    /// Reads a Setup and its configuration review from one snapshot.
+    pub(crate) async fn reviewed_setup(
+        &self,
+        actor: &AuthenticatedUser,
+        owner: &WorkspaceId,
+        id: &ProviderSetupId,
+    ) -> Result<(repository::LoadedSetup, SetupConfigurationReview), Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         self.check_owner_inspection_in_transaction(&mut tx, actor, owner)
             .await?;
@@ -160,7 +184,8 @@ impl ProviderModule {
             .ok_or(Error::ProviderSetupNotFound)?;
         let active_contract = update_contract(&mut tx, &loaded).await?;
         tx.rollback().await?;
-        review_with_active(self.outbound_policy, &loaded, active_contract)
+        let review = review_with_active(self.outbound_policy, &loaded, active_contract)?;
+        Ok((loaded, review))
     }
 
     /// Confirms settings before sign-in, retaining previous settings on field errors.
@@ -598,6 +623,9 @@ pub(crate) fn review_with_active(
     } else {
         result.preview_contract.clone()
     };
+    if result.configuration_confirmed {
+        result.confirmed_contract.clone_from(&candidate);
+    }
     if result.configuration_confirmed
         && let (Some(active), Some(candidate)) = (active, candidate.as_ref())
     {
@@ -635,6 +663,7 @@ fn review(
         diagnostic: None,
         errors: Vec::new(),
         preview_contract: None,
+        confirmed_contract: None,
     };
     if loaded.setup.input_kind() == ProviderSetupInputKind::Mcp {
         match mcp::inspect(loaded) {

@@ -79,6 +79,7 @@ impl RunModule {
         let invoker = OperationInvoker::new(
             self.accounts.clone(),
             self.providers.clone(),
+            self.provider_publisher.clone(),
             self.human_interface.clone(),
             self.database.clone(),
             self.workspaces.clone(),

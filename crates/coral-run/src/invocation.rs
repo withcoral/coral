@@ -124,6 +124,8 @@ pub(crate) trait InvocationObserver: Send + Sync {
     fn invocation_failure_committed(&self, _code: &'static str) {}
 
     fn run_completion_checked(&self, _has_nonterminal_invocation: bool) {}
+
+    fn builtin_setup_prepared(&self) {}
 }
 
 #[cfg(test)]
@@ -152,6 +154,7 @@ impl From<Error> for InvocationHostError {
 pub(crate) struct OperationInvoker {
     accounts: Option<coral_provider::account::AccountModule>,
     providers: coral_provider::ProviderModule,
+    provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
@@ -202,6 +205,7 @@ impl OperationInvoker {
     pub(crate) fn new(
         accounts: Option<coral_provider::account::AccountModule>,
         providers: coral_provider::ProviderModule,
+        provider_publisher: Option<Arc<dyn coral_provider::WorkspaceProviderPublisher>>,
         human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
         workspaces: WorkspaceModule,
@@ -220,6 +224,7 @@ impl OperationInvoker {
         Self {
             accounts,
             providers,
+            provider_publisher,
             human_interface,
             database,
             workspaces,
@@ -253,13 +258,8 @@ impl OperationInvoker {
                     coral_value::ValueError::TooLarge => CoralFailure::InputTooLarge,
                 })
             })?;
-        let (mut admitted, policy) = self.admit(call_path, arguments_json).await?;
-        // A Built-in Operation validates its input before any other work.
-        let builtin = match crate::builtin::BuiltinCall::parse(&admitted.target, &arguments) {
-            Some(Ok(call)) => Some(call),
-            Some(Err(failure)) => return Err(self.finish_failure(&admitted, failure).await?),
-            None => None,
-        };
+        let (mut admitted, policy, builtin) =
+            self.admit(call_path, &arguments, arguments_json).await?;
         if policy == OperationAccessState::Disabled {
             return Err(self
                 .finish_failure(&admitted, CoralFailure::OperationDisabled)
@@ -415,7 +415,7 @@ impl OperationInvoker {
         builtin: Option<&crate::builtin::BuiltinCall>,
     ) -> Result<Dispatch, coral_upstream::Error> {
         if let Some(call) = builtin {
-            return Ok(Dispatch::Builtin(call.clone()));
+            return Ok(Dispatch::Builtin(Box::new(call.clone())));
         }
         self.plan(&admitted.target, arguments)
             .map(Dispatch::Upstream)
@@ -439,8 +439,16 @@ impl OperationInvoker {
     async fn admit(
         &self,
         call_path: &str,
+        arguments: &serde_json::Value,
         arguments_json: String,
-    ) -> Result<(AdmittedInvocation, OperationAccessState), Error> {
+    ) -> Result<
+        (
+            AdmittedInvocation,
+            OperationAccessState,
+            Option<crate::builtin::BuiltinCall>,
+        ),
+        Error,
+    > {
         let mut transaction = self.database.begin().await?;
         let Some(run) =
             run_repository::hold_run(&mut transaction, &self.workspace_id, &self.run_id).await?
@@ -466,6 +474,16 @@ impl OperationInvoker {
         else {
             transaction.rollback().await?;
             return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
+        };
+        // A Built-in Operation checks its input before any other work, so input
+        // it rejects, such as a credential, is never stored.
+        let builtin = match crate::builtin::BuiltinCall::parse(&target, arguments) {
+            Some(Ok(call)) => Some(call),
+            Some(Err(failure)) => {
+                transaction.rollback().await?;
+                return Err(Error::InvocationRejected(failure));
+            }
+            None => None,
         };
         let policy_target = policy_target(&self.workspace_id, &target);
         let policy = coral_policy::invocation_decision_in_transaction(
@@ -497,7 +515,7 @@ impl OperationInvoker {
         };
         invocation_repository::insert_admission(&mut transaction, &admitted, &run).await?;
         transaction.commit().await?;
-        Ok((admitted, policy))
+        Ok((admitted, policy, builtin))
     }
 
     async fn resolve_credentials(&self, admitted: &mut AdmittedInvocation) -> Result<(), Error> {
@@ -712,20 +730,20 @@ impl OperationInvoker {
             self.now()?,
             coral_workspace::TraceId::current_or_new(),
         );
+        let request_id = coral_provider::ManagementRequestId::parse(&admitted.id.to_string())
+            .map_err(Error::from)?;
         let host = crate::builtin::BuiltinHost {
             providers: &self.providers,
+            publisher: self.provider_publisher.as_deref(),
+            database: &self.database,
             context: &context,
+            principal: &self.principal,
             workspace_id: &self.workspace_id,
             human_interface,
+            request_id: &request_id,
+            run: self,
         };
-        let result = tokio::select! {
-            biased;
-            () = self.stop.requested() => {
-                return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
-            }
-            result = call.perform(&host) => result,
-        };
-        match result {
+        match call.perform(&host).await {
             Ok(result) => self.finish_result(admitted, &result).await,
             Err(Error::InvocationRejected(failure)) => {
                 Err(self.finish_failure(admitted, failure).await?)
@@ -1245,7 +1263,7 @@ enum FenceOutcome {
 /// Coral performs itself.
 enum Dispatch {
     Upstream(ReadyDispatch),
-    Builtin(crate::builtin::BuiltinCall),
+    Builtin(Box<crate::builtin::BuiltinCall>),
 }
 
 struct FencedDispatch {
@@ -1255,5 +1273,36 @@ struct FencedDispatch {
 impl FencedDispatch {
     fn into_ready(self) -> Dispatch {
         self.ready
+    }
+}
+
+#[async_trait]
+impl crate::builtin::InvokingRun for OperationInvoker {
+    /// Whether this Run still accepts Program work: not stopped, terminated or
+    /// past its deadline.
+    async fn still_current(&self) -> Result<bool, Error> {
+        if self.stop.is_requested() {
+            return Ok(false);
+        }
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let run =
+            run_repository::find_exact_in_transaction(&mut tx, &self.workspace_id, &self.run_id)
+                .await?;
+        tx.commit().await?;
+        let now = self.now()?;
+        Ok(run.is_some_and(|run| self.run_is_current(&run, now)))
+    }
+
+    async fn stopped(&self) {
+        self.stop.requested().await;
+    }
+
+    fn now(&self) -> Result<i64, Error> {
+        OperationInvoker::now(self)
+    }
+
+    #[cfg(test)]
+    fn setup_prepared(&self) {
+        self.observer.builtin_setup_prepared();
     }
 }

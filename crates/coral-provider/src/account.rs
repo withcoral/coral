@@ -753,6 +753,23 @@ pub async fn select_in_transaction(
     select_route(tx, target.provider_access(), principal, contract).await
 }
 
+/// Whether this Principal must still connect an Account before its Invocations
+/// can use the Provider's credentials, as Invocation selects them now.
+/// # Errors
+/// Persistence and corrupt-evidence failures remain errors.
+pub(crate) async fn account_required_in_transaction(
+    tx: &mut Transaction<'_>,
+    access: &crate::access::ProviderAccess,
+    principal: &coral_workspace::Principal,
+    contract: coral_catalog::ProviderCredentialContract,
+) -> Result<bool, Error> {
+    match select_route(tx, access, principal, contract).await {
+        Ok(_) => Ok(false),
+        Err(Error::AccountRequired) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
 /// Decides whether this Principal can discover the Provider's Operations.
 ///
 /// [`reaches_call_root`] decides first. Otherwise the Credential Route decides. A User connects its own `caller`
@@ -1096,6 +1113,7 @@ pub mod history_repository;
 mod repository;
 pub(crate) mod setup;
 mod setup_oauth;
+pub(crate) use setup_oauth::{SetupActor, end_in_transaction as end_setup_in_transaction};
 pub(crate) mod setup_repository;
 pub(crate) mod update;
 mod update_repository;

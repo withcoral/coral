@@ -182,12 +182,12 @@ async fn provider_deletion_scrubs_update_application_secrets_before_consent() {
 
 #[tokio::test]
 async fn provider_deletion_rejects_pending_update_callbacks() {
-    deletion_fences_callback(false).await;
+    Box::pin(deletion_fences_callback(false)).await;
 }
 
 #[tokio::test]
 async fn provider_deletion_discards_exchanging_update_callbacks() {
-    deletion_fences_callback(true).await;
+    Box::pin(deletion_fences_callback(true)).await;
 }
 
 #[expect(

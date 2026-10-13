@@ -55,8 +55,9 @@ pub(crate) fn is_catalog_identity(pinned: &str) -> bool {
 /// One Coral-owned Operation that Coral performs itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuiltinOperation {
-    /// Prepares a Provider from an OpenAPI document or URL, or an MCP server URL,
-    /// for a person to finish in Reef.
+    /// Creates a Provider from an OpenAPI document or URL, or an MCP server URL.
+    /// Coral publishes it when nobody needs to sign in; otherwise a person
+    /// finishes it in Reef.
     #[serde(rename = "createProvider")]
     CreateProvider,
 }
@@ -127,23 +128,35 @@ struct Definition {
     output: Value,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "each Built-in Operation's whole contract reads as one declaration"
+)]
 fn definition(operation: BuiltinOperation) -> Definition {
     match operation {
         BuiltinOperation::CreateProvider => Definition {
             operation,
-            summary: "Prepare a Provider from an OpenAPI document or URL, or an MCP server URL",
+            summary: "Create a Provider from an OpenAPI document or URL, or an MCP server URL",
             presentation: OperationPresentation::new(
                 Some("Create provider".to_string()),
-                "Prepare a Provider in this Workspace from an OpenAPI document, an OpenAPI \
-                 document URL, or an MCP server URL. Returns a Reef link where a person \
-                 finishes and publishes it."
+                "Create a Provider in this Workspace from an OpenAPI document, an OpenAPI \
+                 document URL, or an MCP server URL. Coral publishes it when nobody needs to \
+                 sign in. Otherwise it returns a Reef link where a person finishes and \
+                 publishes it."
                     .to_string(),
                 false,
                 vec!["providers".to_string()],
                 Some(
-                    "Show the person the returned url. They finish the Provider in Reef. \
-                     To check whether it is published, search with its namespace as \
-                     provider."
+                    "Choose credentialRoute to match the source: none when it needs no \
+                     credential, fixed for one shared account, caller for each person's own \
+                     account. A route that does not match the source fails with invalid_input. \
+                     Give displayName, servers, authentication or requestHeaders only to \
+                     override what the source suggests. Never pass a secret or a literal \
+                     credential value: Coral stores your arguments, and Workspace Owners can \
+                     see them. When status is published, call the Provider's Operations under \
+                     coral.providers.<namespace>. When status is needs_sign_in, show the person \
+                     the returned url. To check later whether it is published, search with its \
+                     namespace as provider."
                         .to_string(),
                 ),
             ),
@@ -151,16 +164,67 @@ fn definition(operation: BuiltinOperation) -> Definition {
             hints: OperationHints::default(),
             input: json!({
                 "type": "object",
-                "required": ["namespace", "source"],
+                "required": ["namespace", "source", "credentialRoute"],
                 "properties": {
                     "namespace": {
                         "type": "string",
                         "description": "Provider Namespace: a short JavaScript identifier, such as github. The Provider's Operations are called under coral.providers.<namespace>."
                     },
-                    "source": { "$ref": "#/$defs/ProviderSource" }
+                    "source": { "$ref": "#/$defs/ProviderSource" },
+                    "credentialRoute": {
+                        "enum": ["none", "fixed", "caller"],
+                        "description": "Whose account Invocations use: none for a source that needs no credential, fixed for one shared account that a person signs in to, or caller for each person's own account."
+                    },
+                    "displayName": {
+                        "type": "string",
+                        "description": "The Provider's name. Omit it to use the source's title."
+                    },
+                    "servers": {
+                        "type": "object",
+                        "description": "Server choice per server declaration, keyed by declaration pointer such as #/servers. Omit it to use the source's server. If the source declares none, or a server variable has no default, the call fails with invalid_input: find the value in the source's documentation or ask the user, then pass it here.",
+                        "additionalProperties": { "$ref": "#/$defs/ServerSelection" }
+                    },
+                    "authentication": {
+                        "type": "object",
+                        "description": "The authentication method and its non-secret settings, such as header names, OAuth endpoints and scopes. Omit it to use the method the source declares. Never include a secret or a literal value.",
+                        "required": ["method"],
+                        "properties": {
+                            "method": {
+                                "enum": ["none", "bearer", "header_credentials", "basic_auth", "query_credentials", "oauth_device_code", "oauth_authorization_code"]
+                            }
+                        }
+                    },
+                    "requestHeaders": {
+                        "type": "object",
+                        "description": "Non-secret headers sent with every request. Omit it to use the source's suggestion. Authorization, Proxy-Authorization, Cookie, X-API-Key, Api-Key, and any header that ends in -Token or -Secret fail with invalid_input: a person enters credentials when they sign in.",
+                        "additionalProperties": { "type": "string" }
+                    }
                 },
                 "additionalProperties": false,
                 "$defs": {
+                    "ServerSelection": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "required": ["kind", "url", "variables"],
+                                "properties": {
+                                    "kind": { "const": "declared" },
+                                    "url": { "type": "string", "description": "A server URL template the source declares." },
+                                    "variables": { "type": "object", "additionalProperties": { "type": "string" } }
+                                },
+                                "additionalProperties": false
+                            },
+                            {
+                                "type": "object",
+                                "required": ["kind", "url"],
+                                "properties": {
+                                    "kind": { "const": "custom" },
+                                    "url": { "type": "string", "description": "An absolute HTTPS base URL." }
+                                },
+                                "additionalProperties": false
+                            }
+                        ]
+                    },
                     "ProviderSource": {
                         "oneOf": [
                             {
@@ -195,14 +259,51 @@ fn definition(operation: BuiltinOperation) -> Definition {
                 }
             }),
             output: json!({
-                "type": "object",
-                "required": ["status", "url", "namespace"],
-                "properties": {
-                    "status": { "const": "needs_sign_in", "description": "A person must finish the Provider in Reef." },
-                    "url": { "type": "string", "description": "The Reef page where a person finishes and publishes the Provider." },
-                    "namespace": { "type": "string", "description": "The requested Provider Namespace. The person can change it." }
-                },
-                "additionalProperties": false
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "required": [
+                            "status", "namespace", "displayName", "credentialRoute",
+                            "authentication", "operations", "accountRequired"
+                        ],
+                        "properties": {
+                            "status": { "const": "published", "description": "Coral published the Provider. You can call it now." },
+                            "namespace": { "type": "string", "description": "The published Provider Namespace." },
+                            "displayName": { "type": "string", "description": "The published Provider display name." },
+                            "credentialRoute": {
+                                "enum": ["none", "fixed", "caller"],
+                                "description": "The published Credential Route."
+                            },
+                            "authentication": {
+                                "enum": [
+                                    "none", "bearer", "header_credentials", "basic_auth",
+                                    "query_credentials", "oauth_device_code", "oauth_authorization_code"
+                                ],
+                                "description": "How Coral sends the Provider's credentials, as resolved from your input and the source."
+                            },
+                            "operations": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "How many of the Provider's Operations you can discover and call."
+                            },
+                            "accountRequired": {
+                                "type": "boolean",
+                                "description": "True when you must connect your own Account before your calls can use the Provider. Your first call then asks you to connect it."
+                            }
+                        },
+                        "additionalProperties": false
+                    },
+                    {
+                        "type": "object",
+                        "required": ["status", "url", "namespace"],
+                        "properties": {
+                            "status": { "const": "needs_sign_in", "description": "A person must finish the Provider in Reef." },
+                            "url": { "type": "string", "description": "The Reef page where a person finishes and publishes the Provider." },
+                            "namespace": { "type": "string", "description": "The requested Provider Namespace. The person can change it." }
+                        },
+                        "additionalProperties": false
+                    }
+                ]
             }),
         },
     }
