@@ -56,21 +56,41 @@ interface ContainerAutoLayoutProps extends ContainerBaseProps {
   maxHeight?: never
   /** Nothing scrolls vertically, so no group heading ever pins. Needs `layout="scroll"`. */
   onPinnedGroupChange?: never
+  /** The sideways scroll leaves no room for a vertical one. Needs `layout="fixed"`. */
+  bounded?: never
 }
 
-interface ContainerFixedLayoutProps extends ContainerBaseProps {
+interface ContainerFixedBaseProps extends ContainerBaseProps {
   /** Shares the width between the columns, so the table owns no scroll port. */
   layout: 'fixed'
-  /** Caps the table height in pixels and scrolls only the rows beneath the heading. */
-  maxHeight?: number
   /** The rows scroll inside `Table.Body`, or an ancestor does; the table never does. */
   onPinnedGroupChange?: never
 }
+
+type ContainerFixedLayoutProps = ContainerFixedBaseProps &
+  (
+    | {
+        /** Caps the table height in pixels and scrolls only the rows beneath the heading. */
+        maxHeight?: number
+        bounded?: false
+      }
+    | {
+        /** A bounded table takes its height from its flex parent, not a fixed cap. */
+        maxHeight?: never
+        /**
+         * Shrinks to the height its flex parent leaves, and scrolls only the rows
+         * beneath the heading. It never grows past its last row.
+         */
+        bounded: true
+      }
+  )
 
 interface ContainerScrollLayoutProps extends ContainerBaseProps {
   /** Bordered, two-axis scroll port with sticky headings. The flex parent bounds its height. */
   layout: 'scroll'
   maxHeight?: never
+  /** A scroll table always takes the height its flex parent leaves. */
+  bounded?: never
   /**
    * Reports the `id` of the top-level `Table.Group` whose heading sits pinned
    * under the head, or null before the first one, whenever it changes.
@@ -111,6 +131,7 @@ export function Container({
   ariaLabel,
   children,
   className,
+  bounded = false,
   columns,
   density = 'default',
   groupHeadings = 'plain',
@@ -166,9 +187,11 @@ export function Container({
           aria-label={ariaLabel}
           className={classNames(
             styles.container({ density, layout, variant }),
+            variant === 'card' && styles.cardTable,
             layout === 'scroll' && styles.scrollTable,
             readingKey && styles.anchoredTable,
-            maxHeight !== undefined && styles.scrollRows,
+            (maxHeight !== undefined || bounded) && styles.scrollRows,
+            bounded && styles.boundedRows,
             groupHeadings === 'prominent' && styles.prominentGroupHeadings,
             staticRows && styles.staticRows,
             className,

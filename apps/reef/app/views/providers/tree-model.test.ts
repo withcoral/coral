@@ -96,4 +96,48 @@ describe('reviewOperationNodes', () => {
     const nodes = reviewOperationNodes(setupWith([operation('logs.list', 'logs')]))
     expect(nodes[0].children?.[0].detail).toBe('Does logs.list')
   })
+
+  // Catches: a refresh hiding what it adds or drops, a new operation that
+  // cannot run listed as runnable, or a first read showing everything as new.
+  it.each([
+    ['without live operations', undefined, ['group:unavailable', 'group:logs']],
+    [
+      'with live operations',
+      [
+        { relativePath: 'logs.list', summary: 'Does logs.list' },
+        { relativePath: 'logs.purge', summary: 'Does logs.purge' },
+      ],
+      ['group:unavailable', 'refresh:new', 'refresh:removed', 'group:logs'],
+    ],
+  ])('groups what a refresh changes %s', (_case, previous, groups) => {
+    const nodes = reviewOperationNodes(
+      setupWith([
+        operation('logs.list', 'logs'),
+        operation('logs.tail', 'logs'),
+        operation('logs.send', 'logs', { available: false, reasons: ['No server matched.'] }),
+      ]),
+      previous,
+    )
+    expect(nodes.map((node) => node.id)).toEqual(groups)
+    const children = (id: string) =>
+      nodes.find((node) => node.id === id)?.children?.map((child) => child.id)
+    // A new operation that cannot run stays under Cannot run, not New.
+    expect(children('group:unavailable')).toEqual(['logs.send'])
+    if (!previous) return
+    expect(children('refresh:new')).toEqual(['logs.tail'])
+    expect(children('refresh:removed')).toEqual(['removed:logs.purge'])
+    expect(children('group:logs')).toEqual(['logs.list'])
+  })
+
+  // Catches: a provider tag named new sharing an ID with the refresh's New
+  // group, so the two open and close together.
+  it('keeps a provider group named new apart from New', () => {
+    const nodes = reviewOperationNodes(
+      setupWith([operation('new.list', 'new'), operation('new.tail', 'new')]),
+      [{ relativePath: 'new.list', summary: 'Does new.list' }],
+    )
+    const ids = nodes.map((node) => node.id)
+    expect(ids).toEqual(['refresh:new', 'group:new'])
+    expect(new Set(ids).size).toBe(ids.length)
+  })
 })

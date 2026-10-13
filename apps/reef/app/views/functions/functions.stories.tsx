@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
-import { expect, screen, userEvent, within } from 'storybook/test'
+import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 import { FunctionDrawer, FunctionDrawerError } from './function-drawer'
+import { dismissAllToasts, ToastContainer } from '@/wax/components/toast'
 import { FunctionsPage } from './functions-page'
 import type { SavedFunctionView } from './types'
 
@@ -115,9 +116,10 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 const listPath = '/workspaces/demo/functions'
-const detail = (f: SavedFunctionView) => (
+const form = { csrf: 'csrf', requestId: 'request' }
+const detail = (f: SavedFunctionView, canDelete = true) => (
   <FunctionsPage workspace={workspace} functions={summaries}>
-    <FunctionDrawer listPath={listPath} savedFunction={f} />
+    <FunctionDrawer listPath={listPath} savedFunction={f} form={form} canDelete={canDelete} />
   </FunctionsPage>
 )
 
@@ -177,6 +179,23 @@ export const TopLevelFunctions: Story = {
     ).toEqual(['other1'])
   },
 }
+export const Deleted: Story = {
+  render: () => (
+    <>
+      <FunctionsPage workspace={workspace} functions={summaries} />
+      <ToastContainer />
+    </>
+  ),
+  parameters: { initialEntry: '/workspaces/demo/functions?functionDeleted=1' },
+  beforeEach: () => {
+    dismissAllToasts()
+    return () => dismissAllToasts()
+  },
+  play: async () => {
+    // A delete returns to the list, which says it worked. The toast bounces in from zero opacity.
+    await waitFor(() => expect(screen.getByText('Function deleted')).toBeVisible())
+  },
+}
 export const Empty: Story = {
   render: () => <FunctionsPage workspace={workspace} functions={[]} />,
 }
@@ -185,8 +204,25 @@ export const Detail: Story = {
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
   play: async () => {
     await expect(await screen.findByRole('dialog', { name: 'finance.monthlyTotals' })).toBeVisible()
-    // Reef only reads Saved Functions until it can author them.
-    await expect(screen.queryByRole('button', { name: /save|replace|delete|run/i })).toBeNull()
+    // Reef reads and deletes Saved Functions, but cannot author or run them.
+    await expect(screen.queryByRole('button', { name: /save|replace|run/i })).toBeNull()
+    // Delete asks first, and names what breaks.
+    await userEvent.click(screen.getByRole('button', { name: 'Delete function' }))
+    const confirm = await screen.findByRole('dialog', { name: 'Delete function' })
+    await expect(confirm).toHaveAccessibleDescription(
+      'After you delete it, programs that call coral.functions.finance.monthlyTotals fail. You cannot undo this.',
+    )
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    await expect(screen.queryByRole('dialog', { name: 'Delete function' })).toBeNull()
+  },
+}
+export const ArchivedWorkspace: Story = {
+  render: () => detail(savedFunction, false),
+  parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
+  play: async () => {
+    await expect(await screen.findByRole('dialog', { name: 'finance.monthlyTotals' })).toBeVisible()
+    // An archived workspace accepts no changes, so delete is absent.
+    await expect(screen.queryByRole('button', { name: 'Delete function' })).toBeNull()
   },
 }
 export const Diagnostics: Story = {

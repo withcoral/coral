@@ -37,14 +37,18 @@ import type {
 } from '@/views/providers/types'
 import { credentialFieldViews, credentialValuesFrom } from '../credential-fields.server'
 import { field, privateHeaders, type ManagementApi } from '../management.server'
+import { safeInternalPath } from '@/auth/safe-path.server'
 import { operationGroup, providerFailure, uuidOr404 } from '../providers.server'
 import { OPENAPI_DOCUMENT_MAX_BYTES, OPENAPI_DOCUMENT_SIZE_LABEL } from '../provider-input-limits'
 import { recipeDocument } from '../provider-recipes/library.server'
 import {
   accountChoice,
   attemptPath,
+  freezeAttempt,
   parseAttempt,
   reviseAttempt,
+  savesDirectly,
+  type FrozenAttempt,
   type PublicationAttempt,
 } from './model'
 
@@ -876,7 +880,7 @@ function recipeInputsFrom(form: FormData): Record<string, string> | undefined {
  * Add and Update flows. The answer to "Whose account does it use?"
  * travels in the stepper URL; a shared-account sign-in returns to it.
  */
-export async function setupAction(
+export async function setupAction<Published = never>(
   api: ManagementApi,
   request: Request,
   context: Readonly<RouterContextProvider>,
@@ -885,6 +889,8 @@ export async function setupAction(
   basePath: string,
   attempt: PublicationAttempt,
   cancelPath = basePath,
+  /** Edit configuration's Save: publish a confirmed configuration that needs nothing more. */
+  save?: { account: AccountChoice; publish: (attempt: FrozenAttempt) => Promise<Published> },
 ) {
   const intent = field(form, 'intent')
   const name = setupName(parent, field(form, 'setup'))
@@ -966,6 +972,11 @@ export async function setupAction(
         }
         const errors = setup.configuration?.errors ?? {}
         if (Object.keys(errors).length) return rejectConfiguration(submitted, errors)
+        if (save && draft.kind === 'update' && draft.task === 'configuration') {
+          const view = setupView(setup)
+          if (savesDirectly(view, save.account))
+            return save.publish(freezeAttempt(draft, view, field(form, 'requestId')))
+        }
         const reviewAccount =
           draft.kind === 'workspace' &&
           Boolean(draft.accountReview) &&
@@ -1070,9 +1081,16 @@ export async function setupAction(
       case 'oauth-retry':
         await api.setups.retryProviderSetupDiscovery({ name })
         return redirect(stepper(chosen), { headers: privateHeaders })
-      case 'cancel':
+      case 'cancel': {
         await api.setups.cancelProviderSetup({ name })
-        return redirect(cancelPath, { headers: privateHeaders })
+        // A discard through a link goes where the link pointed, if that stays on this origin.
+        const leaveTo = form.get('leaveTo')
+        const target =
+          typeof leaveTo === 'string' && leaveTo !== '/' && safeInternalPath(leaveTo) === leaveTo
+            ? leaveTo
+            : cancelPath
+        return redirect(target, { headers: privateHeaders })
+      }
       default:
         throw new Response('Invalid action', {
           status: 400,

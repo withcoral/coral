@@ -18,6 +18,7 @@ import {
   openProviderSettings,
   openYourAccount,
   waitForPublication,
+  waitForYourAccount,
 } from '../../../../support/providers.ts'
 
 test('Workspace OAuth supports external-browser consent and application secret rotation', async (context) => {
@@ -156,26 +157,23 @@ test('Workspace OAuth supports external-browser consent and application secret r
       } finally {
         await browser.close()
       }
-      await page
-        .getByText('This account cannot refresh automatically. Reconnect when access expires.', {
-          exact: true,
-        })
+      // Without a refresh token, the Details card says to reconnect when access expires.
+      const details = page.getByRole('complementary', { name: 'Details', exact: true })
+      await details
+        .getByRole('definition')
+        .getByText('Manual. Reconnect when access expires.', { exact: true })
         .waitFor()
       await page.goto(accountPage)
-      await page.getByText('Ready', { exact: true }).waitFor()
+      await waitForYourAccount(page)
       const account = (await inspect()).account!
       expect(account.state).toBe(ProviderAccountState.READY)
       expect(account.connectedTime).toBeDefined()
       expect(account.configuredByUser).not.toBe('')
-      await page
-        .getByText('Upstream account name and identity are unavailable.', { exact: true })
-        .waitFor()
       // Your own account page does not name you as its configurer.
       expect(await page.getByText('Configured by Coral user', { exact: false }).count()).toBe(0)
-      await page
-        .getByText('This account cannot refresh automatically. Reconnect when access expires.', {
-          exact: true,
-        })
+      await details
+        .getByRole('definition')
+        .getByText('Manual. Reconnect when access expires.', { exact: true })
         .waitFor()
       expect(upstream.counts.tokens).toBe(1)
     })
@@ -205,7 +203,7 @@ test('Workspace OAuth supports external-browser consent and application secret r
       await page.getByRole('button', { name: 'Reconnect', exact: true }).click()
       await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
       await page.waitForURL((url) => url.pathname === accountPage)
-      await page.getByText('Ready', { exact: true }).waitFor()
+      await waitForYourAccount(page)
       expect((await inspect()).account?.id).toBe(connected.id)
       expect((await inspect()).account?.connectedTime).not.toEqual(connected.connectedTime)
       expect(upstream.counts.tokens).toBe(2)

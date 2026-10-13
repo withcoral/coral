@@ -15,6 +15,11 @@ export interface PageLayoutProps {
   actions?: ReactNode
   /** Standard pages are centered; wide pages fill the width. Split pages bound their own scrolling. */
   variant?: 'standard' | 'wide' | 'split'
+  /**
+   * Keeps a standard or wide page no taller than the viewport. The page does not
+   * scroll, so put a `layout="scroll"` table in it to scroll its rows instead.
+   */
+  bounded?: boolean
 }
 
 /**
@@ -29,9 +34,10 @@ export function PageLayout({
   breadcrumbs,
   actions,
   variant = 'standard',
+  bounded = false,
 }: PageLayoutProps) {
   const frame = (
-    <div className={styles.frame({ variant })}>
+    <div className={styles.frame({ variant, bounded })}>
       {header && <div className={styles.header}>{header}</div>}
       {variant === 'split' ? <div className={styles.splitBody}>{children}</div> : children}
     </div>
@@ -39,7 +45,7 @@ export function PageLayout({
   return (
     <div className={styles.container}>
       {breadcrumbs && <TopBar breadcrumbs={breadcrumbs} actions={actions} />}
-      {variant === 'split' ? (
+      {variant === 'split' || bounded ? (
         <div className={styles.scrollContainer}>{frame}</div>
       ) : (
         <ScrollArea.Container
@@ -48,8 +54,9 @@ export function PageLayout({
           // The frame centres short pages against the viewport's height, which
           // only resolves when the scroll content is at least as tall as it.
           fillContent
+          // No tab stop of its own: the page outline would take focus before the
+          // content. Browsers make a scroller focusable when nothing in it is.
           scrollDirection="vertical"
-          tabIndex={0}
         >
           {frame}
         </ScrollArea.Container>

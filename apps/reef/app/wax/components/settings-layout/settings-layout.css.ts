@@ -11,6 +11,8 @@ export const page = style({
   gap: 48,
   // The two columns and the gap between them; removal's rule spans the same.
   maxWidth: 848,
+  // Centred in a wide page, so the cards and their aside read as one column.
+  marginInline: 'auto',
   minWidth: 0,
   width: '100%',
   '@media': { [`screen and (max-width: ${breakpoints.mobile})`]: { gap: 32 } },
@@ -38,6 +40,17 @@ export const columns = style({
   rowGap: 32,
   '@media': { '(max-width: 1040px)': { gridTemplateColumns: 'minmax(0, 480px)' } },
 })
+// A wide list beside the same aside: the main column takes the free width.
+export const wideColumns = style({
+  alignItems: 'start',
+  display: 'grid',
+  columnGap: 32,
+  gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 320px)',
+  minWidth: 0,
+  rowGap: 24,
+  '@media': { '(max-width: 1040px)': { gridTemplateColumns: 'minmax(0, 1fr)' } },
+})
+export const wideMain = style({ minWidth: 0 })
 export const main = style({
   display: 'flex',
   flexDirection: 'column',
@@ -47,6 +60,23 @@ export const main = style({
 })
 // Each card in the main column fills it.
 globalStyle(`${main} > *`, { minWidth: 0, width: '100%' })
+
+// The aside: a card of facts, each its label over its value.
+export const aside = style({ gap: 16, minWidth: 0 })
+export const facts = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+  margin: 0,
+  minWidth: 0,
+})
+export const fact = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  minWidth: 0,
+})
+export const factValue = style({ margin: 0, minWidth: 0 })
 
 // Removal: its heading and consequence take the row, the action keeps the right edge.
 export const removal = style({

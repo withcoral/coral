@@ -118,6 +118,16 @@ export const list = style({
   padding: 0,
 })
 
+export const removalDetails = style({ display: 'flex', flexDirection: 'column', gap: 8 })
+export const bulletList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  margin: 0,
+  paddingLeft: 20,
+  listStyle: 'disc',
+})
+
 export const longValue = style({ overflowWrap: 'anywhere' })
 
 export const emptyProviders = style({ display: 'flex', height: '100%' })
@@ -510,6 +520,14 @@ export const emptyActions = style({
 export const operationsScroll = style({ padding: 4 })
 // An empty panel keeps roughly the height it will have once it holds rows, and
 // centres its message in that room rather than resting on the search bar.
+// Full width, so its percentage-wide rows size against the panel.
+export const operationsSkeleton = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 14,
+  padding: 16,
+  width: '100%',
+})
 export const operationsEmpty = style({
   alignItems: 'center',
   display: 'flex',
@@ -528,8 +546,6 @@ export const headerPreview = style({
   minWidth: 0,
 })
 
-// A Wax card, as the Add provider flow frames its source.
-export const settingsSource = style({ gap: 16, minWidth: 0 })
 export const settingsUrl = style({
   display: 'flex',
   flexDirection: 'column',
@@ -545,25 +561,12 @@ export const settingsUrlRow = style({
   minWidth: 0,
 })
 export const settingsUrlText = style({ flex: '0 1 auto', minWidth: 0, ...utils.boxClamp(1) })
-export const settingsFacts = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-  margin: 0,
-  minWidth: 0,
-})
-export const settingsFact = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-  margin: 0,
-  minWidth: 0,
-})
+// The source's actions, side by side under its facts.
 export const settingsSourceActions = style({
   borderTop: `1px solid ${theme.stroke.secondary}`,
   display: 'flex',
-  flexDirection: 'column',
-  gap: 16,
+  flexWrap: 'wrap',
+  gap: 8,
   paddingTop: 16,
 })
 

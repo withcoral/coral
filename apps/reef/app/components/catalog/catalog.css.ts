@@ -126,3 +126,5 @@ export const toolbarGroup = style({
   selectors: { '&:last-child': { flex: '1 1 auto', justifyContent: 'flex-end' } },
 })
 export const toolbarFilter = style({ flex: '0 1 360px', minWidth: 220 })
+// In a narrow column the filter takes the rest of the row, so it stays beside its picker.
+export const toolbarFilterFill = style({ flex: '1 1 160px', minWidth: 0 })

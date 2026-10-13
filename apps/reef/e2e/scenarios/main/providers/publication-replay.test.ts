@@ -55,7 +55,12 @@ test('Editing configuration after a lost Add starts a new attempt and keeps the 
       await page.getByRole('button', { name: 'Add provider', exact: true }).click()
       await waitForPublication(page)
       await openProviderSettings(page)
-      await page.getByText('Each caller uses their own account.', { exact: true }).waitFor()
+      await page
+        .getByText(
+          'Each person connects their own account. Workspace owners connect accounts for agents.',
+          { exact: true },
+        )
+        .waitFor()
     })
   })
 })
@@ -119,7 +124,7 @@ test('Workspace creation and Update recover exact publication requests', async (
         openApiDocument('Replay provider', { hello: {}, later: {} }),
       )
       await page.getByRole('button', { name: 'Read', exact: true }).click()
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
       const original = new URL(
         (await page.locator('form:has(input[value="publish"])').getAttribute('action'))!,
         page.url(),
@@ -135,7 +140,7 @@ test('Workspace creation and Update recover exact publication requests', async (
         },
         { times: 1 },
       )
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
       await page.waitForURL(
         (url) =>
           Boolean(frozenUrl) &&
@@ -153,8 +158,9 @@ test('Workspace creation and Update recover exact publication requests', async (
       malformed.searchParams.set('configure', 'garbage')
       expect((await page.request.get(malformed.toString())).status()).toBe(404)
       await page.getByRole('button', { name: 'Retry', exact: true }).click()
-      await waitForPublication(page)
-      expect(new URL(page.url()).pathname).toBe(providerPath)
+      // An update returns to the provider's settings.
+      await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+      await page.goto(providerPath)
       // The operation's full name carries the namespace the replay kept.
       const drawer = await openOperation(page, 'hello')
       await drawer.getByText('coral.providers.replayed.hello', { exact: true }).waitFor()

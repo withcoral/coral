@@ -17,7 +17,6 @@ const provider: ProviderSettingsView = {
   account: 'caller',
   enabled: true,
   operationsReady: true,
-  operations: { total: 342, groups: 18, readOnly: 198, destructive: 137, blocked: 7 },
   connection: 'connected',
   canConnect: true,
   canReconnect: true,
@@ -177,7 +176,7 @@ export const YourAccountUnreadable: Story = {
   args: { provider: { ...provider, connection: 'unknown' } },
 }
 
-// Coral manages the Built-in Provider: its settings offer its operations only.
+// Coral manages the Built-in Provider: its settings offer no change.
 export const BuiltinProvider: Story = {
   args: {
     source: undefined,
@@ -188,7 +187,6 @@ export const BuiltinProvider: Story = {
       callRoot: 'coral.admin',
       builtin: true,
       account: 'none',
-      operations: { total: 1, groups: 0, readOnly: 0, destructive: 0, blocked: 0 },
     },
   },
 }

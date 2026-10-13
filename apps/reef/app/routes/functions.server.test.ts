@@ -4,7 +4,7 @@ import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { SavedFunctionDiagnosticCategory } from '@/generated/coral/management/v1/saved_function_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagementTransport, type ManagementHandlers } from '@/lib/management.test-support'
-import { loader as functionLoader } from './function'
+import { action as functionAction, loader as functionLoader } from './function'
 import { loader as functionsLoader, shouldRevalidate } from './functions'
 
 const coral = vi.hoisted(() => ({ transport: undefined as unknown }))
@@ -176,4 +176,63 @@ it.each([
       defaultShouldRevalidate: true,
     } as Parameters<typeof shouldRevalidate>[0]),
   ).toBe(expected)
+})
+
+// Local mode accepts submissions only from a loopback origin.
+const origin = 'http://127.0.0.1:3000'
+const remove = (path: string, intent = 'delete') => {
+  const form = new FormData()
+  form.set('intent', intent)
+  form.set('requestId', 'request')
+  return functionAction(
+    authRouteTestArgs(
+      new Request(`${origin}/workspaces/${workspace}/functions/${encodeURIComponent(path)}`, {
+        method: 'POST',
+        headers: { origin },
+        body: form,
+      }),
+      { workspace, path },
+      null,
+    ),
+  )
+}
+
+// Catches: deleting the wrong function, or leaving its drawer open after it is gone.
+it('deletes the open function and returns to the list', async () => {
+  const deleted: unknown[] = []
+  coral.transport = api({
+    deleteSavedFunction: (request) => {
+      deleted.push({ parent: request.parent, path: request.path })
+      return {}
+    },
+  })
+  const response = await remove('reports.total')
+  expect(deleted).toEqual([{ parent, path: 'reports.total' }])
+  expect(response).toBeInstanceOf(Response)
+  // The list announces the delete when it loads.
+  expect((response as Response).headers.get('location')).toBe(
+    `/workspaces/${workspace}/functions?functionDeleted=1`,
+  )
+})
+
+// Catches: a refused delete closing the dialog as if it worked.
+it('keeps a refused delete in the dialog with its reason', async () => {
+  coral.transport = api({
+    deleteSavedFunction: () => {
+      throw new ConnectError('concealed', Code.NotFound)
+    },
+  })
+  const result = await remove('reports.total')
+  expect(result).toMatchObject({
+    init: { status: 404 },
+    data: { error: 'You cannot delete this function. It no longer exists. Close this panel.' },
+  })
+})
+
+// Catches: a forged intent reaching Coral as a delete.
+it('rejects an unknown intent without calling Coral', async () => {
+  const deleteSavedFunction = vi.fn(() => ({}))
+  coral.transport = api({ deleteSavedFunction })
+  await expect(remove('reports.total', 'rename')).rejects.toMatchObject({ status: 400 })
+  expect(deleteSavedFunction).not.toHaveBeenCalled()
 })
