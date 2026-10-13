@@ -28,6 +28,14 @@ declare namespace coral {
     readonly traceId?: string;
   }
 }
+
+declare const console: {
+  debug(...values: unknown[]): void;
+  info(...values: unknown[]): void;
+  log(...values: unknown[]): void;
+  warn(...values: unknown[]): void;
+  error(...values: unknown[]): void;
+};
 `;
 
 let typeScriptLibrarySources;
