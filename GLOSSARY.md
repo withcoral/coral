@@ -231,7 +231,7 @@ effective Workspace Owner authority can discover or invoke its Operations; membe
 Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
 has no Provider Accounts. Coral itself publishes the Provider from a Setup when the selected route and Setup readiness
 allow it, including from a ready credential-requiring Setup on the `caller` route. When a person must finish the
-Setup, the Operation returns the Reef page and does not wait; Coral ends a Setup it prepared that nobody will finish.
+If a person must finish the Setup and the Run is still current, the Operation returns the Reef page and does not wait; Coral ends a Setup it prepared that nobody will finish.
 Its Operations never return a secret or an OAuth URL to the Program. A Reef link one returns may name a Provider Setup;
 that Setup's identity grants nothing, and only a Workspace Owner can act on the Setup.
 _Avoid_: admin API, administrative calls, coral.admin surface, system provider
