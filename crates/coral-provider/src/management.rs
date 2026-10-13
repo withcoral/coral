@@ -65,6 +65,37 @@ impl ProviderModule {
         tx.rollback().await?;
         Ok(result)
     }
+
+    /// Lists every Workspace Provider, in any state and in creation order, with
+    /// what each offers `actor`, from one snapshot. The Built-in Provider,
+    /// created with the Workspace, comes first.
+    ///
+    /// # Errors
+    /// Returns current Workspace authority, persistence, or corrupt-evidence failures.
+    pub async fn published_providers(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace: &WorkspaceId,
+    ) -> Result<Vec<crate::PublishedProvider>, Error> {
+        let caller = coral_workspace::AuthenticatedPrincipal::user(actor.clone());
+        let mut tx = self.database.begin_read_snapshot().await?;
+        self.management_authority(&mut tx, actor, workspace).await?;
+        let providers = repository::management_providers(&mut tx, workspace, None).await?;
+        let mut published = Vec::with_capacity(providers.len());
+        for active in providers {
+            published.push(
+                crate::program_setup::published_active_provider_in_transaction(
+                    &mut tx,
+                    active,
+                    caller.principal(),
+                )
+                .await?,
+            );
+        }
+        tx.rollback().await?;
+        Ok(published)
+    }
+
     /// Whether a Provider in this Workspace already uses `namespace`, so a
     /// Publication under it would fail with a namespace conflict.
     ///

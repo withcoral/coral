@@ -4,7 +4,7 @@ use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceDisplayName, WorkspaceRole,
 };
 
-use coral_catalog::{BuiltinCatalog, OperationHints};
+use coral_catalog::{AuthenticationKind, BuiltinCatalog, OperationHints};
 use coral_credentials::Secret;
 
 use super::tests::{
@@ -648,6 +648,7 @@ async fn an_owner_updates_the_builtin_provider_to_the_served_catalog_once() {
                 .unwrap();
         }
         let before = arranged.events().await.len();
+        let mut keys = arranged.keys().await;
         let served = catalog_b();
 
         let activated = arranged
@@ -657,7 +658,9 @@ async fn an_owner_updates_the_builtin_provider_to_the_served_catalog_once() {
             .expect("the update activates catalog B");
 
         assert_eq!(activated.provider(), arranged.builtin.id(), "{state:?}");
-        assert_eq!(arranged.keys().await, ["createProvider", "listThings"]);
+        keys.push("listThings".to_string());
+        keys.sort();
+        assert_eq!(arranged.keys().await, keys);
         assert_eq!(arranged.current().await.state(), state);
         let events = arranged.events().await;
         let Some([event]) = events.get(before..) else {
@@ -741,6 +744,7 @@ async fn a_refused_update_changes_nothing() {
             Refusal::OtherCatalog => reviewed = running().identity().to_string(),
         }
         let before = arranged.events().await.len();
+        let keys = arranged.keys().await;
 
         let refused = arranged
             .update_with(&served, &actor, 20, &etag, &provider, &reviewed)
@@ -762,7 +766,7 @@ async fn a_refused_update_changes_nothing() {
             Refusal::OtherCatalog => matches!(refused, Err(Error::BuiltinCatalogMismatch)),
         };
         assert!(expected, "{refusal:?}: {refused:?}");
-        assert_eq!(arranged.keys().await, ["createProvider"], "{refusal:?}");
+        assert_eq!(arranged.keys().await, keys, "{refusal:?}");
         assert_eq!(arranged.events().await.len(), before, "{refusal:?}");
     }
 }
@@ -830,4 +834,84 @@ async fn two_concurrent_updates_activate_one_generation() {
         "{outcomes:?}"
     );
     assert_eq!(arranged.events().await.len(), before + 1);
+}
+
+// Catches: a disabled Provider left out of the list though it still holds its
+// namespace, or a list whose order or account facts a Program cannot rely on.
+#[tokio::test]
+async fn published_providers_lists_every_provider_in_creation_order() {
+    let arranged = BuiltinWorkspace::new().await;
+    let workspace = arranged.workspace.id();
+    let weather = publish_provider(
+        &arranged.providers,
+        &change_context(arranged.owner.clone(), 15, '2'),
+        workspace,
+        CREDENTIAL_FREE_OPENAPI,
+        "weather",
+        CredentialRoute::None,
+    )
+    .await;
+    publish_provider(
+        &arranged.providers,
+        &change_context(arranged.owner.clone(), 16, '3'),
+        workspace,
+        crate::account_tests::CREDENTIAL_REQUIRED_OPENAPI,
+        "private",
+        CredentialRoute::Caller,
+    )
+    .await;
+    arranged
+        .providers
+        .disable_provider(
+            &change_context(arranged.owner.clone(), 17, '4')
+                .with_etag(&weather.etag())
+                .unwrap(),
+            workspace,
+            weather.id(),
+        )
+        .await
+        .unwrap();
+
+    let listed = arranged
+        .providers
+        .published_providers(&arranged.owner, workspace)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        listed
+            .iter()
+            .map(|published| (
+                published.provider.call_root().as_str(),
+                published.provider.state(),
+                published.authentication,
+                published.available_operations,
+                published.account_required,
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "coral.admin",
+                ProviderState::Active,
+                AuthenticationKind::None,
+                arranged.keys().await.len(),
+                false,
+            ),
+            (
+                "coral.providers.weather",
+                ProviderState::Disabled,
+                AuthenticationKind::None,
+                1,
+                false,
+            ),
+            // The Owner has not connected an Account yet.
+            (
+                "coral.providers.private",
+                ProviderState::Active,
+                AuthenticationKind::Bearer,
+                1,
+                true,
+            ),
+        ]
+    );
 }

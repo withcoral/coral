@@ -1,6 +1,7 @@
 //! `coral.admin.createProvider` prepares and configures a Provider Setup. Coral
 //! publishes it when nobody needs to sign in; otherwise the call returns the
 //! Reef page where a person finishes it. The call never waits for that person.
+//! `coral.admin.listProviders` lists the Providers a Program can check first.
 use super::*;
 use coral_provider::{ProviderSetupId, ProviderSetupState};
 
@@ -220,6 +221,64 @@ impl AdminScope {
         let mut created = self.created_setups().await;
         created.retain(|setup| !before.contains(setup));
         created
+    }
+
+    /// Publishes the credential-free Weather document under `weather`, as an
+    /// Owner does in Reef.
+    async fn publish_weather(&self) -> coral_provider::Provider {
+        let context = change(self.owner_user(), 20, '5');
+        let setup = self
+            .fixture
+            .providers
+            .prepare_openapi_fixture(
+                &context,
+                &self.workspace_id,
+                OpenApiDocument::parse(DOCUMENT).unwrap(),
+            )
+            .await
+            .unwrap();
+        self.fixture
+            .providers
+            .publish_workspace_provider(
+                &context,
+                WorkspaceProviderPublicationRequest::new(
+                    ManagementRequestId::parse("00000000-0000-4000-8000-000000000020").unwrap(),
+                    self.workspace_id.clone(),
+                    setup.id().clone(),
+                    ProviderNamespace::parse("weather").unwrap(),
+                    CredentialRoute::None,
+                ),
+            )
+            .await
+            .unwrap()
+            .published_provider()
+            .expect("published Provider")
+            .clone()
+    }
+
+    /// How many Operations the Workspace's Built-in Provider has.
+    async fn builtin_operations(&self) -> usize {
+        let builtin = self
+            .fixture
+            .providers
+            .inspect_providers(&self.owner_user(), &self.workspace_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|provider| provider.call_root().as_str() == "coral.admin")
+            .expect("the Workspace has its Built-in Provider");
+        self.fixture
+            .providers
+            .inspect_catalog_page(
+                &self.owner_user(),
+                &self.workspace_id,
+                builtin.id(),
+                None,
+                100,
+            )
+            .await
+            .unwrap()
+            .len()
     }
 }
 
@@ -1474,4 +1533,106 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
     );
     assert_eq!(fetches(&server).await, 1);
     assert_eq!(scope.setups_created_since(&before).await.len(), 1);
+}
+
+/// A Program that calls `listProviders` with `arguments`, the JavaScript
+/// argument list, and returns its Operation Result or the failure it catches.
+fn list_providers(arguments: &str) -> RunSubmission {
+    submission(
+        &"
+        try {
+            return await coral.admin.listProviders(ARGUMENTS);
+        } catch (error) {
+            if (!(error instanceof coral.OperationError)) throw error;
+            return { code: error.code, message: error.message };
+        }
+    "
+        .replace("ARGUMENTS", arguments),
+    )
+}
+
+// Catches: a result that misleads a Program about taken namespaces, such as
+// the Built-in Provider under a namespace an Owner can take or a disabled
+// Provider not marked disabled, a read that waits for approval, or an
+// argument the call silently ignores.
+#[tokio::test]
+async fn list_providers_lists_every_provider_without_approval() {
+    let scope = AdminScope::new("user:list-providers").await;
+    let weather = scope.publish_weather().await;
+    scope
+        .fixture
+        .providers
+        .disable_provider(
+            &change(scope.owner_user(), 21, '6')
+                .with_etag(&weather.etag())
+                .unwrap(),
+            &scope.workspace_id,
+            weather.id(),
+        )
+        .await
+        .unwrap();
+    let builtin_operations = scope.builtin_operations().await;
+    let listed = serde_json::json!({
+        "data": {
+            "providers": [
+                {
+                    "namespace": null,
+                    "displayName": "Coral",
+                    "state": "active",
+                    "credentialRoute": "none",
+                    "authentication": "none",
+                    "operations": builtin_operations,
+                    "accountRequired": false,
+                },
+                {
+                    "namespace": "weather",
+                    "displayName": "Weather",
+                    "state": "disabled",
+                    "credentialRoute": "none",
+                    "authentication": "none",
+                    "operations": 1,
+                    "accountRequired": false,
+                },
+            ],
+        },
+        "metadata": { "kind": "builtin" },
+    });
+
+    for (arguments, expected) in [
+        ("{}", listed.clone()),
+        // A call with no argument sends an empty object.
+        ("", listed),
+        (
+            r#"{ "namespace": "weather" }"#,
+            serde_json::json!({
+                "code": "invalid_input",
+                "message": "Operation arguments are invalid at `namespace`: unknown field; \
+                            pass an empty object",
+            }),
+        ),
+        (
+            "[]",
+            serde_json::json!({
+                "code": "invalid_input",
+                "message": "Operation arguments are invalid: pass an empty object",
+            }),
+        ),
+    ] {
+        let run = scope.start(&scope.owner, list_providers(arguments)).await;
+        assert_eq!(
+            final_value(&scope.terminal(&scope.owner, &run).await),
+            expected,
+            "{arguments}"
+        );
+        assert!(
+            scope
+                .fixture
+                .approvals()
+                .list_for_run(&scope.owner, &scope.workspace_id, &run)
+                .await
+                .unwrap()
+                .is_empty(),
+            "{arguments}: no approval request"
+        );
+    }
 }
