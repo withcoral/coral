@@ -204,6 +204,7 @@ const meta = {
       const Stub = createRoutesStub([
         {
           path: '*',
+          loader: context.parameters.loader,
           Component: () => (
             <ActionReviewSession>
               <Story />
@@ -910,6 +911,69 @@ export const DrawerNavigation: Story = {
       await expect(list.scrollTop).toBe(before)
       await expect(canvas.getByRole('heading', { name: 'Your recent activity' })).toBeVisible()
     }
+  },
+}
+const pickRows = ['first', 'second'].map((id) => ({
+  ...goal,
+  name: `${task}-${id}`,
+  intent: `Pick the ${id} record`,
+}))
+/**
+ * A click on another record while the drawer closes opens that record, even when
+ * its data arrives after the exit ends. The close must not navigate back over it.
+ */
+export const PickWhileClosing: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?tree=1&record=${encodeURIComponent(pickRows[0]!.name)}`,
+    // Slower than the drawer's exit, as a loader on a busy server can be.
+    loader: async ({ request }: { request: Request }) => {
+      if (new URL(request.url).searchParams.get('record') === pickRows[1]!.name)
+        await new Promise((resolve) => setTimeout(resolve, 800))
+      return null
+    },
+  },
+  render: function PickWhileClosing() {
+    const [query] = useSearchParams()
+    const selected = query.get('record')
+    const selectedRow = pickRows.find((row) => row.name === selected) ?? null
+    return (
+      <Activity
+        page={{
+          ...page,
+          rows: pickRows,
+          branches: {},
+          expanded: [],
+          selected,
+          selectedRow,
+          detail: selectedRow ? { kind: 'task', task: selectedRow } : null,
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement, userEvent }) => {
+    const screen = within(canvasElement.ownerDocument.body)
+    const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+    await expect(
+      within(dialog).getByRole('heading', { name: 'Pick the first record' }),
+    ).toBeVisible()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Close details' }))
+    const list = within(canvasElement).getByRole('table', { name: 'Activity records' })
+    // The pick lands as the exit ends, before React renders the pending navigation.
+    within(list).getByRole('link', { name: 'Pick the second record' }).click()
+    for (const animation of dialog.getAnimations()) animation.finish()
+    // The closing drawer is still in the page, so read whichever dialog shows now.
+    await waitFor(
+      () =>
+        expect(screen.getByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
+          'Pick the second record',
+        ),
+      { timeout: 3000 },
+    )
+    // The detail stays open once the exit and the slow load have both ended.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    await expect(screen.getByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
+      'Pick the second record',
+    )
   },
 }
 export const ExpansionLimit: Story = {
