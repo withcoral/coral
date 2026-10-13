@@ -1,6 +1,7 @@
 /** @vitest-environment happy-dom */
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import * as Dialog from '.'
 
@@ -14,6 +15,27 @@ function resize(width: number) {
   return act(async () => happyDOM.setViewport({ width }))
 }
 
+/** A modal confirmation the drawer's content opens, as Cancel run does. */
+function Confirmation() {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Cancel run
+      </button>
+      <Dialog.Root open={open} onOpenChange={setOpen}>
+        <Dialog.Portal>
+          <Dialog.Backdrop data-testid="confirmation-backdrop" />
+          <Dialog.Popup>
+            <Dialog.Title>Cancel this run?</Dialog.Title>
+            <Dialog.Close ariaLabel="Keep the run" />
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </>
+  )
+}
+
 function renderDrawer() {
   const onOpenChange = vi.fn()
   render(
@@ -25,6 +47,7 @@ function renderDrawer() {
           <Dialog.Popup placement="right" fullWidthOnMobile>
             <Dialog.Title>Record</Dialog.Title>
             <Dialog.Close />
+            <Confirmation />
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.BesidePageRoot>
@@ -61,4 +84,22 @@ it('at 640px or less the drawer is modal, and crossing switches the mode while o
   expect(screen.getByRole('button', { name: 'Page control' })).toBeInTheDocument()
   expect(drawer).toHaveFocus()
   expect(onOpenChange).not.toHaveBeenCalled()
+})
+
+// Catches: a confirmation inside the drawer that inherits the drawer's mode,
+// so it loses its backdrop beside the page, or that takes the drawer's place
+// as the popup to focus when the drawer becomes modal.
+it('a confirmation inside the drawer stays a modal dialog of its own', async () => {
+  const { user } = renderDrawer()
+  const drawer = await screen.findByRole('dialog', { name: 'Record' })
+  await user.click(screen.getByRole('button', { name: 'Cancel run' }))
+  await screen.findByRole('dialog', { name: 'Cancel this run?' })
+  expect(screen.getByTestId('confirmation-backdrop')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Keep the run' }))
+  await vi.waitFor(() =>
+    expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull(),
+  )
+  await user.click(screen.getByRole('button', { name: 'Page control' }))
+  await resize(640)
+  expect(drawer).toHaveFocus()
 })

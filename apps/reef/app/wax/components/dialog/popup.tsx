@@ -2,7 +2,7 @@ import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import classNames from 'classnames'
 import { useCallback, useContext } from 'react'
 
-import { BesidePageContext } from './beside-page-root'
+import { BesidePageContext, OwnBackdropContext } from './beside-page-root'
 
 import * as styles from './dialog.css'
 
@@ -52,7 +52,14 @@ export function Popup({
       ref={register ? registered : ref}
       {...props}
     >
-      {children}
+      {/* The mode belongs to this drawer: a dialog opened from its content is its own. */}
+      {besidePage ? (
+        <BesidePageContext value={null}>
+          <OwnBackdropContext value={besidePage.beside}>{children}</OwnBackdropContext>
+        </BesidePageContext>
+      ) : (
+        children
+      )}
     </BaseDialog.Popup>
   )
 }

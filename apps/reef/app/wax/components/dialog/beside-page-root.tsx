@@ -13,6 +13,12 @@ interface BesidePage {
 /** Set inside a `BesidePageRoot`: its `Backdrop` and `Popup` follow its mode. */
 export const BesidePageContext = createContext<BesidePage | null>(null)
 
+/**
+ * Set inside a drawer beside the page. A dialog nested in another shares its
+ * backdrop, but this drawer has none, so a dialog opened from it draws its own.
+ */
+export const OwnBackdropContext = createContext(false)
+
 const subscribe = (change: () => void) => {
   const query = window.matchMedia(mobile)
   query.addEventListener('change', change)
