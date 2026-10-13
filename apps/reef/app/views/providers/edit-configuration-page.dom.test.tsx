@@ -249,5 +249,7 @@ it('shows what a new read changed before you confirm it', () => {
     task: 'refresh',
   })
   expect(screen.getByRole('heading', { name: 'Changes in the new input' })).toBeVisible()
+  expect(screen.getByText('Saved: Records')).toBeVisible()
+  expect(screen.getByText('New input: Records v2')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Next' })).toBeVisible()
 })

@@ -95,6 +95,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
       ).toBe(true)
       // The read is unsaved, so Cancel asks first.
       await discardSettingsChange(page)
+      expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
       active.knobs.issuerPath = undefined
     })
     const provider = (await api.providers.listProviders({ parent })).providers[0]
@@ -168,6 +169,8 @@ export async function sharedAccountAtomicity(context: TestContext) {
           expect((await api.setups.getProviderSetup({ name: setupName })).authorized).toBe(false)
           // The confirmed configuration is unsaved, so Cancel asks first.
           await discardSettingsChange(page)
+          expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
+          expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
         } else {
           await page.getByText(/Granted permissions:.*additional\.permission/).waitFor()
           await page.getByRole('radio', { name: 'Use this account', exact: true }).check()

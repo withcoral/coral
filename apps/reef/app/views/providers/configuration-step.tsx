@@ -292,7 +292,7 @@ export function ConfigurationStep({
         aria-busy={pending}
         onInput={checkDirty}
       >
-        {/* What a new read changes; empty when you only edit the saved values. */}
+        {/* Where the new input differs from the saved values, when it does. */}
         <ConfigurationDifferences setup={setup} />
         <Fields form={form} intent="configure" />
         <input type="hidden" name="setup" value={setup.id} />
