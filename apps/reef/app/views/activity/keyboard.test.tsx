@@ -735,12 +735,12 @@ it('only the drawer itself steps the detail; its controls keep their arrows', as
   const [a, b] = [task('a'), task('b')]
   const { user, router } = renderActivity({ rows: [a, b], entry: `/activity?record=${a.name}` })
   const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
-  // Shift+Tab reaches the drawer itself from its first control.
-  expect(dialog).toHaveAttribute('tabindex', '0')
   act(() => within(dialog).getByRole('button', { name: 'Close details' }).focus())
   await user.keyboard('{ArrowDown}')
   expect(recordIn(router)).toBe(a.name)
-  act(() => dialog.focus())
+  // Shift+Tab from its first control returns to the drawer itself, which steps.
+  await user.tab({ shift: true })
+  expect(dialog).toHaveFocus()
   await user.keyboard('{ArrowDown}')
   expect(recordIn(router)).toBe(b.name)
   // Escape is the dialog's own, so it closes the drawer from a focused control too.
@@ -813,30 +813,26 @@ it('keeping an unsent comment cancels the step and ignores arrows meanwhile', as
   expect(screen.getByRole('textbox', { name: 'Comment (optional)' })).toHaveValue('Keep this draft')
 })
 
-// Catches: a close the unsent-comment guard blocked leaving the drawer closed for
-// good, so opening another record from the table shows nothing.
-it('a record opened from the table after a kept comment shows its detail', async () => {
-  const { user, router, b, confirmation } = await draftOnApproval()
+// Catches: a close the unsent-comment guard let through leaving the table without
+// focus or cursor, so Enter does nothing.
+it('discarding an unsent comment on Escape returns to the table, where Enter opens again', async () => {
+  const { user, router, confirmation } = await draftOnApproval()
   await user.click(within(confirmation).getByRole('button', { name: 'Keep editing' }))
   act(() => details().focus())
   await user.keyboard('{Escape}')
   await user.click(
     within(await screen.findByRole('dialog', { name: 'Discard your comment?' })).getByRole(
       'button',
-      { name: 'Keep editing' },
-    ),
-  )
-  await user.click(within(activityTable()).getByRole('link', { name: 'Task b' }))
-  await user.click(
-    within(await screen.findByRole('dialog', { name: 'Discard your comment?' })).getByRole(
-      'button',
       { name: 'Discard comment' },
     ),
   )
-  await vi.waitFor(() => expect(recordIn(router)).toBe(b.name))
-  expect(await screen.findByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
-    'Task b',
-  )
+  await vi.waitFor(() => {
+    expect(recordIn(router)).toBeNull()
+    expect(activityTable()).toHaveFocus()
+    expect(cursor()).toBe('opaque-principal')
+  })
+  await user.keyboard('{Enter}')
+  expect(recordIn(router)).toBe(waiting.name)
 })
 
 // Catches: an arrow on the page pulling focus out of another dialog, such as the
@@ -850,9 +846,9 @@ it('an arrow on the page leaves another open dialog alone', async () => {
   expect(recordIn(router)).toBe(waiting.name)
 })
 
-// Catches: a drawer the unsent-comment guard kept from closing that the same
-// record cannot open again, because its URL does not change.
-it('the record a kept comment closed opens again from the table', async () => {
+// Catches: Escape with an unsent comment closing the drawer before the guard asks,
+// so keeping the comment leaves no detail, a hidden cursor and a dead Enter.
+it('Escape with an unsent comment asks first; keeping it keeps the detail', async () => {
   const { user, router, confirmation } = await draftOnApproval()
   await user.click(within(confirmation).getByRole('button', { name: 'Keep editing' }))
   act(() => details().focus())
@@ -863,23 +859,12 @@ it('the record a kept comment closed opens again from the table', async () => {
       { name: 'Keep editing' },
     ),
   )
-  await vi.waitFor(() =>
-    expect(screen.queryByRole('dialog', { name: 'Activity details' })).not.toBeInTheDocument(),
+  const kept = await screen.findByRole('dialog', { name: 'Activity details' })
+  expect(within(kept).getByRole('textbox', { name: 'Comment (optional)' })).toHaveValue(
+    'Keep this draft',
   )
-  await user.click(within(activityTable()).getByRole('link', { name: 'opaque-principal' }))
-  // The guard still asks; keeping the comment leaves the record open with it.
-  await user.click(
-    within(await screen.findByRole('dialog', { name: 'Discard your comment?' })).getByRole(
-      'button',
-      { name: 'Keep editing' },
-    ),
-  )
-  expect(
-    within(await screen.findByRole('dialog', { name: 'Activity details' })).getByRole('textbox', {
-      name: 'Comment (optional)',
-    }),
-  ).toHaveValue('Keep this draft')
   expect(recordIn(router)).toBe(waiting.name)
+  await vi.waitFor(() => expect(kept.contains(document.activeElement)).toBe(true))
 })
 
 it('discarding an unsent comment completes the step', async () => {

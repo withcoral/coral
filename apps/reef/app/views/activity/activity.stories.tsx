@@ -760,17 +760,27 @@ export const OpenWhileClosing: Story = {
       'heading',
       { name: first },
     )
+    // Watch every change until the clicked record shows: no open drawer may show
+    // the closed record meanwhile, with or without the exit animation.
+    const reopened: string[] = []
+    const watch = new MutationObserver(() => {
+      const shown = drawer()
+      if (shown?.hasAttribute('data-open') && shown.textContent?.includes(first))
+        reopened.push(first)
+    })
+    watch.observe(canvasElement.ownerDocument.body, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    })
     await userEvent.click(screen.getByRole('button', { name: 'Close details' }))
     await userEvent.click(within(canvasElement).getByRole('link', { name: second, hidden: true }))
-    // Until the clicked record arrives, a drawer that shows the closed one is
-    // still closing: it never opens again.
-    const closed = drawer()
-    if (closed && within(closed).queryByRole('heading', { name: first, hidden: true }))
-      await expect(closed).not.toHaveAttribute('data-open')
     await waitFor(() =>
       expect(within(drawer()!).getByRole('heading', { name: second })).toBeInTheDocument(),
     )
+    watch.disconnect()
     await expect(drawer()).toHaveAttribute('data-open')
+    await expect(reopened).toEqual([])
   },
 }
 /**

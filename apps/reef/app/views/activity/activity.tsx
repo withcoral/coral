@@ -40,6 +40,7 @@ import {
 import { ActivityDetail } from './detail'
 import { ActivityConnectedContext } from './live'
 import { PendingActions } from './pending'
+import { useUnsentComment } from '../actions/review'
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
 import { activityDays, utcDay } from '@/lib/activity-list'
@@ -459,12 +460,9 @@ export function Activity({
   ).get('record')
   // One drawer shows each record in turn, so a close belongs to the drawer: the
   // record it opened on, which arrow steps keep. A step that lands while it
-  // closes cannot reopen it. Any other record that arrives opens a new drawer,
-  // which a close the unsent-comment guard kept from finishing cannot hold shut;
-  // until it arrives, the closing drawer stays closed. Opening the record a held
-  // close still shows starts a new drawer at once, since no other record arrives.
+  // closes cannot reopen it. Any other record that arrives opens a new drawer;
+  // until it arrives, the closing drawer stays closed.
   const [steppedTo, setSteppedTo] = useState<string | null>(null)
-  const [reopened, setReopened] = useState(0)
   const [drawerRecord, setDrawerRecord] = useState(shown)
   const [arrived, setArrived] = useState(shown)
   if (arrived !== shown) {
@@ -476,17 +474,25 @@ export function Activity({
   useLayoutEffect(() => {
     where.current = { shown, headingTo, steppedTo }
   })
-  const drawer = Dialog.useCloseAfterExit(
-    page.selected ? `${drawerRecord ?? shown}#${reopened}` : null,
-    () => {
-      // A record opened while the drawer closed takes its place: the finished
-      // close does not navigate it away, however slowly it loads. A step the
-      // close interrupted is no such record, so the close still leaves it.
-      const { shown: closing, headingTo: next, steppedTo: stepping } = where.current
-      if (next && next !== closing && next !== stepping) return
-      void navigate(nav.backHref, { preventScrollReset: true })
+  const drawer = Dialog.useCloseAfterExit(page.selected ? (drawerRecord ?? shown) : null, () => {
+    // A record opened while the drawer closed takes its place: the finished
+    // close does not navigate it away, however slowly it loads. A step the
+    // close interrupted is no such record, so the close still leaves it.
+    const { shown: closing, headingTo: next, steppedTo: stepping } = where.current
+    if (next && next !== closing && next !== stepping) return
+    void navigate(nav.backHref, { preventScrollReset: true })
+  })
+  // With an unsent comment, a close navigates at once, so the comment guard asks
+  // over the open drawer, as it does for a step: keeping the comment keeps the
+  // detail. Without one, the drawer plays its exit before it navigates.
+  const unsent = useUnsentComment()
+  const closeDrawer = {
+    ...drawer,
+    onOpenChange: (next: boolean) => {
+      if (!next && unsent) void navigate(nav.backHref, { preventScrollReset: true })
+      else drawer.onOpenChange(next)
     },
-  )
+  }
   const observed = live !== undefined
   const glimpse = more !== undefined
   // A glimpse never loads more, and lists only the latest roots a live update merged in.
@@ -530,17 +536,15 @@ export function Activity({
     expanded: page.expanded,
     stops,
     cursor,
-    shown,
   })
   useLayoutEffect(() => {
-    latest.current = { nav, navigate, live, more, expanded: page.expanded, stops, cursor, shown }
+    latest.current = { nav, navigate, live, more, expanded: page.expanded, stops, cursor }
   })
   const [actions] = useState<RowActions>(() => ({
     select: (row) => {
       // A record opened from the table is no step, even one a guard held back.
       setSteppedTo(null)
       const current = latest.current
-      if (row.name === current.shown) setReopened((count) => count + 1)
       // A glimpse opens the record on its Activity page, at the top of that page.
       if (current.more) void current.navigate(revealHref(row))
       else void current.navigate(current.nav.recordHref(row.name), { preventScrollReset: true })
@@ -709,6 +713,28 @@ export function Activity({
     revealStop(cursorStop)
     return false
   }
+  // A detail the comment guard let go leaves with its navigation, while the
+  // guard's question still holds focus; that question then closes onto nothing.
+  // Once no other dialog remains, focus left on the page returns to the table.
+  const hadDetail = useRef(Boolean(page.selected))
+  useEffect(() => {
+    const had = hadDetail.current
+    hadDetail.current = Boolean(page.selected)
+    const node = table.current
+    if (!had || page.selected || glimpse || !node) return
+    const settle = () => {
+      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return false
+      if (document.activeElement === document.body || !document.activeElement)
+        node.focus({ preventScroll: true })
+      return true
+    }
+    if (settle()) return
+    const watch = new MutationObserver(() => {
+      if (settle()) watch.disconnect()
+    })
+    watch.observe(document.body, { childList: true, subtree: true })
+    return () => watch.disconnect()
+  }, [page.selected, glimpse])
   const scope = useMemo<RowScope>(
     () => ({
       selected: page.selected,
@@ -880,7 +906,7 @@ export function Activity({
             )}
           </div>
           {/* One drawer shows each record in turn, so stepping does not reopen it. */}
-          <Dialog.Root key={page.selected ? 'open' : 'closed'} {...drawer}>
+          <Dialog.Root key={page.selected ? 'open' : 'closed'} {...closeDrawer}>
             <Dialog.Portal>
               <Dialog.Backdrop />
               <Dialog.Popup

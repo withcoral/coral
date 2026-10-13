@@ -276,6 +276,11 @@ test('Activity keys wait for the table or drawer: the sidebar keeps its keys, an
       await page.keyboard.press('Enter')
       await dialog.waitFor()
       await expect.poll(() => hasFocus(dialog)).toBe(true)
+      // Tab enters the drawer's controls; Shift+Tab from the first returns to it.
+      await page.keyboard.press('Tab')
+      expect(await hasFocus(dialog)).toBe(false)
+      await page.keyboard.press('Shift+Tab')
+      expect(await hasFocus(dialog)).toBe(true)
       const opened = new URL(page.url()).searchParams.get('record')
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
       await page.keyboard.press('ArrowDown')
