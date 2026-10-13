@@ -142,14 +142,9 @@ const cursor = () => {
   return row ? within(row).getByRole('link', { hidden: true }).textContent : null
 }
 
-// Catches: page-global keys. Activity acts only on keys the table itself
-// receives, so focus on the page or on a control elsewhere keeps its own keys,
-// and ↓ never pulls focus into the table.
-it.each<[string, () => HTMLElement | null, number]>([
-  ['the page', () => null, 0],
-  // Its own Enter and Space each activate it.
-  ['a button elsewhere on the page', () => screen.getByRole('button', { name: 'Elsewhere' }), 2],
-])('keys do nothing while %s has focus', async (_, focused, activations) => {
+// Catches: page-global keys. A control elsewhere on the page keeps its own keys,
+// and ↓ never pulls focus from it into the table.
+it('keys do nothing while a button elsewhere on the page has focus', async () => {
   const a = task('a')
   const clicked = vi.fn()
   const { user, router } = renderActivity({
@@ -160,7 +155,7 @@ it.each<[string, () => HTMLElement | null, number]>([
   elsewhere.textContent = 'Elsewhere'
   elsewhere.addEventListener('click', clicked)
   try {
-    focused()?.focus()
+    elsewhere.focus()
     const before = document.activeElement
     await user.keyboard('{ArrowDown}{ArrowDown}')
     expect(document.activeElement).toBe(before)
@@ -170,10 +165,24 @@ it.each<[string, () => HTMLElement | null, number]>([
       record: null,
       expanded: [],
     })
-    expect(clicked).toHaveBeenCalledTimes(activations)
+    // Its own Enter and Space each activate it.
+    expect(clicked).toHaveBeenCalledTimes(2)
   } finally {
     elsewhere.remove()
   }
+})
+
+// Catches: arrows on the page background doing nothing, or Enter and Space there
+// acting on a table nobody focused.
+it('an arrow on the page focuses the table and moves its cursor', async () => {
+  const { user, router } = renderActivity({ rows: [task('a'), task('b')] })
+  await user.keyboard('{Enter} ')
+  expect({ cursor: cursor(), record: recordIn(router) }).toEqual({ cursor: null, record: null })
+  await user.keyboard('{ArrowDown}')
+  expect(activityTable()).toHaveFocus()
+  expect(cursor()).toBe('Task a')
+  await user.keyboard('{ArrowDown}')
+  expect(cursor()).toBe('Task b')
 })
 
 // Catches: a table that Tab cannot reach, or that acts before it has focus.
@@ -301,7 +310,7 @@ it.each<[string, string, string[], string[]]>([
 
 // Catches: a held key that toggles a branch or opens the detail again on every repeat.
 it.each([
-  ['Space', '{ >3/}', [task('a').name], null],
+  ['Space', '{ >2/}', [task('a').name], null],
   ['Enter', '{Enter>3/}', [], task('a').name],
 ])('a held %s acts once', async (_, keys, expanded, record) => {
   const a = task('a')
@@ -329,6 +338,31 @@ it('collapsing the branch that holds the cursor moves the cursor to its parent',
   await user.click(screen.getByRole('button', { name: 'Collapse record' }))
   expect(expandedIn(router)).toEqual([])
   expect(cursor()).toBe('Task a')
+})
+
+// Catches: a second tree mapping, such as → expanding and ← collapsing as a tree
+// widget does, on a table where Space alone expands and collapses.
+it('← and → leave expansion to Space', async () => {
+  const a = task('a')
+  const { user, router } = renderActivity({
+    rows: [a, task('b')],
+    branches: { [a.name]: branch([tool(a.name, '0', 0)]) },
+  })
+  await focusTable()
+  await user.keyboard('{ArrowDown}{ArrowRight}{ArrowLeft}')
+  expect(expandedIn(router)).toEqual([])
+  await user.keyboard(' ')
+  expect(expandedIn(router)).toEqual([a.name])
+  await user.keyboard('{ArrowDown}{ArrowLeft}{ArrowRight}')
+  expect({ expanded: expandedIn(router), cursor: cursor() }).toEqual({
+    expanded: [a.name],
+    cursor: 'Tool 0',
+  })
+  await user.keyboard(' ')
+  expect({ expanded: expandedIn(router), cursor: cursor() }).toEqual({
+    expanded: [],
+    cursor: 'Task a',
+  })
 })
 
 // Catches: Space collapsing the enclosing Task instead of the closer Run,
@@ -484,8 +518,7 @@ it('keys act on the cursor record while the table has focus', async () => {
 const details = () => screen.getByRole('dialog', { name: 'Activity details' })
 
 // Catches: a detail that reopens (and refocuses) per record, one history entry
-// per arrow, a review selection carried to another record, or Space expanding
-// a branch from inside the detail.
+// per arrow, or a review selection carried to another record.
 it('↑ and ↓ step the open detail through the table, replacing the URL', async () => {
   const [a, b, c] = [task('a'), task('b'), task('c')]
   const { user, router } = renderActivity({
@@ -502,8 +535,7 @@ it('↑ and ↓ step the open detail through the table, replacing the URL', asyn
   expect(query.has('actionsAfter')).toBe(false)
   expect(details()).toBe(dialog)
   expect(dialog).toHaveTextContent('Task b')
-  await user.keyboard(' {ArrowDown}{ArrowDown}')
-  expect(expandedIn(router)).toEqual([])
+  await user.keyboard('{ArrowDown}{ArrowDown}')
   expect(recordIn(router)).toBe(c.name)
   await user.keyboard('{ArrowUp}')
   expect(recordIn(router)).toBe(b.name)
@@ -588,6 +620,78 @@ it('an expanded Run never stands in for a final value its window lacks', async (
   expect(recordIn(router)).toBe(task('b').name)
 })
 
+// Catches: Space in the drawer that cannot expand or collapse the Task or Run it
+// shows, that closes or changes the detail when it does, or that toggles again
+// on every repeat of a held key.
+it.each<[string, string, string[], string[]]>([
+  ['expands a collapsed Task', ' ', [], ['a']],
+  ['collapses an expanded Task', ' ', ['a'], []],
+  ['acts once while held', '{ >2/}', [], ['a']],
+  [
+    'expands nothing at the expansion bound',
+    ' ',
+    Array.from({ length: 20 }, (_, index) => `other${index}`),
+    Array.from({ length: 20 }, (_, index) => `other${index}`),
+  ],
+])('Space in the drawer %s it shows', async (_, keys, before, after) => {
+  const a = task('a')
+  const name = (id: string) => (id === 'a' ? a.name : id)
+  const entry = before.length
+    ? `${expand(...before.map(name))}&record=${a.name}`
+    : `/activity?record=${a.name}`
+  const { user, router } = renderActivity({
+    rows: [a, task('b')],
+    entry,
+    branches: { [a.name]: branch([tool(a.name, '0', 0)]) },
+  })
+  const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+  act(() => dialog.focus())
+  await user.keyboard(keys)
+  expect(expandedIn(router)).toEqual(after.map(name))
+  expect(recordIn(router)).toBe(a.name)
+  expect(details()).toBe(dialog)
+  expect(dialog).toHaveFocus()
+})
+
+// Catches: Space in the drawer taken from a focused control, or mapped for a
+// record that has no expansion of its own.
+it.each<[string, () => { entry: string; focus: (dialog: HTMLElement) => void }]>([
+  [
+    'a focused button keeps its own Space',
+    () => ({
+      entry: `/activity?record=${task('a').name}`,
+      focus: (dialog) => within(dialog).getByRole('button', { name: 'Close details' }).focus(),
+    }),
+  ],
+  [
+    'a record without children leaves Space alone',
+    () => ({
+      entry: `${expand(task('a').name)}&record=${tool(task('a').name, '0').name}`,
+      focus: (dialog) => dialog.focus(),
+    }),
+  ],
+  [
+    'a collapsed Run’s final value leaves Space alone',
+    () => ({
+      entry: `${expand(task('a').name)}&record=${final(run(task('a').name, 'r', 1).name).name}`,
+      focus: (dialog) => dialog.focus(),
+    }),
+  ],
+])('in the drawer, %s', async (_, setup) => {
+  const a = task('a')
+  const { entry, focus } = setup()
+  const { user, router } = renderActivity({
+    rows: [a, task('b')],
+    entry,
+    branches: { [a.name]: branch([tool(a.name, '0', 0), run(a.name, 'r', 1)]) },
+  })
+  const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+  const expandedBefore = expandedIn(router)
+  act(() => focus(dialog))
+  await user.keyboard(' ')
+  expect(expandedIn(router)).toEqual(expandedBefore)
+})
+
 // Catches: a cursor that Escape leaves on the Run heading rather than on its final
 // value, or clears when a collapsed Run shows no final-value row.
 it.each<[string, boolean, string, string]>([
@@ -644,19 +748,19 @@ it('only the drawer itself steps the detail; its controls keep their arrows', as
   })
 })
 
-// Catches: arrows that land on the page while the detail is open moving the
-// hidden table cursor, so Escape shows a record the detail never showed.
-it('keys on the page leave the table cursor alone while the detail is open', async () => {
+// Catches: an arrow on the page while the detail is open moving the hidden table
+// cursor instead of the detail, so Escape shows a record the detail never showed.
+it('an arrow on the page steps the open detail from the drawer', async () => {
   const [a, b, c] = [task('a'), task('b'), task('c')]
   const { user, router } = renderActivity({ rows: [a, b, c], entry: `/activity?record=${a.name}` })
   await screen.findByRole('dialog', { name: 'Activity details' })
   act(() => (document.activeElement as HTMLElement | null)?.blur())
-  await user.keyboard('{ArrowDown}{ArrowDown}')
-  expect(recordIn(router)).toBe(a.name)
-  act(() => details().focus())
+  await user.keyboard('{ArrowDown}')
+  expect(details()).toHaveFocus()
+  expect(recordIn(router)).toBe(b.name)
   await user.keyboard('{Escape}')
   await vi.waitFor(() => {
-    expect(cursor()).toBe('Task a')
+    expect(cursor()).toBe('Task b')
     expect(activityTable()).toHaveFocus()
   })
 })
@@ -725,6 +829,49 @@ it('a record opened from the table after a kept comment shows its detail', async
   )
 })
 
+// Catches: an arrow on the page pulling focus out of another dialog, such as the
+// unsent-comment confirmation, into the drawer behind it.
+it('an arrow on the page leaves another open dialog alone', async () => {
+  const { user, router, confirmation } = await draftOnApproval()
+  act(() => (document.activeElement as HTMLElement | null)?.blur())
+  await user.keyboard('{ArrowDown}')
+  expect(document.activeElement).toBe(document.body)
+  expect(confirmation).toBeInTheDocument()
+  expect(recordIn(router)).toBe(waiting.name)
+})
+
+// Catches: a drawer the unsent-comment guard kept from closing that the same
+// record cannot open again, because its URL does not change.
+it('the record a kept comment closed opens again from the table', async () => {
+  const { user, router, confirmation } = await draftOnApproval()
+  await user.click(within(confirmation).getByRole('button', { name: 'Keep editing' }))
+  act(() => details().focus())
+  await user.keyboard('{Escape}')
+  await user.click(
+    within(await screen.findByRole('dialog', { name: 'Discard your comment?' })).getByRole(
+      'button',
+      { name: 'Keep editing' },
+    ),
+  )
+  await vi.waitFor(() =>
+    expect(screen.queryByRole('dialog', { name: 'Activity details' })).not.toBeInTheDocument(),
+  )
+  await user.click(within(activityTable()).getByRole('link', { name: 'opaque-principal' }))
+  // The guard still asks; keeping the comment leaves the record open with it.
+  await user.click(
+    within(await screen.findByRole('dialog', { name: 'Discard your comment?' })).getByRole(
+      'button',
+      { name: 'Keep editing' },
+    ),
+  )
+  expect(
+    within(await screen.findByRole('dialog', { name: 'Activity details' })).getByRole('textbox', {
+      name: 'Comment (optional)',
+    }),
+  ).toHaveValue('Keep this draft')
+  expect(recordIn(router)).toBe(waiting.name)
+})
+
 it('discarding an unsent comment completes the step', async () => {
   const { user, router, b, confirmation } = await draftOnApproval()
   await user.click(within(confirmation).getByRole('button', { name: 'Discard comment' }))
@@ -773,6 +920,9 @@ it.each<[string, Records & { entry?: string } & Pick<ActivityViewProps, 'more'>]
 ])('%s takes no keyboard cursor', async (_, records) => {
   const { user, router } = renderActivity(records)
   const before = recordIn(router)
+  // An arrow on the page enters no table that takes no cursor.
+  await user.keyboard('{ArrowDown}')
+  expect(activityTable()).not.toHaveFocus()
   await focusTable()
   await user.keyboard('{ArrowDown}{ArrowUp}{Enter}')
   expect(document.querySelector('[data-active]')).toBeNull()

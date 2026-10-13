@@ -32,6 +32,9 @@ const cursorAt = (table: Locator) =>
     }
   })
 
+/** Whether `locator` is the element with focus. */
+const hasFocus = (locator: Locator) => locator.evaluate((el) => el === document.activeElement)
+
 /** Tabs forward until the table itself has focus, as a keyboard user enters it. */
 async function tabInto(page: Page, table: Locator) {
   for (let presses = 0; !(await table.evaluate((t) => t === document.activeElement)); presses++) {
@@ -197,7 +200,7 @@ test('The keyboard drives an agent’s Activity, its tree, and its detail', asyn
 // Reaching Activity through the sidebar tab, rather than `page.goto`, leaves
 // that link focused. Activity's keys act only on the focused table, so the link
 // keeps its own keys until Tab brings focus into the table.
-test('Activity keys wait for the table: the sidebar keeps its keys, and Tab enters the table', async (context) => {
+test('Activity keys wait for the table or drawer: the sidebar keeps its keys, and the page background enters them', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor, target }) => {
     const workspace = await createWorkspace(actor.accessToken, `First press ${crypto.randomUUID()}`)
     const intent = `First press task ${crypto.randomUUID()}`
@@ -231,14 +234,41 @@ test('Activity keys wait for the table: the sidebar keeps its keys, and Tab ente
       expect(await table.locator('[role="row"][data-active]').count()).toBe(0)
       expect(new URL(page.url()).search).toBe('')
     })
-    await step('Tab enters the table, where ↓ then Space expand the Task', async () => {
-      await tabInto(page, table)
+    const expanded = () => new URL(page.url()).searchParams.getAll('expand').length
+    await step(
+      'An arrow on the page background focuses the table and moves its cursor',
+      async () => {
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+        await page.keyboard.press('ArrowDown')
+        expect(await hasFocus(table)).toBe(true)
+        expect((await cursorAt(table)).label).toBe(intent)
+      },
+    )
+    await step('← and → leave expansion alone; Space expands the cursor Task', async () => {
       const before = await table.getByRole('row').count()
-      await page.keyboard.press('ArrowDown')
-      expect((await cursorAt(table)).label).toBe(intent)
+      await page.keyboard.press('ArrowRight')
+      await page.keyboard.press('ArrowLeft')
+      expect(expanded()).toBe(0)
       await page.keyboard.press('Space')
       await expect.poll(() => table.getByRole('row').count()).toBeGreaterThan(before)
-      expect(new URL(page.url()).searchParams.getAll('expand')).toHaveLength(1)
+      expect(expanded()).toBe(1)
+      await page.keyboard.press('ArrowLeft')
+      expect(expanded()).toBe(1)
+    })
+    await step('With the detail open, an arrow on the page steps the drawer', async () => {
+      const dialog = page.getByRole('dialog', { name: 'Activity details', exact: true })
+      await page.keyboard.press('Enter')
+      await dialog.waitFor()
+      await expect.poll(() => hasFocus(dialog)).toBe(true)
+      const opened = new URL(page.url()).searchParams.get('record')
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+      await page.keyboard.press('ArrowDown')
+      await expect.poll(() => new URL(page.url()).searchParams.get('record')).not.toBe(opened)
+      expect(await hasFocus(dialog)).toBe(true)
+      await page.keyboard.press('Escape')
+      await page.waitForURL((url) => !url.searchParams.has('record'))
+      await expect.poll(() => hasFocus(table)).toBe(true)
+      expect((await cursorAt(table)).label).not.toBe(intent)
     })
   })
 })

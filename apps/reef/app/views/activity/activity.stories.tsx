@@ -664,6 +664,42 @@ export const LargeHistory: Story = {
   },
 }
 /**
+ * Large history whose selection reaches the page `lag` ms after the URL, as a
+ * loader's does. It lists the searches the URL named and the one now loaded.
+ */
+function LaggedHistory({ lag }: { lag: number }) {
+  const { search } = useLocation()
+  const [loaded, setLoaded] = useState(search)
+  const [visited, setVisited] = useState([search])
+  if (visited.at(-1) !== search) setVisited([...visited, search])
+  useEffect(() => {
+    const timer = setTimeout(() => setLoaded(search), lag)
+    return () => clearTimeout(timer)
+  }, [search, lag])
+  const selected = new URLSearchParams(loaded).get('record')
+  const selectedRow = (selected && largeRows.get(selected)) || null
+  return (
+    <>
+      <output data-testid="location">{search}</output>
+      <output data-testid="visited">{visited.join(' ')}</output>
+      <output data-testid="loaded">{loaded}</output>
+      <Activity
+        page={{
+          ...page,
+          rows: largeRoots,
+          branches: {},
+          expanded: [],
+          selected: selectedRow ? selected : null,
+          selectedRow,
+          detail: selectedRow?.kind === 'task' ? { kind: 'task', task: selectedRow } : null,
+          pending: undefined,
+        }}
+      />
+    </>
+  )
+}
+
+/**
  * Press ↓ in the open detail, then Escape before the next record arrives. The
  * selection reaches the page 100 ms after the URL, as a loader's does, so the
  * step lands while the drawer closes. The drawer stays closed. It needs the
@@ -674,37 +710,7 @@ export const EscapeWhileStepping: Story = {
     initialEntry: `/workspaces/finance/activity?tree=1&record=${largeTasks[0]!.name}`,
     chromatic: { disableSnapshot: true },
   },
-  render: function EscapeWhileStepping() {
-    const { search } = useLocation()
-    const [loaded, setLoaded] = useState(search)
-    const [visited, setVisited] = useState<string[]>([])
-    useEffect(() => {
-      setVisited((before) => [...before, search])
-      const timer = setTimeout(() => setLoaded(search), 100)
-      return () => clearTimeout(timer)
-    }, [search])
-    const selected = new URLSearchParams(loaded).get('record')
-    const selectedRow = (selected && largeRows.get(selected)) || null
-    return (
-      <>
-        <output data-testid="location">{search}</output>
-        <output data-testid="visited">{visited.join(' ')}</output>
-        <output data-testid="loaded">{loaded}</output>
-        <Activity
-          page={{
-            ...page,
-            rows: largeRoots,
-            branches: {},
-            expanded: [],
-            selected: selectedRow ? selected : null,
-            selectedRow,
-            detail: selectedRow?.kind === 'task' ? { kind: 'task', task: selectedRow } : null,
-            pending: undefined,
-          }}
-        />
-      </>
-    )
-  },
+  render: () => <LaggedHistory lag={100} />,
   play: async ({ canvasElement, userEvent }) => {
     const screen = within(canvasElement.ownerDocument.body)
     const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
@@ -723,13 +729,98 @@ export const EscapeWhileStepping: Story = {
     // The step reaches the page while the drawer closes. A closing drawer steps no further.
     await waitFor(() => expect(named()).toHaveLength(2))
     await waitFor(() => expect(loaded().get('record')).toBe(named()[1]))
+    // An arrow on the page background reaches a closing drawer no more than one on it.
+    ;(canvasElement.ownerDocument.activeElement as HTMLElement | null)?.blur()
     await userEvent.keyboard('{ArrowDown}')
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Activity details' })).not.toBeInTheDocument(),
     )
     await waitFor(() => expect(screen.getByTestId('location').textContent).not.toContain('record='))
     await expect(named()).toHaveLength(2)
-    await expect(screen.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+    // Focus returns as the drawer unmounts; under load that can trail the URL.
+    await waitFor(() =>
+      expect(screen.getByRole('table', { name: 'Activity records' })).toHaveFocus(),
+    )
+  },
+}
+/**
+ * Close the detail, then open another record from the table while the drawer
+ * still plays its exit. The closed record does not reopen while the next one
+ * loads; the drawer opens on the record clicked. It needs the drawer's real exit
+ * animation, so it runs in a browser.
+ */
+export const OpenWhileClosing: Story = {
+  parameters: EscapeWhileStepping.parameters,
+  render: EscapeWhileStepping.render,
+  play: async ({ canvasElement, userEvent }) => {
+    const screen = within(canvasElement.ownerDocument.body)
+    const [first, second] = [largeTasks[0]!.intent, largeTasks[1]!.intent]
+    const drawer = () => screen.queryByRole('dialog', { name: 'Activity details', hidden: true })
+    await within(await screen.findByRole('dialog', { name: 'Activity details' })).findByRole(
+      'heading',
+      { name: first },
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    await userEvent.click(within(canvasElement).getByRole('link', { name: second, hidden: true }))
+    // Until the clicked record arrives, a drawer that shows the closed one is
+    // still closing: it never opens again.
+    const closed = drawer()
+    if (closed && within(closed).queryByRole('heading', { name: first, hidden: true }))
+      await expect(closed).not.toHaveAttribute('data-open')
+    await waitFor(() =>
+      expect(within(drawer()!).getByRole('heading', { name: second })).toBeInTheDocument(),
+    )
+    await expect(drawer()).toHaveAttribute('data-open')
+  },
+}
+/**
+ * Press ↓ in the open detail, then Escape while the next record still loads,
+ * more slowly than the drawer closes. The close still leaves the detail: the
+ * step it interrupted does not keep the record in the URL.
+ */
+export const EscapeWhileSteppingSlowly: Story = {
+  parameters: EscapeWhileStepping.parameters,
+  render: () => <LaggedHistory lag={700} />,
+  play: async ({ canvasElement, userEvent }) => {
+    const screen = within(canvasElement.ownerDocument.body)
+    const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+    await waitFor(() => expect(dialog).toHaveFocus())
+    await userEvent.keyboard('{ArrowDown}{Escape}')
+    await waitFor(
+      () => expect(screen.getByTestId('location').textContent).not.toContain('record='),
+      { timeout: 3000 },
+    )
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Activity details' })).not.toBeInTheDocument(),
+    )
+  },
+}
+/**
+ * The same, when the clicked record loads more slowly than the drawer closes:
+ * the finished close does not navigate the click away.
+ */
+export const OpenWhileClosingSlowly: Story = {
+  parameters: EscapeWhileStepping.parameters,
+  render: () => <LaggedHistory lag={700} />,
+  play: async ({ canvasElement, userEvent }) => {
+    const screen = within(canvasElement.ownerDocument.body)
+    const [first, second] = [largeTasks[0]!.intent, largeTasks[1]!.intent]
+    await within(await screen.findByRole('dialog', { name: 'Activity details' })).findByRole(
+      'heading',
+      { name: first },
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Close details' }))
+    await userEvent.click(within(canvasElement).getByRole('link', { name: second, hidden: true }))
+    // The closing drawer may unmount first; the clicked record then opens a new one.
+    const drawer = () => screen.getByRole('dialog', { name: 'Activity details' })
+    await waitFor(
+      () => expect(within(drawer()).getByRole('heading', { name: second })).toBeInTheDocument(),
+      { timeout: 3000 },
+    )
+    await expect(drawer()).toHaveAttribute('data-open')
+    await expect(
+      new URLSearchParams(screen.getByTestId('location').textContent ?? '').get('record'),
+    ).toBe(largeTasks[1]!.name)
   },
 }
 /** Whether all of `row` shows: its top and bottom edges are not under a pinned heading. */
@@ -778,6 +869,20 @@ export const KeyboardCursor: Story = {
     await within(dialog).findByRole('heading', { name: largeTasks[2]!.intent })
     await expect(screen.getByRole('dialog', { name: 'Activity details' })).toBe(dialog)
     await expect(dialog.scrollTop).toBe(0)
+    // Space in the drawer collapses, then expands, the Task it shows; the drawer
+    // stays open on it and keeps focus. The table behind shows the change.
+    const toggle = () =>
+      within(
+        list.querySelector<HTMLElement>(`[data-record-key="${CSS.escape(largeTasks[2]!.name)}"]`)!,
+      ).getByRole('button', { hidden: true, name: /^(Expand|Collapse) record$/ })
+    await expect(toggle()).toHaveAccessibleName('Collapse record')
+    await userEvent.keyboard(' ')
+    await waitFor(() => expect(toggle()).toHaveAccessibleName('Expand record'))
+    await userEvent.keyboard(' ')
+    await waitFor(() => expect(toggle()).toHaveAccessibleName('Collapse record'))
+    await expect(screen.getByRole('dialog', { name: 'Activity details' })).toBe(dialog)
+    await expect(dialog).toHaveFocus()
+    await within(dialog).findByRole('heading', { name: largeTasks[2]!.intent })
   },
 }
 /**
