@@ -898,6 +898,12 @@ it('a row click with an unsent comment asks first, and Escape there keeps the de
   expect(details()).toBeInTheDocument()
   await user.click(row('Task b'))
   const confirmation = await screen.findByRole('dialog', { name: 'Discard your comment?' })
+  // The click waits for the answer: the record and the draft stay until then.
+  // The modal confirmation hides the detail from assistive technology meanwhile.
+  expect(recordIn(router)).toBe(waiting.name)
+  expect(screen.getByRole('textbox', { name: 'Comment (optional)', hidden: true })).toHaveValue(
+    'Keep this draft',
+  )
   await user.click(within(confirmation).getByRole('button', { name: 'Discard comment' }))
   await vi.waitFor(() => expect(recordIn(router)).toBe(b.name))
   expect(details()).toHaveTextContent('Task b')

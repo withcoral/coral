@@ -152,11 +152,15 @@ async function driveActivity(
     async () => {
       const dialog = page.getByRole('dialog', { name: 'Activity details', exact: true })
       const shown = new URL(page.url()).searchParams.get('record')
+      // Back and Forward may have mounted a new drawer, so mark the one shown now.
+      await dialog.evaluate((element) => {
+        element.dataset.reelOpened = 'before-click'
+      })
       const link = table.getByRole('link', { name: child, exact: true })
       await link.click()
       await page.waitForURL((url) => url.searchParams.get('record') !== shown)
       await dialog.getByRole('heading', { name: older, exact: true }).waitFor({ state: 'detached' })
-      expect(await dialog.getAttribute('data-reel-opened')).toBe('once')
+      expect(await dialog.getAttribute('data-reel-opened')).toBe('before-click')
       // The table itself takes the keys; the clicked link keeps its own.
       await table.focus()
       await page.keyboard.press('ArrowDown')
