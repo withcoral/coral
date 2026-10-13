@@ -308,7 +308,7 @@ async fn workspace_uniqueness_and_invocation_follow_the_stored_call_root() {
 }
 
 #[tokio::test]
-async fn every_provider_read_reports_an_unparseable_stored_call_root_as_corrupt() {
+async fn exact_provider_reads_report_an_unparseable_stored_call_root_as_corrupt() {
     let (db, workspaces, providers) = test_modules().await;
     let owner = organization_user(db.database(), "user:stored-root", OrganizationRole::Owner).await;
     let context = change_context(owner.clone(), 10, 'a');
