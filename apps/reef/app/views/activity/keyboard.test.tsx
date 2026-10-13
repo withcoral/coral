@@ -811,6 +811,24 @@ it('a click on the open record or on empty table space changes nothing', async (
   expect(details()).toHaveTextContent('Task a')
 })
 
+// Catches: an open-record check that reads the loader's Run selection rather than
+// the final value the detail shows, so a click on the shown final value adds a
+// duplicate history entry and a click on its Run does nothing.
+it('beside an open final value, its own row changes nothing and its Run opens', async () => {
+  const { user, router, two } = finalValues(true)
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  const before = router.state.location
+  const finals = within(screen.getByRole('table', { name: 'Activity records' })).getAllByRole(
+    'link',
+    { name: 'final value' },
+  )
+  await user.click(finals.at(-1)!)
+  expect(router.state.location).toBe(before)
+  await user.click(row('Run two'))
+  expect(recordIn(router)).toBe(two.name)
+  expect(router.state.historyAction).toBe('PUSH')
+})
+
 // Catches: arrows in the table moving a hidden cursor while the detail stays,
 // stepping from that cursor rather than the record shown, or jumping a gap.
 it('↑ and ↓ in the table step the open detail and stop at an unloaded gap', async () => {

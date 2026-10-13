@@ -499,7 +499,7 @@ export function Activity({
     live,
     more,
     // A closing drawer no longer shows its record, so a click opens it again.
-    shown: drawer.open ? page.selected : null,
+    shown: drawer.open ? shown : null,
     expanded: page.expanded,
     stops,
     cursor,
