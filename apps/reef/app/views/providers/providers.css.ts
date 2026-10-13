@@ -517,6 +517,14 @@ export const emptyActions = style({
   minWidth: 0,
   width: '100%',
 })
+// A Setup that ended: leave on the left, start again on the right, as a step's actions are.
+export const endedActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
+  justifyContent: 'center',
+})
 export const operationsScroll = style({ padding: 4 })
 // An empty panel keeps roughly the height it will have once it holds rows, and
 // centres its message in that room rather than resting on the search bar.

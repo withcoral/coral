@@ -69,8 +69,17 @@ function renderPage({
   task = 'configuration',
   account = 'none',
   local = false,
-}: { page?: SetupView; task?: UpdateTask; account?: AccountChoice; local?: boolean } = {}) {
+  source,
+}: {
+  page?: SetupView
+  task?: UpdateTask
+  account?: AccountChoice
+  local?: boolean
+  source?: { url: string; kind: 'mcp' | 'url' }
+} = {}) {
   const intents: string[] = []
+  // What each Start again sends to open a new Setup.
+  const prepares: Record<string, FormDataEntryValue>[] = []
   // Whether each publication accepted that accounts may stop working.
   const consents: string[] = []
   const Stub = createRoutesStub([
@@ -80,6 +89,8 @@ function renderPage({
         <EditConfigurationPage
           currentAccount={account}
           displayName="Records"
+          etag="v2"
+          source={source}
           basePath={`${providerPath}/update`}
           cancelPath={providerPath}
           providersPath="/workspaces/demo/providers"
@@ -100,6 +111,7 @@ function renderPage({
       action: async ({ request }) => {
         const fields = await request.formData()
         intents.push(String(fields.get('intent')))
+        if (fields.get('intent') === 'prepare') prepares.push(Object.fromEntries(fields))
         if (fields.get('intent') === 'publish')
           consents.push(
             String(
@@ -119,7 +131,7 @@ function renderPage({
       <Stub initialEntries={[`${providerPath}/update`]} />
     </LocalDeploymentContext>,
   )
-  return { intents, consents }
+  return { intents, consents, prepares }
 }
 
 const rename = async () => {
@@ -252,4 +264,36 @@ it('shows what a new read changed before you confirm it', () => {
   expect(screen.getByText('Saved: Records')).toBeVisible()
   expect(screen.getByText('New input: Records v2')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Next' })).toBeVisible()
+})
+
+// Catches: an expired Setup that strands you, or a Start again that opens the
+// wrong task, rereads the wrong source, or carries the provider version it began with.
+it.each([
+  ['an edit', 'configuration', undefined, { source: 'current' }],
+  ['an account change', 'accounts', undefined, { source: 'current' }],
+  [
+    'a refresh',
+    'refresh',
+    { url: 'https://records.example.com/mcp', kind: 'mcp' },
+    { source: 'mcp', sourceUrl: 'https://records.example.com/mcp' },
+  ],
+] as const)('starts %s again after its Setup expires', async (_, task, source, sent) => {
+  const page = renderPage({ page: { ...setup, state: 'expired' }, task, source })
+  expect(screen.getByText('This setup expired')).toBeInTheDocument()
+
+  await userEvent.click(screen.getByRole('button', { name: 'Start again' }))
+  await screen.findByRole('heading', { name: 'Provider' })
+  expect(page.prepares).toEqual([
+    expect.objectContaining({ ...sent, task, etag: 'v2', intent: 'prepare' }),
+  ])
+})
+
+// Catches: a Start again that cannot work, because an uploaded document is not kept.
+it('sends you to settings to refresh an uploaded document again', () => {
+  renderPage({ page: { ...setup, state: 'expired' }, task: 'refresh' })
+  expect(screen.queryByRole('button', { name: 'Start again' })).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Choose a source' })).toHaveAttribute(
+    'href',
+    `${providerPath}/settings`,
+  )
 })
