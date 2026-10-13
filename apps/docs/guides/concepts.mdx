@@ -44,13 +44,13 @@ Each provider you add carries:
 
 You can add a provider multiple times, each under its own namespace, to give the same operations a different account setting and policy.
 
-### Coral admin
+### Built-in provider
 
-Every [workspace](#workspaces) also has one built-in provider, **Coral admin**. Coral defines its operations and performs them itself, without an upstream service.
+Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its operations and performs them itself, without an upstream service. It is listed first under **Providers** in the [Coral UI](#coral-ui).
 
 - Its call paths begin with `coral.admin`, not with a namespace.
 - Only workspace owners can find and call its operations. Members and agents cannot see them.
-- Workspace owners can only disable it, enable it, and set its [policy](#operation-policy) under **Providers** in the [Coral UI](#coral-ui). Nobody can rename or remove it. It has no [accounts](#account-setting).
+- Workspace owners can only disable it, enable it, and set its [policy](#operation-policy). Nobody can rename or remove it. It has no [accounts](#account-setting).
 
 ## Operations
 
@@ -62,7 +62,7 @@ An **operation** is a single action exposed by a [provider](#providers). It has 
 await coral.providers.github.actions.addRepoAccess({ repo, user });
 ```
 
-Call paths of the [Coral admin](#coral-admin) provider begin with `coral.admin` instead.
+Call paths of the [built-in provider](#built-in-provider) begin with `coral.admin` instead.
 
 ## Account setting
 

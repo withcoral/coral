@@ -197,6 +197,7 @@ test('the built-in provider leads the providers you add', () => {
     'GitHub settings',
     'Weather settings',
   ])
+  expect(providerGroups()).toEqual(['Coral', 'Arcade', 'GitHub', 'Weather'])
 })
 
 // Catches: a policy form naming the provider's installation instead of its
