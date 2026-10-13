@@ -88,7 +88,9 @@ test('Add and manage a Workspace Provider from an uploaded document', async (con
         .getByRole('button', { name: 'Remove provider', exact: true })
         .click()
       await page.waitForURL((url) => url.pathname === `/workspaces/${workspace}/providers`)
-      await page.getByText('No providers yet', { exact: true }).waitFor()
+      // Every workspace keeps its built-in provider; only the removed one leaves.
+      await page.getByRole('rowgroup', { name: 'Coral admin', exact: true }).waitFor()
+      expect(await page.getByRole('rowgroup', { name: 'Stations', exact: true }).count()).toBe(0)
       expect((await page.request.get(providerPath)).status()).toBe(404)
     })
   })

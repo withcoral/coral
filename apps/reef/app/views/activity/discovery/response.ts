@@ -98,15 +98,7 @@ export const descriptionSchema = z.discriminatedUnion('kind', [
   }),
 ])
 
-const OPERATIONS = 'coral.providers.'
 const FUNCTIONS = 'coral.functions.'
-/** The provider namespace and the path inside it, for a complete Operation Call Path. */
-export function operationTarget(callPath: string) {
-  if (!callPath.startsWith(OPERATIONS)) return null
-  const rest = callPath.slice(OPERATIONS.length)
-  const dot = rest.indexOf('.')
-  return dot > 0 ? { namespace: rest.slice(0, dot), relativePath: rest.slice(dot + 1) } : null
-}
 /** The Saved Function Path, for a complete Saved Function Call Path. */
 export function functionTarget(callPath: string) {
   return callPath.startsWith(FUNCTIONS) ? callPath.slice(FUNCTIONS.length) : null
@@ -130,14 +122,12 @@ function operationFacts(value: {
     },
   }
 }
-/** An Operation without a title and a Saved Function show their path. */
+/**
+ * A Saved Function shows its path. An Operation without a title shows its Call
+ * Path until the loader links it to a provider and shortens it.
+ */
 function title(value: { call_path: string; title?: string | null }) {
-  return (
-    value.title ||
-    functionTarget(value.call_path) ||
-    operationTarget(value.call_path)?.relativePath ||
-    value.call_path
-  )
+  return value.title || functionTarget(value.call_path) || value.call_path
 }
 
 function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {

@@ -20,6 +20,7 @@ const CORAL_HOST_DECLARATION_FILE_NAME = "coral.d.ts";
 const CORAL_HOST_DECLARATION = `
 declare namespace coral {
   const providers: any;
+  const admin: any;
   const functions: any;
   function emit(value: unknown): Promise<void>;
   class OperationError extends Error {

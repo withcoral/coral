@@ -497,6 +497,7 @@ impl AccountModule {
         let access = crate::access::exact_in_transaction(&mut tx, owner, provider_id)
             .await?
             .ok_or(Error::ProviderNotFound)?;
+        crate::change::ProviderChange::AuthorizeAccount.permit(access.call_root())?;
         let (account, caller, kind) = if let Some(row) = reconnect {
             let caller = row
                 .user_id
@@ -752,10 +753,12 @@ pub async fn select_in_transaction(
     select_route(tx, target.provider_access(), principal, contract).await
 }
 
-/// Decides whether the Credential Route lets this Principal discover the Provider's
-/// Operations. A User connects its own `caller` Account during Invocation, so this
-/// reads no User Account; every other route and Principal needs usable credentials now.
-/// Discovery is not Account readiness: it creates no connection request and exposes no Account.
+/// Decides whether this Principal can discover the Provider's Operations.
+///
+/// [`reaches_call_root`] decides first. Otherwise the Credential Route decides. A User connects its own `caller`
+/// Account during Invocation, so this reads no User Account; every other route
+/// and Principal needs usable credentials now. Discovery is not Account
+/// readiness: it creates no connection request and exposes no Account.
 /// The discovery owner supplies current catalog/Provider and Workspace authority in one snapshot.
 /// # Errors
 /// Missing or incompatible credentials return false; persistence/corruption failures remain errors.
@@ -763,11 +766,15 @@ pub async fn discoverable_in_transaction(
     tx: &mut Transaction<'_>,
     provider: &crate::ActiveProvider,
     principal: &coral_workspace::Principal,
+    authority: &coral_workspace::PrincipalWorkspaceEvidence,
 ) -> Result<bool, Error> {
     let access = provider.provider().access();
     // Load the contract even when no Account is read, so corrupt evidence fails closed.
     let contract =
         coral_catalog::credential_contract_in_transaction(tx, provider.generation_id()).await?;
+    if !reaches_call_root(access.call_root(), principal, authority) {
+        return Ok(false);
+    }
     if connects_during_invocation(access, principal) {
         return Ok(true);
     }
@@ -775,6 +782,29 @@ pub async fn discoverable_in_transaction(
         Ok(_) => Ok(true),
         Err(Error::AccountRequired) => Ok(false),
         Err(error) => Err(error),
+    }
+}
+
+/// Decides whether this Principal may reach Operations under this Call Root at
+/// all, before any credential check. [`discoverable_in_transaction`] and
+/// [`crate::resolve_invocation_operation_in_transaction`] both apply it, so
+/// "cannot discover" and "cannot call" stay one rule.
+///
+/// Only a User with effective Workspace Owner authority, explicit or inherited
+/// from the Organization, reaches the Built-in Provider. Every Principal
+/// reaches an Owner-added Provider's Call Root.
+#[must_use]
+pub(crate) fn reaches_call_root(
+    call_root: &crate::ProviderCallRoot,
+    principal: &coral_workspace::Principal,
+    authority: &coral_workspace::PrincipalWorkspaceEvidence,
+) -> bool {
+    match call_root {
+        crate::ProviderCallRoot::Owner(_) => true,
+        crate::ProviderCallRoot::Builtin => {
+            principal.kind() == coral_workspace::PrincipalKind::User
+                && authority.effective_user_role() == Some(coral_workspace::WorkspaceRole::Owner)
+        }
     }
 }
 

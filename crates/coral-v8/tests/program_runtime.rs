@@ -899,6 +899,43 @@ fn operation_paths_are_not_thenables() {
     );
 }
 
+// Catches: a misspelled member such as `coral.emitt` becoming an Operation
+// call that fails only when the Run ends, instead of throwing where it is used.
+#[test]
+fn programs_call_every_call_root_under_coral_by_its_complete_path() {
+    let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");
+    let program = compiler
+        .compile(
+            compilation_deadline(),
+            "await coral.providers.admin.create({ id: 1 }); await coral.admin.createProvider(); \
+             let typo = 'no error'; try { coral.emitt(1); } catch (error) { typo = error.name; } \
+             return [typeof coral.emit, coral.OperationError.name, Object.keys(coral).sort(), \
+                     coral.then, typeof coral.billing, typo];",
+        )
+        .expect("compile Call Root calls");
+    let host = Arc::new(CapturingOperationHost::default());
+    let outcome = ProgramExecutor::new(IsolateLimits::default())
+        .execute_with_host(&program, host.clone())
+        .expect("invoke both Call Roots");
+    assert_eq!(
+        host.calls.lock().expect("calls").as_slice(),
+        &[
+            (
+                "coral.providers.admin.create".to_string(),
+                "{\"id\":1}".to_string()
+            ),
+            ("coral.admin.createProvider".to_string(), "{}".to_string()),
+        ]
+    );
+    assert_eq!(
+        outcome.final_value_json(),
+        Some(
+            "[\"function\",\"OperationError\",[\"OperationError\",\"admin\",\"emit\",\"providers\"],\
+             null,\"undefined\",\"TypeError\"]"
+        )
+    );
+}
+
 #[test]
 fn execution_has_no_forbidden_ambient_capability() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("start compiler");

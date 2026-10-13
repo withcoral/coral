@@ -25,5 +25,6 @@ coral-db.workspace = true
 coral-workspace.workspace = true
 
 [dev-dependencies]
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

@@ -642,11 +642,10 @@ async fn a_token_renewed_during_the_fence_hold_is_the_one_dispatched() {
     wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
     let owner = &account.operation.workspace_id;
     let mut tx = account.fixture.database.begin().await.unwrap();
-    let target = coral_provider::resolve_invocation_operation_in_transaction(
+    let target = coral_provider::resolve_owner_operation_in_transaction(
         &mut tx,
         owner,
-        &ProviderNamespace::parse("weather").unwrap(),
-        "getForecast",
+        "coral.providers.weather.getForecast",
     )
     .await
     .unwrap()

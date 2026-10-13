@@ -92,6 +92,9 @@
     configurable: false,
   });
 
+  // `providers` and `admin` start the two kinds of Provider Call Root; the
+  // host resolves the Provider from the complete Call Path. Any other member
+  // is undefined, so a misspelled one throws where the Program uses it.
   const coral = Object.create(null);
   Object.defineProperties(coral, {
     OperationError: {
@@ -102,6 +105,12 @@
     },
     providers: {
       value: callablePath("coral.providers"),
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    },
+    admin: {
+      value: callablePath("coral.admin"),
       enumerable: true,
       writable: false,
       configurable: false,

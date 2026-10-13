@@ -37,6 +37,7 @@ tracing.workspace = true
 unicode-id-start.workspace = true
 
 [dev-dependencies]
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-functions = { workspace = true, features = ["test-fixtures"] }
 coral-outbound.workspace = true
 coral-provider = { workspace = true, features = ["test-fixtures"] }

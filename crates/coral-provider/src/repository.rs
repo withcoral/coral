@@ -333,6 +333,8 @@ impl ProviderWithActiveGenerationRow {
         let display_name = ProviderDisplayName::parse(&self.display_name).map_err(|_error| {
             Error::CorruptData("Provider has invalid display metadata".to_string())
         })?;
+        let call_root = crate::ProviderCallRoot::parse(&self.namespace)
+            .map_err(|_error| Error::CorruptData("Provider has invalid Call Root".to_string()))?;
         let generation_id =
             ProviderGenerationId::parse(&self.active_generation_id).map_err(|_error| {
                 Error::CorruptData("Provider has invalid active Generation".to_string())
@@ -343,7 +345,7 @@ impl ProviderWithActiveGenerationRow {
                 crate::ProviderAccess::new(
                     id,
                     owner,
-                    crate::ProviderNamespace::parse(&self.namespace)?,
+                    call_root,
                     crate::CredentialRoute::from_storage_str(&self.credential_route)?,
                     self.account_setting_version,
                 ),
@@ -368,6 +370,7 @@ impl LifecycleAction {
             Self::SetupCanceled => "provider_setup.canceled",
             Self::SetupExpired => "provider_setup.expired",
             Self::PublicationCompleted => "provider_publication.completed",
+            Self::BuiltinProviderInstalled => "provider.builtin_installed",
             Self::ProviderDisabled => "provider.disabled",
             Self::ProviderUpdated => "provider.updated",
             Self::ProviderRestored => "provider.restored",
@@ -396,6 +399,7 @@ impl LifecycleAction {
             "provider_setup.canceled" => Ok(Self::SetupCanceled),
             "provider_setup.expired" => Ok(Self::SetupExpired),
             "provider_publication.completed" => Ok(Self::PublicationCompleted),
+            "provider.builtin_installed" => Ok(Self::BuiltinProviderInstalled),
             "provider.disabled" => Ok(Self::ProviderDisabled),
             "provider.updated" => Ok(Self::ProviderUpdated),
             "provider.restored" => Ok(Self::ProviderRestored),
@@ -1120,7 +1124,7 @@ pub(super) async fn insert_provider(
             Expr::val(provider.id().to_string()),
             Expr::val(Some(ToString::to_string(provider.owner()))),
             Expr::val(provider.display_name()),
-            Expr::val(provider.namespace().as_str()),
+            Expr::val(provider.call_root().as_str()),
             Expr::val(provider.credential_route().as_storage_str()),
             Expr::val(provider.account_setting_version()),
             Expr::val(generation_id.to_string()),
@@ -1279,7 +1283,7 @@ pub(crate) async fn set_oauth_client_failure(
     Ok(())
 }
 
-/// Update preparation belongs to the exact Provider identity, not its reusable namespace.
+/// Update preparation belongs to the exact Provider identity, not its reusable Call Root.
 /// Includes configuration-only Setups which have no provisional account row yet.
 pub(crate) async fn unconsumed_setups_for_provider(
     tx: &mut Transaction<'_>,

@@ -440,7 +440,7 @@ function Removal({ provider, form }: { provider: ProviderSettingsView; form: For
           intent="removeProvider"
           etag={provider.etag}
           destructive
-          description={`Coral removes ${provider.displayName}, its namespace coral.providers.${provider.namespace}, and every connected account. Unsent calls stop. You cannot undo this. Coral keeps the run history.`}
+          description={`Coral removes ${provider.displayName}, its namespace ${provider.callRoot}, and every connected account. Unsent calls stop. You cannot undo this. Coral keeps the run history.`}
         >
           <input type="hidden" name="provider" value={provider.id} />
         </ActionDialog>

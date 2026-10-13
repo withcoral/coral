@@ -4,11 +4,15 @@ use std::fmt;
 use base64::Engine as _;
 use coral_catalog::{OperationHints, OperationPresentation};
 pub use coral_provider::ProviderId;
-pub use coral_provider::access::ProviderNamespace;
+pub use coral_provider::access::ProviderCallRoot;
+use coral_provider::access::ProviderNamespace;
 
 pub use coral_functions::ExactSavedFunctionAuthoringMaterial as ExactSavedFunctionDetail;
 
 use crate::Error;
+
+#[cfg(test)]
+mod tests;
 
 /// Maximum UTF-8 byte length accepted by Universal Search.
 pub const SEARCH_QUERY_MAX_BYTES: usize = 4 * 1024;
@@ -140,7 +144,7 @@ impl fmt::Display for SearchCursor {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchRequest {
     query: Option<SearchQuery>,
-    provider: Option<ProviderNamespace>,
+    provider: Option<ProviderCallRoot>,
     limit: SearchLimit,
     cursor: Option<SearchCursor>,
 }
@@ -151,7 +155,7 @@ pub struct SearchRequest {
 pub struct SearchInput {
     /// Optional caller query, preserved exactly when accepted.
     pub query: Option<String>,
-    /// Optional Provider namespace filter: the second segment of a Call Path.
+    /// Optional Provider filter: a namespace, such as `github`, or `coral.admin`.
     pub provider: Option<String>,
     /// Optional requested page size.
     pub limit: Option<u16>,
@@ -167,9 +171,7 @@ impl TryFrom<SearchInput> for SearchRequest {
             None => Self::list(),
         };
         if let Some(provider) = input.provider {
-            request = request.with_provider(ProviderNamespace::parse(&provider).map_err(
-                |_invalid_provider| Error::InvalidInput("invalid Provider namespace".into()),
-            )?);
+            request = request.with_provider(provider_filter(&provider)?);
         }
         if let Some(limit) = input.limit {
             request = request.with_limit(SearchLimit::parse(limit)?);
@@ -178,6 +180,33 @@ impl TryFrom<SearchInput> for SearchRequest {
             request = request.with_cursor(SearchCursor::parse(&cursor)?);
         }
         Ok(request)
+    }
+}
+
+/// Parses the `provider` filter: a Provider Namespace, such as `github`, or
+/// `coral.admin` for the Built-in Provider. A complete `coral.providers` Call
+/// Root is rejected with the namespace to use instead.
+fn provider_filter(value: &str) -> Result<ProviderCallRoot, Error> {
+    match ProviderCallRoot::parse(value) {
+        Ok(ProviderCallRoot::Builtin) => Ok(ProviderCallRoot::Builtin),
+        Ok(ProviderCallRoot::Owner(namespace)) => Err(Error::InvalidInput(format!(
+            "provider must be a Provider namespace, such as `{}`",
+            namespace.as_str()
+        ))),
+        Err(_not_a_call_root) => ProviderNamespace::parse(value)
+            .map(ProviderCallRoot::Owner)
+            .map_err(|_invalid_namespace| Error::InvalidInput("invalid Provider namespace".into())),
+    }
+}
+
+/// The `provider` filter value that selects the Provider at this Call Root:
+/// its namespace, such as `github`, or `coral.admin` for the Built-in Provider.
+/// Callers see this value; the Call Root stays internal.
+#[must_use]
+pub fn provider_filter_value(call_root: &ProviderCallRoot) -> &str {
+    match call_root {
+        ProviderCallRoot::Owner(namespace) => namespace.as_str(),
+        ProviderCallRoot::Builtin => call_root.as_str(),
     }
 }
 
@@ -197,9 +226,9 @@ impl SearchRequest {
         }
     }
 
-    /// Restricts results to the Operations of the Provider with this namespace.
+    /// Restricts results to the Operations of the Provider with this Call Root.
     #[must_use]
-    pub fn with_provider(mut self, provider: ProviderNamespace) -> Self {
+    pub fn with_provider(mut self, provider: ProviderCallRoot) -> Self {
         self.provider = Some(provider);
         self
     }
@@ -224,9 +253,9 @@ impl SearchRequest {
         self.query.as_ref()
     }
 
-    /// Returns the optional Provider namespace filter.
+    /// Returns the optional Provider Call Root filter.
     #[must_use]
-    pub const fn provider(&self) -> Option<&ProviderNamespace> {
+    pub const fn provider(&self) -> Option<&ProviderCallRoot> {
         self.provider.as_ref()
     }
 
@@ -248,21 +277,20 @@ impl SearchRequest {
 pub struct CallPath(String);
 
 impl CallPath {
-    /// Parses one complete `coral.providers` or `coral.functions` Call Path.
+    /// Parses one complete Call Path: a Provider Call Root or `coral.functions`
+    /// followed by the relative path.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] unless every path member is a safe
-    /// JavaScript identifier and the complete canonical prefix is present.
+    /// JavaScript identifier under `coral` with a root and a relative path.
     pub fn parse(value: &str) -> Result<Self, Error> {
         let segments = value.split('.').collect::<Vec<_>>();
-        let shaped = matches!(
-            segments.as_slice(),
-            ["coral", "providers", _, _, ..] | ["coral", "functions", _, ..]
-        );
+        let shaped = ProviderCallRoot::split_call_path(value).is_some()
+            || matches!(segments.as_slice(), ["coral", "functions", _, ..]);
         if !shaped || segments.iter().any(|segment| !safe_path_segment(segment)) {
             return Err(Error::InvalidInput(
-                "Call Path must be a complete safe coral.providers or coral.functions JavaScript path"
+                "Call Path must be a complete safe coral.providers, coral.admin or coral.functions JavaScript path"
                     .to_string(),
             ));
         }
@@ -270,14 +298,10 @@ impl CallPath {
     }
 
     pub(crate) fn operation(
-        namespace: &ProviderNamespace,
+        call_root: &ProviderCallRoot,
         relative_path: &str,
     ) -> Result<Self, Error> {
-        Self::parse(&format!(
-            "coral.providers.{}.{}",
-            namespace.as_str(),
-            relative_path
-        ))
+        Self::parse(&format!("{}.{relative_path}", call_root.as_str()))
     }
 
     pub(crate) fn saved_function(relative_path: &str) -> Result<Self, Error> {
@@ -331,7 +355,7 @@ pub enum ApprovalRequirement {
 pub struct OperationAuthoringDescription {
     call_path: CallPath,
     typescript_declaration: String,
-    provider_namespace: ProviderNamespace,
+    provider_call_root: ProviderCallRoot,
     provider_id: ProviderId,
     provider_display_name: String,
     presentation: OperationPresentation,
@@ -347,7 +371,7 @@ impl OperationAuthoringDescription {
     pub(crate) const fn new(
         call_path: CallPath,
         typescript_declaration: String,
-        provider_namespace: ProviderNamespace,
+        provider_call_root: ProviderCallRoot,
         provider_id: ProviderId,
         provider_display_name: String,
         presentation: OperationPresentation,
@@ -357,7 +381,7 @@ impl OperationAuthoringDescription {
         Self {
             call_path,
             typescript_declaration,
-            provider_namespace,
+            provider_call_root,
             provider_id,
             provider_display_name,
             presentation,
@@ -391,10 +415,10 @@ impl OperationAuthoringDescription {
         &self.typescript_declaration
     }
 
-    /// Returns the immutable Provider namespace.
+    /// Returns the immutable Provider Call Root.
     #[must_use]
-    pub const fn provider_namespace(&self) -> &ProviderNamespace {
-        &self.provider_namespace
+    pub const fn provider_call_root(&self) -> &ProviderCallRoot {
+        &self.provider_call_root
     }
 
     /// Returns the underlying Provider identity without a Generation selector.

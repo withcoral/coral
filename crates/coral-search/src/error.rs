@@ -1,4 +1,4 @@
-use crate::ProviderNamespace;
+use crate::ProviderCallRoot;
 
 /// Universal Search Module failure.
 #[derive(Debug, thiserror::Error)]
@@ -7,10 +7,10 @@ pub enum Error {
     #[error("invalid input: {0}")]
     InvalidInput(String),
     /// The Provider filter names no Provider the caller can search.
-    #[error("no Provider the caller can search has the requested namespace")]
-    UnknownProviderNamespace {
-        /// The namespaces the caller can search, in order.
-        searchable: Vec<ProviderNamespace>,
+    #[error("no Provider the caller can search has the requested Call Root")]
+    UnknownProviderCallRoot {
+        /// The Call Roots the caller can search, in order.
+        searchable: Vec<ProviderCallRoot>,
     },
     /// A cursor is malformed, incompatible, or bound to different arguments.
     #[error("invalid search cursor")]
@@ -64,8 +64,8 @@ impl Error {
                 .safe_rejection()
                 .map(|(code, message)| (code, message.to_owned()));
         }
-        if let Self::UnknownProviderNamespace { searchable } = self {
-            return Some(("invalid_input", unknown_namespace_message(searchable)));
+        if let Self::UnknownProviderCallRoot { searchable } = self {
+            return Some(("invalid_input", unknown_call_root_message(searchable)));
         }
         if let Self::TypesLimit = self {
             return Some((
@@ -107,8 +107,8 @@ impl Error {
     }
 }
 
-/// Names only what the caller can search, never the namespace it asked for.
-fn unknown_namespace_message(searchable: &[ProviderNamespace]) -> String {
+/// Names only what the caller can search, never the value it asked for.
+fn unknown_call_root_message(searchable: &[ProviderCallRoot]) -> String {
     if searchable.is_empty() {
         return "No Provider you can search has this namespace. You can search no Provider."
             .to_string();
@@ -117,7 +117,7 @@ fn unknown_namespace_message(searchable: &[ProviderNamespace]) -> String {
         "No Provider you can search has this namespace. Use one of: {}.",
         searchable
             .iter()
-            .map(ProviderNamespace::as_str)
+            .map(crate::provider_filter_value)
             .collect::<Vec<_>>()
             .join(", ")
     )

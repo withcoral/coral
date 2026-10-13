@@ -95,6 +95,8 @@ export interface ProviderSettingsView {
   id: string
   displayName: string
   namespace: string
+  /** The provider's complete Call Root, such as `coral.providers.github`. */
+  callRoot: string
   etag: string
   path: string
   /** Disabled providers keep their settings but Coral refuses their calls. */

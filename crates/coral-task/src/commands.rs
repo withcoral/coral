@@ -47,7 +47,7 @@ impl TaskCommands {
         }
     }
 
-    /// The namespaces of the Providers the caller can search, as Universal
+    /// The Call Roots of the Providers the caller can search, as Universal
     /// Search decides them. Retains nothing.
     /// # Errors
     /// Discovery authority and persistence failures.
@@ -55,7 +55,7 @@ impl TaskCommands {
         &self,
         actor: &coral_workspace::AuthenticatedPrincipal,
         workspace_id: &coral_workspace::WorkspaceId,
-    ) -> Result<Vec<coral_search::ProviderNamespace>, Error> {
+    ) -> Result<Vec<coral_search::ProviderCallRoot>, Error> {
         Ok(self
             .search
             .searchable_providers(actor, workspace_id)
@@ -90,7 +90,7 @@ impl TaskCommands {
                     .map(|query| query.as_str().to_owned()),
                 provider: request
                     .provider()
-                    .map(|namespace| namespace.as_str().to_owned()),
+                    .map(|provider| coral_search::provider_filter_value(provider).to_owned()),
                 limit: request.limit().value(),
                 cursor: request.cursor().map(ToString::to_string),
             },

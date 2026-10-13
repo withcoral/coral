@@ -18,7 +18,7 @@ const RUN_ID_DESCRIPTION: &str =
 const CALL_INTENT_DESCRIPTION: &str = "Nonblank natural-language reason this call is needed for the attributed Task. No null characters. At most 80 Unicode characters, including whitespace; not trimmed.";
 const DESCRIBE_INTENT_DESCRIPTION: &str = "What you need to learn from this contract that the search result did not show. Nonblank, with no null characters. At most 80 Unicode characters, including whitespace; not trimmed.";
 const FUNCTION_PATH_DESCRIPTION: &str = "Dotted path relative to coral.functions (omit that prefix), such as reports.summarize. Use 1 to 16 safe JavaScript identifier segments; Unicode identifiers are supported. Reserved segments __proto__, prototype, constructor and then are forbidden. At most 256 UTF-8 bytes (not characters), checked by the domain.";
-const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, describe the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with evidence of why it matched and a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A retriever status of `partial` or `error` means results may be missing; retry shortly or list without a query.
+const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, describe the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with evidence of why it matched and a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`, or `coral.admin` for Coral's own operations. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A retriever status of `partial` or `error` means results may be missing; retry shortly or list without a query.
 Retriever states:
 - `results_found`: the retriever ranked at least one result.
 - `empty`: the retriever searched everything and nothing matched.
@@ -68,8 +68,8 @@ pub(crate) struct SearchArguments {
     pub(crate) query: Option<String>,
     #[schemars(
         length(min = 1, max = 128),
-        regex(pattern = r"^[A-Za-z_$][A-Za-z0-9_$]*$"),
-        description = "Optional Provider namespace filter: the second segment of the Provider's Call Paths, as in coral.providers.<namespace>.<operation>. Not a display name or id. Pass it when the user names the service. Otherwise, leave it out. The start_task result lists the namespaces you can search; Coral refuses any other value. It narrows Operations only; Saved Functions stay."
+        regex(pattern = r"^([A-Za-z_$][A-Za-z0-9_$]*|coral\.admin)$"),
+        description = "Optional Provider namespace filter: the second segment of the Provider's Call Paths, as in coral.providers.<namespace>.<operation>, or coral.admin for Coral's own operations. Not a display name or id. Pass it when the user names the service. Otherwise, leave it out. The start_task result lists the namespaces you can search; Coral refuses any other value. It narrows Operations only; Saved Functions stay."
     )]
     pub(crate) provider: Option<String>,
     #[schemars(
@@ -102,7 +102,7 @@ pub(crate) struct DescribeArguments {
     pub(crate) intent: String,
     #[schemars(
         length(min = 1),
-        description = "Complete Call Path: coral.providers.<namespace>.<operation> or coral.functions.<path>, not a relative path. Every segment must be a safe JavaScript identifier; Unicode identifiers are supported. For Saved Functions, the relative path has at most 16 segments and 256 UTF-8 bytes (not characters); reserved segments __proto__, prototype, constructor and then are forbidden. The complete path is at most 1024 UTF-8 bytes (not characters). Identifier and byte constraints are checked by the domain."
+        description = "Complete Call Path: coral.providers.<namespace>.<operation>, coral.admin.<operation> or coral.functions.<path>, not a relative path. Every segment must be a safe JavaScript identifier; Unicode identifiers are supported. For Saved Functions, the relative path has at most 16 segments and 256 UTF-8 bytes (not characters); reserved segments __proto__, prototype, constructor and then are forbidden. The complete path is at most 1024 UTF-8 bytes (not characters). Identifier and byte constraints are checked by the domain."
     )]
     pub(crate) path: String,
     #[schemars(

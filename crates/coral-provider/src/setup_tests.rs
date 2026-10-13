@@ -1066,11 +1066,10 @@ pub(super) async fn credential_evidence(
     principal: &coral_workspace::Principal,
 ) -> Result<crate::account::CredentialEvidence, Error> {
     let mut tx = database.begin().await.unwrap();
-    let target = crate::resolve_invocation_operation_in_transaction(
+    let target = crate::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace,
-        &ProviderNamespace::parse(namespace).unwrap(),
-        relative_path,
+        &format!("coral.providers.{namespace}.{relative_path}"),
     )
     .await?
     .expect("callable Operation");

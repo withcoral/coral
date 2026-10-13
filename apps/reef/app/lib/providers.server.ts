@@ -23,6 +23,7 @@ import type {
 } from '@/views/providers/types'
 import type { PersonalAccountState } from '@/views/accounts/types'
 import { accountLabels } from '@/views/providers/account-labels'
+import { operationCallPath } from './call-root'
 import { privateHeaders, type ManagementApi } from './management.server'
 import { OPENAPI_DOCUMENT_SIZE_LABEL } from './provider-input-limits'
 
@@ -162,7 +163,7 @@ export function operationGroup(o: { tags: readonly string[]; relativePath: strin
 
 export function operationView(
   o: ProviderOperation,
-  options: { namespace: string; basePath: string; policy?: OperationPolicy },
+  options: { callRoot: string; basePath: string; policy?: OperationPolicy },
 ): OperationView {
   const hints = operationHints(o.hints)
   // Coral's default when no rule exists: only a declared read-only operation runs freely.
@@ -174,8 +175,8 @@ export function operationView(
   return {
     name: o.name,
     relativePath: o.relativePath,
-    callPath: options.namespace
-      ? `coral.providers.${options.namespace}.${o.relativePath}`
+    callPath: options.callRoot
+      ? operationCallPath(options.callRoot, o.relativePath)
       : o.relativePath,
     summary: o.summary,
     description: o.description,
@@ -255,7 +256,7 @@ export async function providerView(
   }
   const ops = operations.map((o) =>
     operationView(o, {
-      namespace: provider.namespace,
+      callRoot: provider.callRoot,
       basePath: path,
       policy: policies.get(o.name),
     }),
@@ -330,6 +331,7 @@ export function providerSettingsView(
     id: provider.name.split('/').at(-1)!,
     displayName: provider.displayName,
     namespace: provider.namespace,
+    callRoot: provider.callRoot,
     etag: provider.etag,
     path: providerPath(workspacePath, provider.name),
     enabled: enabled(provider.state),
@@ -359,6 +361,7 @@ const reasons: Record<string, string> = {
   ACCOUNT_REQUIRED: 'This choice needs an account. Sign in first.',
   WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it in settings before you make changes.',
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
+  BUILTIN_PROVIDER_MANAGED: 'Coral manages this provider. You cannot change or remove it.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',
   SETUP_CONSUMED: 'This attempt is complete. Start over to try again.',

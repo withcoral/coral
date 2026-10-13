@@ -10,6 +10,7 @@ import {
 import { collectDataResponses } from '../../../../support/data-responses.ts'
 import { oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
+  addedProviders,
   acceptOperations,
   chooseAccount,
   confirmConfiguration,
@@ -95,7 +96,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
       await page.getByRole('button', { name: 'Cancel changes', exact: true }).click()
       active.knobs.issuerPath = undefined
     })
-    const provider = (await api.providers.listProviders({ parent })).providers[0]
+    const [provider] = addedProviders((await api.providers.listProviders({ parent })).providers)
     const inspectAccount = () =>
       api.accounts.getProviderAccount({
         parent,

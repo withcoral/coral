@@ -389,7 +389,7 @@ async fn a_published_basic_provider_connects_own_and_shared_accounts() {
             &h,
             scope,
             provider.id(),
-            provider.access().namespace().as_str(),
+            provider.access().call_root().name(),
             "getData",
             &principal,
             11,

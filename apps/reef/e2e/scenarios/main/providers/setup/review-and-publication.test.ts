@@ -5,6 +5,7 @@ import { withOwnerSession } from '../../../../support/actors.ts'
 import { managementClients } from '../../../../support/management.ts'
 import { openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
+  addedProviders,
   acceptOperations,
   accountQuestion,
   backToConfiguration,
@@ -23,7 +24,7 @@ test('Setup reviews operations before accounts and preserves the draft until one
     const noProvider = async () => {
       expect(
         (await api.providers.listProviders({ parent: `workspaces/${workspace}` })).providers,
-      ).toHaveLength(0)
+      ).toHaveLength(1)
     }
     await step('Upload a document and name the provider before reading it', async () => {
       await page.goto(`/workspaces/${workspace}/providers/new`)
@@ -95,21 +96,22 @@ test('Setup reviews operations before accounts and preserves the draft until one
       await waitForPublication(page)
       const providers = (await api.providers.listProviders({ parent: `workspaces/${workspace}` }))
         .providers
-      expect(providers).toHaveLength(1)
-      expect(providers[0].namespace).toBe('records_reviewed')
+      expect(providers).toHaveLength(2)
+      const [added] = addedProviders(providers)
+      expect(added.namespace).toBe('records_reviewed')
       // The confirmed name is the provider's, not the document's title.
-      expect((await api.providers.getProvider({ name: providers[0].name })).displayName).toBe(
+      expect((await api.providers.getProvider({ name: added.name })).displayName).toBe(
         'Records (uploaded)',
       )
       // The heading uses the display name; the tree keeps the namespace.
       await page.getByRole('rowgroup', { name: 'Records (uploaded)', exact: true }).waitFor()
-      expect(providers[0].credentialRoute?.kind).toBe(CredentialRoute_Kind.CALLER)
+      expect(added.credentialRoute?.kind).toBe(CredentialRoute_Kind.CALLER)
       for (const scope of [ProviderAccountScope.USER, ProviderAccountScope.SHARED]) {
         expect(
           (
             await api.accounts.getProviderAccount({
               parent: `workspaces/${workspace}`,
-              provider: providers[0].name,
+              provider: added.name,
               scope,
             })
           ).account,

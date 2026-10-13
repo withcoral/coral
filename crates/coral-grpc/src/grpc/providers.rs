@@ -6,7 +6,7 @@ use super::workspaces::{
 use super::{GrpcServices, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_catalog::AuthenticationKind;
-use coral_provider::access::{CredentialRoute, ProviderNamespace};
+use coral_provider::access::{CredentialRoute, ProviderCallRoot, ProviderNamespace};
 use coral_provider::{
     self as domain, ManagementRequestId, ProviderId, ProviderSetupId, WorkspaceId,
 };
@@ -49,6 +49,10 @@ pub(super) fn provider_view(
         CredentialRoute::Caller => wire::credential_route::Kind::Caller,
         CredentialRoute::Fixed => wire::credential_route::Kind::Fixed,
     };
+    let namespace = match provider.call_root() {
+        ProviderCallRoot::Owner(namespace) => namespace.as_str().into(),
+        ProviderCallRoot::Builtin => String::new(),
+    };
     wire::Provider {
         name: provider_name(provider),
         display_name: provider.display_name().into(),
@@ -58,7 +62,8 @@ pub(super) fn provider_view(
         }
         .into(),
         etag: provider.etag(),
-        namespace: provider.namespace().as_str().into(),
+        namespace,
+        call_root: provider.call_root().as_str().into(),
         credential_route: Some(wire::CredentialRoute { kind: kind.into() }),
         account_setting_version: provider.account_setting_version(),
         blockers: blockers
@@ -219,7 +224,8 @@ pub(super) fn error(value: domain::Error) -> Status {
                 &format!("AUTHORIZATION_DISCOVERY_{}", code.to_ascii_uppercase()),
             );
         }
-        E::ProviderNamespaceConflict => (Code::AlreadyExists, "NAMESPACE_IN_USE"),
+        E::ProviderCallRootConflict => (Code::AlreadyExists, "NAMESPACE_IN_USE"),
+        E::BuiltinProviderManaged => (Code::FailedPrecondition, "BUILTIN_PROVIDER_MANAGED"),
         E::OAuthClientConfiguration => (Code::FailedPrecondition, "OAUTH_CLIENT_CONFIGURATION"),
         E::AccountRequired => (Code::FailedPrecondition, "ACCOUNT_REQUIRED"),
         E::RequestIdConflict => (Code::AlreadyExists, "REQUEST_ID_CONFLICT"),
@@ -1005,7 +1011,7 @@ pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
         coral_search::Error::Provider(inner) => error(inner),
         coral_search::Error::Policy(inner) => super::policies::error(inner),
         coral_search::Error::InvalidInput(_)
-        | coral_search::Error::UnknownProviderNamespace { .. }
+        | coral_search::Error::UnknownProviderCallRoot { .. }
         | coral_search::Error::InvalidCursor
         | coral_search::Error::TypesLimit
         | coral_search::Error::UndeclaredTypes { .. } => {
@@ -1045,9 +1051,14 @@ mod tests {
                 "PROVIDER_CHANGED",
             ),
             (
-                E::ProviderNamespaceConflict,
+                E::ProviderCallRootConflict,
                 Code::AlreadyExists,
                 "NAMESPACE_IN_USE",
+            ),
+            (
+                E::BuiltinProviderManaged,
+                Code::FailedPrecondition,
+                "BUILTIN_PROVIDER_MANAGED",
             ),
             (
                 E::AccountRequired,
@@ -1236,7 +1247,7 @@ mod tests {
                 "INVALID_ARGUMENT",
             ),
             (
-                coral_search::Error::UnknownProviderNamespace {
+                coral_search::Error::UnknownProviderCallRoot {
                     searchable: Vec::new(),
                 },
                 Code::InvalidArgument,

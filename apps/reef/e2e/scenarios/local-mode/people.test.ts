@@ -8,7 +8,7 @@ test('A local deployment offers no people management', async (context) => {
     const name = `workspaces/${await createWorkspace(undefined, `Local people ${crypto.randomUUID()}`)}`
     await step('Show no Members destination in the workspace or the account menu', async () => {
       await page.goto(`/${name}`)
-      await page.getByRole('button', { name: 'Add provider', exact: true }).first().waitFor()
+      await page.getByRole('heading', { name: 'Providers', exact: true, level: 2 }).waitFor()
       expect(await page.getByRole('link', { name: 'Members', exact: true }).count()).toBe(0)
       expect(await page.getByRole('heading', { name: 'Members', exact: true }).count()).toBe(0)
       await page

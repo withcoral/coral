@@ -108,7 +108,8 @@ message Provider {
   ProviderState state = 3;
   // Concurrency token for current configuration and lifecycle.
   string etag = 5;
-  // Immutable Program namespace, unique in the Workspace.
+  // Provider Namespace of a Provider an Owner adds: the last segment of
+  // call_root, the name Reef shows. Empty for the Built-in Provider.
   string namespace = 6;
   // Current account-selection setting, never credential material.
   CredentialRoute credential_route = 7;
@@ -116,6 +117,8 @@ message Provider {
   int64 account_setting_version = 8;
   // Derived configuration and inspected-Agent blockers from one read snapshot.
   repeated ProviderBlocker blockers = 9;
+  // Immutable Workspace-unique Provider Call Root, such as coral.providers.github.
+  string call_root = 10;
 }
 
 // Lists Providers owned by one authorized Workspace.
@@ -853,7 +856,8 @@ message PublishProviderRequest {
   string setup = 2;
   // Required first-party UUID; exact replay returns the committed result.
   string request_id = 3;
-  // Creation only: immutable Workspace-unique Program namespace.
+  // Creation only: immutable Workspace-unique Provider Namespace. Coral calls
+  // the Provider under coral.providers.<namespace>.
   string namespace = 4;
   // Creation: required. Update: explicit replacement setting, absent to retain it.
   CredentialRoute credential_route = 5;

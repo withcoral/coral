@@ -20,7 +20,7 @@
 //!   and reads no index. `signature::abridge` shortens the declaration it
 //!   returns; search reads the complete one.
 //! - [`UniversalSearchModule::searchable_providers`] lists the Provider
-//!   namespaces a search's filter accepts from the caller. A filter that names
+//!   Call Roots a search's filter accepts from the caller. A filter that names
 //!   another is refused with that list.
 //! - [`UniversalSearchModule::inspect_provider_readiness`] derives caller readiness
 //!   from the Operation eligibility rule discovery uses, without reading Saved
@@ -58,7 +58,7 @@ mod types;
 use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
-use coral_workspace::AuthenticatedPrincipal;
+use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
 use cursor::decode_cursor_position;
@@ -75,12 +75,13 @@ pub use index::SearchIndex;
 pub use storage::{StorageError, prepare_storage};
 pub use types::{
     ApprovalRequirement, AuthoringDescription, CallPath, EntityKind, ExactAuthoringDescription,
-    ExactSavedFunctionDetail, OperationAuthoringDescription, OperationHit, ProviderId,
-    ProviderNamespace, RetrieverCoverage, RetrieverState, RetrieverStatus, SEARCH_CURSOR_MAX_BYTES,
+    ExactSavedFunctionDetail, OperationAuthoringDescription, OperationHit, ProviderCallRoot,
+    ProviderId, RetrieverCoverage, RetrieverState, RetrieverStatus, SEARCH_CURSOR_MAX_BYTES,
     SEARCH_DEFAULT_LIMIT, SEARCH_EVIDENCE_FIELDS_MAX, SEARCH_EVIDENCE_PATH_MAX_BYTES,
     SEARCH_EVIDENCE_PATHS_MAX, SEARCH_PAGE_MAX_BYTES, SEARCH_QUERY_MAX_BYTES,
     SEARCH_RESULT_LIMIT_MAX, SavedFunctionAuthoringDescription, SearchCursor, SearchEvidence,
     SearchHit, SearchInput, SearchLimit, SearchPage, SearchQuery, SearchRequest,
+    provider_filter_value,
 };
 
 /// How many ranked Search Entities each retriever hands the engine. The
@@ -191,10 +192,12 @@ impl UniversalSearchModule {
         )?;
 
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.authorize(&mut transaction, actor, workspace_id)
+        let authority = self
+            .authorize(&mut transaction, actor, workspace_id)
             .await?;
         let context = RequestContext {
             actor,
+            authority: &authority,
             workspace_id,
             terms: normalized.as_ref().map(|query| query.terms.as_slice()),
         };
@@ -232,7 +235,7 @@ impl UniversalSearchModule {
         Ok(page)
     }
 
-    /// The namespaces of the Providers the caller can search now, in order:
+    /// The Call Roots of the Providers the caller can search now, in order:
     /// the values a search's Provider filter accepts. Reads no index.
     ///
     /// It needs the authority to inspect the Workspace, as a Task start
@@ -246,9 +249,10 @@ impl UniversalSearchModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-    ) -> Result<Vec<ProviderNamespace>, Error> {
+    ) -> Result<Vec<ProviderCallRoot>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.workspaces
+        let authority = self
+            .workspaces
             .check_principal_inspection_in_snapshot(
                 &mut transaction,
                 actor,
@@ -256,17 +260,18 @@ impl UniversalSearchModule {
                 now_unix_nanos()?,
             )
             .await?;
-        let namespaces = retriever::operations::searchable_namespaces(
+        let call_roots = retriever::operations::searchable_call_roots(
             &mut transaction,
             RequestContext {
                 actor,
+                authority: &authority,
                 workspace_id,
                 terms: None,
             },
         )
         .await?;
         transaction.commit().await?;
-        Ok(namespaces)
+        Ok(call_roots)
     }
 
     /// Lists every visible Entity of every kind in Call Path order.
@@ -274,7 +279,7 @@ impl UniversalSearchModule {
         &self,
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
-        provider_filter: Option<&ProviderNamespace>,
+        provider_filter: Option<&ProviderCallRoot>,
     ) -> Result<(Vec<Ranked>, Vec<RetrieverStatus>), Error> {
         let mut listed = Vec::new();
         let mut statuses = Vec::with_capacity(self.retrievers.len());
@@ -401,11 +406,12 @@ impl UniversalSearchModule {
             return Err(Error::TypesLimit);
         }
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.authorize(&mut transaction, actor, workspace_id)
+        let authority = self
+            .authorize(&mut transaction, actor, workspace_id)
             .await
             .map_err(conceal_description_error)?;
         let exact = self
-            .describe_in_transaction(&mut transaction, actor, workspace_id, call_path)
+            .describe_in_transaction(&mut transaction, actor, &authority, workspace_id, call_path)
             .await
             .map_err(conceal_description_error)?
             .ok_or(Error::AuthoringDescriptionNotFound)?;
@@ -425,7 +431,8 @@ impl UniversalSearchModule {
         call_path: &CallPath,
     ) -> Result<(), Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.workspaces
+        let authority = self
+            .workspaces
             .check_principal_inspection_in_snapshot(
                 &mut transaction,
                 actor,
@@ -435,7 +442,7 @@ impl UniversalSearchModule {
             .await
             .map_err(Error::from)
             .map_err(conceal_description_error)?;
-        self.describe_in_transaction(&mut transaction, actor, workspace_id, call_path)
+        self.describe_in_transaction(&mut transaction, actor, &authority, workspace_id, call_path)
             .await?
             .ok_or(Error::AuthoringDescriptionNotFound)?;
         transaction.commit().await?;
@@ -447,11 +454,13 @@ impl UniversalSearchModule {
         &self,
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
+        authority: &PrincipalWorkspaceEvidence,
         workspace_id: &WorkspaceId,
         call_path: &CallPath,
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
         let context = RequestContext {
             actor,
+            authority,
             workspace_id,
             terms: None,
         };
@@ -468,11 +477,11 @@ impl UniversalSearchModule {
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-    ) -> Result<(), Error> {
-        self.workspaces
+    ) -> Result<PrincipalWorkspaceEvidence, Error> {
+        Ok(self
+            .workspaces
             .check_discovery_in_transaction(transaction, actor, workspace_id, now_unix_nanos()?)
-            .await?;
-        Ok(())
+            .await?)
     }
 }
 

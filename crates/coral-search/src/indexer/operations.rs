@@ -237,7 +237,7 @@ fn operation_row<'a>(
     operation: &'a OperationEntry,
     indexed_at_unix_nanos: i64,
 ) -> Result<OperationRow<'a>, IndexError> {
-    let call_path = CallPath::operation(entries.namespace(), operation.relative_path())
+    let call_path = CallPath::operation(entries.call_root(), operation.relative_path())
         .map_err(|error| IndexError::InvalidEntry(error.to_string()))?;
     let description = [Some(operation.description()), operation.guidance()]
         .into_iter()
@@ -254,11 +254,7 @@ fn operation_row<'a>(
         qualified_name: operation.relative_path(),
         title: operation.title().unwrap_or_default().to_string(),
         description,
-        provider_name: format!(
-            "{} {}",
-            entries.namespace().as_str(),
-            entries.display_name()
-        ),
+        provider_name: format!("{} {}", entries.call_root().name(), entries.display_name()),
         searchable_text: searchable_text(entries, operation),
         deprecated: operation.deprecated(),
         indexed_at_unix_nanos,
@@ -279,7 +275,7 @@ fn searchable_text(entries: &GenerationEntries, operation: &OperationEntry) -> S
     let names = [
         operation.relative_path(),
         operation.title().unwrap_or_default(),
-        entries.namespace().as_str(),
+        entries.call_root().name(),
         entries.display_name(),
     ];
     let variants = names

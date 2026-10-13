@@ -74,6 +74,8 @@ pub fn stored_declaration_fields(
                     graph,
                     mcp_names.get_or_init(|| crate::mcp::typescript_names(graph)),
                 ),
+                // Every built-in Operation takes one `input` object.
+                ExecutionBinding::Builtin(_) => Ok(true),
             };
             let prepared = input_declared
                 .and_then(|input_declared| {
@@ -153,6 +155,12 @@ pub(crate) fn prepare_operation_declaration_fields(
                     .ok_or_else(index_too_large)?;
                 walk.index_root(output_schema, &output_path, output_projection)?;
             }
+        }
+        ExecutionBinding::Builtin(binding) => {
+            let output_path = DeclarationPath::result()
+                .property("data")
+                .ok_or_else(index_too_large)?;
+            walk.index_root(binding.output_schema(), &output_path, output_projection)?;
         }
     }
     walk.drain()?;

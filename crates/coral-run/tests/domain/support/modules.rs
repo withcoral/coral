@@ -280,6 +280,19 @@ impl TestModules {
         intent: &str,
         server_url: &str,
     ) -> OperationFixture {
+        self.user_operation_under(user_id, intent, server_url, "weather")
+            .await
+    }
+
+    /// Publishes the forecast Provider at `coral.providers.<namespace>` and
+    /// enables its `getForecast` Operation.
+    pub(crate) async fn user_operation_under(
+        &self,
+        user_id: &str,
+        intent: &str,
+        server_url: &str,
+        namespace: &str,
+    ) -> OperationFixture {
         let (workspace_id, principal) = self.user_scope(user_id, intent).await;
         let user = principal
             .authenticated_user()
@@ -345,7 +358,7 @@ impl TestModules {
                         .expect("request id"),
                     workspace_id.clone(),
                     setup.id().clone(),
-                    ProviderNamespace::parse("weather").expect("namespace"),
+                    ProviderNamespace::parse(namespace).expect("namespace"),
                     CredentialRoute::None,
                 ),
             )
@@ -419,11 +432,10 @@ pub(crate) async fn configure_shared_account(
     );
     let (dir, accounts) = configure_shared_provider(fixture, operation, &document, values).await;
     let mut tx = fixture.database.begin().await.unwrap();
-    let target = coral_provider::resolve_invocation_operation_in_transaction(
+    let target = coral_provider::resolve_owner_operation_in_transaction(
         &mut tx,
         &operation.workspace_id,
-        &ProviderNamespace::parse("weather").unwrap(),
-        "getForecast",
+        "coral.providers.weather.getForecast",
     )
     .await
     .unwrap()

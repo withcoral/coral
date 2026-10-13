@@ -27,7 +27,7 @@ use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
     CallPath, EntityKind, Error, ExactAuthoringDescription, OperationAuthoringDescription,
-    ProviderNamespace, RetrieverCoverage, SearchEvidence, SearchHit,
+    ProviderCallRoot, RetrieverCoverage, SearchEvidence, SearchHit,
 };
 
 /// Ranks, hydrates, and describes Operations.
@@ -48,7 +48,7 @@ impl EntityRetriever for OperationRetriever {
         &self,
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
-        provider_filter: Option<&ProviderNamespace>,
+        provider_filter: Option<&ProviderCallRoot>,
     ) -> Result<Listing, Error> {
         let providers = filtered_providers(transaction, context, provider_filter).await?;
         let units = providers.len();
@@ -78,7 +78,7 @@ impl EntityRetriever for OperationRetriever {
                 }
                 listed.push(EntityRef::Operation(OperationRef {
                     call_path: CallPath::operation(
-                        provider.provider().namespace(),
+                        provider.provider().call_root(),
                         target.relative_path(),
                     )?,
                     provider: Arc::clone(&provider),
@@ -235,7 +235,7 @@ impl EntityRetriever for OperationRetriever {
             .field("call_path", [description.call_path().as_str()])
             .field(
                 "provider_namespace",
-                [description.provider_namespace().as_str()],
+                [description.provider_call_root().name()],
             )
             .field(
                 "provider_display_name",
@@ -269,17 +269,12 @@ impl EntityRetriever for OperationRetriever {
         context: RequestContext<'_>,
         call_path: &CallPath,
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
-        let Some((namespace, relative_path)) = call_path
-            .as_str()
-            .strip_prefix("coral.providers.")
-            .and_then(|path| path.split_once('.'))
+        let Some((call_root, relative_path)) =
+            ProviderCallRoot::split_call_path(call_path.as_str())
         else {
             return Ok(None);
         };
-        let Ok(namespace) = ProviderNamespace::parse(namespace) else {
-            return Ok(None);
-        };
-        let Some(provider) = visible_providers(transaction, context, Some(&namespace))
+        let Some(provider) = visible_providers(transaction, context, Some(&call_root))
             .await?
             .into_iter()
             .next()
@@ -303,13 +298,13 @@ impl EntityRetriever for OperationRetriever {
     }
 }
 
-/// The namespaces of the Workspace's Active Providers that are ready for the
+/// The Call Roots of the Workspace's Active Providers that are ready for the
 /// caller, in order: what a Provider filter may name.
-pub(crate) async fn searchable_namespaces(
+pub(crate) async fn searchable_call_roots(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
-) -> Result<Vec<ProviderNamespace>, Error> {
-    Ok(namespaces(
+) -> Result<Vec<ProviderCallRoot>, Error> {
+    Ok(call_roots(
         &visible_providers(transaction, context, None).await?,
     ))
 }
@@ -317,50 +312,51 @@ pub(crate) async fn searchable_namespaces(
 /// The Providers a search's filter leaves, all visible ones without a filter.
 /// A filter reads only the Provider it names, so another Provider's state
 /// cannot fail the search. A filter that names no visible Provider is refused
-/// with the namespaces the caller can search, so a wrong guess never reads as
+/// with the Call Roots the caller can search, so a wrong guess never reads as
 /// an empty catalog.
 async fn filtered_providers(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
-    provider_filter: Option<&ProviderNamespace>,
+    provider_filter: Option<&ProviderCallRoot>,
 ) -> Result<Vec<ActiveProvider>, Error> {
     let filtered = visible_providers(transaction, context, provider_filter).await?;
     if provider_filter.is_some() && filtered.is_empty() {
-        return Err(Error::UnknownProviderNamespace {
-            searchable: searchable_namespaces(transaction, context).await?,
+        return Err(Error::UnknownProviderCallRoot {
+            searchable: searchable_call_roots(transaction, context).await?,
         });
     }
     Ok(filtered)
 }
 
-fn namespaces(providers: &[ActiveProvider]) -> Vec<ProviderNamespace> {
-    let mut namespaces = providers
+fn call_roots(providers: &[ActiveProvider]) -> Vec<ProviderCallRoot> {
+    let mut call_roots = providers
         .iter()
-        .map(|provider| provider.provider().namespace().clone())
+        .map(|provider| provider.provider().call_root().clone())
         .collect::<Vec<_>>();
-    namespaces.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-    namespaces.dedup();
-    namespaces
+    call_roots.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    call_roots.dedup();
+    call_roots
 }
 
 /// The Workspace's Active Providers that are ready for the caller, cut to the
-/// namespace filter. Reads no Operation catalog.
+/// Call Root filter. Reads no Operation catalog.
 async fn visible_providers(
     transaction: &mut Transaction<'_>,
     context: RequestContext<'_>,
-    provider_filter: Option<&ProviderNamespace>,
+    provider_filter: Option<&ProviderCallRoot>,
 ) -> Result<Vec<ActiveProvider>, Error> {
     let mut visible = Vec::new();
     for provider in
         coral_provider::active_providers_in_transaction(transaction, context.workspace_id).await?
     {
-        if provider_filter.is_some_and(|namespace| provider.provider().namespace() != namespace) {
+        if provider_filter.is_some_and(|root| provider.provider().call_root() != root) {
             continue;
         }
         if coral_provider::account::discoverable_in_transaction(
             transaction,
             &provider,
             context.actor.principal(),
+            context.authority,
         )
         .await?
         {
@@ -377,7 +373,7 @@ fn describe_material(
     rules: &ExactOperationRules,
     call_path: &CallPath,
 ) -> Result<Option<OperationAuthoringDescription>, Error> {
-    if CallPath::operation(material.provider_namespace(), material.relative_path())? != *call_path {
+    if CallPath::operation(material.provider_call_root(), material.relative_path())? != *call_path {
         return Ok(None);
     }
     let Some(approval) = operation_approval(
@@ -391,7 +387,7 @@ fn describe_material(
     Ok(Some(OperationAuthoringDescription::new(
         call_path.clone(),
         material.typescript_declaration().to_string(),
-        material.provider_namespace().clone(),
+        material.provider_call_root().clone(),
         material.provider_id().clone(),
         material.provider_display_name().to_string(),
         material.presentation().clone(),

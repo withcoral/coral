@@ -55,7 +55,7 @@ async fn account_grant_expiring_during_materialization_is_not_promoted() {
         authorization_request(),
         workspace.id().clone(),
         setup.id().clone(),
-        ProviderNamespace::parse("expiring").unwrap(),
+        crate::ProviderNamespace::parse("expiring").unwrap(),
         CredentialRoute::Fixed,
     )
     .with_account_grant(grant.provisional_grant_id.unwrap());

@@ -39,6 +39,9 @@ impl ReadyDispatch {
                 ReadyMcpDispatch::plan(operation, arguments, provider, resources, limits)
                     .map(|ready| Self::Mcp(Box::new(ready)))
             }
+            // Coral performs built-in Operations itself and sends nothing upstream.
+            // Until it does, planning one settles as a safe Coral Failure.
+            ExecutionBinding::Builtin(_) => Err(Error::OperationUnavailable),
         }
     }
 }

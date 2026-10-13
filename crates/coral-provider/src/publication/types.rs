@@ -1,4 +1,4 @@
-use crate::access::{CredentialRoute, ProviderNamespace};
+use crate::access::{CredentialRoute, ProviderCallRoot, ProviderNamespace};
 use crate::{
     Error, ManagementRequestId, Provider, ProviderId, ProviderSetupId, PublicationDiagnostic,
 };
@@ -25,7 +25,8 @@ pub struct WorkspaceProviderPublicationRequest {
 }
 
 impl WorkspaceProviderPublicationRequest {
-    /// Builds one Workspace-owned Provider creation request.
+    /// Builds one Workspace-owned Provider creation request. An Owner names
+    /// the Provider; Coral calls it under `coral.providers.<namespace>`.
     #[must_use]
     pub const fn new(
         request_id: ManagementRequestId,
@@ -76,10 +77,16 @@ impl WorkspaceProviderPublicationRequest {
         &self.setup_id
     }
 
-    /// Returns the requested immutable Provider namespace.
+    /// Returns the requested Provider Namespace.
     #[must_use]
     pub const fn namespace(&self) -> &ProviderNamespace {
         &self.namespace
+    }
+
+    /// Returns the immutable Call Root the created Provider gets.
+    #[must_use]
+    pub fn call_root(&self) -> ProviderCallRoot {
+        ProviderCallRoot::Owner(self.namespace.clone())
     }
 
     /// Returns the requested initial credential route.

@@ -5,6 +5,7 @@ mod providers;
 mod provisional;
 mod repository;
 mod setup;
+mod workspaces;
 
 use super::*;
 use coral_functions::{

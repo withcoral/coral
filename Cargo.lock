@@ -614,6 +614,7 @@ dependencies = [
  "coral-search",
  "coral-test-support",
  "coral-workspace",
+ "sea-query",
  "sqlx",
  "tempfile",
  "thiserror",

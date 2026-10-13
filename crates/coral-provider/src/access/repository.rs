@@ -6,7 +6,7 @@ use coral_db::Transaction;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 use sqlx::FromRow;
 
-use crate::access::{CredentialRoute, ProviderAccess, ProviderNamespace};
+use crate::access::{CredentialRoute, ProviderAccess, ProviderCallRoot};
 use crate::{Error, ProviderId};
 
 #[derive(Iden)]
@@ -14,6 +14,7 @@ enum ProviderRecords {
     Table,
     Id,
     WorkspaceId,
+    /// Holds the complete Provider Call Root; the column predates Call Roots.
     Namespace,
     CredentialRoute,
     AccountSettingVersion,
@@ -35,8 +36,8 @@ impl ProviderAccessRow {
         let workspace_id = WorkspaceId::parse(&self.workspace_id).map_err(|_error| {
             Error::CorruptData("Provider has invalid Workspace identity".to_string())
         })?;
-        let namespace = ProviderNamespace::parse(&self.namespace)
-            .map_err(|_error| Error::CorruptData("Provider has invalid namespace".to_string()))?;
+        let call_root = ProviderCallRoot::parse(&self.namespace)
+            .map_err(|_error| Error::CorruptData("Provider has invalid Call Root".to_string()))?;
         let credential_route = CredentialRoute::from_storage_str(&self.credential_route)?;
         if self.account_setting_version <= 0 {
             return Err(Error::CorruptData(
@@ -46,17 +47,17 @@ impl ProviderAccessRow {
         Ok(ProviderAccess::new(
             id,
             workspace_id,
-            namespace,
+            call_root,
             credential_route,
             self.account_setting_version,
         ))
     }
 }
 
-pub(crate) async fn by_namespace_in_transaction(
+pub(crate) async fn by_call_root_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    namespace: &ProviderNamespace,
+    call_root: &ProviderCallRoot,
 ) -> Result<Option<ProviderAccess>, Error> {
     let row: Option<ProviderAccessRow> = transaction
         .fetch_optional(
@@ -64,7 +65,7 @@ pub(crate) async fn by_namespace_in_transaction(
                 .columns(provider_access_columns())
                 .from(ProviderRecords::Table)
                 .and_where(Expr::col(ProviderRecords::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(ProviderRecords::Namespace).eq(namespace.as_str()))
+                .and_where(Expr::col(ProviderRecords::Namespace).eq(call_root.as_str()))
                 .to_owned(),
         )
         .await?;
@@ -166,10 +167,10 @@ fn provider_access_columns() -> [ProviderRecords; 5] {
     ]
 }
 
-pub(crate) async fn namespace_exists(
+pub(crate) async fn call_root_exists(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    namespace: &ProviderNamespace,
+    call_root: &ProviderCallRoot,
 ) -> Result<bool, Error> {
     let found: Option<(i32,)> = transaction
         .fetch_optional(
@@ -177,7 +178,7 @@ pub(crate) async fn namespace_exists(
                 .expr(Expr::val(1_i32))
                 .from(ProviderRecords::Table)
                 .and_where(Expr::col(ProviderRecords::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(ProviderRecords::Namespace).eq(namespace.as_str()))
+                .and_where(Expr::col(ProviderRecords::Namespace).eq(call_root.as_str()))
                 .limit(1)
                 .to_owned(),
         )

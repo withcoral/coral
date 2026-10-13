@@ -21,10 +21,10 @@ use coral_db::Transaction;
 use coral_functions::SavedFunctionSearchMaterial;
 use coral_policy::ExactOperationRules;
 use coral_provider::ActiveProvider;
-use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceId};
 
 use crate::{
-    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderNamespace, RetrieverCoverage,
+    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage,
     SearchHit,
 };
 
@@ -33,6 +33,8 @@ use crate::{
 #[derive(Clone, Copy)]
 pub(crate) struct RequestContext<'a> {
     pub(crate) actor: &'a AuthenticatedPrincipal,
+    /// The caller's Workspace authority, checked once for this request.
+    pub(crate) authority: &'a PrincipalWorkspaceEvidence,
     pub(crate) workspace_id: &'a WorkspaceId,
     pub(crate) terms: Option<&'a [String]>,
 }
@@ -84,10 +86,10 @@ pub(crate) struct Listing {
 }
 
 /// What one retriever's `query` asks: the engine's normalized terms, the
-/// Provider namespace filter, and the window size.
+/// Provider Call Root filter, and the window size.
 pub(crate) struct QueryRequest<'a> {
     pub(crate) terms: &'a [String],
-    pub(crate) provider_filter: Option<&'a ProviderNamespace>,
+    pub(crate) provider_filter: Option<&'a ProviderCallRoot>,
     pub(crate) window: usize,
 }
 
@@ -154,7 +156,7 @@ pub(crate) trait EntityRetriever: Send + Sync {
         &self,
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
-        provider_filter: Option<&ProviderNamespace>,
+        provider_filter: Option<&ProviderCallRoot>,
     ) -> Result<Listing, Error>;
 
     /// Applies the owners' visibility rules, runs this kind's ranked

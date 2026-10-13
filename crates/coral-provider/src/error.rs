@@ -91,9 +91,12 @@ pub enum Error {
     /// Restoration applies only to a revoked Provider.
     #[error("Provider is already active")]
     ProviderAlreadyActive,
-    /// The immutable namespace is already used in the target Workspace.
-    #[error("Provider namespace is already in use")]
-    ProviderNamespaceConflict,
+    /// The immutable Call Root is already used in the target Workspace.
+    #[error("Provider Call Root is already in use")]
+    ProviderCallRootConflict,
+    /// Coral defines and manages the Built-in Provider; an Owner cannot change it.
+    #[error("Coral manages the Built-in Provider")]
+    BuiltinProviderManaged,
     /// The Provider version cannot advance further.
     #[error("Provider version overflowed")]
     ProviderAccountSettingVersionOverflow,

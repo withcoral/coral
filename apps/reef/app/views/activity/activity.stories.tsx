@@ -6,7 +6,8 @@ import { trail } from '@/views/management/layout'
 import { Activity } from './activity'
 import { ActionReviewSession } from '../actions/review'
 import { stored } from './discovery/fixtures'
-import { discoveryView, functionTarget, operationTarget } from './discovery/response'
+import { discoveryView, functionTarget } from './discovery/response'
+import { operationOwner } from '@/lib/call-root'
 import type {
   ActivityPage,
   ActivityRow,
@@ -1043,10 +1044,13 @@ function discovery(context: DiscoveryContext, response: string): Story['args'] {
   const targets =
     view.kind === 'search' ? view.page.hits : view.kind === 'describe' ? [view.description] : []
   for (const target of targets) {
-    const operation = operationTarget(target.callPath)
+    const operation = operationOwner(target.callPath, [
+      { id: 'github', callRoot: 'coral.providers.github' },
+    ])
     const path = functionTarget(target.callPath)
+    if (operation && target.title === target.callPath) target.title = operation.relativePath
     target.currentHref = operation
-      ? `/${workspace}/providers/${operation.namespace}/ops/${operation.relativePath}`
+      ? `/${workspace}/providers/${operation.provider.id}/ops/${operation.relativePath}`
       : `/${workspace}/functions/${path}`
   }
   const name = context.kind === 'describe' ? 'describe' : 'search'

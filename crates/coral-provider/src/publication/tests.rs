@@ -284,7 +284,10 @@ async fn publishes_workspace_provider_catalog_and_access_atomically() {
         )
     );
     assert_eq!(published.access().id(), published.id());
-    assert_eq!(published.access().namespace().as_str(), "weather");
+    assert_eq!(
+        published.access().call_root().as_str(),
+        "coral.providers.weather"
+    );
     assert_eq!(published.access().credential_route(), CredentialRoute::None);
     assert_eq!(published.access().version(), 1);
 
@@ -351,7 +354,7 @@ async fn successful_regeneration_atomically_activates_current_material_and_retai
     let retained = retained_operation(
         &providers,
         &fixture.workspace_id,
-        fixture.provider_access.namespace(),
+        fixture.provider_access.call_root(),
     )
     .await;
     let provider_inspections = providers
@@ -510,7 +513,7 @@ async fn regeneration_reuses_the_active_generation_only_for_an_unchanged_package
         let before = retained_operation(
             &providers,
             &fixture.workspace_id,
-            fixture.provider_access.namespace(),
+            fixture.provider_access.call_root(),
         )
         .await;
         let setup = fixture
@@ -526,7 +529,7 @@ async fn regeneration_reuses_the_active_generation_only_for_an_unchanged_package
         let after = retained_operation(
             &providers,
             &fixture.workspace_id,
-            fixture.provider_access.namespace(),
+            fixture.provider_access.call_root(),
         )
         .await;
 

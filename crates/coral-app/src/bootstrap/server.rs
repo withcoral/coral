@@ -689,6 +689,12 @@ pub(crate) async fn start_server(
                 providers.clone(),
                 search_index.clone(),
             ),
+            workspace_workflow: coral_administration::WorkspaceWorkflow::new(
+                database.clone(),
+                workspaces.clone(),
+                providers.clone(),
+                search_index.clone(),
+            ),
             workspaces,
             providers,
             accounts: accounts.clone(),

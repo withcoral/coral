@@ -59,7 +59,7 @@ async fn creation_evidence_names_the_activated_generation_or_the_failed_outcome(
     let conflict = publication_request(
         &fixture.workspace_id,
         setup.id(),
-        fixture.provider_access.namespace().as_str(),
+        fixture.provider_access.call_root().name(),
         CredentialRoute::None,
         "15000000-0000-4000-8000-000000000002",
     );

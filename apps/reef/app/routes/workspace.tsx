@@ -2,6 +2,7 @@ import { Outlet, data } from 'react-router'
 import type { Route } from './+types/workspace'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
 import { OVERVIEW_ACTIVITY_ROOTS } from '@/lib/activity-live-types'
+import { isBuiltinProvider } from '@/lib/call-root'
 import { loadActivity } from '@/lib/activity.server'
 import {
   formContext,
@@ -46,17 +47,21 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       {
         workspace: w,
         agents: agents?.agents.map(agentView) ?? [],
-        providers: providers.map((provider) => ({
-          id: provider.name.split('/').at(-1)!,
-          displayName: provider.displayName,
-          namespace: provider.namespace,
-          path: providerPath(w.path, provider.name),
-          blockers: [
-            ...(provider.state === ProviderState.DISABLED ? ['Disabled'] : []),
-            ...provider.blockers.map(blockerLabel),
-          ],
-          icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
-        })),
+        // The card shows the providers you add. Coral's Built-in Provider stays on
+        // the providers page, so a new workspace still offers Add provider here.
+        providers: providers
+          .filter((provider) => !isBuiltinProvider(provider.callRoot))
+          .map((provider) => ({
+            id: provider.name.split('/').at(-1)!,
+            displayName: provider.displayName,
+            namespace: provider.namespace,
+            path: providerPath(w.path, provider.name),
+            blockers: [
+              ...(provider.state === ProviderState.DISABLED ? ['Disabled'] : []),
+              ...provider.blockers.map(blockerLabel),
+            ],
+            icons: RECIPE_CHOICES.find((r) => r.id === provider.namespace)?.icons,
+          })),
         owners: owners?.owners.map(ownerView) ?? null,
         ownMembership: own ? membershipView(own) : null,
         form: formContext(context),

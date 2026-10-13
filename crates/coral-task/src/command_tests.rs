@@ -1952,8 +1952,8 @@ fn wall_time() -> i64 {
 async fn empty_filtered_search_retains_exact_accepted_query_provider_and_limit() {
     let fixture = Fixture::new().await;
     let goal = fixture.goal().await;
+    fixture.publish_provider("weather").await;
     let provider = "weather";
-    fixture.publish_provider(provider).await;
     let page = fixture
         .commands
         .search(

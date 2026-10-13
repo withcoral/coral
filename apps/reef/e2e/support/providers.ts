@@ -212,9 +212,21 @@ export async function nextPublication(page: Page) {
   )
 }
 
+/** Every workspace also holds the Built-in Provider, which Coral adds itself. */
+const BUILTIN_CALL_ROOT = 'coral.admin'
+const BUILTIN_GEAR = 'Coral admin settings'
+/** Every gear in the rail but the Built-in Provider's. */
+const ADDED_GEAR = /^(?!Coral admin settings$).+ settings$/
+
+/** The providers the workspace added, without the Built-in Provider. */
+export function addedProviders<P extends { callRoot: string }>(providers: readonly P[]) {
+  return providers.filter((provider) => provider.callRoot !== BUILTIN_CALL_ROOT)
+}
+
 /**
- * Opens the settings page of the provider the URL names, or of the only
- * provider on the page, from its entry in the rail.
+ * Opens the settings page of the provider the URL names, from its entry in
+ * the rail. When the URL names no provider or the Built-in Provider, opens the
+ * only added provider's settings instead.
  */
 export async function openProviderSettings(page: Page) {
   // The gear sits in the rail beside its provider. Publication lands on the
@@ -222,12 +234,17 @@ export async function openProviderSettings(page: Page) {
   // redirect is about to replace.
   await page.waitForURL((url) => /\/providers(?:\/(?!new(?:\/|$))[^/?#]+)?$/.test(url.pathname))
   const routed = /\/providers\/([^/?#]+)/.exec(new URL(page.url()).pathname)?.[1]
-  // The bare list route selects its first provider implicitly. Each gear
-  // links to its provider's settings route, beside the provider in the rail.
+  // The bare list route selects its first provider implicitly, which can be
+  // the Built-in Provider. Each gear links to its provider's settings route,
+  // beside the provider in the rail. Wait for the routed gear before reading
+  // whose it is, so a rail that has not rendered yet cannot redirect the click.
   const rail = page.getByRole('navigation', { name: 'installed providers', exact: true })
-  const gear = routed
-    ? rail.locator(`a[href$="/providers/${routed}/settings"]`)
-    : rail.getByRole('link', { name: / settings$/ }).first()
+  let gear = routed ? rail.locator(`a[href$="/providers/${routed}/settings"]`) : null
+  if (gear) await gear.waitFor()
+  const builtin = gear
+    ? await gear.and(rail.getByRole('link', { name: BUILTIN_GEAR, exact: true })).count()
+    : 0
+  if (!gear || builtin) gear = rail.getByRole('link', { name: ADDED_GEAR }).first()
   await gear.click()
   await page.waitForURL((url) => url.pathname.endsWith('/settings'))
   await breadcrumb(page, 'Settings').waitFor()

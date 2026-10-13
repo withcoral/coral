@@ -2110,7 +2110,7 @@ async fn blockers(
         .into_iter()
         .map(|inspection| {
             (
-                format!("{:?}", inspection.provider.namespace()),
+                format!("{:?}", inspection.provider.call_root()),
                 inspection.blockers,
             )
         })
@@ -2124,11 +2124,10 @@ async fn active_contract(
     namespace: &str,
 ) -> ProviderCredentialContract {
     let mut tx = harness.database.begin().await.unwrap();
-    let target = crate::resolve_invocation_operation_in_transaction(
+    let target = crate::resolve_owner_operation_in_transaction(
         &mut tx,
         workspace,
-        &crate::access::ProviderNamespace::parse(namespace).unwrap(),
-        "getData",
+        &format!("coral.providers.{namespace}.getData"),
     )
     .await
     .unwrap()

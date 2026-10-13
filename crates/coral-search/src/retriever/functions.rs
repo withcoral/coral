@@ -22,7 +22,7 @@ use crate::evidence::{EvidenceBuilder, EvidenceTerms};
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
 use crate::{
-    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderNamespace, RetrieverCoverage,
+    CallPath, EntityKind, Error, ExactAuthoringDescription, ProviderCallRoot, RetrieverCoverage,
     SavedFunctionAuthoringDescription, SearchEvidence, SearchHit,
 };
 
@@ -46,7 +46,7 @@ impl EntityRetriever for SavedFunctionRetriever {
         &self,
         transaction: &mut Transaction<'_>,
         context: RequestContext<'_>,
-        _provider_filter: Option<&ProviderNamespace>,
+        _provider_filter: Option<&ProviderCallRoot>,
     ) -> Result<Listing, Error> {
         let entities = current_functions(transaction, context)
             .await?

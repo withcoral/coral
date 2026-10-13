@@ -102,7 +102,7 @@ test.for(['OpenAPI URL', 'MCP server'])(
         expect(upstream.requests()).toBe(0)
         expect(
           (await api.providers.listProviders({ parent: `workspaces/${workspace}` })).providers,
-        ).toHaveLength(0)
+        ).toHaveLength(1)
       })
     })
   },
@@ -127,7 +127,7 @@ test('Authenticated configuration rejects a loopback server and accepts a public
       await page.getByText('outbound_destination_rejected', { exact: true }).waitFor()
       expect(
         (await api.providers.listProviders({ parent: `workspaces/${workspace}` })).providers,
-      ).toHaveLength(0)
+      ).toHaveLength(1)
       expect(upstream.requests()).toBe(0)
     })
     await step(
@@ -162,7 +162,7 @@ test('Authenticated update rejects loopback MCP discovery and preserves the exis
     )
     const parent = `workspaces/${workspace}`
     const before = (await api.providers.listProviders({ parent })).providers
-    expect(before).toHaveLength(1)
+    expect(before).toHaveLength(2)
     await step('Refuse the replacement source before reaching its server', async () => {
       await openProviderSettings(page)
       await page.getByRole('link', { name: 'Replace source', exact: true }).click()

@@ -15,8 +15,8 @@
 //!   own Agent/Registration lifecycle and safe transactional Events.
 //! - [`WorkspaceModule::authenticate_agent`] verifies the exact Workspace's bearer
 //!   credential without owning HTTP, OAuth, or session protocol machinery.
-//! - [`WorkspaceModule::create`] creates one active Workspace and the creator's
-//!   explicit Owner Membership atomically.
+//! - [`WorkspaceModule::create_in_transaction`] creates one active Workspace and
+//!   the creator's explicit Owner Membership in the caller's transaction.
 //! - [`WorkspaceModule::check`] returns current role and lifecycle evidence for
 //!   inspection, configuration, Run admission, or dispatch.
 //! - [`WorkspaceModule::check_configuration_in_transaction`] lets the Module
@@ -108,7 +108,7 @@ mod types;
 
 use std::sync::Arc;
 
-use coral_db::Database;
+use coral_db::{Database, Transaction};
 
 pub use agent_types::{
     Agent, AgentCredential, AgentDisplayName, AgentRegistration, AgentRegistrationId, AgentState,
@@ -151,39 +151,59 @@ impl WorkspaceModule {
         Self { database }
     }
 
-    /// Creates an active Workspace and the creator's explicit Owner Membership.
+    /// Creates an active Workspace and the creator's explicit Owner Membership,
+    /// with no Built-in Provider. Tests only: production creation goes through
+    /// the administration workflow, which also creates the Workspace's Built-in
+    /// Provider in the same transaction.
     ///
     /// # Errors
     ///
     /// Returns an authority or persistence error. Failure writes neither the
     /// Workspace, Membership, nor Administrative Lifecycle Event.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn create(
         &self,
         context: &ChangeContext,
         display_name: WorkspaceDisplayName,
     ) -> Result<Workspace, Error> {
         let mut transaction = self.database.begin().await?;
-        let actor = organization::hold_user(&mut transaction, context.actor().user_id()).await?;
+        let workspace = self
+            .create_in_transaction(&mut transaction, context, display_name)
+            .await?;
+        transaction.commit().await?;
+        Ok(workspace)
+    }
+
+    /// Creates an active Workspace and the creator's explicit Owner Membership
+    /// in the caller's transaction, without committing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority or persistence error. An error may follow writes;
+    /// do not commit the transaction after one.
+    pub async fn create_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &ChangeContext,
+        display_name: WorkspaceDisplayName,
+    ) -> Result<Workspace, Error> {
+        let actor = organization::hold_user(transaction, context.actor().user_id()).await?;
         if actor.organization_role().is_none() {
             return Err(Error::PermissionDenied(
                 "current Organization Membership is required to create a Workspace",
             ));
         }
-        management::claim_request(&mut transaction, context).await?;
+        management::claim_request(transaction, context).await?;
         let workspace = Workspace::new(
             WorkspaceId::generate(),
             display_name,
             WorkspaceState::Active,
             1,
         );
-        repository::insert_workspace(
-            &mut transaction,
-            &workspace,
-            context.occurred_at_unix_nanos(),
-        )
-        .await?;
+        repository::insert_workspace(transaction, &workspace, context.occurred_at_unix_nanos())
+            .await?;
         repository::upsert_membership(
-            &mut transaction,
+            transaction,
             workspace.id(),
             context.actor().user_id(),
             WorkspaceRole::Owner,
@@ -191,7 +211,7 @@ impl WorkspaceModule {
         )
         .await?;
         record_event(
-            &mut transaction,
+            transaction,
             context,
             workspace.id(),
             EventDetail {
@@ -204,7 +224,7 @@ impl WorkspaceModule {
         )
         .await?;
         record_event(
-            &mut transaction,
+            transaction,
             context,
             workspace.id(),
             EventDetail {
@@ -216,7 +236,6 @@ impl WorkspaceModule {
             },
         )
         .await?;
-        transaction.commit().await?;
         Ok(workspace)
     }
 
