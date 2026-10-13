@@ -3,6 +3,7 @@ import {
   useImperativeHandle,
   useRef,
   type CSSProperties,
+  type KeyboardEventHandler,
   type PropsWithChildren,
   type ReactElement,
   type ReactNode,
@@ -29,6 +30,12 @@ interface ContainerBaseProps {
   ariaLabel?: string
   children?: ReactNode
   className?: string
+  /**
+   * Makes the table itself a focus stop, for a view whose keys act on the table
+   * only while it has focus. Pair with `onKeyDown`.
+   */
+  tabIndex?: number
+  onKeyDown?: KeyboardEventHandler<HTMLDivElement>
   /**
    * One descriptor per column, in order. They set the width of each column and
    * the alignment of everything in it, and `Table.Head` renders their labels.
@@ -148,6 +155,8 @@ export function Container({
   onVisibleRecordsChange,
   staticRows = false,
   variant = 'plain',
+  tabIndex,
+  onKeyDown,
 }: ContainerProps) {
   const readingRef = useRef<HTMLDivElement>(null)
   useImperativeHandle(ref, () => readingRef.current!)
@@ -198,6 +207,8 @@ export function Container({
           )}
           ref={readingRef}
           role="table"
+          tabIndex={tabIndex}
+          onKeyDown={onKeyDown}
           onScroll={onScroll}
           style={
             {

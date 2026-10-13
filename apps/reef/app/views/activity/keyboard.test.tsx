@@ -131,13 +131,72 @@ const branch = (rows: ActivityRow[], total = rows.length): ActivityBranch => ({
   unavailable: false,
 })
 
+// An open detail hides the table from assistive technology, not from these checks.
+const activityTable = () => screen.getByRole('table', { name: 'Activity records', hidden: true })
+/** The table itself takes focus; only then do its keys move the cursor. */
+const focusTable = () => act(() => activityTable().focus())
+
 /** The record the keyboard cursor rests on, by its link. */
 const cursor = () => {
-  const row = screen
-    .getByRole('table', { name: 'Activity records' })
-    .querySelector<HTMLElement>('[role="row"][data-active]')
-  return row ? within(row).getByRole('link').textContent : null
+  const row = activityTable().querySelector<HTMLElement>('[role="row"][data-active]')
+  return row ? within(row).getByRole('link', { hidden: true }).textContent : null
 }
+
+// Catches: page-global keys. Activity acts only on keys the table itself
+// receives, so focus on the page or on a control elsewhere keeps its own keys,
+// and ↓ never pulls focus into the table.
+it.each<[string, () => HTMLElement | null, number]>([
+  ['the page', () => null, 0],
+  // Its own Enter and Space each activate it.
+  ['a button elsewhere on the page', () => screen.getByRole('button', { name: 'Elsewhere' }), 2],
+])('keys do nothing while %s has focus', async (_, focused, activations) => {
+  const a = task('a')
+  const clicked = vi.fn()
+  const { user, router } = renderActivity({
+    rows: [a, task('b')],
+    branches: { [a.name]: branch([tool(a.name, '0', 0)]) },
+  })
+  const elsewhere = document.body.appendChild(document.createElement('button'))
+  elsewhere.textContent = 'Elsewhere'
+  elsewhere.addEventListener('click', clicked)
+  try {
+    focused()?.focus()
+    const before = document.activeElement
+    await user.keyboard('{ArrowDown}{ArrowDown}')
+    expect(document.activeElement).toBe(before)
+    await user.keyboard('{Enter} ')
+    expect({ cursor: cursor(), record: recordIn(router), expanded: expandedIn(router) }).toEqual({
+      cursor: null,
+      record: null,
+      expanded: [],
+    })
+    expect(clicked).toHaveBeenCalledTimes(activations)
+  } finally {
+    elsewhere.remove()
+  }
+})
+
+// Catches: a table that Tab cannot reach, or that acts before it has focus.
+it('Tab reaches the table, and its keys work once it has focus', async () => {
+  const { user } = renderActivity({ rows: [task('a'), task('b')] })
+  for (let presses = 0; document.activeElement !== activityTable() && presses < 20; presses++)
+    await user.tab()
+  expect(activityTable()).toHaveFocus()
+  await user.keyboard('{ArrowDown}')
+  expect(cursor()).toBe('Task a')
+})
+
+// Catches: a cursor drawn while its keys cannot act, or lost when focus returns.
+it('the cursor shows only while focus is in the table', async () => {
+  const { user } = renderActivity({ rows: [task('a'), task('b')] })
+  await focusTable()
+  await user.keyboard('{ArrowDown}')
+  expect(cursor()).toBe('Task a')
+  act(() => activityTable().blur())
+  expect(cursor()).toBeNull()
+  await focusTable()
+  expect(cursor()).toBe('Task a')
+})
 
 // Catches: a cursor that wraps around or runs off either end of the loaded list.
 it.each<[string, string, string | null]>([
@@ -149,12 +208,14 @@ it.each<[string, string, string | null]>([
 ])('%s', async (_, keys, expected) => {
   const { user } = renderActivity({ rows: [task('a'), task('b'), task('c')] })
   expect(cursor()).toBeNull()
+  await focusTable()
   await user.keyboard(keys)
   expect(cursor()).toBe(expected)
 })
 
 it('an empty table has no cursor to move', async () => {
   const { user } = renderActivity({ rows: [] })
+  await focusTable()
   await user.keyboard('{ArrowDown}{ArrowUp}')
   expect(screen.getByText('No activity yet')).toBeInTheDocument()
   expect(
@@ -198,6 +259,7 @@ it.each([
   '%s moves through records in displayed tree order and stops at unloaded gaps',
   async (key, expected) => {
     const { user, list } = sparseTree()
+    await focusTable()
     expect(await press(user, key === '↓' ? '{ArrowDown}' : '{ArrowUp}', expected.length)).toEqual(
       expected,
     )
@@ -232,43 +294,10 @@ it.each<[string, string, string[], string[]]>([
     entry: before.length ? expand(...before.map(name)) : '/activity',
     branches: { [a.name]: branch([tool(a.name, '0', 0)]) },
   })
+  await focusTable()
   await user.keyboard(keys)
   expect(expandedIn(router)).toEqual(after.map(name))
 })
-
-/**
- * A control outside this table, left focused by whatever navigation opened
- * the page (a sidebar link, say) — never one of the table's own rows.
- */
-function focusOutsideControl() {
-  const link = document.createElement('a')
-  link.href = '#elsewhere'
-  link.textContent = 'Elsewhere'
-  document.body.appendChild(link)
-  link.focus()
-  return () => link.remove()
-}
-
-// Catches: a first keyboard press on a freshly opened table doing nothing
-// because a control the navigation left focused, unrelated to this table,
-// is mistaken for a control the key belongs to.
-it.each([
-  ['Space expands the cursor Task', ' ', [task('a').name], null],
-  ['Enter opens the cursor record', '{Enter}', [], task('a').name],
-])(
-  '%s even while a control outside the table is still focused',
-  async (_, key, expanded, record) => {
-    const a = task('a')
-    const { user, router } = renderActivity({ rows: [a] })
-    const restore = focusOutsideControl()
-    await user.keyboard('{ArrowDown}')
-    expect(cursor()).toBe('Task a')
-    await user.keyboard(key)
-    expect(expandedIn(router)).toEqual(expanded)
-    expect(recordIn(router)).toBe(record)
-    restore()
-  },
-)
 
 // Catches: a held key that toggles a branch or opens the detail again on every repeat.
 it.each([
@@ -280,6 +309,7 @@ it.each([
     rows: [a],
     branches: { [a.name]: branch([tool(a.name, '0', 0)]) },
   })
+  await focusTable()
   await user.keyboard(`{ArrowDown}${keys}`)
   expect(expandedIn(router)).toEqual(expanded)
   expect(recordIn(router)).toBe(record)
@@ -293,6 +323,7 @@ it('collapsing the branch that holds the cursor moves the cursor to its parent',
     entry: expand(a.name),
     branches: { [a.name]: branch([tool(a.name, '0', 0)]) },
   })
+  await focusTable()
   await user.keyboard('{ArrowDown}{ArrowDown}')
   expect(cursor()).toBe('Tool 0')
   await user.click(screen.getByRole('button', { name: 'Collapse record' }))
@@ -337,6 +368,7 @@ it.each<[string, string[], string, string[], string]>([
       [r.name]: branch([tool(r.name, 'nested', 0)]),
     },
   })
+  await focusTable()
   await user.keyboard(keys)
   expect(expandedIn(router)).toEqual(after.map(name))
   expect(cursor()).toBe(expectedCursor)
@@ -348,6 +380,7 @@ it.each<[string, string[], string, string[], string]>([
 it('Space on a root record with no parent does nothing', async () => {
   const standalone = tool('task', 'x', 0)
   const { user, router } = renderActivity({ rows: [standalone] })
+  await focusTable()
   await user.keyboard('{ArrowDown} ')
   expect(cursor()).toBe('Tool x')
   expect(expandedIn(router)).toEqual([])
@@ -357,6 +390,7 @@ it('Space on a root record with no parent does nothing', async () => {
 it('keeps the cursor on its record when records arrive or reorder', async () => {
   const [a, b, c] = [task('a'), task('b'), task('c')]
   const { user, publish } = renderActivity({ rows: [a, b] })
+  await focusTable()
   await user.keyboard('{ArrowDown}{ArrowDown}')
   expect(cursor()).toBe('Task b')
   await publish({ rows: [c, b, a] })
@@ -378,6 +412,7 @@ it('keeps the cursor on a submission once it shows as its accepted Run', async (
     branches: { [a.name]: branch([child, tool(a.name, '1', 1)]) },
   })
   const { user, publish } = renderActivity({ ...records(submission), entry: expand(a.name) })
+  await focusTable()
   await user.keyboard('{ArrowDown}{ArrowDown}')
   expect(cursor()).toBe('Tool exec')
   await publish(records(accepted))
@@ -391,6 +426,7 @@ it.each<[string, Records]>([
   ['access loss conceals the list', { rows: [], listUnavailable: true }],
 ])('clears the cursor when %s', async (_, records) => {
   const { user, publish } = renderActivity({ rows: [task('a'), task('b'), task('c')] })
+  await focusTable()
   await user.keyboard('{ArrowDown}{ArrowDown}')
   expect(cursor()).toBe('Task b')
   await publish(records)
@@ -405,6 +441,7 @@ it.each<[string, Records]>([
 it('Enter opens the cursor record’s detail', async () => {
   const b = task('b')
   const { user, router } = renderActivity({ rows: [task('a'), b] })
+  await focusTable()
   await user.keyboard('{ArrowUp}{Enter}')
   expect(recordIn(router)).toBe(b.name)
   expect(await screen.findByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
@@ -420,6 +457,7 @@ it('Enter on a focused button activates it, not the cursor record', async () => 
     rows: [a, b],
     branches: { [b.name]: branch([tool(b.name, '0', 0)]) },
   })
+  await focusTable()
   await user.keyboard('{ArrowDown}')
   screen.getAllByRole('button', { name: 'Expand record' })[1]!.focus()
   await user.keyboard('{Enter}')
@@ -476,6 +514,7 @@ it('↑ and ↓ step the open detail through the table, replacing the URL', asyn
 it('Escape closes the detail and leaves the cursor on the last record it showed', async () => {
   const [a, b] = [task('a'), task('b')]
   const { user, router } = renderActivity({ rows: [a, b] })
+  await focusTable()
   await user.keyboard('{ArrowDown}{Enter}')
   await screen.findByRole('dialog', { name: 'Activity details' })
   await user.keyboard('{ArrowDown}{Escape}')
@@ -582,6 +621,46 @@ it('the cursor follows the detail even when the record it left leaves the table'
   await vi.waitFor(() => expect(cursor()).toBe('Task b'))
 })
 
+// Catches: a control inside the detail losing its own arrows to stepping, or a
+// drawer that keyboard users cannot focus again once inside it.
+it('only the drawer itself steps the detail; its controls keep their arrows', async () => {
+  const [a, b] = [task('a'), task('b')]
+  const { user, router } = renderActivity({ rows: [a, b], entry: `/activity?record=${a.name}` })
+  const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+  // Shift+Tab reaches the drawer itself from its first control.
+  expect(dialog).toHaveAttribute('tabindex', '0')
+  act(() => within(dialog).getByRole('button', { name: 'Close details' }).focus())
+  await user.keyboard('{ArrowDown}')
+  expect(recordIn(router)).toBe(a.name)
+  act(() => dialog.focus())
+  await user.keyboard('{ArrowDown}')
+  expect(recordIn(router)).toBe(b.name)
+  // Escape is the dialog's own, so it closes the drawer from a focused control too.
+  act(() => within(dialog).getByRole('button', { name: 'Close details' }).focus())
+  await user.keyboard('{Escape}')
+  await vi.waitFor(() => {
+    expect(recordIn(router)).toBeNull()
+    expect(activityTable()).toHaveFocus()
+  })
+})
+
+// Catches: arrows that land on the page while the detail is open moving the
+// hidden table cursor, so Escape shows a record the detail never showed.
+it('keys on the page leave the table cursor alone while the detail is open', async () => {
+  const [a, b, c] = [task('a'), task('b'), task('c')]
+  const { user, router } = renderActivity({ rows: [a, b, c], entry: `/activity?record=${a.name}` })
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  act(() => (document.activeElement as HTMLElement | null)?.blur())
+  await user.keyboard('{ArrowDown}{ArrowDown}')
+  expect(recordIn(router)).toBe(a.name)
+  act(() => details().focus())
+  await user.keyboard('{Escape}')
+  await vi.waitFor(() => {
+    expect(cursor()).toBe('Task a')
+    expect(activityTable()).toHaveFocus()
+  })
+})
+
 // The approval review's unsent comment guards stepping to another record.
 async function draftOnApproval() {
   const b = task('b')
@@ -601,10 +680,10 @@ async function draftOnApproval() {
   })
   const comment = await screen.findByRole('textbox', { name: 'Comment (optional)' })
   await rendered.user.type(comment, 'Keep this draft')
-  // The field keeps its own arrows; a button hands them to the detail.
+  // The field keeps its own arrows; the drawer itself steps.
   await rendered.user.keyboard('{ArrowDown}')
   expect(recordIn(rendered.router)).toBe(waiting.name)
-  screen.getByRole('button', { name: 'Close details' }).focus()
+  act(() => details().focus())
   await rendered.user.keyboard('{ArrowDown}')
   const confirmation = await screen.findByRole('dialog', { name: 'Discard your comment?' })
   return { ...rendered, b, confirmation }
@@ -618,6 +697,32 @@ it('keeping an unsent comment cancels the step and ignores arrows meanwhile', as
   await user.click(within(confirmation).getByRole('button', { name: 'Keep editing' }))
   expect(recordIn(router)).toBe(waiting.name)
   expect(screen.getByRole('textbox', { name: 'Comment (optional)' })).toHaveValue('Keep this draft')
+})
+
+// Catches: a close the unsent-comment guard blocked leaving the drawer closed for
+// good, so opening another record from the table shows nothing.
+it('a record opened from the table after a kept comment shows its detail', async () => {
+  const { user, router, b, confirmation } = await draftOnApproval()
+  await user.click(within(confirmation).getByRole('button', { name: 'Keep editing' }))
+  act(() => details().focus())
+  await user.keyboard('{Escape}')
+  await user.click(
+    within(await screen.findByRole('dialog', { name: 'Discard your comment?' })).getByRole(
+      'button',
+      { name: 'Keep editing' },
+    ),
+  )
+  await user.click(within(activityTable()).getByRole('link', { name: 'Task b' }))
+  await user.click(
+    within(await screen.findByRole('dialog', { name: 'Discard your comment?' })).getByRole(
+      'button',
+      { name: 'Discard comment' },
+    ),
+  )
+  await vi.waitFor(() => expect(recordIn(router)).toBe(b.name))
+  expect(await screen.findByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
+    'Task b',
+  )
 })
 
 it('discarding an unsent comment completes the step', async () => {
@@ -668,6 +773,7 @@ it.each<[string, Records & { entry?: string } & Pick<ActivityViewProps, 'more'>]
 ])('%s takes no keyboard cursor', async (_, records) => {
   const { user, router } = renderActivity(records)
   const before = recordIn(router)
+  await focusTable()
   await user.keyboard('{ArrowDown}{ArrowUp}{Enter}')
   expect(document.querySelector('[data-active]')).toBeNull()
   expect(recordIn(router)).toBe(before)

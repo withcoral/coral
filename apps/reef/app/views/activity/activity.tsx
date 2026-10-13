@@ -3,6 +3,7 @@ import {
   memo,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -16,7 +17,6 @@ import { Button, Typography } from '@/wax/components'
 import { Elapsed } from '@/wax/components/elapsed'
 import * as Dialog from '@/wax/components/dialog'
 import { Icon, type IconName } from '@/wax/components/icon'
-import { KeyboardShortcut, cursorKeyApplies } from '@/wax/components/keyboard-shortcut'
 import { Pill } from '@/wax/components/pill'
 import * as Table from '@/wax/components/table'
 import {
@@ -279,8 +279,17 @@ function useCursorOn(identity: string) {
     () => false,
   )
 }
-const repeated = (event: KeyboardEvent) => event.repeat
-const never = () => false
+/**
+ * A plain key pressed on the element that handles it, not on a control inside it
+ * or while typing a composed character. Modified keys keep their own meaning.
+ */
+const ownKey = (event: React.KeyboardEvent) =>
+  event.target === event.currentTarget &&
+  !event.defaultPrevented &&
+  !event.nativeEvent.isComposing &&
+  !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+const arrowStep = (event: React.KeyboardEvent) =>
+  event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0
 /** A plain left click; other clicks keep the link's own behaviour, such as a new tab. */
 const plainClick = (event: React.MouseEvent) =>
   event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
@@ -440,7 +449,12 @@ export function Activity({
   const nav = useActivityNavigation(page)
   const navigate = useNavigate()
   const { search } = useLocation()
-  const drawer = Dialog.useCloseAfterExit(page.selected ?? null, () =>
+  // One drawer shows each record in turn, so a close belongs to the drawer, not
+  // to the record it showed: a step that lands while it closes cannot reopen it.
+  // Opening a record from the table starts a new drawer, which a close the
+  // unsent-comment guard kept from finishing cannot hold shut.
+  const [drawerSession, setDrawerSession] = useState(0)
+  const drawer = Dialog.useCloseAfterExit(page.selected ? `open-${drawerSession}` : null, () =>
     navigate(nav.backHref, { preventScrollReset: true }),
   )
   const observed = live !== undefined
@@ -461,8 +475,9 @@ export function Activity({
         ? stopOf(stops, page.selected)
         : undefined))
   // The cursor follows the open detail, so it rests on the last record the detail showed.
+  // A step that lands while the drawer closes was never shown, so it is not followed.
   const [followedSelection, setFollowedSelection] = useState<string | null>(null)
-  if (followedSelection !== shown) {
+  if (followedSelection !== shown && (!shown || drawer.open)) {
     setFollowedSelection(shown)
     if (shown) setCursor(shownStop?.identity ?? null)
   }
@@ -470,7 +485,13 @@ export function Activity({
   // A cursor that just followed the detail comes from these stops, so it stays.
   else if (cursor !== null && !stops.some((stop) => stop.identity === cursor)) setCursor(null)
   const [cursorStore] = useState(() => new CursorStore())
-  useLayoutEffect(() => cursorStore.set(cursor), [cursorStore, cursor])
+  // The cursor shows only while focus is in the table. Its keys act when the
+  // table itself has focus; a control in a row keeps its own.
+  const [tableFocused, setTableFocused] = useState(false)
+  useLayoutEffect(
+    () => cursorStore.set(tableFocused ? cursor : null),
+    [cursorStore, cursor, tableFocused],
+  )
   // Rows navigate with the reader's latest position, read when the click happens.
   const latest = useRef({ nav, navigate, live, more, expanded: page.expanded, stops, cursor })
   useLayoutEffect(() => {
@@ -478,6 +499,7 @@ export function Activity({
   })
   const [actions] = useState<RowActions>(() => ({
     select: (row) => {
+      setDrawerSession((session) => session + 1)
       const current = latest.current
       // A glimpse opens the record on its Activity page, at the top of that page.
       if (current.more) void current.navigate(revealHref(row))
@@ -506,52 +528,71 @@ export function Activity({
     const row = key && table.current?.querySelector<HTMLElement>(`[data-record-key="${key}"]`)
     if (row) Table.revealRow(row)
   }
-  const moveCursor = (step: 1 | -1) => (event: KeyboardEvent) => {
-    if (!stops.length || !cursorKeyApplies(event, { overControls: true })) return
-    event.preventDefault()
-    const next = stepStop(stops, cursor, step)
-    if (!next) return
-    setCursor(next.identity)
-    revealStop(next)
-  }
   const cursorStop = stops.find((stop) => stop.identity === cursor)
-  // A control outside the table, such as a nav link the page's own navigation
-  // left focused, does not own these keys merely by holding stale focus.
-  const applies = (event: KeyboardEvent) =>
-    cursorKeyApplies(event, { overControls: false, within: table.current })
-  // Space toggles the cursor's own Task or Run, expanded or not. A
-  // non-expandable record has no expansion of its own, so Space instead
-  // collapses its closest enclosing Run or Task and the cursor follows
-  // there; a root record with no enclosing Run or Task is unaffected.
-  const toggleCursor = (event: KeyboardEvent) => {
-    if (!cursorStop || page.selected || !applies(event)) return
-    const { row, ancestors } = cursorStop
-    if (expandable(row)) {
-      const expanded = page.expanded.includes(row.name)
-      if (!expanded && page.expanded.length >= MAX_EXPANDED_RECORDS) return
+  // Only the table itself takes these keys: a control in a row, or anything
+  // elsewhere on the page, keeps its own. ↑ and ↓ move the cursor. Space
+  // toggles the cursor's own Task or Run, expanded or not; a non-expandable
+  // record has none, so Space collapses its closest enclosing Run or Task
+  // and the cursor follows there. Enter opens the cursor record's detail.
+  const tableKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (glimpse || !ownKey(event)) return
+    const step = arrowStep(event)
+    if (step) {
+      if (!stops.length) return
       event.preventDefault()
-      actions.toggle(row.name)
+      const next = stepStop(stops, cursor, step)
+      if (!next) return
+      setCursor(next.identity)
+      revealStop(next)
       return
     }
-    const target = ancestors.at(-1)
-    if (!target) return
-    event.preventDefault()
-    actions.toggle(target)
+    // A held Space or Enter acts once.
+    if (event.repeat || !cursorStop || page.selected) return
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      actions.select(cursorStop.row)
+    } else if (event.key === ' ') {
+      const { row, ancestors } = cursorStop
+      const target = expandable(row) ? row.name : ancestors.at(-1)
+      if (!target) return
+      const expanding = expandable(row) && !page.expanded.includes(row.name)
+      if (expanding && page.expanded.length >= MAX_EXPANDED_RECORDS) return
+      event.preventDefault()
+      actions.toggle(target)
+    }
   }
-  const openCursor = (event: KeyboardEvent) => {
-    if (!cursorStop || page.selected || !applies(event)) return
-    event.preventDefault()
-    actions.select(cursorStop.row)
-  }
-  // In the open detail, ↑ and ↓ show the previous and next record in place.
+  // Focus anywhere in the table shows the cursor; arriving at the table reveals
+  // it. Native listeners also see the focus a closing drawer returns during a
+  // React commit, which React's own focus events miss.
+  useEffect(() => {
+    const node = table.current
+    if (glimpse || !node) return
+    const enter = (event: FocusEvent) => {
+      setTableFocused(true)
+      const { stops: current, cursor: at } = latest.current
+      const stop = event.target === node && current.find((item) => item.identity === at)
+      const row =
+        stop && node.querySelector<HTMLElement>(`[data-record-key="${CSS.escape(stop.row.name)}"]`)
+      if (row) Table.revealRow(row)
+    }
+    const leave = (event: FocusEvent) => {
+      if (!(event.relatedTarget instanceof Node && node.contains(event.relatedTarget)))
+        setTableFocused(false)
+    }
+    node.addEventListener('focusin', enter)
+    node.addEventListener('focusout', leave)
+    return () => {
+      node.removeEventListener('focusin', enter)
+      node.removeEventListener('focusout', leave)
+    }
+  }, [glimpse])
+  // In the open detail, ↑ and ↓ show the previous and next record in place, but
+  // only from the drawer itself: its controls and dialogs keep their keys.
   const stepDetail = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0
-    if (!step || !page.selected) return
-    // A dialog inside the detail, such as a confirmation, keeps its keys.
-    const dialog = (event.target as Element).closest('[role="dialog"], [role="alertdialog"]')
-    if (dialog !== event.currentTarget) return
-    if (!cursorKeyApplies(event.nativeEvent, { overControls: true, inDialog: true })) return
-    if (!shownStop) return
+    const step = arrowStep(event)
+    if (!step || !page.selected || !ownKey(event)) return
+    // A closing drawer steps nowhere.
+    if (!drawer.open || !shownStop) return
     event.preventDefault()
     const next = stepStop(stops, shownStop.identity, step)
     if (next)
@@ -659,6 +700,8 @@ export function Activity({
             <Table.Container
               ref={table}
               className={styles.table}
+              tabIndex={glimpse ? undefined : 0}
+              onKeyDown={tableKey}
               readingKey={windowKey}
               readingPaused={live && !live.connected}
               readingFollowStart={live?.followRoot}
@@ -748,7 +791,9 @@ export function Activity({
                 placement="right"
                 fullWidthOnMobile
                 onKeyDown={stepDetail}
-                // The drawer takes focus itself, so a held Enter does not then close it.
+                // The drawer takes focus itself, so its arrows step at once and a held
+                // Enter does not close it. Shift+Tab from its first control returns here.
+                tabIndex={0}
                 initialFocus={popup}
                 finalFocus={returnFocus}
               >
@@ -785,11 +830,6 @@ export function Activity({
               </Dialog.Popup>
             </Dialog.Portal>
           </Dialog.Root>
-          {/* `cursorKeyApplies` decides which controls keep a key, so they don't skip it here. */}
-          <KeyboardShortcut shortcut="ArrowDown" handler={moveCursor(1)} ignore={never} />
-          <KeyboardShortcut shortcut="ArrowUp" handler={moveCursor(-1)} ignore={never} />
-          <KeyboardShortcut shortcut="Enter" handler={openCursor} ignore={repeated} />
-          <KeyboardShortcut shortcut="Space" handler={toggleCursor} ignore={repeated} />
         </div>
       </ActivityConnectedContext>
     </RowActionsContext>

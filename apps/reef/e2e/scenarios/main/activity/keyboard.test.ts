@@ -32,6 +32,14 @@ const cursorAt = (table: Locator) =>
     }
   })
 
+/** Tabs forward until the table itself has focus, as a keyboard user enters it. */
+async function tabInto(page: Page, table: Locator) {
+  for (let presses = 0; !(await table.evaluate((t) => t === document.activeElement)); presses++) {
+    expect(presses, 'Tab reaches the Activity table').toBeLessThan(60)
+    await page.keyboard.press('Tab')
+  }
+}
+
 /** Two Tasks; the newer one holds a search and a Run with more emissions than one window. */
 async function recordHistory(execute: (intent: string) => ReturnType<typeof programRunner>) {
   const older = execute(`Keyboard second ${crypto.randomUUID()}`)
@@ -62,6 +70,8 @@ async function driveActivity(
     await page.setViewportSize({ width: 1440, height: 600 })
     await page.goto(path)
     await table.getByRole('link', { name: intent, exact: true }).waitFor()
+    // The table's keys act only while the table itself has focus.
+    await tabInto(page, table)
   })
   await step('Space expands the cursor Task and then its Run', async () => {
     expect((await press('ArrowDown')).label).toBe(intent)
@@ -112,6 +122,8 @@ async function driveActivity(
     await page.keyboard.press('Enter')
     const dialog = page.getByRole('dialog', { name: 'Activity details', exact: true })
     await dialog.waitFor()
+    // The drawer itself takes focus, so its arrows step the detail.
+    await expect.poll(() => dialog.evaluate((d) => d === document.activeElement)).toBe(true)
     await page.waitForURL((url) => url.searchParams.has('record'))
     const opened = new URL(page.url()).searchParams.get('record')
     // A shorter window makes the detail scroll. The mark shows the dialog stays mounted.
@@ -183,13 +195,14 @@ test('The keyboard drives an agent’s Activity, its tree, and its detail', asyn
 })
 
 // Reaching Activity through the sidebar tab, rather than `page.goto`, leaves
-// that link focused — a genuine first-use repro for a first key press, not
-// the always-clean focus a fresh navigation starts with.
-test('A first key press on Activity still expands, right after the sidebar opens it', async (context) => {
+// that link focused. Activity's keys act only on the focused table, so the link
+// keeps its own keys until Tab brings focus into the table.
+test('Activity keys wait for the table: the sidebar keeps its keys, and Tab enters the table', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor, target }) => {
     const workspace = await createWorkspace(actor.accessToken, `First press ${crypto.randomUUID()}`)
     const intent = `First press task ${crypto.randomUUID()}`
     const table = page.getByRole('table', { name: 'Activity records', exact: true })
+    let tab: Locator
     await step('Record one Task with a Run', async () => {
       const execute = programRunner(page, target, workspace, { taskIntent: intent })
       await observeRun(execute, await execute.exec('return "ready";'))
@@ -198,7 +211,7 @@ test('A first key press on Activity still expands, right after the sidebar opens
       await page.goto(`/workspaces/${workspace}`)
       // Hydration first: a click that lands before it opens nothing.
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-      const tab = page.getByRole('navigation', { name: 'Coral', exact: true }).getByRole('link', {
+      tab = page.getByRole('navigation', { name: 'Coral', exact: true }).getByRole('link', {
         name: /^Activity(\. \d+ pending actions?|\. Pending actions unavailable)?$/,
       })
       await tab.click()
@@ -209,12 +222,20 @@ test('A first key press on Activity still expands, right after the sidebar opens
       await table.getByRole('link', { name: intent, exact: true }).waitFor()
       // The sidebar tab click opened a plain list: no selection, expansion, or anchor.
       expect(new URL(page.url()).search).toBe('')
-      // The click left the tab focused, which is what the first key must get past.
       expect(await tab.evaluate((link) => link === document.activeElement)).toBe(true)
     })
-    await step('↓ then Space work on the very first press, with nothing else clicked', async () => {
+    await step('↓ and Space leave the focused sidebar link its own keys', async () => {
+      await page.keyboard.press('ArrowDown')
+      await page.keyboard.press('Space')
+      expect(await tab.evaluate((link) => link === document.activeElement)).toBe(true)
+      expect(await table.locator('[role="row"][data-active]').count()).toBe(0)
+      expect(new URL(page.url()).search).toBe('')
+    })
+    await step('Tab enters the table, where ↓ then Space expand the Task', async () => {
+      await tabInto(page, table)
       const before = await table.getByRole('row').count()
       await page.keyboard.press('ArrowDown')
+      expect((await cursorAt(table)).label).toBe(intent)
       await page.keyboard.press('Space')
       await expect.poll(() => table.getByRole('row').count()).toBeGreaterThan(before)
       expect(new URL(page.url()).searchParams.getAll('expand')).toHaveLength(1)

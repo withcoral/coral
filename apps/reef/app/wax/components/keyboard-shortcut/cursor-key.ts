@@ -12,10 +12,7 @@ const KEY_CONTROLS =
  * `inDialog` says the caller is the dialog the cursor drives. A field whose id
  * is `field` hands the key on. With `overControls`, the key also works from a
  * focused button, link, or checkbox, which otherwise keep the Enter and Space
- * that activate them. `within`, when given, narrows that activated-control
- * exclusion to controls inside it: a button or link elsewhere on the page —
- * such as one the navigation that opened this table left focused — keeps its
- * own Enter and Space, but does not block the table's keys.
+ * that activate them.
  */
 export function cursorKeyApplies(
   event: KeyboardEvent,
@@ -23,8 +20,7 @@ export function cursorKeyApplies(
     overControls,
     inDialog = false,
     field,
-    within,
-  }: { overControls: boolean; inDialog?: boolean; field?: string; within?: Element | null },
+  }: { overControls: boolean; inDialog?: boolean; field?: string },
 ) {
   if (event.defaultPrevented || event.isComposing) return false
   const target = event.target instanceof Element ? event.target : null
@@ -32,7 +28,7 @@ export function cursorKeyApplies(
   if (!target || target === document.body || target.matches('[role="table"]')) return true
   if (field && target.id === field) return true
   const activated = target.closest(ACTIVATED_CONTROLS)
-  if (!overControls && activated && (!within || within.contains(activated))) return false
+  if (!overControls && activated) return false
   if (target.closest(KEY_CONTROLS)) return false
   return inDialog || !target.closest('[role="dialog"], [role="alertdialog"]')
 }
