@@ -327,8 +327,48 @@ function runEntries(
     endedEvent?: boolean
     contextImpact?: boolean
     completedEntries?: boolean
+    /**
+     * A finished Run of `total` entries, windowed as Coral windows a viewport: from
+     * its anchor less the predecessors, else from its offset. With `finalRow`, the
+     * last entry is the `run.ended` Event that shows as the final value.
+     */
+    window?: { total: number; finalRow: boolean }
   } = {},
 ): Handlers {
+  const windowed = (viewport: { offset: bigint; anchor: string; preceding: number }) => {
+    const { total, finalRow } = options.window!
+    const name = (index: number) =>
+      finalRow && index === total - 1 ? `${run}/final` : `${run}/events/${index + 2}`
+    const anchored = Array.from({ length: total }, (_, index) => name(index)).indexOf(
+      viewport.anchor,
+    )
+    const start = Math.min(
+      anchored < 0 ? Number(viewport.offset) : Math.max(0, anchored - viewport.preceding),
+      total - 1,
+    )
+    const end = Math.min(total, start + ACTIVITY_CHILD_WINDOW)
+    return {
+      offset: BigInt(start),
+      total: BigInt(total),
+      entries: Array.from({ length: end - start }, (_, at) => {
+        const last = finalRow && start + at === total - 1
+        return {
+          record: {
+            case: 'event' as const,
+            value: {
+              sequence: BigInt(start + at + 2),
+              kind: last ? 'run.ended' : 'program.emitted',
+              contextImpactBytes: last ? 4n : undefined,
+              occurredAtUnixNanos: 3_000_000_000n,
+            },
+          },
+        }
+      }),
+      nextAfter: BigInt(end + 1),
+      hasMore: end < total,
+      hasFinalValue: true,
+    }
+  }
   return {
     activity: {
       browseRunEntries: (input) => {
@@ -401,6 +441,7 @@ function runEntries(
           nextAfter: options.endedEvent ? 4n : 3n,
           hasMore: !options.endedEvent && !options.completedEntries,
           hasFinalValue: options.endedEvent || (options.completedEntries ?? false),
+          ...(options.window && windowed(input.viewport!)),
         }
       },
     },
@@ -1246,6 +1287,33 @@ describe('hierarchical activity through the private server interface', () => {
     expect(page.branches[run].rows.every((row) => !row.name.endsWith('/final'))).toBe(true)
     expect(page.detail).toBeNull()
     expect(JSON.stringify(page)).not.toContain('secretSource')
+  })
+  // Catches: a final value the detail shows but its Run's window does not hold, so
+  // the table has no row for it and the keyboard cannot step from it; or a window
+  // moved for a final value whose Run ends without a row for it.
+  it.each([
+    ['ends the window at the final value', true, `${run}/final`, `${run}/final`],
+    ['keeps the window it asked for without one', false, `${run}/events/101`, undefined],
+  ])('for a selected final value, an expanded Run %s', async (_, finalRow, last, pinned) => {
+    const page = await loadActivity(
+      request({
+        record: `${run}/final`,
+        tree: '1',
+        expand: [task, run],
+        [`offset.${run}`]: '0',
+        [`anchor.${run}`]: `${run}/events/2`,
+        [`preceding.${run}`]: '0',
+      }),
+      coral(list(), taskDetail(), runDetail(), runEntries({ window: { total: 131, finalRow } }))
+        .api,
+      { scope },
+    )
+    const rows = page.branches[run]!.rows
+    expect(rows).toHaveLength(ACTIVITY_CHILD_WINDOW)
+    expect(rows.at(-1)!.name).toBe(last)
+    // The reader keeps a window the loader moved, not the one its URL asked for.
+    expect(page.initialRecord).toBe(pinned)
+    expect(page.anchors?.[run]).toBe(pinned ?? `${run}/events/2`)
   })
   it('retains accepted source snapshots and distinguishes explicit null from no final value', async () => {
     const present = await loadActivity(

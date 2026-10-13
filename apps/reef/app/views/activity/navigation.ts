@@ -54,8 +54,14 @@ export function activitySelection(page: ActivityPage, search: string): URLSearch
   if (!query.has('request') && page.initialRequest) query.set('request', page.initialRequest)
   if (page.initialRecord) {
     query.set('record', page.initialRecord)
-    if (page.detail?.kind === 'invocation') {
-      const run = page.detail.invocation.run
+    // The loader moved this Run's window to hold the selected record.
+    const run =
+      page.detail?.kind === 'invocation'
+        ? page.detail.invocation.run
+        : page.initialRecord === `${page.selected}/final`
+          ? page.selected
+          : null
+    if (run) {
       query.set(`anchor.${run}`, page.initialRecord)
       for (const prefix of ['cursor', 'offset', 'preceding']) query.delete(`${prefix}.${run}`)
     }

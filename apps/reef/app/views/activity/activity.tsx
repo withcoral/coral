@@ -452,11 +452,19 @@ export function Activity({
   const stops = useMemo(() => (glimpse ? [] : activityStops(page, roots)), [glimpse, page, roots])
   const [cursor, setCursor] = useState<string | null>(null)
   const shown = shownRecord(page.selected, search)
+  // A collapsed Run shows no final-value row, so its final value rests on the
+  // Run's own row. An expanded Run never stands in for it: that would wrap.
+  const shownStop = !shown
+    ? undefined
+    : (stopOf(stops, shown) ??
+      (page.selected && shown !== page.selected && !page.expanded.includes(page.selected)
+        ? stopOf(stops, page.selected)
+        : undefined))
   // The cursor follows the open detail, so it rests on the last record the detail showed.
   const [followedSelection, setFollowedSelection] = useState<string | null>(null)
   if (followedSelection !== shown) {
     setFollowedSelection(shown)
-    if (shown) setCursor(stopOf(stops, shown)?.identity ?? null)
+    if (shown) setCursor(shownStop?.identity ?? null)
   }
   // A record that leaves the table takes the cursor with it: no neighbour inherits it.
   // A cursor that just followed the detail comes from these stops, so it stays.
@@ -543,7 +551,6 @@ export function Activity({
     const dialog = (event.target as Element).closest('[role="dialog"], [role="alertdialog"]')
     if (dialog !== event.currentTarget) return
     if (!cursorKeyApplies(event.nativeEvent, { overControls: true, inDialog: true })) return
-    const shownStop = shown && stopOf(stops, shown)
     if (!shownStop) return
     event.preventDefault()
     const next = stepStop(stops, shownStop.identity, step)

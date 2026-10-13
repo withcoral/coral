@@ -257,6 +257,39 @@ it('starts navigation observation with only fresh payload and the reauthorized a
     unmount()
   }
 })
+// Catches: observation asking for the window the URL named before the loader moved
+// it to hold the selected final value, so the first snapshot drops that row again.
+it('observes the window the loader pinned for a selected final value', async () => {
+  const requests: ActivityObservation[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Promise(() => {})
+    }),
+  )
+  const initial: ActivityPage = {
+    ...page,
+    selected: 'run',
+    initialRecord: 'run/final',
+    expanded: ['run'],
+    branches: { run: { rows: [], total: '131', next: '', offset: 31, unavailable: false } },
+  }
+  const store = createStore()
+  const query = new URLSearchParams({
+    record: 'run/final',
+    'offset.run': '0',
+    'anchor.run': 'run/events/2',
+    'preceding.run': '0',
+  })
+  const state = activityObservation(initial, '/activity', query.toString())
+  const unmount = store.sub(state, () => {})
+  try {
+    expect(requests[0].window.branches).toEqual({ run: { offset: 31, anchor: '', preceding: 0 } })
+  } finally {
+    unmount()
+  }
+})
 it('conceals rows, selectors and selected exact evidence on disconnect before reconnecting', async () => {
   vi.stubGlobal(
     'fetch',

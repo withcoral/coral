@@ -480,50 +480,88 @@ it('Escape closes the detail and leaves the cursor on the last record it showed'
   await screen.findByRole('dialog', { name: 'Activity details' })
   await user.keyboard('{ArrowDown}{Escape}')
   await vi.waitFor(() => expect(recordIn(router)).toBeNull())
-  expect(cursor()).toBe('Task b')
-  expect(screen.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+  // The URL changes before React commits the closed detail, so wait for the table.
+  await vi.waitFor(() => {
+    expect(cursor()).toBe('Task b')
+    expect(screen.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+  })
   await user.keyboard('{ArrowUp}')
   expect(cursor()).toBe('Task a')
 })
 
 /** Task a holds Runs one and two, each ending in its final value; Task b follows. */
-function finalValues() {
+function finalValues(expanded: boolean) {
   const a = task('a')
   const [one, two] = [run(a.name, 'one', 0), run(a.name, 'two', 1)]
+  const shown = expanded ? [a.name, one.name, two.name] : [a.name, one.name]
   const rendered = renderActivity({
     rows: [a, task('b')],
-    entry: `${expand(a.name, one.name, two.name)}&record=${final(two.name).name}`,
+    entry: `${expand(...shown)}&record=${final(two.name).name}`,
     branches: {
       [a.name]: branch([one, two]),
       [one.name]: branch([output(one.name, 0, 'emission one'), final(one.name)]),
       [two.name]: branch([output(two.name, 0, 'emission two'), final(two.name)]),
     },
   })
-  return { ...rendered, two }
+  return { ...rendered, one, two }
 }
 
 // Catches: a final value's detail stepping from its Run's heading, because the
 // loader selects the Run for it: ↓ wrapped to the Run's first record and ↑
-// skipped the Run's own records.
-it.each<[string, string, (two: string) => string]>([
-  ['↓ goes to the record after the Run', '{ArrowDown}', () => task('b').name],
-  ['↑ goes to the Run’s previous record', '{ArrowUp}', (two) => `${two}/events/2`],
-])('from a Run’s final value, %s', async (_, key, expected) => {
-  const { user, router, two } = finalValues()
+// skipped the Run's own records. In a collapsed Run the final value is not a
+// row, so the detail steps from the Run's own row instead of not at all.
+it.each<[string, boolean, string, (runs: { one: string; two: string }) => string]>([
+  ['↓ goes to the record after the Run', true, '{ArrowDown}', () => task('b').name],
+  ['↑ goes to the Run’s previous record', true, '{ArrowUp}', ({ two }) => `${two}/events/2`],
+  ['in a collapsed Run, ↓ goes to the record after it', false, '{ArrowDown}', () => task('b').name],
+  [
+    'in a collapsed Run, ↑ goes to the record before it',
+    false,
+    '{ArrowUp}',
+    ({ one }) => `${one}/final`,
+  ],
+])('from a Run’s final value, %s', async (_, expanded, key, expected) => {
+  const { user, router, one, two } = finalValues(expanded)
   await screen.findByRole('dialog', { name: 'Activity details' })
   await user.keyboard(key)
-  expect(recordIn(router)).toBe(expected(two.name))
+  expect(recordIn(router)).toBe(expected({ one: one.name, two: two.name }))
 })
 
-// Catches: a cursor that Escape leaves on the Run heading rather than on its final value.
-it('Escape from a Run’s final value leaves the cursor on the final value', async () => {
-  const { user, router } = finalValues()
+// Catches: an expanded Run standing in for a final value its window has not
+// loaded, which steps from the Run heading back to the Run's first record.
+it('an expanded Run never stands in for a final value its window lacks', async () => {
+  const a = task('a')
+  const two = run(a.name, 'two', 0)
+  const records = (loaded: ActivityRow[]) => ({
+    rows: [a, task('b')],
+    branches: { [a.name]: branch([two]), [two.name]: branch(loaded, 2) },
+  })
+  const { user, router, publish } = renderActivity({
+    ...records([output(two.name, 0, 'emission two')]),
+    entry: `${expand(a.name, two.name)}&record=${final(two.name).name}`,
+  })
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  await user.keyboard('{ArrowDown}')
+  expect(recordIn(router)).toBe(final(two.name).name)
+  // Once its row arrives, the final value steps on to the record after the Run.
+  await publish(records([output(two.name, 0, 'emission two'), final(two.name)]))
+  await user.keyboard('{ArrowDown}')
+  expect(recordIn(router)).toBe(task('b').name)
+})
+
+// Catches: a cursor that Escape leaves on the Run heading rather than on its final
+// value, or clears when a collapsed Run shows no final-value row.
+it.each<[string, boolean, string, string]>([
+  ['on the final value', true, 'final value', 'emission two'],
+  ['on a collapsed Run’s own row', false, 'Run two', 'final value'],
+])('Escape from a Run’s final value leaves the cursor %s', async (_, expanded, at, above) => {
+  const { user, router } = finalValues(expanded)
   await screen.findByRole('dialog', { name: 'Activity details' })
   await user.keyboard('{Escape}')
   await vi.waitFor(() => expect(recordIn(router)).toBeNull())
-  await vi.waitFor(() => expect(cursor()).toBe('final value'))
+  await vi.waitFor(() => expect(cursor()).toBe(at))
   await user.keyboard('{ArrowUp}')
-  expect(cursor()).toBe('emission two')
+  expect(cursor()).toBe(above)
 })
 
 // Catches: a cursor that follows the newly shown record but is then cleared in the
