@@ -207,13 +207,7 @@ impl CreateProvider {
             .authentication
             .map(AuthenticationConfiguration::try_from)
             .transpose()
-            .map_err(|_rejected| {
-                problems.push(InputProblem::new(
-                    "authentication",
-                    "a literal credential value must be empty; use a `field` source \
-                     so a person enters the value when they sign in",
-                ));
-            })
+            .map_err(|problem| problems.push(problem))
             .ok()
             .flatten();
         let route = match arguments.credential_route {

@@ -1159,6 +1159,51 @@ async fn an_invalid_argument_names_what_to_correct() {
              source so a person enters the value when they sign in",
         ),
         (
+            valid_with(serde_json::json!({
+                "credentialRoute": "fixed",
+                "authentication": {
+                    "method": "oauth_authorization_code",
+                    "authorization_url": format!("https://user:{CANARY}@weather.example/authorize"),
+                    "token_url": "https://weather.example/token",
+                    "scopes": [],
+                },
+            })),
+            " at `authentication.authorization_url`: use an absolute `http` or `https` URL \
+             without credentials, a fragment or an OAuth parameter that Coral sets, such as \
+             `client_secret`",
+        ),
+        (
+            valid_with(serde_json::json!({
+                "credentialRoute": "fixed",
+                "authentication": {
+                    "method": "oauth_authorization_code",
+                    "authorization_url": "https://weather.example/authorize",
+                    "token_url": format!("https://weather.example/token?client_secret={CANARY}"),
+                    "scopes": [],
+                },
+            })),
+            " at `authentication.token_url`: use an absolute `http` or `https` URL without \
+             credentials, a fragment or an OAuth parameter that Coral sets, such as \
+             `client_secret`",
+        ),
+        (
+            valid_with(serde_json::json!({
+                "credentialRoute": "fixed",
+                "authentication": {
+                    "method": "oauth_authorization_code",
+                    "authorization_url": "https://weather.example/authorize",
+                    "token_url": "https://weather.example/token",
+                    "scopes": [],
+                    "client": {
+                        "client_id": "weather-app",
+                        "authorization_parameters": { "client_secret": CANARY },
+                    },
+                },
+            })),
+            " at `authentication.client.authorization_parameters.client_secret`: Coral sets \
+             this OAuth parameter, or a person enters it when they sign in; remove it",
+        ),
+        (
             serde_json::json!({
                 "namespace": "not-an-identifier",
                 "source": document_source(),
