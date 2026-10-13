@@ -30,11 +30,11 @@ declare namespace coral {
 }
 
 declare const console: {
-  debug(...values: unknown[]): void;
-  info(...values: unknown[]): void;
-  log(...values: unknown[]): void;
-  warn(...values: unknown[]): void;
-  error(...values: unknown[]): void;
+  readonly debug: (...values: unknown[]) => void;
+  readonly info: (...values: unknown[]) => void;
+  readonly log: (...values: unknown[]) => void;
+  readonly warn: (...values: unknown[]) => void;
+  readonly error: (...values: unknown[]) => void;
 };
 `;
 
