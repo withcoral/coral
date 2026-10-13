@@ -11,9 +11,9 @@ Publish one Coral saved function as a secret gist with two files: the implementa
 
 ## Steps
 
-1. **Start a task.** Call `mcp__coral__start_task` with an intent like "Gist saved function <path>".
+1. **Start a task.** Call `mcp__coral__start_task` with an intent like "Gist saved function <path>". Pass its `task_id`, and an `intent` where the tool asks for one, to every later Coral call.
 
-2. **Pick the function.** The argument is the function path. Accept `unifi.networkHealth` or `coral.functions.unifi.networkHealth`; the full call path is `coral.functions.<path>`.
+2. **Pick the function.** The argument is the function path. Accept `unifi.networkHealth` or `coral.functions.unifi.networkHealth`. Keep a path that already starts with `coral.functions.`; prefix any other path with `coral.functions.`.
    With no argument, call `mcp__coral__search` with no `query` to list saved functions. Ask the user to pick one with `AskUserQuestion`, offering up to four `saved_function` hits by path (description as the option detail). Done when you hold one full call path.
 
 3. **Fetch it.** Call `mcp__coral__describe` on the call path. Keep three fields from the result:
@@ -25,12 +25,14 @@ Publish one Coral saved function as a secret gist with two files: the implementa
 4. **Write the files.** Let `<name>` be the last path segment. In a fresh directory in the scratchpad (or a temp directory), write:
    - `<name>.ts`: `source`, verbatim
    - `<name>.d.ts`: `typescript_declaration`, verbatim
+   - `desc.txt`: `<full call path>: <description>`, with no trailing newline
    Verbatim means the JSON string decoded (`\n` becomes a newline, `\"` becomes `"`) and nothing else changed: no reformatting, no fixes, no added comments. The gist is a record of what Coral holds, flaws included.
 
 5. **Create the gist.** Coral's GitHub provider has no gist operation, so use the `gh` CLI. It creates secret gists by default:
    ```bash
-   gh gist create --desc "coral.functions.<path>: <description>" <dir>/<name>.ts <dir>/<name>.d.ts
+   gh gist create --desc "$(cat '<dir>/desc.txt')" '<dir>/<name>.ts' '<dir>/<name>.d.ts'
    ```
+   Never paste the description into the command: it is user-authored text, and backticks or `$(…)` in it would run. Single-quote the paths, since a name may contain `$`.
    Done when `gh` prints the gist URL.
 
 6. **End the task.** Call `mcp__coral__end_task` with `success`, or `failure` if the gist was not created.
