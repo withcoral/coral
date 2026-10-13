@@ -1,13 +1,16 @@
+import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import {
+  CredentialMethod,
   CredentialRoute_Kind,
   ProviderBlocker,
   ProviderSetupInputKind,
   ProviderState,
 } from '@/generated/coral/management/v1/provider_pb'
 import {
+  GetProviderAccountResponseSchema,
   ProviderAccountScope,
   ProviderAccountState,
 } from '@/generated/coral/management/v1/account_pb'
@@ -40,7 +43,11 @@ function recordingApi() {
               calls.push(`${service}.${method}`)
               const respond = responses[`${service}.${method}`]
               if (!respond) throw new Error(`Unexpected call ${service}.${method}`)
-              return respond(request)
+              const response = await respond(request)
+              // As Coral answers: every field of the message, defaults included.
+              return `${service}.${method}` === 'accounts.getProviderAccount'
+                ? create(GetProviderAccountResponseSchema, response as object)
+                : response
             },
           },
         ),
@@ -264,4 +271,39 @@ it('says whether the provider is enabled and has operations ready', async () => 
 
   responses['providers.getProvider'] = () => provider()
   expect((await load()).provider).toMatchObject({ enabled: true, operationsReady: true })
+})
+
+// Catches: the card offering a sign-in for a secret account, or the fields a
+// secret needs going missing, so your account cannot connect from settings.
+it.each([
+  [
+    'a sign-in',
+    CredentialMethod.OAUTH_AUTHORIZATION_CODE,
+    {},
+    { oauth: true, credentialFields: [] },
+  ],
+  [
+    'a secret',
+    CredentialMethod.BEARER,
+    { token: { label: 'Token', description: '', sensitive: true } },
+    {
+      oauth: false,
+      credentialFields: [expect.objectContaining({ name: 'token', label: 'Token' })],
+    },
+  ],
+])('says how your own account connects with %s', async (_, credentialMethod, fields, expected) => {
+  responses['accounts.getProviderAccount'] = () => ({
+    canConnect: true,
+    credentialMethod,
+    credentialFields: fields,
+  })
+  signedInAs('member')
+  expect((await load()).provider).toMatchObject({ yourAccount: expected })
+})
+
+it('gives the shared account no way to connect from the card', async () => {
+  responses['providers.getProvider'] = () =>
+    provider({ credentialRoute: { kind: CredentialRoute_Kind.FIXED } })
+  signedInAs('owner')
+  expect((await load()).provider).not.toHaveProperty('yourAccount')
 })

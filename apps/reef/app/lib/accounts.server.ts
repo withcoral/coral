@@ -567,7 +567,8 @@ export async function loadUserAccount(
     form: formContext(context),
   }
 }
-function isOAuth(method: CredentialMethod) {
+/** Whether an account connects by signing in, not by entering a secret. */
+export function isOAuth(method: CredentialMethod) {
   return (
     method === CredentialMethod.OAUTH_AUTHORIZATION_CODE ||
     method === CredentialMethod.OAUTH_DEVICE_CODE

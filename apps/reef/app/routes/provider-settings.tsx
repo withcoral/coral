@@ -10,7 +10,8 @@ import {
 import { providerName, providerSettingsView } from '@/lib/providers.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ProviderAccountScope } from '@/generated/coral/management/v1/account_pb'
-import { accountConnectionState } from '@/lib/accounts.server'
+import { accountConnectionState, isOAuth } from '@/lib/accounts.server'
+import { credentialFieldViews } from '@/lib/credential-fields.server'
 import { ProviderSetupInputKind } from '@/generated/coral/management/v1/provider_pb'
 import { ProviderSettingsPage } from '@/views/providers/settings-page'
 import { redactSourceUrl } from '@/views/providers/source-url'
@@ -65,7 +66,9 @@ async function readConnection(
   provider: string,
   account: 'caller' | 'fixed',
   owner: boolean,
-): Promise<Partial<Pick<ProviderSettingsView, 'connection' | 'canConnect' | 'canReconnect'>>> {
+): Promise<
+  Partial<Pick<ProviderSettingsView, 'connection' | 'canConnect' | 'canReconnect' | 'yourAccount'>>
+> {
   if (account === 'fixed' && !owner) return { canConnect: false, canReconnect: false }
   try {
     const current = await api.accounts.getProviderAccount({
@@ -78,6 +81,13 @@ async function readConnection(
       connection: accountConnectionState(current.account),
       canConnect: current.canConnect,
       canReconnect: current.canReconnect,
+      // Your own account connects from the card; the shared one opens its page.
+      ...(account === 'caller' && {
+        yourAccount: {
+          oauth: isOAuth(current.credentialMethod),
+          credentialFields: credentialFieldViews(current.credentialFields),
+        },
+      }),
     }
   } catch (error) {
     // A state this Reef does not know reads as a failed read, not a failed page.

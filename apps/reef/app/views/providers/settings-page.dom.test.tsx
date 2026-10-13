@@ -90,6 +90,10 @@ async function render(
   return { submissions }
 }
 
+// Your account under Accounts, with the way back to these settings.
+const yourAccountPath = `/workspaces/demo/accounts/${provider.id}?${new URLSearchParams({
+  returnTo: `${provider.path}/settings`,
+})}`
 const text = () => document.body.textContent ?? ''
 const byLabel = (label: string) => document.querySelector<HTMLElement>(`[aria-label="${label}"]`)
 const named = (role: 'button' | 'link', name: string) =>
@@ -206,8 +210,8 @@ test('each account setting explains whose account calls use', async () => {
     named('link', 'Connect your account')?.closest('[aria-label="Individual accounts"]'),
   ).not.toBeNull()
   expect(named('link', 'Connect your account')?.getAttribute('href')).toBe(
-    // Your own account has its page under Accounts.
-    `/workspaces/demo/accounts/${provider.id}`,
+    // Your own account has its page under Accounts, which brings you back.
+    yourAccountPath,
   )
   act(() => roots.pop()!.unmount())
 
@@ -336,8 +340,8 @@ test('the account card shows a reconnect and hides refused connects', async () =
   // The same words as your account's own page under Accounts.
   expect(byLabel('Individual accounts')?.textContent).toContain('Needs reconnect')
   expect(named('link', 'Reconnect your account')?.getAttribute('href')).toBe(
-    // Your own account has its page under Accounts.
-    `/workspaces/demo/accounts/${provider.id}`,
+    // Your own account has its page under Accounts, which brings you back.
+    yourAccountPath,
   )
   act(() => roots.pop()!.unmount())
 
@@ -350,9 +354,7 @@ test('the account card shows a reconnect and hides refused connects', async () =
     provider: { account: 'caller', connection: 'needs_reconnect', canReconnect: false },
   })
   expect(named('link', 'Reconnect your account')).toBeUndefined()
-  expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(
-    `/workspaces/demo/accounts/${provider.id}`,
-  )
+  expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(yourAccountPath)
 })
 
 // Catches: a disabled provider looking the same as an active one.
@@ -389,9 +391,7 @@ test('an unreadable account says so and still links to it', async () => {
   const card = byLabel('Individual accounts')!
   expect(card.textContent).not.toMatch(/Connected|Not connected|Needs reconnect/)
   expect(text()).toContain('Coral could not read your account. Open it to see its state.')
-  expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(
-    `/workspaces/demo/accounts/${provider.id}`,
-  )
+  expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(yourAccountPath)
 })
 
 // The card opens the provider's operations.
@@ -415,4 +415,40 @@ test('configuration is a card with its edit action inside', async () => {
   expect(card.textContent).toContain('Configuration')
   expect(card.textContent).toContain('Change destinations or sign-in settings.')
   expect(card.querySelector('form')?.textContent).toBe('Edit configuration')
+})
+
+// Catches: connecting your own account sending you away from settings, or a
+// secret account offering a sign-in it cannot do.
+test('connects your own account from the card and comes back', async () => {
+  await render({
+    provider: {
+      connection: 'not_connected',
+      yourAccount: { oauth: true, credentialFields: [] },
+    },
+  })
+  // A sign-in posts to your account, which returns here after it.
+  const signIn = named('button', 'Connect your account')!
+  expect(signIn.closest('form')?.getAttribute('action')).toBe(yourAccountPath)
+  expect(signIn.closest('form')?.querySelector<HTMLInputElement>('[name="intent"]')?.value).toBe(
+    'connect',
+  )
+  act(() => roots.pop()!.unmount())
+
+  await render({
+    provider: {
+      connection: 'needs_reconnect',
+      yourAccount: {
+        oauth: false,
+        credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
+      },
+    },
+  })
+  expect(named('link', 'Reconnect your account')).toBeUndefined()
+  await click(named('button', 'Reconnect your account'))
+  const dialog = document.querySelector('[role="dialog"]')!
+  expect(dialog.textContent).toContain('Enter the credentials from GitLab.com.')
+  const entry = dialog.querySelector('form')!
+  expect(entry.getAttribute('action')).toBe(yourAccountPath)
+  expect(entry.querySelector<HTMLInputElement>('[name="intent"]')?.value).toBe('secret')
+  expect(dialog.querySelector('input[type="password"]')).not.toBeNull()
 })

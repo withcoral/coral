@@ -152,7 +152,7 @@ test('OpenAPI OAuth with one shared account: consent, resume, forged callbacks, 
   })
 })
 
-test('OpenAPI OAuth with each person’s own account signs nobody in', async (context) => {
+test('OpenAPI OAuth with each person’s own account signs nobody in until they connect from settings', async (context) => {
   const upstream = await oauthApiServer(context, `fixture-access-${crypto.randomUUID()}`)
   await withOwnerSession(context, async ({ page, step, actor }) => {
     let workspace = ''
@@ -195,6 +195,15 @@ test('OpenAPI OAuth with each person’s own account signs nobody in', async (co
         .getByText('Not connected', { exact: true })
         .waitFor()
       expect(upstream.counts.consents).toBe(0)
+    })
+    await step('Connect your own account from settings and come back to them', async () => {
+      const settings = new URL(page.url()).pathname
+      const card = page.getByRole('region', { name: 'Individual accounts', exact: true })
+      await card.getByRole('button', { name: 'Connect your account', exact: true }).click()
+      await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
+      await page.waitForURL((url) => url.pathname === settings)
+      await card.getByText('Connected', { exact: true }).waitFor()
+      expect(upstream.counts.consents).toBe(1)
     })
   })
 })

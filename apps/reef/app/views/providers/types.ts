@@ -113,6 +113,11 @@ export interface ProviderSettingsView {
   canReconnect: boolean
   /** Coral reports that the saved account setting no longer suits the provider. */
   accountSettingIncompatible: boolean
+  /**
+   * How you connect your own account from settings: a sign-in, or the fields a
+   * secret needs. Absent for the shared account and when Coral cannot read yours.
+   */
+  yourAccount?: { oauth: boolean; credentialFields: CredentialFieldView[] }
 }
 
 /** The owner-only source read: its kind and a redacted address, or a failed read. */

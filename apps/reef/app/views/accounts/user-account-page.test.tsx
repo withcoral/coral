@@ -97,3 +97,14 @@ it.each([
     html.includes('Coral asks for no permissions. Linear decides what this account can access.'),
   ).toBe(shown)
 })
+
+// Catches: a provider's settings sending you here with a button that says it
+// returns to a run.
+it.each([
+  ['a run', '/workspaces/w/runs/r', 'Return to run'],
+  ['provider settings', '/workspaces/w/providers/p/settings', 'Return to settings'],
+])('names the way back to %s', (_, returnTo, label) => {
+  const html = render({ returnTo })
+  expect(html).toContain(`>${label}<`)
+  expect(html).toContain(`href="${returnTo}"`)
+})
