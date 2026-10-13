@@ -37,7 +37,8 @@ export function ProviderSettingsPage({
 }: ProviderSettingsPageProps) {
   const owner = w.effectiveRole === 'owner'
   const active = w.state === 'active'
-  const canChange = owner && active
+  // Coral manages the Built-in Provider: owners read it and set its operations' policy only.
+  const canChange = owner && active && !provider.builtin
   return (
     <PageLayout
       variant="wide"
@@ -70,6 +71,7 @@ export function ProviderSettingsPage({
           form={form}
           owner={owner}
           active={active}
+          canChange={canChange}
           pending={pending}
         />
         {canChange && (
@@ -246,6 +248,7 @@ function AccountSection({
   form,
   owner,
   active,
+  canChange,
   pending,
 }: {
   workspacePath: string
@@ -253,6 +256,8 @@ function AccountSection({
   form: FormContext
   owner: boolean
   active: boolean
+  /** The reader may change the account setting. */
+  canChange: boolean
   pending: boolean
 }) {
   const card = accountCards[provider.account]
@@ -287,7 +292,6 @@ function AccountSection({
       {`Connect ${whose}`}
     </Button.InternalLink>
   ) : null
-  const canChange = owner && active
   return (
     <section aria-label="Account">
       <Card

@@ -107,7 +107,7 @@ async fn creating_a_workspace_creates_its_builtin_provider_with_the_creator_as_a
                 operation.provider_name.as_str()
             ))
             .collect::<Vec<_>>(),
-        [("coral.admin.createProvider", "admin Coral admin")]
+        [("coral.admin.createProvider", "admin Coral")]
     );
 }
 

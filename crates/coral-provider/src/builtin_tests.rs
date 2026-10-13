@@ -374,3 +374,32 @@ async fn an_owner_can_only_disable_and_restore_the_builtin_provider() {
         ]
     );
 }
+
+/// Coral defines the Built-in Provider's catalog in Rust, so it has no source
+/// for an Owner to read, refresh or replace.
+#[tokio::test]
+async fn the_builtin_provider_has_no_source_to_inspect() {
+    let (fixture, workspaces, providers) = test_modules().await;
+    let database = fixture.database();
+    let owner = organization_user(database.clone(), "user:owner", OrganizationRole::Member).await;
+    let context = change_context(owner.clone(), 10, '1');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Builtin").unwrap())
+        .await
+        .unwrap();
+    let mut transaction = database.begin().await.unwrap();
+    let builtin = providers
+        .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    let source = providers
+        .inspect_provider_source(&owner, workspace.id(), builtin.id())
+        .await;
+
+    assert!(
+        matches!(source, Err(Error::BuiltinProviderManaged)),
+        "{source:?}"
+    );
+}

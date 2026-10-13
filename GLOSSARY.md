@@ -230,7 +230,7 @@ effective Workspace Owner authority can discover or invoke its Operations; membe
 Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
 has no Provider Accounts. Its Operations never return a secret, OAuth URL, or Provider Setup identity to the Program.
 _Avoid_: admin API, administrative calls, coral.admin surface, system provider
-_In Reef_: "Coral admin", labeled "Built in"
+_In Reef_: "Coral", with the Coral logo, listed first
 
 **Provider Namespace**: The short JavaScript identifier an Owner chooses for a Provider, such as `github`, and the
 name Reef shows and accepts. It is one segment of the Provider's Call Root. _Avoid_: Call Root, display name

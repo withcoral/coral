@@ -81,6 +81,7 @@ const github: ProviderView = {
   id: 'prov-github',
   displayName: 'GitHub',
   namespace: 'github',
+  builtin: false,
   account: 'Individual accounts',
   blockers: [],
   personalAccountAction: null,
@@ -95,6 +96,7 @@ const weather: ProviderView = {
   id: 'prov-weather',
   displayName: 'Weather',
   namespace: 'weather',
+  builtin: false,
   account: 'No account',
   blockers: [],
   personalAccountAction: null,
@@ -129,6 +131,24 @@ const blocked: ProviderView = {
   blockers: ['Provider disabled'],
   path: '/workspaces/demo/providers/prov-hr',
   operations: githubOps('prov-hr', 'hr'),
+}
+// Coral's Built-in Provider, which leads the rail under Coral's mark.
+const coral: ProviderView = {
+  ...weather,
+  id: 'prov-coral',
+  displayName: 'Coral',
+  namespace: '',
+  builtin: true,
+  path: '/workspaces/demo/providers/prov-coral',
+  operations: [
+    {
+      ...weather.operations[0]!,
+      name: 'providers/prov-coral/operations/createProvider',
+      relativePath: 'createProvider',
+      callPath: 'coral.admin.createProvider',
+      path: '/workspaces/demo/providers/prov-coral/ops/createProvider',
+    },
+  ],
 }
 const meta = {
   title: 'Management/Providers',
@@ -222,6 +242,9 @@ export const EmptyWorkspace: Story = {
 }
 export const TreeNothingSelected: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} />,
+}
+export const TreeWithBuiltinProvider: Story = {
+  render: () => <WorkspaceProvidersPage {...treeProps} providers={[github, coral, weather]} />,
 }
 export const TreeProviderSelected: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,

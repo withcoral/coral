@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// Safe display name of the Built-in Provider.
-pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral admin";
+pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral";
 /// Starts the catalog identity a built-in Generation pins as its input.
 const CATALOG_IDENTITY_PREFIX: &str = "coral-admin-catalog:";
 pub(crate) const MATERIALIZER_VERSION: &str = "coral-admin-catalog-v1";

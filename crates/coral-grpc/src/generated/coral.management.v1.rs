@@ -2509,6 +2509,7 @@ pub mod provider_service_client {
             self.inner.unary(req, path, codec).await
         }
         /// Reads source provenance for the current Workspace Owner only.
+        /// The Built-in Provider has no source and fails with FailedPrecondition.
         pub async fn get_provider_source(
             &mut self,
             request: impl tonic::IntoRequest<super::GetProviderSourceRequest>,
@@ -2724,6 +2725,7 @@ pub(crate) mod provider_service_server {
             request: tonic::Request<super::GetProviderRequest>,
         ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status>;
         /// Reads source provenance for the current Workspace Owner only.
+        /// The Built-in Provider has no source and fails with FailedPrecondition.
         async fn get_provider_source(
             &self,
             request: tonic::Request<super::GetProviderSourceRequest>,

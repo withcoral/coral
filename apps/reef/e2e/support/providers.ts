@@ -214,9 +214,9 @@ export async function nextPublication(page: Page) {
 
 /** Every workspace also holds the Built-in Provider, which Coral adds itself. */
 const BUILTIN_CALL_ROOT = 'coral.admin'
-const BUILTIN_GEAR = 'Coral admin settings'
+const BUILTIN_GEAR = 'Coral settings'
 /** Every gear in the rail but the Built-in Provider's. */
-const ADDED_GEAR = /^(?!Coral admin settings$).+ settings$/
+const ADDED_GEAR = /^(?!Coral settings$).+ settings$/
 
 /** The providers the workspace added, without the Built-in Provider. */
 export function addedProviders<P extends { callRoot: string }>(providers: readonly P[]) {

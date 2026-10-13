@@ -100,6 +100,9 @@ export function useVirtualRows({
       ) || GROUP_HEADING_HEIGHT_PX[density]
     const pinnedHeight = (depth: number) =>
       HEADING_HEIGHT_PX[density] + depth * groupHeadingHeight()
+    // The head sits above the first row in the scroll port, so a row's estimated
+    // offset there is the head's height plus its start in the list.
+    const inPort = (offset: number) => HEADING_HEIGHT_PX[density] + offset
     // Where the row at `index` lies in the port, from the DOM. Estimates for
     // rows that never mounted and the head above the rows put the virtualizer's
     // offsets off by many pixels, so a mounted row is the truth.
@@ -123,7 +126,7 @@ export function useVirtualRows({
         // The estimate mounts the rows around the target; the frames after it
         // correct against the target's real position as those rows measure.
         cancelAnimationFrame(settling.current)
-        virtualizer.scrollToOffset(Math.max(0, start - pinned), { align: 'start' })
+        virtualizer.scrollToOffset(Math.max(0, inPort(start) - pinned), { align: 'start' })
         let frames = 12
         let steady = 0
         const settle = () => {
@@ -153,10 +156,10 @@ export function useVirtualRows({
         const port = scrollRef.current
         if (!item || !port) return
         const top = port.scrollTop
-        if (item.start - pinned < top)
-          virtualizer.scrollToOffset(Math.max(0, item.start - pinned), { align: 'start' })
-        else if (item.end > top + port.clientHeight)
-          virtualizer.scrollToOffset(item.end - port.clientHeight, { align: 'start' })
+        if (inPort(item.start) - pinned < top)
+          virtualizer.scrollToOffset(Math.max(0, inPort(item.start) - pinned), { align: 'start' })
+        else if (inPort(item.end) > top + port.clientHeight)
+          virtualizer.scrollToOffset(inPort(item.end) - port.clientHeight, { align: 'start' })
       },
       extent: (from, to) => {
         const cache = virtualizer.measurementsCache

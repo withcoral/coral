@@ -2,7 +2,7 @@
 //! together with its Built-in Provider.
 //!
 //! Workspace writes the Workspace and the creator's Owner Membership; Provider
-//! then writes "Coral admin" at `coral.admin` with the creator as its actor.
+//! then writes "Coral" at `coral.admin` with the creator as its actor.
 //! The workflow commits only when both succeed, so a failure leaves neither.
 //!
 //! Per ADR 0006, the workflow notifies Universal Search after the commit. The

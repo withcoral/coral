@@ -15,6 +15,9 @@ const columns = [{ label: 'Name', width: 'fill' }] as const
 const ROW = 40
 const VIEWPORT = 200
 
+/** A row's top in the scroll port: the head above the list, plus the rows above it. */
+const top = (index: number) => HEADING_HEIGHT_PX.default + index * ROW
+
 // happy-dom lays nothing out. TanStack Virtual reads the scroll port and each
 // mounted row through `offsetHeight`, so the port is as tall as the viewport
 // here and every row measures `ROW`.
@@ -115,7 +118,8 @@ describe('Table virtual rows', () => {
   })
 
   // Catches: a revealed row landing at the scroll port's top edge, under the
-  // pinned head and group heading, where the reader cannot see it.
+  // pinned head and group heading, where the reader cannot see it; or one
+  // head lower, so the heading above it keeps the pinned slot.
   it('scrolls a row to sit under the headings pinned above it', async () => {
     let handle: ReturnType<typeof useVirtualRows> | null = null
     render(
@@ -133,13 +137,15 @@ describe('Table virtual rows', () => {
       scrolls.push(options.top!)) as typeof table.scrollTo
     // happy-dom reports no scroll height; the virtualizer clamps to it.
     Object.defineProperty(table, 'scrollHeight', { get: () => 21 * ROW })
-    // row-1-2 is the 10th row of the flat list (index 10): 10 rows above it.
+    Object.defineProperty(table, 'clientHeight', { get: () => VIEWPORT })
+    // row-1-2 is index 10: 10 rows above it.
     await act(async () => handle!.scrollToIndex(10, { depth: 1 }))
-    expect(scrolls).toEqual([
-      10 * ROW - HEADING_HEIGHT_PX.default - GROUP_HEADING_HEIGHT_PX.default,
-    ])
+    expect(scrolls).toEqual([top(10) - HEADING_HEIGHT_PX.default - GROUP_HEADING_HEIGHT_PX.default])
     // A top-level heading sits under the head alone.
     await act(async () => handle!.scrollToIndex(7))
-    expect(scrolls.at(-1)).toBe(7 * ROW - HEADING_HEIGHT_PX.default)
+    expect(scrolls.at(-1)).toBe(top(7) - HEADING_HEIGHT_PX.default)
+    // A row below the port scrolls only until its bottom edge shows.
+    await act(async () => handle!.revealIndex(6, { depth: 1 }))
+    expect(scrolls.at(-1)).toBe(top(7) - VIEWPORT)
   })
 })
