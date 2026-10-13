@@ -55,7 +55,8 @@ pub(crate) fn is_catalog_identity(pinned: &str) -> bool {
 /// One Coral-owned Operation that Coral performs itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuiltinOperation {
-    /// Creates a Provider from an OpenAPI document or URL, or an MCP server URL.
+    /// Prepares a Provider from an OpenAPI document or URL, or an MCP server URL,
+    /// for a person to finish in Reef.
     #[serde(rename = "createProvider")]
     CreateProvider,
 }
@@ -130,17 +131,19 @@ fn definition(operation: BuiltinOperation) -> Definition {
     match operation {
         BuiltinOperation::CreateProvider => Definition {
             operation,
-            summary: "Create a Provider from an OpenAPI document or URL, or an MCP server URL",
+            summary: "Prepare a Provider from an OpenAPI document or URL, or an MCP server URL",
             presentation: OperationPresentation::new(
                 Some("Create provider".to_string()),
-                "Create a Provider in this Workspace from an OpenAPI document, an OpenAPI \
-                 document URL, or an MCP server URL. Returns the Provider as published."
+                "Prepare a Provider in this Workspace from an OpenAPI document, an OpenAPI \
+                 document URL, or an MCP server URL. Returns a Reef link where a person \
+                 finishes and publishes it."
                     .to_string(),
                 false,
                 vec!["providers".to_string()],
                 Some(
-                    "A Workspace Owner reviews and publishes the Provider. Call the new \
-                     Provider's Operations under its returned callRoot."
+                    "Show the person the returned url. They finish the Provider in Reef. \
+                     To check whether it is published, search with its namespace as \
+                     provider."
                         .to_string(),
                 ),
             ),
@@ -193,11 +196,11 @@ fn definition(operation: BuiltinOperation) -> Definition {
             }),
             output: json!({
                 "type": "object",
-                "required": ["namespace", "callRoot", "displayName"],
+                "required": ["status", "url", "namespace"],
                 "properties": {
-                    "namespace": { "type": "string", "description": "The published Provider Namespace." },
-                    "callRoot": { "type": "string", "description": "The Provider Call Root, such as coral.providers.github." },
-                    "displayName": { "type": "string", "description": "The published Provider display name." }
+                    "status": { "const": "needs_sign_in", "description": "A person must finish the Provider in Reef." },
+                    "url": { "type": "string", "description": "The Reef page where a person finishes and publishes the Provider." },
+                    "namespace": { "type": "string", "description": "The requested Provider Namespace. The person can change it." }
                 },
                 "additionalProperties": false
             }),

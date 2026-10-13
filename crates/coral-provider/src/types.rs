@@ -130,6 +130,13 @@ impl ProviderSetupState {
             Self::AwaitingConfiguration | Self::AwaitingAuthorization | Self::AwaitingDiscovery
         )
     }
+
+    /// Whether the Setup can still be published: not yet ready, or ready and
+    /// not consumed. Only an open Setup expires at its deadline.
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        self.is_pre_ready() || matches!(self, Self::Ready)
+    }
 }
 
 /// Durable preparation of one exact Provider input, pinned at the ready transition.

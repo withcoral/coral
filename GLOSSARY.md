@@ -195,8 +195,9 @@ setup-scoped material rather than a permanent discovery account; retaining it as
 requires an explicit choice. Failed or abandoned creation leaves no usable Provider Account. Creating or regenerating a
 Provider consumes the prepared setup; Coral does not fetch a different descriptor silently. A Setup is `awaiting_configuration`, `awaiting_authorization`, `awaiting_discovery`, `ready`, `consumed`, `expired`,
 or `canceled`. Only a
-ready Setup feeds Publication. A pre-ready Setup and any Setup holding setup-scoped credential material has a host
-deadline; expiry and explicit cancellation scrub that material. _Avoid_: Provider Definition inspection, live Provider,
+ready Setup feeds Publication. Every open Setup has a host deadline one hour after it is created; a Setup still open
+then, ready or not, expires, and Publication refuses it. Expiry and explicit cancellation scrub setup-scoped credential
+material. _Avoid_: Provider Definition inspection, live Provider,
 implicit refresh
 _In Reef_: never named; preparation within "Add provider", "Refresh operations", "Edit configuration", and "Change account setting"
 
@@ -228,7 +229,8 @@ Operations Coral itself performs, with no upstream dispatch. Its Call Root is `c
 Operation Access State, Approval Requests, and Operation Invocation records with every other Provider. Only a User with
 effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals cannot. An
 Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
-has no Provider Accounts. Its Operations never return a secret, OAuth URL, or Provider Setup identity to the Program.
+has no Provider Accounts. Its Operations never return a secret or an OAuth URL to the Program. A Reef link one returns
+may name a Provider Setup; that Setup's identity grants nothing, and only a Workspace Owner can act on the Setup.
 _Avoid_: admin API, administrative calls, coral.admin surface, system provider
 _In Reef_: "Coral", with the Coral logo, listed first
 
@@ -313,15 +315,6 @@ the Provider's account setting and credential contract; it is not retargeted whe
 for a shared Account or an Agent. Only an Invocation creates it; discovery never does. Any completed connection that
 leaves that User's exact Account compatible with its pin satisfies it, wherever the User connects.
 _Avoid_: Provider Account Authorization, Program resume payload, automatic Program replay, Run preflight, Agent OAuth prompt
-
-**Provider Setup Request**: A durable host-owned request for the invoking User to finish, in Reef, the one Provider
-Setup that a Built-in Provider Invocation prepared. The Invocation waits on it before dispatch, as it would on an
-Account Connection Request. The Publication of that exact Setup satisfies it, and the Invocation returns the Provider
-as published, even if the User changed its namespace. A failed Publication, a canceled or expired Setup, a decline, or the
-Run deadline terminates the Invocation with Run-level termination. A Provider published from any other Setup does not satisfy it.
-The Setup outlives the Request, so the User can still finish it in Reef after the Run ends. _Avoid_: admin approval,
-Program-visible Setup
-_In Reef_: "Add provider" on the Run Status Page
 
 **Materialized Operation Catalog**: The published, Provider-scoped definition of Operations produced when an Owner
 creates or regenerates a Provider. It indexes summaries separately from lazily loaded Operation definitions and
@@ -457,13 +450,12 @@ human actions for the Run and receives Run, approval, and account-connection cha
 Authorized Workspace Owners find Agent approval actions through Reef's queue and notifications. _Avoid_: Per-Invocation
 action URL, bearer URL, MCP session state
 
-**Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request,
-Account Connection Request, or Provider Setup Request of their own Run, while an observation of that Run is in progress. Each observing tool call
+**Action Prompt**: A negotiated MCP elicitation that asks the invoking User about one current Approval Request or
+Account Connection Request of their own Run, while an observation of that Run is in progress. Each observing tool call
 asks about each current request at most once; a later call asks again while the request is still pending. An approval
 prompt is a form: accepting it approves that exact Invocation and declining it declines the Invocation, with the same
 first-wins rules as Reef. A connection prompt is a URL elicitation to the User's Reef page for that Provider Account, sent
-only to clients that support URL mode; declining it declines the request, and accepting it only opens the page. A setup prompt is a URL elicitation to the Run Status Page with the same
-rules as a connection prompt. Dismissing a
+only to clients that support URL mode; declining it declines the request, and accepting it only opens the page. Dismissing a
 prompt without an answer decides nothing. An in-band prompt whose request no longer needs an answer is withdrawn; a
 later answer to an obsolete prompt decides nothing. The prompt keeps no durable state and grants no authority beyond the
 authenticated User's own. Agent bearer sessions, other Users, and Owners observing Agent Runs are never prompted.

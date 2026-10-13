@@ -1088,7 +1088,7 @@ pub(super) async fn settle_deadlines(
         )
         .await?;
     }
-    if loaded.setup.state().is_pre_ready()
+    if loaded.setup.state().is_open()
         && loaded
             .setup
             .expires_at_unix_nanos()
@@ -1098,6 +1098,7 @@ pub(super) async fn settle_deadlines(
             ProviderSetupState::AwaitingConfiguration,
             ProviderSetupState::AwaitingAuthorization,
             ProviderSetupState::AwaitingDiscovery,
+            ProviderSetupState::Ready,
         ];
         if providers::update_setup_state(tx, owner, &id, &from, &ProviderSetupState::Expired)
             .await?

@@ -1784,11 +1784,12 @@ async fn expired_setup_credential_fails_publication_and_creates_no_account() {
             )
             .with_account_grant(grant_id),
         )
-        .await
-        .unwrap();
-    assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
-    assert_eq!(publication.diagnostic().unwrap().code(), "setup_expired");
-    assert!(publication.published_provider().is_none());
+        .await;
+    // The read past the deadline expired the Setup, so it publishes nothing.
+    assert!(
+        matches!(publication, Err(Error::ProviderSetupNotReady)),
+        "{publication:?}"
+    );
     assert!(
         harness
             .providers

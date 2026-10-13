@@ -14,6 +14,7 @@ mod mcp;
 mod memory;
 mod observation;
 mod output;
+mod provider_setup;
 mod refresh;
 mod required_actions;
 mod scoping;

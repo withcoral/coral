@@ -465,7 +465,8 @@ fn mcp_modules(
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let saved_functions =
         SavedFunctionModule::new(Arc::clone(&database), workspaces.clone(), isolate_limits)?;
-    let runs = RunModule::new(policy, database, workspaces.clone(), isolate_limits)?;
+    let runs = RunModule::new(policy, database, workspaces.clone(), isolate_limits)?
+        .with_human_interface(human_interface.clone());
     let runs = match accounts {
         Some(accounts) => runs.with_accounts(accounts),
         None => runs,

@@ -440,19 +440,13 @@ impl ProviderModule {
         if current_setup.setup_input.as_ref() != Some(&setup_input) {
             return Err(Error::EtagMismatch);
         }
+        // A Setup that reached its deadline publishes nothing, ready or not.
         let materialized = if credential_decision_context(context, started).occurred_at_unix_nanos()
             >= setup_credentials::setup_deadline(current_setup.setup.created_at_unix_nanos())?
-            && crate::account::oauth_client_secret_repository::load(
-                transaction,
-                &owner,
-                &crate::account::oauth_client_secret_repository::Target::Setup(&setup_id),
-            )
-            .await?
-            .is_some()
         {
             MaterializationOutcome::Rejected(PublicationDiagnostic::stable(
                 "setup_expired",
-                "the setup-scoped OAuth application secret expired before Publication",
+                "the Setup expired before Publication",
             ))
         } else {
             materialized

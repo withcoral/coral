@@ -23,10 +23,12 @@ coral-v8.workspace = true
 coral-value.workspace = true
 coral-workspace.workspace = true
 sea-query.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+url.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
@@ -40,4 +42,3 @@ tempfile.workspace = true
 coral-search.workspace = true
 coral-test-support.workspace = true
 wiremock.workspace = true
-url.workspace = true
