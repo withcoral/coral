@@ -31,7 +31,7 @@ import {
   partLabel,
   type BasicCredentials as BasicCredentialsValue,
 } from './basic-credentials'
-import { OAuthApplicationBlock } from './oauth-application'
+import { ClientSecretInput, OAuthApplicationBlock } from './oauth-application'
 import { FieldError, NamespaceField, NAMESPACE, RequiredMark, TextField } from './fields'
 import {
   authenticationOptions,
@@ -97,7 +97,6 @@ export function ConfigurationStep({
   recipe?: RecipeConfigurationView | null
 }) {
   const formId = useId()
-  const clientSecretId = useId()
   const fieldId = useId()
   const ids = {
     displayName: `${fieldId}-display-name`,
@@ -471,18 +470,7 @@ export function ConfigurationStep({
                 }
                 callbackUrl={callbackUrl}
                 configuring
-                clientSecretInput={
-                  <>
-                    <Typography.BodySmallStrong as="label" htmlFor={clientSecretId}>
-                      Client secret
-                    </Typography.BodySmallStrong>
-                    <Inputs.CredentialInput
-                      id={clientSecretId}
-                      name="clientSecret"
-                      required={!setup.clientSecretConfigured}
-                    />
-                  </>
-                }
+                clientSecretInput={<ClientSecretInput required={!setup.clientSecretConfigured} />}
               />
             </div>
           )}

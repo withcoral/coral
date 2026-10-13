@@ -354,15 +354,28 @@ pub(crate) async fn require_configured(
     setup: &crate::ProviderSetupId,
     contract: &coral_catalog::ProviderCredentialContract,
 ) -> Result<(), Error> {
-    if let Some(policy) = contract.oauth_client().filter(|policy| {
-        policy.authentication != coral_catalog::OAuthClientAuthenticationMethod::None
-    }) && repository::for_setup(tx, owner, setup)
-        .await?
-        .is_none_or(|secret| secret.bound_client_id != policy.client_id)
-    {
+    if client_secret_missing(tx, owner, setup, contract).await? {
         return Err(Error::OAuthClientConfiguration);
     }
     Ok(())
+}
+
+/// Whether the contract names a confidential OAuth application whose secret
+/// the Setup does not hold for that client ID. Only a person can give it.
+pub(crate) async fn client_secret_missing(
+    tx: &mut Transaction<'_>,
+    owner: &WorkspaceId,
+    setup: &crate::ProviderSetupId,
+    contract: &coral_catalog::ProviderCredentialContract,
+) -> Result<bool, Error> {
+    let Some(policy) = contract.oauth_client().filter(|policy| {
+        policy.authentication != coral_catalog::OAuthClientAuthenticationMethod::None
+    }) else {
+        return Ok(false);
+    };
+    Ok(repository::for_setup(tx, owner, setup)
+        .await?
+        .is_none_or(|secret| secret.bound_client_id != policy.client_id))
 }
 
 pub(crate) fn require_device_client(

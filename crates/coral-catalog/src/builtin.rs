@@ -209,7 +209,7 @@ fn definition(operation: BuiltinOperation) -> Definition {
                         "additionalProperties": false
                     },
                     "Authentication": {
-                        "description": "The authentication method and its non-secret settings. Omit it to use the method the source declares. Never include a secret or a literal value: a header, query parameter or Basic part names a field from credentialFields.",
+                        "description": "The authentication method and its non-secret settings. Omit it to use the method the source declares. Never include a secret or a literal value: a header, query parameter or Basic part names a field from credentialFields. The one literal is empty, for a Basic or query part the service leaves blank.",
                         "oneOf": [
                             {
                                 "type": "object",

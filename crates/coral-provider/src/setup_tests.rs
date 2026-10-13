@@ -993,6 +993,21 @@ fn bearer_openapi(server: &MockServer) -> String {
     .to_string()
 }
 
+fn oauth_openapi(server: &MockServer) -> String {
+    json!({
+        "openapi": "3.1.0", "info": {"title": "OAuth", "version": "1"},
+        "servers": [{"url": server.uri()}],
+        "security": [{"oauth": ["read"]}],
+        "components": {"securitySchemes": {"oauth": {"type": "oauth2", "flows": {"authorizationCode": {
+            "authorizationUrl": format!("{}/authorize", server.uri()),
+            "tokenUrl": format!("{}/token", server.uri()),
+            "scopes": {"read": "Read"}
+        }}}}},
+        "paths": {"/data": {"get": {"operationId": "getData", "responses": {"200": {"description": "Data"}}}}}
+    })
+    .to_string()
+}
+
 fn header_keys_openapi(server: &MockServer) -> String {
     json!({
         "openapi": "3.1.0", "info": {"title": "Header keys", "version": "1"},
@@ -1810,18 +1825,7 @@ async fn publishability_says_who_can_publish_a_setup_under_a_route() {
     let server = MockServer::start().await;
     let open = crate::tests::CREDENTIAL_FREE_OPENAPI.to_string();
     let bearer = bearer_openapi(&server);
-    let oauth = json!({
-        "openapi": "3.1.0", "info": {"title": "OAuth", "version": "1"},
-        "servers": [{"url": server.uri()}],
-        "security": [{"oauth": ["read"]}],
-        "components": {"securitySchemes": {"oauth": {"type": "oauth2", "flows": {"authorizationCode": {
-            "authorizationUrl": format!("{}/authorize", server.uri()),
-            "tokenUrl": format!("{}/token", server.uri()),
-            "scopes": {"read": "Read"}
-        }}}}},
-        "paths": {"/data": {"get": {"operationId": "getData", "responses": {"200": {"description": "Data"}}}}}
-    })
-    .to_string();
+    let oauth = oauth_openapi(&server);
     for (document, configured, route, expected) in [
         (
             &open,
@@ -2204,6 +2208,11 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
         Err(Error::AccountNotFound)
     ));
     // Promoting it would publish the Setup, which only its configuring User can.
+    let events_before = harness
+        .providers
+        .list_lifecycle_events(&owner, &scope)
+        .await
+        .unwrap();
     let publication = harness
         .providers
         .publish_workspace_provider(
@@ -2223,6 +2232,22 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
         "{publication:?}"
     );
     assert!(!format!("{publication:?}{authorized:?}").contains(TOKEN));
+    // The refusal changed nothing: the configuring User still holds the sign-in.
+    let kept = harness
+        .providers
+        .setup_authentication(&owner, &scope, setup.id(), 16)
+        .await
+        .unwrap();
+    assert!(kept.authorized);
+    assert_eq!(kept.provisional_grant_id, Some(grant_id));
+    assert_eq!(
+        harness
+            .providers
+            .list_lifecycle_events(&owner, &scope)
+            .await
+            .unwrap(),
+        events_before
+    );
 }
 
 #[tokio::test]
@@ -2231,18 +2256,7 @@ async fn secret_entry_rejects_credential_free_and_oauth_contracts() {
     let (owner, workspace) = workspace_owner(&harness, "user:secret-shape").await;
     let scope = workspace.id().clone();
     let server = MockServer::start().await;
-    let oauth = json!({
-        "openapi": "3.1.0", "info": {"title": "OAuth", "version": "1"},
-        "servers": [{"url": server.uri()}],
-        "security": [{"oauth": ["read"]}],
-        "components": {"securitySchemes": {"oauth": {"type": "oauth2", "flows": {"authorizationCode": {
-            "authorizationUrl": format!("{}/authorize", server.uri()),
-            "tokenUrl": format!("{}/token", server.uri()),
-            "scopes": {"read": "Read"}
-        }}}}},
-        "paths": {"/data": {"get": {"operationId": "getData", "responses": {"200": {"description": "Data"}}}}}
-    })
-    .to_string();
+    let oauth = oauth_openapi(&server);
     for (document, contract) in [
         (credential_free_openapi(&server), "credential-free"),
         (oauth, "OAuth"),

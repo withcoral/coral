@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useId, useRef, useState, type ReactNode } from 'react'
 import { Form } from 'react-router'
 import { signInFormTarget } from '@/lib/device-sign-in'
 
@@ -8,7 +8,7 @@ import * as Dialog from '@/wax/components/dialog'
 import { Fields } from '@/views/management/forms'
 import { DeviceCodeDialog } from '@/views/accounts/device-code'
 import { oauthFailureMessage } from '@/views/accounts/oauth-failure'
-import { credentialHosts, OAuthApplicationBlock } from './oauth-application'
+import { ClientSecretInput, credentialHosts, OAuthApplicationBlock } from './oauth-application'
 
 import { CredentialFields } from '@/views/management/credential-fields'
 import { accountLabels } from './account-labels'
@@ -31,7 +31,6 @@ export function SetupFields({ setup, extra }: { setup: SetupView; extra?: ReactN
   )
 }
 
-/** What one sign-in attempt reports, before the person acts on it again. */
 /**
  * Where typed-in credentials go, shown where you enter them. An agent's
  * createProvider can choose the servers, so you check them here.
@@ -46,6 +45,7 @@ export function CredentialDestination({ setup }: { setup: SetupView }) {
   )
 }
 
+/** What one sign-in attempt reports, before the person acts on it again. */
 export function SignInStatus({ setup }: { setup: SetupView }) {
   const a = setup.authorization
   if (!a) return null
@@ -170,7 +170,7 @@ export function DiscoveryPrompt({
   callbackUrl: string
 }) {
   const formId = useId()
-  const secretId = useId()
+  const oauthForm = useRef<HTMLFormElement>(null)
   const [asking, setAsking] = useState(false)
   if (setup.state === 'awaiting_discovery')
     return (
@@ -215,20 +215,13 @@ export function DiscoveryPrompt({
           elsewhere and its button names this form. A secret is typed in the
           dialog, so that form goes in with it. */}
           {!bearer && canStart && (
-            <Form id={formId} method="post" reloadDocument aria-busy={pending}>
+            <Form ref={oauthForm} id={formId} method="post" reloadDocument aria-busy={pending}>
               <Fields form={form} intent="oauth-start" />
               <SetupFields setup={setup} />
               <OAuthApplicationBlock
                 setup={setup}
                 callbackUrl={callbackUrl}
-                clientSecretInput={
-                  <>
-                    <Typography.BodySmallStrong as="label" htmlFor={secretId}>
-                      Client secret
-                    </Typography.BodySmallStrong>
-                    <Inputs.CredentialInput id={secretId} name="clientSecret" required />
-                  </>
-                }
+                clientSecretInput={<ClientSecretInput />}
               />
             </Form>
           )}
@@ -236,7 +229,15 @@ export function DiscoveryPrompt({
             <OAuthApplicationBlock setup={setup} callbackUrl={callbackUrl} />
           )}
           {canAsk && !inFlight && (
-            <Dialog.Root open={asking} onOpenChange={setAsking}>
+            <Dialog.Root
+              open={asking}
+              onOpenChange={(open) => {
+                // The dialog covers the sign-in form's fields, such as a client
+                // secret, so they must be complete before it opens.
+                if (open && oauthForm.current && !oauthForm.current.reportValidity()) return
+                setAsking(open)
+              }}
+            >
               <Dialog.Trigger
                 render={<Button.Container variant="primary" size="36" disabled={pending} />}
               >
@@ -321,7 +322,6 @@ export function DiscoveryStep({
   existingAccount?: AccountChoice
 }) {
   const formId = useId()
-  const secretId = useId()
   const back = backPath ? (
     <Button.InternalLink size="small" to={backPath} variant="secondary">
       Back
@@ -438,14 +438,7 @@ export function DiscoveryStep({
             <OAuthApplicationBlock
               setup={setup}
               callbackUrl={callbackUrl}
-              clientSecretInput={
-                <>
-                  <Typography.BodySmallStrong as="label" htmlFor={secretId}>
-                    Client secret
-                  </Typography.BodySmallStrong>
-                  <Inputs.CredentialInput id={secretId} name="clientSecret" required />
-                </>
-              }
+              clientSecretInput={<ClientSecretInput />}
             />
           </Form>
           {expiry}

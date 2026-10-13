@@ -10,7 +10,7 @@ import * as Dialog from '@/wax/components/dialog'
 import { Fields } from '@/views/management/forms'
 import { accountLabels, useAccountAudience } from './account-labels'
 import { CredentialFields } from '@/views/management/credential-fields'
-import { OAuthApplicationBlock } from './oauth-application'
+import { ClientSecretInput, OAuthApplicationBlock } from './oauth-application'
 import { usePublication } from './publication-form'
 import {
   accountSummary,
@@ -108,7 +108,6 @@ export function AccountStep({
     )
   }
   const formId = useId()
-  const secretId = useId()
   const secretFormId = useId()
   const [confirming, setConfirming] = useState(false)
   const method = setup.credentialMethod
@@ -269,14 +268,7 @@ export function AccountStep({
             <OAuthApplicationBlock
               setup={setup}
               callbackUrl={callbackUrl}
-              clientSecretInput={
-                <>
-                  <Typography.BodySmallStrong as="label" htmlFor={secretId}>
-                    Client secret
-                  </Typography.BodySmallStrong>
-                  <Inputs.CredentialInput id={secretId} name="clientSecret" required />
-                </>
-              }
+              clientSecretInput={<ClientSecretInput />}
             />
           )}
         </Form>

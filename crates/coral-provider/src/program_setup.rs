@@ -50,10 +50,14 @@ impl ProviderModule {
         let (loaded, review) = self
             .reviewed_setup_in_transaction(&mut tx, actor, owner, setup)
             .await?;
-        let secret_given =
-            crate::account::oauth_client_secret_repository::for_setup(&mut tx, owner, setup)
-                .await?
-                .is_some();
+        // Publication requires the same secret, bound to the same client ID.
+        let secret_missing = match review.confirmed_contract() {
+            Some(contract) => {
+                crate::account::oauth_client::client_secret_missing(&mut tx, owner, setup, contract)
+                    .await?
+            }
+            None => false,
+        };
         tx.rollback().await?;
         // Nobody publishes an ended Setup, and a person cannot finish it.
         if !loaded.setup.state().is_open() {
@@ -78,13 +82,7 @@ impl ProviderModule {
             (_, CredentialRoute::Fixed) => SetupPublishability::Person,
             _ if loaded.setup.state().is_pre_ready() => SetupPublishability::Person,
             // Only a person can give a confidential application's secret.
-            _ if !secret_given
-                && contract.oauth_client().is_some_and(|client| {
-                    client.authentication != coral_catalog::OAuthClientAuthenticationMethod::None
-                }) =>
-            {
-                SetupPublishability::Person
-            }
+            _ if secret_missing => SetupPublishability::Person,
             _ => SetupPublishability::Coral,
         })
     }

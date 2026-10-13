@@ -5,6 +5,19 @@ import * as styles from './providers.css'
 
 type ApplicationMode = 'automatic' | 'explicit'
 
+/** The write-only secret of a confidential OAuth application, which a person enters. */
+export function ClientSecretInput({ required = true }: { required?: boolean }) {
+  const id = useId()
+  return (
+    <>
+      <Typography.BodySmallStrong as="label" htmlFor={id}>
+        Client secret
+      </Typography.BodySmallStrong>
+      <Inputs.CredentialInput id={id} name="clientSecret" required={required} />
+    </>
+  )
+}
+
 /**
  * One application editor and its confirmed sign-in fields, shared by Add and Update.
  * Owns conditional authentication and advanced settings; callers supply the write-only
@@ -61,13 +74,7 @@ export function OAuthApplicationBlock({
   const parameters = configured?.parameters ?? ''
   // Once the application is settled, it is a fact about the sign-in rather than
   // a section of the page: one muted line, and the id in the shape of an id.
-  const settled = configured
-    ? configured.mode === 'manual'
-      ? configured.clientId
-      : ''
-    : used?.bootstrap === 'manual'
-      ? used.clientId
-      : ''
+  const settled = configured?.mode === 'manual' ? configured.clientId : ''
   const note = (text: string) => (
     <Typography.BodySmall as="p" variant="tertiary">
       {text}
@@ -235,11 +242,10 @@ export function OAuthApplicationBlock({
             </Typography.BodySmall>
           )}
           {/* An agent's createProvider confirms the configuration without an
-              application. Coral chooses one at sign-in: the one already in use,
-              or one it registers. */}
+              application. Coral chooses one at sign-in: the one it registered
+              for this setup, or a new one. It never reuses a client ID you
+              entered, so no client ID is named here. */}
           <input type="hidden" name="application" value="automatic" />
-          {used?.bootstrap === 'manual' &&
-            note('Signs in through your own OAuth application, client ID')}
         </>
       ) : (
         <Typography.BodySmall as="p" variant="tertiary">

@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useMemo,
   useState,
   type ReactNode,
 } from 'react'
@@ -164,7 +165,11 @@ export function ApprovalReview({ detail }: { detail: Approval }) {
   const commentInvalid = new TextEncoder().encode(comment).length > 1024 || comment.includes('\0')
   const state = winning ?? detail.state
   const stateLabel = settledApproval(state)?.label ?? 'Approval unavailable'
-  const { args, document } = withoutInlineDocument(detail.arguments)
+  // A comment draft re-renders on every keystroke; the document only changes with the call.
+  const { args, document } = useMemo(
+    () => withoutInlineDocument(detail.arguments),
+    [detail.arguments],
+  )
   return (
     <section className={styles.review} aria-label={`Review ${detail.callPath}`}>
       <Card.Header sticky>

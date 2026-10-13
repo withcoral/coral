@@ -805,6 +805,7 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
     let server = private_document_server().await;
     let fetchable = url_source(&server);
     let arguments = |namespace: &str, source: &serde_json::Value| serde_json::json!({ "namespace": namespace, "source": source, "credentialRoute": "fixed" });
+    let authenticated = |authentication: serde_json::Value| serde_json::json!({ "namespace": "weather", "source": fetchable, "credentialRoute": "fixed", "authentication": authentication });
     let before = scope.lifecycle_events().await.len();
     for arguments in [
         arguments("not-an-identifier", &fetchable),
@@ -831,31 +832,47 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
             "weather",
             &serde_json::json!({ "kind": "mcp_url", "url": "https://weather.example/mcp#tools" }),
         ),
-        serde_json::json!({
-            "namespace": "weather",
-            "source": fetchable,
-            "credentialRoute": "fixed",
-            "authentication": {
-                "method": "header_credentials",
-                "headers": { "x-weather-key": { "source": "literal", "value": "secret" } },
-            },
-        }),
+        authenticated(serde_json::json!({
+            "method": "header_credentials",
+            "headers": { "x-weather-key": { "source": "literal", "value": "secret" } },
+        })),
         // Device authorization takes no authorization parameters.
-        serde_json::json!({
-            "namespace": "weather",
-            "source": fetchable,
-            "credentialRoute": "fixed",
-            "authentication": {
-                "method": "oauth_device_code",
-                "device_authorization_url": "https://weather.example/device",
-                "token_url": "https://weather.example/token",
-                "scopes": [],
-                "client": {
-                    "client_id": "weather-app",
-                    "authorization_parameters": { "audience": "weather" },
-                },
+        authenticated(serde_json::json!({
+            "method": "oauth_device_code",
+            "device_authorization_url": "https://weather.example/device",
+            "token_url": "https://weather.example/token",
+            "scopes": [],
+            "client": {
+                "client_id": "weather-app",
+                "authorization_parameters": { "audience": "weather" },
             },
-        }),
+        })),
+        // An OAuth endpoint or parameter that could carry a credential.
+        authenticated(serde_json::json!({
+            "method": "oauth_authorization_code",
+            "authorization_url": "https://user:secret@weather.example/authorize",
+            "token_url": "https://weather.example/token",
+            "scopes": [],
+        })),
+        authenticated(serde_json::json!({
+            "method": "oauth_authorization_code",
+            "authorization_url": "https://weather.example/authorize",
+            "token_url": "https://weather.example/token?client_secret=secret",
+            "scopes": [],
+        })),
+        authenticated(serde_json::json!({
+            "method": "oauth_authorization_code",
+            "authorization_url": "https://weather.example/authorize",
+            "token_url": "https://weather.example/token",
+            "scopes": [],
+            "client": {
+                "client_id": "weather-app",
+                "authorization_parameters": { "client_secret": "secret" },
+            },
+        })),
+        // A credential field takes no value: a person enters it when they sign in.
+        serde_json::json!({ "namespace": "weather", "source": fetchable, "credentialRoute": "fixed",
+            "credentialFields": { "token": { "label": "Bot token", "sensitive": true, "value": "secret" } } }),
     ] {
         // createProvider waits for approval by default; input it can judge alone never does.
         let run = scope.start(&scope.owner, create_provider(&arguments)).await;
@@ -932,8 +949,8 @@ async fn credential_headers_are_rejected_by_their_exact_name() {
 }
 
 // Catches: a Program unable to configure how a person signs in as Reef's
-// configuration step does, a value reaching Coral through that configuration,
-// or Coral publishing an application whose secret only a person can give.
+// configuration step does, a link that opens the wrong account question, or
+// Coral publishing an application whose secret only a person can give.
 #[tokio::test]
 async fn the_program_configures_how_a_person_signs_in() {
     let scope = AdminScope::new("user:sign-in-configuration").await;
@@ -943,14 +960,15 @@ async fn the_program_configures_how_a_person_signs_in() {
         "headers": { "authorization": { "source": "field", "field": "token", "prefix": "Bot " } },
     });
     let bot_token = serde_json::json!({ "token": { "label": "Bot token", "sensitive": true } });
-    let device = serde_json::json!({
+    let bot = serde_json::json!({ "authentication": bot_header, "credentialFields": bot_token });
+    let device = serde_json::json!({ "authentication": {
         "method": "oauth_device_code",
         "device_authorization_url": "https://weather.example/device",
         "token_url": "https://weather.example/token",
         "scopes": [],
         "client": { "client_id": "weather-app" },
-    });
-    let confidential = serde_json::json!({
+    } });
+    let confidential = serde_json::json!({ "authentication": {
         "method": "oauth_authorization_code",
         "authorization_url": "https://weather.example/authorize",
         "token_url": "https://weather.example/token",
@@ -959,28 +977,24 @@ async fn the_program_configures_how_a_person_signs_in() {
             "client_id": "weather-app",
             "authentication": "client_secret_post",
         },
-    });
-    for (index, (route, choices, signs_in)) in [
-        (
-            "fixed",
-            serde_json::json!({ "authentication": bot_header, "credentialFields": bot_token }),
-            true,
-        ),
+    } });
+    for (index, (route, choices, question)) in [
+        ("fixed", bot, Some("&account=fixed")),
         // The source declares no field for the header to send.
-        ("fixed", serde_json::json!({ "authentication": bot_header }), false),
         (
             "fixed",
-            serde_json::json!({
-                "authentication": bot_header,
-                "credentialFields": { "token": { "label": "Bot token", "sensitive": true, "value": "secret" } },
-            }),
-            false,
+            serde_json::json!({ "authentication": bot_header }),
+            None,
         ),
         // Device code never uses PKCE, whatever the Program wrote.
-        ("fixed", serde_json::json!({ "authentication": device }), true),
+        ("fixed", device, Some("&account=fixed")),
         // Only the person can give a confidential application's secret, so even
         // a caller route that Coral could publish needs them.
-        ("caller", serde_json::json!({ "authentication": confidential }), true),
+        (
+            "caller",
+            confidential,
+            Some("&account=caller&accountReview=1"),
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -996,13 +1010,20 @@ async fn the_program_configures_how_a_person_signs_in() {
             .extend(choices.as_object().unwrap().clone());
         let run = scope.start(&scope.owner, create_provider(&arguments)).await;
         let value = final_value(&scope.terminal(&scope.owner, &run).await);
-        if !signs_in {
+        let Some(question) = question else {
             assert_eq!(value, serde_json::json!("invalid_input"), "{arguments}");
             continue;
-        }
+        };
         assert_eq!(
             value.pointer("/data/status"),
             Some(&serde_json::json!("needs_sign_in")),
+            "{arguments}: {value}"
+        );
+        let link = value
+            .pointer("/data/url")
+            .and_then(serde_json::Value::as_str);
+        assert!(
+            link.is_some_and(|link| link.ends_with(question)),
             "{arguments}: {value}"
         );
         let configuration = scope.last_confirmed_configuration().await;

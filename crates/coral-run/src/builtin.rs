@@ -152,7 +152,7 @@ impl CreateProvider {
             .map_err(|_error| CoralFailure::InvalidInput)?;
         // A credential-named header would carry a credential value through the
         // Program; a person enters every value in Reef. The authentication input
-        // takes no literal value.
+        // takes no literal value but an empty one.
         if arguments
             .request_headers
             .as_ref()

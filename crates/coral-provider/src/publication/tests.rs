@@ -1962,6 +1962,10 @@ async fn only_the_user_who_started_a_setup_publishes_it() {
         "26000000-0000-4000-8000-000000000001",
     );
 
+    let events_before = providers
+        .list_lifecycle_events(&starter, workspace.id())
+        .await
+        .unwrap();
     let refused = providers
         .publish_workspace_provider(&change_context(other_owner, 30, 'c'), request.clone())
         .await;
@@ -1970,12 +1974,35 @@ async fn only_the_user_who_started_a_setup_publishes_it() {
         "{refused:?}"
     );
     assert_eq!(materializer.calls(), 0, "the refusal reads no source");
-    // The refusal changed nothing: the starter publishes the same Setup with
-    // the same request.
-    providers
+    assert_eq!(
+        providers
+            .list_lifecycle_events(&starter, workspace.id())
+            .await
+            .unwrap(),
+        events_before,
+        "the refusal records no event"
+    );
+    assert_eq!(
+        providers
+            .get_setup(&starter, workspace.id(), setup.id())
+            .await
+            .unwrap()
+            .state(),
+        ProviderSetupState::Ready,
+        "the refusal leaves the Setup ready"
+    );
+    // Nor did it record the request: the starter publishes with the same one.
+    let published = providers
         .publish_workspace_provider(&change_context(starter, 40, 'd'), request)
         .await
         .expect("the starter publishes");
+    assert_eq!(
+        published.outcome(),
+        ProviderPublicationOutcome::Succeeded,
+        "{:?}",
+        published.diagnostic()
+    );
+    assert!(published.published_provider().is_some());
 }
 
 #[tokio::test]

@@ -87,8 +87,8 @@ mod credentials;
 pub use credentials::{
     AuthenticationConfiguration, AuthenticationKind, CredentialSource, HeaderBinding,
     OAuthClientAuthenticationMethod, OAuthClientBootstrap, OAuthClientPolicy, OAuthPkcePolicy,
-    OAuthScopeFormat, ProviderCredentialContract, oauth_parameter_is_reserved,
-    validate_oauth_client_id,
+    OAuthScopeFormat, ProviderCredentialContract, oauth_endpoint_is_valid,
+    oauth_parameter_is_reserved, validate_oauth_client_id,
 };
 pub mod history_repository;
 mod repository;

@@ -123,15 +123,15 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
                 scope_format,
                 client,
             } => Self::OAuthDeviceCode {
-                device_authorization_url,
-                token_url,
+                device_authorization_url: endpoint(device_authorization_url)?,
+                token_url: endpoint(token_url)?,
                 scopes,
                 scope_format: scope_format.into(),
                 resource: None,
                 issuer: None,
-                client: client.map(|client| {
-                    ClientInput::from(client).policy(Some(OAuthPkcePolicy::Disabled))
-                }),
+                client: client
+                    .map(|client| ClientInput::from(client).policy(Some(OAuthPkcePolicy::Disabled)))
+                    .transpose()?,
             },
             AuthenticationInput::OauthAuthorizationCode {
                 authorization_url,
@@ -140,15 +140,25 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
                 scope_format,
                 client,
             } => Self::OAuthAuthorizationCode {
-                authorization_url,
-                token_url,
+                authorization_url: endpoint(authorization_url)?,
+                token_url: endpoint(token_url)?,
                 scopes,
                 scope_format: scope_format.into(),
                 resource: None,
                 issuer: None,
-                client: client.map(|client| client.policy(None)),
+                client: client.map(|client| client.policy(None)).transpose()?,
             },
         })
+    }
+}
+
+/// An OAuth endpoint, rejected before the arguments are stored when it could
+/// carry a credential, such as `user:secret@` or a `client_secret` parameter.
+fn endpoint(url: String) -> Result<String, Rejected> {
+    if coral_catalog::oauth_endpoint_is_valid(&url) {
+        Ok(url)
+    } else {
+        Err(Rejected)
     }
 }
 
@@ -226,9 +236,17 @@ pub(super) struct ClientInput {
 
 impl ClientInput {
     /// The application policy; `fixed_pkce` overrides the Program's choice
-    /// where the method decides it.
-    fn policy(self, fixed_pkce: Option<OAuthPkcePolicy>) -> OAuthClientPolicy {
-        OAuthClientPolicy {
+    /// where the method decides it. A reserved parameter, such as
+    /// `client_secret`, is rejected before the arguments are stored.
+    fn policy(self, fixed_pkce: Option<OAuthPkcePolicy>) -> Result<OAuthClientPolicy, Rejected> {
+        if self
+            .authorization_parameters
+            .keys()
+            .any(|name| coral_catalog::oauth_parameter_is_reserved(name))
+        {
+            return Err(Rejected);
+        }
+        Ok(OAuthClientPolicy {
             bootstrap: OAuthClientBootstrap::Manual,
             client_id: self.client_id,
             authentication: match self.authentication {
@@ -246,7 +264,7 @@ impl ClientInput {
                 Some(PkceInput::Disabled) => OAuthPkcePolicy::Disabled,
             }),
             authorization_parameters: self.authorization_parameters,
-        }
+        })
     }
 }
 
