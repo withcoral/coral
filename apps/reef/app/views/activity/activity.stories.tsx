@@ -918,13 +918,14 @@ const pickRows = ['first', 'second'].map((id) => ({
   name: `${task}-${id}`,
   intent: `Pick the ${id} record`,
 }))
+const pickEntry = `/workspaces/finance/activity?tree=1&record=${encodeURIComponent(pickRows[0]!.name)}`
 /**
  * A click on another record while the drawer closes opens that record, even when
  * its data arrives after the exit ends. The close must not navigate back over it.
  */
 export const PickWhileClosing: Story = {
   parameters: {
-    initialEntry: `/workspaces/finance/activity?tree=1&record=${encodeURIComponent(pickRows[0]!.name)}`,
+    initialEntry: pickEntry,
     // Slower than the drawer's exit, as a loader on a busy server can be.
     loader: async ({ request }: { request: Request }) => {
       if (new URL(request.url).searchParams.get('record') === pickRows[1]!.name)
@@ -973,6 +974,40 @@ export const PickWhileClosing: Story = {
     await new Promise((resolve) => setTimeout(resolve, 500))
     await expect(screen.getByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
       'Pick the second record',
+    )
+  },
+}
+/**
+ * A click on the record whose drawer just closed opens it again, even while the
+ * list the close navigated to is still loading.
+ */
+export const ReopenWhileLeaving: Story = {
+  parameters: {
+    initialEntry: pickEntry,
+    // The list loads slower than a reader clicks.
+    loader: async ({ request }: { request: Request }) => {
+      if (!new URL(request.url).searchParams.has('record'))
+        await new Promise((resolve) => setTimeout(resolve, 800))
+      return null
+    },
+  },
+  render: PickWhileClosing.render,
+  play: async ({ canvasElement, userEvent }) => {
+    const screen = within(canvasElement.ownerDocument.body)
+    const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Close details' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    const list = within(canvasElement).getByRole('table', { name: 'Activity records' })
+    await userEvent.click(within(list).getByRole('link', { name: 'Pick the first record' }))
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
+        'Pick the first record',
+      ),
+    )
+    // The list's late load does not close it again.
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await expect(screen.getByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
+      'Pick the first record',
     )
   },
 }

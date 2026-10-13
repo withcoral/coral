@@ -829,6 +829,21 @@ it('beside an open final value, its own row changes nothing and its Run opens', 
   expect(router.state.historyAction).toBe('PUSH')
 })
 
+// Catches: a click on the record the drawer is closing that pushes a duplicate
+// history entry and then loses to the close, which navigates back anyway.
+it('a click on the closing record keeps its detail open', async () => {
+  const [a, b] = [task('a'), task('b')]
+  const { router } = renderActivity({ rows: [a, b], entry: `/activity?record=${a.name}` })
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  const before = router.state.location
+  // The click lands after the close renders and before the exit ends.
+  act(() => screen.getByRole('button', { name: 'Close details' }).click())
+  act(() => row('Task a').click())
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  expect(router.state.location).toBe(before)
+  expect(details()).toHaveTextContent('Task a')
+})
+
 // Catches: arrows in the table moving a hidden cursor while the detail stays,
 // stepping from that cursor rather than the record shown, or jumping a gap.
 it('↑ and ↓ in the table step the open detail and stop at an unloaded gap', async () => {

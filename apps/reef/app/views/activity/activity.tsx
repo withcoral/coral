@@ -448,7 +448,7 @@ export function Activity({
   const [lostPosition, setLostPosition] = useState<string>()
   const nav = useActivityNavigation(page)
   const navigate = useNavigate()
-  const { search } = useLocation()
+  const { pathname, search } = useLocation()
   // One drawer shows each record in turn, so a close belongs to the drawer, not
   // to the record it showed: a step that lands while it closes cannot reopen it.
   // Opening a record from the table starts a new drawer, which a close the
@@ -500,6 +500,9 @@ export function Activity({
     more,
     // A closing drawer no longer shows its record, so a click opens it again.
     shown: drawer.open ? shown : null,
+    closingShown: drawer.open ? null : shown,
+    reopen: drawer.reopen,
+    here: `${pathname}${search}`,
     expanded: page.expanded,
     stops,
     cursor,
@@ -514,6 +517,12 @@ export function Activity({
       const current = latest.current
       // A glimpse opens the record on its Activity page, at the top of that page.
       if (current.more) void current.navigate(revealHref(row))
+      // A click on the record the drawer is closing keeps it open. If the close
+      // already navigated away, this URL replaces that navigation: no new entry.
+      else if (current.closingShown !== null && row.name === current.closingShown) {
+        if (current.reopen())
+          void current.navigate(current.here, { replace: true, preventScrollReset: true })
+      }
       // The record the detail shows is already open: no second history entry.
       else if (row.name !== current.shown)
         void current.navigate(current.nav.recordHref(row.name), { preventScrollReset: true })
