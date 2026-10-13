@@ -448,7 +448,10 @@ export function Activity({
   const [lostPosition, setLostPosition] = useState<string>()
   const nav = useActivityNavigation(page)
   const navigate = useNavigate()
-  const { pathname, search } = useLocation()
+  const { pathname, search, key: locationKey } = useLocation()
+  // Where the reader stood when they last picked another record. Until the
+  // location moves, that pick is still loading.
+  const pickedFrom = useRef<string | null>(null)
   // One drawer shows each record in turn, so a close belongs to the drawer, not
   // to the record it showed: a step that lands while it closes cannot reopen it.
   // Opening a record from the table starts a new drawer, which a close the
@@ -503,6 +506,7 @@ export function Activity({
     closingShown: drawer.open ? null : shown,
     reopen: drawer.reopen,
     here: `${pathname}${search}`,
+    locationKey,
     expanded: page.expanded,
     stops,
     cursor,
@@ -517,15 +521,18 @@ export function Activity({
       const current = latest.current
       // A glimpse opens the record on its Activity page, at the top of that page.
       if (current.more) void current.navigate(revealHref(row))
-      // A click on the record the drawer is closing keeps it open. If the close
-      // already navigated away, this URL replaces that navigation: no new entry.
-      else if (current.closingShown !== null && row.name === current.closingShown) {
-        if (current.reopen())
+      // A click on the record on screen, open or closing, keeps it. A pick still
+      // loading, or a close that already navigated away, gives way to this URL in
+      // place: the last click wins and no entry is added.
+      else if (row.name === (current.shown ?? current.closingShown)) {
+        const reopened = current.shown === null && current.reopen()
+        if (reopened || pickedFrom.current === current.locationKey)
           void current.navigate(current.here, { replace: true, preventScrollReset: true })
-      }
-      // The record the detail shows is already open: no second history entry.
-      else if (row.name !== current.shown)
+        pickedFrom.current = null
+      } else {
+        pickedFrom.current = current.locationKey
         void current.navigate(current.nav.recordHref(row.name), { preventScrollReset: true })
+      }
     },
     toggle: (name) => {
       const current = latest.current

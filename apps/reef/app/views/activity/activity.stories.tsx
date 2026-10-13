@@ -919,12 +919,9 @@ const pickRows = ['first', 'second'].map((id) => ({
   intent: `Pick the ${id} record`,
 }))
 const pickEntry = `/workspaces/finance/activity?tree=1&record=${encodeURIComponent(pickRows[0]!.name)}`
-/**
- * A click on another record while the drawer closes opens that record, even when
- * its data arrives after the exit ends. The close must not navigate back over it.
- */
-export const PickWhileClosing: Story = {
-  parameters: {
+/** Opens the first record; the second loads slower than the drawer's exit. */
+function slowSecondRecord() {
+  return {
     initialEntry: pickEntry,
     // Slower than the drawer's exit, as a loader on a busy server can be.
     loader: async ({ request }: { request: Request }) => {
@@ -932,7 +929,14 @@ export const PickWhileClosing: Story = {
         await new Promise((resolve) => setTimeout(resolve, 800))
       return null
     },
-  },
+  }
+}
+/**
+ * A click on another record while the drawer closes opens that record, even when
+ * its data arrives after the exit ends. The close must not navigate back over it.
+ */
+export const PickWhileClosing: Story = {
+  parameters: slowSecondRecord(),
   render: function PickWhileClosing() {
     const [query] = useSearchParams()
     const selected = query.get('record')
@@ -974,6 +978,24 @@ export const PickWhileClosing: Story = {
     await new Promise((resolve) => setTimeout(resolve, 500))
     await expect(screen.getByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
       'Pick the second record',
+    )
+  },
+}
+/** The last record picked while the drawer closes wins over an earlier pick still loading. */
+export const LastPickWhileClosing: Story = {
+  parameters: slowSecondRecord(),
+  render: PickWhileClosing.render,
+  play: async ({ canvasElement, userEvent }) => {
+    const screen = within(canvasElement.ownerDocument.body)
+    const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Close details' }))
+    const list = within(canvasElement).getByRole('table', { name: 'Activity records' })
+    within(list).getByRole('link', { name: 'Pick the second record' }).click()
+    within(list).getByRole('link', { name: 'Pick the first record' }).click()
+    // The second record's slow load ends after this, and must not take over.
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    await expect(screen.getByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
+      'Pick the first record',
     )
   },
 }

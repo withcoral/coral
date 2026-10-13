@@ -844,6 +844,34 @@ it('a click on the closing record keeps its detail open', async () => {
   expect(details()).toHaveTextContent('Task a')
 })
 
+// Catches: a pick noted during one close that outlives it, so a later close of
+// the same record skips its navigation and leaves the record in the URL.
+it('a record picked during a close does not affect a later close', async () => {
+  const [a, b] = [task('a'), task('b')]
+  const { user, router } = renderActivity({ rows: [a, b], entry: `/activity?record=${a.name}` })
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  // Task b loads before the exit ends, so that close never runs.
+  act(() => screen.getByRole('button', { name: 'Close details' }).click())
+  act(() => row('Task b').click())
+  await vi.waitFor(() => expect(details()).toHaveTextContent('Task b'))
+  await user.click(row('Task a'))
+  await vi.waitFor(() => expect(details()).toHaveTextContent('Task a'))
+  await user.click(screen.getByRole('button', { name: 'Close details' }))
+  await vi.waitFor(() => expect(recordIn(router)).toBeNull())
+})
+
+// Catches: a close keyed on the loader's Run selection, which a Run and its
+// final value share, so picking the Run while its final value closes is lost.
+it('a Run picked while its final value closes opens the Run', async () => {
+  const { router, two } = finalValues(true)
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  act(() => screen.getByRole('button', { name: 'Close details' }).click())
+  act(() => row('Run two').click())
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  expect(recordIn(router)).toBe(two.name)
+  expect(screen.getByRole('dialog', { name: 'Activity details' })).toBeInTheDocument()
+})
+
 // Catches: arrows in the table moving a hidden cursor while the detail stays,
 // stepping from that cursor rather than the record shown, or jumping a gap.
 it('↑ and ↓ in the table step the open detail and stop at an unloaded gap', async () => {
