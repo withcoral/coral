@@ -146,13 +146,17 @@ function StatusFilterMenu({
   onChange: (value: PersonalAccountState | null) => void
 }) {
   const active = value ? states[value] : undefined
+  const label = active?.label ?? 'All statuses'
   return (
     <Menu.Container>
       <Menu.Trigger
-        render={<Button.Container variant="secondary" ariaLabel="Filter accounts by status" />}
+        render={
+          // The name keeps the visible choice, so a screen reader hears it too (WCAG 2.5.3).
+          <Button.Container variant="secondary" ariaLabel={`Filter accounts by status: ${label}`} />
+        }
       >
         <Button.Icon name={active?.icon ?? 'ListFilter'} />
-        <Button.Text>{active?.label ?? 'All statuses'}</Button.Text>
+        <Button.Text>{label}</Button.Text>
         <Button.Icon name="ChevronDown" />
       </Menu.Trigger>
       <Menu.Content>

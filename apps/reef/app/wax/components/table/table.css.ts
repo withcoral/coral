@@ -85,6 +85,8 @@ export const scrollTable = style({
 // One grid owns every column width. Head, Body, and Row inherit those tracks
 // through `subgrid`, so a column stays the same width in the heading and in
 // every row without any of them being told how wide it is.
+const CARD_RADIUS = 10
+
 export const container = recipe({
   base: {
     alignContent: 'start',
@@ -148,7 +150,7 @@ export const container = recipe({
       card: {
         background: theme.surface.card,
         border: `1px solid ${theme.stroke.secondary}`,
-        borderRadius: '10px',
+        borderRadius: CARD_RADIUS,
       },
       plain: {},
     },
@@ -239,9 +241,14 @@ export const row = style({
       borderBottom: 'none',
     },
     // The card's radius less its border, so a highlight's corners match the card's.
-    [`${cardTable} ${body}:last-child > &:last-child`]: {
-      borderEndEndRadius: 9,
-      borderEndStartRadius: 9,
+    // The table's last row can sit in a group, or in a group nested in one.
+    [[
+      `${cardTable} ${body}:last-child > &:last-child`,
+      `${cardTable} ${body}:last-child > ${group}:last-child > &:last-child`,
+      `${cardTable} ${body}:last-child > ${group}:last-child > ${group}:last-child > &:last-child`,
+    ].join(', ')]: {
+      borderEndEndRadius: CARD_RADIUS - 1,
+      borderEndStartRadius: CARD_RADIUS - 1,
     },
     [`${head} > &`]: {
       minHeight: tableVars.headingHeight.value,
@@ -271,10 +278,11 @@ export const selectedRow = style({
 })
 
 // The keyboard cursor: an outline, so it reads apart from an open row's edge bar.
-export const activeRow = style({
+const cursor = {
   backgroundColor: theme.surface.onMainContentSubtle,
   boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
-})
+}
+export const activeRow = style(cursor)
 
 // The marker overlays the existing edge without moving columns or replacing selection.
 export const markedRow = style({
@@ -584,9 +592,6 @@ export const rowLink = style({
 // A row with `to` shows its link's keyboard focus as the keyboard cursor.
 export const linkRow = style({
   selectors: {
-    [`&:has(${rowLink}:focus-visible)`]: {
-      backgroundColor: theme.surface.onMainContentSubtle,
-      boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
-    },
+    [`&:has(${rowLink}:focus-visible)`]: cursor,
   },
 })

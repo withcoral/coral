@@ -1,10 +1,15 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { Button, Typography } from '@/wax/components'
-import * as CardFrame from '@/wax/components/card'
 import { Card } from '@/wax/components/card/card'
 
-import { SettingsLayout, SettingsRemoval } from './index'
+import {
+  SettingsAside,
+  SettingsFact,
+  SettingsFacts,
+  SettingsLayout,
+  SettingsRemoval,
+} from './index'
 
 const meta = {
   title: 'Components/SettingsLayout',
@@ -12,9 +17,12 @@ const meta = {
     <SettingsLayout
       header={<Typography.HeadingLarge as="h2">Nightly reconciler</Typography.HeadingLarge>}
       aside={
-        <CardFrame.Container as="aside" aria-label="Source">
-          <Typography.BodyLargeStrong as="h2">Source</Typography.BodyLargeStrong>
-        </CardFrame.Container>
+        <SettingsAside title="Source">
+          <SettingsFacts>
+            <SettingsFact label="Type">OpenAPI document</SettingsFact>
+            <SettingsFact label="URL">api.example.com</SettingsFact>
+          </SettingsFacts>
+        </SettingsAside>
       }
       removal={
         <SettingsRemoval

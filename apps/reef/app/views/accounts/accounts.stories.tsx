@@ -245,14 +245,19 @@ export const FilterYourAccounts: Story = {
     const providers = () =>
       canvas.getAllByRole('link', { name: / account details$/ }).map((link) => link.textContent)
 
-    await userEvent.click(canvas.getByRole('button', { name: 'Filter accounts by status' }))
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'Filter accounts by status: All statuses' }),
+    )
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'Needs reconnect' }))
     await expect(providers()).toEqual(['Ledger'])
 
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter accounts' }), 'git')
     await expect(await canvas.findByText('No accounts match.')).toBeVisible()
 
-    await userEvent.click(canvas.getByRole('button', { name: 'Filter accounts by status' }))
+    // The button's name says which status the table shows.
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'Filter accounts by status: Needs reconnect' }),
+    )
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'All statuses' }))
     await expect(providers()).toEqual(['GitHub'])
   },

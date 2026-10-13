@@ -1,15 +1,19 @@
-import type { ReactNode } from 'react'
 import { Banner, Button, Inputs, Table, Typography } from '@/wax/components'
-import * as CardFrame from '@/wax/components/card'
 import { PageLayout } from '@/wax/components/page-layout'
-import { SettingsLayout, SettingsRemoval } from '@/wax/components/settings-layout'
+import {
+  SettingsAside,
+  SettingsFact,
+  SettingsFacts,
+  SettingsLayout,
+  SettingsRemoval,
+} from '@/wax/components/settings-layout'
 import { CredentialFields } from '@/views/management/credential-fields'
 import { Fields } from '@/views/management/forms'
 import { Section, trail } from '@/views/management/layout'
 import { SavedAt } from '@/views/functions/saved-at'
 import { ConnectButton } from './connect-button'
 import { DisconnectAccount } from './disconnect-account'
-import { PermissionsTable, permissionRows, permissionSummary } from './permissions-table'
+import { PermissionsTable, permissionRows } from './permissions-table'
 import type { CredentialFieldView } from '@/views/providers/types'
 import type { AccountView, UserAccountView } from './types'
 import * as styles from './accounts.css'
@@ -27,8 +31,7 @@ export function UserAccountPage({
   const returnsToRun = v.returnTo && v.returnTo !== v.accountsPath
   const blocked = !v.canConnect && !connected
   const stored = v.account && v.account.state !== 'disconnected' ? v.account : undefined
-  // A secret has no grant, so its rows list only what the provider asks for.
-  const permissions = permissionRows(v.scopes, stored?.grantedScope || undefined)
+  const permissions = permissionRows(v.scopes)
   const description = blocked ? undefined : guidance(v)
   return (
     <PageLayout
@@ -37,25 +40,23 @@ export function UserAccountPage({
     >
       <SettingsLayout
         header={
-          <>
-            <div className={styles.heading}>
-              <div className={styles.headingText}>
-                <Typography.HeadingLarge as="h2">{`${v.providerName} account`}</Typography.HeadingLarge>
-                {description && <Typography.Body as="p">{description}</Typography.Body>}
-              </div>
-              {/* OAuth connects in one click. A secret needs the form below. */}
-              {v.canConnect && (v.oauth || connected) && (
-                <ConnectButton
-                  action={v.path}
-                  csrf={v.form.csrf}
-                  requestId={v.form.requestId}
-                  label={connected ? 'Reconnect' : verb}
-                  primary={!connected}
-                  disabled={pending}
-                />
-              )}
+          <div className={styles.heading}>
+            <div className={styles.headingText}>
+              <Typography.HeadingLarge as="h2">{`${v.providerName} account`}</Typography.HeadingLarge>
+              {description && <Typography.Body as="p">{description}</Typography.Body>}
             </div>
-          </>
+            {/* OAuth connects in one click. A secret needs the form below. */}
+            {v.canConnect && (v.oauth || connected) && (
+              <ConnectButton
+                action={v.path}
+                csrf={v.form.csrf}
+                requestId={v.form.requestId}
+                label={connected ? 'Reconnect' : verb}
+                primary={!connected}
+                disabled={pending}
+              />
+            )}
+          </div>
         }
         aside={stored && <AccountDetails account={stored} />}
         removal={
@@ -98,7 +99,7 @@ export function UserAccountPage({
             title="Permissions"
             description={
               permissions.length > 0
-                ? permissionSummary(permissions)
+                ? `Coral asks for ${permissions.length} ${permissions.length === 1 ? 'permission' : 'permissions'}.`
                 : `Coral asks for no permissions. ${v.providerName} decides what this account can access.`
             }
           >
@@ -129,36 +130,30 @@ function guidance(v: UserAccountView): string | undefined {
 /** What Coral knows about your stored account, beside the permissions. */
 function AccountDetails({ account }: { account: AccountView }) {
   return (
-    <CardFrame.Container as="aside" className={styles.details} aria-label="Details">
-      <Typography.BodyLargeStrong as="h2">Details</Typography.BodyLargeStrong>
-      <dl className={styles.facts}>
+    <SettingsAside title="Details">
+      <SettingsFacts>
         {account.connectedAt && (
-          <Fact label="Last connected">
+          <SettingsFact label="Last connected">
             <SavedAt at={account.connectedAt} />
-          </Fact>
+          </SettingsFact>
         )}
         {account.automaticRefresh === false && (
-          <Fact label="Refresh">Manual. Reconnect when access expires.</Fact>
+          <SettingsFact label="Refresh">Manual. Reconnect when access expires.</SettingsFact>
+        )}
+        {/* Exactly as the service reported it. Services name scopes in their own ways. */}
+        {account.grantedScope && (
+          <SettingsFact label="Granted permissions">
+            <span className={styles.reference}>{account.grantedScope}</span>
+          </SettingsFact>
         )}
         {/* Coral's own record, for support. It is not your identity at the provider. */}
-        <Fact label="Coral account ID">
+        <SettingsFact label="Coral account ID">
           <Typography.BodySmall as="span" variant="tertiary" className={styles.reference}>
             {account.id}
           </Typography.BodySmall>
-        </Fact>
-      </dl>
-    </CardFrame.Container>
-  )
-}
-
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className={styles.fact}>
-      <Typography.BodySmallStrong as="dt">{label}</Typography.BodySmallStrong>
-      <Typography.BodySmall as="dd" className={styles.factValue}>
-        {children}
-      </Typography.BodySmall>
-    </div>
+        </SettingsFact>
+      </SettingsFacts>
+    </SettingsAside>
   )
 }
 

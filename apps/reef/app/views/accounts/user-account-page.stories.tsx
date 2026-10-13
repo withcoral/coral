@@ -61,7 +61,7 @@ const slack: UserAccountView = {
   account: {
     ...account,
     automaticRefresh: false,
-    // Slack separates its grant with commas, and the grant can differ from the request.
+    // Slack separates its grant with commas, and the page shows it as Slack wrote it.
     grantedScope: [...slackScopes.filter((s) => !s.endsWith(':write')), 'team:read'].join(),
   },
 }
@@ -85,7 +85,7 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-/** A long grant that misses some permissions and adds one, and cannot refresh. */
+/** A long request, a grant that differs from it, and no automatic refresh. */
 export const PartialGrant: Story = { render: () => <UserAccountPage view={slack} /> }
 export const FullGrant: Story = { render: () => <UserAccountPage view={connected} /> }
 /** A GitHub App ignores OAuth scopes, so Coral asks for none and says who decides access. */
@@ -136,13 +136,6 @@ export const FilterPermissions: Story = {
     const table = canvas.getByRole('table', { name: 'Permissions' })
     await userEvent.type(filter, 'canvases')
     await expect(await within(table).findAllByRole('row')).toHaveLength(3)
-    await userEvent.click(canvas.getByRole('button', { name: 'Filter permissions by status' }))
-    await userEvent.click(
-      await within(canvasElement.ownerDocument.body).findByRole('menuitemradio', {
-        name: /^Not granted/,
-      }),
-    )
-    await expect(await within(table).findAllByRole('row')).toHaveLength(2)
     await expect(within(table).getByText('canvases:write')).toBeVisible()
     await userEvent.clear(filter)
     await userEvent.type(filter, 'admin')

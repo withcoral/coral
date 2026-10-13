@@ -4,13 +4,18 @@ import { Form, Link, useFetcher } from 'react-router'
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
 import { ErrorMessage } from '@/wax/components/error-message/error-message'
 import { PageLayout } from '@/wax/components/page-layout'
-import * as CardFrame from '@/wax/components/card'
 import { Card } from '@/wax/components/card/card'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Pill } from '@/wax/components/pill'
 import { ActionDialog, Fields } from '@/views/management/forms'
 import { ArchivedBanner, trail } from '@/views/management/layout'
-import { SettingsLayout, SettingsRemoval } from '@/wax/components/settings-layout'
+import {
+  SettingsAside,
+  SettingsFact,
+  SettingsFacts,
+  SettingsLayout,
+  SettingsRemoval,
+} from '@/wax/components/settings-layout'
 
 import type {
   ActionResult,
@@ -347,35 +352,28 @@ function SourcePanel({
   canChange: boolean
 }) {
   return (
-    <CardFrame.Container as="aside" className={styles.settingsSource} aria-label="Source">
-      <Typography.BodyLargeStrong as="h2">Source</Typography.BodyLargeStrong>
+    <SettingsAside title="Source">
       {source.state === 'failed' ? (
         <Banner variant="error">
           Coral could not read the source. Reload the page to try again.
         </Banner>
       ) : (
-        <dl className={styles.settingsFacts}>
-          <div className={styles.settingsFact}>
-            <Typography.BodySmallStrong as="dt">Type</Typography.BodySmallStrong>
-            <Typography.BodySmall as="dd">{sourceKinds[source.kind]}</Typography.BodySmall>
-          </div>
-          <div className={styles.settingsFact}>
-            <Typography.BodySmallStrong as="dt">URL</Typography.BodySmallStrong>
+        <SettingsFacts>
+          <SettingsFact label="Type">{sourceKinds[source.kind]}</SettingsFact>
+          <SettingsFact label="URL">
             {source.location.type === 'url' ? (
               <SourceUrl url={source.location.url} host={source.location.host} />
+            ) : source.location.type === 'upload' ? (
+              'Uploaded document'
             ) : (
-              <Typography.BodySmall as="dd">
-                {source.location.type === 'upload'
-                  ? 'Uploaded document'
-                  : 'Coral cannot show this URL.'}
-              </Typography.BodySmall>
+              'Coral cannot show this URL.'
             )}
-          </div>
-        </dl>
+          </SettingsFact>
+        </SettingsFacts>
       )}
       {canChange && (
         <div className={styles.settingsSourceActions}>
-          <div className={styles.settingsFact}>
+          <div className={styles.settingsSourceAction}>
             <Typography.BodySmall as="p">
               Read the source again to update operations.
             </Typography.BodySmall>
@@ -385,7 +383,7 @@ function SourcePanel({
               </Button.InternalLink>
             </div>
           </div>
-          <div className={styles.settingsFact}>
+          <div className={styles.settingsSourceAction}>
             <Typography.BodySmall as="p">
               Use a different source for this provider.
             </Typography.BodySmall>
@@ -401,7 +399,7 @@ function SourcePanel({
           </div>
         </div>
       )}
-    </CardFrame.Container>
+    </SettingsAside>
   )
 }
 
@@ -411,7 +409,7 @@ function SourcePanel({
  */
 function SourceUrl({ url, host }: { url: string; host: string }) {
   return (
-    <dd className={styles.settingsUrl}>
+    <span className={styles.settingsUrl}>
       <Typography.BodySmall as="span">{host}</Typography.BodySmall>
       <span className={styles.settingsUrlRow}>
         <Tooltip content={url} showOnlyWhenTruncated maxWidth={520}>
@@ -423,7 +421,7 @@ function SourceUrl({ url, host }: { url: string; host: string }) {
         </Tooltip>
         <Button.CopyButton textToCopy={url} ariaLabel="Copy source URL" size="22" variant="bare" />
       </span>
-    </dd>
+    </span>
   )
 }
 

@@ -528,8 +528,6 @@ export const headerPreview = style({
   minWidth: 0,
 })
 
-// A Wax card, as the Add provider flow frames its source.
-export const settingsSource = style({ gap: 16, minWidth: 0 })
 export const settingsUrl = style({
   display: 'flex',
   flexDirection: 'column',
@@ -545,14 +543,8 @@ export const settingsUrlRow = style({
   minWidth: 0,
 })
 export const settingsUrlText = style({ flex: '0 1 auto', minWidth: 0, ...utils.boxClamp(1) })
-export const settingsFacts = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-  margin: 0,
-  minWidth: 0,
-})
-export const settingsFact = style({
+// One action under the facts: what it does, then its button.
+export const settingsSourceAction = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 4,

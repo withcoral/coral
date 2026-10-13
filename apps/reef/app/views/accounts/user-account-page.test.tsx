@@ -50,10 +50,13 @@ it('signs in to the provider with one button and keeps the run to return to', ()
   expect(html).toContain('>read<')
 })
 
-it('manages a connected account here: granted permissions, reconnect, and disconnect', () => {
-  const html = render({ ...connected, returnTo: null })
-  expect(html).toContain('The service granted 1 of 1 requested permissions.')
-  expect(html).toContain('Granted')
+it('manages a connected account here: the reported grant, reconnect, and disconnect', () => {
+  // The grant leaves out "admin", but services name scopes in their own ways.
+  const html = render({ ...connected, scopes: ['read', 'admin'], returnTo: null })
+  // The grant reads as the service reported it, apart from the request: no comparison.
+  expect(html).toContain('Coral asks for 2 permissions.')
+  expect(html).toMatch(/>Granted permissions<\/dt><dd[^>]*><span[^>]*>read write<\/span>/)
+  expect(html).not.toContain('Not granted')
   expect(html).not.toContain('Configured by Coral user')
   expect(html).toContain('>Reconnect<')
   expect(html).toContain('>Disconnect<')

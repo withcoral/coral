@@ -24,7 +24,7 @@ import {
   waitForYourAccount,
 } from '../../../support/providers.ts'
 
-/** The Permissions table's rows, as each reads: a missing permission sorts first. */
+/** The Permissions table's rows: what Coral requests. */
 async function permissions(page: Page) {
   const rows = page
     .getByRole('table', { name: 'Permissions', exact: true })
@@ -95,18 +95,13 @@ test.for(['complete', 'partial', 'rejected'] as const)(
             expect(await permissions(page)).toEqual(['read', 'write'])
           } else {
             await waitForYourAccount(page)
-            // The service reported a grant, so each requested permission shows its status.
+            // The grant shows as the service reported it, apart from the request.
             await page
-              .getByText(
-                `The service granted ${grant === 'partial' ? 1 : 2} of 2 requested permissions.`,
-                { exact: true },
-              )
+              .getByRole('complementary', { name: 'Details', exact: true })
+              .getByRole('definition')
+              .filter({ hasText: grant === 'partial' ? /^read$/ : /^read write$/ })
               .waitFor()
-            expect(await permissions(page)).toEqual(
-              grant === 'partial'
-                ? ['write Not granted', 'read Granted']
-                : ['read Granted', 'write Granted'],
-            )
+            expect(await permissions(page)).toEqual(['read', 'write'])
           }
           for (const body of await responses()) {
             expect(body).not.toContain(token)

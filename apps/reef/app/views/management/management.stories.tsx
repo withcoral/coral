@@ -287,6 +287,7 @@ export const ManyAgents: Story = {
         ...agent,
         name: `${agent.name}-${i}`,
         displayName: `${agent.displayName} ${i + 1}`,
+        settingsPath: `/${agent.name}-${i}/settings`,
       }))}
       nextPage="next"
       form={form}

@@ -1,5 +1,4 @@
 import { style } from '@vanilla-extract/css'
-import { theme } from '@/wax/theme/theme.css'
 
 export const stack = style({
   display: 'flex',
@@ -27,24 +26,6 @@ export const permissions = style({
   gap: '0.75rem',
   minWidth: 0,
 })
-export const missing = style({ color: theme.content.error })
-// The same details card as a provider's Source panel in its settings.
-export const details = style({ gap: 16, minWidth: 0 })
-export const facts = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 12,
-  margin: 0,
-  minWidth: 0,
-})
-export const fact = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-  margin: 0,
-  minWidth: 0,
-})
-export const factValue = style({ margin: 0, minWidth: 0 })
 // The page heading with what to do next, and the action that does it at the right.
 export const heading = style({
   alignItems: 'flex-start',
