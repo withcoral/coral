@@ -188,6 +188,19 @@ export async function saveConfirmedSettingsChange(page: Page) {
  * Waits for Add to land on the provider's own page. A callback or error page
  * outside the stepper does not count as a publication. Updates land on settings.
  */
+/**
+ * Cancels a settings change that has unsaved changes: Cancel asks first, and
+ * Discard changes returns to the provider's settings.
+ */
+export async function discardSettingsChange(page: Page) {
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: 'Discard your changes?' })
+    .getByRole('button', { name: 'Discard changes', exact: true })
+    .click()
+  await page.waitForURL((url) => url.pathname.endsWith('/settings'))
+}
+
 export async function waitForPublication(page: Page) {
   await page.waitForURL((url) =>
     /^\/workspaces\/[^/]+\/providers\/(?!new$)[^/]+$/.test(url.pathname),

@@ -2039,7 +2039,10 @@ export const RefreshNewOperations: Story = {
   ),
   parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
   play: async ({ canvas }) => {
-    await expect(canvas.getByRole('treeitem', { name: /^New/ })).toBeVisible()
-    await expect(canvas.getByRole('treeitem', { name: /^Removed/ })).toBeVisible()
+    // What the refresh changes opens; the provider's own groups stay closed.
+    await expect(canvas.getByRole('button', { name: 'Collapse New' })).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: 'Collapse Removed' })).toBeInTheDocument()
+    expect(canvas.queryAllByRole('button', { name: /^Expand / }).length).toBeGreaterThan(0)
+    expect(canvas.queryAllByRole('button', { name: /^Collapse / })).toHaveLength(2)
   },
 }

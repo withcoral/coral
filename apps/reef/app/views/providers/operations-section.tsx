@@ -9,7 +9,7 @@ import {
   destinationGroups,
   operationCount,
 } from './configuration-details'
-import { reviewOperationNodes } from './tree-model'
+import { REFRESH_NEW, REFRESH_REMOVED, reviewOperationNodes } from './tree-model'
 import type { LiveOperationView, SetupView } from './types'
 import * as styles from './providers.css'
 
@@ -45,7 +45,7 @@ export function OperationsBrowser({
   const [query, setQuery] = useState('')
   // New and Removed open at the start: they are what a refresh changes.
   const [collapsed, setCollapsed] = useState<readonly string[]>(() =>
-    groups.filter((id) => id !== 'group:new' && id !== 'group:removed'),
+    groups.filter((id) => id !== REFRESH_NEW && id !== REFRESH_REMOVED),
   )
   const search = query.trim().toLowerCase()
   const shown = useMemo(() => filterNodes(nodes, search), [nodes, search])

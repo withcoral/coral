@@ -62,10 +62,7 @@ export interface OperationView extends OperationNodeView {
 }
 
 /** One operation the live provider has, as a refresh compares it. */
-export interface LiveOperationView {
-  relativePath: string
-  summary: string
-}
+export type LiveOperationView = Pick<OperationNodeView, 'relativePath' | 'summary'>
 
 /** One previewed Operation, as the operations step groups and lists it. */
 export interface ReviewOperationView extends OperationNodeView {

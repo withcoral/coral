@@ -16,6 +16,7 @@ import {
   openOperation,
   openProviderSettings,
   programRunner,
+  discardSettingsChange,
   saveConfirmedSettingsChange,
   setProviderEnabled,
   signInToReadOperations,
@@ -80,9 +81,8 @@ test('Change account settings without reading a source or editing configuration'
       expect(await page.getByLabel('Display name', { exact: true }).inputValue()).toBe(
         'Unsaved records',
       )
-      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-      await discard.getByRole('button', { name: 'Discard changes', exact: true }).click()
-      await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+      await discardSettingsChange(page)
+      expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
     })
     await step('Edit configuration without fetching a source', async () => {
       await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
@@ -147,7 +147,8 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
       expect(reads).toBe(initialReads)
       operations = { listRecords: {}, newReport: {} }
       await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
-      await page.getByText(source.origin, { exact: true }).waitFor()
+      // The source shows as settings show it, redacted and normalised.
+      await page.getByText(`${source.origin}/`, { exact: true }).waitFor()
       expect(reads).toBe(initialReads)
       expect(await page.getByRole('heading', { name: 'Changes', exact: true }).count()).toBe(0)
       expect(await page.getByRole('heading', { name: 'Review', exact: true }).count()).toBe(0)

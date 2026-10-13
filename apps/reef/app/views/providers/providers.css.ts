@@ -520,11 +520,13 @@ export const emptyActions = style({
 export const operationsScroll = style({ padding: 4 })
 // An empty panel keeps roughly the height it will have once it holds rows, and
 // centres its message in that room rather than resting on the search bar.
+// Full width, so its percentage-wide rows size against the panel.
 export const operationsSkeleton = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 14,
   padding: 16,
+  width: '100%',
 })
 export const operationsEmpty = style({
   alignItems: 'center',
@@ -559,7 +561,7 @@ export const settingsUrlRow = style({
   minWidth: 0,
 })
 export const settingsUrlText = style({ flex: '0 1 auto', minWidth: 0, ...utils.boxClamp(1) })
-// One action under the facts: what it does, then its button.
+// The source's actions, side by side under its facts.
 export const settingsSourceActions = style({
   borderTop: `1px solid ${theme.stroke.secondary}`,
   display: 'flex',

@@ -183,8 +183,23 @@ export async function attemptAction(
           account: target.account,
           // Save sends the request identity of the configuration form, so the
           // same request decoding protects it.
+          // Save keeps the account setting: an account the URL still carries
+          // from an earlier step never reaches the publication.
           publish: (frozen) =>
-            publishFrozen(api, target, requestAttempt(target.kind, attemptParams(frozen), '', 400)),
+            publishFrozen(
+              api,
+              target,
+              requestAttempt(
+                target.kind,
+                attemptParams(
+                  frozen.kind === 'update'
+                    ? { ...frozen, account: undefined, accountGrant: undefined }
+                    : frozen,
+                ),
+                '',
+                400,
+              ),
+            ),
         }
       : undefined,
   )

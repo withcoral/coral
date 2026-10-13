@@ -368,8 +368,11 @@ export function EditConfigurationPage({
           pending={pending}
           result={result}
           callbackUrl={callbackUrl}
+          title="Edit configuration"
+          actions={cancel}
           // A refresh shows the operations next, so its form only confirms.
-          editing={{ cancel, onDirtyChange: setFormDirty, confirm: refresh ? 'Next' : 'Save' }}
+          confirmLabel={refresh ? 'Next' : 'Save'}
+          onDirtyChange={setFormDirty}
         />
         {/* Save confirms the configuration first. When Coral needs your
             confirmation to publish it, the dialog asks for it. */}
@@ -397,7 +400,7 @@ export function EditConfigurationPage({
               <Dialog.Title>Save changes?</Dialog.Title>
               <Dialog.Description>
                 {settingChanged
-                  ? 'This change removes existing account credentials. Switching back requires new connections.'
+                  ? 'Save removes the existing account credentials. To switch back, connect new accounts.'
                   : accessUnknown && !requiresInterruptionAcceptance && !grant
                     ? 'Accounts may need to reconnect after you save.'
                     : !needsConsent

@@ -171,7 +171,7 @@ test('Update retains saved choices and requires acceptance only for incompatible
         const confirm = page.getByRole('dialog', { name: 'Save changes?' })
         await confirm
           .getByText(
-            'This change removes existing account credentials. Switching back requires new connections.',
+            'Save removes the existing account credentials. To switch back, connect new accounts.',
             { exact: true },
           )
           .waitFor()

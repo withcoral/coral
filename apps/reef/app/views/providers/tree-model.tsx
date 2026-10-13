@@ -5,6 +5,13 @@ import type { TreeNode } from '@/wax/components/tree'
 import { countLabel } from './configuration-details'
 import type { LiveOperationView, OperationNodeView, ReviewOperationView, SetupView } from './types'
 
+/**
+ * A refresh's own groups. Outside `group:`, so a provider tag named `new` or
+ * `removed` cannot share their IDs.
+ */
+export const REFRESH_NEW = 'refresh:new'
+export const REFRESH_REMOVED = 'refresh:removed'
+
 /** The path under its group node, so `actions.listRunners` reads `listRunners` beneath `actions`. */
 function leafLabel(o: OperationNodeView) {
   const head = `${o.group}.`
@@ -122,7 +129,7 @@ export function reviewOperationNodes(
   const fresh = added.filter((o) => o.available)
   if (fresh.length > 0)
     nodes.unshift({
-      id: 'group:new',
+      id: REFRESH_NEW,
       label: 'New',
       detail: countLabel(fresh.length, 'operation'),
       children: fresh.map((o) =>
@@ -137,7 +144,7 @@ export function reviewOperationNodes(
   // What a refresh removes, after New: it has no page or destination any more.
   if (removed.length > 0)
     nodes.splice(fresh.length > 0 ? 1 : 0, 0, {
-      id: 'group:removed',
+      id: REFRESH_REMOVED,
       label: 'Removed',
       dimmed: true,
       detail: countLabel(removed.length, 'operation'),

@@ -80,7 +80,10 @@ export function ConfigurationStep({
   takenNamespaces = [],
   suggestedName,
   recipe = null,
-  editing,
+  title = 'Setup',
+  actions,
+  confirmLabel = 'Next',
+  onDirtyChange,
 }: {
   setup: SetupView
   form: FormContext
@@ -96,21 +99,17 @@ export function ConfigurationStep({
   suggestedName?: string
   /** What the chosen recipe fills in; it applies only before the first confirmation. */
   recipe?: RecipeConfigurationView | null
-  /**
-   * Edits a provider's saved configuration: Cancel joins the button, and the step
-   * reports whether the fields differ from what it first showed.
-   */
-  editing?: {
-    cancel: ReactNode
-    onDirtyChange: (dirty: boolean) => void
-    /** Save publishes. Next confirms, when the operations follow it. */
-    confirm: 'Save' | 'Next'
-  }
+  title?: string
+  /** Actions before the confirm button, such as Cancel. */
+  actions?: ReactNode
+  /** Save when confirming also publishes; Next when another step follows. */
+  confirmLabel?: 'Next' | 'Save'
+  /** Reports whether the posted values differ from what the step first showed. */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const formId = useId()
   const formRef = useRef<HTMLFormElement>(null)
   const baseline = useRef<string | null>(null)
-  const onDirtyChange = editing?.onDirtyChange
   // Every field, controlled or not, posts through the form, so the posted
   // values are the one thing to compare.
   const checkDirty = () => {
@@ -269,36 +268,21 @@ export function ConfigurationStep({
         document.getElementById(blocked.field)?.focus()
       }}
     >
-      {editing?.confirm === 'Save'
-        ? pending
-          ? 'Saving…'
-          : 'Save'
-        : pending
-          ? 'Confirming…'
-          : 'Next'}
+      {confirmLabel === 'Save' ? (pending ? 'Saving…' : 'Save') : pending ? 'Confirming…' : 'Next'}
     </Button.TextButton>
   )
   const confirm =
     blocked && !pending ? <Tooltip content={blocked.message}>{nextButton}</Tooltip> : nextButton
   return (
     <StepFrame
-      title={editing ? 'Edit configuration' : 'Setup'}
+      title={title}
       actions={
-        editing ? (
-          <>
-            {editing.cancel}
-            {confirm}
-          </>
-        ) : (
-          confirm
-        )
+        <>
+          {actions}
+          {confirm}
+        </>
       }
     >
-      {!editing && review.updating && review.interruptsAccess === null && (
-        <Typography.BodySmall as="p">
-          Confirm the configuration to check account access.
-        </Typography.BodySmall>
-      )}
       <Form
         ref={formRef}
         id={formId}
@@ -308,7 +292,8 @@ export function ConfigurationStep({
         aria-busy={pending}
         onInput={checkDirty}
       >
-        {!editing && <ConfigurationDifferences setup={setup} />}
+        {/* What a new read changes; empty when you only edit the saved values. */}
+        <ConfigurationDifferences setup={setup} />
         <Fields form={form} intent="configure" />
         <input type="hidden" name="setup" value={setup.id} />
         <input type="hidden" name="configurationRevision" value={review.revision} />

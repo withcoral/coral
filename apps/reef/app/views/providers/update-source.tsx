@@ -11,7 +11,8 @@ import {
 import { Skeleton } from '@/wax/components/skeleton'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import { Fields } from '@/views/management/forms'
-import { SourceUrl, sourceHost, sourceKinds } from './source-facts'
+import { SourceUrl, sourceKinds } from './source-facts'
+import { redactSourceUrl } from './source-url'
 import { OperationsBrowser } from './operations-section'
 import { SourceStep } from './source-step'
 import { StepFrame } from './step-frame'
@@ -62,6 +63,7 @@ export function UpdateSource({
   if (replacingSource)
     return (
       <StepFrame title="Replace source" actions={cancel}>
+        {children}
         <SourceStep form={form} pending={pending} result={result} hidden={hidden} />
       </StepFrame>
     )
@@ -138,6 +140,8 @@ export function RefreshLayout({
   source?: UpdatePageProps['source']
   children: ReactNode
 }) {
+  // As on settings: never show or copy credentials, fragments or secret values.
+  const shown = source?.url ? redactSourceUrl(source.url) : null
   return (
     <SettingsWideColumns
       aside={
@@ -147,10 +151,12 @@ export function RefreshLayout({
               {sourceKinds[source?.kind === 'mcp' ? 'mcp' : 'openapi']}
             </SettingsFact>
             <SettingsFact label="URL">
-              {source?.url ? (
-                <SourceUrl url={source.url} host={sourceHost(source.url)} />
-              ) : (
+              {!source?.url ? (
                 'Uploaded document'
+              ) : shown ? (
+                <SourceUrl url={shown.url} host={shown.host} />
+              ) : (
+                'Coral cannot show this URL.'
               )}
             </SettingsFact>
           </SettingsFacts>

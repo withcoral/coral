@@ -57,7 +57,7 @@ export async function bearerDiscovery(context: TestContext) {
         total: 1,
       })
       await openProviderSettings(page)
-      await page.getByText('People and agents use this shared account.', { exact: true }).waitFor()
+      // The card's title is the setting in every deployment; its sentence is not.
       await page
         .getByRole('region', { name: 'One shared account', exact: true })
         .getByText('Connected', { exact: true })

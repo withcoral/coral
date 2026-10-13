@@ -19,6 +19,7 @@ import {
   openCustomSource,
   openProviderSettings,
   programRunner,
+  discardSettingsChange,
   saveConfirmedSettingsChange,
   signInToReadOperations,
   waitForPublication,
@@ -93,12 +94,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
         (await api.setups.getProviderSetup({ name: setupName })).configuration?.interruptsAccess,
       ).toBe(true)
       // The read is unsaved, so Cancel asks first.
-      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-      await page
-        .getByRole('dialog', { name: 'Discard your changes?' })
-        .getByRole('button', { name: 'Discard changes', exact: true })
-        .click()
-      await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+      await discardSettingsChange(page)
       active.knobs.issuerPath = undefined
     })
     const provider = (await api.providers.listProviders({ parent })).providers[0]
@@ -171,12 +167,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
           await page.getByRole('button', { name: 'Sign in again', exact: true }).waitFor()
           expect((await api.setups.getProviderSetup({ name: setupName })).authorized).toBe(false)
           // The confirmed configuration is unsaved, so Cancel asks first.
-          await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-          await page
-            .getByRole('dialog', { name: 'Discard your changes?' })
-            .getByRole('button', { name: 'Discard changes', exact: true })
-            .click()
-          await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+          await discardSettingsChange(page)
         } else {
           await page.getByText(/Granted permissions:.*additional\.permission/).waitFor()
           await page.getByRole('radio', { name: 'Use this account', exact: true }).check()

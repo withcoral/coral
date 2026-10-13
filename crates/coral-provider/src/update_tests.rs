@@ -1,7 +1,7 @@
 //! Update acceptance through the Provider and Account interfaces on both databases.
 mod expiry;
 mod races;
-use crate::setup_tests::{Harness, credential_for, harness, user_principal, workspace_owner};
+use crate::setup_tests::{HOUR, Harness, credential_for, harness, user_principal, workspace_owner};
 use crate::tests::change_context;
 use crate::*;
 use coral_credentials::Secret;
@@ -434,32 +434,39 @@ async fn explicit_shared_replacement_publishes_configuration_and_account_togethe
     );
 }
 
-// Catches: Edit configuration's Cancel failing, because a canceled Update that
-// never confirmed its saved values had no preview to inspect.
+// Catches: Edit configuration's Cancel failing, because an Update canceled or
+// expired before it confirmed its saved values had no preview to inspect.
 #[tokio::test]
-async fn an_update_canceled_before_confirmation_stays_inspectable() {
-    let h = harness().await;
-    let (actor, workspace) = workspace_owner(&h, "cancel-update-owner").await;
-    let context = change_context(actor.clone(), 10, '2');
-    let provider = shared(&h, &context, workspace.id()).await;
-    let candidate = h
-        .providers
-        .prepare_setup(
-            &context,
-            workspace.id(),
-            ProviderSetupSource::Current,
-            Some(provider.id()),
-        )
-        .await
-        .unwrap();
-    h.accounts
-        .cancel_setup(&context, workspace.id(), candidate.id())
-        .await
-        .unwrap();
-    let inspected = h
-        .providers
-        .inspect_setup(&actor, workspace.id(), candidate.id(), 11)
-        .await
-        .unwrap();
-    assert_eq!(inspected.setup.state(), ProviderSetupState::Canceled);
+async fn an_update_ended_before_confirmation_stays_inspectable() {
+    for (cancel, inspected_at, expected) in [
+        (true, 11, ProviderSetupState::Canceled),
+        (false, 10 + 2 * HOUR, ProviderSetupState::Expired),
+    ] {
+        let h = harness().await;
+        let (actor, workspace) = workspace_owner(&h, "ended-update-owner").await;
+        let context = change_context(actor.clone(), 10, '2');
+        let provider = shared(&h, &context, workspace.id()).await;
+        let candidate = h
+            .providers
+            .prepare_setup(
+                &context,
+                workspace.id(),
+                ProviderSetupSource::Current,
+                Some(provider.id()),
+            )
+            .await
+            .unwrap();
+        if cancel {
+            h.accounts
+                .cancel_setup(&context, workspace.id(), candidate.id())
+                .await
+                .unwrap();
+        }
+        let inspected = h
+            .providers
+            .inspect_setup(&actor, workspace.id(), candidate.id(), inspected_at)
+            .await
+            .unwrap();
+        assert_eq!(inspected.setup.state(), expected);
+    }
 }

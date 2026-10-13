@@ -678,9 +678,11 @@ describe('Edit configuration Save', () => {
     publishProvider.mockResolvedValue({ outcome: ProviderPublicationOutcome.SUCCEEDED })
     const response = await attemptAction(
       api,
-      new Request(`http://127.0.0.1${basePath}?setup=${setup}&task=configuration&etag=v1`, {
-        method: 'POST',
-      }),
+      // Back from an account step leaves its answer in the URL.
+      new Request(
+        `http://127.0.0.1${basePath}?setup=${setup}&task=configuration&etag=v1&account=caller`,
+        { method: 'POST' },
+      ),
       context,
       formWith({
         intent: 'configure',

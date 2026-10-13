@@ -17,7 +17,6 @@ import {
 } from '@/wax/components/settings-layout'
 
 import type {
-  AccountChoice,
   ActionResult,
   FormContext,
   ProviderSettingsPageProps,
@@ -25,7 +24,7 @@ import type {
   ProviderSourceView,
 } from './types'
 import { accountStates } from '@/views/accounts/account-states'
-import { accountLabels, useAccountAudience, type AccountAudience } from './account-labels'
+import { accountLabels, useAccountAudience } from './account-labels'
 import { SourceUrl, sourceKinds } from './source-facts'
 import * as styles from './providers.css'
 
@@ -205,15 +204,6 @@ function ProviderNameHeading({
   )
 }
 
-/** Whose account calls use, named as the account setting names it. */
-function accountCard(account: AccountChoice, audience: AccountAudience) {
-  return {
-    caller: { title: accountLabels.caller, description: audience.individualAccounts },
-    fixed: { title: accountLabels.fixed, description: audience.sharedAccount },
-    none: { title: 'No account is required.', description: undefined },
-  }[account]
-}
-
 /**
  * One card for the account calls use: whose it is, its connection, and its
  * actions. Changing the setting and managing credentials stay separate
@@ -234,7 +224,13 @@ function AccountSection({
   active: boolean
   pending: boolean
 }) {
-  const card = accountCard(provider.account, useAccountAudience())
+  const audience = useAccountAudience()
+  // Whose account calls use, named as the account setting names it.
+  const card = {
+    caller: { title: accountLabels.caller, description: audience.individualAccounts },
+    fixed: { title: accountLabels.fixed, description: audience.sharedAccount },
+    none: { title: 'No account is required.', description: undefined },
+  }[provider.account]
   const required = provider.account !== 'none'
   const shared = provider.account === 'fixed'
   const connected = provider.connection === 'connected'

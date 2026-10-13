@@ -26,12 +26,3 @@ export function SourceUrl({ url, host }: { url: string; host: string }) {
     </span>
   )
 }
-
-/** The host a source URL names, or the URL itself when it does not parse. */
-export function sourceHost(url: string) {
-  try {
-    return new URL(url).host
-  } catch {
-    return url
-  }
-}

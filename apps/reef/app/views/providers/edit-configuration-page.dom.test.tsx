@@ -234,3 +234,20 @@ it.each([
   await screen.findByRole('heading', { name: 'Provider' })
   expect(page.consents).toEqual([consent])
 })
+
+// Catches: a refresh that needs a configuration review hiding what the new
+// document changed, the one thing the review is for.
+it('shows what a new read changed before you confirm it', () => {
+  renderPage({
+    page: {
+      ...setup,
+      configuration: {
+        ...review,
+        differences: [{ field: 'display_name', saved: 'Records', document: 'Records v2' }],
+      },
+    },
+    task: 'refresh',
+  })
+  expect(screen.getByRole('heading', { name: 'Changes in the new input' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Next' })).toBeVisible()
+})
