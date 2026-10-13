@@ -192,7 +192,7 @@ export const Detail: Story = {
     await userEvent.click(screen.getByRole('button', { name: 'Delete function' }))
     const confirm = await screen.findByRole('dialog', { name: 'Delete function' })
     await expect(confirm).toHaveAccessibleDescription(
-      'Programs and functions that call coral.functions.finance.monthlyTotals will fail. You cannot undo this.',
+      'After you delete it, programs that call coral.functions.finance.monthlyTotals fail. You cannot undo this.',
     )
     await userEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
     await expect(screen.queryByRole('dialog', { name: 'Delete function' })).toBeNull()

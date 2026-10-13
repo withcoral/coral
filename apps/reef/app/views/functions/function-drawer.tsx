@@ -135,7 +135,7 @@ export function FunctionDrawer({
               form={form}
               intent="delete"
               destructive
-              description={`Programs and functions that call ${callPath} will fail. You cannot undo this.`}
+              description={`After you delete it, programs that call ${callPath} fail. You cannot undo this.`}
             />
           }
         />
