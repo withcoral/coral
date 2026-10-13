@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react'
-import { createRoutesStub, useSearchParams } from 'react-router'
+import { useEffect, useState } from 'react'
+import { createRoutesStub, useLocation, useSearchParams } from 'react-router'
 import { expect, fn, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
@@ -660,6 +661,123 @@ export const LargeHistory: Story = {
         }}
       />
     )
+  },
+}
+/**
+ * Press ↓ in the open detail, then Escape before the next record arrives. The
+ * selection reaches the page 100 ms after the URL, as a loader's does, so the
+ * step lands while the drawer closes. The drawer stays closed. It needs the
+ * drawer's real exit animation, so it runs in a browser.
+ */
+export const EscapeWhileStepping: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?tree=1&record=${largeTasks[0]!.name}`,
+    chromatic: { disableSnapshot: true },
+  },
+  render: function EscapeWhileStepping() {
+    const { search } = useLocation()
+    const [loaded, setLoaded] = useState(search)
+    const [visited, setVisited] = useState<string[]>([])
+    useEffect(() => {
+      setVisited((before) => [...before, search])
+      const timer = setTimeout(() => setLoaded(search), 100)
+      return () => clearTimeout(timer)
+    }, [search])
+    const selected = new URLSearchParams(loaded).get('record')
+    const selectedRow = (selected && largeRows.get(selected)) || null
+    return (
+      <>
+        <output data-testid="location">{search}</output>
+        <output data-testid="visited">{visited.join(' ')}</output>
+        <output data-testid="loaded">{loaded}</output>
+        <Activity
+          page={{
+            ...page,
+            rows: largeRoots,
+            branches: {},
+            expanded: [],
+            selected: selectedRow ? selected : null,
+            selectedRow,
+            detail: selectedRow?.kind === 'task' ? { kind: 'task', task: selectedRow } : null,
+            pending: undefined,
+          }}
+        />
+      </>
+    )
+  },
+  play: async ({ canvasElement, userEvent }) => {
+    const screen = within(canvasElement.ownerDocument.body)
+    const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+    await waitFor(() => expect(dialog).toHaveFocus())
+    // The records the URL has named, in order, and the one the page now shows.
+    const named = () => [
+      ...new Set(
+        (screen.getByTestId('visited').textContent ?? '')
+          .split(' ')
+          .map((search) => new URLSearchParams(search).get('record'))
+          .filter(Boolean),
+      ),
+    ]
+    const loaded = () => new URLSearchParams(screen.getByTestId('loaded').textContent ?? '')
+    await userEvent.keyboard('{ArrowDown}{Escape}')
+    // The step reaches the page while the drawer closes. A closing drawer steps no further.
+    await waitFor(() => expect(named()).toHaveLength(2))
+    await waitFor(() => expect(loaded().get('record')).toBe(named()[1]))
+    await userEvent.keyboard('{ArrowDown}')
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Activity details' })).not.toBeInTheDocument(),
+    )
+    await waitFor(() => expect(screen.getByTestId('location').textContent).not.toContain('record='))
+    await expect(named()).toHaveLength(2)
+    await expect(screen.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+  },
+}
+/** Whether all of `row` shows: its top and bottom edges are not under a pinned heading. */
+const shownInFull = (row: HTMLElement) => {
+  const bounds = row.getBoundingClientRect()
+  const x = bounds.left + bounds.width / 2
+  return [bounds.top + 1, bounds.bottom - 1].every((y) =>
+    row.contains(row.ownerDocument.elementFromPoint(x, y)),
+  )
+}
+/**
+ * Press ↓ and ↑ to move the keyboard cursor through the tree, Space to toggle
+ * expansion, and Enter to open the detail. Its row shows in full below the pinned
+ * headings. Vitest covers the traversal rules and focus; this needs a real layout.
+ */
+export const KeyboardCursor: Story = {
+  parameters: LargeHistory.parameters,
+  render: LargeHistory.render,
+  play: async ({ canvasElement, userEvent }) => {
+    const canvas = within(canvasElement)
+    const screen = within(canvasElement.ownerDocument.body)
+    const list = canvas.getByRole('table', { name: 'Activity records' })
+    const cursor = () => list.querySelector<HTMLElement>('[role="row"][data-active]')
+    // The table's keys act once the table itself has focus.
+    list.focus()
+    // Down into the expanded Task and its Run, then back up, each row in full view.
+    for (const key of [...Array(40).fill('{ArrowDown}'), ...Array(40).fill('{ArrowUp}')]) {
+      await userEvent.keyboard(key)
+      await waitFor(() => expect(shownInFull(cursor()!)).toBe(true))
+    }
+    await expect(list.scrollTop).toBe(0)
+    // The cursor, not an outer table ring, shows where keyboard actions apply.
+    list.focus()
+    await expect(list).toHaveFocus()
+    await expect(getComputedStyle(list).outlineStyle).toBe('none')
+    await expect(cursor()).not.toBeNull()
+    // Past the first Task's solo Run to the next Task; rows in view do not move.
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}')
+    await expect(list.scrollTop).toBe(0)
+    await userEvent.keyboard('{Enter}')
+    const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+    await within(dialog).findByRole('heading', { name: largeTasks[1]!.intent })
+    dialog.scrollTop = dialog.scrollHeight
+    // ↓ reaches the expanded Task after it, in the same drawer, from its top.
+    await userEvent.keyboard('{ArrowDown}')
+    await within(dialog).findByRole('heading', { name: largeTasks[2]!.intent })
+    await expect(screen.getByRole('dialog', { name: 'Activity details' })).toBe(dialog)
+    await expect(dialog.scrollTop).toBe(0)
   },
 }
 /**

@@ -257,6 +257,39 @@ it('starts navigation observation with only fresh payload and the reauthorized a
     unmount()
   }
 })
+// Catches: observation asking for the window the URL named before the loader moved
+// it to hold the selected final value, so the first snapshot drops that row again.
+it('observes the window the loader pinned for a selected final value', async () => {
+  const requests: ActivityObservation[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_url, init) => {
+      requests.push(JSON.parse(init.body))
+      return new Promise(() => {})
+    }),
+  )
+  const initial: ActivityPage = {
+    ...page,
+    selected: 'run',
+    initialRecord: 'run/final',
+    expanded: ['run'],
+    branches: { run: { rows: [], total: '131', next: '', offset: 31, unavailable: false } },
+  }
+  const store = createStore()
+  const query = new URLSearchParams({
+    record: 'run/final',
+    'offset.run': '0',
+    'anchor.run': 'run/events/2',
+    'preceding.run': '0',
+  })
+  const state = activityObservation(initial, '/activity', query.toString())
+  const unmount = store.sub(state, () => {})
+  try {
+    expect(requests[0].window.branches).toEqual({ run: { offset: 31, anchor: '', preceding: 0 } })
+  } finally {
+    unmount()
+  }
+})
 it('conceals rows, selectors and selected exact evidence on disconnect before reconnecting', async () => {
   vi.stubGlobal(
     'fetch',
@@ -724,6 +757,53 @@ it('loads older records through the Activity loader, keeps them on a failure, an
     expect(latest.current!.page.selected).toBe(listed(3).name)
     expect(container.textContent).toBe('r1:succeeded r2:succeeded r3:succeeded r4:succeeded')
     expect(latest.current!.windowKey).toBe(before)
+  } finally {
+    await act(async () => root.unmount())
+    router.dispose()
+    container.remove()
+  }
+})
+
+// Catches: opening a Run's final value scrolling the table up to the Run's heading,
+// because the loader selects the Run for a final value's detail.
+it('reveals the final value the URL names, not the Run its detail selects', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => new Promise(() => {})),
+  )
+  const final = `${listed(1).name}/final`
+  const latest = createRef<ReturnType<typeof useActivityReader>>()
+  function RevealReader() {
+    const value = useActivityReader(useLoaderData<ActivityPage>())
+    useLayoutEffect(() => {
+      latest.current = value
+    })
+    return null
+  }
+  const router = createMemoryRouter(
+    [
+      {
+        path: '/activity',
+        element: <RevealReader />,
+        loader: ({ request }) => ({
+          ...page,
+          rows: [listed(1), listed(2)],
+          selected:
+            new URL(request.url).searchParams.get('record')?.replace(/\/final$/, '') ?? null,
+        }),
+      },
+    ],
+    { initialEntries: ['/activity?tree=1'] },
+  )
+  const container = document.body.appendChild(document.createElement('div'))
+  const root = createRoot(container)
+  try {
+    await act(async () => root.render(<RouterProvider router={router} />))
+    await act(async () => {
+      await router.navigate(latest.current!.navigation.recordHref(final))
+    })
+    expect(latest.current!.page.selected).toBe(listed(1).name)
+    expect(latest.current!.revealRecord).toBe(final)
   } finally {
     await act(async () => root.unmount())
     router.dispose()

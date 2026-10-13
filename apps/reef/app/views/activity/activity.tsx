@@ -1,4 +1,15 @@
-import { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
@@ -16,7 +27,16 @@ import {
   type ActivityRow,
   type RunState,
 } from './types'
-import { revealHref, selectionKeys, useActivityNavigation } from './navigation'
+import {
+  activityStops,
+  expandable,
+  type ActivityStop,
+  revealHref,
+  selectionKeys,
+  shownRecord,
+  stepStop,
+  useActivityNavigation,
+} from './navigation'
 import { ActivityDetail } from './detail'
 import { ActivityConnectedContext } from './live'
 import { PendingActions } from './pending'
@@ -232,6 +252,44 @@ const RowActionsContext = createContext<RowActions>({
   toggle() {},
   viewport() {},
 })
+/**
+ * The keyboard cursor's record identity. A move re-renders only the two rows it
+ * leaves and reaches, not every memoized row.
+ */
+class CursorStore {
+  private value: string | null = null
+  private listeners = new Set<() => void>()
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener)
+    return () => void this.listeners.delete(listener)
+  }
+  get = () => this.value
+  set(value: string | null) {
+    if (value === this.value) return
+    this.value = value
+    for (const listener of this.listeners) listener()
+  }
+}
+const CursorContext = createContext(new CursorStore())
+function useCursorOn(identity: string) {
+  const store = useContext(CursorContext)
+  return useSyncExternalStore(
+    store.subscribe,
+    () => store.get() === identity,
+    () => false,
+  )
+}
+/**
+ * A plain key pressed on the element that handles it, not on a control inside it
+ * or while typing a composed character. Modified keys keep their own meaning.
+ */
+const ownKey = (event: React.KeyboardEvent) =>
+  event.target === event.currentTarget &&
+  !event.defaultPrevented &&
+  !event.nativeEvent.isComposing &&
+  !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+const arrowStep = (event: React.KeyboardEvent) =>
+  event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0
 /** A plain left click; other clicks keep the link's own behaviour, such as a new tab. */
 const plainClick = (event: React.MouseEvent) =>
   event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
@@ -249,12 +307,15 @@ const RecordRow = memo(function RecordRow({
   scope: RowScope
 }) {
   const actions = useContext(RowActionsContext)
-  const expandable = !scope.glimpse && (row.kind === 'task' || row.kind === 'run')
+  const toggles = !scope.glimpse && expandable(row)
   const branch = scope.glimpse ? undefined : branches?.[row.name]
   const expanded = scope.expanded.has(row.name)
+  const cursorOn = useCursorOn(activityRowIdentity(row))
   const recordRowProps = {
     recordKey: row.name,
     selected: row.name === scope.selected,
+    // An open detail marks its record as selected instead.
+    active: cursorOn && scope.selected === null,
     status: rowStatus(row),
     onClick: (event: React.MouseEvent<HTMLElement>) => {
       if (!(event.target as HTMLElement).closest('a,button,input,select')) actions.select(row)
@@ -271,7 +332,7 @@ const RecordRow = memo(function RecordRow({
           icon={rowIcon(row)}
           expanded={expanded}
           disabled={!expanded && scope.full}
-          onToggle={expandable ? () => actions.toggle(row.name) : undefined}
+          onToggle={toggles ? () => actions.toggle(row.name) : undefined}
           marker={row.kind === 'invocation' && row.requiresAction ? 'needs action' : undefined}
           metadata={
             row.kind === 'run' &&
@@ -310,8 +371,7 @@ const RecordRow = memo(function RecordRow({
     </>
   )
   // Only a Task or Run expands; anything else stays a plain row.
-  if (!branch || (row.kind !== 'task' && row.kind !== 'run'))
-    return <Table.Row {...recordRowProps}>{cells}</Table.Row>
+  if (!branch || !expandable(row)) return <Table.Row {...recordRowProps}>{cells}</Table.Row>
   // The expanded record heads its children and pins while they scroll.
   return (
     <Table.Group label={rowLabel(row)} heading={cells} headingRow={recordRowProps}>
@@ -365,6 +425,10 @@ function shownRecords(page: ActivityPage, roots: ActivityRow[], glimpse: boolean
   visit(roots)
   return shown
 }
+/** The stop that shows the record `name`, by its detail or its child-window identity. */
+function stopOf(stops: ActivityStop[], name: string) {
+  return stops.find((stop) => stop.row.name === name || stop.identity === name)
+}
 /** This URL with `name` selected, as a link shows it. A click navigates with more state. */
 function selectionHref(listPath: string, search: string, name: string) {
   const query = new URLSearchParams(search)
@@ -385,25 +449,71 @@ export function Activity({
   const nav = useActivityNavigation(page)
   const navigate = useNavigate()
   const { search } = useLocation()
-  const drawer = Dialog.useCloseAfterExit(page.selected ?? null, () =>
+  // One drawer shows each record in turn, so a close belongs to the drawer, not
+  // to the record it showed: a step that lands while it closes cannot reopen it.
+  // Opening a record from the table starts a new drawer, which a close the
+  // unsent-comment guard kept from finishing cannot hold shut.
+  const [drawerSession, setDrawerSession] = useState(0)
+  const drawer = Dialog.useCloseAfterExit(page.selected ? `open-${drawerSession}` : null, () =>
     navigate(nav.backHref, { preventScrollReset: true }),
   )
+  const observed = live !== undefined
+  const glimpse = more !== undefined
+  // A glimpse never loads more, and lists only the latest roots a live update merged in.
+  const roots = more ? page.rows.slice(0, more.roots) : page.rows
+  const loadable = more ? undefined : list
+  // A glimpse has no keyboard cursor; the full list's table owns the keys.
+  const stops = useMemo(() => (glimpse ? [] : activityStops(page, roots)), [glimpse, page, roots])
+  const [cursor, setCursor] = useState<string | null>(null)
+  const shown = shownRecord(page.selected, search)
+  // A collapsed Run shows no final-value row, so its final value rests on the
+  // Run's own row. An expanded Run never stands in for it: that would wrap.
+  const shownStop = !shown
+    ? undefined
+    : (stopOf(stops, shown) ??
+      (page.selected && shown !== page.selected && !page.expanded.includes(page.selected)
+        ? stopOf(stops, page.selected)
+        : undefined))
+  // The cursor follows the open detail, so it rests on the last record the detail showed.
+  // A step that lands while the drawer closes was never shown, so it is not followed.
+  const [followedSelection, setFollowedSelection] = useState<string | null>(null)
+  if (followedSelection !== shown && (!shown || drawer.open)) {
+    setFollowedSelection(shown)
+    if (shown) setCursor(shownStop?.identity ?? null)
+  }
+  // A record that leaves the table takes the cursor with it: no neighbour inherits it.
+  // A cursor that just followed the detail comes from these stops, so it stays.
+  else if (cursor !== null && !stops.some((stop) => stop.identity === cursor)) setCursor(null)
+  const [cursorStore] = useState(() => new CursorStore())
+  // The cursor shows only while focus is in the table. Its keys act when the
+  // table itself has focus; a control in a row keeps its own.
+  const [tableFocused, setTableFocused] = useState(false)
+  useLayoutEffect(
+    () => cursorStore.set(tableFocused ? cursor : null),
+    [cursorStore, cursor, tableFocused],
+  )
   // Rows navigate with the reader's latest position, read when the click happens.
-  const latest = useRef({ nav, navigate, live, more })
+  const latest = useRef({ nav, navigate, live, more, expanded: page.expanded, stops, cursor })
   useLayoutEffect(() => {
-    latest.current = { nav, navigate, live, more }
+    latest.current = { nav, navigate, live, more, expanded: page.expanded, stops, cursor }
   })
   const [actions] = useState<RowActions>(() => ({
     select: (row) => {
+      setDrawerSession((session) => session + 1)
       const current = latest.current
       // A glimpse opens the record on its Activity page, at the top of that page.
       if (current.more) void current.navigate(revealHref(row))
       else void current.navigate(current.nav.recordHref(row.name), { preventScrollReset: true })
     },
-    toggle: (name) =>
-      void latest.current.navigate(latest.current.nav.toggleHref(name), {
-        preventScrollReset: true,
-      }),
+    toggle: (name) => {
+      const current = latest.current
+      // Collapsing the branch that holds the cursor moves the cursor to its parent.
+      const held = current.stops.find((stop) => stop.identity === current.cursor)
+      const parent = current.stops.find((stop) => stop.row.name === name)
+      if (current.expanded.includes(name) && parent && held?.ancestors.includes(name))
+        setCursor(parent.identity)
+      void current.navigate(current.nav.toggleHref(name), { preventScrollReset: true })
+    },
     viewport: (parent, value) => latest.current.live?.viewport(parent, value),
   }))
   const expandedKey = page.expanded.join('\n')
@@ -411,11 +521,96 @@ export function Activity({
     page.selectedRow?.kind === 'run' && page.selectedRow.hasFinalValue
       ? page.selectedRow.name
       : null
-  const observed = live !== undefined
-  const glimpse = more !== undefined
-  // A glimpse never loads more, and lists only the latest roots a live update merged in.
-  const roots = more ? page.rows.slice(0, more.roots) : page.rows
-  const loadable = more ? undefined : list
+  const table = useRef<HTMLDivElement>(null)
+  // The cursor's row shows in full below the pinned headings.
+  const revealStop = (stop: ActivityStop | undefined) => {
+    const key = stop && CSS.escape(stop.row.name)
+    const row = key && table.current?.querySelector<HTMLElement>(`[data-record-key="${key}"]`)
+    if (row) Table.revealRow(row)
+  }
+  const cursorStop = stops.find((stop) => stop.identity === cursor)
+  // Only the table itself takes these keys: a control in a row, or anything
+  // elsewhere on the page, keeps its own. ↑ and ↓ move the cursor. Space
+  // toggles the cursor's own Task or Run, expanded or not; a non-expandable
+  // record has none, so Space collapses its closest enclosing Run or Task
+  // and the cursor follows there. Enter opens the cursor record's detail.
+  const tableKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (glimpse || !ownKey(event)) return
+    const step = arrowStep(event)
+    if (step) {
+      if (!stops.length) return
+      event.preventDefault()
+      const next = stepStop(stops, cursor, step)
+      if (!next) return
+      setCursor(next.identity)
+      revealStop(next)
+      return
+    }
+    // A held Space or Enter acts once.
+    if (event.repeat || !cursorStop || page.selected) return
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      actions.select(cursorStop.row)
+    } else if (event.key === ' ') {
+      const { row, ancestors } = cursorStop
+      const target = expandable(row) ? row.name : ancestors.at(-1)
+      if (!target) return
+      const expanding = expandable(row) && !page.expanded.includes(row.name)
+      if (expanding && page.expanded.length >= MAX_EXPANDED_RECORDS) return
+      event.preventDefault()
+      actions.toggle(target)
+    }
+  }
+  // Focus anywhere in the table shows the cursor; arriving at the table reveals
+  // it. Native listeners also see the focus a closing drawer returns during a
+  // React commit, which React's own focus events miss.
+  useEffect(() => {
+    const node = table.current
+    if (glimpse || !node) return
+    const enter = (event: FocusEvent) => {
+      setTableFocused(true)
+      const { stops: current, cursor: at } = latest.current
+      const stop = event.target === node && current.find((item) => item.identity === at)
+      const row =
+        stop && node.querySelector<HTMLElement>(`[data-record-key="${CSS.escape(stop.row.name)}"]`)
+      if (row) Table.revealRow(row)
+    }
+    const leave = (event: FocusEvent) => {
+      if (!(event.relatedTarget instanceof Node && node.contains(event.relatedTarget)))
+        setTableFocused(false)
+    }
+    node.addEventListener('focusin', enter)
+    node.addEventListener('focusout', leave)
+    return () => {
+      node.removeEventListener('focusin', enter)
+      node.removeEventListener('focusout', leave)
+    }
+  }, [glimpse])
+  // In the open detail, ↑ and ↓ show the previous and next record in place, but
+  // only from the drawer itself: its controls and dialogs keep their keys.
+  const stepDetail = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = arrowStep(event)
+    if (!step || !page.selected || !ownKey(event)) return
+    // A closing drawer steps nowhere.
+    if (!drawer.open || !shownStop) return
+    event.preventDefault()
+    const next = stepStop(stops, shownStop.identity, step)
+    if (next)
+      void navigate(nav.recordHref(next.row.name), { replace: true, preventScrollReset: true })
+  }
+  // Each record's detail mounts at its top; the drawer itself stays open.
+  const popup = useRef<HTMLDivElement>(null)
+  const scrollToTop = useCallback((content: HTMLDivElement | null) => {
+    if (content) popup.current?.scrollTo?.({ top: 0 })
+  }, [])
+  // The keyboard cursor rests in the table, so closing returns focus there. Base
+  // UI would pass it on to the first link in a table that does not scroll.
+  const returnFocus = () => {
+    if (!table.current) return true
+    table.current.focus({ preventScroll: true })
+    revealStop(cursorStop)
+    return false
+  }
   const scope = useMemo<RowScope>(
     () => ({
       selected: page.selected,
@@ -503,6 +698,10 @@ export function Activity({
               </Typography.BodySmall>
             )}
             <Table.Container
+              ref={table}
+              className={styles.table}
+              tabIndex={glimpse ? undefined : 0}
+              onKeyDown={tableKey}
               readingKey={windowKey}
               readingPaused={live && !live.connected}
               readingFollowStart={live?.followRoot}
@@ -523,7 +722,7 @@ export function Activity({
               <Table.Head />
               <Table.Body>
                 {loadable?.newer && <LoadRecords control={loadable.newer} direction="newer" />}
-                {tableRows}
+                <CursorContext value={cursorStore}>{tableRows}</CursorContext>
                 {loadable?.older && <LoadRecords control={loadable.older} direction="older" />}
                 {!page.rows.length && !page.listUnavailable && !page.anchorUnavailable && (
                   <Table.Status>
@@ -582,10 +781,22 @@ export function Activity({
               </div>
             )}
           </div>
-          <Dialog.Root key={page.selected ?? 'closed'} {...drawer}>
+          {/* One drawer shows each record in turn, so stepping does not reopen it. */}
+          <Dialog.Root key={page.selected ? 'open' : 'closed'} {...drawer}>
             <Dialog.Portal>
               <Dialog.Backdrop />
-              <Dialog.Popup size="xl" placement="right" fullWidthOnMobile>
+              <Dialog.Popup
+                ref={popup}
+                size="xl"
+                placement="right"
+                fullWidthOnMobile
+                onKeyDown={stepDetail}
+                // The drawer takes focus itself, so its arrows step at once and a held
+                // Enter does not close it. Shift+Tab from its first control returns here.
+                tabIndex={0}
+                initialFocus={popup}
+                finalFocus={returnFocus}
+              >
                 <Dialog.Header>
                   <Dialog.Title>
                     {(page.detail?.kind === 'invocation' &&
@@ -600,7 +811,9 @@ export function Activity({
                 {page.unavailable ? (
                   <Typography.Body>This history is unavailable.</Typography.Body>
                 ) : (
-                  <ActivityDetail key={page.selected} page={page} />
+                  <div key={shown} ref={scrollToTop} className={styles.detail}>
+                    <ActivityDetail page={page} />
+                  </div>
                 )}
                 {outside &&
                   page.detail?.kind !== 'run' &&

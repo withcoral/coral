@@ -345,6 +345,11 @@ export const groupHeading = recipe({
         backgroundColor: theme.surface.mainContent,
         backgroundImage: `linear-gradient(${theme.surface.onMainContent}, ${theme.surface.onMainContent})`,
       },
+      // The keyboard cursor's tint lies over the opaque heading colour too.
+      [`&${activeRow}, ${group} > &${activeRow}:hover`]: {
+        backgroundColor: theme.surface.mainContent,
+        backgroundImage: `linear-gradient(${theme.surface.onMainContentSubtle}, ${theme.surface.onMainContentSubtle})`,
+      },
       [`&${markedRow}`]: { position: 'sticky' },
     },
   },

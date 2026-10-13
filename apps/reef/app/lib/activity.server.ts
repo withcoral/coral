@@ -893,6 +893,12 @@ export async function loadActivity(
     query.getAll(`cursor.${name}`).length
       ? ''
       : (query.get(`anchor.${name}`) ?? automaticAnchors.get(name) ?? '')
+  /** Opens `run`'s window at the selected `record`, not where the reader's URL left it. */
+  const pinRun = (run: string, record: string) => {
+    automaticAnchors.set(run, record)
+    query.set(`anchor.${run}`, record)
+    for (const prefix of ['cursor', 'offset', 'preceding']) query.delete(`${prefix}.${run}`)
+  }
   const viewport = (name: string) => {
     const value = reading?.branches[name]
     if (value) return { ...value, offset: BigInt(value.offset) }
@@ -922,15 +928,15 @@ export async function loadActivity(
       },
       { signal },
     )
-  const runPage = (name: string) =>
+  const runPage = (name: string, window = viewport(name)) =>
     api.activity.browseRunEntries(
       {
         name,
-        after: viewport(name) ? 0n : eventCursor(query.getAll(`cursor.${name}`).at(-1) ?? null),
+        after: window ? 0n : eventCursor(query.getAll(`cursor.${name}`).at(-1) ?? null),
         pageSize: ACTIVITY_CHILD_WINDOW,
         scope,
-        anchor: viewport(name) ? '' : anchor(name),
-        viewport: viewport(name),
+        anchor: window ? '' : anchor(name),
+        viewport: window,
       },
       { signal },
     )
@@ -949,9 +955,7 @@ export async function loadActivity(
   }
   if (page.initialRecord && page.detail?.kind === 'invocation') {
     const run = page.detail.invocation.run
-    automaticAnchors.set(run, page.initialRecord)
-    query.set(`anchor.${run}`, page.initialRecord)
-    for (const prefix of ['cursor', 'offset', 'preceding']) query.delete(`${prefix}.${run}`)
+    pinRun(run, page.initialRecord)
     if (!page.expanded.includes(run) && page.expanded.length < MAX_EXPANDED_RECORDS)
       page.expanded.push(run)
   }
@@ -1128,6 +1132,28 @@ export async function loadActivity(
       }
       row.hasFinalValue = value.hasFinalValue
       page.branches[name] = executionBranch(value, row)
+      // A final value the detail shows keeps its row: the window then ends there.
+      // The reader pins this window, so observation and later links keep it too.
+      const final = `${name}/final`
+      if (
+        !reading &&
+        !options.run &&
+        page.selected === name &&
+        selectedRecord === final &&
+        value.hasFinalValue &&
+        !page.branches[name].rows.some((child) => child.name === final)
+      ) {
+        const ending = executionBranch(
+          await runPage(name, { offset: 0n, anchor: final, preceding: ACTIVITY_CHILD_WINDOW - 1 }),
+          row,
+        )
+        // A Run whose end carries no row keeps the window the reader asked for.
+        if (ending.rows.some((child) => child.name === final)) {
+          page.branches[name] = ending
+          page.initialRecord = final
+          pinRun(name, final)
+        }
+      }
     } catch (error) {
       if (!unavailable(error)) throw error
       if (row) page.branches[name] = missingBranch()
