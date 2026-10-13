@@ -727,16 +727,29 @@ fn configuration_rejection(
 
 /// The `createProvider` argument for a stored configuration field address.
 fn program_field(field: &str) -> String {
-    let (head, rest) = field
-        .split_once('.')
-        .map_or((field, None), |(head, rest)| (head, Some(rest)));
-    let head = match head {
-        "display_name" => "displayName",
-        "request_headers" => "requestHeaders",
-        "credential_fields" => "credentialFields",
-        other => other,
-    };
-    rest.map_or_else(|| head.to_owned(), |rest| format!("{head}.{rest}"))
+    // A server declaration is a JSON pointer that keys `servers`.
+    if field.starts_with("#/") {
+        return format!("servers.{field}");
+    }
+    for (stored, argument) in [
+        ("display_name", "displayName"),
+        ("request_headers", "requestHeaders"),
+        ("credential_fields", "credentialFields"),
+        ("authentication.fields", "credentialFields"),
+        ("application", "authentication.client"),
+        ("server", "servers"),
+    ] {
+        if field == stored {
+            return argument.to_owned();
+        }
+        if let Some(rest) = field
+            .strip_prefix(stored)
+            .and_then(|rest| rest.strip_prefix('.'))
+        {
+            return format!("{argument}.{rest}");
+        }
+    }
+    field.to_owned()
 }
 
 /// What is wrong with the shape of one argument, from serde's message without

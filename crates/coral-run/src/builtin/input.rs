@@ -110,13 +110,16 @@ impl TryFrom<AuthenticationInput> for AuthenticationConfiguration {
                     .collect(),
             },
             AuthenticationInput::BasicAuth { username, password } => Self::BasicAuth {
-                username: username.try_into()?,
-                password: password.try_into()?,
+                username: credential_source("authentication.username", username)?,
+                password: credential_source("authentication.password", password)?,
             },
             AuthenticationInput::QueryCredentials { parameters } => Self::QueryCredentials {
                 parameters: parameters
                     .into_iter()
-                    .map(|(name, source)| Ok((name, source.try_into()?)))
+                    .map(|(name, source)| {
+                        let field = format!("authentication.parameters.{name}");
+                        Ok((name, credential_source(field, source)?))
+                    })
                     .collect::<Result<_, InputProblem>>()?,
             },
             // Device authorization has no redirect for PKCE to protect.
@@ -201,20 +204,22 @@ pub(super) enum SourceInput {
     Literal { value: String },
 }
 
-impl TryFrom<SourceInput> for CredentialSource {
-    type Error = InputProblem;
-
-    fn try_from(input: SourceInput) -> Result<Self, InputProblem> {
-        match input {
-            SourceInput::Field { field } => Ok(Self::Field { field }),
-            SourceInput::Literal { value } if value.is_empty() => Ok(Self::Literal { value }),
-            // A person enters every value when they sign in.
-            SourceInput::Literal { .. } => Err(InputProblem::new(
-                "authentication",
-                "a literal credential value must be empty; use a `field` source so a person \
-                 enters the value when they sign in",
-            )),
+/// The credential part at `field`. A person enters every value when they
+/// sign in, so a literal must be empty.
+fn credential_source(
+    field: impl Into<String>,
+    input: SourceInput,
+) -> Result<CredentialSource, InputProblem> {
+    match input {
+        SourceInput::Field { field } => Ok(CredentialSource::Field { field }),
+        SourceInput::Literal { value } if value.is_empty() => {
+            Ok(CredentialSource::Literal { value })
         }
+        SourceInput::Literal { .. } => Err(InputProblem::new(
+            field,
+            "a literal credential value must be empty; use a `field` source so a person \
+             enters the value when they sign in",
+        )),
     }
 }
 
