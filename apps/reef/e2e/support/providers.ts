@@ -372,6 +372,23 @@ export async function approveDeviceInNewTab(page: Page) {
   await service.close()
 }
 
+/**
+ * Checks a radio on a page that a document load has just rendered. Its state
+ * lives in React, so a click that lands before hydration changes nothing:
+ * click until the choice holds.
+ */
+export async function checkRadio(radio: Locator) {
+  await expect
+    .poll(
+      async () => {
+        await radio.click()
+        return radio.isChecked()
+      },
+      { timeout: 5000 },
+    )
+    .toBe(true)
+}
+
 /** The account question itself, whatever outcomes it currently offers. */
 export function accountQuestion(page: Page) {
   return page.getByRole('radiogroup', { name: 'Whose account does it use?' })
@@ -383,7 +400,7 @@ export async function chooseAccount(page: Page, outcome: AccountOutcome) {
   for (const name of ACCOUNT_OUTCOMES[outcome]) {
     const option = page.getByRole('radio', { name, exact: true })
     if (await option.count()) {
-      await option.check()
+      await checkRadio(option)
       return
     }
   }
@@ -673,6 +690,7 @@ export function programRunner(
   let session = ''
   let taskId = ''
   let accessToken = options.accessToken
+  const waitMs = options.waitMs ?? 8000
   const headers = () => ({
     Accept: 'application/json, text/event-stream',
     'MCP-Protocol-Version': '2025-11-25',
@@ -686,6 +704,8 @@ export function programRunner(
     const response = await page.request.post(`${target.mcpURL}/workspaces/${workspace}/mcp`, {
       headers: headers(),
       data: { jsonrpc: '2.0', id: ++id, method, params },
+      // exec and wait hold the request for up to wait_ms, so it must outlast that.
+      timeout: waitMs + 10_000,
     })
     expect(response.status(), `MCP ${method} HTTP status`).toBe(200)
     session = response.headers()['mcp-session-id'] ?? session
@@ -734,7 +754,7 @@ export function programRunner(
         task_id: taskId,
         intent: 'Call one Operation',
         program,
-        wait_ms: options.waitMs ?? 8000,
+        wait_ms: waitMs,
       },
     })
   }
@@ -769,7 +789,7 @@ export function programRunner(
         arguments: {
           run_id: update.run_id,
           cursor: update.next_cursor || undefined,
-          wait_ms: options.waitMs ?? 8000,
+          wait_ms: waitMs,
         },
       })
     },

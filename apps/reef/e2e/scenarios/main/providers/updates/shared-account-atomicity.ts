@@ -11,6 +11,7 @@ import { collectDataResponses } from '../../../../support/data-responses.ts'
 import { oauthMcpServer } from '../../../../support/provider-fixtures.ts'
 import {
   acceptOperations,
+  checkRadio,
   chooseAccount,
   confirmConfiguration,
   createWorkspace,
@@ -173,7 +174,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
           expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
         } else {
           await page.getByText(/Granted permissions:.*additional\.permission/).waitFor()
-          await page.getByRole('radio', { name: 'Use this account', exact: true }).check()
+          await checkRadio(page.getByRole('radio', { name: 'Use this account', exact: true }))
           expect((await api.setups.getProviderSetup({ name: setupName })).authorized).toBe(true)
           // A new shared account replaces the old one, so Save asks first.
           await page.getByRole('button', { name: 'Save', exact: true }).click()
@@ -226,7 +227,7 @@ export async function sharedAccountAtomicity(context: TestContext) {
         .getByRole('button', { name: 'Sign in and share the account', exact: true })
         .click()
       await approveConsent()
-      await page.getByRole('radio', { name: 'Use this account', exact: true }).check()
+      await checkRadio(page.getByRole('radio', { name: 'Use this account', exact: true }))
       await saveConfirmedSettingsChange(page)
       const changed = await api.providers.getProvider({ name: provider.name })
       expect(changed.name).toBe(provider.name)
