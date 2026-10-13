@@ -1274,13 +1274,16 @@ pub(crate) struct PreparedCatalogParts {
 }
 
 impl PreparedProviderCatalog {
+    /// Holds `operations` in Operation Key order, the order storage returns
+    /// them in, so a stored Generation's fingerprint matches the prepared one.
     pub(crate) fn new(
         display_name: String,
         schema_graph: SchemaGraph,
         schema_graph_json: String,
-        operations: Vec<MaterializedOperation>,
+        mut operations: Vec<MaterializedOperation>,
         declaration_fields: BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>>,
     ) -> Self {
+        operations.sort_by(|left, right| left.key().cmp(right.key()));
         let typescript_view = operations
             .iter()
             .flat_map(|operation| operation.typescript_declaration().lines())

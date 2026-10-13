@@ -105,6 +105,7 @@ async fn an_update_makes_the_added_operation_searchable_and_describable() {
             &ChangeContext::with_etag(change(200), &builtin.etag()).unwrap(),
             workspace.id(),
             builtin.id(),
+            catalog_b().identity(),
         )
         .await
         .unwrap();

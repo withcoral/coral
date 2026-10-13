@@ -152,14 +152,16 @@ it('rejects a selection with a malformed or repeated operation', async () => {
   expect(mocks.updateOperationPolicies).not.toHaveBeenCalled()
 })
 
-// Catches: Update sending the update for another provider, or without the
-// etag that keeps two owners from updating at once.
-it('updates the Coral provider it names with its etag', async () => {
+// Catches: Update sending the update for another provider, without the etag
+// that keeps two owners from updating at once, or without the catalog that
+// keeps another Coral version from applying changes the owner did not review.
+it('updates the Coral provider it names with its etag and reviewed catalog', async () => {
   mocks.updateBuiltinCatalog.mockResolvedValue({})
   const form = new FormData()
   form.set('intent', 'updateBuiltinCatalog')
   form.set('provider', providerA)
   form.set('etag', 'coral-etag')
+  form.set('catalog', 'coral-admin-catalog:reviewed')
 
   const result = (await post(form)) as unknown as { data: { error: null; message: string } }
 
@@ -167,6 +169,7 @@ it('updates the Coral provider it names with its etag', async () => {
   expect(mocks.updateBuiltinCatalog.mock.calls[0]![0]).toMatchObject({
     name: `workspaces/${workspaceId}/providers/${providerA}`,
     etag: 'coral-etag',
+    catalog: 'coral-admin-catalog:reviewed',
   })
   expect(result.data).toMatchObject({ error: null, message: 'Coral is updated.' })
 })

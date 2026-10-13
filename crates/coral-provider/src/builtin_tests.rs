@@ -473,38 +473,50 @@ impl BuiltinWorkspace {
             .unwrap()
     }
 
-    /// `actor` updates the Built-in Provider through a process that serves
-    /// `served`, in its own transaction, with the Provider's current etag.
+    /// `actor` reviews `served` and updates the Built-in Provider to it
+    /// through a process that serves it, in its own transaction, with the
+    /// Provider's current etag.
     async fn update(
         &self,
-        served: &ProviderModule,
+        served: &BuiltinCatalog,
         actor: &coral_workspace::AuthenticatedUser,
         at: i64,
     ) -> Result<Option<crate::ActivatedGeneration>, Error> {
         let etag = self.current().await.etag();
-        self.update_with_etag(served, actor, at, &etag, self.builtin.id())
-            .await
+        self.update_with(
+            served,
+            actor,
+            at,
+            &etag,
+            self.builtin.id(),
+            served.identity(),
+        )
+        .await
     }
 
-    async fn update_with_etag(
+    /// `actor` updates `provider` with `etag` through a process that serves
+    /// `served`, naming the `reviewed` catalog.
+    async fn update_with(
         &self,
-        served: &ProviderModule,
+        served: &BuiltinCatalog,
         actor: &coral_workspace::AuthenticatedUser,
         at: i64,
         etag: &str,
         provider: &crate::ProviderId,
+        reviewed: &str,
     ) -> Result<Option<crate::ActivatedGeneration>, Error> {
         let context = change_context(actor.clone(), at, '2')
             .with_etag(etag)
             .unwrap();
         let database = self.fixture.database();
         let mut transaction = database.begin().await.unwrap();
-        let updated = served
+        let updated = serving(&self.providers, served.clone())
             .update_builtin_catalog_in_transaction(
                 &mut transaction,
                 &context,
                 self.workspace.id(),
                 provider,
+                reviewed,
             )
             .await;
         if updated.is_ok() {
@@ -587,13 +599,10 @@ async fn an_owner_sees_how_the_served_catalog_differs() {
     assert_eq!(inspect(running()).await, None, "the same catalog");
     let to_b = inspect(catalog_b()).await.expect("B adds listThings");
     assert_eq!(offered(&to_b), [vec!["listThings"], vec![], vec![]]);
+    assert_eq!(to_b.identity, catalog_b().identity(), "an update names B");
 
     arranged
-        .update(
-            &serving(&arranged.providers, catalog_b()),
-            &arranged.owner,
-            20,
-        )
+        .update(&catalog_b(), &arranged.owner, 20)
         .await
         .unwrap();
     let to_a = inspect(running()).await.expect("A removes listThings");
@@ -639,7 +648,7 @@ async fn an_owner_updates_the_builtin_provider_to_the_served_catalog_once() {
                 .unwrap();
         }
         let before = arranged.events().await.len();
-        let served = serving(&arranged.providers, catalog_b());
+        let served = catalog_b();
 
         let activated = arranged
             .update(&served, &arranged.owner, 20)
@@ -680,10 +689,12 @@ enum Refusal {
     StaleEtag,
     Archived,
     OwnerProvider,
+    OtherCatalog,
 }
 
-/// An update by a Member, with a stale etag, in an archived Workspace, or of
-/// an Owner-added Provider is refused and changes nothing.
+/// An update by a Member, with a stale etag, in an archived Workspace, of an
+/// Owner-added Provider, or that names a catalog other than the one the
+/// serving Coral defines is refused and changes nothing.
 #[tokio::test]
 async fn a_refused_update_changes_nothing() {
     for refusal in [
@@ -691,13 +702,15 @@ async fn a_refused_update_changes_nothing() {
         Refusal::StaleEtag,
         Refusal::Archived,
         Refusal::OwnerProvider,
+        Refusal::OtherCatalog,
     ] {
         let arranged = BuiltinWorkspace::new().await;
-        let served = serving(&arranged.providers, catalog_b());
+        let served = catalog_b();
         let owner = arranged.owner.clone();
         let mut provider = arranged.builtin.id().clone();
         let mut etag = arranged.current().await.etag();
         let mut actor = owner.clone();
+        let mut reviewed = served.identity().to_string();
         match refusal {
             Refusal::Member => actor = arranged.member("user:member").await,
             Refusal::StaleEtag => etag = uuid::Uuid::new_v4().to_string(),
@@ -724,11 +737,13 @@ async fn a_refused_update_changes_nothing() {
                 etag = added.etag();
                 provider = added.id().clone();
             }
+            // The Owner reviewed the update another Coral version offered.
+            Refusal::OtherCatalog => reviewed = running().identity().to_string(),
         }
         let before = arranged.events().await.len();
 
         let refused = arranged
-            .update_with_etag(&served, &actor, 20, &etag, &provider)
+            .update_with(&served, &actor, 20, &etag, &provider, &reviewed)
             .await;
 
         let expected = match refusal {
@@ -744,6 +759,7 @@ async fn a_refused_update_changes_nothing() {
                 Err(Error::Workspace(coral_workspace::Error::WorkspaceArchived))
             ),
             Refusal::OwnerProvider => matches!(refused, Err(Error::NotBuiltinProvider)),
+            Refusal::OtherCatalog => matches!(refused, Err(Error::BuiltinCatalogMismatch)),
         };
         assert!(expected, "{refusal:?}: {refused:?}");
         assert_eq!(arranged.keys().await, ["createProvider"], "{refusal:?}");
@@ -766,11 +782,13 @@ async fn two_concurrent_updates_activate_one_generation() {
         catalog_b(),
     );
     let etag = arranged.current().await.etag();
+    let reviewed = catalog_b().identity().to_string();
     let update = |served: &ProviderModule, database: std::sync::Arc<coral_db::Database>, at| {
         let context = change_context(arranged.owner.clone(), at, '2')
             .with_etag(&etag)
             .unwrap();
         let served = served.clone();
+        let reviewed = reviewed.clone();
         let workspace = arranged.workspace.id().clone();
         let provider = arranged.builtin.id().clone();
         async move {
@@ -781,6 +799,7 @@ async fn two_concurrent_updates_activate_one_generation() {
                     &context,
                     &workspace,
                     &provider,
+                    &reviewed,
                 )
                 .await;
             if updated.is_ok() {

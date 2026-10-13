@@ -150,6 +150,8 @@ export interface BuiltinUpdateOperationView {
 
 /** How the catalog this Coral defines differs from the Coral provider's catalog in the workspace. */
 export interface BuiltinUpdateView {
+  /** The catalog this update applies. Update sends it, so Coral applies only what you reviewed. */
+  catalog: string
   added: BuiltinUpdateOperationView[]
   removed: BuiltinUpdateOperationView[]
   /** Each as the update makes it. */

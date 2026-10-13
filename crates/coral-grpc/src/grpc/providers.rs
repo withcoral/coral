@@ -227,6 +227,7 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::ProviderCallRootConflict => (Code::AlreadyExists, "NAMESPACE_IN_USE"),
         E::BuiltinProviderManaged => (Code::FailedPrecondition, "BUILTIN_PROVIDER_MANAGED"),
         E::NotBuiltinProvider => (Code::FailedPrecondition, "NOT_BUILTIN_PROVIDER"),
+        E::BuiltinCatalogMismatch => (Code::Aborted, "BUILTIN_CATALOG_MISMATCH"),
         E::OAuthClientConfiguration => (Code::FailedPrecondition, "OAUTH_CLIENT_CONFIGURATION"),
         E::AccountRequired => (Code::FailedPrecondition, "ACCOUNT_REQUIRED"),
         E::RequestIdConflict => (Code::AlreadyExists, "REQUEST_ID_CONFLICT"),
@@ -1019,6 +1020,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
                 added: views(&changes.added),
                 removed: views(&changes.removed),
                 changed: views(&changes.changed),
+                catalog: changes.identity,
             },
         )))
     }
@@ -1035,7 +1037,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         let (workspace, id) = resource(&req.name, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
         self.provider_workflow
-            .update_builtin_catalog(&context, &workspace, &id)
+            .update_builtin_catalog(&context, &workspace, &id, &req.catalog)
             .await
             .map_err(error)?;
         self.provider_projection(context.actor(), &workspace, &id)
@@ -1119,6 +1121,11 @@ mod tests {
                 E::NotBuiltinProvider,
                 Code::FailedPrecondition,
                 "NOT_BUILTIN_PROVIDER",
+            ),
+            (
+                E::BuiltinCatalogMismatch,
+                Code::Aborted,
+                "BUILTIN_CATALOG_MISMATCH",
             ),
             (
                 E::AccountRequired,

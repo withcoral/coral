@@ -999,16 +999,56 @@ pub(super) async fn activate_generation(
     replacement_generation_id: &ProviderGenerationId,
     display_name: &ProviderDisplayName,
 ) -> Result<bool, Error> {
-    let statement = Query::update()
+    let mut statement = activation(
+        owner,
+        provider_id,
+        expected_generation_id,
+        replacement_generation_id,
+    );
+    statement
+        .value(
+            ProviderRecords::DisplayName,
+            Expr::val(display_name.as_str()),
+        )
+        .and_where(Expr::col(ProviderRecords::State).eq(ProviderState::Active.as_storage_str()));
+    Ok(transaction.execute(statement).await? == 1)
+}
+
+/// Activates `replacement_generation_id` when the Workspace's Built-in
+/// Provider still has `expected_generation_id` active, whatever its state.
+pub(super) async fn activate_builtin_generation(
+    transaction: &mut Transaction<'_>,
+    owner: &WorkspaceId,
+    provider_id: &ProviderId,
+    expected_generation_id: &ProviderGenerationId,
+    replacement_generation_id: &ProviderGenerationId,
+) -> Result<bool, Error> {
+    let mut statement = activation(
+        owner,
+        provider_id,
+        expected_generation_id,
+        replacement_generation_id,
+    );
+    statement.and_where(
+        Expr::col(ProviderRecords::Namespace).eq(crate::ProviderCallRoot::Builtin.as_str()),
+    );
+    Ok(transaction.execute(statement).await? == 1)
+}
+
+/// Replaces the Provider's active Generation when it is still the expected
+/// one, and bumps its resource version.
+fn activation(
+    owner: &WorkspaceId,
+    provider_id: &ProviderId,
+    expected_generation_id: &ProviderGenerationId,
+    replacement_generation_id: &ProviderGenerationId,
+) -> sea_query::UpdateStatement {
+    Query::update()
         .table(ProviderRecords::Table)
         .values([
             (
                 ProviderRecords::ActiveGenerationId,
                 Expr::val(replacement_generation_id.to_string()),
-            ),
-            (
-                ProviderRecords::DisplayName,
-                Expr::val(display_name.as_str()),
             ),
             (
                 ProviderRecords::ResourceVersion,
@@ -1017,12 +1057,10 @@ pub(super) async fn activate_generation(
         ])
         .and_where(exact_provider_owner(owner))
         .and_where(Expr::col(ProviderRecords::Id).eq(provider_id.to_string()))
-        .and_where(Expr::col(ProviderRecords::State).eq(ProviderState::Active.as_storage_str()))
         .and_where(
             Expr::col(ProviderRecords::ActiveGenerationId).eq(expected_generation_id.to_string()),
         )
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
+        .to_owned()
 }
 
 pub(super) async fn update_provider_state(

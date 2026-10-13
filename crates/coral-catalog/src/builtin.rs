@@ -75,7 +75,7 @@ impl BuiltinOperation {
 
 /// The Built-in Provider's catalog that a Coral process serves, and the
 /// identity each Generation of it pins. Bootstrap prepares it once. Workspace
-/// creation and the boot update publish it.
+/// creation and an Owner's update publish it.
 #[derive(Clone)]
 pub struct BuiltinCatalog(Arc<PreparedBuiltinCatalog>);
 
@@ -159,6 +159,9 @@ impl BuiltinCatalog {
 /// Built-in Generation, in Operation Key order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltinCatalogChanges {
+    /// The served catalog's identity. An update names it, so it applies the
+    /// catalog these changes describe.
+    pub identity: String,
     /// Operations that only the served catalog has.
     pub added: Vec<OperationSummary>,
     /// Operations that only the Workspace's Generation has.
@@ -169,10 +172,12 @@ pub struct BuiltinCatalogChanges {
 
 /// Compares the served catalog's Operations with a Generation's, by key.
 pub(crate) fn changes(
-    served: &[MaterializedOperation],
+    served: &BuiltinCatalog,
     stored: &[MaterializedOperation],
 ) -> BuiltinCatalogChanges {
+    let identity = served.identity().to_string();
     let served: BTreeMap<_, _> = served
+        .operations()
         .iter()
         .map(|operation| (operation.key(), operation))
         .collect();
@@ -181,6 +186,7 @@ pub(crate) fn changes(
         .map(|operation| (operation.key(), operation))
         .collect();
     BuiltinCatalogChanges {
+        identity,
         added: served
             .iter()
             .filter(|(key, _)| !stored.contains_key(*key))

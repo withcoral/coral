@@ -16,7 +16,6 @@ pub mod account;
 #[cfg(test)]
 mod account_tests;
 mod builtin;
-mod builtin_repository;
 #[cfg(test)]
 mod builtin_tests;
 mod change;

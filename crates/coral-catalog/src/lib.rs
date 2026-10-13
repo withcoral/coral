@@ -100,6 +100,9 @@ use coral_db::Transaction;
 
 #[cfg(test)]
 use coral_v8 as _;
+// The dev-dependency on this crate exists for the integration tests' feature.
+#[cfg(test)]
+use coral_catalog as _;
 
 pub use binding::ExecutionBinding;
 pub use declaration_path::{DECLARATION_PATH_MAX_BYTES, DeclarationPath};
@@ -281,7 +284,7 @@ pub async fn builtin_catalog_changes_in_transaction(
         return Ok(None);
     }
     let stored = repository::load_catalog_operations(transaction, generation_id).await?;
-    Ok(Some(builtin::changes(catalog.operations(), &stored)))
+    Ok(Some(builtin::changes(catalog, &stored)))
 }
 
 /// Reads confirmed secret-free OpenAPI configuration for Update review.

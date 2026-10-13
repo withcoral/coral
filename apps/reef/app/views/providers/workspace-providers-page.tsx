@@ -288,6 +288,7 @@ function BuiltinUpdateNotice({
           <Form method="post" action={provider.path}>
             <Fields form={form} intent="updateBuiltinCatalog" etag={provider.etag} />
             <input type="hidden" name="provider" value={provider.id} />
+            <input type="hidden" name="catalog" value={update.catalog} />
             <Button.TextButton type="submit" variant="primary" size="32">
               Update
             </Button.TextButton>

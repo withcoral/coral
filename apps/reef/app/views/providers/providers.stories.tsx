@@ -255,6 +255,7 @@ export const TreeBuiltinUpdateAvailable: Story = {
       providers={[github, coral, weather]}
       selectedProvider="prov-coral"
       builtinUpdate={{
+        catalog: 'coral-admin-catalog:story',
         added: [{ relativePath: 'listProviders', summary: 'List the providers in this workspace' }],
         removed: [],
         changed: [

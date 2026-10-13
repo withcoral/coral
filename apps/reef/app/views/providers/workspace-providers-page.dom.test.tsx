@@ -221,6 +221,7 @@ test('the providers page shows what the Coral update changes, and Update sends i
     },
     providers: [coral, github],
     builtinUpdate: {
+      catalog: 'coral-admin-catalog:reviewed',
       added: [{ relativePath: 'listThings', summary: 'List things' }],
       removed: [],
       changed: [{ relativePath: 'createProvider', summary: 'Create a provider' }],
@@ -240,6 +241,7 @@ test('the providers page shows what the Coral update changes, and Update sends i
       intent: 'updateBuiltinCatalog',
       provider: coral.id,
       etag: coral.etag,
+      catalog: 'coral-admin-catalog:reviewed',
       csrf: 'test-csrf',
     }),
   ])

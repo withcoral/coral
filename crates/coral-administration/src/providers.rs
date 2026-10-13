@@ -132,7 +132,8 @@ impl ProviderWorkflow {
     }
 
     /// Updates the Workspace's Built-in Provider to the catalog this process
-    /// serves, as the acting Owner, then tells Universal Search.
+    /// serves, which `catalog_identity` names, as the acting Owner, then
+    /// tells Universal Search.
     ///
     /// # Errors
     ///
@@ -144,11 +145,18 @@ impl ProviderWorkflow {
         context: &ChangeContext,
         workspace: &WorkspaceId,
         id: &ProviderId,
+        catalog_identity: &str,
     ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let activated = self
             .providers
-            .update_builtin_catalog_in_transaction(&mut transaction, context, workspace, id)
+            .update_builtin_catalog_in_transaction(
+                &mut transaction,
+                context,
+                workspace,
+                id,
+                catalog_identity,
+            )
             .await?;
         transaction.commit().await?;
         if let Some(activated) = activated {

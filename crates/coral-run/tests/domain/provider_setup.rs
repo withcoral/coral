@@ -940,15 +940,16 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
 #[tokio::test]
 async fn an_operation_this_version_does_not_perform_fails_before_approval() {
     let scope = AdminScope::new("user:unknown-operation").await;
+    let newer_catalog = coral_catalog::BuiltinCatalog::with_unknown_operations([(
+        "listThings",
+        coral_catalog::OperationHints::default(),
+    )])
+    .expect("the newer catalog prepares");
     let newer = ProviderModule::new(
         coral_outbound::DestinationPolicy::default(),
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
-        coral_catalog::BuiltinCatalog::with_unknown_operations([(
-            "listThings",
-            coral_catalog::OperationHints::default(),
-        )])
-        .expect("the newer catalog prepares"),
+        newer_catalog.clone(),
     );
     // An Owner updates the Workspace through a process of the newer Coral.
     let builtin = newer
@@ -967,6 +968,7 @@ async fn an_operation_this_version_does_not_perform_fails_before_approval() {
                 .unwrap(),
             &scope.workspace_id,
             builtin.id(),
+            newer_catalog.identity(),
         )
         .await
         .unwrap()

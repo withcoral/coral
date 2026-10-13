@@ -16,8 +16,10 @@ has no boot step for this, so processes of different versions never move a Works
 
 Catalogs are not ordered. A Coral older than the one an Owner updated with, during a rolling deploy or after a rollback,
 offers an update that removes or reverts what the newer one added, and the page shows exactly that before the Owner
-selects Update. An older Coral that reads a newer catalog still searches and describes its Operations, and fails an
-Invocation of one it does not perform with `operation_unavailable`.
+selects Update. Showing and applying the update are separate requests that can reach different versions, so the update
+names the catalog the Owner reviewed, and a Coral that serves another catalog refuses it. An older Coral that reads a
+newer catalog still searches and describes its Operations, and fails an Invocation of one it does not perform with
+`operation_unavailable`.
 
 A new Operation starts at the Access State its hints give, and Owners change it with the existing Operation policy.
 Exact rules are keyed by Operation Key, so a rule set on an Operation applies again when the Operation returns.

@@ -13,7 +13,7 @@ use crate::repository as provider_repository;
 use crate::{
     ActivatedGeneration, CredentialRoute, Error, LifecycleAction, LifecycleActor, LifecycleOutcome,
     Provider, ProviderCallRoot, ProviderDisplayName, ProviderId, ProviderModule, ProviderState,
-    access, builtin_repository,
+    access,
 };
 
 impl ProviderModule {
@@ -116,16 +116,13 @@ impl ProviderModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         self.check_owner_inspection_in_transaction(&mut transaction, actor, workspace_id)
             .await?;
-        let stored = provider_repository::provider_in_transaction(
+        let stored = change::load_for_change(
             &mut transaction,
             workspace_id,
             provider_id,
+            ProviderChange::UpdateBuiltinCatalog,
         )
-        .await?
-        .ok_or(Error::ProviderNotFound)?;
-        if stored.provider.call_root() != &ProviderCallRoot::Builtin {
-            return Err(Error::NotBuiltinProvider);
-        }
+        .await?;
         let changes = coral_catalog::builtin_catalog_changes_in_transaction(
             &mut transaction,
             &self.builtin_catalog,
@@ -138,21 +135,25 @@ impl ProviderModule {
 
     /// Updates the Workspace's Built-in Provider to the catalog this process
     /// serves, in the caller's transaction, with the acting Owner recorded.
-    /// The Provider keeps its state. `None` means the Workspace already has
-    /// this catalog, and nothing changes.
+    /// `catalog_identity` names the catalog the Owner reviewed. The Provider
+    /// keeps its state. `None` means the Workspace already has this catalog,
+    /// and nothing changes.
     ///
     /// # Errors
     ///
     /// Returns an authority failure unless the actor is an Owner of an active
     /// Workspace, [`Error::EtagMismatch`] for a stale etag,
-    /// [`Error::NotBuiltinProvider`] for another Provider, or a persistence
-    /// failure. An error may follow writes; do not commit after one.
+    /// [`Error::BuiltinCatalogMismatch`] when this process serves a catalog
+    /// other than `catalog_identity`, [`Error::NotBuiltinProvider`] for
+    /// another Provider, or a persistence failure. An error may follow writes;
+    /// do not commit after one.
     pub async fn update_builtin_catalog_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
         provider_id: &ProviderId,
+        catalog_identity: &str,
     ) -> Result<Option<ActivatedGeneration>, Error> {
         let authority = self
             .check_owner_configuration_in_transaction(transaction, context.actor(), workspace_id)
@@ -165,6 +166,11 @@ impl ProviderModule {
         )
         .await?;
         stored.provider.check_etag(context)?;
+        // During a rolling deploy or after a rollback, the process that showed
+        // the Owner the update may serve another catalog than this one.
+        if catalog_identity != self.builtin_catalog.identity() {
+            return Err(Error::BuiltinCatalogMismatch);
+        }
         if coral_catalog::builtin_catalog_changes_in_transaction(
             transaction,
             &self.builtin_catalog,
@@ -181,7 +187,7 @@ impl ProviderModule {
             context.occurred_at_unix_nanos(),
         )
         .await?;
-        if !builtin_repository::activate_builtin_generation(
+        if !provider_repository::activate_builtin_generation(
             transaction,
             workspace_id,
             provider_id,

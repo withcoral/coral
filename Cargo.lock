@@ -704,6 +704,7 @@ dependencies = [
 name = "coral-catalog"
 version = "1.0.0"
 dependencies = [
+ "coral-catalog",
  "coral-db",
  "coral-outbound",
  "coral-test-support",

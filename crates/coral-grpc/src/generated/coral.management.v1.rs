@@ -188,6 +188,10 @@ pub struct BuiltinCatalogUpdate {
     /// Operations the update changes, as they will be.
     #[prost(message, repeated, tag = "4")]
     pub changed: ::prost::alloc::vec::Vec<ProviderOperation>,
+    /// Identity of the catalog these changes describe, when available. Pass it
+    /// to UpdateBuiltinCatalog.
+    #[prost(string, tag = "5")]
+    pub catalog: ::prost::alloc::string::String,
 }
 /// Applies the serving Coral's catalog to the Built-in Provider.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -198,6 +202,11 @@ pub struct UpdateBuiltinCatalogRequest {
     /// Required current Provider concurrency token.
     #[prost(string, tag = "2")]
     pub etag: ::prost::alloc::string::String,
+    /// Required identity of the catalog the Owner reviewed, from
+    /// GetBuiltinCatalogUpdate. The update fails when the serving Coral defines
+    /// another catalog.
+    #[prost(string, tag = "3")]
+    pub catalog: ::prost::alloc::string::String,
 }
 /// One page of administrative Operation metadata.
 #[derive(Clone, PartialEq, ::prost::Message)]

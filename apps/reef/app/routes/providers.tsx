@@ -136,6 +136,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         await api.providers.updateBuiltinCatalog({
           name: providerName(w.name, field(form, 'provider')),
           etag: field(form, 'etag'),
+          catalog: field(form, 'catalog'),
         })
         return data(
           { error: null, credential: null, message: 'Coral is updated.' },

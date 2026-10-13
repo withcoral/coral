@@ -31,6 +31,8 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Integration tests build this library without `cfg(test)`.
+coral-catalog = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 coral-v8.workspace = true
 tokio.workspace = true

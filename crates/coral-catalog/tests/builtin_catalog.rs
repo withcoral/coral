@@ -198,6 +198,36 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
     }
 }
 
+// Catches: a catalog that Coral defines out of Operation Key order, which
+// storage reads back in key order. Its stored fingerprint then never matches
+// the served one, so Owners see an update forever, even right after updating.
+#[tokio::test]
+async fn a_generation_of_the_served_catalog_has_no_update_whatever_the_definition_order() {
+    let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
+    let database = fixture.database();
+    // `archiveThings` follows `createProvider` in definition order and precedes it by key.
+    let catalog =
+        BuiltinCatalog::with_unknown_operations([("archiveThings", OperationHints::default())])
+            .unwrap();
+    let mut transaction = database.begin().await.unwrap();
+    let generation =
+        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
+            .await
+            .unwrap();
+    transaction.commit().await.unwrap();
+
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let changes = coral_catalog::builtin_catalog_changes_in_transaction(
+        &mut transaction,
+        &catalog,
+        &generation,
+    )
+    .await
+    .unwrap();
+    transaction.rollback().await.unwrap();
+    assert_eq!(changes, None);
+}
+
 async fn pinned_input(
     transaction: &mut coral_db::Transaction<'_>,
     generation: &coral_catalog::ProviderGenerationId,
