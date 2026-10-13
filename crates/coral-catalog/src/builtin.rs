@@ -150,13 +150,16 @@ fn definition(operation: BuiltinOperation) -> Definition {
                     "Choose credentialRoute to match the source: none when it needs no \
                      credential, fixed for one shared account, caller for each person's own \
                      account. A route that does not match the source fails with invalid_input. \
-                     Give displayName, servers, authentication, credentialFields or \
-                     requestHeaders only to override what the source suggests. Never pass a \
-                     secret or a literal credential value: Coral stores your arguments, and \
-                     Workspace Owners can see them. When status is published, call the \
-                     Provider's Operations under coral.providers.<namespace>. When status is \
-                     needs_sign_in, show the person the returned url. To check later whether \
-                     it is published, search with its namespace as provider."
+                     Omit displayName, servers, authentication, credentialFields and \
+                     requestHeaders to use what the source suggests, or give them to override \
+                     it. When the source declares no credential but the service needs one, \
+                     give authentication, such as { method: \"bearer\" }, with fixed or \
+                     caller. Never pass a secret or a literal credential value: Coral stores \
+                     your arguments, and Workspace Owners can see them. When status is \
+                     published, call the Provider's Operations under \
+                     coral.providers.<namespace>. When status is needs_sign_in, show the \
+                     person the returned url. To check later whether it is published, search \
+                     with its namespace as provider."
                         .to_string(),
                 ),
             ),

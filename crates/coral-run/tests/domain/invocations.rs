@@ -110,7 +110,17 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
     let operation = fixture
         .user_operation("user:coral-failure", "Catch a safe failure")
         .await;
-    for argument in [r#"{unexpected: "secret-canary"}"#, "null"] {
+    // The message names what to correct, never a submitted value.
+    for (argument, message) in [
+        (
+            r#"{unexpected: "secret-canary"}"#,
+            "Operation arguments are invalid: Operation argument `unexpected` is not declared",
+        ),
+        (
+            "null",
+            "Operation arguments are invalid: Operation arguments must be an object",
+        ),
+    ] {
         let accepted = fixture
             .runs
             .start(
@@ -143,7 +153,7 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
                 if matches!(started.kind(), RunEventKind::InvocationStarted { .. })
                 && matches!(ended.kind(), RunEventKind::InvocationEnded { result_kind: crate::InvocationResultKind::CoralFailure, .. })
                 && matches!(emission.kind(), RunEventKind::ProgramEmitted { value } if value.as_json() == &serde_json::json!({
-                    "code": "invalid_input", "message": "Operation arguments are invalid"
+                    "code": "invalid_input", "message": message
                 }))
             ),
             "{terminal:?}"

@@ -547,7 +547,9 @@ success or error. _Avoid_: Provider Outcome, Upstream Error, Coral Failure, norm
 
 **Coral Failure**: A safe, coded inability to produce a complete Upstream Outcome for one Operation Invocation. It
 excludes Run-level termination and unexpected host defects and makes no public claim about dispatch, external effects,
-or retry safety in v1. _Avoid_: Upstream failure, transport failure, Program failure
+or retry safety in v1. When Coral can identify an invalid argument, an `invalid_input` failure names it and gives a
+Coral-written reason; otherwise it may give only a general message. It never repeats a submitted value. _Avoid_:
+Upstream failure, transport failure, Program failure
 
 **Upstream Result**: The Upstream Service-owned value and safe upstream metadata carried by an Upstream Outcome. Coral
 does not reshape the value into normalized rows or make upstream schema conformance a condition of success. _Avoid_:

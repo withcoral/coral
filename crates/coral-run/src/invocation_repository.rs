@@ -307,9 +307,11 @@ pub(super) async fn finish(
 ) -> Result<bool, Error> {
     let (result_json, failure_code, failure_message) = match completion {
         InvocationCompletion::Upstream { result_json } => (Some(result_json.as_str()), None, None),
-        InvocationCompletion::Failure(failure) => {
-            (None, Some(failure.code()), Some(failure.message()))
-        }
+        InvocationCompletion::Failure(failure) => (
+            None,
+            Some(failure.code()),
+            Some(failure.message().into_owned()),
+        ),
     };
     let result_bytes = i64::try_from(result_json.map_or(0, str::len))
         .map_err(|_overflow| Error::CorruptData("Invocation byte count overflow".into()))?;

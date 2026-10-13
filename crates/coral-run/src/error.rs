@@ -3,8 +3,9 @@
 // the first one listed.
 macro_rules! coral_failures {
     ($($(#[doc = $doc:literal])* $variant:ident => $code:literal,)*) => {
-        /// Known safe Invocation failures. Only this vocabulary can cross into a Program;
-        /// private Adapter errors and host defects never supply their own message.
+        /// Known safe Invocation failures. Only this vocabulary, and a [`Rejection`]
+        /// reason Coral writes, can cross into a Program; private Adapter errors and
+        /// host defects never supply their own message.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum CoralFailure {
             $($(#[doc = $doc])* $variant,)*
@@ -122,6 +123,101 @@ impl std::fmt::Display for CoralFailure {
     }
 }
 
+/// A Coral Failure and, for `invalid_input`, each argument the Program should
+/// correct. Only the code is durable evidence that later work decodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejection {
+    failure: CoralFailure,
+    problems: Vec<InputProblem>,
+}
+
+/// One argument to correct. Coral writes each reason; it never holds a
+/// submitted value, upstream content or a host diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InputProblem {
+    field: String,
+    reason: String,
+}
+
+impl InputProblem {
+    /// The argument at `field`, a dotted path from the arguments object. An
+    /// empty path names the arguments object itself.
+    pub(crate) fn new(field: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+impl Rejection {
+    /// `invalid_input` for the one argument at `field`.
+    pub(crate) fn invalid_input(field: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::invalid_inputs(vec![InputProblem::new(field, reason)])
+    }
+
+    /// `invalid_input` for each of `problems`, in the order Coral found them.
+    pub(crate) fn invalid_inputs(problems: Vec<InputProblem>) -> Self {
+        Self {
+            failure: CoralFailure::InvalidInput,
+            problems,
+        }
+    }
+
+    /// The durable failure.
+    #[must_use]
+    pub const fn failure(&self) -> CoralFailure {
+        self.failure
+    }
+
+    /// Stable, transport-neutral code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        self.failure.code()
+    }
+
+    /// Safe, bounded message, naming each argument to correct when Coral knows it.
+    #[must_use]
+    pub fn message(&self) -> std::borrow::Cow<'static, str> {
+        let message = match self.problems.as_slice() {
+            [] => return self.failure.message().into(),
+            [InputProblem { field, reason }] if !field.is_empty() => {
+                format!("{} at `{field}`: {reason}", self.failure.message())
+            }
+            problems => {
+                let problems = problems
+                    .iter()
+                    .map(|InputProblem { field, reason }| {
+                        if field.is_empty() {
+                            reason.clone()
+                        } else {
+                            format!("`{field}`: {reason}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("{}: {problems}", self.failure.message())
+            }
+        };
+        coral_v8::bounded_diagnostic_message(&message).into()
+    }
+}
+
+impl From<CoralFailure> for Rejection {
+    fn from(failure: CoralFailure) -> Self {
+        Self {
+            failure,
+            problems: Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message())
+    }
+}
+
 /// Program Run Module failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -174,7 +270,7 @@ pub enum Error {
     ProgramValueJson(#[source] serde_json::Error),
     /// A resolved Operation was rejected with safe durable evidence.
     #[error("Operation Invocation failed: {0}")]
-    InvocationRejected(CoralFailure),
+    InvocationRejected(Rejection),
     /// Invocation persistence lost an atomic lifecycle transition.
     #[error("Operation Invocation persistence failed: {0}")]
     InvocationPersistence(String),

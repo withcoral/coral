@@ -629,15 +629,23 @@ pub(super) async fn gate(
         ApprovalState::Pending => Ok(false),
         ApprovalState::Approved => {
             if required && now >= row.deadline_at_unix_nanos {
-                Err(Error::InvocationRejected(CoralFailure::ApprovalExpired))
+                Err(Error::InvocationRejected(
+                    CoralFailure::ApprovalExpired.into(),
+                ))
             } else {
                 Ok(true)
             }
         }
         ApprovalState::Closed if !required => Ok(true),
-        ApprovalState::Declined => Err(Error::InvocationRejected(CoralFailure::ApprovalDeclined)),
-        ApprovalState::Expired => Err(Error::InvocationRejected(CoralFailure::ApprovalExpired)),
-        ApprovalState::Closed => Err(Error::InvocationRejected(CoralFailure::ApprovalRequired)),
+        ApprovalState::Declined => Err(Error::InvocationRejected(
+            CoralFailure::ApprovalDeclined.into(),
+        )),
+        ApprovalState::Expired => Err(Error::InvocationRejected(
+            CoralFailure::ApprovalExpired.into(),
+        )),
+        ApprovalState::Closed => Err(Error::InvocationRejected(
+            CoralFailure::ApprovalRequired.into(),
+        )),
     }
 }
 
@@ -662,7 +670,7 @@ pub(super) async fn committed_rejection(
     let failure =
         invocation_repository::completed_failure(tx, &admitted.workspace_id, &admitted.id).await?;
     match failure.filter(|failure| prevents_continuation(*failure)) {
-        Some(failure) => Err(Error::InvocationRejected(failure)),
+        Some(failure) => Err(Error::InvocationRejected(failure.into())),
         None => Ok(()),
     }
 }

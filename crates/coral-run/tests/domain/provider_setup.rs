@@ -24,6 +24,37 @@ fn create_provider(arguments: &serde_json::Value) -> RunSubmission {
     )
 }
 
+/// A Program that calls `createProvider` with `arguments` and returns the code
+/// and message of the Coral Failure it catches.
+fn create_provider_failure(arguments: &serde_json::Value) -> RunSubmission {
+    submission(
+        &"
+        try {
+            return await coral.admin.createProvider(ARGUMENTS);
+        } catch (error) {
+            if (!(error instanceof coral.OperationError)) throw error;
+            return { code: error.code, message: error.message };
+        }
+    "
+        .replace("ARGUMENTS", &arguments.to_string()),
+    )
+}
+
+/// Arguments that `createProvider` accepts for a source that needs no
+/// credential, with `extra` replacing or adding fields.
+fn valid_with(extra: serde_json::Value) -> serde_json::Value {
+    let mut arguments = serde_json::json!({
+        "namespace": "weather",
+        "source": document_source(),
+        "credentialRoute": "none",
+    });
+    let serde_json::Value::Object(extra) = extra else {
+        panic!("extra arguments are an object");
+    };
+    arguments.as_object_mut().unwrap().extend(extra);
+    arguments
+}
+
 fn document_source() -> serde_json::Value {
     serde_json::json!({ "kind": "openapi_document", "document": DOCUMENT })
 }
@@ -1051,6 +1082,126 @@ async fn the_program_configures_how_a_person_signs_in() {
             }
             other => panic!("unexpected method {other:?}"),
         }
+    }
+}
+
+/// An `invalid_input` message names each argument to correct and what to write,
+/// whether Coral rejects it before or after it reads the source. It never
+/// repeats a submitted value.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table lists every argument check and the reason it gives"
+)]
+async fn an_invalid_argument_names_what_to_correct() {
+    const CANARY: &str = "sk-canary";
+    let scope = AdminScope::new("user:invalid-argument-reason").await;
+    scope.set_access(OperationAccessState::Enabled).await;
+    for (arguments, message) in [
+        (
+            serde_json::json!({ "namespace": "weather", "source": document_source() }),
+            " at `credentialRoute`: choose `none`, `fixed` or `caller`",
+        ),
+        (
+            // serde quotes the value before its own `expected` clause.
+            valid_with(serde_json::json!({ "credentialRoute": format!("expected {CANARY}") })),
+            " at `credentialRoute`: expected one of `none`, `fixed`, `caller`",
+        ),
+        (
+            valid_with(serde_json::json!({ "displayName": [CANARY] })),
+            " at `displayName`: expected a string",
+        ),
+        (
+            valid_with(serde_json::json!({ "displayname": "Forecasts" })),
+            " at `displayname`: unknown field `displayname`, expected one of `namespace`, \
+             `source`, `credentialRoute`, `displayName`, `servers`, `authentication`, \
+             `requestHeaders`, `credentialFields`",
+        ),
+        (
+            valid_with(serde_json::json!({ "namespace": "not-an-identifier" })),
+            " at `namespace`: use a JavaScript identifier of at most 128 bytes, such as `weather`",
+        ),
+        (
+            valid_with(serde_json::json!({ "source": { "kind": "openapi_url" } })),
+            " at `source`: missing field `url`",
+        ),
+        (
+            valid_with(serde_json::json!({
+                "source": { "kind": "openapi_url", "url": format!("ftp://{CANARY}.example") },
+            })),
+            " at `source.url`: use an absolute `http` or `https` URL without credentials or a fragment",
+        ),
+        (
+            valid_with(
+                serde_json::json!({ "source": { "kind": "openapi_document", "document": CANARY } }),
+            ),
+            " at `source`: Coral cannot build a Provider from the source (invalid_openapi_document)",
+        ),
+        (
+            valid_with(serde_json::json!({ "requestHeaders": { "X-Api-Key": CANARY } })),
+            " at `requestHeaders.X-Api-Key`: this header names a credential; send it through \
+             `authentication` so a person enters its value when they sign in",
+        ),
+        (
+            valid_with(serde_json::json!({ "requestHeaders": { "Host": "weather.example" } })),
+            " at `requestHeaders.Host`: Use a header that Coral does not set for credentials or transport.",
+        ),
+        (
+            valid_with(serde_json::json!({
+                "credentialRoute": "fixed",
+                "authentication": {
+                    "method": "basic_auth",
+                    "username": { "source": "field", "field": "username" },
+                    "password": { "source": "literal", "value": CANARY },
+                },
+            })),
+            " at `authentication`: a literal credential value must be empty; use a `field` \
+             source so a person enters the value when they sign in",
+        ),
+        (
+            serde_json::json!({
+                "namespace": "not-an-identifier",
+                "source": document_source(),
+                "requestHeaders": { "X-Api-Key": CANARY, "Authorization": CANARY },
+            }),
+            ": `namespace`: use a JavaScript identifier of at most 128 bytes, such as `weather`; \
+             `requestHeaders.Authorization`: this header names a credential; send it through \
+             `authentication` so a person enters its value when they sign in; \
+             `requestHeaders.X-Api-Key`: this header names a credential; send it through \
+             `authentication` so a person enters its value when they sign in; \
+             `credentialRoute`: choose `none`, `fixed` or `caller`",
+        ),
+        (
+            valid_with(serde_json::json!({
+                "requestHeaders": { "Host": "weather.example", "Connection": "close" },
+            })),
+            ": `requestHeaders.Connection`: Use a header that Coral does not set for credentials \
+             or transport.; `requestHeaders.Host`: Use a header that Coral does not set for \
+             credentials or transport.",
+        ),
+        (
+            valid_with(serde_json::json!({ "credentialRoute": "fixed" })),
+            " at `credentialRoute`: the source declares no credential; use `none`, or give \
+             `authentication` to say how a person signs in",
+        ),
+        (
+            valid_with(serde_json::json!({
+                "source": { "kind": "openapi_document", "document": PRIVATE_DOCUMENT },
+            })),
+            " at `credentialRoute`: the source needs a credential; use `fixed` or `caller`",
+        ),
+    ] {
+        let run = scope
+            .start(&scope.owner, create_provider_failure(&arguments))
+            .await;
+        assert_eq!(
+            final_value(&scope.terminal(&scope.owner, &run).await),
+            serde_json::json!({
+                "code": "invalid_input",
+                "message": format!("Operation arguments are invalid{message}"),
+            }),
+            "{arguments}"
+        );
     }
 }
 
