@@ -107,9 +107,15 @@ export const popupSize = styleVariants({
   xl: { width: '700px' },
 })
 
+/** Below this width a drawer covers the screen, so it stays modal. */
+export const mobile = '(max-width: 640px)'
+
 export const fullWidthOnMobile = style({
-  '@media': { '(max-width: 640px)': { width: '100vw', maxWidth: '100vw' } },
+  '@media': { [mobile]: { width: '100vw', maxWidth: '100vw' } },
 })
+
+// Page menus draw above a drawer the page stays usable beside; dialogs and tooltips too.
+export const besidePage = style({ zIndex: zIndex.besidePage })
 
 export const header = style({
   position: 'sticky',

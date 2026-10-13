@@ -1,5 +1,8 @@
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import classNames from 'classnames'
+import { useCallback, useContext } from 'react'
+
+import { BesidePageContext, OwnBackdropContext } from './beside-page-root'
 
 import * as styles from './dialog.css'
 
@@ -24,6 +27,25 @@ export function Popup({
   fullWidthOnMobile = false,
   ...props
 }: PopupProps) {
+  const besidePage = useContext(BesidePageContext)
+  const register = besidePage?.register
+  // A root beside the page focuses the popup when it becomes modal.
+  // React 19 runs a returned cleanup instead of passing null, so the caller's
+  // own cleanup runs here, or its ref is cleared as React would.
+  const registered = useCallback(
+    (element: HTMLDivElement) => {
+      register?.(element)
+      const cleanup = typeof ref === 'function' ? ref(element) : undefined
+      if (ref && typeof ref !== 'function') ref.current = element
+      return () => {
+        register?.(null)
+        if (typeof cleanup === 'function') cleanup()
+        else if (typeof ref === 'function') ref(null)
+        else if (ref) ref.current = null
+      }
+    },
+    [register, ref],
+  )
   return (
     <BaseDialog.Popup
       className={classNames(
@@ -32,12 +54,17 @@ export function Popup({
         placement !== 'center' && styles.drawer,
         placement === 'right' && styles.rightDrawer,
         fullWidthOnMobile && styles.fullWidthOnMobile,
+        besidePage?.beside && styles.besidePage,
         className,
       )}
-      ref={ref}
+      ref={register ? registered : ref}
       {...props}
     >
-      {children}
+      {/* The mode belongs to this drawer: a dialog opened from its content is its own.
+          Only a drawer beside the page leaves those dialogs without a backdrop to share. */}
+      <BesidePageContext value={null}>
+        <OwnBackdropContext value={besidePage?.beside ?? false}>{children}</OwnBackdropContext>
+      </BesidePageContext>
     </BaseDialog.Popup>
   )
 }

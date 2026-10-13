@@ -1,0 +1,159 @@
+/** @vitest-environment happy-dom */
+import { act, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
+import { expect, it, onTestFinished, vi } from 'vitest'
+import * as Dialog from '.'
+
+/** Resizes the window, as a reader who narrows it or turns a tablet does. */
+function resize(width: number) {
+  const { happyDOM } = window as unknown as {
+    happyDOM: { setViewport: (viewport: { width: number }) => void }
+  }
+  const { innerWidth } = window
+  onTestFinished(() => happyDOM.setViewport({ width: innerWidth }))
+  return act(async () => happyDOM.setViewport({ width }))
+}
+
+/** A modal confirmation the drawer's content opens, as Cancel run does. */
+function Confirmation() {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Cancel run
+      </button>
+      <Dialog.Root open={open} onOpenChange={setOpen}>
+        <Dialog.Portal>
+          <Dialog.Backdrop data-testid="confirmation-backdrop" />
+          <Dialog.Popup>
+            <Dialog.Title>Cancel this run?</Dialog.Title>
+            <Dialog.Close ariaLabel="Keep the run" />
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </>
+  )
+}
+
+function renderDrawer() {
+  const onOpenChange = vi.fn()
+  render(
+    <>
+      <button type="button">Page control</button>
+      <Dialog.BesidePageRoot open onOpenChange={onOpenChange}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup placement="right" fullWidthOnMobile>
+            <Dialog.Title>Record</Dialog.Title>
+            <Dialog.Close />
+            <Confirmation />
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.BesidePageRoot>
+    </>,
+  )
+  return { user: userEvent.setup(), onOpenChange }
+}
+
+// Catches: a drawer beside the page that closes when the reader uses the page,
+// or that hides the page from assistive technology.
+it('above 640px the page stays usable and the drawer stays open', async () => {
+  const { user, onOpenChange } = renderDrawer()
+  const drawer = await screen.findByRole('dialog', { name: 'Record' })
+  expect(drawer).not.toHaveAttribute('aria-modal')
+  await user.click(screen.getByRole('button', { name: 'Page control' }))
+  expect(screen.getByRole('button', { name: 'Page control' })).toHaveFocus()
+  expect(onOpenChange).not.toHaveBeenCalled()
+  // Escape still closes it, even from the page.
+  await user.keyboard('{Escape}')
+  expect(onOpenChange).toHaveBeenCalledWith(false, expect.anything())
+})
+
+// Catches: a full-screen drawer that leaves the page it covers reachable, a
+// drawer that closes when the mode changes, or one that takes focus from the
+// page when it stops being modal.
+it('at 640px or less the drawer is modal, and crossing switches the mode while open', async () => {
+  const { user, onOpenChange } = renderDrawer()
+  const drawer = await screen.findByRole('dialog', { name: 'Record' })
+  await user.click(screen.getByRole('button', { name: 'Page control' }))
+  await resize(640)
+  expect(screen.queryByRole('button', { name: 'Page control' })).toBeNull()
+  expect(drawer).toHaveFocus()
+  await resize(641)
+  expect(screen.getByRole('button', { name: 'Page control' })).toBeInTheDocument()
+  expect(drawer).toHaveFocus()
+  expect(onOpenChange).not.toHaveBeenCalled()
+})
+
+// Catches: a confirmation inside the drawer that inherits the drawer's mode,
+// so it loses its backdrop beside the page, or that takes the drawer's place
+// as the popup to focus when the drawer becomes modal.
+it('a confirmation inside the drawer stays a modal dialog of its own', async () => {
+  const { user } = renderDrawer()
+  const drawer = await screen.findByRole('dialog', { name: 'Record' })
+  await user.click(screen.getByRole('button', { name: 'Cancel run' }))
+  await screen.findByRole('dialog', { name: 'Cancel this run?' })
+  expect(screen.getByTestId('confirmation-backdrop')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Keep the run' }))
+  await vi.waitFor(() =>
+    expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull(),
+  )
+  await user.click(screen.getByRole('button', { name: 'Page control' }))
+  await resize(640)
+  expect(drawer).toHaveFocus()
+})
+
+// Catches: a popup that wraps the caller's ref and drops the cleanup a React 19
+// callback ref returns, so the caller never releases what it set up.
+it('a callback ref on the drawer popup gets its cleanup', async () => {
+  const cleanup = vi.fn()
+  const ref = vi.fn(() => cleanup)
+  const { unmount } = render(
+    <Dialog.BesidePageRoot open>
+      <Dialog.Portal>
+        <Dialog.Popup ref={ref}>
+          <Dialog.Title>Record</Dialog.Title>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.BesidePageRoot>,
+  )
+  await screen.findByRole('dialog', { name: 'Record' })
+  expect(ref).toHaveBeenCalledWith(screen.getByRole('dialog', { name: 'Record' }))
+  unmount()
+  expect(cleanup).toHaveBeenCalledOnce()
+  expect(ref).not.toHaveBeenCalledWith(null)
+})
+
+// Catches: the drawer's rule that a dialog opened from it draws its own backdrop
+// reaching one level further, so a dialog inside that dialog dims the page twice.
+it('a dialog inside a confirmation shares the confirmation backdrop', async () => {
+  render(
+    <Dialog.BesidePageRoot open>
+      <Dialog.Portal>
+        <Dialog.Popup>
+          <Dialog.Title>Record</Dialog.Title>
+          <Dialog.Root open>
+            <Dialog.Portal>
+              <Dialog.Backdrop data-testid="confirmation-backdrop" />
+              <Dialog.Popup>
+                <Dialog.Title>Cancel this run?</Dialog.Title>
+                <Dialog.Root open>
+                  <Dialog.Portal>
+                    <Dialog.Backdrop data-testid="inner-backdrop" />
+                    <Dialog.Popup>
+                      <Dialog.Title>Inner</Dialog.Title>
+                    </Dialog.Popup>
+                  </Dialog.Portal>
+                </Dialog.Root>
+              </Dialog.Popup>
+            </Dialog.Portal>
+          </Dialog.Root>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.BesidePageRoot>,
+  )
+  await screen.findByRole('dialog', { name: 'Inner' })
+  expect(screen.getByTestId('confirmation-backdrop')).toBeInTheDocument()
+  expect(screen.queryByTestId('inner-backdrop')).toBeNull()
+})

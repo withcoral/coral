@@ -9,8 +9,13 @@ type Step = { route: string | null } | ((drawer: Drawer) => void)
 
 const requestClose: Step = (drawer) => drawer.onOpenChange(false)
 const exitEnds: Step = (drawer) => drawer.onOpenChangeComplete(false)
+/** What the last `reopen` said: whether the close had already navigated away. */
+let reported: boolean | undefined
+const reopen: Step = (drawer) => {
+  reported = drawer.reopen()
+}
 
-it.each<[string, Step[], { open: boolean; closes: number }]>([
+it.each<[string, Step[], { open: boolean; closes: number; reported?: boolean }]>([
   // Navigating first would unmount the drawer before its exit plays.
   [
     'a close request hides the drawer but waits for the exit',
@@ -36,7 +41,25 @@ it.each<[string, Step[], { open: boolean; closes: number }]>([
     [requestClose, { route: 'second' }, exitEnds],
     { open: true, closes: 0 },
   ],
+  // A click on the record that is closing keeps it, so no close may follow. The
+  // caller cancels the navigation only when the close already started one.
+  [
+    'a reopen during the exit keeps the drawer open',
+    [requestClose, reopen, exitEnds],
+    { open: true, closes: 0, reported: false },
+  ],
+  [
+    'a reopen after the exit keeps the drawer open and says it navigated',
+    [requestClose, exitEnds, reopen],
+    { open: true, closes: 1, reported: true },
+  ],
+  [
+    'a reopen with no close under way changes nothing',
+    [reopen],
+    { open: true, closes: 0, reported: false },
+  ],
 ])('%s', (_, steps, expected) => {
+  reported = undefined
   const onClose = vi.fn()
   const { result, rerender } = renderHook(({ route }) => useCloseAfterExit(route, onClose), {
     initialProps: { route: 'first' as string | null },
@@ -47,4 +70,5 @@ it.each<[string, Step[], { open: boolean; closes: number }]>([
   }
   expect(result.current.open).toBe(expected.open)
   expect(onClose).toHaveBeenCalledTimes(expected.closes)
+  expect(reported).toBe(expected.reported)
 })
