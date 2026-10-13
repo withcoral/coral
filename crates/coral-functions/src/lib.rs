@@ -12,7 +12,8 @@
 //! explicit deletion evidence in Administration's transaction.
 //!
 //! [`SavedFunctionInspection`] reads the caller's own current definitions
-//! without a compiler, for read-only surfaces.
+//! without a compiler, for read-only surfaces. [`SavedFunctionDeletion`]
+//! deletes them without a compiler, for management surfaces.
 //!
 //! Search facets join the caller's authorized read snapshot and separate metadata,
 //! declaration ranking, hydration, and exact editing material. Admission facets
@@ -22,6 +23,7 @@
 //!
 //! Errors distinguish input, concealment, authority, compilation, and persistence.
 
+mod deletion;
 mod error;
 mod inspection;
 mod repository;
@@ -34,6 +36,7 @@ use coral_db::Transaction;
 use coral_workspace::{Principal, WorkspaceId};
 
 pub use coral_v8::IsolateLimits;
+pub use deletion::SavedFunctionDeletion;
 pub use error::Error;
 pub use inspection::SavedFunctionInspection;
 pub use repository::{hold_source_selection_in_transaction, select_source_in_transaction};

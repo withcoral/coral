@@ -234,6 +234,10 @@ impl Fixture {
                     database.clone(),
                     workspaces.clone(),
                 ),
+                saved_function_deletion: coral_functions::SavedFunctionDeletion::new(
+                    database.clone(),
+                    workspaces.clone(),
+                ),
             },
             coral_grpc::TransportContext {
                 authentication,

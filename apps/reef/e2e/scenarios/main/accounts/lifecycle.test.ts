@@ -12,6 +12,8 @@ import {
   createWorkspace,
   openProviderSettings,
   openYourAccount,
+  waitForNoAccount,
+  waitForYourAccount,
 } from '../../../support/providers.ts'
 
 test('Connect, reconnect and disconnect retain one exact caller account', async (context) => {
@@ -42,15 +44,20 @@ test('Connect, reconnect and disconnect retain one exact caller account', async 
       )
       await openProviderSettings(page)
       await openYourAccount(page)
-      await page.getByRole('button', { name: 'Connect Accounts', exact: true }).waitFor()
-      await page.getByText('No connected account.', { exact: true }).waitFor()
+      await page.getByRole('heading', { name: 'Accounts account', exact: true, level: 2 }).waitFor()
+      await page
+        .getByText('Enter the credentials from Accounts. Coral does not show them again.', {
+          exact: true,
+        })
+        .waitFor()
+      await waitForNoAccount(page)
       expect((await inspect()).account).toBeUndefined()
       accountPage = new URL(page.url()).pathname
     })
     await step('Connect one account without a separate selection', async () => {
       await page.getByLabel('Token', { exact: true }).fill(secret)
-      await page.getByRole('button', { name: 'Connect Accounts', exact: true }).click()
-      await page.getByText('Ready', { exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Connect', exact: true }).click()
+      await waitForYourAccount(page)
       expect(new URL(page.url()).pathname).toBe(accountPage)
       const account = (await inspect()).account!
       expect(account.state).toBe(ProviderAccountState.READY)
@@ -60,16 +67,17 @@ test('Connect, reconnect and disconnect retain one exact caller account', async 
       connectedAt = JSON.stringify(account.connectedTime, (_, value) =>
         typeof value === 'bigint' ? String(value) : value,
       )
-      await page.getByText('Ready', { exact: true }).waitFor()
-      await page
-        .getByText('Upstream account name and identity are unavailable.', { exact: true })
-        .waitFor()
+      const details = page.getByRole('complementary', { name: 'Details', exact: true })
+      await details.getByText(accountId, { exact: true }).waitFor()
+      // A connected account needs nothing from you, so the page gives no instruction.
+      expect(await page.getByText('Enter the credentials from', { exact: false }).count()).toBe(0)
       // Your own account page does not name you as its configurer.
       expect(await page.getByText('Configured by Coral user', { exact: false }).count()).toBe(0)
-      expect(await page.getByRole('group', { name: /^Account / }).count()).toBe(1)
-      expect(
-        await page.getByRole('button', { name: 'Connect Accounts', exact: true }).count(),
-      ).toBe(0)
+      // Coral names the stored secret but never shows it.
+      const credentials = page.getByRole('table', { name: 'Credentials', exact: true })
+      await credentials.getByRole('row', { name: 'Token Stored', exact: true }).waitFor()
+      expect(await page.getByLabel('Token', { exact: true }).count()).toBe(0)
+      expect(await page.getByRole('button', { name: 'Connect', exact: true }).count()).toBe(0)
       expect(
         await page.getByRole('button', { name: /Use this|Save account setting/ }).count(),
       ).toBe(0)
@@ -90,7 +98,7 @@ test('Connect, reconnect and disconnect retain one exact caller account', async 
             typeof value === 'bigint' ? String(value) : value,
           ),
         ).not.toBe(connectedAt)
-        await page.getByText('Ready', { exact: true }).waitFor()
+        await waitForYourAccount(page)
       },
     )
     await step('Disconnect keeps the account but does not present it as connected', async () => {
@@ -99,8 +107,9 @@ test('Connect, reconnect and disconnect retain one exact caller account', async 
         .getByRole('dialog')
         .getByRole('button', { name: 'Disconnect', exact: true })
         .click()
-      await page.getByText('Disconnected', { exact: true }).waitFor()
-      await page.getByText('No connected account.', { exact: true }).waitFor()
+      // A disconnected account reads as no account, and the page offers Connect again.
+      await waitForNoAccount(page)
+      expect(await page.getByRole('region', { name: 'Disconnect', exact: true }).count()).toBe(0)
       const account = (await inspect()).account!
       expect(account.id).toBe(accountId)
       expect(account.state).toBe(ProviderAccountState.DISCONNECTED)
@@ -109,12 +118,14 @@ test('Connect, reconnect and disconnect retain one exact caller account', async 
       'Connect again uses the same scoped account, not a spare inventory item',
       async () => {
         await page.getByLabel('Token', { exact: true }).fill(`${secret}-again`)
-        await page.getByRole('button', { name: 'Connect Accounts', exact: true }).click()
-        await page.getByText('Ready', { exact: true }).waitFor()
+        await page.getByRole('button', { name: 'Connect', exact: true }).click()
+        await waitForYourAccount(page)
         expect(new URL(page.url()).pathname).toBe(accountPage)
         expect((await inspect()).account?.id).toBe(accountId)
-        await page.getByText('Ready', { exact: true }).waitFor()
-        expect(await page.getByRole('group', { name: /^Account / }).count()).toBe(1)
+        await page
+          .getByRole('complementary', { name: 'Details', exact: true })
+          .getByText(accountId, { exact: true })
+          .waitFor()
       },
     )
     await step('No credential is echoed into browser documents or route data', async () => {

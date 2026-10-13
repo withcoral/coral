@@ -2,7 +2,8 @@ import classNames from 'classnames'
 import { useCallback, useRef, type MouseEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 
-import { Button, Inputs, ScrollArea, Typography } from '@/wax/components'
+import { Button, Inputs, Menu, ScrollArea, Typography } from '@/wax/components'
+import type { IconName } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 
 import * as styles from './catalog.css'
@@ -155,12 +156,14 @@ export function CatalogToolbar({
   filter: FilterFieldProps & {
     /** A shortcut, such as "$mod+f", that focuses the filter from anywhere on the page. */
     shortcut?: string
+    /** Takes the rest of the row, for a toolbar in a narrow column such as a card. */
+    fill?: boolean
   }
   /** Controls at the start of the row, such as actions on the selection. */
   leading?: ReactNode
   children?: ReactNode
 }) {
-  const { shortcut, ...field } = filter
+  const { shortcut, fill, ...field } = filter
   const input = useRef<HTMLInputElement>(null)
   const focusFilter = useCallback((event: KeyboardEvent) => {
     event.preventDefault()
@@ -169,14 +172,74 @@ export function CatalogToolbar({
   }, [])
   return (
     <div className={styles.toolbar}>
-      <div className={styles.toolbarGroup}>{leading}</div>
+      {/* An empty group would still take a gap, and push the controls off the table's edge. */}
+      {leading && <div className={styles.toolbarGroup}>{leading}</div>}
       <div className={styles.toolbarGroup}>
         {children}
-        <div className={classNames(styles.toolbarFilter, field.className)}>
+        <div
+          className={classNames(
+            styles.toolbarFilter,
+            fill && styles.toolbarFilterFill,
+            field.className,
+          )}
+        >
           <FilterInput {...field} ref={input} />
           {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
         </div>
       </div>
     </div>
+  )
+}
+
+export interface CatalogFilterOption<T extends string> {
+  value: T
+  label: string
+  icon: IconName
+}
+
+/** The menu's choices. The first shows every row, so there is always one. */
+export type CatalogFilterOptions<T extends string> = readonly [
+  CatalogFilterOption<T>,
+  ...CatalogFilterOption<T>[],
+]
+
+/**
+ * A menu beside the filter that narrows the table to one value, such as a
+ * status. The first option shows every row; the button names the choice.
+ */
+export function CatalogFilterMenu<T extends string>({
+  ariaLabel,
+  options,
+  value,
+  onChange,
+}: {
+  ariaLabel: string
+  options: CatalogFilterOptions<T>
+  value: T
+  onChange: (value: T) => void
+}) {
+  const active = options.find((option) => option.value === value) ?? options[0]
+  return (
+    <Menu.Container>
+      <Menu.Trigger
+        render={
+          // The name keeps the visible choice, so a screen reader hears it too (WCAG 2.5.3).
+          <Button.Container variant="secondary" ariaLabel={`${ariaLabel}: ${active.label}`} />
+        }
+      >
+        <Button.Icon name={active.icon} />
+        <Button.Text>{active.label}</Button.Text>
+        <Button.Icon name="ChevronDown" />
+      </Menu.Trigger>
+      <Menu.Content>
+        <Menu.RadioGroup value={value} onValueChange={(next: string) => onChange(next as T)}>
+          {options.map((option) => (
+            <Menu.RadioItem key={option.value} value={option.value} iconName={option.icon}>
+              {option.label}
+            </Menu.RadioItem>
+          ))}
+        </Menu.RadioGroup>
+      </Menu.Content>
+    </Menu.Container>
   )
 }

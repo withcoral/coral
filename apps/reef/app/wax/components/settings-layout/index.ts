@@ -1,2 +1,15 @@
-export { SettingsLayout, SettingsRemoval } from './settings-layout'
-export type { SettingsLayoutProps, SettingsRemovalProps } from './settings-layout'
+export {
+  SettingsAside,
+  SettingsFact,
+  SettingsFacts,
+  SettingsLayout,
+  SettingsRemoval,
+  SettingsWideColumns,
+} from './settings-layout'
+export type {
+  SettingsAsideProps,
+  SettingsFactProps,
+  SettingsLayoutProps,
+  SettingsRemovalProps,
+  SettingsWideColumnsProps,
+} from './settings-layout'

@@ -9,6 +9,7 @@ import stripeIcon from '../../../recipes/stripe/stripe.svg'
 import { StepperPage } from './stepper-page'
 import type { ProviderView, OperationView, ReviewOperationView, SetupView } from './types'
 import { UpdatePage } from './update-page'
+import { EditConfigurationPage } from './edit-configuration-page'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
 
 const form = { csrf: 'storybook-csrf', requestId: 'storybook-request' }
@@ -1465,7 +1466,7 @@ export const StepNameItConsumed: Story = {
 }
 export const UpdatePublicationRetry: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       {...updateStory}
       setup={{ ...setupReady, state: 'consumed' }}
       attempt={{
@@ -1482,7 +1483,7 @@ export const UpdatePublicationRetry: Story = {
 }
 export const UpdatePublicationFailedAfterReplay: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       {...updateStory}
       setup={{ ...setupReady, state: 'consumed' }}
       attempt={{
@@ -1515,7 +1516,6 @@ export const RefreshUploadedDocument: Story = {
       basePath="/workspaces/demo/providers/prov-github/update"
       cancelPath="/workspaces/demo/providers/prov-github"
       providersPath="/workspaces/demo/providers"
-      setup={null}
       attempt={{
         kind: 'update',
         state: 'draft',
@@ -1532,7 +1532,7 @@ export const RefreshUploadedDocument: Story = {
 }
 export const UpdateReady: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       displayName="GitHub"
       basePath="/workspaces/demo/providers/prov-github/update"
       cancelPath="/workspaces/demo/providers/prov-github"
@@ -1554,7 +1554,7 @@ export const UpdateReady: Story = {
 }
 export const UpdateFailed: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       displayName="GitHub"
       basePath="/workspaces/demo/providers/prov-github/update"
       cancelPath="/workspaces/demo/providers/prov-github"
@@ -1756,7 +1756,7 @@ const updateStory = {
 }
 export const UpdateRemovedDeclaration: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       {...updateStory}
       setup={{
         ...updateReview,
@@ -1781,7 +1781,7 @@ export const UpdateRemovedDeclaration: Story = {
 }
 export const UpdateInvalidLocalServerSelection: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       {...updateStory}
       setup={{
         ...configurationSetup,
@@ -1836,18 +1836,9 @@ export const UpdateInvalidLocalServerSelection: Story = {
     />
   ),
 }
-export const UpdateSavedDifferences: Story = {
-  render: () => <UpdatePage {...updateStory} setup={updateReview} />,
-  play: async ({ canvas }) => {
-    await expect(
-      canvas.getByText('Confirm the configuration to check account access.'),
-    ).toBeVisible()
-    await expect(canvas.queryByRole('checkbox')).not.toBeInTheDocument()
-  },
-}
 export const UpdateIncompatibleWarning: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       {...updateStory}
       setup={{
         ...updateReview,
@@ -1859,7 +1850,7 @@ export const UpdateIncompatibleWarning: Story = {
 }
 export const UpdateCompatibleWithoutRepair: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       {...updateStory}
       setup={{
         ...updateReview,
@@ -1869,37 +1860,13 @@ export const UpdateCompatibleWithoutRepair: Story = {
     />
   ),
   play: async ({ canvas }) => {
-    await expect(canvas.queryByRole('checkbox')).not.toBeInTheDocument()
-    await expect(canvas.getByRole('button', { name: 'Apply changes' })).toBeEnabled()
-    await expect(canvas.getByText('Keep existing accounts.', { exact: true })).toBeVisible()
-  },
-}
-export const UpdateCompatibilityUnknown: Story = {
-  render: () => (
-    <UpdatePage
-      {...updateStory}
-      setup={{
-        ...updateReview,
-        state: 'ready',
-        configuration: {
-          ...updateReview.configuration!,
-          confirmed: true,
-          interruptsAccess: null,
-          diagnostic: 'invalid_schema_reference',
-        },
-      }}
-    />
-  ),
-  play: async ({ canvas }) => {
-    await expect(
-      canvas.getByText(/Coral cannot check account access for this configuration/),
-    ).toBeVisible()
-    await expect(canvas.queryByRole('checkbox')).not.toBeInTheDocument()
+    // Nothing breaks access, so Save publishes without asking.
+    await expect(canvas.getByRole('button', { name: 'Save' })).toHaveAttribute('type', 'submit')
   },
 }
 export const UpdateMcpProtectedDiscovery: Story = {
   render: () => (
-    <UpdatePage
+    <EditConfigurationPage
       {...updateStory}
       setup={{
         ...setupAwaiting,
@@ -1914,7 +1881,6 @@ export const RefreshSavedSource: Story = {
   render: () => (
     <UpdatePage
       {...updateStory}
-      setup={null}
       source={{ url: 'https://api.example.test/openapi.json', kind: 'url' }}
     />
   ),
@@ -1931,85 +1897,19 @@ export const ReadingSavedSource: Story = {
   render: () => (
     <UpdatePage
       {...updateStory}
-      setup={null}
       pending
       source={{ url: 'https://api.example.test/openapi.json', kind: 'url' }}
     />
   ),
   play: async ({ canvas }) => {
-    await expect(canvas.getByRole('button', { name: 'Reading operations…' })).toBeDisabled()
-    await expect(canvas.getByRole('status')).toHaveTextContent('Reading operations.')
+    await expect(canvas.getByRole('status')).toHaveTextContent('Reading operations…')
+    await expect(canvas.getByRole('button', { name: 'Save' })).toBeDisabled()
   },
 }
 export const ReplaceProviderSource: Story = {
-  render: () => <UpdatePage {...updateStory} setup={null} replacingSource />,
+  render: () => <UpdatePage {...updateStory} replacingSource />,
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('textbox', { name: 'MCP server URL' })).toBeVisible()
-  },
-}
-
-const accountChangeSetup: SetupView = {
-  ...updateReview,
-  state: 'ready',
-  authorized: false,
-  authorization: null,
-  credentialMethod: 'bearer',
-  configuration: {
-    ...updateReview.configuration!,
-    values: { ...updateReview.configuration!.values, displayName: 'Records' },
-    confirmed: true,
-    interruptsAccess: false,
-  },
-}
-export const ChangeAccountSetting: Story = {
-  render: () => (
-    <UpdatePage
-      {...updateStory}
-      setup={accountChangeSetup}
-      currentAccount="fixed"
-      attempt={{ ...updateStory.attempt, task: 'accounts' }}
-    />
-  ),
-  play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole('radio', { name: 'Individual accounts' }))
-    await expect(canvas.getByRole('button', { name: 'Review changes' })).toBeEnabled()
-    await expect(canvas.queryByRole('tablist', { name: 'Source' })).not.toBeInTheDocument()
-  },
-}
-export const ReviewAccountRemoval: Story = {
-  render: () => (
-    <UpdatePage
-      {...updateStory}
-      setup={accountChangeSetup}
-      currentAccount="fixed"
-      attempt={{ ...updateStory.attempt, task: 'accounts', account: 'caller', review: true }}
-    />
-  ),
-  play: async ({ canvas }) => {
-    await expect(canvas.getByRole('button', { name: 'Apply changes' })).toBeDisabled()
-    await userEvent.click(
-      canvas.getByRole('checkbox', { name: 'Remove existing shared account credentials' }),
-    )
-    await expect(canvas.getByRole('button', { name: 'Apply changes' })).toBeEnabled()
-  },
-}
-export const RetainTemporarySignIn: Story = {
-  render: () => (
-    <UpdatePage
-      {...updateStory}
-      setup={{
-        ...accountChangeSetup,
-        authorized: true,
-        provisionalGrantId: '00000000-0000-4000-8000-000000000001',
-      }}
-    />
-  ),
-  play: async ({ canvas }) => {
-    await expect(canvas.getByRole('button', { name: 'Review changes' })).toBeDisabled()
-    await userEvent.click(
-      canvas.getByRole('radio', { name: 'Use this sign-in as the shared account' }),
-    )
-    await expect(canvas.getByRole('button', { name: 'Review changes' })).toBeEnabled()
   },
 }
 
@@ -2090,4 +1990,82 @@ export const ConfigurationHeaderCredentials: Story = {
     />
   ),
   parameters: { ...workspaceEntry, chromatic: { viewports: [390, 1440] } },
+}
+
+const editStory = {
+  ...updateStory,
+  currentAccount: 'caller' as const,
+  attempt: { ...updateStory.attempt, task: 'configuration' } as UpdateAttempt,
+}
+export const EditConfiguration: Story = {
+  render: () => (
+    <EditConfigurationPage
+      {...editStory}
+      setup={{ ...updateReview, state: 'awaiting_configuration' }}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
+}
+/** Save confirmed a change that makes each account reconnect, so it asks first. */
+export const EditConfigurationReconnect: Story = {
+  render: () => (
+    <EditConfigurationPage
+      {...editStory}
+      setup={{
+        ...updateReview,
+        state: 'ready',
+        configuration: { ...updateReview.configuration!, interruptsAccess: true },
+      }}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
+  play: async () => {
+    const dialog = await screen.findByRole('dialog', { name: 'Save changes?' })
+    await expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled()
+  },
+}
+/** Change account setting compares the two settings as Add provider does. */
+export const ChangeAccountSettingRoutes: Story = {
+  render: () => (
+    <EditConfigurationPage
+      {...editStory}
+      currentAccount="fixed"
+      attempt={{ ...editStory.attempt, task: 'accounts' }}
+      setup={{
+        ...updateReview,
+        state: 'ready',
+        configuration: { ...updateReview.configuration!, interruptsAccess: false },
+      }}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
+}
+/** After a refresh reads the source, the operations the live provider lacks group at the top. */
+export const RefreshNewOperations: Story = {
+  render: () => (
+    <EditConfigurationPage
+      {...updateStory}
+      currentAccount="none"
+      source={{ url: 'https://api.example.test/openapi.json', kind: 'url' }}
+      attempt={{ ...updateStory.attempt, task: 'refresh' } as UpdateAttempt}
+      setup={{
+        ...discovered,
+        credentialMethod: 'none',
+        configuration: { ...discovered.configuration!, interruptsAccess: false },
+      }}
+      currentOperations={[
+        { relativePath: 'users.list', summary: 'List the people in the account.' },
+        { relativePath: 'events.stream', summary: 'Read the event stream.' },
+        { relativePath: 'users.delete', summary: 'Remove one person from the account.' },
+      ]}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
+  play: async ({ canvas }) => {
+    // What the refresh changes opens; the provider's own groups stay closed.
+    await expect(canvas.getByRole('button', { name: 'Collapse New' })).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: 'Collapse Removed' })).toBeInTheDocument()
+    expect(canvas.queryAllByRole('button', { name: /^Expand / }).length).toBeGreaterThan(0)
+    expect(canvas.queryAllByRole('button', { name: /^Collapse / })).toHaveLength(2)
+  },
 }

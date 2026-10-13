@@ -24,8 +24,10 @@ const audiences = {
     later: 'Everyone, including you, connects an account when they first use the provider.',
     onlyYou: 'Only you use this account. Other people connect their own accounts.',
     sharedAccount: 'People and agents use this shared account.',
+    individualAccounts:
+      'Each person connects their own account. Workspace owners connect accounts for agents.',
     reconnect:
-      'Reconnect your account after you apply the changes. Reconnect each agent account. Other users reconnect their own accounts.',
+      'Reconnect your account after you save the changes. Reconnect each agent account. Other users reconnect their own accounts.',
     help: {
       fixed: 'People and agents use one shared account for calls through this namespace.',
       caller:
@@ -42,7 +44,8 @@ const audiences = {
       'You connect your account when you first use the provider. You connect one for each agent that uses it.',
     onlyYou: 'Only you use this account. You connect a separate account for each agent.',
     sharedAccount: 'You and your agents use this shared account.',
-    reconnect: 'Reconnect your account after you apply the changes. Reconnect each agent account.',
+    individualAccounts: 'You connect your own account and a separate account for each agent.',
+    reconnect: 'Reconnect your account after you save the changes. Reconnect each agent account.',
     help: {
       fixed: 'You and your agents use one shared account for calls through this namespace.',
       caller:

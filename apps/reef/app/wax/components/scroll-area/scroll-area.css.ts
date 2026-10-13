@@ -23,6 +23,11 @@ export const viewport = style({
   maxHeight: 'inherit',
   overscrollBehavior: 'contain',
   width: '100%',
+  selectors: {
+    // Not a tab stop: only a click focuses it, and a later key press must not
+    // outline the whole area as if the keyboard had.
+    '&[tabindex="-1"]:focus-visible': { outline: 'none' },
+  },
 })
 
 /** The reading controller, rather than browser heuristics, owns record anchoring. */

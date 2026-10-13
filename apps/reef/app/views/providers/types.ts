@@ -61,6 +61,9 @@ export interface OperationView extends OperationNodeView {
   policy: PolicyState
 }
 
+/** One operation the live provider has, as a refresh compares it. */
+export type LiveOperationView = Pick<OperationNodeView, 'relativePath' | 'summary'>
+
 /** One previewed Operation, as the operations step groups and lists it. */
 export interface ReviewOperationView extends OperationNodeView {
   /** Operation Key, which the destination map and the unavailable list are keyed by. */
@@ -107,18 +110,6 @@ export interface ProviderSettingsView {
   enabled: boolean
   /** False when Coral can call none of the provider's operations. */
   operationsReady: boolean
-  /** The whole catalog by declared hint, and how many Coral cannot call. */
-  operations: {
-    total: number
-    /** Distinct operation groups; zero when the catalog is a flat list. */
-    groups: number
-    /** Operations that declare they change nothing. */
-    readOnly: number
-    /** Operations that declare they may destroy data. */
-    destructive: number
-    /** Unavailable operations, whatever their effect. */
-    blocked: number
-  }
   account: AccountChoice
   /** The state of the account calls use: yours, or the shared one. Unknown when unread. */
   connection: PersonalAccountState | 'unknown'
@@ -411,6 +402,10 @@ export interface UpdatePageProps {
   displayName: string
   basePath: string
   cancelPath: string
+  /** The provider's settings, where Edit configuration opens from. */
+  settingsPath?: string
+  /** The live provider's operations; a refresh groups the new and removed ones. */
+  currentOperations?: readonly LiveOperationView[]
   providersPath: string
   setup: SetupView | null
   attempt: UpdateAttempt
