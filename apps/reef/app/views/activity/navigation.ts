@@ -161,3 +161,63 @@ export function useActivityNavigation(page: ActivityPage) {
   const { pathname } = useLocation()
   return reader ?? activityNavigation(page, pathname, query.toString())
 }
+
+/** Only a Task or Run has children to expand. */
+export const expandable = (row: ActivityRow) => row.kind === 'task' || row.kind === 'run'
+
+/** A record the keyboard cursor reaches, in the order the table shows it. */
+export interface ActivityStop {
+  row: ActivityRow
+  /** Child-window identity: it survives a submission becoming its accepted Run. */
+  identity: string
+  /** The records whose expanded branches hold it, outermost first. */
+  ancestors: string[]
+  /** Unloaded records sit between it and the stop before it. */
+  gapBefore: boolean
+}
+
+/**
+ * The records the keyboard cursor reaches, in the order the table shows them:
+ * each root, then the loaded children of a Task or Run whose branch the table
+ * shows, by ordinal. Headings, status rows, and unloaded ordinals are not stops.
+ */
+export function activityStops(page: ActivityPage, roots: ActivityRow[]): ActivityStop[] {
+  const stops: ActivityStop[] = []
+  let gap = false
+  const add = (row: ActivityRow, ancestors: string[]) => {
+    stops.push({ row, identity: activityRowIdentity(row), ancestors, gapBefore: gap })
+    gap = false
+    const branch = page.branches[row.name]
+    if (!expandable(row)) return
+    if (!branch) {
+      // An expanded record whose children have not arrived yet hides them.
+      if (page.expanded.includes(row.name)) gap = true
+      return
+    }
+    if (branch.unavailable) return
+    const children = branch.rows
+      .map((child, index) => ({ child, index: child.position ?? (branch.offset ?? 0) + index }))
+      .toSorted((left, right) => left.index - right.index)
+    let next = 0
+    for (const { child, index } of children) {
+      if (index > next) gap = true
+      add(child, [...ancestors, row.name])
+      next = index + 1
+    }
+    if (Number(branch.total ?? branch.rows.length) > next) gap = true
+  }
+  for (const row of roots) add(row, [])
+  return stops
+}
+
+/**
+ * The stop a step from `cursor` reaches, or undefined at either end or an
+ * unloaded gap. Without a cursor, a step forward starts at the first stop and a
+ * step back at the last.
+ */
+export function stepStop(stops: ActivityStop[], cursor: string | null, step: 1 | -1) {
+  const at = cursor === null ? -1 : stops.findIndex((stop) => stop.identity === cursor)
+  if (at < 0) return step > 0 ? stops[0] : stops.at(-1)
+  const next = stops[at + step]
+  return next && !(step > 0 ? next : stops[at]!).gapBefore ? next : undefined
+}

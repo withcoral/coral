@@ -6,7 +6,10 @@ import { Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/componen
 import { animations } from '@/wax/animations'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Icon, type IconName } from '@/wax/components/icon'
-import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
+import {
+  KeyboardShortcut,
+  cursorKeyApplies as tableCursorKeyApplies,
+} from '@/wax/components/keyboard-shortcut'
 import { Logo } from '@/wax/components/logo'
 import { Markdown } from '@/wax/components/markdown'
 import { PageLayout } from '@/wax/components/page-layout'
@@ -1429,11 +1432,6 @@ const OperationRow = memo(function OperationRow({
 // Clicks on these keep their own behavior and do not open the drawer.
 const ROW_CONTROLS = 'button, input, label, [role="radio"], [role="checkbox"], [tabindex]'
 
-// Controls that read these keys themselves: a radio group or menu moves with
-// the arrows, and a field types the space.
-const KEY_CONTROLS =
-  'textarea, select, [contenteditable="true"], [role="radiogroup"], [role="menu"], [role="listbox"], [role="combobox"], [role="slider"], [role="tablist"], input'
-
 const never = () => false
 const repeated = (event: KeyboardEvent) => event.repeat
 
@@ -1458,11 +1456,9 @@ function policyFormData(
 }
 
 /**
- * Whether a cursor key belongs to the operations table. A control that reads
- * the key keeps it; so does any dialog but the operation drawer, which passes
- * `inDrawer`. With `fromFilter`, the key also works from the operation filter.
- * With `overControls`, it also works from a focused button, link, or checkbox,
- * which otherwise keep the Enter and Space that activate them.
+ * Whether a cursor key belongs to the operations table, as Wax decides for any
+ * table cursor. With `fromFilter`, the key also works from the operation filter.
+ * Only the operation drawer, which passes `inDrawer`, drives the cursor from a dialog.
  */
 function cursorKeyApplies(
   event: KeyboardEvent,
@@ -1472,14 +1468,11 @@ function cursorKeyApplies(
     inDrawer = false,
   }: { fromFilter: boolean; overControls: boolean; inDrawer?: boolean },
 ) {
-  if (event.defaultPrevented || event.isComposing) return false
-  const target = event.target instanceof Element ? event.target : null
-  // The table scrolls, so it takes focus, but it is not a control in a row.
-  if (!target || target === document.body || target.matches('[role="table"]')) return true
-  if (target.id === OPERATION_FILTER_ID) return fromFilter
-  if (!overControls && target.closest(ROW_CONTROLS + ', a')) return false
-  if (target.closest(KEY_CONTROLS)) return false
-  return inDrawer || !target.closest('[role="dialog"], [role="alertdialog"]')
+  return tableCursorKeyApplies(event, {
+    overControls,
+    inDialog: inDrawer,
+    field: fromFilter ? OPERATION_FILTER_ID : undefined,
+  })
 }
 
 const PolicySelect = memo(function PolicySelect({

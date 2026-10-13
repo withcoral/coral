@@ -51,3 +51,6 @@ export const native = style({
   overflowWrap: 'anywhere',
   flexShrink: 0,
 })
+
+// One record's detail, keyed so it mounts per record; its parts stay the drawer's.
+export const detail = style({ display: 'contents' })

@@ -662,6 +662,47 @@ export const LargeHistory: Story = {
     )
   },
 }
+/** Whether all of `row` shows: its top and bottom edges are not under a pinned heading. */
+const shownInFull = (row: HTMLElement) => {
+  const bounds = row.getBoundingClientRect()
+  const x = bounds.left + bounds.width / 2
+  return [bounds.top + 1, bounds.bottom - 1].every((y) =>
+    row.contains(row.ownerDocument.elementFromPoint(x, y)),
+  )
+}
+/**
+ * Press ↓ and ↑ to move the keyboard cursor through the tree, Space to toggle
+ * expansion, and Enter to open the detail. Its row shows in full below the pinned
+ * headings. Vitest covers the traversal rules and focus; this needs a real layout.
+ */
+export const KeyboardCursor: Story = {
+  parameters: LargeHistory.parameters,
+  render: LargeHistory.render,
+  play: async ({ canvasElement, userEvent }) => {
+    const canvas = within(canvasElement)
+    const screen = within(canvasElement.ownerDocument.body)
+    const list = canvas.getByRole('table', { name: 'Activity records' })
+    const cursor = () => list.querySelector<HTMLElement>('[role="row"][data-active]')
+    // Down into the expanded Task and its Run, then back up, each row in full view.
+    for (const key of [...Array(40).fill('{ArrowDown}'), ...Array(40).fill('{ArrowUp}')]) {
+      await userEvent.keyboard(key)
+      await waitFor(() => expect(shownInFull(cursor()!)).toBe(true))
+    }
+    await expect(list.scrollTop).toBe(0)
+    // Past the first Task's solo Run to the next Task; rows in view do not move.
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}')
+    await expect(list.scrollTop).toBe(0)
+    await userEvent.keyboard('{Enter}')
+    const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+    await within(dialog).findByRole('heading', { name: largeTasks[1]!.intent })
+    dialog.scrollTop = dialog.scrollHeight
+    // ↓ reaches the expanded Task after it, in the same drawer, from its top.
+    await userEvent.keyboard('{ArrowDown}')
+    await within(dialog).findByRole('heading', { name: largeTasks[2]!.intent })
+    await expect(screen.getByRole('dialog', { name: 'Activity details' })).toBe(dialog)
+    await expect(dialog.scrollTop).toBe(0)
+  },
+}
 /**
  * Records on both sides of midnight UTC sit under their own day headings. This is
  * the one home for the midnight split, so it runs in a real browser.
