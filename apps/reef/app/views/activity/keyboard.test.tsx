@@ -173,16 +173,20 @@ it('keys do nothing while a button elsewhere on the page has focus', async () =>
 })
 
 // Catches: arrows on the page background doing nothing, or Enter and Space there
-// acting on a table nobody focused.
-it('an arrow on the page focuses the table and moves its cursor', async () => {
+// acting on a table nobody focused. With no cursor, ↓ starts at the first record
+// and ↑ at the last, as in the focused table.
+it.each<[string, string, string, string]>([
+  ['↓', '{ArrowDown}', 'Task a', 'Task b'],
+  ['↑', '{ArrowUp}', 'Task b', 'Task a'],
+])('%s on the page focuses the table and moves its cursor', async (_, key, first, then) => {
   const { user, router } = renderActivity({ rows: [task('a'), task('b')] })
   await user.keyboard('{Enter} ')
   expect({ cursor: cursor(), record: recordIn(router) }).toEqual({ cursor: null, record: null })
-  await user.keyboard('{ArrowDown}')
+  await user.keyboard(key)
   expect(activityTable()).toHaveFocus()
-  expect(cursor()).toBe('Task a')
-  await user.keyboard('{ArrowDown}')
-  expect(cursor()).toBe('Task b')
+  expect(cursor()).toBe(first)
+  await user.keyboard(key)
+  expect(cursor()).toBe(then)
 })
 
 // Catches: a table that Tab cannot reach, or that acts before it has focus.
@@ -750,17 +754,23 @@ it('only the drawer itself steps the detail; its controls keep their arrows', as
 
 // Catches: an arrow on the page while the detail is open moving the hidden table
 // cursor instead of the detail, so Escape shows a record the detail never showed.
-it('an arrow on the page steps the open detail from the drawer', async () => {
+it.each<[string, string, string, string]>([
+  ['↓', '{ArrowDown}', 'a', 'b'],
+  ['↑', '{ArrowUp}', 'b', 'a'],
+])('%s on the page steps the open detail from the drawer', async (_, key, from, to) => {
   const [a, b, c] = [task('a'), task('b'), task('c')]
-  const { user, router } = renderActivity({ rows: [a, b, c], entry: `/activity?record=${a.name}` })
+  const { user, router } = renderActivity({
+    rows: [a, b, c],
+    entry: `/activity?record=${task(from).name}`,
+  })
   await screen.findByRole('dialog', { name: 'Activity details' })
   act(() => (document.activeElement as HTMLElement | null)?.blur())
-  await user.keyboard('{ArrowDown}')
+  await user.keyboard(key)
   expect(details()).toHaveFocus()
-  expect(recordIn(router)).toBe(b.name)
+  expect(recordIn(router)).toBe(task(to).name)
   await user.keyboard('{Escape}')
   await vi.waitFor(() => {
-    expect(cursor()).toBe('Task b')
+    expect(cursor()).toBe(`Task ${to}`)
     expect(activityTable()).toHaveFocus()
   })
 })

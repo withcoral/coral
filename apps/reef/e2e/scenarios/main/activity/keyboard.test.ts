@@ -93,15 +93,28 @@ async function driveActivity(
   })
   await step('↓ walks every emission in order, below the pinned headings', async () => {
     // The Run's first window ends before its last emissions. The cursor stops
-    // there until scrolling loads them; it never skips to the next Task.
+    // there until the reader loads them; it never skips to the next Task. The
+    // reader's next window waits until that stop, so the stop always happens.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await page.route('**/activity/observe', async (route) => {
+      await held
+      await route.continue().catch(() => {})
+    })
     let previous = await cursorAt(table)
     let emissions = 0
     let gaps = 0
+    let stops = 0
     for (let presses = 0; presses < 400; presses++) {
       const at = await press('ArrowDown')
       expect(at.shown, `${at.label} shows in full`).toBe(true)
       if (at.label === previous.label) {
         expect(previous.beforeGap, `${at.label} stops only at a gap`).toBe(true)
+        stops++
+        // The existing loader now brings the emissions after the gap.
+        release()
         await page.waitForTimeout(50)
       } else if (at.window === previous.window && at.index !== null) {
         expect(at.index, `${at.label} follows ${previous.label}`).toBe(previous.index! + 1)
@@ -114,8 +127,11 @@ async function driveActivity(
     // The walk left the expanded Task for the older one, past every emission.
     expect(previous.label).toMatch(/^Keyboard second /)
     expect(emissions).toBe(130)
-    // The cursor reached the end of a loaded window at least once.
+    // The cursor reached the end of a loaded window and stopped at its gap.
     expect(gaps).toBeGreaterThan(0)
+    expect(stops).toBeGreaterThan(0)
+    release()
+    await page.unroute('**/activity/observe')
   })
   let older = ''
   let child = ''
