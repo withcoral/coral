@@ -33,9 +33,16 @@ enum Retriever {
     SavedFunction,
 }
 
+/// - `results_found`: the retriever ranked at least one result.
+/// - `empty`: the retriever searched everything and nothing matched.
+/// - `skipped`: only in a search that an earlier Coral retained; its Provider
+///   filter left this kind out.
+/// - `partial`: some Providers or Saved Functions are not indexed yet, or
+///   failed; results may be missing.
+/// - `error`: the retriever could not rank; its results are missing.
+///
 /// `partial` and `error` mean results may be missing: retry shortly or list
-/// without a query. Only a search that an earlier Coral retained holds
-/// `skipped`: its Provider filter left this kind out.
+/// without a query.
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum RetrieverState {

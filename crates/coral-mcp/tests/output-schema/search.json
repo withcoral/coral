@@ -223,7 +223,7 @@
         "partial",
         "error"
       ],
-      "description": "`partial` and `error` mean results may be missing: retry shortly or list\nwithout a query. Only a search that an earlier Coral retained holds\n`skipped`: its Provider filter left this kind out."
+      "description": "- `results_found`: the retriever ranked at least one result.\n- `empty`: the retriever searched everything and nothing matched.\n- `skipped`: only in a search that an earlier Coral retained; its Provider\n  filter left this kind out.\n- `partial`: some Providers or Saved Functions are not indexed yet, or\n  failed; results may be missing.\n- `error`: the retriever could not rank; its results are missing.\n\n`partial` and `error` mean results may be missing: retry shortly or list\nwithout a query."
     },
     "RetrieverCoverage": {
       "type": "object",
