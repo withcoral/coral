@@ -338,9 +338,15 @@ export const ManyAgents: Story = {
     ),
   ],
 }
+/** The table keeps its shape with no agents, and offers to create one. */
 export const NoAgents: Story = {
   render: () => <AgentsPage workspace={workspace} agents={[]} nextPage="" form={form} />,
   parameters: { initialEntry: '/workspaces/demo/agents' },
+  play: async ({ canvas }) => {
+    const table = within(canvas.getByRole('table', { name: 'Agents' }))
+    await expect(table.getByText('No agents yet')).toBeVisible()
+    await expect(table.getByRole('button', { name: 'Create agent' })).toBeVisible()
+  },
 }
 export const ArchivedAgents: Story = {
   render: () => <AgentsPage workspace={archived} agents={[agent]} nextPage="" form={form} />,

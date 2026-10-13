@@ -88,76 +88,78 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
         </ArchivedBanner>
       )}
       {notice?.error && <ActionNotice result={notice} />}
-      {agents.length === 0 ? (
-        <EmptyPage
-          iconName="Bot"
-          title="No agents yet"
-          description="Create an agent to get its API key. Then connect the agent to this workspace."
-          action={active ? createButton : undefined}
+      {/* The empty state sits in the table, so the page keeps its shape at the first agent. */}
+      <CatalogToolbar
+        filter={{
+          id: FILTER_ID,
+          label: 'Filter agents',
+          shortcut: '$mod+f',
+          value: input,
+          onChange: setInput,
+        }}
+      >
+        <CatalogFilterMenu
+          ariaLabel="Filter agents by status"
+          options={STATUS_FILTERS}
+          value={status}
+          onChange={setStatus}
         />
-      ) : (
-        <>
-          <CatalogToolbar
-            filter={{
-              id: FILTER_ID,
-              label: 'Filter agents',
-              shortcut: '$mod+f',
-              value: input,
-              onChange: setInput,
-            }}
-          >
-            <CatalogFilterMenu
-              ariaLabel="Filter agents by status"
-              options={STATUS_FILTERS}
-              value={status}
-              onChange={setStatus}
+      </CatalogToolbar>
+      <Table.Container
+        ref={table}
+        ariaLabel="Agents"
+        variant="card"
+        layout="fixed"
+        // The rows scroll under the heading, so the table never outgrows the page.
+        bounded
+        columns={[
+          { label: 'Name', width: { fill: 3 } },
+          { label: 'Status', width: { fill: 1.2 } },
+          { label: 'Created by', width: { fill: 1.6 } },
+          { ariaLabel: 'Settings', width: 48 },
+        ]}
+      >
+        <Table.Head />
+        {agents.length === 0 ? (
+          <Table.Status>
+            <EmptyPage
+              fullSize={false}
+              iconName="Bot"
+              title="No agents yet"
+              description="Create an agent to get its API key. Then connect the agent to this workspace."
+              action={active ? createButton : undefined}
             />
-          </CatalogToolbar>
-          <Table.Container
-            ref={table}
-            ariaLabel="Agents"
-            variant="card"
-            layout="fixed"
-            // The rows scroll under the heading, so the table never outgrows the page.
-            bounded
-            columns={[
-              { label: 'Name', width: { fill: 3 } },
-              { label: 'Status', width: { fill: 1.2 } },
-              { label: 'Created by', width: { fill: 1.6 } },
-              { ariaLabel: 'Settings', width: 48 },
-            ]}
-          >
-            <Table.Head />
-            {shown.length === 0 && (
-              <Table.Status>
-                {query ? `No agents match “${query}”.` : 'No agents match.'}
-              </Table.Status>
-            )}
-            <Table.Body>
-              {shown.map((a) => (
-                <Table.Row key={a.name} to={a.path}>
-                  <Table.Cell wrap>
-                    <Table.RowLink to={a.path}>{a.displayName}</Table.RowLink>
-                  </Table.Cell>
-                  <Table.Cell wrap>
-                    <Status blockers={a.accessBlockers} />
-                  </Table.Cell>
-                  <Table.Cell wrap>
-                    <Person person={a.creator} currentUser={w.currentUser} compact />
-                  </Table.Cell>
-                  <Table.Cell actions>
-                    <Button.IconLink
-                      name="Settings"
-                      to={a.settingsPath}
-                      tooltipText={`${a.displayName} settings`}
-                    />
-                  </Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table.Container>
-        </>
-      )}
+          </Table.Status>
+        ) : (
+          shown.length === 0 && (
+            <Table.Status>
+              {query ? `No agents match “${query}”.` : 'No agents match.'}
+            </Table.Status>
+          )
+        )}
+        <Table.Body>
+          {shown.map((a) => (
+            <Table.Row key={a.name} to={a.path}>
+              <Table.Cell wrap>
+                <Table.RowLink to={a.path}>{a.displayName}</Table.RowLink>
+              </Table.Cell>
+              <Table.Cell wrap>
+                <Status blockers={a.accessBlockers} />
+              </Table.Cell>
+              <Table.Cell wrap>
+                <Person person={a.creator} currentUser={w.currentUser} compact />
+              </Table.Cell>
+              <Table.Cell actions>
+                <Button.IconLink
+                  name="Settings"
+                  to={a.settingsPath}
+                  tooltipText={`${a.displayName} settings`}
+                />
+              </Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Container>
       {nextPage && (
         <div className={styles.row}>
           <Button.InternalLink to={`${agentsPath}?page=${encodeURIComponent(nextPage)}`}>
