@@ -253,7 +253,7 @@ it('keeps the code through a failed check while it waits', async () => {
   const popup = within(await open())
   await popup.findByText('WDJB-MJHT')
   await act(() => vi.advanceTimersByTimeAsync(2000))
-  await popup.findByText('Coral could not check the connection. Trying again in a moment.')
+  await popup.findByText('Coral could not check the connection. Trying again in a moment…')
   expect(popup.getByText('WDJB-MJHT')).toBeTruthy()
   await act(() => vi.advanceTimersByTimeAsync(2000))
   await vi.waitFor(() => expect(popup.queryByText(/Trying again in a moment/)).toBeNull())

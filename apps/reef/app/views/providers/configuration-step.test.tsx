@@ -221,11 +221,6 @@ describe('OAuth application registration copy', () => {
     expect(html).not.toContain('registration with docs.example.test')
   })
 
-  it('names the OAuth host for an automatic client', () => {
-    const html = render({ ...separateHosts, automaticClientAvailable: true })
-    expect(html).toContain('Leave empty to register automatically with login.example.test.')
-  })
-
   it('names the service without an OAuth host to read', () => {
     const html = render({
       ...separateHosts,

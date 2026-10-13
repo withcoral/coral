@@ -240,7 +240,7 @@ function AuthorizationStep({
   // Coral checks again on the next tick while it waits.
   const recheck = failed && waiting && (
     <Typography.BodySmall as="p" variant="tertiary" aria-live="polite">
-      {failed} Trying again in a moment.
+      {failed} Trying again in a moment…
     </Typography.BodySmall>
   )
   if (v.state === 'failed' || v.state === 'expired' || v.state === 'canceled')

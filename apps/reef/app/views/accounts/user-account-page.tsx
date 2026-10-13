@@ -58,7 +58,7 @@ export function UserAccountPage({
       ) : v.oauth ? (
         <>
           <Typography.BodySmall as="p">
-            Sign in to {v.providerName} to connect your account.
+            Sign in to {v.providerName} to {verb.toLowerCase()} your account.
           </Typography.BodySmall>
           <ConnectButton
             action={v.path}

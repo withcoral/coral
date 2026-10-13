@@ -110,7 +110,7 @@ export function OAuthApplicationBlock({
             />
             <Typography.BodySmall as="p" variant="tertiary">
               {automaticAllowed
-                ? `Leave empty to register automatically with ${registrar}.`
+                ? 'Leave empty to use automatic client setup.'
                 : `From your application's registration with ${registrar}.`}
             </Typography.BodySmall>
           </div>
@@ -136,7 +136,7 @@ export function OAuthApplicationBlock({
                   <Typography.BodySmall as="p" variant="tertiary">
                     {setup.clientSecretConfigured
                       ? 'Leave this field empty to keep the saved secret for the same client ID.'
-                      : `From your application's registration with ${registrar}.`}
+                      : `Enter the application secret from your registration with ${registrar}.`}
                   </Typography.BodySmall>
                 </div>
               )}
