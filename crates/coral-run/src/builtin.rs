@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use coral_catalog::{
-    AuthenticationConfiguration, BuiltinOperation, ExecutionBinding, ProviderConfiguration,
-    ServerSelection,
+    AuthenticationConfiguration, BuiltinOperation, CredentialField, ExecutionBinding,
+    ProviderConfiguration, ServerSelection,
 };
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
@@ -19,6 +19,8 @@ use coral_workspace::{ChangeContext, Principal, WorkspaceId};
 use serde::Deserialize;
 
 use crate::{CoralFailure, Error, HumanInterfaceUrl};
+
+mod input;
 
 /// One admitted Built-in Operation with its validated input.
 #[derive(Clone)]
@@ -93,14 +95,14 @@ pub(crate) struct CreateProvider {
     choices: ConfigurationChoices,
 }
 
-/// The configuration fields the Program chose. Nested values use the Setup
-/// configuration's own JSON shape.
+/// The configuration fields the Program chose, converted from its input.
 #[derive(Clone)]
 struct ConfigurationChoices {
     display_name: Option<String>,
     servers: Option<BTreeMap<String, ServerSelection>>,
     authentication: Option<AuthenticationConfiguration>,
     request_headers: Option<BTreeMap<String, String>>,
+    credential_fields: Option<BTreeMap<String, CredentialField>>,
 }
 
 /// Who publishes a configured Setup.
@@ -118,9 +120,10 @@ struct CreateProviderArguments {
     source: SourceArguments,
     credential_route: Option<RouteArgument>,
     display_name: Option<String>,
-    servers: Option<BTreeMap<String, ServerSelection>>,
-    authentication: Option<AuthenticationConfiguration>,
+    servers: Option<BTreeMap<String, input::ServerInput>>,
+    authentication: Option<input::AuthenticationInput>,
     request_headers: Option<BTreeMap<String, String>>,
+    credential_fields: Option<BTreeMap<String, input::CredentialFieldInput>>,
 }
 
 #[derive(Deserialize)]
@@ -147,19 +150,21 @@ impl CreateProvider {
             .map_err(|_error| CoralFailure::InvalidInput)?;
         let namespace = ProviderNamespace::parse(&arguments.namespace)
             .map_err(|_error| CoralFailure::InvalidInput)?;
-        // A literal or a credential-named header would carry a credential value
-        // through the Program; a person enters every value in Reef.
+        // A credential-named header would carry a credential value through the
+        // Program; a person enters every value in Reef. The authentication input
+        // takes no literal value.
         if arguments
-            .authentication
+            .request_headers
             .as_ref()
-            .is_some_and(AuthenticationConfiguration::has_literal_values)
-            || arguments
-                .request_headers
-                .as_ref()
-                .is_some_and(|headers| headers.keys().any(|name| names_a_credential(name)))
+            .is_some_and(|headers| headers.keys().any(|name| names_a_credential(name)))
         {
             return Err(CoralFailure::InvalidInput);
         }
+        let authentication = arguments
+            .authentication
+            .map(AuthenticationConfiguration::try_from)
+            .transpose()
+            .map_err(|_rejected| CoralFailure::InvalidInput)?;
         let route = match arguments
             .credential_route
             .ok_or(CoralFailure::InvalidInput)?
@@ -185,9 +190,20 @@ impl CreateProvider {
             route,
             choices: ConfigurationChoices {
                 display_name: arguments.display_name,
-                servers: arguments.servers,
-                authentication: arguments.authentication,
+                servers: arguments.servers.map(|servers| {
+                    servers
+                        .into_iter()
+                        .map(|(declaration, server)| (declaration, server.into()))
+                        .collect()
+                }),
+                authentication,
                 request_headers: arguments.request_headers,
+                credential_fields: arguments.credential_fields.map(|fields| {
+                    fields
+                        .into_iter()
+                        .map(|(name, field)| (name, field.into()))
+                        .collect()
+                }),
             },
         })
     }
@@ -294,15 +310,21 @@ impl CreateProvider {
                 .request_headers
                 .clone()
                 .unwrap_or(suggested.request_headers),
-            credential_fields: suggested.credential_fields,
+            credential_fields: choices
+                .credential_fields
+                .clone()
+                .unwrap_or(suggested.credential_fields),
         }
     }
 
     /// The Reef page where a person finishes the Setup.
     fn needs_sign_in(&self, host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> serde_json::Value {
-        let url =
-            host.human_interface
-                .page_url(&setup_path(host.workspace_id, setup, &self.namespace));
+        let url = host.human_interface.page_url(&setup_path(
+            host.workspace_id,
+            setup,
+            &self.namespace,
+            self.route,
+        ));
         serde_json::json!({
             "data": {
                 "status": "needs_sign_in",
@@ -516,16 +538,30 @@ fn web_url(url: String) -> Result<String, CoralFailure> {
     }
 }
 
-/// Reef's new-provider page for one Setup, with the requested namespace filled in.
+/// Reef's new-provider stepper for one Setup. The namespace, the Operations
+/// and the Credential Route are already chosen, so the person signs in and
+/// publishes. A valid namespace, a Setup id and a route need no URL encoding.
 fn setup_path(
     workspace: &WorkspaceId,
     setup: &ProviderSetupId,
     namespace: &ProviderNamespace,
+    route: CredentialRoute,
 ) -> String {
-    format!(
-        "/workspaces/{workspace}/providers/new?setup={setup}&namespace={}",
+    let path = format!(
+        "/workspaces/{workspace}/providers/new?setup={setup}&namespace={}&operationsAccepted=1",
         namespace.as_str()
-    )
+    );
+    // Reef asks the account question only for a route that has an Account.
+    // `accountReview` would also let a sign-in in hand add the Provider without
+    // a click, so the link carries it only where the question needs it.
+    match route {
+        CredentialRoute::None => path,
+        CredentialRoute::Fixed => format!("{path}&account=fixed"),
+        // It opens the question on Connect now. A confidential application
+        // takes its secret only at that sign-in, so Connect later could not
+        // publish.
+        CredentialRoute::Caller => format!("{path}&account=caller&accountReview=1"),
+    }
 }
 
 /// Maps a Setup preparation failure to the Program-safe vocabulary. Only

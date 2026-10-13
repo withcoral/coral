@@ -11,8 +11,8 @@ use crate::{CredentialRoute, Error, Provider, ProviderModule, ProviderSetupId};
 pub enum SetupPublishability {
     /// Coral can publish it now, with no person.
     Coral,
-    /// A person must finish it: they share a credential, or sign in to the
-    /// source before its Operations are known.
+    /// A person must finish it: they share a credential, sign in to the
+    /// source before its Operations are known, or give an application's secret.
     Person,
     /// Nobody can publish it under this route.
     Rejected(PublishabilityRejection),
@@ -46,7 +46,15 @@ impl ProviderModule {
         setup: &ProviderSetupId,
         route: CredentialRoute,
     ) -> Result<SetupPublishability, Error> {
-        let (loaded, review) = self.reviewed_setup(actor, owner, setup).await?;
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let (loaded, review) = self
+            .reviewed_setup_in_transaction(&mut tx, actor, owner, setup)
+            .await?;
+        let secret_given =
+            crate::account::oauth_client_secret_repository::for_setup(&mut tx, owner, setup)
+                .await?
+                .is_some();
+        tx.rollback().await?;
         // Nobody publishes an ended Setup, and a person cannot finish it.
         if !loaded.setup.state().is_open() {
             return Err(Error::ProviderSetupNotApplicable);
@@ -69,6 +77,14 @@ impl ProviderModule {
             }
             (_, CredentialRoute::Fixed) => SetupPublishability::Person,
             _ if loaded.setup.state().is_pre_ready() => SetupPublishability::Person,
+            // Only a person can give a confidential application's secret.
+            _ if !secret_given
+                && contract.oauth_client().is_some_and(|client| {
+                    client.authentication != coral_catalog::OAuthClientAuthenticationMethod::None
+                }) =>
+            {
+                SetupPublishability::Person
+            }
             _ => SetupPublishability::Coral,
         })
     }

@@ -620,6 +620,95 @@ describe('consent issuance', () => {
     },
   )
 
+  // Catches: a sign-in that read the operations returning as the account
+  // question's answer because the page URL, such as an agent's link, already
+  // named a route. Reef then adds the provider without asking.
+  it.each([
+    ['oauth-start', 'the account question', { account: 'fixed' }, '1'],
+    ['oauth-resume', 'the account question', { account: 'fixed' }, '1'],
+    ['oauth-start', 'discovery', {}, null],
+    ['oauth-resume', 'discovery', {}, null],
+  ])(
+    'returns %s from %s as an answer only when the question started it',
+    async (intent, _, fields, review) => {
+      const pending = {
+        name: `${name}/providerSetups/${setup}`,
+        authorization: {
+          state: SetupAuthorizationState.PENDING,
+          consentNavigation: { url: 'https://provider.test/consent?state=opaque' },
+        },
+      }
+      const api = fakeManagement({
+        setups: {
+          startProviderSetupAuthorization: () => pending,
+          getProviderSetup: () => pending,
+        },
+      })
+      const response = await attemptAction(
+        api,
+        new Request(
+          `http://127.0.0.1:3000${basePath}?setup=${setup}&namespace=weather` +
+            '&operationsAccepted=1&account=fixed&accountReview=1',
+        ),
+        context,
+        formWith({
+          intent,
+          setup,
+          configurationRevision: '1',
+          application: 'automatic',
+          ...fields,
+        }),
+        target,
+      )
+      if (!(response instanceof Response)) throw new Error('expected a consent redirect')
+      const progress = new URL(
+        response.headers.get('X-Coral-Authorization-Return-To')!,
+        'http://127.0.0.1:3000',
+      ).searchParams
+      expect(progress.get('account')).toBe('fixed')
+      expect(progress.get('accountReview')).toBe(review)
+    },
+  )
+
+  // Catches: the secret an agent's createProvider cannot give being dropped
+  // before Coral, so a confidential application can never sign in.
+  it('sends a confidential application secret with the sign-in', async () => {
+    const pending = {
+      name: `${name}/providerSetups/${setup}`,
+      authorization: {
+        state: SetupAuthorizationState.PENDING,
+        consentNavigation: { url: 'https://provider.test/consent?state=opaque' },
+      },
+    }
+    const startProviderSetupAuthorization = vi.fn(() => pending)
+    const api = fakeManagement({
+      setups: { startProviderSetupAuthorization, getProviderSetup: () => pending },
+    })
+    await attemptAction(
+      api,
+      new Request(`http://127.0.0.1:3000${basePath}?setup=${setup}&namespace=consent`),
+      context,
+      formWith({
+        intent: 'oauth-start',
+        setup,
+        configurationRevision: '1',
+        application: 'explicit',
+        clientId: 'owner-app',
+        clientAuthentication: 'post',
+        clientSecret: 'application-secret',
+      }),
+      target,
+    )
+    const [request] = startProviderSetupAuthorization.mock.calls[0] as unknown as [
+      { application: { mode: { value: string }; authentication: { method: unknown } } },
+    ]
+    expect(request.application.mode.value).toBe('owner-app')
+    expect(request.application.authentication.method).toMatchObject({
+      case: 'clientSecretPost',
+      value: { secret: 'application-secret' },
+    })
+  })
+
   it.each(['oauth-start', 'oauth-resume'])(
     'keeps %s refusal in the editable attempt instead of an unhandled rejection',
     async (intent) => {

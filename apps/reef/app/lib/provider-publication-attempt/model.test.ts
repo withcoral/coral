@@ -115,6 +115,37 @@ describe('attemptProgress', () => {
     )
   })
 
+  // Catches: the agent's setup link landing on configuration or the operations
+  // list, or losing the namespace and route it asked for.
+  it.each([
+    ['an OAuth MCP source, shared', 'fixed', {}, 'discovery'],
+    ['an OAuth MCP source, separate', 'caller', {}, 'discovery'],
+    [
+      'an OAuth MCP source after sign-in',
+      'caller',
+      { state: 'ready' as const, authorized: true },
+      'account',
+    ],
+    [
+      'a shared credential',
+      'fixed',
+      { kind: 'openapi' as const, state: 'ready' as const, credentialMethod: 'bearer' as const },
+      'account',
+    ],
+  ])("opens the agent's link for %s at the sign-in", (_, account, over, stage) => {
+    // The link Coral returns when a createProvider call needs sign-in. Only a
+    // caller link opens the question on Connect now.
+    const review = account === 'caller' ? '&accountReview=1' : ''
+    const attempt = parseAttempt(
+      'workspace',
+      new URLSearchParams(
+        `setup=${setup.id}&namespace=weather&operationsAccepted=1&account=${account}${review}`,
+      ),
+    )
+    expect(attempt).toMatchObject({ namespace: 'weather', account })
+    expect(attemptProgress(attempt, { ...setup, ...over }).stage).toBe(stage)
+  })
+
   it('discovers an update without asking a creation-only account question', () => {
     const attempt = parseAttempt('update', new URLSearchParams({ setup: setup.id }), 'etag')
     expect(attemptProgress(attempt, setup).stage).toBe('discovery')

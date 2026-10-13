@@ -164,26 +164,28 @@ impl ProviderModule {
         owner: &WorkspaceId,
         id: &ProviderSetupId,
     ) -> Result<SetupConfigurationReview, Error> {
-        self.reviewed_setup(actor, owner, id)
-            .await
-            .map(|(_loaded, review)| review)
+        let mut tx = self.database.begin_read_snapshot().await?;
+        let (_loaded, review) = self
+            .reviewed_setup_in_transaction(&mut tx, actor, owner, id)
+            .await?;
+        tx.rollback().await?;
+        Ok(review)
     }
 
-    /// Reads a Setup and its configuration review from one snapshot.
-    pub(crate) async fn reviewed_setup(
+    /// Reads a Setup and its configuration review in the caller's snapshot.
+    pub(crate) async fn reviewed_setup_in_transaction(
         &self,
+        tx: &mut coral_db::Transaction<'_>,
         actor: &AuthenticatedUser,
         owner: &WorkspaceId,
         id: &ProviderSetupId,
     ) -> Result<(repository::LoadedSetup, SetupConfigurationReview), Error> {
-        let mut tx = self.database.begin_read_snapshot().await?;
-        self.check_owner_inspection_in_transaction(&mut tx, actor, owner)
+        self.check_owner_inspection_in_transaction(tx, actor, owner)
             .await?;
-        let loaded = repository::setup(&mut tx, owner, id)
+        let loaded = repository::setup(&mut *tx, owner, id)
             .await?
             .ok_or(Error::ProviderSetupNotFound)?;
-        let active_contract = update_contract(&mut tx, &loaded).await?;
-        tx.rollback().await?;
+        let active_contract = update_contract(tx, &loaded).await?;
         let review = review_with_active(self.outbound_policy, &loaded, active_contract)?;
         Ok((loaded, review))
     }
@@ -379,7 +381,9 @@ impl ProviderModule {
             )
             .await?;
         }
-        crate::account::oauth_client::require_configured(&mut tx, owner, id, &new_contract).await?;
+        // A confidential application's secret may follow confirmation: an agent
+        // configures the application, and the person enters its secret when they
+        // sign in. Sign-in and Publication each require it.
         if changed || secret.is_some() {
             if authority_changed || reset_catalog {
                 crate::setup_credentials::reset_for_configuration(

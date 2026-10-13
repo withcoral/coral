@@ -8,7 +8,7 @@ import * as Dialog from '@/wax/components/dialog'
 import { Fields } from '@/views/management/forms'
 import { DeviceCodeDialog } from '@/views/accounts/device-code'
 import { oauthFailureMessage } from '@/views/accounts/oauth-failure'
-import { OAuthApplicationBlock } from './oauth-application'
+import { credentialHosts, OAuthApplicationBlock } from './oauth-application'
 
 import { CredentialFields } from '@/views/management/credential-fields'
 import { accountLabels } from './account-labels'
@@ -32,6 +32,20 @@ export function SetupFields({ setup, extra }: { setup: SetupView; extra?: ReactN
 }
 
 /** What one sign-in attempt reports, before the person acts on it again. */
+/**
+ * Where typed-in credentials go, shown where you enter them. An agent's
+ * createProvider can choose the servers, so you check them here.
+ */
+export function CredentialDestination({ setup }: { setup: SetupView }) {
+  const hosts = credentialHosts(setup)
+  if (!hosts.length) return null
+  return (
+    <Typography.BodySmall as="p" variant="tertiary">
+      Coral sends what you enter here to {hosts.join(', ')}.
+    </Typography.BodySmall>
+  )
+}
+
 export function SignInStatus({ setup }: { setup: SetupView }) {
   const a = setup.authorization
   if (!a) return null
@@ -156,6 +170,7 @@ export function DiscoveryPrompt({
   callbackUrl: string
 }) {
   const formId = useId()
+  const secretId = useId()
   const [asking, setAsking] = useState(false)
   if (setup.state === 'awaiting_discovery')
     return (
@@ -203,7 +218,18 @@ export function DiscoveryPrompt({
             <Form id={formId} method="post" reloadDocument aria-busy={pending}>
               <Fields form={form} intent="oauth-start" />
               <SetupFields setup={setup} />
-              <OAuthApplicationBlock setup={setup} callbackUrl={callbackUrl} />
+              <OAuthApplicationBlock
+                setup={setup}
+                callbackUrl={callbackUrl}
+                clientSecretInput={
+                  <>
+                    <Typography.BodySmallStrong as="label" htmlFor={secretId}>
+                      Client secret
+                    </Typography.BodySmallStrong>
+                    <Inputs.CredentialInput id={secretId} name="clientSecret" required />
+                  </>
+                }
+              />
             </Form>
           )}
           {!bearer && !canStart && !inFlight && (
@@ -236,6 +262,7 @@ export function DiscoveryPrompt({
                       <CredentialFields fields={setup.credentialFields}>
                         {(input) => <Inputs.CredentialInput {...input} />}
                       </CredentialFields>
+                      <CredentialDestination setup={setup} />
                     </Form>
                   )}
                   <Dialog.Actions>
@@ -294,6 +321,7 @@ export function DiscoveryStep({
   existingAccount?: AccountChoice
 }) {
   const formId = useId()
+  const secretId = useId()
   const back = backPath ? (
     <Button.InternalLink size="small" to={backPath} variant="secondary">
       Back
@@ -387,6 +415,7 @@ export function DiscoveryStep({
             <CredentialFields fields={setup.credentialFields}>
               {(input) => <Inputs.CredentialInput {...input} />}
             </CredentialFields>
+            <CredentialDestination setup={setup} />
           </Form>
           <div className={styles.stepActions}>
             {back}
@@ -406,7 +435,18 @@ export function DiscoveryStep({
           >
             <Fields form={form} intent="oauth-start" />
             <SetupFields setup={setup} />
-            <OAuthApplicationBlock setup={setup} callbackUrl={callbackUrl} />
+            <OAuthApplicationBlock
+              setup={setup}
+              callbackUrl={callbackUrl}
+              clientSecretInput={
+                <>
+                  <Typography.BodySmallStrong as="label" htmlFor={secretId}>
+                    Client secret
+                  </Typography.BodySmallStrong>
+                  <Inputs.CredentialInput id={secretId} name="clientSecret" required />
+                </>
+              }
+            />
           </Form>
           {expiry}
           <div className={styles.stepActions}>

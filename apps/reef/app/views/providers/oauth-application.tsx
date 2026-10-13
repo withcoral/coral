@@ -27,7 +27,21 @@ export function OAuthApplicationBlock({
 }) {
   const automaticAllowed = !device && setup.configuration?.automaticClientAvailable === true
   // The OAuth host holds the registration; it can differ from the API host.
-  const registrar = oauthHost(setup.configuration?.values.tokenUrl) || 'the service'
+  const registrar = hostOf(setup.configuration?.values.tokenUrl) || 'the service'
+  // A device sign-in happens on the verification page the service returns when
+  // it starts, not at the device authorization endpoint, so it is not named.
+  const signInHost = device ? '' : hostOf(setup.configuration?.values.authorizationUrl)
+  const tokenHost = hostOf(setup.configuration?.values.tokenUrl)
+  const callHosts = credentialHosts(setup)
+  // An agent's createProvider can choose these endpoints and the servers, so
+  // you see them before you sign in.
+  const destination = [
+    signInHost && `You sign in at ${signInHost}.`,
+    tokenHost && `Coral gets the token from ${tokenHost}.`,
+    callHosts.length > 0 && `Coral sends the token to ${callHosts.join(', ')}.`,
+  ]
+    .filter(Boolean)
+    .join(' ')
   const used = setup.authorization
   const [client, setClient] = useState(
     configured
@@ -178,6 +192,11 @@ export function OAuthApplicationBlock({
         </>
       ) : configured ? (
         <>
+          {destination && (
+            <Typography.BodySmall as="p" variant="tertiary">
+              {destination}
+            </Typography.BodySmall>
+          )}
           <input
             type="hidden"
             name="application"
@@ -193,10 +212,35 @@ export function OAuthApplicationBlock({
           <input type="hidden" name="authorizationParameters" value={parameters} />
           {configured.mode === 'manual' &&
             note('Signs in through your own OAuth application, client ID')}
+          {/* An agent's createProvider names a confidential application but
+              never its secret, so you enter it here before you sign in. The
+              sign-in form supplies the field, so it stays a document form. */}
+          {configured.authentication &&
+            configured.authentication !== 'none' &&
+            !setup.clientSecretConfigured &&
+            clientSecretInput && (
+              <div className={styles.field}>
+                {clientSecretInput}
+                <Typography.BodySmall as="p" variant="tertiary">
+                  Enter the secret of this OAuth application. Coral sends it only to {registrar}.
+                </Typography.BodySmall>
+              </div>
+            )}
         </>
-      ) : used ? (
-        used.bootstrap === 'manual' &&
-        note('Signs in through your own OAuth application, client ID')
+      ) : automaticAllowed ? (
+        <>
+          {destination && (
+            <Typography.BodySmall as="p" variant="tertiary">
+              {destination}
+            </Typography.BodySmall>
+          )}
+          {/* An agent's createProvider confirms the configuration without an
+              application. Coral chooses one at sign-in: the one already in use,
+              or one it registers. */}
+          <input type="hidden" name="application" value="automatic" />
+          {used?.bootstrap === 'manual' &&
+            note('Signs in through your own OAuth application, client ID')}
+        </>
       ) : (
         <Typography.BodySmall as="p" variant="tertiary">
           Choose the OAuth application in configuration before you sign in.
@@ -206,10 +250,22 @@ export function OAuthApplicationBlock({
   )
 }
 
-function oauthHost(tokenUrl = '') {
+/** The host of a URL, or empty when there is none to name. */
+export function hostOf(url = '') {
   try {
-    return new URL(tokenUrl).host
+    return new URL(url).host
   } catch {
     return ''
   }
+}
+
+/** Where Coral sends a credential: each host the operations call, or the MCP server. */
+export function credentialHosts(setup: SetupView) {
+  return [
+    ...new Set(
+      setup.kind === 'mcp'
+        ? [setup.sourceHost]
+        : Object.values(setup.configuration?.destinations ?? {}).map((url) => hostOf(url)),
+    ),
+  ].filter(Boolean)
 }

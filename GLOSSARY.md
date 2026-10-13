@@ -230,10 +230,11 @@ Operation Access State, Approval Requests, and Operation Invocation records with
 effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals cannot. An
 Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
 has no Provider Accounts. Coral itself publishes the Provider from a Setup when the selected route and Setup readiness
-allow it, including from a ready credential-requiring Setup on the `caller` route. When a person must finish the
-If a person must finish the Setup and the Run is still current, the Operation returns the Reef page and does not wait; Coral ends a Setup it prepared that nobody will finish.
-Its Operations never return a secret or an OAuth URL to the Program. A Reef link one returns may name a Provider Setup;
-that Setup's identity grants nothing, and only a Workspace Owner can act on the Setup.
+allow it, including from a ready credential-requiring Setup on the `caller` route. If a person must finish the Setup
+and the Run is still current, the Operation returns the Reef page and does not wait; Coral ends a Setup it prepared
+that nobody will finish. Its Operations never return a secret or an OAuth URL to the Program, and never take a secret
+from it: a person enters a confidential OAuth application's secret in Reef. A Reef link one returns may name a Provider
+Setup; that Setup's identity grants nothing, and only the User who started the Setup can publish it.
 _Avoid_: admin API, administrative calls, coral.admin surface, system provider
 _In Reef_: "Coral", with the Coral logo, listed first
 
