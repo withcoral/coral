@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Form, useFetcher } from 'react-router'
 
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
@@ -22,12 +22,9 @@ import type {
   ProviderSettingsPageProps,
   ProviderSettingsView,
   ProviderSourceView,
-  CredentialFieldView,
 } from './types'
 import { accountStates } from '@/views/accounts/account-states'
-import { ConnectButton } from '@/views/accounts/connect-button'
-import { CredentialFields } from '@/views/management/credential-fields'
-import * as Dialog from '@/wax/components/dialog'
+import { ConnectAccountDialog } from '@/views/management/connect-account-dialog'
 import { accountLabels, useAccountAudience } from './account-labels'
 import { SourceUrl, sourceKinds } from './source-facts'
 import * as styles from './providers.css'
@@ -254,50 +251,40 @@ function AccountSection({
       {`Manage ${whose}`}
     </Button.InternalLink>
   )
-  // Your own account connects here: a sign-in in one click, or a secret in a
-  // dialog. Both come back to these settings. The shared account opens its page.
-  const connect = (verb: 'Connect' | 'Reconnect') => {
-    const label = `${verb} ${whose}`
-    if (shared || !provider.yourAccount)
-      return (
-        <Button.InternalLink to={accountsPath} variant="primary" size="small">
-          {label}
-        </Button.InternalLink>
-      )
-    if (provider.yourAccount.oauth)
-      return (
-        <ConnectButton
-          action={accountsPath}
-          csrf={form.csrf}
-          requestId={form.requestId}
-          label={label}
-          disabled={pending}
-          size="32"
-        />
-      )
-    return (
-      <SecretConnect
-        label={label}
-        action={accountsPath}
-        providerName={provider.displayName}
-        fields={provider.yourAccount.credentialFields}
-        form={form}
-        pending={pending}
-      />
-    )
-  }
-  const connection = !canOpen
-    ? null
-    : provider.connection === 'connected' || provider.connection === 'unknown'
-      ? manage
-      : reconnect && provider.canReconnect
-        ? connect('Reconnect')
-        : reconnect
-          ? // Coral refuses this reader a reconnect; the account can still be opened.
-            manage
-          : active && provider.canConnect
-            ? connect('Connect')
-            : null
+  // What the reader may do with the account: connect it, reconnect it, or neither.
+  const verb =
+    !canOpen || provider.connection === 'connected' || provider.connection === 'unknown'
+      ? null
+      : reconnect
+        ? provider.canReconnect
+          ? 'Reconnect'
+          : null
+        : active && provider.canConnect
+          ? 'Connect'
+          : null
+  const link = verb && (
+    <Button.InternalLink to={accountsPath} variant="primary" size="small">
+      {`${verb} ${whose}`}
+    </Button.InternalLink>
+  )
+  // Your own account connects in a dialog on this page, as an agent's does.
+  // Mounted while it is connected too, so an open dialog sees the account land.
+  const connection = !canOpen ? null : shared ? (
+    (link ?? (provider.connection === 'not_connected' && !reconnect ? null : manage))
+  ) : (
+    <ConnectAccountDialog
+      provider={provider.id}
+      providerName={provider.displayName}
+      namespace={provider.namespace}
+      form={form}
+      connectable={verb !== null}
+      reconnect={verb === 'Reconnect'}
+      ready={connected}
+      fallback={provider.connection === 'not_connected' && !reconnect ? null : manage}
+      trigger={{ label: `${verb ?? 'Connect'} ${whose}`, variant: 'primary', size: '32' }}
+      description={audience.onlyYou}
+    />
+  )
   const canChange = owner && active
   return (
     <section aria-label="Account">
@@ -343,60 +330,6 @@ function AccountSection({
         )}
       </Card>
     </section>
-  )
-}
-
-/**
- * Connects your own account with a secret, as Add provider does: the fields in
- * a dialog. Your account page takes the entry and brings you back here.
- */
-function SecretConnect({
-  label,
-  action,
-  providerName,
-  fields,
-  form,
-  pending,
-}: {
-  label: string
-  action: string
-  providerName: string
-  fields: CredentialFieldView[]
-  form: FormContext
-  pending: boolean
-}) {
-  const formId = useId()
-  const [open, setOpen] = useState(false)
-  return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger render={<Button.Container variant="primary" size="32" />}>
-        <Button.Text>{label}</Button.Text>
-      </Dialog.Trigger>
-      <Dialog.Portal>
-        <Dialog.Backdrop />
-        <Dialog.Popup>
-          <Dialog.Title>{label}</Dialog.Title>
-          <Dialog.Description>
-            {`Enter the credentials from ${providerName}. Coral does not show them again.`}
-          </Dialog.Description>
-          {/* A full page post: your account page answers it and returns here. */}
-          <form id={formId} method="post" action={action} className={styles.stack}>
-            <Fields form={form} intent="secret" />
-            <CredentialFields fields={fields}>
-              {(input) => <Inputs.CredentialInput {...input} />}
-            </CredentialFields>
-          </form>
-          <Dialog.Actions>
-            <Button.TextButton type="button" variant="secondary" onClick={() => setOpen(false)}>
-              Cancel
-            </Button.TextButton>
-            <Button.TextButton type="submit" form={formId} disabled={pending}>
-              Connect
-            </Button.TextButton>
-          </Dialog.Actions>
-        </Dialog.Popup>
-      </Dialog.Portal>
-    </Dialog.Root>
   )
 }
 

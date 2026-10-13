@@ -3,7 +3,6 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import {
-  CredentialMethod,
   CredentialRoute_Kind,
   ProviderBlocker,
   ProviderSetupInputKind,
@@ -95,7 +94,7 @@ beforeEach(() => {
   responses = {
     'providers.getProvider': () => provider(),
     'providers.getProviderSource': () => ({
-      url: 'https://reader:secret@gitlab.example.com/api/v4/openapi.json?private_token=abc',
+      url: 'https://reader:fixture-password@gitlab.example.com/api/v4/openapi.json?private_token=fixture-token',
       kind: ProviderSetupInputKind.OPENAPI,
     }),
     'accounts.getProviderAccount': () => ({
@@ -138,8 +137,9 @@ it('gives owners the source kind and a redacted URL', async () => {
       host: 'gitlab.example.com',
     },
   })
-  expect(JSON.stringify(data)).not.toContain('secret')
-  expect(JSON.stringify(data)).not.toContain('abc')
+  // The URL's password and secret query value never reach the page.
+  expect(JSON.stringify(data)).not.toContain('fixture-password')
+  expect(JSON.stringify(data)).not.toContain('fixture-token')
 })
 
 it('tells an uploaded document apart from a failed source read', async () => {
@@ -271,39 +271,4 @@ it('says whether the provider is enabled and has operations ready', async () => 
 
   responses['providers.getProvider'] = () => provider()
   expect((await load()).provider).toMatchObject({ enabled: true, operationsReady: true })
-})
-
-// Catches: the card offering a sign-in for a secret account, or the fields a
-// secret needs going missing, so your account cannot connect from settings.
-it.each([
-  [
-    'a sign-in',
-    CredentialMethod.OAUTH_AUTHORIZATION_CODE,
-    {},
-    { oauth: true, credentialFields: [] },
-  ],
-  [
-    'a secret',
-    CredentialMethod.BEARER,
-    { token: { label: 'Token', description: '', sensitive: true } },
-    {
-      oauth: false,
-      credentialFields: [expect.objectContaining({ name: 'token', label: 'Token' })],
-    },
-  ],
-])('says how your own account connects with %s', async (_, credentialMethod, fields, expected) => {
-  responses['accounts.getProviderAccount'] = () => ({
-    canConnect: true,
-    credentialMethod,
-    credentialFields: fields,
-  })
-  signedInAs('member')
-  expect((await load()).provider).toMatchObject({ yourAccount: expected })
-})
-
-it('gives the shared account no way to connect from the card', async () => {
-  responses['providers.getProvider'] = () =>
-    provider({ credentialRoute: { kind: CredentialRoute_Kind.FIXED } })
-  signedInAs('owner')
-  expect((await load()).provider).not.toHaveProperty('yourAccount')
 })

@@ -26,7 +26,8 @@ type Progress =
   | { error: string }
 
 /**
- * Connects one of the agent's accounts without leaving its page. Opening the
+ * Connects an account without leaving the page: one of an agent's, or your own
+ * from a provider's settings. Opening the
  * dialog starts an authorization; the dialog then shows its next step. Sign-in
  * and secrets leave as document submissions, so secrets never enter router
  * state, and they return here once the account is connected.
@@ -40,6 +41,8 @@ export function ConnectAccountDialog({
   reconnect,
   ready,
   fallback,
+  trigger,
+  description = 'Connect this account for the agent. Your personal accounts stay the same.',
 }: {
   provider: string
   providerName: string
@@ -52,6 +55,10 @@ export function ConnectAccountDialog({
   /** The row now shows a ready account, so the connection is done. */
   ready: boolean
   fallback: ReactNode
+  /** A labelled button in place of the row's small Connect; the label names the account. */
+  trigger?: { label: string; variant: 'primary' | 'secondary'; size: '22' | '32' | '36' }
+  /** Whose account this is, under the title. */
+  description?: string
 }) {
   const [open, setOpen] = useState(false)
   // One attempt per connection: reopening continues it, and a finished
@@ -98,14 +105,18 @@ export function ConnectAccountDialog({
         <Dialog.Trigger
           render={
             <Button.Container
-              variant="secondary"
-              size="22"
+              variant={trigger?.variant ?? 'secondary'}
+              size={trigger?.size ?? '22'}
               // The name starts with the visible label, so voice control finds it.
-              ariaLabel={`${reconnect ? 'Reconnect' : 'Connect'} account for ${namespace}`}
+              ariaLabel={
+                trigger
+                  ? undefined
+                  : `${reconnect ? 'Reconnect' : 'Connect'} account for ${namespace}`
+              }
             />
           }
         >
-          <Button.Text>{reconnect ? 'Reconnect' : 'Connect'}</Button.Text>
+          <Button.Text>{trigger?.label ?? (reconnect ? 'Reconnect' : 'Connect')}</Button.Text>
         </Dialog.Trigger>
       ) : (
         fallback
@@ -117,9 +128,7 @@ export function ConnectAccountDialog({
             <Dialog.Title>
               {reconnect ? 'Reconnect' : 'Connect'} {providerName}
             </Dialog.Title>
-            <Dialog.Description>
-              Connect this account for the agent. Your personal accounts stay the same.
-            </Dialog.Description>
+            <Dialog.Description>{description}</Dialog.Description>
             {start.state !== 'idle' || !start.data ? (
               <Typography.BodySmall as="p" aria-live="polite">
                 Starting the connection…
@@ -282,7 +291,7 @@ function AuthorizationStep({
           {(input) => <Inputs.CredentialInput {...input} />}
         </CredentialFields>
         <Typography.BodySmall as="p" variant="tertiary">
-          Enter the credentials from {v.providerName}. Coral does not show them again.
+          Enter the credentials from {v.providerName}.
         </Typography.BodySmall>
         <Dialog.Actions>
           {closeButton}

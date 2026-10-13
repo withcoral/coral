@@ -206,13 +206,11 @@ test('each account setting explains whose account calls use', async () => {
   expect(byLabel('Individual accounts')?.textContent).toContain('Not connected')
   // The account's actions sit inside its card.
   expect(byLabel('Individual accounts')?.textContent).toContain('Change account setting')
+  // Your own account connects in a dialog on this page.
   expect(
-    named('link', 'Connect your account')?.closest('[aria-label="Individual accounts"]'),
+    named('button', 'Connect your account')?.closest('[aria-label="Individual accounts"]'),
   ).not.toBeNull()
-  expect(named('link', 'Connect your account')?.getAttribute('href')).toBe(
-    // Your own account has its page under Accounts, which brings you back.
-    yourAccountPath,
-  )
+  expect(named('link', 'Connect your account')).toBeUndefined()
   act(() => roots.pop()!.unmount())
 
   await render({ provider: { account: 'fixed', connection: 'connected' } })
@@ -244,7 +242,7 @@ test('a member sees readable settings and only their own account action', async 
   expect(document.querySelector('[aria-label="Source"]')).toBeNull()
   expect(named('button', 'Change account setting')).toBeUndefined()
   expect(named('button', 'Remove provider')).toBeUndefined()
-  expect(named('link', 'Connect your account')).toBeDefined()
+  expect(named('button', 'Connect your account')).toBeDefined()
 })
 
 test('a member of a shared-account provider is told who connects it', async () => {
@@ -339,21 +337,19 @@ test('the account card shows a reconnect and hides refused connects', async () =
   await render({ provider: { account: 'caller', connection: 'needs_reconnect' } })
   // The same words as your account's own page under Accounts.
   expect(byLabel('Individual accounts')?.textContent).toContain('Needs reconnect')
-  expect(named('link', 'Reconnect your account')?.getAttribute('href')).toBe(
-    // Your own account has its page under Accounts, which brings you back.
-    yourAccountPath,
-  )
+  expect(named('button', 'Reconnect your account')).toBeDefined()
   act(() => roots.pop()!.unmount())
 
   await render({ provider: { account: 'caller', connection: 'not_connected', canConnect: false } })
-  expect(named('link', 'Connect your account')).toBeUndefined()
+  expect(named('button', 'Connect your account')).toBeUndefined()
   act(() => roots.pop()!.unmount())
 
   // A reconnect Coral refuses leaves the account to open, not to reconnect.
   await render({
     provider: { account: 'caller', connection: 'needs_reconnect', canReconnect: false },
   })
-  expect(named('link', 'Reconnect your account')).toBeUndefined()
+  expect(named('button', 'Reconnect your account')).toBeUndefined()
+  // Manage opens your account under Accounts, which brings you back here.
   expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(yourAccountPath)
 })
 
@@ -417,38 +413,18 @@ test('configuration is a card with its edit action inside', async () => {
   expect(card.querySelector('form')?.textContent).toBe('Edit configuration')
 })
 
-// Catches: connecting your own account sending you away from settings, or a
-// secret account offering a sign-in it cannot do.
-test('connects your own account from the card and comes back', async () => {
-  await render({
-    provider: {
-      connection: 'not_connected',
-      yourAccount: { oauth: true, credentialFields: [] },
-    },
-  })
-  // A sign-in posts to your account, which returns here after it.
-  const signIn = named('button', 'Connect your account')!
-  expect(signIn.closest('form')?.getAttribute('action')).toBe(yourAccountPath)
-  expect(signIn.closest('form')?.querySelector<HTMLInputElement>('[name="intent"]')?.value).toBe(
-    'connect',
-  )
-  act(() => roots.pop()!.unmount())
-
-  await render({
-    provider: {
-      connection: 'needs_reconnect',
-      yourAccount: {
-        oauth: false,
-        credentialFields: [{ name: 'token', label: 'Token', description: '', sensitive: true }],
-      },
-    },
-  })
-  expect(named('link', 'Reconnect your account')).toBeUndefined()
-  await click(named('button', 'Reconnect your account'))
+// Catches: connecting your own account sending you away from settings, or
+// starting anyone's account but yours.
+test('connects your own account in a dialog on this page', async () => {
+  const { submissions } = await render({ provider: { connection: 'not_connected' } }, () => ({
+    error: 'Stopped here.',
+    credential: null,
+  }))
+  await click(named('button', 'Connect your account'))
+  // Opening the dialog starts your connection through this page's action.
+  await expect.poll(() => submissions.length).toBe(1)
+  expect(submissions[0]!.get('intent')).toBe('connectAccount')
   const dialog = document.querySelector('[role="dialog"]')!
-  expect(dialog.textContent).toContain('Enter the credentials from GitLab.com.')
-  const entry = dialog.querySelector('form')!
-  expect(entry.getAttribute('action')).toBe(yourAccountPath)
-  expect(entry.querySelector<HTMLInputElement>('[name="intent"]')?.value).toBe('secret')
-  expect(dialog.querySelector('input[type="password"]')).not.toBeNull()
+  expect(dialog.textContent).toContain('Connect GitLab.com')
+  expect(dialog.textContent).toContain('Stopped here.')
 })

@@ -4,14 +4,14 @@ import type { Route } from './+types/provider-settings'
 import {
   formContext,
   managementFailure,
+  mutationForm,
   privateHeaders,
   type ManagementApi,
 } from '@/lib/management.server'
 import { providerName, providerSettingsView } from '@/lib/providers.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ProviderAccountScope } from '@/generated/coral/management/v1/account_pb'
-import { accountConnectionState, isOAuth } from '@/lib/accounts.server'
-import { credentialFieldViews } from '@/lib/credential-fields.server'
+import { accountConnectionState, connectYourAccountAction } from '@/lib/accounts.server'
 import { ProviderSetupInputKind } from '@/generated/coral/management/v1/provider_pb'
 import { ProviderSettingsPage } from '@/views/providers/settings-page'
 import { redactSourceUrl } from '@/views/providers/source-url'
@@ -19,7 +19,19 @@ import type { ProviderSettingsView, ProviderSourceView } from '@/views/providers
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 // Rename and removal are the provider list's own mutations.
-export { action } from './providers'
+import { action as providersAction } from './providers'
+
+/**
+ * Your own account connects from here, so any member may; every other change
+ * is the providers route's, which only owners make.
+ */
+export async function action(args: Route.ActionArgs) {
+  const form = await mutationForm(args.request.clone(), args.context)
+  // The providers action reads only the workspace, which both routes carry.
+  if (form.get('intent') !== 'connectAccount')
+    return providersAction(args as unknown as Parameters<typeof providersAction>[0])
+  return connectYourAccountAction(args.request, args.context, args.params, form)
+}
 
 /**
  * Settings show only what existing reads return. Opening or revalidating the
@@ -66,9 +78,7 @@ async function readConnection(
   provider: string,
   account: 'caller' | 'fixed',
   owner: boolean,
-): Promise<
-  Partial<Pick<ProviderSettingsView, 'connection' | 'canConnect' | 'canReconnect' | 'yourAccount'>>
-> {
+): Promise<Partial<Pick<ProviderSettingsView, 'connection' | 'canConnect' | 'canReconnect'>>> {
   if (account === 'fixed' && !owner) return { canConnect: false, canReconnect: false }
   try {
     const current = await api.accounts.getProviderAccount({
@@ -81,13 +91,6 @@ async function readConnection(
       connection: accountConnectionState(current.account),
       canConnect: current.canConnect,
       canReconnect: current.canReconnect,
-      // Your own account connects from the card; the shared one opens its page.
-      ...(account === 'caller' && {
-        yourAccount: {
-          oauth: isOAuth(current.credentialMethod),
-          credentialFields: credentialFieldViews(current.credentialFields),
-        },
-      }),
     }
   } catch (error) {
     // A state this Reef does not know reads as a failed read, not a failed page.

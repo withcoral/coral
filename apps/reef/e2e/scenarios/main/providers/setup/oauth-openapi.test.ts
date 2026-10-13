@@ -199,7 +199,12 @@ test('OpenAPI OAuth with each person’s own account signs nobody in until they 
     await step('Connect your own account from settings and come back to them', async () => {
       const settings = new URL(page.url()).pathname
       const card = page.getByRole('region', { name: 'Individual accounts', exact: true })
+      // The connection starts in a dialog on this page, as an agent's does.
       await card.getByRole('button', { name: 'Connect your account', exact: true }).click()
+      await page
+        .getByRole('dialog', { name: 'Connect Records', exact: true })
+        .getByRole('button', { name: 'Continue to sign in', exact: true })
+        .click()
       await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
       await page.waitForURL((url) => url.pathname === settings)
       await card.getByText('Connected', { exact: true }).waitFor()

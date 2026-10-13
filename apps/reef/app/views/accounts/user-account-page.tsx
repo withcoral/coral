@@ -128,7 +128,7 @@ function guidance(v: UserAccountView): string | undefined {
   const lead = v.state === 'needs_reconnect' ? 'Coral cannot use this account. ' : ''
   return v.oauth
     ? `${lead}Sign in to ${v.providerName} to ${v.state === 'needs_reconnect' ? 'reconnect' : 'connect'} it.`
-    : `${lead}Enter the credentials from ${v.providerName}. Coral does not show them again.`
+    : `${lead}Enter the credentials from ${v.providerName}.`
 }
 
 /** What Coral knows about your stored account, beside the permissions. */
