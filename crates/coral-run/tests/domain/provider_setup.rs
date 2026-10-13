@@ -46,6 +46,7 @@ impl AdminScope {
         )
         .await;
         let (workspace_id, owner) = fixture.user_scope(user, "Add a provider").await;
+        let catalog = coral_provider::prepare_builtin_catalog().unwrap();
         let mut transaction = fixture.database.begin().await.unwrap();
         fixture
             .providers
@@ -53,6 +54,7 @@ impl AdminScope {
                 &mut transaction,
                 &change(owner.authenticated_user().unwrap().clone(), 11, '2'),
                 &workspace_id,
+                catalog,
             )
             .await
             .expect("install the Built-in Provider");
@@ -169,6 +171,14 @@ async fn document_server() -> MockServer {
     server
 }
 
+/// The `openapi_url` source for the document `server` serves.
+fn url_source(server: &MockServer) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "openapi_url",
+        "url": format!("{}/openapi.json", server.uri()),
+    })
+}
+
 async fn fetches(server: &MockServer) -> usize {
     server.received_requests().await.unwrap_or_default().len()
 }
@@ -194,10 +204,7 @@ async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
         let scope = AdminScope::new("user:create-provider").await;
         scope.set_access(access).await;
         let server = document_server().await;
-        let source = serde_json::json!({
-            "kind": "openapi_url",
-            "url": format!("{}/openapi.json", server.uri()),
-        });
+        let source = url_source(&server);
         let before = scope.created_setups().await;
         let run = scope
             .start(&scope.owner, create_provider("weather", &source))
@@ -260,10 +267,7 @@ async fn create_provider_returns_the_reef_page_that_finishes_its_setup() {
 async fn invalid_input_fails_before_approval_fetch_or_setup() {
     let scope = AdminScope::new("user:invalid-input").await;
     let server = document_server().await;
-    let fetchable = serde_json::json!({
-        "kind": "openapi_url",
-        "url": format!("{}/openapi.json", server.uri()),
-    });
+    let fetchable = url_source(&server);
     let before = scope.lifecycle_events().await.len();
     for (namespace, source) in [
         ("not-an-identifier", fetchable.clone()),
@@ -351,10 +355,7 @@ async fn members_and_agents_cannot_reach_create_provider_and_change_nothing() {
 #[tokio::test]
 async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
     let server = document_server().await;
-    let source = serde_json::json!({
-        "kind": "openapi_url",
-        "url": format!("{}/openapi.json", server.uri()),
-    });
+    let source = url_source(&server);
     // The default deployment policy rejects the loopback test server.
     let scope = AdminScope::new("user:outbound-policy").await;
     scope.set_access(OperationAccessState::Enabled).await;
@@ -363,6 +364,11 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
         DestinationPolicy::default(),
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
+        coral_provider::ProviderModule::new(
+            DestinationPolicy::default(),
+            scope.fixture.database.clone(),
+            scope.fixture.workspaces.clone(),
+        ),
         crate::IsolateLimits::default(),
     )
     .expect("start the real Program runtime")

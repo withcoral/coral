@@ -1143,25 +1143,6 @@ pub(super) async fn settle_deadlines(
         )
         .await?;
     }
-    // Sealed material on a ready Setup outlives nothing: past its deadline it is
-    // scrubbed on the first read, and Publication then reports `setup_expired`.
-    if loaded.setup.state() == ProviderSetupState::Ready
-        && row.encrypted_credentials.is_some()
-        && now >= row.expires_at_unix_nanos
-    {
-        scrub(tx, owner, &id).await?;
-        super::event(
-            tx,
-            context,
-            owner,
-            authority,
-            LifecycleAction::SetupExpired,
-            false,
-            &id.to_string(),
-            LifecycleOutcome::Accepted,
-        )
-        .await?;
-    }
     Ok(())
 }
 

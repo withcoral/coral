@@ -50,6 +50,11 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         coral_outbound::DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
+        coral_provider::ProviderModule::new(
+            coral_outbound::DestinationPolicy::default(),
+            database.clone(),
+            workspaces.clone(),
+        ),
         IsolateLimits::default(),
     )
     .unwrap();

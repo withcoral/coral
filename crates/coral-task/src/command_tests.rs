@@ -80,11 +80,13 @@ impl Fixture {
             coral_functions::IsolateLimits::default(),
         )
         .unwrap();
+        let loopback = coral_outbound::DestinationPolicy::default()
+            .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps);
         let runs = coral_run::RunModule::new(
-            coral_outbound::DestinationPolicy::default()
-                .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+            loopback,
             database.clone(),
             workspaces.clone(),
+            coral_provider::ProviderModule::new(loopback, database.clone(), workspaces.clone()),
             coral_run::IsolateLimits::default(),
         )
         .unwrap();

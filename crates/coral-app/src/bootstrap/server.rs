@@ -454,6 +454,7 @@ fn resolve_database_config(
 /// handle sends shutdown to the background task as a best-effort fallback, but
 /// does not wait for the task to finish.
 pub struct RunningServer {
+    providers: coral_provider::ProviderModule,
     accounts: Option<coral_provider::account::AccountModule>,
     device_recovery: Option<JoinHandle<()>>,
     search_index: coral_search::SearchIndex,
@@ -571,6 +572,12 @@ impl RunningServer {
 }
 
 impl RunningServer {
+    /// Shares the bootstrap-owned Provider Module with companion runtime composition.
+    #[must_use]
+    pub fn providers(&self) -> coral_provider::ProviderModule {
+        self.providers.clone()
+    }
+
     /// Shares the bootstrap-owned credential subsystem with companion runtime composition.
     #[must_use]
     pub fn provider_accounts(&self) -> Option<coral_provider::account::AccountModule> {
@@ -656,6 +663,7 @@ pub(crate) async fn start_server(
         policy,
         database.clone(),
         workspaces.clone(),
+        providers.clone(),
         coral_run::IsolateLimits::default(),
     )
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
@@ -696,7 +704,7 @@ pub(crate) async fn start_server(
                 search_index.clone(),
             ),
             workspaces,
-            providers,
+            providers: providers.clone(),
             accounts: accounts.clone(),
             tasks,
             saved_functions,
@@ -737,6 +745,7 @@ pub(crate) async fn start_server(
     });
     let search_reconcile = search_index.spawn_reconcile_task();
     Ok(RunningServer {
+        providers,
         device_recovery,
         search_index,
         search_reconcile,

@@ -3,6 +3,7 @@ use crate::auth::test_config::loopback_policy;
 use crate::{CanonicalOauthUrl, WorkspaceMcpUrls};
 use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
 use coral_mcp::{McpModules, WorkspaceAuthenticator};
+use coral_provider::ProviderModule;
 use coral_workspace::{
     AgentDisplayName, AgentState, AuthenticatedUser, ChangeContext, OrganizationModule,
     OrganizationRole, PrincipalKind, TraceId, UserId, WorkspaceDisplayName, WorkspaceId,
@@ -363,6 +364,7 @@ impl Fixture {
             loopback_policy(),
             database.clone(),
             workspaces.clone(),
+            ProviderModule::new(loopback_policy(), database.clone(), workspaces.clone()),
             coral_run::IsolateLimits::default(),
         )
         .unwrap();

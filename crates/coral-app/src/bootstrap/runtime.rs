@@ -421,6 +421,7 @@ async fn start_mcp_http(
     let modules = mcp_modules(
         policy,
         grpc.database(),
+        grpc.providers(),
         grpc.provider_accounts(),
         grpc.search_index(),
         isolate_limits,
@@ -455,6 +456,7 @@ async fn start_mcp_http(
 fn mcp_modules(
     policy: coral_outbound::DestinationPolicy,
     database: Arc<Database>,
+    providers: coral_provider::ProviderModule,
     accounts: Option<coral_provider::account::AccountModule>,
     search_index: SearchIndex,
     isolate_limits: coral_run::IsolateLimits,
@@ -465,8 +467,14 @@ fn mcp_modules(
     let search = UniversalSearchModule::new(Arc::clone(&database), workspaces.clone());
     let saved_functions =
         SavedFunctionModule::new(Arc::clone(&database), workspaces.clone(), isolate_limits)?;
-    let runs = RunModule::new(policy, database, workspaces.clone(), isolate_limits)?
-        .with_human_interface(human_interface.clone());
+    let runs = RunModule::new(
+        policy,
+        database,
+        workspaces.clone(),
+        providers,
+        isolate_limits,
+    )?
+    .with_human_interface(human_interface.clone());
     let runs = match accounts {
         Some(accounts) => runs.with_accounts(accounts),
         None => runs,

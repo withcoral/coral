@@ -141,6 +141,7 @@ impl TestModules {
         let runs = RunModule::with_adapters(
             database.clone(),
             workspaces.clone(),
+            providers.clone(),
             engine,
             upstream.clone(),
             clock.clone(),
@@ -166,9 +167,11 @@ impl TestModules {
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             self.database.clone(),
             self.workspaces.clone(),
+            self.providers.clone(),
             crate::IsolateLimits::default(),
         )
-        .expect("start the real Program runtime");
+        .expect("start the real Program runtime")
+        .with_human_interface(test_reef());
         match accounts {
             Some(accounts) => runs.with_accounts(accounts),
             None => runs,

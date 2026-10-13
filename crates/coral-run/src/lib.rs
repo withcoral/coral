@@ -206,21 +206,19 @@ pub struct RunModule {
 
 impl RunModule {
     /// Builds the runtime with deployment-selected outbound policy and isolate limits.
+    /// Built-in Operations prepare Setups through `providers`, the bootstrap's
+    /// Provider Module.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
         policy: coral_outbound::DestinationPolicy,
         database: Arc<Database>,
         workspaces: WorkspaceModule,
+        providers: coral_provider::ProviderModule,
         isolate_limits: IsolateLimits,
     ) -> Result<Self, Error> {
         Ok(Self {
-            // Built-in Operations prepare Setups under the same policy as Reef's.
-            providers: coral_provider::ProviderModule::new(
-                policy,
-                database.clone(),
-                workspaces.clone(),
-            ),
+            providers,
             human_interface: None,
             database,
             workspaces,
@@ -242,18 +240,14 @@ impl RunModule {
     pub(crate) fn with_adapters(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
+        providers: coral_provider::ProviderModule,
         engine: Arc<dyn ProgramEngine>,
         upstream: Arc<dyn UpstreamSender>,
         clock: Arc<dyn Clock>,
         observers: TestObservers,
     ) -> Self {
         Self {
-            providers: coral_provider::ProviderModule::new(
-                coral_outbound::DestinationPolicy::default()
-                    .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
-                database.clone(),
-                workspaces.clone(),
-            ),
+            providers,
             human_interface: None,
             database,
             workspaces,
