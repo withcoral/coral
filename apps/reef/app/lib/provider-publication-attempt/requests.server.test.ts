@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  CredentialMethod,
   CredentialRoute_Kind,
   OAuthScopeFormat,
   ProviderPublicationOutcome,
@@ -158,6 +159,7 @@ describe('recipe preparation', () => {
             provider: `${parent}/providers/stripe`,
             successPath: '/',
             basePath,
+            account: 'none',
           }
         : { kind, parent, workspacePath: '/', basePath },
     )
@@ -646,4 +648,143 @@ describe('consent issuance', () => {
       })
     },
   )
+})
+
+describe('Edit configuration Save', () => {
+  const setup = '29a180e5-397c-4844-92de-8bbea6066235'
+  const requestId = '33333333-3333-4333-8333-333333333333'
+  const parent = 'workspaces/11111111-1111-4111-8111-111111111111'
+  const provider = `${parent}/providers/records`
+  const basePath = '/providers/records/update'
+  const confirmProviderSetupConfiguration = vi.fn()
+  const publishProvider = vi.fn()
+  const api = fakeManagement({
+    setups: { confirmProviderSetupConfiguration },
+    providers: { publishProvider },
+  })
+
+  beforeEach(() => vi.resetAllMocks())
+
+  async function save(state: ProviderSetupState, interruptsAccess: boolean | undefined) {
+    confirmProviderSetupConfiguration.mockResolvedValue(
+      create(ProviderSetupSchema, {
+        name: `${parent}/providerSetups/${setup}`,
+        inputKind: ProviderSetupInputKind.OPENAPI,
+        state,
+        credentialMethod: CredentialMethod.NONE,
+        configuration: { revision: 3n, errors: {}, interruptsAccess },
+      }),
+    )
+    publishProvider.mockResolvedValue({ outcome: ProviderPublicationOutcome.SUCCEEDED })
+    const response = await attemptAction(
+      api,
+      // Back from an account step leaves its answer in the URL.
+      new Request(
+        `http://127.0.0.1${basePath}?setup=${setup}&task=configuration&etag=v1&account=caller`,
+        { method: 'POST' },
+      ),
+      context,
+      formWith({
+        intent: 'configure',
+        setup,
+        requestId,
+        configurationRevision: '2',
+        configuration: JSON.stringify({
+          displayName: 'Renamed',
+          authentication: 'none',
+          headers: [],
+          parameters: [],
+          basic: {
+            username: { source: 'literal', value: '' },
+            password: { source: 'literal', value: '' },
+          },
+          credentialFields: {},
+          authorizationUrl: '',
+          tokenUrl: '',
+          scopes: [],
+          servers: [],
+        }),
+      }),
+      {
+        kind: 'update',
+        parent,
+        provider,
+        successPath: '/providers/records',
+        basePath,
+        account: 'none',
+      },
+    )
+    if (!(response instanceof Response)) throw new Error('Expected a redirect')
+    return new URL(response.headers.get('Location')!, 'http://127.0.0.1')
+  }
+
+  // Catches: Save stopping on a page that only repeats the form, or publishing
+  // a change that needs a sign-in or consent first.
+  it.each([
+    ['nothing more', ProviderSetupState.READY, false, true],
+    ['consent', ProviderSetupState.READY, true, false],
+    ['an unchecked access change', ProviderSetupState.READY, undefined, false],
+    ['a sign-in', ProviderSetupState.AWAITING_AUTHORIZATION, false, false],
+  ])('publishes at once only when Coral needs %s', async (_, state, interrupts, publishes) => {
+    const location = await save(state, interrupts)
+    if (publishes) {
+      expect(location.pathname).toBe('/providers/records')
+      expect(publishProvider).toHaveBeenCalledOnce()
+      expect(publishProvider.mock.calls[0][0]).toMatchObject({
+        provider,
+        requestId,
+        etag: 'v1',
+        configurationRevision: 3n,
+        allowIncompatibleConfiguration: false,
+      })
+      // Save keeps the account setting.
+      expect(publishProvider.mock.calls[0][0].credentialRoute).toBeUndefined()
+    } else {
+      expect(publishProvider).not.toHaveBeenCalled()
+      expect(location.pathname).toBe(basePath)
+      expect(location.searchParams.get('task')).toBe('configuration')
+      expect(location.searchParams.has('configure')).toBe(false)
+    }
+  })
+})
+
+describe('Edit configuration Cancel', () => {
+  const setup = '29a180e5-397c-4844-92de-8bbea6066235'
+  const parent = 'workspaces/11111111-1111-4111-8111-111111111111'
+  const settings = '/providers/records/settings'
+  const basePath = '/providers/records/update'
+
+  // Catches: a discard through a link leaving the Setup open, or a crafted
+  // leaveTo sending you off this origin.
+  it.each([
+    ['without a link', undefined, settings],
+    ['to the link', '/workspaces/demo/providers?view=all', '/workspaces/demo/providers?view=all'],
+    ['never off this origin', '//evil.example/path', settings],
+    ['never to an absolute URL', 'https://evil.example/', settings],
+    ['never to a backslash path', '/\\evil.example', settings],
+  ])('cancels the Setup and goes %s', async (_, leaveTo, location) => {
+    const cancelProviderSetup = vi.fn().mockResolvedValue({})
+    const response = await attemptAction(
+      fakeManagement({ setups: { cancelProviderSetup } }),
+      new Request(`http://127.0.0.1${basePath}?setup=${setup}&task=configuration&etag=v1`, {
+        method: 'POST',
+      }),
+      context,
+      formWith({ intent: 'cancel', setup, ...(leaveTo ? { leaveTo } : {}) }),
+      {
+        kind: 'update',
+        parent,
+        provider: `${parent}/providers/records`,
+        successPath: settings,
+        basePath,
+        account: 'none',
+      },
+    )
+    if (!(response instanceof Response)) throw new Error('Expected a redirect')
+    expect(cancelProviderSetup).toHaveBeenCalledOnce()
+    expect(cancelProviderSetup.mock.calls[0][0]).toMatchObject({
+      name: `${parent}/providerSetups/${setup}`,
+    })
+    expect(response.headers.get('Location')).toBe(location)
+  })
 })

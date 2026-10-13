@@ -13,11 +13,14 @@ export function UpdateAuthorization({
   form,
   pending,
   callbackUrl,
+  formId,
 }: {
   setup: SetupView
   form: FormContext
   pending: boolean
   callbackUrl: string
+  /** Names the sign-in form for a submit button outside it, which then replaces its own. */
+  formId?: string
 }) {
   const oauth = setup.credentialMethod === 'oauth' || setup.credentialMethod === 'device'
   const inFlight =
@@ -33,7 +36,7 @@ export function UpdateAuthorization({
           extra={<input type="hidden" name="account" value="fixed" />}
         />
       ) : (
-        <Form method="post" reloadDocument className={styles.stack}>
+        <Form id={formId} method="post" reloadDocument className={styles.stack}>
           <Fields form={form} intent={oauth ? 'oauth-start' : 'secret'} />
           <input type="hidden" name="setup" value={setup.id} />
           <input type="hidden" name="configurationRevision" value={setup.configuration?.revision} />
@@ -48,9 +51,11 @@ export function UpdateAuthorization({
               {(input) => <Inputs.CredentialInput {...input} />}
             </CredentialFields>
           )}
-          <Button.TextButton type="submit" disabled={pending}>
-            {oauth ? signInLabel(setup, pending) : 'Authorize replacement'}
-          </Button.TextButton>
+          {!formId && (
+            <Button.TextButton type="submit" disabled={pending}>
+              {oauth ? signInLabel(setup, pending) : 'Authorize replacement'}
+            </Button.TextButton>
+          )}
         </Form>
       )}
     </div>

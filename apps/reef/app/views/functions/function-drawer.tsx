@@ -3,7 +3,10 @@ import { Banner, Button, Dialog, Table, Typography } from '@/wax/components'
 import { CodeBlock } from '@/wax/components/code-block'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Markdown } from '@/wax/components/markdown'
+import { SettingsRemoval } from '@/wax/components/settings-layout'
+import { ActionDialog } from '@/views/management/forms'
 import { Section } from '@/views/management/layout'
+import type { FormContext } from '@/views/management/types'
 import { SavedAt } from './saved-at'
 import type { SavedFunctionDiagnosticView, SavedFunctionView } from './types'
 import * as styles from './functions.css'
@@ -52,10 +55,18 @@ function Drawer({
 export interface FunctionDrawerProps {
   listPath: string
   savedFunction: SavedFunctionView
+  form: FormContext
+  /** False in an archived workspace, which accepts no changes. */
+  canDelete: boolean
 }
 
-/** One of the current User's Saved Functions, as Coral saved it. Reef only reads it. */
-export function FunctionDrawer({ listPath, savedFunction: f }: FunctionDrawerProps) {
+/** One of the current User's Saved Functions, as Coral saved it. You can read or delete it. */
+export function FunctionDrawer({
+  listPath,
+  savedFunction: f,
+  form,
+  canDelete,
+}: FunctionDrawerProps) {
   const callPath = `coral.functions.${f.path}`
   return (
     <Drawer listPath={listPath} title={f.path}>
@@ -113,6 +124,22 @@ export function FunctionDrawer({ listPath, savedFunction: f }: FunctionDrawerPro
           </Table.Container>
         )}
       </Section>
+      {canDelete && (
+        <SettingsRemoval
+          title="Delete function"
+          description="Programs that call this function fail after you delete it."
+          action={
+            <ActionDialog
+              title="Delete function"
+              submit="Delete function"
+              form={form}
+              intent="delete"
+              destructive
+              description={`After you delete it, programs that call ${callPath} fail. You cannot undo this.`}
+            />
+          }
+        />
+      )}
     </Drawer>
   )
 }

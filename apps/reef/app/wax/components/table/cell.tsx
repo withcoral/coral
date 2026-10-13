@@ -12,7 +12,7 @@ export type CellProps = PropsWithChildren<{
   /** Overrides the alignment its column states. */
   align?: TableAlign
   className?: string
-  /** Holds an input, which brings its own padding. */
+  /** Holds an input or button, which brings its own padding and focus ring. */
   control?: boolean
   /** Spans every column. Use it for a status or empty-state row. */
   fullWidth?: boolean
@@ -45,7 +45,7 @@ export function Cell({
       style={alignOverride(align) as CSSProperties}
       title={title}
     >
-      <div className={styles.cellText({ actions, mono, wrap })}>{children}</div>
+      <div className={styles.cellText({ actions, control, mono, wrap })}>{children}</div>
     </div>
   )
 }

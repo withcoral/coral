@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import type { ButtonSize } from '@/wax/components/button/button.css'
 import { ActionDialog } from '@/views/management/forms'
 import type { FormContext } from './types'
 
@@ -7,11 +8,13 @@ export function DisconnectAccount({
   form,
   action,
   children,
+  size,
 }: {
   form: FormContext
   action: string
   /** Hidden fields that identify the account where the action needs them. */
   children?: ReactNode
+  size?: ButtonSize
 }) {
   return (
     <ActionDialog
@@ -20,6 +23,7 @@ export function DisconnectAccount({
       intent="disconnect"
       action={action}
       destructive
+      triggerSize={size}
       description="Disconnect removes your stored credentials immediately. Coral stops unsent calls that use this account."
     >
       {children}

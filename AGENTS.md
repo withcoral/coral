@@ -77,6 +77,10 @@
 - Wax (`apps/reef/app/wax`) owns reusable visual behavior and styling. Extend
   its primitives when a UI needs a missing capability; app-specific modules
   compose Wax and own layout, not a parallel set of controls or theme values.
+- When a table row opens a page, pass the path to `Table.Row`'s `to` so a
+  click anywhere in the row opens it, and link its name with `Table.RowLink`.
+  Do not make only the name a link, or style the name as a link.
+  Use `Table.useRowCursor` so ↑, ↓ and Enter reach the rows.
 - Do not show status or meaning with color alone. Pair color with a distinct
   icon shape or text, so color-blind users can read it (WCAG 1.4.1).
 - Browser access to Coral belongs in React Router server loaders, actions, and

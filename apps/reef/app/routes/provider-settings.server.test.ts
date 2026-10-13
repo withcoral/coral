@@ -95,7 +95,6 @@ beforeEach(() => {
       account: { state: ProviderAccountState.READY },
       canConnect: true,
     }),
-    'providers.listOperations': () => ({ operations: [], nextPageToken: '' }),
   }
 })
 
@@ -108,7 +107,6 @@ it('makes only read calls when settings open', async () => {
     'accounts.getProviderAccount',
     'providers.getProvider',
     'providers.getProviderSource',
-    'providers.listOperations',
   ])
 })
 
@@ -230,7 +228,7 @@ it('reads the shared account for owners only', async () => {
     connection: 'not_connected',
     canConnect: false,
   })
-  expect(calls.toSorted()).toEqual(['providers.getProvider', 'providers.listOperations'])
+  expect(calls.toSorted()).toEqual(['providers.getProvider'])
 })
 
 it('reads no account when calls use none', async () => {
@@ -238,7 +236,7 @@ it('reads no account when calls use none', async () => {
     provider({ credentialRoute: { kind: CredentialRoute_Kind.NONE } })
   signedInAs('member')
   await load()
-  expect(calls.toSorted()).toEqual(['providers.getProvider', 'providers.listOperations'])
+  expect(calls.toSorted()).toEqual(['providers.getProvider'])
 })
 
 // Catches: a failed read of your own account reported as connected. Coral's
@@ -282,55 +280,4 @@ it('says whether the provider is enabled and has operations ready', async () => 
 
   responses['providers.getProvider'] = () => provider()
   expect((await load()).provider).toMatchObject({ enabled: true, operationsReady: true })
-})
-
-// Catches: the summary counting one page of a long catalog, counting a
-// blocked operation as callable, or counting a hint the provider did not
-// declare true.
-type Hints = { readOnly?: boolean; destructive?: boolean }
-const readOnly: Hints = { readOnly: true }
-const destructive: Hints = { readOnly: false, destructive: true }
-const operation = (hints: Hints | undefined, available = true, tags: string[] = []) => ({
-  hints,
-  available,
-  tags,
-  relativePath: 'op',
-})
-
-it('counts every operation by declared hint and availability', async () => {
-  const pages: Record<string, { operations: unknown[]; nextPageToken: string }> = {
-    '': {
-      operations: [
-        operation(readOnly, true, ['issues']),
-        operation(readOnly, false, ['issues']),
-        operation(destructive, true, ['repos']),
-      ],
-      nextPageToken: 'next',
-    },
-    next: {
-      operations: [operation({ destructive: false }), operation(undefined, false)],
-      nextPageToken: '',
-    },
-  }
-  responses['providers.listOperations'] = (request) =>
-    pages[(request as { pageToken: string }).pageToken]
-  signedInAs('member')
-  expect((await load()).provider).toMatchObject({
-    // issues, repos, and Other for the two without a group, as the table shows.
-    operations: { total: 5, groups: 3, readOnly: 2, destructive: 1, blocked: 2 },
-  })
-
-  // A catalog with no groups at all is a flat list.
-  responses['providers.listOperations'] = () => ({
-    operations: [operation(readOnly)],
-    nextPageToken: '',
-  })
-  expect((await load()).provider).toMatchObject({ operations: { groups: 0 } })
-
-  // A provider's own group named Other is a group, not the flat-list fallback.
-  responses['providers.listOperations'] = () => ({
-    operations: [operation(readOnly, true, ['Other'])],
-    nextPageToken: '',
-  })
-  expect((await load()).provider).toMatchObject({ operations: { groups: 1 } })
 })

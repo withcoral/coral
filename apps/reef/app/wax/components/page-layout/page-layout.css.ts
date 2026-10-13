@@ -54,7 +54,13 @@ export const frame = recipe({
       // to the bottom, so their tables get the height.
       split: { height: '100%', minHeight: 0, paddingBlock: 16 },
     },
+    // The frame is the viewport's height, and a scroll table in it takes the rest.
+    bounded: {
+      false: {},
+      true: { height: '100%', minHeight: 0 },
+    },
   },
+  defaultVariants: { bounded: false },
 })
 
 export const header = style({

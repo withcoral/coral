@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
-import { Form, Link, useFetcher } from 'react-router'
+import { Form, useFetcher } from 'react-router'
 
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
 import { ErrorMessage } from '@/wax/components/error-message/error-message'
 import { PageLayout } from '@/wax/components/page-layout'
-import * as CardFrame from '@/wax/components/card'
 import { Card } from '@/wax/components/card/card'
-import { Tooltip } from '@/wax/components/tooltip'
 import { Pill } from '@/wax/components/pill'
 import { ActionDialog, Fields } from '@/views/management/forms'
 import { ArchivedBanner, trail } from '@/views/management/layout'
-import { SettingsLayout, SettingsRemoval } from '@/wax/components/settings-layout'
+import {
+  SettingsAside,
+  SettingsFact,
+  SettingsFacts,
+  SettingsLayout,
+  SettingsRemoval,
+} from '@/wax/components/settings-layout'
 
 import type {
   ActionResult,
@@ -20,7 +24,8 @@ import type {
   ProviderSourceView,
 } from './types'
 import { accountStates } from '@/views/accounts/account-states'
-import { countLabel } from './configuration-details'
+import { accountLabels, useAccountAudience } from './account-labels'
+import { SourceUrl, sourceKinds } from './source-facts'
 import * as styles from './providers.css'
 
 /**
@@ -64,7 +69,6 @@ export function ProviderSettingsPage({
         aside={source && <SourcePanel provider={provider} source={source} canChange={canChange} />}
         removal={canChange && <Removal provider={provider} form={form} />}
       >
-        <OperationsSummary operations={provider.operations} path={provider.path} />
         <AccountSection
           workspacePath={w.path}
           provider={provider}
@@ -91,34 +95,6 @@ export function ProviderSettingsPage({
         )}
       </SettingsLayout>
     </PageLayout>
-  )
-}
-
-const formatCount = (count: number) => count.toLocaleString('en-US')
-
-/** How many operations the provider offers, what they can do, and how many are blocked. */
-function OperationsSummary({
-  operations: o,
-  path,
-}: {
-  operations: ProviderSettingsView['operations']
-  /** The provider's operations view, which the card opens. */
-  path: string
-}) {
-  // Only what the catalog has: a count of nothing says nothing.
-  const parts = [
-    o.groups > 0 && countLabel(o.groups, 'group'),
-    o.readOnly > 0 && `${formatCount(o.readOnly)} read-only`,
-    o.destructive > 0 && `${formatCount(o.destructive)} destructive`,
-    o.blocked > 0 && `${formatCount(o.blocked)} blocked`,
-  ].filter(Boolean)
-  return (
-    <Card
-      as={Link}
-      to={path}
-      title={countLabel(o.total, 'operation')}
-      description={parts.join(' · ') || undefined}
-    />
   )
 }
 
@@ -230,13 +206,6 @@ function ProviderNameHeading({
   )
 }
 
-/** Whose account calls use, as the Add provider account step names it. */
-const accountCards = {
-  caller: { title: 'Your account', description: 'Each caller uses their own account.' },
-  fixed: { title: 'Shared account', description: 'All callers use one shared account.' },
-  none: { title: 'No account is required.', description: undefined },
-} as const
-
 /**
  * One card for the account calls use: whose it is, its connection, and its
  * actions. Changing the setting and managing credentials stay separate
@@ -260,7 +229,13 @@ function AccountSection({
   canChange: boolean
   pending: boolean
 }) {
-  const card = accountCards[provider.account]
+  const audience = useAccountAudience()
+  // Whose account calls use, named as the account setting names it.
+  const card = {
+    caller: { title: accountLabels.caller, description: audience.individualAccounts },
+    fixed: { title: accountLabels.fixed, description: audience.sharedAccount },
+    none: { title: 'No account is required.', description: undefined },
+  }[provider.account]
   const required = provider.account !== 'none'
   const shared = provider.account === 'fixed'
   const connected = provider.connection === 'connected'
@@ -339,8 +314,6 @@ function AccountSection({
   )
 }
 
-const sourceKinds = { openapi: 'OpenAPI document', mcp: 'MCP server' } as const
-
 function SourcePanel({
   provider,
   source,
@@ -351,83 +324,40 @@ function SourcePanel({
   canChange: boolean
 }) {
   return (
-    <CardFrame.Container as="aside" className={styles.settingsSource} aria-label="Source">
-      <Typography.BodyLargeStrong as="h2">Source</Typography.BodyLargeStrong>
+    <SettingsAside title="Source">
       {source.state === 'failed' ? (
         <Banner variant="error">
           Coral could not read the source. Reload the page to try again.
         </Banner>
       ) : (
-        <dl className={styles.settingsFacts}>
-          <div className={styles.settingsFact}>
-            <Typography.BodySmallStrong as="dt">Type</Typography.BodySmallStrong>
-            <Typography.BodySmall as="dd">{sourceKinds[source.kind]}</Typography.BodySmall>
-          </div>
-          <div className={styles.settingsFact}>
-            <Typography.BodySmallStrong as="dt">URL</Typography.BodySmallStrong>
+        <SettingsFacts>
+          <SettingsFact label="Type">{sourceKinds[source.kind]}</SettingsFact>
+          <SettingsFact label="URL">
             {source.location.type === 'url' ? (
               <SourceUrl url={source.location.url} host={source.location.host} />
+            ) : source.location.type === 'upload' ? (
+              'Uploaded document'
             ) : (
-              <Typography.BodySmall as="dd">
-                {source.location.type === 'upload'
-                  ? 'Uploaded document'
-                  : 'Coral cannot show this URL.'}
-              </Typography.BodySmall>
+              'Coral cannot show this URL.'
             )}
-          </div>
-        </dl>
+          </SettingsFact>
+        </SettingsFacts>
       )}
       {canChange && (
         <div className={styles.settingsSourceActions}>
-          <div className={styles.settingsFact}>
-            <Typography.BodySmall as="p">
-              Read the source again to update operations.
-            </Typography.BodySmall>
-            <div className={styles.rowActions}>
-              <Button.InternalLink to={`${provider.path}/update`} variant="secondary" size="small">
-                Refresh operations
-              </Button.InternalLink>
-            </div>
-          </div>
-          <div className={styles.settingsFact}>
-            <Typography.BodySmall as="p">
-              Use a different source for this provider.
-            </Typography.BodySmall>
-            <div className={styles.rowActions}>
-              <Button.InternalLink
-                to={`${provider.path}/update?replaceSource=1`}
-                variant="secondary"
-                size="small"
-              >
-                Replace source
-              </Button.InternalLink>
-            </div>
-          </div>
+          <Button.InternalLink to={`${provider.path}/update`} variant="secondary" size="small">
+            Check for updates
+          </Button.InternalLink>
+          <Button.InternalLink
+            to={`${provider.path}/update?replaceSource=1`}
+            variant="secondary"
+            size="small"
+          >
+            Replace source
+          </Button.InternalLink>
         </div>
       )}
-    </CardFrame.Container>
-  )
-}
-
-/**
- * The host reads at a glance; the whole URL stays on one line, shortened when
- * it does not fit, with its full text in a tooltip and a copy button.
- */
-function SourceUrl({ url, host }: { url: string; host: string }) {
-  return (
-    <dd className={styles.settingsUrl}>
-      <Typography.BodySmall as="span">{host}</Typography.BodySmall>
-      <span className={styles.settingsUrlRow}>
-        <Tooltip content={url} showOnlyWhenTruncated maxWidth={520}>
-          <span className={styles.settingsUrlText}>
-            <Typography.BodySmall as="span" variant="tertiary">
-              {url}
-            </Typography.BodySmall>
-          </span>
-        </Tooltip>
-        <Button.CopyButton textToCopy={url} ariaLabel="Copy source URL" size="22" variant="bare" />
-      </span>
-    </dd>
+    </SettingsAside>
   )
 }
 
@@ -435,7 +365,7 @@ function Removal({ provider, form }: { provider: ProviderSettingsView; form: For
   return (
     <SettingsRemoval
       title="Remove provider"
-      description="Remove this provider and its connected accounts. You cannot undo this."
+      description="Remove this provider and its connected accounts."
       action={
         <ActionDialog
           title="Remove provider"
@@ -444,9 +374,22 @@ function Removal({ provider, form }: { provider: ProviderSettingsView; form: For
           intent="removeProvider"
           etag={provider.etag}
           destructive
-          description={`Coral removes ${provider.displayName}, its namespace ${provider.callRoot}, and every connected account. Unsent calls stop. You cannot undo this. Coral keeps the run history.`}
         >
           <input type="hidden" name="provider" value={provider.id} />
+          <div className={styles.removalDetails}>
+            <Typography.Body as="p">This removes:</Typography.Body>
+            <ul className={styles.bulletList}>
+              <Typography.Body as="li">{provider.displayName}</Typography.Body>
+              <Typography.Body as="li">
+                The namespace <Typography.CodeInline>{provider.callRoot}</Typography.CodeInline>
+              </Typography.Body>
+              <Typography.Body as="li">Every connected account</Typography.Body>
+            </ul>
+            <Typography.Body as="p">
+              Calls to this provider fail after you remove it. Its run history stays.
+            </Typography.Body>
+            <Typography.Body as="p">You cannot undo this.</Typography.Body>
+          </div>
         </ActionDialog>
       }
     />

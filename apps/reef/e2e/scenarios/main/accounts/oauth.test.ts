@@ -1,4 +1,5 @@
 import { expect, test } from 'vitest'
+import type { Page } from 'playwright'
 import { authenticatedTarget, loginActor } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { oauthApiServer } from '../../../support/provider-fixtures.ts'
@@ -18,8 +19,20 @@ import {
   nextPublication,
   openProviderSettings,
   openYourAccount,
+  waitForNoAccount,
   waitForPublication,
+  waitForYourAccount,
 } from '../../../support/providers.ts'
+
+/** The Permissions table's rows: what Coral requests. */
+async function permissions(page: Page) {
+  const rows = page
+    .getByRole('table', { name: 'Permissions', exact: true })
+    .getByRole('rowgroup')
+    .last()
+    .getByRole('row')
+  return (await rows.allInnerTexts()).map((row) => row.split(/\s+/).join(' ').trim())
+}
 
 test.for(['complete', 'partial', 'rejected'] as const)(
   'Published provider OAuth account authorization: %s grant',
@@ -48,11 +61,14 @@ test.for(['complete', 'partial', 'rejected'] as const)(
             await openProviderSettings(page)
             await openYourAccount(page)
             accountPage = new URL(page.url()).pathname
-            await page.getByText('Requested permissions: read, write', { exact: true }).waitFor()
+            await page.getByText('Sign in to Records to connect it.', { exact: true }).waitFor()
+            // Before a grant the table lists only what Coral asks for.
+            await page.getByText('Coral asks for 2 permissions.', { exact: true }).waitFor()
+            expect(await permissions(page)).toEqual(['read', 'write'])
           },
         )
         await step('One click goes to host-owned OAuth consent and returns here', async () => {
-          await page.getByRole('button', { name: /^Connect / }).click()
+          await page.getByRole('button', { name: 'Connect', exact: true }).click()
           await page.getByRole('link', { name: 'Approve fixture access', exact: true }).waitFor()
           const url = new URL(page.url())
           expect(url.searchParams.get('code_challenge_method')).toBe('S256')
@@ -67,22 +83,25 @@ test.for(['complete', 'partial', 'rejected'] as const)(
               .getByText('The service rejected the sign-in code.', { exact: false })
               .waitFor()
           else {
-            await page.getByText('Ready', { exact: true }).waitFor()
+            await waitForYourAccount(page)
             expect(new URL(page.url()).pathname).toBe(accountPage)
           }
           expect(upstream.counts.tokens).toBe(1)
         })
         await step('The reported grant connects the account and shows as written', async () => {
           await page.goto(accountPage)
-          if (grant === 'rejected')
-            await page.getByText('No connected account.', { exact: true }).waitFor()
-          else {
-            await page.getByText('Ready', { exact: true }).waitFor()
+          if (grant === 'rejected') {
+            await waitForNoAccount(page)
+            expect(await permissions(page)).toEqual(['read', 'write'])
+          } else {
+            await waitForYourAccount(page)
+            // The grant shows as the service reported it, apart from the request.
             await page
-              .getByText(`Granted permissions: ${grant === 'partial' ? 'read' : 'read write'}`, {
-                exact: true,
-              })
+              .getByRole('complementary', { name: 'Details', exact: true })
+              .getByRole('definition')
+              .filter({ hasText: grant === 'partial' ? /^read$/ : /^read write$/ })
               .waitFor()
+            expect(await permissions(page)).toEqual(['read', 'write'])
           }
           for (const body of await responses()) {
             expect(body).not.toContain(token)

@@ -14,6 +14,7 @@ import {
   createWorkspaceViaUi,
   openProviderSettings,
   openYourAccount,
+  waitForYourAccount,
 } from '../../support/providers.ts'
 
 // Only the host's part of Provider consent. Coral's loopback callback itself is
@@ -36,7 +37,7 @@ test('Desktop opens provider consent in the system browser and keeps sign-in pro
     await step(
       'Connect sends consent to the system browser and keeps the window on Coral',
       async () => {
-        await page.getByRole('button', { name: /^Connect / }).click()
+        await page.getByRole('button', { name: 'Connect', exact: true }).click()
         await page.getByRole('link', { name: 'Check connection', exact: true }).waitFor()
         expect(new URL(page.url()).origin).toBe(reef)
         await expect.poll(opened).toHaveLength(1)
@@ -56,7 +57,7 @@ test('Desktop opens provider consent in the system browser and keeps sign-in pro
           .getByText('Return to Coral to check your connection. You can close this browser tab.')
           .waitFor()
         // Reef's activity stream returns the open page to the account; nothing reloads it.
-        await page.getByText('Ready', { exact: true }).waitFor()
+        await waitForYourAccount(page)
         expect(await samePage()).toBe(true)
         expect(upstream.counts.tokens).toBe(1)
       },

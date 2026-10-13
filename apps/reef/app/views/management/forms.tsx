@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useFetcher } from 'react-router'
 
 import { Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
+import type { ButtonSize } from '@/wax/components/button/button.css'
 
 import { personLabel } from './person'
 import type { ActionResult, FormContext, OrganizationPersonView } from './types'
@@ -214,6 +215,8 @@ interface ActionDialogProps {
   onSuccess?: (result: ActionResult) => void
   onError?: (result: ActionResult) => void
   size?: Dialog.PopupSize
+  /** The size of the button that opens the dialog. */
+  triggerSize?: ButtonSize
   finalFocus?: React.RefObject<HTMLElement | null>
 }
 
@@ -234,6 +237,7 @@ export function ActionDialog(props: ActionDialogProps) {
           render={
             <Button.Container
               disabled={props.disabled}
+              size={props.triggerSize}
               variant={props.destructive ? 'destructive' : props.primary ? 'primary' : 'secondary'}
             />
           }

@@ -1,11 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { AccountsPage } from './accounts-page'
 import { AuthorizationPage } from './authorization-page'
-import { UserAccountPage } from './user-account-page'
 import { PolicyPage } from './policy-page'
 import { UserAccountsPage } from './user-accounts-page'
-import type { AccountsView, AuthorizationView, UserAccountView, UserAccountsView } from './types'
+import type { AccountsView, AuthorizationView, UserAccountsView } from './types'
 
 const form = { csrf: 'storybook', requestId: 'storybook' }
 const account = {
@@ -58,20 +58,6 @@ const workspace = {
   profile: { user: 'u_demo', name: 'Demo user', email: 'demo@example.test', local: false },
   mcpEndpoint: '',
   path: '/workspaces/demo',
-}
-const connect: UserAccountView = {
-  workspace,
-  providerName: 'Linear',
-  path: '/connect',
-  returnTo: '/workspaces/demo/runs/run',
-  accountsPath: '/workspaces/demo/accounts',
-  state: 'not_connected',
-  scopes: ['read', 'write'],
-  canConnect: true,
-  canDisconnect: false,
-  oauth: true,
-  credentialFields: authorization.credentialFields,
-  form,
 }
 const personal: UserAccountsView = {
   workspace,
@@ -251,19 +237,49 @@ export const Expired: Story = {
   render: () => <AuthorizationPage view={{ ...authorization, state: 'expired' }} />,
 }
 export const YourAccounts: Story = { render: () => <UserAccountsPage view={personal} /> }
+export const FilterYourAccounts: Story = {
+  render: () => <UserAccountsPage view={personal} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const page = within(canvasElement.ownerDocument.body)
+    // The filter applies through a deferred value, so the rows can lag a render.
+    const providers = (expected: string[]) =>
+      waitFor(() =>
+        expect(
+          canvas
+            .getAllByRole('link', { name: / account details$/ })
+            .map((link) => link.textContent),
+        ).toEqual(expected),
+      )
+
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'Filter accounts by status: All statuses' }),
+    )
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'Needs reconnect' }))
+    await providers(['Ledger'])
+
+    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter accounts' }), 'git')
+    await expect(await canvas.findByText('No accounts match “git”.')).toBeVisible()
+
+    // The button's name says which status the table shows.
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'Filter accounts by status: Needs reconnect' }),
+    )
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'All statuses' }))
+    await providers(['GitHub'])
+  },
+}
+/** The table keeps its shape with no accounts, and points to the providers. */
 export const NoSeparateAccounts: Story = {
   render: () => <UserAccountsPage view={{ ...personal, accounts: [] }} />,
-}
-export const ConnectFromRun: Story = { render: () => <UserAccountPage view={connect} /> }
-export const ConnectWithSecret: Story = {
-  render: () => <UserAccountPage view={{ ...connect, oauth: false, returnTo: null }} />,
-}
-export const ReconnectFromAccounts: Story = {
-  render: () => (
-    <UserAccountPage
-      view={{ ...connect, state: 'needs_reconnect', returnTo: connect.accountsPath }}
-    />
-  ),
+  play: async ({ canvas }) => {
+    const table = within(canvas.getByRole('table', { name: 'Accounts' }))
+    await expect(table.getByText('No accounts yet')).toBeVisible()
+    await expect(table.getByRole('link', { name: 'View providers' })).toHaveAttribute(
+      'href',
+      `${personal.workspace.path}/providers`,
+    )
+  },
 }
 export const ExactPolicy: Story = {
   render: () => (

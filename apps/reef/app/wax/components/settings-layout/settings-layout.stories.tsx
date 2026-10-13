@@ -1,10 +1,16 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { Button, Typography } from '@/wax/components'
-import * as CardFrame from '@/wax/components/card'
 import { Card } from '@/wax/components/card/card'
 
-import { SettingsLayout, SettingsRemoval } from './index'
+import {
+  SettingsAside,
+  SettingsFact,
+  SettingsFacts,
+  SettingsLayout,
+  SettingsRemoval,
+  SettingsWideColumns,
+} from './index'
 
 const meta = {
   title: 'Components/SettingsLayout',
@@ -12,9 +18,12 @@ const meta = {
     <SettingsLayout
       header={<Typography.HeadingLarge as="h2">Nightly reconciler</Typography.HeadingLarge>}
       aside={
-        <CardFrame.Container as="aside" aria-label="Source">
-          <Typography.BodyLargeStrong as="h2">Source</Typography.BodyLargeStrong>
-        </CardFrame.Container>
+        <SettingsAside title="Source">
+          <SettingsFacts>
+            <SettingsFact label="Type">OpenAPI document</SettingsFact>
+            <SettingsFact label="URL">api.example.com</SettingsFact>
+          </SettingsFacts>
+        </SettingsAside>
       }
       removal={
         <SettingsRemoval
@@ -44,5 +53,21 @@ export const WithoutAside: Story = {
     <SettingsLayout header={<Typography.HeadingLarge as="h2">Settings</Typography.HeadingLarge>}>
       <Card title="Agent" description="Disabling the agent blocks new runs." />
     </SettingsLayout>
+  ),
+}
+/** A long list takes the free width; the aside keeps its settings width. */
+export const WideColumns: Story = {
+  render: () => (
+    <SettingsWideColumns
+      aside={
+        <SettingsAside title="Source">
+          <SettingsFacts>
+            <SettingsFact label="Type">OpenAPI document</SettingsFact>
+          </SettingsFacts>
+        </SettingsAside>
+      }
+    >
+      <Card title="Operations" description="Every operation the source offers." />
+    </SettingsWideColumns>
   ),
 }

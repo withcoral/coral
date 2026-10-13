@@ -7,7 +7,7 @@ import {
   privateHeaders,
   type ManagementApi,
 } from '@/lib/management.server'
-import { listAllOperations, providerName, providerSettingsView } from '@/lib/providers.server'
+import { providerName, providerSettingsView } from '@/lib/providers.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ProviderAccountScope } from '@/generated/coral/management/v1/account_pb'
 import { accountConnectionState } from '@/lib/accounts.server'
@@ -28,11 +28,8 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
     const { api, workspace } = await authorizedWorkspace(request, context, params.workspace)
     const name = providerName(workspace.name, params.provider)
-    const [stored, operations] = await Promise.all([
-      api.providers.getProvider({ name }),
-      listAllOperations(api, name),
-    ])
-    const provider = providerSettingsView(stored, workspace.path, operations)
+    const stored = await api.providers.getProvider({ name })
+    const provider = providerSettingsView(stored, workspace.path)
     const owner = workspace.effectiveRole === 'owner'
     const [source, connection] = await Promise.all([
       // Source metadata is owner-only; members never reach the read. Coral

@@ -278,9 +278,75 @@ export const AgentListing: Story = {
     ).toHaveAttribute('href', agent.settingsPath)
   },
 }
+export const FilterAgents: Story = {
+  ...AgentListing,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const page = within(canvasElement.ownerDocument.body)
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'Filter agents by status: All statuses' }),
+    )
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'Blocked' }))
+    // The filters apply through a deferred value, so the rows can lag a render.
+    await waitFor(() => expect(canvas.queryByRole('link', { name: agent.displayName })).toBeNull())
+    await expect(canvas.getByRole('link', { name: blockedAgent.displayName })).toBeVisible()
+
+    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter agents' }), 'deploy')
+    await expect(await canvas.findByText('No agents match “deploy”.')).toBeVisible()
+  },
+}
+// The table scrolls its rows under its heading; the page stays the viewport's height.
+export const ManyAgents: Story = {
+  render: () => (
+    <AgentsPage
+      workspace={workspace}
+      agents={Array.from({ length: 40 }, (_, i) => ({
+        ...agent,
+        name: `${agent.name}-${i}`,
+        // One name wraps, so its row is taller than the others.
+        displayName:
+          i === 0
+            ? `${agent.displayName} for every payments, billing and reconciliation queue in each region`
+            : `${agent.displayName} ${i + 1}`,
+        settingsPath: `/${agent.name}-${i}/settings`,
+      }))}
+      nextPage="next"
+      form={form}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/agents' },
+  // A bounded table once shrank every row to the shortest row's height, so a
+  // wrapped name spilled over the next row and took its clicks.
+  play: async ({ canvasElement }) => {
+    const table = within(canvasElement).getByRole('table', { name: 'Agents' })
+    const rows = within(table).getAllByRole('row').slice(1)
+    await expect(rows[0].getBoundingClientRect().height).toBeGreaterThan(
+      rows[1].getBoundingClientRect().height,
+    )
+    for (const row of rows) {
+      const bottom = row.getBoundingClientRect().bottom
+      for (const cell of within(row).getAllByRole('cell'))
+        await expect(cell.getBoundingClientRect().bottom).toBeLessThanOrEqual(bottom)
+    }
+  },
+  // The app shell bounds the page's height; the story needs a bound of its own.
+  decorators: [
+    (Story) => (
+      <div style={{ height: '100vh' }}>
+        <Story />
+      </div>
+    ),
+  ],
+}
+/** The table keeps its shape with no agents, and offers to create one. */
 export const NoAgents: Story = {
   render: () => <AgentsPage workspace={workspace} agents={[]} nextPage="" form={form} />,
   parameters: { initialEntry: '/workspaces/demo/agents' },
+  play: async ({ canvas }) => {
+    const table = within(canvas.getByRole('table', { name: 'Agents' }))
+    await expect(table.getByText('No agents yet')).toBeVisible()
+    await expect(table.getByRole('button', { name: 'Create agent' })).toBeVisible()
+  },
 }
 export const ArchivedAgents: Story = {
   render: () => <AgentsPage workspace={archived} agents={[agent]} nextPage="" form={form} />,
@@ -591,6 +657,32 @@ export const OrganizationMembers: Story = {
     await expect(canvas.getByTitle(alice.email)).toBeVisible()
     await expect(canvas.queryByText(alice.email)).not.toBeInTheDocument()
     await expect(canvas.getByText('Disabled')).toBeVisible()
+  },
+}
+export const FilterOrganizationMembers: Story = {
+  render: OrganizationMembers.render,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const page = within(canvasElement.ownerDocument.body)
+    // The filters apply through a deferred value, so the rows can lag a render.
+    const shown = (expected: string[]) =>
+      waitFor(() =>
+        expect(
+          canvas
+            .getAllByRole('button', { name: /^Actions for / })
+            .map((button) => button.getAttribute('aria-label')),
+        ).toEqual(expected),
+      )
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Filter members by role: All roles' }))
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'Member' }))
+    await shown(['Actions for Alice Chen'])
+
+    await userEvent.click(canvas.getByRole('button', { name: 'Filter members by role: Member' }))
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'All roles' }))
+    // The filter matches an email as well as a name.
+    await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter members' }), 'jordan@')
+    await shown(['Actions for Jordan Lee'])
   },
 }
 export const OrganizationMembersEmpty: Story = {

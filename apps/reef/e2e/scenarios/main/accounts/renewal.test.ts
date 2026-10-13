@@ -19,6 +19,7 @@ import {
   openCustomSource,
   programRunner,
   signInToReadOperations,
+  waitForNoAccount,
   waitForPublication,
 } from '../../../support/providers.ts'
 
@@ -184,7 +185,7 @@ test.for(['user', 'shared', 'agent'] as const)(
             // Your own account returns to its page; another scope's progress page says so.
             await page
               .getByText('Account connected.', { exact: true })
-              .or(page.getByText('Ready', { exact: true }))
+              .or(page.getByRole('complementary', { name: 'Details', exact: true }))
               .waitFor()
             const connected = await snapshot()
             expect((await inspect()).account!.id).toBe(accountId)
@@ -212,7 +213,9 @@ test.for(['user', 'shared', 'agent'] as const)(
             .getByRole('dialog')
             .getByRole('button', { name: 'Disconnect', exact: true })
             .click()
-          await page.getByText('Disconnected', { exact: true }).waitFor()
+          // Your own account page shows no account; a shared or Agent account says Disconnected.
+          if (scope === 'user') await waitForNoAccount(page)
+          else await page.getByText('Disconnected', { exact: true }).waitFor()
           const disconnected = await snapshot()
           await page.goto(callback!)
           await page.getByText('Sign-in did not complete.', { exact: false }).waitFor()

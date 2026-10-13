@@ -16,23 +16,30 @@ import {
   openOperation,
   openProviderSettings,
   programRunner,
+  discardSettingsChange,
+  saveConfirmedSettingsChange,
   setProviderEnabled,
   signInToReadOperations,
   waitForProviderStatus,
   waitForPublication,
 } from '../../../../support/providers.ts'
 
-const applied = (page: Page) => waitForPublication(page)
+// Every change returns to the provider's settings, where it opens.
+const saved = (page: Page) => page.waitForURL((url) => url.pathname.endsWith('/settings'))
 const operationLink = (page: Page, name: string) =>
   page
     .getByRole('table', { name: 'Operations', exact: true })
     .getByRole('link', { name, exact: true })
-const apply = async (page: Page) => {
+const save = async (page: Page) => {
   expect(new URL(page.url()).searchParams.has('operationsAccepted')).toBe(false)
-  expect(await page.getByRole('link', { name: 'Next', exact: true }).count()).toBe(0)
-  await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
-  await applied(page)
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await saved(page)
 }
+// An open group's toggle names it.
+const operationGroup = (page: Page, name: string) =>
+  page
+    .getByRole('treeitem')
+    .filter({ has: page.getByRole('button', { name: `Collapse ${name}`, exact: true }) })
 
 test('Change account settings without reading a source or editing configuration', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
@@ -50,34 +57,44 @@ test('Change account settings without reading a source or editing configuration'
     await step('Choose the account setting directly from the provider', async () => {
       await openProviderSettings(page)
       await page.getByRole('button', { name: 'Change account setting', exact: true }).click()
-      await page.getByRole('radio', { name: 'Individual accounts', exact: true }).check()
+      expect(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled()).toBe(true)
+      await page.getByRole('radio', { name: 'Use individual accounts', exact: true }).check()
       expect(
         await page.getByRole('textbox', { name: /^(OpenAPI URL|MCP server URL)$/ }).count(),
       ).toBe(0)
       expect(await page.getByLabel('Display name', { exact: true }).count()).toBe(0)
-      await page.getByRole('button', { name: 'Review changes', exact: true }).click()
-      await page.getByRole('heading', { name: 'Review changes', exact: true }).waitFor()
-      expect(
-        await page.getByRole('button', { name: 'Apply changes', exact: true }).isDisabled(),
-      ).toBe(true)
+      await saveConfirmedSettingsChange(page)
+      expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
       await page
-        .getByRole('checkbox', { name: 'Remove existing shared account credentials', exact: true })
-        .check()
-      await apply(page)
-      expect(new URL(page.url()).pathname).toBe(providerPath)
-      await openProviderSettings(page)
-      await page.getByText('Each caller uses their own account.', { exact: true }).waitFor()
+        .getByText(
+          'Each person connects their own account. Workspace owners connect accounts for agents.',
+          { exact: true },
+        )
+        .waitFor()
+    })
+    await step('Ask before discarding an unsaved edit', async () => {
+      await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
+      await page.getByLabel('Display name', { exact: true }).fill('Unsaved records')
+      const discard = page.getByRole('dialog', { name: 'Discard your changes?' })
+      await page.getByRole('link', { name: 'Providers', exact: true }).first().click()
+      await discard.getByRole('button', { name: 'Keep editing', exact: true }).click()
+      expect(await page.getByLabel('Display name', { exact: true }).inputValue()).toBe(
+        'Unsaved records',
+      )
+      await discardSettingsChange(page)
+      expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
     })
     await step('Edit configuration without fetching a source', async () => {
       await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
+      expect(await page.getByLabel('Display name', { exact: true }).inputValue()).toBe('Records')
       await page.getByLabel('Display name', { exact: true }).fill('Renamed records')
       expect(
         await page.getByRole('textbox', { name: /^(OpenAPI URL|MCP server URL)$/ }).count(),
       ).toBe(0)
-      await page.getByRole('button', { name: 'Next', exact: true }).click()
-      await page.getByText('Keep existing accounts.', { exact: true }).waitFor()
-      await apply(page)
-      await page.getByRole('rowgroup', { name: 'Renamed records', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await saved(page)
+      expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
+      await page.getByRole('heading', { level: 2, name: 'Renamed records', exact: true }).waitFor()
     })
   })
 })
@@ -125,34 +142,30 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
       await openProviderSettings(page)
       await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
       await page.getByLabel('Display name', { exact: true }).fill('Renamed records')
-      await page.getByRole('button', { name: 'Next', exact: true }).click()
-      await apply(page)
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await saved(page)
       expect(reads).toBe(initialReads)
       operations = { listRecords: {}, newReport: {} }
-      await openProviderSettings(page)
-      await page.getByRole('link', { name: 'Refresh operations', exact: true }).click()
-      await page.getByText(source.origin, { exact: true }).waitFor()
+      await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
+      // The source shows as settings show it, redacted and normalised.
+      await page.getByText(`${source.origin}/`, { exact: true }).waitFor()
       expect(reads).toBe(initialReads)
       expect(await page.getByRole('heading', { name: 'Changes', exact: true }).count()).toBe(0)
       expect(await page.getByRole('heading', { name: 'Review', exact: true }).count()).toBe(0)
       holdRead = true
       await page.getByRole('button', { name: 'Read operations', exact: true }).click()
-      await page
-        .getByRole('status')
-        .getByText('Reading operations. Large catalogs can take a moment.', {
-          exact: true,
-        })
-        .waitFor()
-      expect(
-        await page.getByRole('button', { name: 'Reading operations…', exact: true }).isDisabled(),
-      ).toBe(true)
+      await page.getByRole('status').getByText('Reading operations…', { exact: true }).waitFor()
+      // Nothing to save until the source is read.
+      expect(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled()).toBe(true)
       await expect.poll(() => typeof releaseRead).toBe('function')
       releaseRead!()
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).waitFor()
+      // What the read adds opens at the top.
+      await operationGroup(page, 'New').getByText('newReport', { exact: true }).waitFor()
       expect(await page.getByRole('textbox', { name: 'Display name', exact: true }).count()).toBe(0)
       expect(await page.getByRole('group', { name: 'Sign-in', exact: true }).count()).toBe(0)
-      await apply(page)
+      await save(page)
       expect(reads).toBe(initialReads + 1)
+      await page.goto(providerPath)
       await operationLink(page, 'newReport').waitFor()
     })
     await step('An uploaded replacement no longer offers the old URL', async () => {
@@ -160,13 +173,12 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
       await page.getByRole('link', { name: 'Replace source', exact: true }).click()
       await chooseFile(page, 'replacement.json', openApiDocument('Renamed records', operations))
       await page.getByRole('button', { name: 'Read', exact: true }).click()
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
       expect(await page.getByRole('textbox', { name: 'Display name', exact: true }).count()).toBe(0)
-      await apply(page)
+      await save(page)
       expect(reads).toBe(initialReads + 1)
-      expect(new URL(page.url()).pathname).toBe(providerPath)
-      await openProviderSettings(page)
-      await page.getByRole('link', { name: 'Refresh operations', exact: true }).click()
+      expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
+      await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
       await page.getByRole('link', { name: 'Replace document', exact: true }).waitFor()
       expect(await page.getByRole('button', { name: 'Read operations', exact: true }).count()).toBe(
         0,
@@ -204,25 +216,32 @@ test('Recover a different-account sign-in and review configuration-triggered red
       'Resume replacement sign-in after leaving consent, then recover its failure',
       async () => {
         await openProviderSettings(page)
-        await page.getByRole('link', { name: 'Refresh operations', exact: true }).click()
+        await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
         await page.getByRole('button', { name: 'Read operations', exact: true }).click()
         await page.getByRole('button', { name: /^Sign in/ }).click()
         await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
-        await page.getByRole('radio', { name: 'Connect a different account', exact: true }).check()
-        await page.getByRole('button', { name: 'Sign in again', exact: true }).click()
+        await page.getByRole('radio', { name: 'Connect another account', exact: true }).check()
+        // A new shared account is connected from the share question, as in Add provider.
+        expect(await page.getByRole('button', { name: 'Save', exact: true }).count()).toBe(0)
+        await page.getByRole('button', { name: 'Connect the shared account', exact: true }).click()
+        await page
+          .getByRole('dialog')
+          .getByRole('button', { name: 'Sign in and share the account', exact: true })
+          .click()
         await page.getByRole('link', { name: 'Approve fixture access', exact: true }).waitFor()
         await page.goBack()
         await page.reload()
+        // The sign-in in progress survives the reload.
         await page.getByRole('button', { name: 'Continue sign-in', exact: true }).click()
         upstream.knobs.tokenError = 'access_denied'
         await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
-        await page.getByRole('button', { name: 'Sign in again', exact: true }).waitFor()
+        // The failed sign-in stays in view, ready to try again.
         await page
-          .getByRole('radio', { name: 'Keep the existing shared account', exact: true })
-          .check()
-        await page.getByRole('button', { name: 'Review changes', exact: true }).click()
-        await page.getByText('Keep existing accounts.', { exact: true }).waitFor()
-        await apply(page)
+          .getByRole('button', { name: 'Connect the shared account', exact: true })
+          .waitFor()
+        await page.getByRole('radio', { name: 'Keep the current account', exact: true }).check()
+        // Keeping the account needs no consent, so Save publishes at once.
+        await save(page)
         expect(await inspect()).toEqual(original)
       },
     )
@@ -230,19 +249,20 @@ test('Recover a different-account sign-in and review configuration-triggered red
       upstream.knobs.tokenError = undefined
       await openProviderSettings(page)
       await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
-      await confirmConfiguration(page, 'Bearer token')
+      await confirmConfiguration(page, 'Bearer token', 'Save')
       await page.getByLabel('Token', { exact: true }).fill(token)
       await page.getByRole('button', { name: 'List operations', exact: true }).click()
-      await page
-        .getByRole('radio', { name: 'Use this sign-in as the shared account', exact: true })
-        .check()
-      await page.getByRole('button', { name: 'Review changes', exact: true }).click()
-      await page.getByText('Use the reviewed catalog', { exact: true }).waitFor()
-      expect(await page.getByText('Keep the current catalog', { exact: true }).count()).toBe(0)
-      await page
-        .getByRole('checkbox', { name: 'Replace the shared account authorization', exact: true })
-        .check()
-      await apply(page)
+      await page.getByRole('radio', { name: 'Use this account', exact: true }).check()
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      const confirm = page.getByRole('dialog', { name: 'Save changes?' })
+      await confirm
+        .getByText(
+          'This change replaces the shared account authorization. Pending calls cannot switch accounts.',
+          { exact: true },
+        )
+        .waitFor()
+      await confirm.getByRole('button', { name: 'Save', exact: true }).click()
+      await saved(page)
     })
   })
 })
@@ -263,11 +283,13 @@ test('Refresh an uploaded document with failure, replay and stale-change protect
     }
     await step('A new document adds and removes operations', async () => {
       await upload(openApiDocument('Records', { listRecords: {}, newReport: {} }))
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).waitFor()
+      await operationGroup(page, 'New').getByText('newReport', { exact: true }).waitFor()
+      await operationGroup(page, 'Removed').getByText('oldReport', { exact: true }).waitFor()
+      // Nothing breaks access, so Save asks nothing.
       expect(await page.getByRole('checkbox').count()).toBe(0)
-      await page.getByText('The namespace and policy stay the same.', { exact: true }).waitFor()
-      await apply(page)
-      expect(new URL(page.url()).pathname).toBe(providerPath)
+      await save(page)
+      expect(new URL(page.url()).pathname).toBe(`${providerPath}/settings`)
+      await page.goto(providerPath)
       await operationLink(page, 'newReport').waitFor()
       expect(await operationLink(page, 'oldReport').count()).toBe(0)
       // The operation's full name keeps the namespace.
@@ -302,7 +324,7 @@ test('Refresh an uploaded document with failure, replay and stale-change protect
         (await page.locator('form:has(input[value="publish"])').getAttribute('action'))!,
         page.url(),
       ).toString()
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
       await page.getByText('Not updated', { exact: true }).waitFor()
       await page.getByText('The provider is unchanged.').waitFor()
       await page.goto(providerPath)
@@ -311,26 +333,29 @@ test('Refresh an uploaded document with failure, replay and stale-change protect
       await page.getByRole('button', { name: 'Retry', exact: true }).click()
       await page.getByText('Not updated', { exact: true }).waitFor()
       expect(await page.getByRole('button', { name: 'Retry', exact: true }).count()).toBe(0)
+      // Start over returns to settings, where every change opens.
       await page.getByRole('link', { name: 'Start over', exact: true }).click()
+      await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+      await page.getByRole('link', { name: 'Replace source', exact: true }).click()
       await chooseFile(
         page,
         'corrected.json',
         openApiDocument('Records', { listRecords: {}, newReport: {} }),
       )
       await page.getByRole('button', { name: 'Read', exact: true }).click()
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
       expect(await page.locator('input[name="requestId"]').last().inputValue()).not.toBe(
         new URL(failedUrl).searchParams.get('requestId'),
       )
-      await apply(page)
+      await save(page)
     })
     await step('A change in another tab invalidates the reviewed request', async () => {
       await upload(openApiDocument('Records', { listRecords: {} }))
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
       // Another change moves the provider on, as a second tab or operator would.
       await setProviderEnabled(actor.accessToken, providerPath, false)
       await setProviderEnabled(actor.accessToken, providerPath, true)
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
       await page
         .getByText(
           'This provider changed. Reload the page. Review the changes before you try again.',
