@@ -197,6 +197,12 @@ export interface CatalogFilterOption<T extends string> {
   icon: IconName
 }
 
+/** The menu's choices. The first shows every row, so there is always one. */
+export type CatalogFilterOptions<T extends string> = readonly [
+  CatalogFilterOption<T>,
+  ...CatalogFilterOption<T>[],
+]
+
 /**
  * A menu beside the filter that narrows the table to one value, such as a
  * status. The first option shows every row; the button names the choice.
@@ -208,7 +214,7 @@ export function CatalogFilterMenu<T extends string>({
   onChange,
 }: {
   ariaLabel: string
-  options: readonly CatalogFilterOption<T>[]
+  options: CatalogFilterOptions<T>
   value: T
   onChange: (value: T) => void
 }) {

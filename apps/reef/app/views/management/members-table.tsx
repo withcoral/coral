@@ -1,5 +1,5 @@
 import { useDeferredValue, useState, type ReactNode } from 'react'
-import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOption } from '@/components/catalog'
+import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
 import { Table } from '@/wax/components'
 import { Pill } from '@/wax/components/pill'
 import { Person, personLabel } from './person'
@@ -16,7 +16,7 @@ interface MemberRow {
 
 type RoleFilter = 'all' | 'Owner' | 'Member'
 
-const ROLE_FILTERS: CatalogFilterOption<RoleFilter>[] = [
+const ROLE_FILTERS: CatalogFilterOptions<RoleFilter> = [
   { value: 'all', label: 'All roles', icon: 'ListFilter' },
   { value: 'Owner', label: 'Owner', icon: 'Crown' },
   { value: 'Member', label: 'Member', icon: 'User' },

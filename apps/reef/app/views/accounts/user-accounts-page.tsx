@@ -4,7 +4,7 @@ import type { IconName } from '@/wax/components/icon'
 import { Deadline } from '@/wax/components/deadline'
 import { Pill } from '@/wax/components/pill'
 import type { PillColor } from '@/wax/components/pill/pill'
-import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOption } from '@/components/catalog'
+import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
 import { ManagementLayout, trail } from '@/views/management/layout'
 import type { PersonalAccountState, UserAccountRow, UserAccountsView } from './types'
@@ -22,7 +22,7 @@ const states: Record<
   needs_reconnect: { ...accountStates.needs_reconnect, action: 'Reconnect', icon: 'CircleAlert' },
 }
 
-const STATUS_FILTERS: CatalogFilterOption<PersonalAccountState | 'all'>[] = [
+const STATUS_FILTERS: CatalogFilterOptions<PersonalAccountState | 'all'> = [
   { value: 'all', label: 'All statuses', icon: 'ListFilter' },
   ...(Object.keys(states) as PersonalAccountState[]).map((value) => ({
     value,

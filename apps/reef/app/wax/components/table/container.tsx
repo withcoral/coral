@@ -60,19 +60,30 @@ interface ContainerAutoLayoutProps extends ContainerBaseProps {
   bounded?: never
 }
 
-interface ContainerFixedLayoutProps extends ContainerBaseProps {
+interface ContainerFixedBaseProps extends ContainerBaseProps {
   /** Shares the width between the columns, so the table owns no scroll port. */
   layout: 'fixed'
-  /** Caps the table height in pixels and scrolls only the rows beneath the heading. */
-  maxHeight?: number
-  /**
-   * Shrinks to the height its flex parent leaves, and scrolls only the rows
-   * beneath the heading. It never grows past its last row.
-   */
-  bounded?: boolean
   /** The rows scroll inside `Table.Body`, or an ancestor does; the table never does. */
   onPinnedGroupChange?: never
 }
+
+type ContainerFixedLayoutProps = ContainerFixedBaseProps &
+  (
+    | {
+        /** Caps the table height in pixels and scrolls only the rows beneath the heading. */
+        maxHeight?: number
+        bounded?: false
+      }
+    | {
+        /** A bounded table takes its height from its flex parent, not a fixed cap. */
+        maxHeight?: never
+        /**
+         * Shrinks to the height its flex parent leaves, and scrolls only the rows
+         * beneath the heading. It never grows past its last row.
+         */
+        bounded: true
+      }
+  )
 
 interface ContainerScrollLayoutProps extends ContainerBaseProps {
   /** Bordered, two-axis scroll port with sticky headings. The flex parent bounds its height. */

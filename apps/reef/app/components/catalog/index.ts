@@ -7,4 +7,4 @@ export {
   FilterField,
   railItem,
 } from './catalog'
-export type { CatalogFilterOption } from './catalog'
+export type { CatalogFilterOption, CatalogFilterOptions } from './catalog'

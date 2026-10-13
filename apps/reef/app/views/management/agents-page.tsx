@@ -1,6 +1,6 @@
 import { useDeferredValue, useRef, useState } from 'react'
 import { Button, Table } from '@/wax/components'
-import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOption } from '@/components/catalog'
+import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
 import { Status } from '@/wax/components/status'
 import { AgentKeyDialog } from './agent-key-dialog'
@@ -12,7 +12,7 @@ import * as styles from './management.css'
 
 type StatusFilter = 'all' | 'ready' | 'blocked'
 
-const STATUS_FILTERS: CatalogFilterOption<StatusFilter>[] = [
+const STATUS_FILTERS: CatalogFilterOptions<StatusFilter> = [
   { value: 'all', label: 'All statuses', icon: 'ListFilter' },
   { value: 'ready', label: 'Ready', icon: 'CircleCheck' },
   // The same shape a blocked row's status shows.
