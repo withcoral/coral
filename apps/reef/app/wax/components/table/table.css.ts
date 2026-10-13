@@ -186,12 +186,20 @@ export const head = style({
 
 export const scrollRows = style({})
 
+// The heading keeps its height; the rows' track gives up the rest, down to nothing.
+export const boundedRows = style({
+  flex: '0 1 auto',
+  gridTemplateRows: 'auto minmax(0, 1fr)',
+  minHeight: 0,
+})
+
 export const bodyScrollArea = style({
   ...rowGroup,
   selectors: {
     [`${scrollRows} > &`]: {
       maxHeight: `var(${ROWS_MAX_HEIGHT_PROPERTY})`,
     },
+    [`${boundedRows} > &`]: { minHeight: 0 },
   },
 })
 
@@ -203,6 +211,12 @@ export const body = style({
     // reaching whatever scrolls outside the table.
     [`:not(${scrollRows}) > ${bodyScrollArea} > &`]: {
       overscrollBehavior: 'auto',
+    },
+    // A bounded body is the scroll port and has a fixed height. Its `auto` rows
+    // would shrink to their minimum height to fit, and a wrapped cell would
+    // spill over the next row. Each row keeps its content's height instead.
+    [`${boundedRows} > ${bodyScrollArea} > &`]: {
+      gridAutoRows: 'max-content',
     },
   },
 })
@@ -513,7 +527,8 @@ export const statusCell = recipe({
   },
   variants: {
     scope: {
-      table: { paddingBlock: '24px' },
+      // The cells' own padding: a status reads as one more row, as tall as the rest.
+      table: { paddingBlock: tableVars.cellPaddingBlock.value },
       // The scroll-layout row already pads its cells; one line then reaches
       // the height of an ordinary row.
       group: { paddingBlock: 0 },

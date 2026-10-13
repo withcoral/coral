@@ -1,10 +1,10 @@
 import { useDeferredValue, useState } from 'react'
-import { Button, Menu, Table, Typography } from '@/wax/components'
+import { Button, Table, Typography } from '@/wax/components'
 import type { IconName } from '@/wax/components/icon'
 import { Deadline } from '@/wax/components/deadline'
 import { Pill } from '@/wax/components/pill'
 import type { PillColor } from '@/wax/components/pill/pill'
-import { CatalogToolbar } from '@/components/catalog'
+import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOption } from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
 import { ManagementLayout, trail } from '@/views/management/layout'
 import type { PersonalAccountState, UserAccountRow, UserAccountsView } from './types'
@@ -22,6 +22,15 @@ const states: Record<
   needs_reconnect: { ...accountStates.needs_reconnect, action: 'Reconnect', icon: 'CircleAlert' },
 }
 
+const STATUS_FILTERS: CatalogFilterOption<PersonalAccountState | 'all'>[] = [
+  { value: 'all', label: 'All statuses', icon: 'ListFilter' },
+  ...(Object.keys(states) as PersonalAccountState[]).map((value) => ({
+    value,
+    label: states[value].label,
+    icon: states[value].icon,
+  })),
+]
+
 const FILTER_ID = 'accounts-filter'
 
 /** Your own account for each provider that uses individual accounts, in one workspace. */
@@ -33,11 +42,12 @@ export function UserAccountsPage({
   pending?: boolean
 }) {
   const [input, setInput] = useState('')
-  const [state, setState] = useState<PersonalAccountState | null>(null)
+  const [state, setState] = useState<PersonalAccountState | 'all'>('all')
   const query = useDeferredValue(input).trim()
   const shown = v.accounts.filter(
     (row) =>
-      row.name.toLowerCase().includes(query.toLowerCase()) && (!state || row.state === state),
+      row.name.toLowerCase().includes(query.toLowerCase()) &&
+      (state === 'all' || row.state === state),
   )
   const table = Table.useRowCursor({ filterId: FILTER_ID })
 
@@ -53,7 +63,12 @@ export function UserAccountsPage({
           onChange: setInput,
         }}
       >
-        <StatusFilterMenu value={state} onChange={setState} />
+        <CatalogFilterMenu
+          ariaLabel="Filter accounts by status"
+          options={STATUS_FILTERS}
+          value={state}
+          onChange={setState}
+        />
       </CatalogToolbar>
       <Table.Container
         ariaLabel="Accounts"
@@ -83,7 +98,11 @@ export function UserAccountsPage({
             />
           </Table.Status>
         ) : (
-          shown.length === 0 && <Table.Status>No accounts match.</Table.Status>
+          shown.length === 0 && (
+            <Table.Status>
+              {query ? `No accounts match “${query}”.` : 'No accounts match.'}
+            </Table.Status>
+          )
         )}
         <Table.Body>
           {shown.map((row) => (
@@ -145,47 +164,5 @@ function AccountAction({
       disabled={pending}
       size="22"
     />
-  )
-}
-
-function StatusFilterMenu({
-  value,
-  onChange,
-}: {
-  value: PersonalAccountState | null
-  onChange: (value: PersonalAccountState | null) => void
-}) {
-  const active = value ? states[value] : undefined
-  const label = active?.label ?? 'All statuses'
-  return (
-    <Menu.Container>
-      <Menu.Trigger
-        render={
-          // The name keeps the visible choice, so a screen reader hears it too (WCAG 2.5.3).
-          <Button.Container variant="secondary" ariaLabel={`Filter accounts by status: ${label}`} />
-        }
-      >
-        <Button.Icon name={active?.icon ?? 'ListFilter'} />
-        <Button.Text>{label}</Button.Text>
-        <Button.Icon name="ChevronDown" />
-      </Menu.Trigger>
-      <Menu.Content>
-        <Menu.RadioGroup
-          value={value ?? 'all'}
-          onValueChange={(next: string) =>
-            onChange(next === 'all' ? null : (next as PersonalAccountState))
-          }
-        >
-          <Menu.RadioItem value="all" iconName="ListFilter">
-            All statuses
-          </Menu.RadioItem>
-          {(Object.keys(states) as PersonalAccountState[]).map((key) => (
-            <Menu.RadioItem key={key} value={key} iconName={states[key].icon}>
-              {states[key].label}
-            </Menu.RadioItem>
-          ))}
-        </Menu.RadioGroup>
-      </Menu.Content>
-    </Menu.Container>
   )
 }

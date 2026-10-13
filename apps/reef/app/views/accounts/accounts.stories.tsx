@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { AccountsPage } from './accounts-page'
 import { AuthorizationPage } from './authorization-page'
 import { PolicyPage } from './policy-page'
@@ -242,24 +242,31 @@ export const FilterYourAccounts: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const page = within(canvasElement.ownerDocument.body)
-    const providers = () =>
-      canvas.getAllByRole('link', { name: / account details$/ }).map((link) => link.textContent)
+    // The filter applies through a deferred value, so the rows can lag a render.
+    const providers = (expected: string[]) =>
+      waitFor(() =>
+        expect(
+          canvas
+            .getAllByRole('link', { name: / account details$/ })
+            .map((link) => link.textContent),
+        ).toEqual(expected),
+      )
 
     await userEvent.click(
       canvas.getByRole('button', { name: 'Filter accounts by status: All statuses' }),
     )
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'Needs reconnect' }))
-    await expect(providers()).toEqual(['Ledger'])
+    await providers(['Ledger'])
 
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter accounts' }), 'git')
-    await expect(await canvas.findByText('No accounts match.')).toBeVisible()
+    await expect(await canvas.findByText('No accounts match “git”.')).toBeVisible()
 
     // The button's name says which status the table shows.
     await userEvent.click(
       canvas.getByRole('button', { name: 'Filter accounts by status: Needs reconnect' }),
     )
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'All statuses' }))
-    await expect(providers()).toEqual(['GitHub'])
+    await providers(['GitHub'])
   },
 }
 /** The table keeps its shape with no accounts, and points to the providers. */

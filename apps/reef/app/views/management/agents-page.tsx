@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { useDeferredValue, useRef, useState } from 'react'
 import { Button, Table } from '@/wax/components'
+import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOption } from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
 import { Status } from '@/wax/components/status'
 import { AgentKeyDialog } from './agent-key-dialog'
@@ -8,6 +9,17 @@ import { ArchivedBanner, ManagementLayout, trail } from './layout'
 import { Person } from './person'
 import type { ActionResult, AgentView, FormContext, WorkspaceView } from './types'
 import * as styles from './management.css'
+
+type StatusFilter = 'all' | 'ready' | 'blocked'
+
+const STATUS_FILTERS: CatalogFilterOption<StatusFilter>[] = [
+  { value: 'all', label: 'All statuses', icon: 'ListFilter' },
+  { value: 'ready', label: 'Ready', icon: 'CircleCheck' },
+  // The same shape a blocked row's status shows.
+  { value: 'blocked', label: 'Blocked', icon: 'TriangleAlert' },
+]
+
+const FILTER_ID = 'agents-filter'
 
 export interface AgentsPageProps {
   workspace: WorkspaceView
@@ -25,7 +37,15 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
   const createTrigger = useRef<HTMLButtonElement>(null)
   const notice = dialogResult ?? result
   const agentsPath = `${w.path}/agents`
-  const table = Table.useRowCursor()
+  const [input, setInput] = useState('')
+  const [status, setStatus] = useState<StatusFilter>('all')
+  const query = useDeferredValue(input).trim()
+  const shown = agents.filter(
+    (a) =>
+      a.displayName.toLowerCase().includes(query.toLowerCase()) &&
+      (status === 'all' || (status === 'blocked') === a.accessBlockers.length > 0),
+  )
+  const table = Table.useRowCursor({ filterId: FILTER_ID })
   // The key shows once, in a dialog whose only exit is copying it.
   const [savedKey, setSavedKey] = useState<string | null>(null)
   const key = notice?.credential && notice.credential !== savedKey ? notice.credential : null
@@ -76,42 +96,67 @@ export function AgentsPage({ workspace: w, agents, nextPage, form, result }: Age
           action={active ? createButton : undefined}
         />
       ) : (
-        <Table.Container
-          ref={table}
-          ariaLabel="Agents"
-          // The rows scroll under the heading, so the table never outgrows the page.
-          layout="scroll"
-          columns={[
-            { label: 'Name', width: { fill: 3 } },
-            { label: 'Status', width: { fill: 1.2 } },
-            { label: 'Created by', width: { fill: 1.6 } },
-            { ariaLabel: 'Settings', width: 48 },
-          ]}
-        >
-          <Table.Head />
-          <Table.Body>
-            {agents.map((a) => (
-              <Table.Row key={a.name} to={a.path}>
-                <Table.Cell wrap>
-                  <Table.RowLink to={a.path}>{a.displayName}</Table.RowLink>
-                </Table.Cell>
-                <Table.Cell wrap>
-                  <Status blockers={a.accessBlockers} />
-                </Table.Cell>
-                <Table.Cell wrap>
-                  <Person person={a.creator} currentUser={w.currentUser} compact />
-                </Table.Cell>
-                <Table.Cell actions>
-                  <Button.IconLink
-                    name="Settings"
-                    to={a.settingsPath}
-                    tooltipText={`${a.displayName} settings`}
-                  />
-                </Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table.Container>
+        <>
+          <CatalogToolbar
+            filter={{
+              id: FILTER_ID,
+              label: 'Filter agents',
+              shortcut: '$mod+f',
+              value: input,
+              onChange: setInput,
+            }}
+          >
+            <CatalogFilterMenu
+              ariaLabel="Filter agents by status"
+              options={STATUS_FILTERS}
+              value={status}
+              onChange={setStatus}
+            />
+          </CatalogToolbar>
+          <Table.Container
+            ref={table}
+            ariaLabel="Agents"
+            variant="card"
+            layout="fixed"
+            // The rows scroll under the heading, so the table never outgrows the page.
+            bounded
+            columns={[
+              { label: 'Name', width: { fill: 3 } },
+              { label: 'Status', width: { fill: 1.2 } },
+              { label: 'Created by', width: { fill: 1.6 } },
+              { ariaLabel: 'Settings', width: 48 },
+            ]}
+          >
+            <Table.Head />
+            {shown.length === 0 && (
+              <Table.Status>
+                {query ? `No agents match “${query}”.` : 'No agents match.'}
+              </Table.Status>
+            )}
+            <Table.Body>
+              {shown.map((a) => (
+                <Table.Row key={a.name} to={a.path}>
+                  <Table.Cell wrap>
+                    <Table.RowLink to={a.path}>{a.displayName}</Table.RowLink>
+                  </Table.Cell>
+                  <Table.Cell wrap>
+                    <Status blockers={a.accessBlockers} />
+                  </Table.Cell>
+                  <Table.Cell wrap>
+                    <Person person={a.creator} currentUser={w.currentUser} compact />
+                  </Table.Cell>
+                  <Table.Cell actions>
+                    <Button.IconLink
+                      name="Settings"
+                      to={a.settingsPath}
+                      tooltipText={`${a.displayName} settings`}
+                    />
+                  </Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table.Container>
+        </>
       )}
       {nextPage && (
         <div className={styles.row}>

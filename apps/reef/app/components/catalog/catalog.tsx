@@ -2,7 +2,8 @@ import classNames from 'classnames'
 import { useCallback, useRef, type MouseEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 
-import { Button, Inputs, ScrollArea, Typography } from '@/wax/components'
+import { Button, Inputs, Menu, ScrollArea, Typography } from '@/wax/components'
+import type { IconName } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 
 import * as styles from './catalog.css'
@@ -187,5 +188,52 @@ export function CatalogToolbar({
         </div>
       </div>
     </div>
+  )
+}
+
+export interface CatalogFilterOption<T extends string> {
+  value: T
+  label: string
+  icon: IconName
+}
+
+/**
+ * A menu beside the filter that narrows the table to one value, such as a
+ * status. The first option shows every row; the button names the choice.
+ */
+export function CatalogFilterMenu<T extends string>({
+  ariaLabel,
+  options,
+  value,
+  onChange,
+}: {
+  ariaLabel: string
+  options: readonly CatalogFilterOption<T>[]
+  value: T
+  onChange: (value: T) => void
+}) {
+  const active = options.find((option) => option.value === value) ?? options[0]
+  return (
+    <Menu.Container>
+      <Menu.Trigger
+        render={
+          // The name keeps the visible choice, so a screen reader hears it too (WCAG 2.5.3).
+          <Button.Container variant="secondary" ariaLabel={`${ariaLabel}: ${active.label}`} />
+        }
+      >
+        <Button.Icon name={active.icon} />
+        <Button.Text>{active.label}</Button.Text>
+        <Button.Icon name="ChevronDown" />
+      </Menu.Trigger>
+      <Menu.Content>
+        <Menu.RadioGroup value={value} onValueChange={(next: string) => onChange(next as T)}>
+          {options.map((option) => (
+            <Menu.RadioItem key={option.value} value={option.value} iconName={option.icon}>
+              {option.label}
+            </Menu.RadioItem>
+          ))}
+        </Menu.RadioGroup>
+      </Menu.Content>
+    </Menu.Container>
   )
 }
