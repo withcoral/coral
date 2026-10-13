@@ -264,9 +264,9 @@ test('an archived workspace is read-only with a notice', async () => {
   expect(text()).toContain('This workspace is archived')
   expect(byLabel('Edit provider name')).toBeNull()
   expect(document.querySelector('[aria-label="Configuration"]')).toBeNull()
-  for (const name of ['Change account setting', 'Remove provider'])
+  for (const name of ['Change account setting', 'Remove provider', 'Connect your account'])
     expect(named('button', name)).toBeUndefined()
-  for (const name of ['Check for updates', 'Replace source', 'Connect your account'])
+  for (const name of ['Check for updates', 'Replace source'])
     expect(named('link', name)).toBeUndefined()
   // Owners still read the source where Coral lets them.
   expect(text()).toContain('https://gitlab.com/api/v4/openapi.json')

@@ -9,6 +9,7 @@ import {
   type ManagementApi,
 } from '@/lib/management.server'
 import { providerName, providerSettingsView } from '@/lib/providers.server'
+import { applyProviderChange } from '@/lib/provider-changes.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { ProviderAccountScope } from '@/generated/coral/management/v1/account_pb'
 import { accountConnectionState, connectYourAccountAction } from '@/lib/accounts.server'
@@ -19,18 +20,15 @@ import type { ProviderSettingsView, ProviderSourceView } from '@/views/providers
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 // Rename and removal are the provider list's own mutations.
-import { action as providersAction } from './providers'
-
 /**
  * Your own account connects from here, so any member may; every other change
- * is the providers route's, which only owners make.
+ * is an owner's, as on the providers page. The form is parsed and checked once.
  */
-export async function action(args: Route.ActionArgs) {
-  const form = await mutationForm(args.request.clone(), args.context)
-  // The providers action reads only the workspace, which both routes carry.
-  if (form.get('intent') !== 'connectAccount')
-    return providersAction(args as unknown as Parameters<typeof providersAction>[0])
-  return connectYourAccountAction(args.request, args.context, args.params, form)
+export async function action({ request, context, params }: Route.ActionArgs) {
+  const form = await mutationForm(request, context)
+  return form.get('intent') === 'connectAccount'
+    ? connectYourAccountAction(request, context, params, form)
+    : applyProviderChange(request, context, params, form)
 }
 
 /**
