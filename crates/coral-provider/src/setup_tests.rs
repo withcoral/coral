@@ -1824,7 +1824,6 @@ impl Start {
         owner: &coral_workspace::AuthenticatedUser,
         scope: &coral_workspace::WorkspaceId,
         setup: &crate::ProviderSetupId,
-        document: &crate::OpenApiDocument,
     ) -> i64 {
         let context = change_context(owner.clone(), 11, '2');
         match self {
@@ -1840,14 +1839,7 @@ impl Start {
             Self::Published => {
                 harness
                     .providers
-                    .publish_setup_fixture(
-                        &context,
-                        scope,
-                        setup,
-                        document,
-                        "weather",
-                        CredentialRoute::None,
-                    )
+                    .publish_setup_fixture(&context, scope, setup, "weather", CredentialRoute::None)
                     .await
                     .unwrap();
             }
@@ -1880,16 +1872,10 @@ async fn ending_cancels_an_open_setup_and_expires_one_past_its_deadline() {
                 crate::OpenApiDocument::parse(crate::tests::CREDENTIAL_FREE_OPENAPI).unwrap();
             let setup = harness
                 .providers
-                .prepare_openapi_fixture(
-                    &change_context(owner.clone(), 10, '1'),
-                    &scope,
-                    document.clone(),
-                )
+                .prepare_openapi_fixture(&change_context(owner.clone(), 10, '1'), &scope, document)
                 .await
                 .unwrap();
-            let now = start
-                .arrange(&harness, &owner, &scope, setup.id(), &document)
-                .await;
+            let now = start.arrange(&harness, &owner, &scope, setup.id()).await;
             let state_before = harness
                 .providers
                 .get_setup(&owner, &scope, setup.id())
@@ -1904,17 +1890,25 @@ async fn ending_cancels_an_open_setup_and_expires_one_past_its_deadline() {
                 .len();
             match ender {
                 Ender::User => {
-                    let _ended = harness
+                    let ended = harness
                         .accounts
                         .cancel_setup(&change_context(owner.clone(), now, '3'), &scope, setup.id())
                         .await;
+                    if ended_as.is_some() {
+                        assert!(ended.is_ok(), "{start:?}: {ended:?}");
+                    } else {
+                        assert!(
+                            matches!(ended, Err(crate::Error::ProviderSetupNotApplicable)),
+                            "{start:?}: {ended:?}"
+                        );
+                    }
                 }
                 Ender::Coral => {
-                    let mut transaction = harness.database.begin().await.unwrap();
-                    crate::abandon_setup_in_transaction(&mut transaction, &scope, setup.id(), now)
+                    harness
+                        .providers
+                        .abandon_setup(&scope, setup.id(), now)
                         .await
                         .unwrap();
-                    transaction.commit().await.unwrap();
                 }
             }
             let state = harness

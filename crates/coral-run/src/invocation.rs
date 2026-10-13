@@ -735,7 +735,6 @@ impl OperationInvoker {
         let host = crate::builtin::BuiltinHost {
             providers: &self.providers,
             publisher: self.provider_publisher.as_deref(),
-            database: &self.database,
             context: &context,
             principal: &self.principal,
             workspace_id: &self.workspace_id,

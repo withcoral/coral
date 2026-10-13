@@ -64,14 +64,12 @@ macro_rules! provider_setup_fixtures {
                     namespace: &str,
                     route: providers::CredentialRoute,
                 ) -> Result<providers::Provider, providers::Error>;
-                /// Confirms an existing OpenAPI Setup's configuration from `document`,
-                /// as the Owner does in Reef, and attempts its Publication.
+                /// Attempts the Publication of a configured Setup, as the Owner does in Reef.
                 async fn publish_setup_fixture(
                     &self,
                     context: &ChangeContext,
                     workspace: &WorkspaceId,
                     setup: &providers::ProviderSetupId,
-                    document: &OpenApiDocument,
                     namespace: &str,
                     route: providers::CredentialRoute,
                 ) -> Result<providers::ProviderPublication, providers::Error>;
@@ -276,17 +274,10 @@ macro_rules! provider_setup_fixtures {
                     route: providers::CredentialRoute,
                 ) -> Result<providers::Provider, providers::Error> {
                     let setup = self
-                        .create_openapi_setup(context, workspace, document.clone())
+                        .prepare_openapi_fixture(context, workspace, document)
                         .await?;
                     let publication = self
-                        .publish_setup_fixture(
-                            context,
-                            workspace,
-                            setup.id(),
-                            &document,
-                            namespace,
-                            route,
-                        )
+                        .publish_setup_fixture(context, workspace, setup.id(), namespace, route)
                         .await?;
                     Ok(publication
                         .published_provider()
@@ -304,24 +295,9 @@ macro_rules! provider_setup_fixtures {
                     context: &ChangeContext,
                     workspace: &WorkspaceId,
                     setup: &providers::ProviderSetupId,
-                    document: &OpenApiDocument,
                     namespace: &str,
                     route: providers::CredentialRoute,
                 ) -> Result<providers::ProviderPublication, providers::Error> {
-                    let confirmed = self
-                        .confirm_setup_configuration(
-                            context,
-                            workspace,
-                            setup,
-                            0,
-                            fixture_configuration(document),
-                        )
-                        .await?;
-                    assert!(
-                        confirmed.errors.is_empty(),
-                        "fixture configuration: {:?}",
-                        confirmed.errors
-                    );
                     self.publish_workspace_provider(
                         context,
                         providers::WorkspaceProviderPublicationRequest::new(

@@ -4,9 +4,7 @@
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedUser, WorkspaceId};
 
-use crate::{
-    CredentialRoute, Error, Provider, ProviderModule, ProviderSetupId, ProviderSetupState,
-};
+use crate::{CredentialRoute, Error, Provider, ProviderModule, ProviderSetupId};
 
 /// Who can publish a Setup under a Credential Route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,8 +36,9 @@ impl ProviderModule {
     /// # Errors
     ///
     /// Requires current Workspace Owner authority. Returns
-    /// [`Error::ProviderSetupNotFound`] for an absent Setup, or a persistence
-    /// or corrupt-evidence failure.
+    /// [`Error::ProviderSetupNotFound`] for an absent Setup,
+    /// [`Error::ProviderSetupNotApplicable`] for one that is consumed, expired
+    /// or canceled, or a persistence or corrupt-evidence failure.
     pub async fn setup_publishability(
         &self,
         actor: &AuthenticatedUser,
@@ -48,6 +47,10 @@ impl ProviderModule {
         route: CredentialRoute,
     ) -> Result<SetupPublishability, Error> {
         let (loaded, review) = self.reviewed_setup(actor, owner, setup).await?;
+        // Nobody publishes an ended Setup, and a person cannot finish it.
+        if !loaded.setup.state().is_open() {
+            return Err(Error::ProviderSetupNotApplicable);
+        }
         let contract = match review.confirmed_contract() {
             Some(contract) if review.configuration_confirmed => contract,
             _ => {
@@ -65,7 +68,7 @@ impl ProviderModule {
                 SetupPublishability::Rejected(PublishabilityRejection::SourceNeedsNoCredential)
             }
             (_, CredentialRoute::Fixed) => SetupPublishability::Person,
-            _ if loaded.setup.state() != ProviderSetupState::Ready => SetupPublishability::Person,
+            _ if loaded.setup.state().is_pre_ready() => SetupPublishability::Person,
             _ => SetupPublishability::Coral,
         })
     }
@@ -113,7 +116,7 @@ pub async fn published_provider_in_transaction(
             })
             .count();
     let authentication = contract.authentication().kind();
-    let account_required = crate::account::account_required_in_transaction(
+    let account_required = !crate::account::credentials_ready_in_transaction(
         transaction,
         active.provider.access(),
         principal,
@@ -128,27 +131,51 @@ pub async fn published_provider_in_transaction(
     })
 }
 
-/// Ends, as Coral and in the caller's transaction, a Setup that a Built-in
-/// Invocation prepared but nobody will finish, so that it does not stay open
-/// until its deadline. One already past its deadline expires; an ended Setup
-/// stays as it is.
-///
-/// # Errors
-///
-/// Returns [`Error::ProviderSetupNotFound`] for an absent Setup, or a
-/// persistence failure.
-pub async fn abandon_setup_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    setup_id: &ProviderSetupId,
-    now: i64,
-) -> Result<(), Error> {
-    crate::account::end_setup_in_transaction(
-        transaction,
-        crate::account::SetupActor::Coral { now },
-        workspace_id,
-        setup_id,
-    )
-    .await
-    .map(|_ended| ())
+impl ProviderModule {
+    /// Reads what `provider`'s active Generation offers `principal`, from one
+    /// snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ProviderNotFound`] for an absent Provider, or a persistence
+    /// or corrupt-evidence failure.
+    pub async fn published_provider(
+        &self,
+        workspace_id: &WorkspaceId,
+        provider: &Provider,
+        principal: &coral_workspace::Principal,
+    ) -> Result<PublishedProvider, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let published =
+            published_provider_in_transaction(&mut transaction, workspace_id, provider, principal)
+                .await?;
+        transaction.rollback().await?;
+        Ok(published)
+    }
+
+    /// Ends, as Coral, a Setup that a Built-in Invocation prepared but nobody
+    /// will finish, so that it does not stay open until its deadline. One
+    /// already past its deadline expires; an ended Setup stays as it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ProviderSetupNotFound`] for an absent Setup, or a
+    /// persistence failure.
+    pub async fn abandon_setup(
+        &self,
+        workspace_id: &WorkspaceId,
+        setup_id: &ProviderSetupId,
+        now: i64,
+    ) -> Result<(), Error> {
+        let mut transaction = self.database.begin().await?;
+        crate::account::end_setup_in_transaction(
+            &mut transaction,
+            crate::account::SetupActor::Coral { now },
+            workspace_id,
+            setup_id,
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
 }

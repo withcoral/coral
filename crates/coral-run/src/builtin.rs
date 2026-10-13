@@ -74,7 +74,6 @@ pub(crate) trait InvokingRun: Send + Sync {
 pub(crate) struct BuiltinHost<'a> {
     pub(crate) providers: &'a ProviderModule,
     pub(crate) publisher: Option<&'a dyn WorkspaceProviderPublisher>,
-    pub(crate) database: &'a coral_db::Database,
     pub(crate) context: &'a ChangeContext,
     pub(crate) principal: &'a Principal,
     pub(crate) workspace_id: &'a WorkspaceId,
@@ -360,15 +359,10 @@ impl CreateProvider {
                 },
             ));
         };
-        let mut transaction = host.database.begin_read_snapshot().await?;
-        let details = coral_provider::published_provider_in_transaction(
-            &mut transaction,
-            host.workspace_id,
-            provider,
-            host.principal,
-        )
-        .await?;
-        transaction.commit().await?;
+        let details = host
+            .providers
+            .published_provider(host.workspace_id, provider, host.principal)
+            .await?;
         Ok(published_result(&details))
     }
 }
@@ -441,19 +435,10 @@ async fn end_setup(host: &BuiltinHost<'_>, setup: &ProviderSetupId) {
     let Ok(now) = host.run.now() else {
         return;
     };
-    let Ok(mut transaction) = host.database.begin().await else {
-        return;
-    };
-    let ended = coral_provider::abandon_setup_in_transaction(
-        &mut transaction,
-        host.workspace_id,
-        setup,
-        now,
-    )
-    .await;
-    if ended.is_ok() {
-        let _committed = transaction.commit().await;
-    }
+    let _ended = host
+        .providers
+        .abandon_setup(host.workspace_id, setup, now)
+        .await;
 }
 
 /// Header names whose value is a credential. Request headers are non-secret by

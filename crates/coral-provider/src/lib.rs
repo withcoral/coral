@@ -48,7 +48,7 @@ mod setup_input_tests;
 #[cfg(test)]
 mod setup_oauth_tests;
 pub use program_setup::{
-    PublishabilityRejection, PublishedProvider, SetupPublishability, abandon_setup_in_transaction,
+    PublishabilityRejection, PublishedProvider, SetupPublishability,
     published_provider_in_transaction,
 };
 #[cfg(test)]

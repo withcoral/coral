@@ -63,6 +63,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         "\"openapi_document\"",
         "\"openapi_url\"",
         "\"mcp_url\"",
+        "function createProvider(input: {",
         r#""credentialRoute": "none" | "fixed" | "caller""#,
         r#""displayName"?: string"#,
         r#""namespace": string"#,

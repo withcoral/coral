@@ -753,19 +753,19 @@ pub async fn select_in_transaction(
     select_route(tx, target.provider_access(), principal, contract).await
 }
 
-/// Whether this Principal must still connect an Account before its Invocations
-/// can use the Provider's credentials, as Invocation selects them now.
+/// Whether this Principal's Invocations could use the Provider's credentials
+/// now, as Invocation selects them; false when an Account must still be connected.
 /// # Errors
 /// Persistence and corrupt-evidence failures remain errors.
-pub(crate) async fn account_required_in_transaction(
+pub(crate) async fn credentials_ready_in_transaction(
     tx: &mut Transaction<'_>,
     access: &crate::access::ProviderAccess,
     principal: &coral_workspace::Principal,
     contract: coral_catalog::ProviderCredentialContract,
 ) -> Result<bool, Error> {
     match select_route(tx, access, principal, contract).await {
-        Ok(_) => Ok(false),
-        Err(Error::AccountRequired) => Ok(true),
+        Ok(_) => Ok(true),
+        Err(Error::AccountRequired) => Ok(false),
         Err(error) => Err(error),
     }
 }
@@ -795,11 +795,7 @@ pub async fn discoverable_in_transaction(
     if connects_during_invocation(access, principal) {
         return Ok(true);
     }
-    match select_route(tx, access, principal, contract).await {
-        Ok(_) => Ok(true),
-        Err(Error::AccountRequired) => Ok(false),
-        Err(error) => Err(error),
-    }
+    credentials_ready_in_transaction(tx, access, principal, contract).await
 }
 
 /// Decides whether this Principal may reach Operations under this Call Root at

@@ -5,15 +5,15 @@ import { addedProviders, observeRun, programRunner } from '../../../support/prov
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import { OperationAccessState } from '../../../generated/coral/management/v1/policy_pb.ts'
 
-test('An agent adds a provider that needs no sign-in, and Coral publishes it with no Reef step', async (context) => {
+test("A workspace owner's Program adds a provider that needs no sign-in, and Coral publishes it with no Reef step", async (context) => {
   await withOwnerSession(context, async ({ page, target, actor, step }) => {
     const api = managementClients(actor.accessToken)
     const workspace = await api.workspaces.createWorkspace({
-      displayName: 'Agent provider',
+      displayName: 'Program provider',
       requestId: crypto.randomUUID(),
     })
     const id = workspace.name.split('/')[1]
-    await step('Let the agent create providers without approval', async () => {
+    await step("Let the owner's Programs create providers without approval", async () => {
       const builtin = (
         await api.providers.listProviders({ parent: workspace.name })
       ).providers.find((provider) => provider.callRoot === 'coral.admin')!

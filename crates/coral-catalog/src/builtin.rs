@@ -219,7 +219,7 @@ fn definition(operation: BuiltinOperation) -> Definition {
                                 "required": ["kind", "url"],
                                 "properties": {
                                     "kind": { "const": "custom" },
-                                    "url": { "type": "string", "description": "An absolute HTTPS base URL." }
+                                    "url": { "type": "string", "description": "An absolute HTTP or HTTPS base URL, without credentials, a query, or a fragment." }
                                 },
                                 "additionalProperties": false
                             }
