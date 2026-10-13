@@ -60,14 +60,11 @@ export function Popup({
       ref={register ? registered : ref}
       {...props}
     >
-      {/* The mode belongs to this drawer: a dialog opened from its content is its own. */}
-      {besidePage ? (
-        <BesidePageContext value={null}>
-          <OwnBackdropContext value={besidePage.beside}>{children}</OwnBackdropContext>
-        </BesidePageContext>
-      ) : (
-        children
-      )}
+      {/* The mode belongs to this drawer: a dialog opened from its content is its own.
+          Only a drawer beside the page leaves those dialogs without a backdrop to share. */}
+      <BesidePageContext value={null}>
+        <OwnBackdropContext value={besidePage?.beside ?? false}>{children}</OwnBackdropContext>
+      </BesidePageContext>
     </BaseDialog.Popup>
   )
 }

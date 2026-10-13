@@ -124,3 +124,36 @@ it('a callback ref on the drawer popup gets its cleanup', async () => {
   expect(cleanup).toHaveBeenCalledOnce()
   expect(ref).not.toHaveBeenCalledWith(null)
 })
+
+// Catches: the drawer's rule that a dialog opened from it draws its own backdrop
+// reaching one level further, so a dialog inside that dialog dims the page twice.
+it('a dialog inside a confirmation shares the confirmation backdrop', async () => {
+  render(
+    <Dialog.BesidePageRoot open>
+      <Dialog.Portal>
+        <Dialog.Popup>
+          <Dialog.Title>Record</Dialog.Title>
+          <Dialog.Root open>
+            <Dialog.Portal>
+              <Dialog.Backdrop data-testid="confirmation-backdrop" />
+              <Dialog.Popup>
+                <Dialog.Title>Cancel this run?</Dialog.Title>
+                <Dialog.Root open>
+                  <Dialog.Portal>
+                    <Dialog.Backdrop data-testid="inner-backdrop" />
+                    <Dialog.Popup>
+                      <Dialog.Title>Inner</Dialog.Title>
+                    </Dialog.Popup>
+                  </Dialog.Portal>
+                </Dialog.Root>
+              </Dialog.Popup>
+            </Dialog.Portal>
+          </Dialog.Root>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.BesidePageRoot>,
+  )
+  await screen.findByRole('dialog', { name: 'Inner' })
+  expect(screen.getByTestId('confirmation-backdrop')).toBeInTheDocument()
+  expect(screen.queryByTestId('inner-backdrop')).toBeNull()
+})
