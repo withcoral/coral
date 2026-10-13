@@ -8,9 +8,13 @@ import { Button, Table } from '@/wax/components'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Tooltip } from '@/wax/components/tooltip'
 import { trail } from '@/views/management/layout'
+import { useArrivalToast } from '@/lib/use-arrival-toast'
 import type { WorkspaceView } from '@/views/management/types'
 import type { SavedFunctionSummaryView } from './types'
 import * as styles from './functions.css'
+
+/** Deleting a function returns to the list with this flag in the query. */
+export const FUNCTION_DELETED = ['functionDeleted'] as const
 
 export interface FunctionsPageProps {
   workspace: WorkspaceView
@@ -90,6 +94,7 @@ function PolicyPreview({ name }: { name: string }) {
 
 /** The current User's own Saved Functions in one Workspace. Reef only reads them. */
 export function FunctionsPage({ workspace: w, functions, children }: FunctionsPageProps) {
+  useArrivalToast(FUNCTION_DELETED, () => ({ title: 'Function deleted' }))
   const [railFilterInput, setRailFilterInput] = useState('')
   const [tableFilterInput, setTableFilterInput] = useState('')
   const [current, setCurrent] = useState<string | null>(null)

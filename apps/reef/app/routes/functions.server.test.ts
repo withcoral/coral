@@ -209,7 +209,10 @@ it('deletes the open function and returns to the list', async () => {
   const response = await remove('reports.total')
   expect(deleted).toEqual([{ parent, path: 'reports.total' }])
   expect(response).toBeInstanceOf(Response)
-  expect((response as Response).headers.get('location')).toBe(`/workspaces/${workspace}/functions`)
+  // The list announces the delete when it loads.
+  expect((response as Response).headers.get('location')).toBe(
+    `/workspaces/${workspace}/functions?functionDeleted=1`,
+  )
 })
 
 // Catches: a refused delete closing the dialog as if it worked.
@@ -222,7 +225,7 @@ it('keeps a refused delete in the dialog with its reason', async () => {
   const result = await remove('reports.total')
   expect(result).toMatchObject({
     init: { status: 404 },
-    data: { error: expect.stringMatching(/^Coral could not delete the function\. /) },
+    data: { error: 'You cannot delete this function. It no longer exists. Close this panel.' },
   })
 })
 

@@ -21,6 +21,7 @@ import {
 } from '@/lib/management.server'
 import { savedFunctionView } from '@/lib/management-views.server'
 import { FunctionDrawer, FunctionDrawerError } from '@/views/functions/function-drawer'
+import { FUNCTION_DELETED } from '@/views/functions/functions-page'
 import type { loader as functionsLoader } from './functions'
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -56,9 +57,15 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       path: params.path,
     })
   } catch (error) {
-    return actionFailure(error, 'Coral could not delete the function. ')
+    return actionFailure(
+      error,
+      'You cannot delete this function. ',
+      'It no longer exists. Close this panel.',
+    )
   }
-  return redirect(`${resourcePath(parent)}/functions`, { headers: privateHeaders })
+  return redirect(`${resourcePath(parent)}/functions?${FUNCTION_DELETED[0]}=1`, {
+    headers: privateHeaders,
+  })
 }
 
 export function ErrorBoundary() {

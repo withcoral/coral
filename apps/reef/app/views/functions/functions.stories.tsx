@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
-import { expect, screen, userEvent, within } from 'storybook/test'
+import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 import { FunctionDrawer, FunctionDrawerError } from './function-drawer'
+import { dismissAllToasts, ToastContainer } from '@/wax/components/toast'
 import { FunctionsPage } from './functions-page'
 import type { SavedFunctionView } from './types'
 
@@ -176,6 +177,23 @@ export const TopLevelFunctions: Story = {
         .getAllByRole('link')
         .map((link) => link.textContent),
     ).toEqual(['other1'])
+  },
+}
+export const Deleted: Story = {
+  render: () => (
+    <>
+      <FunctionsPage workspace={workspace} functions={summaries} />
+      <ToastContainer />
+    </>
+  ),
+  parameters: { initialEntry: '/workspaces/demo/functions?functionDeleted=1' },
+  beforeEach: () => {
+    dismissAllToasts()
+    return () => dismissAllToasts()
+  },
+  play: async () => {
+    // A delete returns to the list, which says it worked. The toast bounces in from zero opacity.
+    await waitFor(() => expect(screen.getByText('Function deleted')).toBeVisible())
   },
 }
 export const Empty: Story = {
