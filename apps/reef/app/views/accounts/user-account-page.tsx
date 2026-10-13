@@ -160,10 +160,7 @@ function AccountDetails({ account }: { account: AccountView }) {
 /** Names what Coral stores for a secret account. Coral never shows the values. */
 function StoredCredentials({ fields }: { fields: CredentialFieldView[] }) {
   return (
-    <Section
-      title="Credentials"
-      description="Coral stores these credentials and does not show them. Reconnect to replace them."
-    >
+    <Section title="Credentials" description="Reconnect to replace these credentials.">
       <Table.Container
         ariaLabel="Credentials"
         variant="card"
