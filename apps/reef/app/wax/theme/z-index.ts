@@ -13,6 +13,7 @@
  * - sticky: Page-level sticky elements
  * - navigation: Sidebar, main navigation
  * - floating: Floating toolbars, inline menus
+ * - besidePage: A non-modal drawer the page stays usable beside
  * - portaledMenu: Menus portaled to document body
  * - modalBackdrop: Modal backdrop overlay
  * - modal: Modal dialog content
@@ -29,6 +30,7 @@ export const zIndex = {
   sticky: MAX_ZINDEX - 20,
   navigation: MAX_ZINDEX - 18,
   floating: MAX_ZINDEX - 16,
+  besidePage: MAX_ZINDEX - 15,
   portaledMenu: MAX_ZINDEX - 14,
   modalBackdrop: MAX_ZINDEX - 12,
   modal: MAX_ZINDEX - 10,

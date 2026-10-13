@@ -493,9 +493,20 @@ export function Activity({
     [cursorStore, cursor, tableFocused],
   )
   // Rows navigate with the reader's latest position, read when the click happens.
-  const latest = useRef({ nav, navigate, live, more, expanded: page.expanded, stops, cursor })
+  const latestState = {
+    nav,
+    navigate,
+    live,
+    more,
+    // A closing drawer no longer shows its record, so a click opens it again.
+    shown: drawer.open ? page.selected : null,
+    expanded: page.expanded,
+    stops,
+    cursor,
+  }
+  const latest = useRef(latestState)
   useLayoutEffect(() => {
-    latest.current = { nav, navigate, live, more, expanded: page.expanded, stops, cursor }
+    latest.current = latestState
   })
   const [actions] = useState<RowActions>(() => ({
     select: (row) => {
@@ -503,7 +514,9 @@ export function Activity({
       const current = latest.current
       // A glimpse opens the record on its Activity page, at the top of that page.
       if (current.more) void current.navigate(revealHref(row))
-      else void current.navigate(current.nav.recordHref(row.name), { preventScrollReset: true })
+      // The record the detail shows is already open: no second history entry.
+      else if (row.name !== current.shown)
+        void current.navigate(current.nav.recordHref(row.name), { preventScrollReset: true })
     },
     toggle: (name) => {
       const current = latest.current
@@ -528,15 +541,29 @@ export function Activity({
     const row = key && table.current?.querySelector<HTMLElement>(`[data-record-key="${key}"]`)
     if (row) Table.revealRow(row)
   }
+  // An open detail shows the previous or next record in place, from the record it
+  // shows, whether the key comes from the drawer or the table beside it. A closing
+  // drawer steps nowhere.
+  const stepShown = (event: React.KeyboardEvent, step: 1 | -1) => {
+    if (!drawer.open || !shownStop) return
+    event.preventDefault()
+    const next = stepStop(stops, shownStop.identity, step)
+    if (!next) return
+    void navigate(nav.recordHref(next.row.name), { replace: true, preventScrollReset: true })
+    revealStop(next)
+  }
   const cursorStop = stops.find((stop) => stop.identity === cursor)
   // Only the table itself takes these keys: a control in a row, or anything
-  // elsewhere on the page, keeps its own. ↑ and ↓ move the cursor. Space
+  // elsewhere on the page, keeps its own. ↑ and ↓ move the cursor, or step an
+  // open detail. Space
   // toggles the cursor's own Task or Run, expanded or not; a non-expandable
   // record has none, so Space collapses its closest enclosing Run or Task
   // and the cursor follows there. Enter opens the cursor record's detail.
   const tableKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (glimpse || !ownKey(event)) return
     const step = arrowStep(event)
+    // Beside an open detail, the table's arrows step the record it shows.
+    if (step && page.selected) return stepShown(event, step)
     if (step) {
       if (!stops.length) return
       event.preventDefault()
@@ -591,12 +618,7 @@ export function Activity({
   const stepDetail = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const step = arrowStep(event)
     if (!step || !page.selected || !ownKey(event)) return
-    // A closing drawer steps nowhere.
-    if (!drawer.open || !shownStop) return
-    event.preventDefault()
-    const next = stepStop(stops, shownStop.identity, step)
-    if (next)
-      void navigate(nav.recordHref(next.row.name), { replace: true, preventScrollReset: true })
+    stepShown(event, step)
   }
   // Each record's detail mounts at its top; the drawer itself stays open.
   const popup = useRef<HTMLDivElement>(null)
@@ -606,9 +628,14 @@ export function Activity({
   // The keyboard cursor rests in the table, so closing returns focus there. Base
   // UI would pass it on to the first link in a table that does not scroll.
   const returnFocus = () => {
-    if (!table.current) return true
-    table.current.focus({ preventScroll: true })
-    revealStop(cursorStop)
+    const element = table.current
+    if (!element) return true
+    // Base UI asks during React's commit, and React then gives focus back to a
+    // row link the reader clicked. Focus the table once the commit ends.
+    queueMicrotask(() => {
+      element.focus({ preventScroll: true })
+      revealStop(cursorStop)
+    })
     return false
   }
   const scope = useMemo<RowScope>(
@@ -781,8 +808,9 @@ export function Activity({
               </div>
             )}
           </div>
-          {/* One drawer shows each record in turn, so stepping does not reopen it. */}
-          <Dialog.Root key={page.selected ? 'open' : 'closed'} {...drawer}>
+          {/* One drawer shows each record in turn, so stepping does not reopen it. The
+              table stays usable beside it, so a click picks another record. */}
+          <Dialog.BesidePageRoot key={page.selected ? 'open' : 'closed'} {...drawer}>
             <Dialog.Portal>
               <Dialog.Backdrop />
               <Dialog.Popup
@@ -829,7 +857,7 @@ export function Activity({
                   )}
               </Dialog.Popup>
             </Dialog.Portal>
-          </Dialog.Root>
+          </Dialog.BesidePageRoot>
         </div>
       </ActivityConnectedContext>
     </RowActionsContext>

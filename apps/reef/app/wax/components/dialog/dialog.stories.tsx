@@ -244,3 +244,43 @@ export const RightDrawer: Story = {
   },
   render: () => <RouteDrawer />,
 }
+
+/** A record list beside a drawer that shows the record it picks. */
+function BesidePageDrawer() {
+  const [record, setRecord] = useState<string | null>('First record')
+  const drawer = Dialog.useCloseAfterExit(record, () => setRecord(null))
+  return (
+    <>
+      <ul>
+        {['First record', 'Second record'].map((name) => (
+          <li key={name}>
+            <Button.TextButton variant="bare" onClick={() => setRecord(name)}>
+              {name}
+            </Button.TextButton>
+          </li>
+        ))}
+      </ul>
+      <Dialog.BesidePageRoot key={record ? 'open' : 'closed'} {...drawer}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup size="xl" placement="right" fullWidthOnMobile>
+            <Dialog.Header>
+              <Dialog.Title>Record</Dialog.Title>
+              <Dialog.Close />
+            </Dialog.Header>
+            <Dialog.Description>{record}</Dialog.Description>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.BesidePageRoot>
+    </>
+  )
+}
+
+/**
+ * Above 640px the page stays usable beside the drawer: no backdrop, and a press
+ * outside it does not close it. At 640px or less it is a full-screen modal.
+ */
+export const BesidePage: Story = {
+  parameters: { layout: 'fullscreen', chromatic: { viewports: [390, 1440] } },
+  render: () => <BesidePageDrawer />,
+}

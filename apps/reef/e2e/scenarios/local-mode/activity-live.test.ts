@@ -110,7 +110,12 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
       await page.getByText('Goal outcome: success', { exact: true }).waitFor()
       await page.getByRole('button', { name: 'Close details', exact: true }).click()
       await page.getByRole('link', { name: 'Second local goal', exact: true }).click()
-      await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
+      // The table stays usable while the drawer closes, so the same drawer may show
+      // the second goal. Wait for its detail, not just for a drawer.
+      await page
+        .getByRole('dialog', { name: 'Activity details' })
+        .getByRole('heading', { name: 'Second local goal', exact: true })
+        .waitFor()
       expect(await page.getByText('Completion feedback', { exact: true }).count()).toBe(0)
     })
   })

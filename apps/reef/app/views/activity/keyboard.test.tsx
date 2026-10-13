@@ -444,9 +444,9 @@ it('Enter opens the cursor record’s detail', async () => {
   await focusTable()
   await user.keyboard('{ArrowUp}{Enter}')
   expect(recordIn(router)).toBe(b.name)
-  expect(await screen.findByRole('dialog', { name: 'Activity details' })).toHaveTextContent(
-    'Task b',
-  )
+  const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+  expect(dialog).toHaveTextContent('Task b')
+  await vi.waitFor(() => expect(dialog).toHaveFocus())
 })
 
 // Catches (#712): Enter on a focused button opening the cursor's detail instead
@@ -777,4 +777,95 @@ it.each<[string, Records & { entry?: string } & Pick<ActivityViewProps, 'more'>]
   await user.keyboard('{ArrowDown}{ArrowUp}{Enter}')
   expect(document.querySelector('[data-active]')).toBeNull()
   expect(recordIn(router)).toBe(before)
+})
+
+const row = (label: string) =>
+  within(screen.getByRole('table', { name: 'Activity records' })).getByRole('link', {
+    name: label,
+  })
+
+// Catches: a modal drawer that makes the table inert, or a drawer that closes
+// and reopens (and refocuses) for each record a click picks.
+it('a row click while the detail is open shows that record in place', async () => {
+  const [a, b] = [task('a'), task('b')]
+  const { user, router } = renderActivity({ rows: [a, b], entry: `/activity?record=${a.name}` })
+  const dialog = await screen.findByRole('dialog', { name: 'Activity details' })
+  await user.click(row('Task b'))
+  expect(recordIn(router)).toBe(b.name)
+  expect(router.state.historyAction).toBe('PUSH')
+  expect(details()).toBe(dialog)
+  expect(dialog).toHaveTextContent('Task b')
+  expect(row('Task b')).toHaveFocus()
+})
+
+// Catches: a click on the record already open pushing a duplicate history
+// entry, so Back seems to do nothing, or a click beside the rows closing the detail.
+it('a click on the open record or on empty table space changes nothing', async () => {
+  const [a, b] = [task('a'), task('b')]
+  const { user, router } = renderActivity({ rows: [a, b], entry: `/activity?record=${a.name}` })
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  const before = router.state.location
+  await user.click(row('Task a'))
+  await user.click(screen.getByRole('table', { name: 'Activity records' }))
+  expect(router.state.location).toBe(before)
+  expect(details()).toHaveTextContent('Task a')
+})
+
+// Catches: arrows in the table moving a hidden cursor while the detail stays,
+// stepping from that cursor rather than the record shown, or jumping a gap.
+it('↑ and ↓ in the table step the open detail and stop at an unloaded gap', async () => {
+  const a = task('a')
+  const r = run(a.name, 'r', 1)
+  const [zero, two] = [tool(a.name, '0', 0), tool(a.name, '2', 2)]
+  const { user, router } = renderActivity({
+    rows: [a, task('b')],
+    entry: `${expand(a.name, r.name)}&record=${encodeURIComponent(r.name)}`,
+    branches: {
+      [a.name]: branch([tool(a.name, '4', 4), zero, r, two], 6),
+      [r.name]: branch([tool(r.name, 'r0', 0)]),
+    },
+  })
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  await user.click(row('Tool 0'))
+  expect(recordIn(router)).toBe(zero.name)
+  // The table itself takes the keys; the clicked link keeps its own.
+  screen.getByRole('table', { name: 'Activity records' }).focus()
+  await user.keyboard('{ArrowDown}')
+  expect(router.state.historyAction).toBe('REPLACE')
+  expect(recordIn(router)).toBe(r.name)
+  await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}')
+  expect(recordIn(router)).toBe(two.name)
+  await user.keyboard('{ArrowUp}')
+  expect(recordIn(router)).toBe(tool(r.name, 'r0', 0).name)
+})
+
+// Catches: Escape that only works while focus is in the drawer.
+it('Escape in the table closes the detail and keeps focus in the table', async () => {
+  const [a, b] = [task('a'), task('b')]
+  const { user, router } = renderActivity({ rows: [a, b], entry: `/activity?record=${a.name}` })
+  await screen.findByRole('dialog', { name: 'Activity details' })
+  await user.click(row('Task b'))
+  await user.keyboard('{Escape}')
+  await vi.waitFor(() => expect(recordIn(router)).toBeNull())
+  // The router settles before React renders the closed detail.
+  await vi.waitFor(() => expect(cursor()).toBe('Task b'))
+  expect(screen.queryByRole('dialog', { name: 'Activity details' })).toBeNull()
+  expect(screen.getByRole('table', { name: 'Activity records' })).toHaveFocus()
+})
+
+// Catches: a row click that drops an unsent comment, or Escape in the
+// confirmation also closing the detail behind it.
+it('a row click with an unsent comment asks first, and Escape there keeps the detail', async () => {
+  const { user, router, b } = await draftOnApproval()
+  await user.keyboard('{Escape}')
+  await vi.waitFor(() =>
+    expect(screen.queryByRole('dialog', { name: 'Discard your comment?' })).toBeNull(),
+  )
+  expect(recordIn(router)).toBe(waiting.name)
+  expect(details()).toBeInTheDocument()
+  await user.click(row('Task b'))
+  const confirmation = await screen.findByRole('dialog', { name: 'Discard your comment?' })
+  await user.click(within(confirmation).getByRole('button', { name: 'Discard comment' }))
+  await vi.waitFor(() => expect(recordIn(router)).toBe(b.name))
+  expect(details()).toHaveTextContent('Task b')
 })

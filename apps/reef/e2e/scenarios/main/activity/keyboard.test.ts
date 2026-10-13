@@ -148,6 +148,34 @@ async function driveActivity(
     await page.setViewportSize({ width: 1440, height: 600 })
   })
   await step(
+    'A click on another record keeps the detail open, and ↓ in the table steps it',
+    async () => {
+      const dialog = page.getByRole('dialog', { name: 'Activity details', exact: true })
+      const shown = new URL(page.url()).searchParams.get('record')
+      const link = table.getByRole('link', { name: child, exact: true })
+      await link.click()
+      await page.waitForURL((url) => url.searchParams.get('record') !== shown)
+      await dialog.getByRole('heading', { name: older, exact: true }).waitFor({ state: 'detached' })
+      expect(await dialog.getAttribute('data-reel-opened')).toBe('once')
+      // The table itself takes the keys; the clicked link keeps its own.
+      await table.focus()
+      await page.keyboard.press('ArrowDown')
+      await dialog.getByRole('heading', { name: older, exact: true }).waitFor()
+      // The step scrolled the shown record's row into the table's view.
+      const row = table.locator('[role="row"][aria-selected="true"]')
+      await expect
+        .poll(() =>
+          row.evaluate((element) => {
+            const port = element.closest('[role="table"]')!.getBoundingClientRect()
+            const bounds = element.getBoundingClientRect()
+            return bounds.top >= port.top && bounds.bottom <= port.bottom
+          }),
+        )
+        .toBe(true)
+      expect(await row.locator('a').first().textContent()).toBe(older)
+    },
+  )
+  await step(
     'Escape returns focus to the table, on the last record the detail showed',
     async () => {
       await page.keyboard.press('Escape')
