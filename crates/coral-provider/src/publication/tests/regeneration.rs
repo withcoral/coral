@@ -31,11 +31,10 @@ async fn regeneration_rechecks_setup_configuration_after_materialization() {
 )]
 async fn rejected_regeneration(change: InterveningChange) {
     let (_database_fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let fixture = WorkspaceRegenerationFixture::new(
         &workspaces,
@@ -281,11 +280,10 @@ async fn rejected_regeneration(change: InterveningChange) {
 #[tokio::test]
 async fn competing_regeneration_requests_consume_one_setup_once() {
     let (_database_fixture, database, workspaces) = test_foundation().await;
-    let default_providers = ProviderModule::new(
+    let default_providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default(),
         database.clone(),
         workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let fixture = WorkspaceRegenerationFixture::new(
         &workspaces,

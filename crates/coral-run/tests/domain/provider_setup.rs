@@ -1438,11 +1438,10 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
         DestinationPolicy::default(),
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
-        coral_provider::ProviderModule::new(
+        coral_provider::ProviderModule::with_running_catalog(
             DestinationPolicy::default(),
             scope.fixture.database.clone(),
             scope.fixture.workspaces.clone(),
-            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         ),
         crate::IsolateLimits::default(),
     )

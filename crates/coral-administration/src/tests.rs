@@ -899,12 +899,11 @@ async fn agent_removal_rolls_back_registration_functions_and_events_together() {
         .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
         .await
         .unwrap();
-    let providers = coral_provider::ProviderModule::new(
+    let providers = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database.clone(),
         workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let published = providers
         .publish_openapi_fixture(

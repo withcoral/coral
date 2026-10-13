@@ -149,6 +149,23 @@ impl ProviderModule {
         }
     }
 
+    /// Builds the Module with the Built-in catalog this Coral version defines.
+    ///
+    /// # Panics
+    ///
+    /// Panics when that catalog is invalid.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub fn with_running_catalog(
+        outbound_policy: coral_outbound::DestinationPolicy,
+        database: Arc<Database>,
+        workspaces: WorkspaceModule,
+    ) -> Self {
+        let catalog =
+            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares");
+        Self::new(outbound_policy, database, workspaces, catalog)
+    }
+
     #[cfg(test)]
     fn with_test_dependencies(
         database: Arc<Database>,

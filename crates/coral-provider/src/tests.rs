@@ -211,11 +211,10 @@ pub(crate) fn publication_request(
 
 pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, ProviderModule) {
     let (fixture, database, workspaces) = test_foundation().await;
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,
         workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     (fixture, workspaces, providers)
 }
@@ -268,11 +267,10 @@ impl Harness {
     /// Adds other Modules' schemas, such as Saved Functions for offboarding.
     pub(crate) async fn with_migrations(extra: &[&sqlx::migrate::Migrator]) -> Self {
         let (fixture, database, workspaces) = test_foundation_with(extra).await;
-        let providers = ProviderModule::new(
+        let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
-            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let vault_dir = tempfile::tempdir().expect("create the test vault directory");
         let accounts = accounts_for(&providers, vault_dir.path());

@@ -13,11 +13,10 @@ provider_setup_fixtures!(coral_provider);
 )]
 async fn historical_account_selection_verifies_the_original_run_reference() {
     let f = Fixture::new().await;
-    let providers = coral_provider::ProviderModule::new(
+    let providers = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default(),
         f.database.database(),
         f.workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = super::super::change(&f.owner);
     let setup = providers.prepare_openapi_fixture(&context, f.workspace.id(), coral_catalog::OpenApiDocument::parse(&json!({
@@ -424,12 +423,11 @@ async fn invocation_wire_preserves_mcp_is_error_as_native_data_not_coral_failure
         };
         ResponseTemplate::new(200).set_body_json(json!({"jsonrpc": "2.0", "id": request.get("id").unwrap(), "result": result}))
     }).mount(&server).await;
-    let providers = coral_provider::ProviderModule::new(
+    let providers = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.database.database(),
         f.workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = super::super::change(&f.owner);
     let setup = providers.prepare_mcp_fixture(&context, f.workspace.id(), coral_catalog::McpDiscoverySnapshot::parse(&json!({
@@ -1048,12 +1046,11 @@ async fn terminal(f: &Fixture, id: &coral_run::RunId) -> wire::InspectRunRespons
 }
 
 async fn publish_http(f: &Fixture, url: &str) -> coral_provider::ProviderId {
-    let providers = coral_provider::ProviderModule::new(
+    let providers = coral_provider::ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.database.database(),
         f.workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = super::super::change(&f.owner);
     let setup = providers.prepare_openapi_fixture(&context, f.workspace.id(),

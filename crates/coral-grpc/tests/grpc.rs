@@ -170,11 +170,10 @@ impl Fixture {
         let vault_dir = tempfile::tempdir().unwrap();
         let vault =
             coral_credentials::CredentialVault::open(&vault_dir.path().join("key")).unwrap();
-        let providers = coral_provider::ProviderModule::new(
+        let providers = coral_provider::ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
-            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
             .with_client_id_metadata_document(

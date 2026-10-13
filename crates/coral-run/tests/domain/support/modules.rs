@@ -131,11 +131,10 @@ impl TestModules {
             .await
             .expect("prepare Universal Search storage");
         let workspaces = WorkspaceModule::new(database.clone());
-        let providers = ProviderModule::new(
+        let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             database.clone(),
             workspaces.clone(),
-            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         let policies = OperationPolicyModule::new(database.clone(), workspaces.clone());
         let clock = Arc::new(TestClock::new());

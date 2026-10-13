@@ -14,12 +14,11 @@ pub(super) async fn prepare_accounts(
     owner: &AuthenticatedUser,
     workspace: &WorkspaceId,
 ) -> (ProviderId, AccountModule, tempfile::TempDir) {
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database,
         workspaces,
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let provider = providers
         .publish_openapi_fixture(
@@ -262,12 +261,11 @@ impl AccountFixture {
 )]
 async fn shared_account_survives_its_provisioner_but_pending_replacement_is_canceled() {
     let f = AccountFixture::new().await;
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.db.database(),
         f.workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let context = change(&f.member);
     let setup = providers

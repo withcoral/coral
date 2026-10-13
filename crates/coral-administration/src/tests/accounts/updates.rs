@@ -155,12 +155,11 @@ async fn offboarding_serializes_prepared_catalog_updates_replacements_and_settin
 )]
 async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
     let mut f = AccountFixture::new().await;
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         f.db.database(),
         f.workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let connected = connected_account(&f, &providers, initially_shared).await;
     let pending = f
@@ -288,12 +287,11 @@ async fn publication_before_offboarding_preserves_shared_accounts_but_retires_ca
     for removal in [Removal::Workspace, Removal::Organization] {
         for (initially_shared, shared) in SETTINGS {
             let f = AccountFixture::new().await;
-            let providers = ProviderModule::new(
+            let providers = ProviderModule::with_running_catalog(
                 coral_outbound::DestinationPolicy::default()
                     .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
                 f.db.database(),
                 f.workspaces.clone(),
-                coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
             );
             connected_account(&f, &providers, initially_shared).await;
             let update = candidate(&f, &providers, shared, "candidate-secret").await;

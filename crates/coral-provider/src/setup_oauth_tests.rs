@@ -5051,11 +5051,10 @@ async fn consent_issuance_rechecks_dns_on_setup_reads_account_reads_and_request_
     for published in [false, true] {
         let mut h = harness(None).await;
         let public = Arc::new(AtomicBool::new(false));
-        h.providers = crate::ProviderModule::new(
+        h.providers = crate::ProviderModule::with_running_catalog(
             coral_outbound::DestinationPolicy::default(),
             h.database.clone(),
             h.workspaces.clone(),
-            coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
         );
         h.providers.consent =
             crate::account::consent::Issuer::with_resolver(Arc::new(ChangingDns(public.clone())));

@@ -48,12 +48,11 @@ async fn removal_scrubs_configuration_only_setup_secrets_and_prevents_reuse_afte
         )
         .await
         .unwrap();
-    let providers = ProviderModule::new(
+    let providers = ProviderModule::with_running_catalog(
         coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
         database.clone(),
         workspaces.clone(),
-        coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
     );
     let dir = tempfile::tempdir().unwrap();
     let accounts = AccountModule::new(
