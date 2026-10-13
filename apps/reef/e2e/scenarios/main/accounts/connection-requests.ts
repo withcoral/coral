@@ -10,6 +10,7 @@ import {
   createWorkspace,
   observeRun,
   programRunner,
+  waitForYourAccount,
 } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
 
@@ -75,7 +76,7 @@ export async function connectionRequests(context: TestContext) {
       await page.getByRole('button', { name: 'Connect Connections', exact: true }).click()
       await page.getByLabel('Token', { exact: true }).waitFor()
       await page.getByLabel('Token', { exact: true }).fill('connection-secret-canary')
-      await page.getByRole('button', { name: 'Connect Connections', exact: true }).click()
+      await page.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByRole('heading', { name: 'Accounts', exact: true, level: 1 }).waitFor()
       await page.getByText('Connected', { exact: true }).waitFor()
       expect(
@@ -83,6 +84,19 @@ export async function connectionRequests(context: TestContext) {
       ).toBe(0)
       expect(await page.content()).not.toContain('connection-secret-canary')
       accountId = (await inspect()).account!.id
+      // A click anywhere in the row, not only on its name, opens your account.
+      await page
+        .getByRole('table', { name: 'Accounts', exact: true })
+        .getByRole('row')
+        .filter({ hasText: 'Connections' })
+        .getByRole('cell')
+        .filter({ hasText: 'Connected' })
+        .click()
+      await waitForYourAccount(page)
+      await page
+        .getByRole('complementary', { name: 'Details', exact: true })
+        .getByText(accountId, { exact: true })
+        .waitFor()
       // The same run continues to its approval instead of failing the connection.
       await openRun()
       await page.getByRole('link', { name: /^Review .*connections\.listEntries$/ }).click()

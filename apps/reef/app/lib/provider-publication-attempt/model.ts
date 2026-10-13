@@ -363,6 +363,20 @@ export function attemptProgress(
   }
 }
 
+/**
+ * Whether Edit configuration's Save can publish a confirmed configuration at
+ * once: Coral needs no sign-in, no account choice and no consent for it.
+ */
+export function savesDirectly(setup: SetupView, currentAccount: AccountChoice) {
+  return (
+    setup.state === 'ready' &&
+    setup.configuration?.interruptsAccess === false &&
+    !setup.authorized &&
+    !setup.authorization &&
+    (setup.credentialMethod === 'none') === (currentAccount === 'none')
+  )
+}
+
 /** Accepts the listed operations, so the attempt moves on to the account question. */
 export function acceptOperations(attempt: CreationAttempt): CreationAttempt & Draft {
   return { ...reviseAttempt(attempt), operationsAccepted: true }

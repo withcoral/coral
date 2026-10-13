@@ -164,14 +164,42 @@ export async function addProviderFromFile(
 }
 
 /**
- * Matches the data response of a publication that Coral committed: it redirects
- * to the provider. A refusal answers with data instead.
+ * Matches the data response of a publication that Coral committed: Add
+ * redirects to the provider, an update to its settings. A refusal answers with
+ * data instead.
  */
-export const committedPublication = /"redirect","\/workspaces\/[^"]+\/providers\/[^"/]+"/
+export const committedPublication =
+  /"redirect","\/workspaces\/[^"]+\/providers\/[^"/]+(?:\/settings)?"/
 
 /**
- * Waits for Add or Update to land on the provider's own page. A callback or
- * error page outside the stepper does not count as a publication.
+ * Saves a settings change that asks for confirmation first, then waits for the
+ * provider's settings, where the change opened from.
+ */
+export async function saveConfirmedSettingsChange(page: Page) {
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: 'Save changes?' })
+    .getByRole('button', { name: 'Save', exact: true })
+    .click()
+  await page.waitForURL((url) => url.pathname.endsWith('/settings'))
+}
+
+/**
+ * Cancels a settings change that has unsaved changes: Cancel asks first, and
+ * Discard changes returns to the provider's settings.
+ */
+export async function discardSettingsChange(page: Page) {
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: 'Discard your changes?' })
+    .getByRole('button', { name: 'Discard changes', exact: true })
+    .click()
+  await page.waitForURL((url) => url.pathname.endsWith('/settings'))
+}
+
+/**
+ * Waits for Add to land on the provider's own page. A callback or error page
+ * outside the stepper does not count as a publication. Updates land on settings.
  */
 export async function waitForPublication(page: Page) {
   await page.waitForURL((url) =>
@@ -229,6 +257,12 @@ export function addedProviders<P extends { callRoot: string }>(providers: readon
  * only added provider's settings instead.
  */
 export async function openProviderSettings(page: Page) {
+  // A saved change returns to settings. Load them again for fresh data.
+  if (/\/providers\/[^/?#]+\/settings$/.test(new URL(page.url()).pathname)) {
+    await page.reload()
+    await breadcrumb(page, 'Settings').waitFor()
+    return
+  }
   // The gear sits in the rail beside its provider. Publication lands on the
   // provider route; the gear must belong to that document, not to the page a
   // redirect is about to replace.
@@ -566,9 +600,20 @@ export async function replaceScopes(page: Page, scopes: string[]) {
   await expect.poll(() => requestedScopes(page)).toEqual(scopes)
 }
 
-/** Explicit fixture-owner confirmation; missing document metadata is never consent. */
-export async function confirmConfiguration(page: Page, authentication?: SignInMethod) {
-  await configurationNext(page).waitFor()
+/**
+ * Explicit fixture-owner confirmation; missing document metadata is never consent.
+ * Add and a refresh confirm with Next. Edit configuration confirms with Save.
+ */
+export async function confirmConfiguration(
+  page: Page,
+  authentication?: SignInMethod,
+  submit: 'Next' | 'Save' = 'Next',
+) {
+  const confirm =
+    submit === 'Next'
+      ? configurationNext(page)
+      : page.getByRole('button', { name: /^(Save|Saving…)$/ })
+  await confirm.waitFor()
   await ensureNamespace(page)
   if (authentication) await chooseSignIn(page, authentication)
   else if ((await signInPicker(page).textContent()) === 'Choose a method')
@@ -589,8 +634,12 @@ export async function confirmConfiguration(page: Page, authentication?: SignInMe
     expect(await page.getByLabel('Callback URL', { exact: true }).count()).toBe(0)
   }
   // Confirm configuration before either discovery or runtime-account authorization.
-  await page.getByRole('button', { name: 'Next', exact: true }).click()
-  await configurationNext(page).waitFor({ state: 'detached' })
+  // The form posts as a document. Save's next view can show another Save, so
+  // the new document, not the button, marks the confirmation.
+  const loaded = submit === 'Save' && page.waitForEvent('load')
+  await page.getByRole('button', { name: submit, exact: true }).click()
+  if (loaded) await loaded
+  else await confirm.waitFor({ state: 'detached' })
   expect(await page.getByLabel('Callback URL', { exact: true }).count()).toBe(0)
 }
 
@@ -864,7 +913,7 @@ export async function publishWorkspaceProvider(
  * It imitates Desktop: Reef names that path in `X-Coral-Authorization-Return-To`
  * on the consent redirect, and Desktop's main process reads, then strips, it.
  */
-export async function connectKeepingProgress(page: Page, name: string | RegExp = /^Connect /) {
+export async function connectKeepingProgress(page: Page, name: string | RegExp = /^Connect$/) {
   const [posted] = await Promise.all([
     page.waitForResponse(
       (response) =>
@@ -886,4 +935,16 @@ export async function openYourAccount(page: Page) {
     .first()
     .click()
   await page.waitForURL((url) => /\/accounts\/[^/?#]+$/.test(url.pathname))
+}
+
+/** Waits until your account page shows a stored account: its Details card and Reconnect. */
+export async function waitForYourAccount(page: Page) {
+  await page.getByRole('complementary', { name: 'Details', exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Reconnect', exact: true }).waitFor()
+}
+
+/** Waits until your account page offers Connect and shows no stored account. */
+export async function waitForNoAccount(page: Page) {
+  await page.getByRole('button', { name: 'Connect', exact: true }).waitFor()
+  expect(await page.getByRole('complementary', { name: 'Details', exact: true }).count()).toBe(0)
 }

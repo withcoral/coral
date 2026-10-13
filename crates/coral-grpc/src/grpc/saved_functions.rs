@@ -1,12 +1,13 @@
 use super::workspaces::{
-    error as workspace_error, invalid, page_start, page_token, safe_status, timestamp, workspace_id,
+    annotate, error as workspace_error, invalid, page_start, page_token, safe_status, timestamp,
+    workspace_id,
 };
-use super::{GrpcServices, management as wire};
+use super::{GrpcServices, management as wire, now};
 use coral_functions::{
-    SavedFunction, SavedFunctionDiagnostic, SavedFunctionDiagnosticCategory, SavedFunctionPath,
-    SavedFunctionSummary,
+    SavedFunction, SavedFunctionChangeContext, SavedFunctionDiagnostic,
+    SavedFunctionDiagnosticCategory, SavedFunctionPath, SavedFunctionSummary,
 };
-use coral_workspace::AuthenticatedPrincipal;
+use coral_workspace::{AuthenticatedPrincipal, TraceId};
 use tonic::{Request, Response, Status};
 
 fn error(error: coral_functions::Error) -> Status {
@@ -16,7 +17,7 @@ fn error(error: coral_functions::Error) -> Status {
         E::InvalidInput(_) => (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
         E::SavedFunctionNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
         E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
-        // Reads never author. Name every variant so a new one needs a wire decision.
+        // Reads and deletes never compile. Name every variant so a new one needs a wire decision.
         E::SavedFunctionAdmission(_)
         | E::SavedFunctionCompilationTimedOut
         | E::PackageTooLarge { .. }
@@ -125,5 +126,26 @@ impl wire::saved_function_service_server::SavedFunctionService for GrpcServices 
             .await
             .map_err(error)?;
         Ok(Response::new(saved_function(&function)))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.delete_saved_function")]
+    async fn delete_saved_function(
+        &self,
+        request: Request<wire::DeleteSavedFunctionRequest>,
+    ) -> Result<Response<()>, Status> {
+        let user = self.management_user(&request).await?;
+        let input = request.into_inner();
+        let w = workspace_id(&input.parent)?;
+        let path = path(&input.path)?;
+        let context = SavedFunctionChangeContext::new(
+            AuthenticatedPrincipal::user(user),
+            now().map_err(annotate)?,
+            TraceId::current_or_new(),
+        );
+        self.saved_function_deletion
+            .delete(&context, &w, &path)
+            .await
+            .map_err(error)?;
+        Ok(Response::new(()))
     }
 }

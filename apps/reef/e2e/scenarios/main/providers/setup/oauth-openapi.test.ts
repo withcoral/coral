@@ -123,9 +123,9 @@ test('OpenAPI OAuth with one shared account: consent, resume, forged callbacks, 
       await page.keyboard.press('Escape')
       await drawer.waitFor({ state: 'hidden' })
       await openProviderSettings(page)
-      await page.getByText('All callers use one shared account.', { exact: true }).waitFor()
+      await page.getByText('People and agents use this shared account.', { exact: true }).waitFor()
       await page
-        .getByRole('region', { name: 'Shared account', exact: true })
+        .getByRole('region', { name: 'One shared account', exact: true })
         .getByText('Connected', { exact: true })
         .waitFor()
     })
@@ -184,9 +184,14 @@ test('OpenAPI OAuth with each person’s own account signs nobody in', async (co
       // asks you to connect, and settings show your account is not connected.
       await waitForProviderStatus(page, 'Records', 'Connect your account')
       await openProviderSettings(page)
-      await page.getByText('Each caller uses their own account.', { exact: true }).waitFor()
       await page
-        .getByRole('region', { name: 'Your account', exact: true })
+        .getByText(
+          'Each person connects their own account. Workspace owners connect accounts for agents.',
+          { exact: true },
+        )
+        .waitFor()
+      await page
+        .getByRole('region', { name: 'Individual accounts', exact: true })
         .getByText('Not connected', { exact: true })
         .waitFor()
       expect(upstream.counts.consents).toBe(0)

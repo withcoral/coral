@@ -8,7 +8,12 @@ import {
   mutationForm,
   privateHeaders,
 } from '@/lib/management.server'
-import { providerName, providerPath } from '@/lib/providers.server'
+import {
+  accountChoice,
+  listAllOperations,
+  providerName,
+  providerPath,
+} from '@/lib/providers.server'
 import { callbackRedirectUri } from '@/lib/provider-publication-attempt/setup.server'
 import { attemptPath } from '@/lib/provider-publication-attempt/model'
 import {
@@ -18,11 +23,8 @@ import {
 } from '@/lib/provider-publication-attempt/requests.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { UpdatePage } from '@/views/providers/update-page'
-import {
-  CredentialRoute_Kind,
-  ProviderSetupInputKind,
-} from '@/generated/coral/management/v1/provider_pb'
-import type { AccountChoice } from '@/views/providers/types'
+import { EditConfigurationPage } from '@/views/providers/edit-configuration-page'
+import { ProviderSetupInputKind } from '@/generated/coral/management/v1/provider_pb'
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
@@ -42,6 +44,7 @@ async function resolveTarget(
   const name = providerName(w.name, params.provider)
   const provider = await api.providers.getProvider({ name })
   const path = providerPath(w.path, name)
+  // Every update opens from the provider's settings, so it returns there.
   return {
     api,
     workspace: w,
@@ -49,21 +52,27 @@ async function resolveTarget(
     provider,
     basePath: `${path}/update`,
     cancelPath: path,
-    successPath: path,
+    settingsPath: `${path}/settings`,
+    successPath: `${path}/settings`,
   }
 }
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
-    const { api, workspace, parent, provider, basePath, cancelPath } = await resolveTarget(
-      request,
-      context,
-      params,
-    )
+    const { api, workspace, parent, provider, basePath, cancelPath, settingsPath } =
+      await resolveTarget(request, context, params)
     const parsed = requestAttempt('update', new URL(request.url).searchParams, provider.etag)
     const { setup, attempt } = await loadAttempt(api, parent, parsed)
     const application = await api.providers.getProviderOAuthClient({ name: provider.name })
     const source = await api.providers.getProviderSource({ name: provider.name })
+    // A refresh groups what it adds to and removes from the live provider.
+    const currentOperations =
+      setup && (parsed.task ?? 'refresh') === 'refresh'
+        ? (await listAllOperations(api, provider.name)).map((o) => ({
+            relativePath: o.relativePath,
+            summary: o.summary,
+          }))
+        : undefined
     return data(
       {
         workspace,
@@ -73,13 +82,11 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
           url: source.url,
           kind: source.kind === ProviderSetupInputKind.MCP ? ('mcp' as const) : ('url' as const),
         },
-        currentAccount: (provider.credentialRoute?.kind === CredentialRoute_Kind.FIXED
-          ? 'fixed'
-          : provider.credentialRoute?.kind === CredentialRoute_Kind.CALLER
-            ? 'caller'
-            : 'none') as AccountChoice,
+        currentAccount: accountChoice(provider.credentialRoute),
+        currentOperations,
         basePath,
         cancelPath,
+        settingsPath,
         providersPath: `${workspace.path}/providers`,
         setup,
         callbackUrl: callbackRedirectUri(request, context),
@@ -129,6 +136,7 @@ export async function action({ request, context, params }: Route.ActionArgs) {
     provider: provider.name,
     successPath,
     basePath,
+    account: accountChoice(provider.credentialRoute),
   })
 }
 
@@ -138,12 +146,18 @@ export default function ProviderUpdateRoute({ loaderData, actionData }: Route.Co
     !(actionData && 'configurationErrors' in actionData) &&
       (authorization?.state === 'pending' || authorization?.state === 'exchanging'),
   )
-  return (
-    <UpdatePage
-      key={attemptPath(loaderData.basePath, loaderData.attempt)}
-      {...loaderData}
-      result={actionData}
-      pending={useNavigation().state !== 'idle'}
-    />
-  )
+  const pending = useNavigation().state !== 'idle'
+  const key = attemptPath(loaderData.basePath, loaderData.attempt)
+  const { setup } = loaderData
+  if (setup)
+    return (
+      <EditConfigurationPage
+        key={key}
+        {...loaderData}
+        setup={setup}
+        result={actionData}
+        pending={pending}
+      />
+    )
+  return <UpdatePage key={key} {...loaderData} result={actionData} pending={pending} />
 }

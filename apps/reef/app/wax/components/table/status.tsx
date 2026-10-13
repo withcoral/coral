@@ -11,8 +11,9 @@ export type StatusProps = PropsWithChildren<{
   'data-index'?: number
   ref?: Ref<HTMLDivElement>
   /**
-   * `table` (the default) pads the line like a whole-table state. `group` keeps
-   * it one row tall, for the state of one group among many that still have rows.
+   * `table` (the default) stands in for all the rows, and a scroll table centres
+   * it in the height it fills. `group` is the state of one group among many that
+   * still have rows. Either is one row tall elsewhere.
    */
   scope?: 'table' | 'group'
 }>

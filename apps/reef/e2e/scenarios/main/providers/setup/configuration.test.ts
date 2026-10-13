@@ -1,5 +1,7 @@
 import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../../support/actors.ts'
+import { managementClients } from '../../../../support/management.ts'
+import { CredentialRoute_Kind } from '../../../../generated/coral/management/v1/provider_pb.ts'
 import { openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
   addProviderFromFile,
@@ -8,8 +10,8 @@ import {
   createWorkspace,
   destinationField,
   openOperation,
+  signInPicker,
   waitForProviderStatus,
-  waitForPublication,
   committedPublication,
 } from '../../../../support/providers.ts'
 
@@ -89,24 +91,25 @@ test('Update clears only an invalid operation-specific server selection', async 
         'https://api.example.test/v1',
       )
       await confirmConfiguration(page)
-      await page.getByText('Configuration details', { exact: true }).click()
-      const destination = page.getByRole('region', {
-        name: 'https://api.example.test/v1',
-        exact: true,
-      })
-      await destination.getByText('Used by 1 operation.', { exact: true }).waitFor()
-      await destination.getByText('View operations', { exact: true }).click()
-      await destination.getByText('metrics', { exact: true }).waitFor()
-      expect(await destination.getByText('logs', { exact: true }).count()).toBe(0)
-      await page.getByText('View unavailable operations', { exact: true }).click()
+      // The read operations show that only logs cannot run.
       await page
-        .getByText('logs: review the selected server and its declared variables', {
-          exact: true,
-        })
+        .getByText(
+          '1 operation cannot run with this configuration. Open the Cannot run group to see why.',
+          {
+            exact: true,
+          },
+        )
         .waitFor()
-      await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
-      await waitForPublication(page)
-      expect(new URL(page.url()).pathname).toBe(providerPath)
+      // Groups open closed; the toggle names the group.
+      await page.getByRole('button', { name: 'Expand Cannot run', exact: true }).click()
+      const cannotRun = page
+        .getByRole('treeitem')
+        .filter({ has: page.getByRole('button', { name: 'Collapse Cannot run', exact: true }) })
+      await cannotRun.getByText('logs', { exact: true }).waitFor()
+      expect(await cannotRun.getByText('metrics', { exact: true }).count()).toBe(0)
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+      await page.goto(providerPath)
       let drawer = await openOperation(page, 'logs')
       await drawer.getByText('Unavailable', { exact: true }).waitFor()
       await page.keyboard.press('Escape')
@@ -125,6 +128,7 @@ test('Update clears only an invalid operation-specific server selection', async 
 
 test('Update retains saved choices and requires acceptance only for incompatible configuration', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
+    const api = managementClients(actor.accessToken)
     let providerPath = ''
     await step('Add a bearer provider with caller accounts', async () => {
       const workspace = await createWorkspace(
@@ -149,43 +153,35 @@ test('Update retains saved choices and requires acceptance only for incompatible
         document.security = []
         await chooseFile(page, 'records-new.json', Buffer.from(JSON.stringify(document)))
         await page.getByRole('button', { name: 'Read', exact: true }).click()
-        await page.getByRole('button', { name: 'Apply changes', exact: true }).waitFor()
-        await page
-          .getByRole('group', { name: 'Authentication', exact: true })
-          .getByText('Bearer token', { exact: true })
-          .waitFor()
+        await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
         expect(await page.getByRole('textbox', { name: 'Display name', exact: true }).count()).toBe(
           0,
         )
-        expect(
-          await page
-            .getByRole('checkbox', {
-              name: 'Require each account to reconnect',
-              exact: true,
-            })
-            .count(),
-        ).toBe(0)
+        // The saved bearer setting stays, so nobody reconnects and Save asks nothing.
+        await page.getByRole('button', { name: 'Save', exact: true }).click()
+        await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
+        await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
+        await expect.poll(() => signInPicker(page).textContent()).toBe('Bearer token')
       },
     )
     await step(
       'An explicit incompatible edit warns, permits cancellation, and requires exact acceptance',
       async () => {
-        await page.getByRole('link', { name: 'Edit configuration', exact: true }).click()
-        await confirmConfiguration(page, 'No authentication')
-        const accept = page.getByRole('checkbox', {
-          name: 'Remove existing individual account credentials',
-          exact: true,
+        await confirmConfiguration(page, 'No authentication', 'Save')
+        const confirm = page.getByRole('dialog', { name: 'Save changes?' })
+        await confirm
+          .getByText(
+            'Save removes the existing account credentials. To switch back, connect new accounts.',
+            { exact: true },
+          )
+          .waitFor()
+        // Keep editing publishes nothing; Save asks again.
+        await confirm.getByRole('button', { name: 'Keep editing', exact: true }).click()
+        await confirm.waitFor({ state: 'detached' })
+        expect(await api.providers.getProvider({ name: providerPath.slice(1) })).toMatchObject({
+          credentialRoute: { kind: CredentialRoute_Kind.CALLER },
         })
-        await accept.waitFor()
-        expect(
-          await page.getByRole('button', { name: 'Apply changes', exact: true }).isDisabled(),
-        ).toBe(true)
-        await accept.check()
-        await accept.uncheck()
-        expect(
-          await page.getByRole('button', { name: 'Apply changes', exact: true }).isDisabled(),
-        ).toBe(true)
-        await accept.check()
+        await page.getByRole('button', { name: 'Save', exact: true }).click()
         let requestId = ''
         await page.route(
           '**/update.data*',
@@ -204,7 +200,7 @@ test('Update retains saved choices and requires acceptance only for incompatible
           },
           { times: 1 },
         )
-        await page.getByRole('button', { name: 'Apply changes', exact: true }).click()
+        await confirm.getByRole('button', { name: 'Save', exact: true }).click()
         await page.waitForURL(
           (url) => Boolean(requestId) && url.searchParams.get('requestId') === requestId,
         )
@@ -214,8 +210,7 @@ test('Update retains saved choices and requires acceptance only for incompatible
         ).toBe('yes')
         expect(await page.locator('input[name="requestId"]').last().inputValue()).toBe(requestId)
         await page.getByRole('button', { name: 'Retry', exact: true }).click()
-        await waitForPublication(page)
-        expect(new URL(page.url()).pathname).toBe(providerPath)
+        await page.waitForURL((url) => url.pathname === `${providerPath}/settings`)
       },
     )
   })

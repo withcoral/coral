@@ -1,4 +1,5 @@
 export {
+  CatalogFilterMenu,
   CatalogLayout,
   CatalogRail,
   CatalogRailItem,
@@ -6,3 +7,4 @@ export {
   FilterField,
   railItem,
 } from './catalog'
+export type { CatalogFilterOption, CatalogFilterOptions } from './catalog'

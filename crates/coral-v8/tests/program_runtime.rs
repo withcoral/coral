@@ -766,6 +766,7 @@ fn saved_function_authoring_types_the_coral_host_root() {
                 await coral.emit(title);
                 return title;
             } catch (error) {
+                console.warn('report failed', error);
                 if (error instanceof coral.OperationError) return error.code;
                 throw error;
             }
@@ -786,16 +787,21 @@ fn saved_function_authoring_types_the_coral_host_root() {
     let misused = compiler
         .prepare_saved_function(
             compilation_deadline(),
-            "export default function misuse(): number { new coral.OperationError(); return coral.missing; }",
+            "export default function misuse(): number { console.table([]); console.log = () => {}; new coral.OperationError(); return coral.missing; }",
         )
         .expect("host root misuse is advisory");
-    for code in [2673, 2339] {
+    for (code, name) in [
+        (2339, "'table'"),
+        (2540, "'log'"),
+        (2673, "OperationError"),
+        (2339, "'missing'"),
+    ] {
         assert!(
             misused
                 .diagnostics()
                 .iter()
-                .any(|diagnostic| diagnostic.code() == code),
-            "missing {code}: {:?}",
+                .any(|diagnostic| diagnostic.code() == code && diagnostic.message().contains(name)),
+            "missing {code} for {name}: {:?}",
             misused.diagnostics()
         );
     }

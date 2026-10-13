@@ -85,6 +85,8 @@ export const scrollTable = style({
 // One grid owns every column width. Head, Body, and Row inherit those tracks
 // through `subgrid`, so a column stays the same width in the heading and in
 // every row without any of them being told how wide it is.
+const CARD_RADIUS = 10
+
 export const container = recipe({
   base: {
     alignContent: 'start',
@@ -148,12 +150,15 @@ export const container = recipe({
       card: {
         background: theme.surface.card,
         border: `1px solid ${theme.stroke.secondary}`,
-        borderRadius: '10px',
+        borderRadius: CARD_RADIUS,
       },
       plain: {},
     },
   },
 })
+
+// Marks a card table, so its last row can follow the card's rounded corners.
+export const cardTable = style({})
 
 const rowGroup = {
   display: 'grid',
@@ -181,12 +186,20 @@ export const head = style({
 
 export const scrollRows = style({})
 
+// The heading keeps its height; the rows' track gives up the rest, down to nothing.
+export const boundedRows = style({
+  flex: '0 1 auto',
+  gridTemplateRows: 'auto minmax(0, 1fr)',
+  minHeight: 0,
+})
+
 export const bodyScrollArea = style({
   ...rowGroup,
   selectors: {
     [`${scrollRows} > &`]: {
       maxHeight: `var(${ROWS_MAX_HEIGHT_PROPERTY})`,
     },
+    [`${boundedRows} > &`]: { minHeight: 0 },
   },
 })
 
@@ -198,6 +211,12 @@ export const body = style({
     // reaching whatever scrolls outside the table.
     [`:not(${scrollRows}) > ${bodyScrollArea} > &`]: {
       overscrollBehavior: 'auto',
+    },
+    // A bounded body is the scroll port and has a fixed height. Its `auto` rows
+    // would shrink to their minimum height to fit, and a wrapped cell would
+    // spill over the next row. Each row keeps its content's height instead.
+    [`${boundedRows} > ${bodyScrollArea} > &`]: {
+      gridAutoRows: 'max-content',
     },
   },
 })
@@ -235,6 +254,16 @@ export const row = style({
     [`${body} > &:last-child, ${group} > &:last-child`]: {
       borderBottom: 'none',
     },
+    // The card's radius less its border, so a highlight's corners match the card's.
+    // The table's last row can sit in a group, or in a group nested in one.
+    [[
+      `${cardTable} ${body}:last-child > &:last-child`,
+      `${cardTable} ${body}:last-child > ${group}:last-child > &:last-child`,
+      `${cardTable} ${body}:last-child > ${group}:last-child > ${group}:last-child > &:last-child`,
+    ].join(', ')]: {
+      borderEndEndRadius: CARD_RADIUS - 1,
+      borderEndStartRadius: CARD_RADIUS - 1,
+    },
     [`${head} > &`]: {
       minHeight: tableVars.headingHeight.value,
     },
@@ -263,10 +292,11 @@ export const selectedRow = style({
 })
 
 // The keyboard cursor: an outline, so it reads apart from an open row's edge bar.
-export const activeRow = style({
+const cursor = {
   backgroundColor: theme.surface.onMainContentSubtle,
   boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
-})
+}
+export const activeRow = style(cursor)
 
 // The marker overlays the existing edge without moving columns or replacing selection.
 export const markedRow = style({
@@ -418,6 +448,7 @@ export const cellText = recipe({
   },
   defaultVariants: {
     actions: false,
+    control: false,
     mono: false,
     wrap: false,
   },
@@ -442,6 +473,11 @@ export const cellText = recipe({
     actions: {
       false: {},
       true: { display: 'flex', justifyContent: 'center', overflow: 'visible' },
+    },
+    // A control draws its focus ring outside its box, which a clip would cut.
+    control: {
+      false: {},
+      true: { overflow: 'visible' },
     },
   },
 })
@@ -491,7 +527,8 @@ export const statusCell = recipe({
   },
   variants: {
     scope: {
-      table: { paddingBlock: '24px' },
+      // The cells' own padding: a status reads as one more row, as tall as the rest.
+      table: { paddingBlock: tableVars.cellPaddingBlock.value },
       // The scroll-layout row already pads its cells; one line then reaches
       // the height of an ordinary row.
       group: { paddingBlock: 0 },
@@ -555,4 +592,21 @@ export const addRow = style({
 export const loadMoreStatus = style({
   alignItems: 'center',
   display: 'inline-flex',
+})
+
+// The row's own link: the row's hover already shows it opens, so the text keeps
+// its colour. The cell clips overflow, so the row draws the focus, not the link.
+export const rowLink = style({
+  color: 'inherit',
+  minWidth: 0,
+  outline: 'none',
+  overflow: 'hidden',
+  textDecoration: 'none',
+  textOverflow: 'ellipsis',
+})
+// A row with `to` shows its link's keyboard focus as the keyboard cursor.
+export const linkRow = style({
+  selectors: {
+    [`&:has(${rowLink}:focus-visible)`]: cursor,
+  },
 })

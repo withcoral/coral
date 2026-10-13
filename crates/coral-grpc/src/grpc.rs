@@ -43,6 +43,8 @@ pub struct Dependencies {
     pub tasks: coral_task::TaskModule,
     /// The caller's own current Saved Function inspection.
     pub saved_functions: coral_functions::SavedFunctionInspection,
+    /// The caller's own current Saved Function deletion.
+    pub saved_function_deletion: coral_functions::SavedFunctionDeletion,
     /// Atomic membership and Agent removal, retaining execution history.
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
 }
@@ -78,6 +80,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         accounts: dependencies.accounts,
         tasks: dependencies.tasks,
         saved_functions: dependencies.saved_functions,
+        saved_function_deletion: dependencies.saved_function_deletion,
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
     };
@@ -183,6 +186,7 @@ struct GrpcServices {
     accounts: Option<coral_provider::account::AccountModule>,
     tasks: coral_task::TaskModule,
     saved_functions: coral_functions::SavedFunctionInspection,
+    saved_function_deletion: coral_functions::SavedFunctionDeletion,
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
 }
