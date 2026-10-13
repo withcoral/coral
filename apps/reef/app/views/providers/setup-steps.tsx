@@ -8,7 +8,7 @@ import * as Dialog from '@/wax/components/dialog'
 import { Fields } from '@/views/management/forms'
 import { DeviceCodeDialog } from '@/views/accounts/device-code'
 import { oauthFailureMessage } from '@/views/accounts/oauth-failure'
-import { ClientSecretInput, credentialHosts, OAuthApplicationBlock } from './oauth-application'
+import { credentialHosts, OAuthApplicationBlock } from './oauth-application'
 
 import { CredentialFields } from '@/views/management/credential-fields'
 import { accountLabels } from './account-labels'
@@ -170,6 +170,7 @@ export function DiscoveryPrompt({
   callbackUrl: string
 }) {
   const formId = useId()
+  const secretId = useId()
   const oauthForm = useRef<HTMLFormElement>(null)
   const [asking, setAsking] = useState(false)
   if (setup.state === 'awaiting_discovery')
@@ -221,7 +222,14 @@ export function DiscoveryPrompt({
               <OAuthApplicationBlock
                 setup={setup}
                 callbackUrl={callbackUrl}
-                clientSecretInput={<ClientSecretInput />}
+                clientSecretInput={
+                  <>
+                    <Typography.BodySmallStrong as="label" htmlFor={secretId}>
+                      Client secret
+                    </Typography.BodySmallStrong>
+                    <Inputs.CredentialInput id={secretId} name="clientSecret" required />
+                  </>
+                }
               />
             </Form>
           )}
@@ -322,6 +330,7 @@ export function DiscoveryStep({
   existingAccount?: AccountChoice
 }) {
   const formId = useId()
+  const secretId = useId()
   const back = backPath ? (
     <Button.InternalLink size="small" to={backPath} variant="secondary">
       Back
@@ -438,7 +447,14 @@ export function DiscoveryStep({
             <OAuthApplicationBlock
               setup={setup}
               callbackUrl={callbackUrl}
-              clientSecretInput={<ClientSecretInput />}
+              clientSecretInput={
+                <>
+                  <Typography.BodySmallStrong as="label" htmlFor={secretId}>
+                    Client secret
+                  </Typography.BodySmallStrong>
+                  <Inputs.CredentialInput id={secretId} name="clientSecret" required />
+                </>
+              }
             />
           </Form>
           {expiry}

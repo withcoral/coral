@@ -31,7 +31,7 @@ import {
   partLabel,
   type BasicCredentials as BasicCredentialsValue,
 } from './basic-credentials'
-import { ClientSecretInput, OAuthApplicationBlock } from './oauth-application'
+import { OAuthApplicationBlock } from './oauth-application'
 import { FieldError, NamespaceField, NAMESPACE, RequiredMark, TextField } from './fields'
 import {
   authenticationOptions,
@@ -123,6 +123,7 @@ export function ConfigurationStep({
     onDirtyChange(current !== baseline.current)
   }
   useEffect(checkDirty)
+  const clientSecretId = useId()
   const fieldId = useId()
   const ids = {
     displayName: `${fieldId}-display-name`,
@@ -508,7 +509,18 @@ export function ConfigurationStep({
                 }
                 callbackUrl={callbackUrl}
                 configuring
-                clientSecretInput={<ClientSecretInput required={!setup.clientSecretConfigured} />}
+                clientSecretInput={
+                  <>
+                    <Typography.BodySmallStrong as="label" htmlFor={clientSecretId}>
+                      Client secret
+                    </Typography.BodySmallStrong>
+                    <Inputs.CredentialInput
+                      id={clientSecretId}
+                      name="clientSecret"
+                      required={!setup.clientSecretConfigured}
+                    />
+                  </>
+                }
               />
             </div>
           )}

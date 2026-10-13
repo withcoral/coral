@@ -5,19 +5,6 @@ import * as styles from './providers.css'
 
 type ApplicationMode = 'automatic' | 'explicit'
 
-/** The write-only secret of a confidential OAuth application, which a person enters. */
-export function ClientSecretInput({ required = true }: { required?: boolean }) {
-  const id = useId()
-  return (
-    <>
-      <Typography.BodySmallStrong as="label" htmlFor={id}>
-        Client secret
-      </Typography.BodySmallStrong>
-      <Inputs.CredentialInput id={id} name="clientSecret" required={required} />
-    </>
-  )
-}
-
 /**
  * One application editor and its confirmed sign-in fields, shared by Add and Update.
  * Owns conditional authentication and advanced settings; callers supply the write-only
