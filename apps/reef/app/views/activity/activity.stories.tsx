@@ -689,6 +689,11 @@ export const KeyboardCursor: Story = {
       await waitFor(() => expect(shownInFull(cursor()!)).toBe(true))
     }
     await expect(list.scrollTop).toBe(0)
+    // The cursor, not an outer table ring, shows where keyboard actions apply.
+    list.focus()
+    await expect(list).toHaveFocus()
+    await expect(getComputedStyle(list).outlineStyle).toBe('none')
+    await expect(cursor()).not.toBeNull()
     // Past the first Task's solo Run to the next Task; rows in view do not move.
     await userEvent.keyboard('{ArrowDown}{ArrowDown}')
     await expect(list.scrollTop).toBe(0)

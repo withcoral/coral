@@ -45,6 +45,10 @@ export const pending = style({
   minWidth: 0,
   gap: 12,
 })
+// The active row supplies the focus indicator, as on the operations table.
+export const table = style({
+  selectors: { '&:focus:has([data-active])': { outline: 'none' } },
+})
 export const metadata = style({ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 })
 export const native = style({
   whiteSpace: 'pre-wrap',

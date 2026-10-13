@@ -648,6 +648,7 @@ export function Activity({
             )}
             <Table.Container
               ref={table}
+              className={styles.table}
               readingKey={windowKey}
               readingPaused={live && !live.connected}
               readingFollowStart={live?.followRoot}
