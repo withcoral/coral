@@ -38,6 +38,8 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
       expect(await page.getByText('Second local goal', { exact: true }).count()).toBe(1)
       await page.getByRole('button', { name: 'Close details', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/${workspace.name}/activity`)
+      // The address changes first; the detail keeps its record while it exits.
+      await page.getByRole('dialog').waitFor({ state: 'detached' })
       expect(await page.getByRole('button', { name: 'Load new', exact: true }).count()).toBe(0)
       await page.getByRole('link', { name: 'Second local goal', exact: true }).waitFor()
       expect(await page.content()).not.toContain('Local completion')
