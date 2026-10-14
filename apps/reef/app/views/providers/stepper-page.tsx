@@ -189,7 +189,7 @@ function StepperAttemptPage({
 /**
  * A Setup that ended. Start again reads the same source into a new Setup, as
  * the catalog does. A source that needs details or an upload opens the source
- * form instead.
+ * form instead, and so does Choose a source after a read fails.
  */
 function AddEnded({
   ended,
@@ -206,7 +206,7 @@ function AddEnded({
   basePath: string
   cancelPath: string
 }) {
-  const { read, reading } = useReadRecipe(form, basePath)
+  const { read, reading, failed } = useReadRecipe(form, basePath)
   // A typed URL keeps no source choice in the address, but its Setup names the URL.
   const source =
     recipe ??
@@ -225,9 +225,15 @@ function AddEnded({
         <Button.InternalLink to={basePath}>Choose a source</Button.InternalLink>
       </AttemptEnded>
     )
+  // A read that fails says why in a toast. The source form lets you correct the source.
   return (
     <AttemptEnded ended={ended}>
       {leave}
+      {failed && (
+        <Button.InternalLink to={basePath} variant="secondary">
+          Choose a source
+        </Button.InternalLink>
+      )}
       {needsSourceDetails(source) ? (
         <Button.InternalLink to={`${basePath}?${sourceSearch(source)}`}>
           Start again

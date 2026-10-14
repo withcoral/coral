@@ -267,19 +267,28 @@ it('shows what a new read changed before you confirm it', () => {
 })
 
 // Catches: an expired Setup that strands you, or a Start again that opens the
-// wrong task, rereads the wrong source, or carries the provider version it began with.
+// wrong task, rereads the saved source in place of a replacement, or carries the
+// provider version it began with.
 it.each([
-  ['an edit', 'configuration', undefined, { source: 'current' }],
-  ['an account change', 'accounts', undefined, { source: 'current' }],
+  ['an edit', 'configuration', {}, { source: 'current' }],
+  ['an account change', 'accounts', {}, { source: 'current' }],
   [
-    'a refresh',
+    'a replacement',
     'refresh',
-    { url: 'https://records.example.com/mcp', kind: 'mcp' },
-    { source: 'mcp', sourceUrl: 'https://records.example.com/mcp' },
+    {
+      kind: 'mcp',
+      sourceLabel: 'https://records.example.com/v2/mcp',
+      sourceHost: 'records.example.com',
+    },
+    { source: 'mcp', sourceUrl: 'https://records.example.com/v2/mcp' },
   ],
-] as const)('starts %s again after its Setup expires', async (_, task, source, sent) => {
-  const page = renderPage({ page: { ...setup, state: 'expired' }, task, source })
-  expect(screen.getByText('This setup expired')).toBeInTheDocument()
+] as const)('starts %s again after its Setup expires', async (_, task, read, sent) => {
+  const page = renderPage({
+    page: { ...setup, ...read, state: 'expired' },
+    task,
+    source: { url: 'https://records.example.com/mcp', kind: 'mcp' },
+  })
+  expect(screen.getByText('This setup has expired')).toBeInTheDocument()
 
   await userEvent.click(screen.getByRole('button', { name: 'Start again' }))
   await screen.findByRole('heading', { name: 'Provider' })
@@ -288,9 +297,13 @@ it.each([
   ])
 })
 
-// Catches: a Start again that cannot work, because an uploaded document is not kept.
-it('sends you to settings to refresh an uploaded document again', () => {
-  renderPage({ page: { ...setup, state: 'expired' }, task: 'refresh' })
+// Catches: a Start again that reads the saved URL, because an uploaded document is not kept.
+it('sends you to settings to read an uploaded document again', () => {
+  renderPage({
+    page: { ...setup, state: 'expired' },
+    task: 'refresh',
+    source: { url: 'https://records.example.com/openapi.json', kind: 'url' },
+  })
   expect(screen.queryByRole('button', { name: 'Start again' })).not.toBeInTheDocument()
   expect(screen.getByRole('link', { name: 'Choose a source' })).toHaveAttribute(
     'href',

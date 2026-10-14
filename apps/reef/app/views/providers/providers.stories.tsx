@@ -1488,7 +1488,7 @@ export const StepExpired: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     // A typed URL starts again from the URL its Setup read.
-    await expect(canvas.getByText('This setup expired')).toBeVisible()
+    await expect(canvas.getByText('This setup has expired')).toBeVisible()
     await expect(canvas.getByRole('button', { name: 'Start again' })).toBeEnabled()
     await expect(canvas.getByRole('link', { name: 'Back to providers' })).toHaveAttribute(
       'href',

@@ -164,8 +164,9 @@ export function EditConfigurationPage({
     </Form>
   )
   // Start again opens a new Setup for the same task, as settings does. A refresh
-  // reads the source again; an uploaded document needs a new upload in settings.
-  const rereads = refresh && source?.url
+  // reads the URL this Setup read, not the saved one: Replace source reads a new
+  // URL. An uploaded document needs a new upload in settings.
+  const rereads = refresh && setup.sourceHost ? setup.sourceLabel : ''
   const restart =
     refresh && !rereads ? (
       <Button.InternalLink to={settingsPath}>Choose a source</Button.InternalLink>
@@ -176,8 +177,8 @@ export function EditConfigurationPage({
         <input type="hidden" name="task" value={attempt.task ?? 'refresh'} />
         {rereads ? (
           <>
-            <input type="hidden" name="source" value={source.kind} />
-            <input type="hidden" name="sourceUrl" value={source.url} />
+            <input type="hidden" name="source" value={setup.kind === 'mcp' ? 'mcp' : 'url'} />
+            <input type="hidden" name="sourceUrl" value={rereads} />
           </>
         ) : (
           <input type="hidden" name="source" value="current" />

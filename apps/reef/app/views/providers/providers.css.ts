@@ -517,7 +517,7 @@ export const emptyActions = style({
   minWidth: 0,
   width: '100%',
 })
-// A Setup that ended: leave on the left, start again on the right, as a step's actions are.
+// A Setup that ended: its actions in one centred row that wraps on a narrow screen.
 export const endedActions = style({
   alignItems: 'center',
   display: 'flex',

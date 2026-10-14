@@ -335,7 +335,7 @@ const reasons: Record<string, string> = {
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',
-  SETUP_CONSUMED: 'This attempt is complete. Start over to try again.',
+  SETUP_CONSUMED: 'This setup is complete. Start again to continue.',
   CONSENT_DESTINATION_REJECTED:
     'Coral cannot open this sign-in address. Use HTTPS or a local or private HTTP address.',
   // One message for both a configured denial and the fixed blocklist: the

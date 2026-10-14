@@ -1,14 +1,16 @@
 import { expect, test } from 'vitest'
+import { createServer } from 'node:http'
 import { ProviderAccountScope } from '../../../../generated/coral/management/v1/account_pb.ts'
 import { CredentialRoute_Kind } from '../../../../generated/coral/management/v1/provider_pb.ts'
 import { withOwnerSession } from '../../../../support/actors.ts'
 import { managementClients } from '../../../../support/management.ts'
-import { openApiDocument } from '../../../../support/provider-fixtures.ts'
+import { listen, openApiDocument } from '../../../../support/provider-fixtures.ts'
 import {
   acceptOperations,
   accountQuestion,
   backToConfiguration,
   chooseAccount,
+  configurationNext,
   confirmConfiguration,
   createWorkspace,
   openCustomSource,
@@ -116,6 +118,57 @@ test('Setup reviews operations before accounts and preserves the draft until one
         ).toBeUndefined()
       }
     })
+  })
+})
+
+test('Start an ended setup again from the URL you typed', async (context) => {
+  let reads = 0
+  const source = await listen(
+    context,
+    createServer((request, response) => {
+      if (request.method !== 'GET') {
+        response.writeHead(404).end()
+        return
+      }
+      reads++
+      response
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(openApiDocument('Records', { listRecords: {} }))
+    }),
+  )
+  await withOwnerSession(context, async ({ page, step, actor }) => {
+    const workspace = await createWorkspace(actor.accessToken, `Start again ${crypto.randomUUID()}`)
+    const api = managementClients(actor.accessToken)
+    const setupId = () => new URL(page.url()).searchParams.get('setup')
+    let ended: string | null = null
+    await step('Read a typed URL, then lose its setup', async () => {
+      await page.goto(`/workspaces/${workspace}/providers/new`)
+      await openCustomSource(page)
+      await page.getByLabel('OpenAPI URL', { exact: true }).fill(source.origin)
+      await page.getByRole('button', { name: 'Read', exact: true }).click()
+      await configurationNext(page).waitFor()
+      ended = setupId()
+      // A setup ends after an hour, or when another tab cancels it.
+      await api.setups.cancelProviderSetup({
+        name: `workspaces/${workspace}/providerSetups/${ended}`,
+      })
+      await page.reload()
+      await page.getByText('This setup is canceled', { exact: true }).waitFor()
+    })
+    await step(
+      'Start again reads the same URL into a new setup that adds the provider',
+      async () => {
+        const before = reads
+        await page.getByRole('button', { name: 'Start again', exact: true }).click()
+        await configurationNext(page).waitFor()
+        expect(setupId()).not.toBe(ended)
+        expect(reads).toBe(before + 1)
+        await confirmConfiguration(page, 'No authentication')
+        await acceptOperations(page)
+        await page.getByRole('button', { name: 'Add provider', exact: true }).click()
+        await waitForPublication(page)
+      },
+    )
   })
 })
 

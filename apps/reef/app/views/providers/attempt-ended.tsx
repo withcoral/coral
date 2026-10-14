@@ -8,12 +8,12 @@ import * as styles from './providers.css'
 const ENDS: Record<AttemptEnd, { icon: IconName; title: string; description: string }> = {
   expired: {
     icon: 'Clock',
-    title: 'This setup expired',
+    title: 'This setup has expired',
     description: 'A setup stays open for one hour. Start again to continue.',
   },
   canceled: {
     icon: 'CircleX',
-    title: 'This setup was canceled',
+    title: 'This setup is canceled',
     description: 'Start again to continue.',
   },
   consumed: {
