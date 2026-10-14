@@ -59,14 +59,14 @@ The database account's permissions still apply to every query.
 
 ## Query through Coral
 
-Copy your workspace's MCP endpoint from the Coral sidebar and [connect your MCP client](/getting-started/quickstart#connect-an-mcp-client).
+[Connect your MCP client to Coral](/getting-started/quickstart#connect-an-mcp-client).
 Give your client the Coral workspace URL, and keep the Toolbox URL in the provider configuration.
 Ask your agent to query the database using the provider's namespace.
 
 ## Deploy with Coral
 
-When you run Toolbox without client authentication, restrict access to its MCP endpoint to Coral.
-This prevents remote clients from bypassing Coral's operation policy.
+Without Toolbox client authentication, allow only Coral to reach its MCP endpoint.
+Direct access bypasses Coral's operation policy.
 
 ### Local
 
