@@ -90,7 +90,7 @@ it('shows a member their own membership and the owners, and no one else', () => 
   })
   expect(listed()).toEqual([
     ['Ada', 'Owner', 'Enabled', false],
-    ['Ben · You', 'Member', 'Enabled', true],
+    ['Ben (You)', 'Member', 'Enabled', true],
     ['Cy', 'Owner', 'Disabled', false],
   ])
 })
@@ -111,7 +111,7 @@ it('lists each person once, and marks a disabled person in words', () => {
     ownMembership: ada,
   })
   expect(listed()).toEqual([
-    ['Ada · You', 'Owner', 'Enabled', true],
+    ['Ada (You)', 'Owner', 'Enabled', true],
     ['Ben', 'Member', 'Enabled', true],
     ['Cy', 'Owner', 'Disabled', true],
     ['Eve', 'Member', 'Disabled', true],

@@ -321,10 +321,6 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
     let json = |schema: Value| serde_json::json!({"application/json": {"schema": schema}});
     let reference =
         |name: &str| serde_json::json!({"$ref": format!("#/components/schemas/{name}")});
-    let two_hundreds = (200..300)
-        .map(|status| status.to_string())
-        .collect::<Vec<_>>()
-        .join(" | ");
     let application_json = Some("\"application/json\"");
     let cases = [
         (
@@ -339,16 +335,6 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
                 previous_typed("BasicError", "404", application_json),
                 previous_typed("Branch", "200", application_json),
             ],
-        ),
-        (
-            "listNames",
-            serde_json::json!({"2XX": {"description": "ok",
-                "content": json(serde_json::json!({"type": "array", "items": {"type": "string"}}))}}),
-            vec![previous_typed(
-                "Array<string>",
-                &two_hundreds,
-                application_json,
-            )],
         ),
         (
             "getWithDefault",
@@ -425,6 +411,88 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
              type CurrentIsPrevious = Assignable<Current, Previous>;"
         ));
     }
+}
+
+#[test]
+fn status_ranges_project_as_one_named_type_per_range() {
+    let document = r"
+openapi: 3.1.0
+info: { title: Range status, version: '1' }
+servers: [{ url: https://api.example.test }]
+paths:
+  /probe:
+    get:
+      operationId: probe
+      responses:
+        '2XX': { description: ok }
+        '4XX':
+          description: error
+          content:
+            application/json:
+              schema: { type: object }
+        '5XX': { description: failure }
+        default: { description: other }
+  /exact:
+    get:
+      operationId: exact
+      responses:
+        '200': { description: ok }
+";
+    let prepared = ready(document);
+    let declaration = |key: &str| {
+        prepared
+            .operations()
+            .iter()
+            .find(|operation| operation.key().as_str() == key)
+            .expect("declared Operation")
+            .typescript_declaration()
+    };
+    let probe = declaration("probe");
+
+    for range in ["2xx", "4xx", "5xx"] {
+        let alias = format!(
+            "type HttpStatus{range} = number & {{ readonly [HttpStatusRangeBrand]: \"{range}\" }};"
+        );
+        assert_eq!(
+            probe.lines().filter(|line| *line == alias).count(),
+            1,
+            "`{alias}` is declared once in:\n{probe}"
+        );
+    }
+    for branch in [
+        "HttpResult<({} & Record<string, unknown>), HttpStatus4xx, \"application/json\">",
+        "HttpResult<null, HttpStatus2xx, string | null>",
+        "HttpResult<null, HttpStatus5xx, string | null>",
+        "HttpResult<null, number, string | null>",
+    ] {
+        assert!(probe.contains(branch), "missing `{branch}` in:\n{probe}");
+    }
+    assert_eq!(
+        probe
+            .lines()
+            .filter(|line| *line == "const HttpStatusRangeBrand: unique symbol;")
+            .count(),
+        1,
+        "the brand is declared once in:\n{probe}"
+    );
+    for absent in ["HttpStatus1xx", "HttpStatus3xx", "418"] {
+        assert!(
+            !probe.contains(absent),
+            "unexpected `{absent}` in:\n{probe}"
+        );
+    }
+    assert!(
+        !declaration("exact").contains("HttpStatus"),
+        "an Operation without ranges declares none"
+    );
+    assert_strict_compiling_declaration(&format!(
+        "{probe}\n\
+         type Holds<Claim extends true> = Claim;\n\
+         type Statuses = Awaited<ReturnType<typeof probe>>[\"metadata\"][\"status\"];\n\
+         type RangeIsNotDefault = Holds<number extends HttpStatus4xx ? false : true>;\n\
+         type RangesAreDistinct = Holds<HttpStatus4xx extends HttpStatus5xx ? false : true>;\n\
+         type StatusIsANumber = Holds<Statuses extends number ? true : false>;"
+    ));
 }
 
 #[test]
@@ -3140,7 +3208,7 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
             "/items/id": {"get": {
                 "operationId": "byLiteral",
                 "parameters": query("literal"),
-                "responses": {"200": {"description": "ok"}}
+                "responses": {"200": {"description": "ok"}, "4XX": {"description": "error"}}
             }},
             "/settings": {"put": {
                 "operationId": "putSettings",
@@ -3156,7 +3224,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
                     "anyOf": [
                         reference("HttpResult"),
                         reference("HttpUnknownResult"),
-                        reference("BinaryValue")
+                        reference("BinaryValue"),
+                        reference("HttpStatus4xx")
                     ]
                 }))
             }}
@@ -3168,7 +3237,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
             "SettingsInput": {"const": "component named SettingsInput"},
             "HttpResult": {"const": "component named HttpResult"},
             "HttpUnknownResult": {"const": "component named HttpUnknownResult"},
-            "BinaryValue": {"const": "component named BinaryValue"}
+            "BinaryValue": {"const": "component named BinaryValue"},
+            "HttpStatus4xx": {"const": "component named HttpStatus4xx"}
         }}
     });
     let prepared = ready(&document.to_string());
@@ -3191,6 +3261,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
         r#"type HttpResult2 = "component named HttpResult";"#,
         r#"type HttpUnknownResult2 = "component named HttpUnknownResult";"#,
         r#"type BinaryValue2 = "component named BinaryValue";"#,
+        r#"type HttpStatus4xx2 = "component named HttpStatus4xx";"#,
+        r#"type HttpStatus4xx = number & { readonly [HttpStatusRangeBrand]: "4xx" };"#,
     ] {
         assert!(
             scope.lines().any(|line| line == expected),

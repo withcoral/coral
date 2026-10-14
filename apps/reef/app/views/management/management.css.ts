@@ -39,8 +39,6 @@ export const plainList = style({
   margin: 0,
   padding: 0,
 })
-// The owners of one workspace, in a table cell.
-export const owners = style([plainList, { gap: 4 }])
 // A card's few rows and the link to the rest sit close, apart from the card's other parts.
 export const glimpse = style({ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 })
 export const glimpseMore = style({ alignSelf: 'flex-start' })
