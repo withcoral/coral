@@ -4,7 +4,14 @@ import { Typography } from './typography'
 const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ? '' : 's'}`
 
 /** A reading aid only: the server, not the browser clock, decides action availability. */
-export function Deadline({ at }: { at: string }) {
+export function Deadline({
+  at,
+  variant,
+}: {
+  at: string
+  /** Text colour, for a deadline that sits in a line of secondary metadata. */
+  variant?: 'secondary' | 'tertiary'
+}) {
   const [now, setNow] = useState<number>()
   const remaining = now === undefined ? undefined : Date.parse(at) - now
   useEffect(() => {
@@ -24,7 +31,7 @@ export function Deadline({ at }: { at: string }) {
           ? `Expires in ${plural(Math.ceil(remaining / 1000), 'second')}`
           : `Expires in ${plural(Math.ceil(remaining / 60_000), 'minute')}`
   return (
-    <Typography.BodySmall as="time" dateTime={at} title={at}>
+    <Typography.BodySmall as="time" dateTime={at} title={at} variant={variant}>
       {label}
     </Typography.BodySmall>
   )

@@ -21,3 +21,8 @@ export type { TriggerProps } from './trigger'
 
 export const Portal = BaseDialog.Portal
 export const Root = BaseDialog.Root
+
+/** Pins content to the popup's top edge, flush like `Header`. */
+export { pinned as pinnedClassName } from './dialog.css'
+/** Pins content to the popup's bottom edge. */
+export { pinnedBottom as pinnedBottomClassName } from './dialog.css'

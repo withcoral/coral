@@ -13,20 +13,20 @@ const subjects = { operation: 'Operations', saved_function: 'Saved functions' }
 /** What Coral counts as searched: a provider's operations, or one function. */
 const units = { operation: 'providers', saved_function: 'functions' }
 
+/** A count says when more matched than Coral returned; only missing results keep a sentence. */
 export function coverageLine(coverage: SearchCoverage): CoverageLine {
   const subject = subjects[coverage.kind]
   const unit = units[coverage.kind]
-  const searched = `${coverage.searched} of ${coverage.eligible} ${unit} searched`
   switch (coverage.state) {
     case 'results_found':
       return {
         subject,
-        label: `${coverage.returned} found`,
+        label: `${coverage.returned}${coverage.hasMore ? '+' : ''} found`,
         tone: 'success',
-        detail: coverage.hasMore ? `${searched}, more available` : searched,
+        detail: null,
       }
     case 'empty':
-      return { subject, label: 'none match', tone: 'neutral', detail: searched }
+      return { subject, label: 'none match', tone: 'neutral', detail: null }
     case 'skipped':
       return { subject, label: 'skipped by the provider filter', tone: 'neutral', detail: null }
     case 'partial':

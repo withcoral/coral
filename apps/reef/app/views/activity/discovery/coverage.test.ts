@@ -6,20 +6,21 @@ const counts = { eligible: 3, searched: 3, failed: 0, returned: 0, hasMore: fals
 const row = (kind: SearchCoverage['kind'], state: SearchCoverage['state'], change = {}) =>
   ({ kind, state, ...counts, ...change }) satisfies SearchCoverage
 
-// Search Coverage in Reef's words. A row never names a retriever or a stored state.
+// Search Coverage in Reef's words. A row never names a retriever or a stored state. A count
+// says when more matched than Coral returned; only missing results keep a sentence.
 it.each([
   [
     row('operation', 'results_found', { returned: 12 }),
-    ['Operations', '12 found', 'success', '3 of 3 providers searched'],
+    ['Operations', '12 found', 'success', null],
   ],
   [
     row('saved_function', 'results_found', { returned: 1, hasMore: true }),
-    ['Saved functions', '1 found', 'success', '3 of 3 functions searched, more available'],
+    ['Saved functions', '1+ found', 'success', null],
   ],
-  [row('operation', 'empty'), ['Operations', 'none match', 'neutral', '3 of 3 providers searched']],
+  [row('operation', 'empty'), ['Operations', 'none match', 'neutral', null]],
   [
     row('saved_function', 'empty', { eligible: 0, searched: 0 }),
-    ['Saved functions', 'none match', 'neutral', '0 of 0 functions searched'],
+    ['Saved functions', 'none match', 'neutral', null],
   ],
   [row('operation', 'skipped'), ['Operations', 'skipped by the provider filter', 'neutral', null]],
   [

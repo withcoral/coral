@@ -51,3 +51,6 @@ export const native = style({
   overflowWrap: 'anywhere',
   flexShrink: 0,
 })
+
+// A panel's own action, after its evidence, at the panel's end edge.
+export const endActions = style({ display: 'flex', justifyContent: 'flex-end' })

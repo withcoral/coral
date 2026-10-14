@@ -1,0 +1,85 @@
+import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import classNames from 'classnames'
+import { Typography } from '@/wax/components'
+import * as Card from '@/wax/components/card'
+import * as Dialog from '@/wax/components/dialog'
+import { IconPlate, type IconName, type IconPlateTone } from '@/wax/components/icon'
+import * as styles from './panel.css'
+
+/** The drawer's close control. A panel's sticky header places it beside the status. */
+export const PanelClose = createContext<ReactNode>(null)
+
+const FooterSlot = createContext<HTMLElement | null>(null)
+
+/** One Activity detail panel. It ends with the one footer slot that stays pinned to the
+ * drawer's bottom: a sticky footer pins only within its parent, so the slot spans the panel. */
+export function Panel({ children }: { children: ReactNode }) {
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
+  const close = useContext(PanelClose)
+  return (
+    <section className={styles.panel}>
+      <FooterSlot value={slot}>{children}</FooterSlot>
+      <Card.Footer
+        ref={setSlot}
+        sticky
+        className={classNames(styles.footerSlot, Boolean(close) && Dialog.pinnedBottomClassName)}
+      />
+    </section>
+  )
+}
+
+/** The panel's record identity: a status icon, the heading, and its status, aligned on
+ * the heading's first line. Lines under the heading say more about the same record. */
+export function PanelHeader({
+  icon,
+  tone,
+  title,
+  heading = 'h2',
+  details,
+  status,
+  sticky = true,
+}: {
+  icon: IconName
+  tone: IconPlateTone
+  title: ReactNode
+  heading?: 'h2' | 'h3'
+  details?: ReactNode
+  /** Text, never colour alone, such as a Pill. */
+  status: ReactNode
+  /** A sticky header leads the drawer and carries its close control; a nested one does not. */
+  sticky?: boolean
+}) {
+  const close = useContext(PanelClose)
+  return (
+    <Card.Header
+      sticky={sticky}
+      className={classNames(styles.header, sticky && Boolean(close) && Dialog.pinnedClassName)}
+    >
+      <IconPlate name={icon} tone={tone} />
+      <div className={styles.summary}>
+        <Typography.BodyLargeStrong as={heading} className={styles.title}>
+          {title}
+        </Typography.BodyLargeStrong>
+        <div className={styles.details}>{details}</div>
+      </div>
+      <div className={styles.trailing}>
+        {status}
+        {sticky && close}
+      </div>
+    </Card.Header>
+  )
+}
+
+/** A panel's decision controls, pinned to the drawer's bottom inside a Panel. Outside one,
+ * and before the panel mounts, they render here in their own sticky footer. */
+export function PanelFooter({ children }: { children: ReactNode }) {
+  const slot = useContext(FooterSlot)
+  const close = useContext(PanelClose)
+  if (slot) return createPortal(children, slot)
+  return (
+    <Card.Footer sticky className={close ? Dialog.pinnedBottomClassName : undefined}>
+      {children}
+    </Card.Footer>
+  )
+}

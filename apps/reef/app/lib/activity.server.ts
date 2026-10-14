@@ -708,7 +708,7 @@ async function selectedDetail(
             (detail.kind === 'invocation' && request.invocation !== detail.invocation.name)
           )
             throw new ConnectError('unavailable', Code.NotFound)
-          const review: RequestDetail = {
+          const review: Extract<RequestDetail, { kind: 'approval' }> = {
             kind: 'approval',
             actionable: request.actionable,
             name: request.name,
@@ -770,6 +770,18 @@ async function selectedDetail(
             if (context.detail?.kind !== 'run') throw new ConnectError('unavailable', Code.NotFound)
             detail.context = context.detail
             detail.request = review
+          }
+          // Approval review shows why the Task started. The Run names its Task only when the
+          // caller can see it; an unavailable Task leaves the intent out, not the review.
+          const owner =
+            page.detail?.kind === 'invocation' ? page.detail.context?.run.task : undefined
+          if (owner) {
+            try {
+              const value = await api.activity.inspectTask({ name: owner, pageSize: 1 }, { signal })
+              if (value.task?.intent) review.taskIntent = value.task.intent
+            } catch (error) {
+              if (!unavailable(error)) throw error
+            }
           }
         } else if (
           reference?.kind === 'account_connection' ||

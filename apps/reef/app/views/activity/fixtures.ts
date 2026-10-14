@@ -1,7 +1,7 @@
 // Activity data for unit tests: one agent Run in the Finance workspace that
 // waits on one approval of `mail.send`.
 
-import type { ActivityPage, ActivityRow, RequestDetail } from './types'
+import type { ActivityPage, ActivityRow, RequestDetail, RunDetail } from './types'
 
 export const workspace = 'workspaces/finance'
 
@@ -54,6 +54,15 @@ export const approvalRequest: Extract<RequestDetail, { kind: 'approval' }> = {
   approver: '',
   decidedAt: null,
   comment: null,
+}
+
+/** The Run that `approvalRequest` belongs to, as its review reads it. */
+export const approvalContext: RunDetail = {
+  kind: 'run',
+  run,
+  source: 'return await coral.providers.mail.send({ to: "exact-recipient" })',
+  linkedFunctions: [],
+  terminal: { kind: 'unavailable' },
 }
 
 /** An Activity page with no records and nothing selected, with `overrides` applied. */

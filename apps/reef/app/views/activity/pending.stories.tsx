@@ -54,6 +54,7 @@ const request: Extract<RequestDetail, { kind: 'approval' }> = {
   callPath: 'coral.providers.mail.send',
   arguments:
     '{"to":"owner@example.com","subject":"Invoice INV-4171 is overdue","body":"Your invoice is ready for review."}',
+  taskIntent: 'Chase overdue invoices for the Finance workspace',
   state: 'pending',
   actionable: true,
   deadline: '2030-09-22T09:15:00Z',
@@ -160,7 +161,16 @@ function StoryActivity({ page: initial }: { page: ActivityPage }) {
             kind: 'run',
             run: selectedRun,
             request: exact,
-            source: 'return await coral.providers.mail.send({to: "owner@example.com"});',
+            source: [
+              'const invoices = await coral.providers.billing.listOverdue({ limit: 10 })',
+              'for (const invoice of invoices) {',
+              '  await coral.providers.mail.send({',
+              '    to: invoice.owner,',
+              '    subject: `Invoice ${invoice.id} is overdue`,',
+              "    body: 'Your invoice is ready for review.',",
+              '  })',
+              '}',
+            ].join('\n'),
             linkedFunctions: [],
             terminal: { kind: 'unavailable' },
           }
@@ -345,9 +355,28 @@ export const LargeArguments: Story = {
           ...request,
           arguments: JSON.stringify({
             to: 'owner@example.com',
+            options: { trackOpens: false, replyTo: 'billing@example.com' },
             lines: Array.from({ length: 80 }, (_, i) => `Invoice ${i + 1}`),
           }),
         },
+      },
+    },
+  },
+}
+/** Arguments that are not a JSON object stay one exact JSON block. */
+export const NonObjectArguments: Story = {
+  args: {
+    page: {
+      ...page,
+      selected: run.name,
+      selectedRow: run,
+      detail: {
+        kind: 'run',
+        run,
+        source: 'return null;',
+        linkedFunctions: [],
+        terminal: { kind: 'unavailable' },
+        request: { ...request, arguments: '["owner@example.com","INV-4171"]' },
       },
     },
   },
@@ -402,8 +431,8 @@ export const ParallelCalls: Story = {
   },
 }
 /**
- * Scrolled arguments pass under the sticky review header. The play function
- * scrolls the heading behind the header so Chromatic records that the header
+ * Scrolled review content passes under the sticky review header. The play function
+ * scrolls an argument label behind the header so Chromatic records that the header
  * hides it in each theme.
  */
 const reviewHeaderOverArguments: Story = {
@@ -437,7 +466,8 @@ const reviewHeaderOverArguments: Story = {
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body)
     const review = await body.findByRole('region', { name: `Review ${request.callPath}` })
-    const heading = within(review).getByRole('heading', { name: 'Arguments to review' })
+    // The field label sits above its tall value, so it scrolls fully under the header.
+    const heading = within(review).getByText('lines', { selector: 'dt' })
     const header = review.querySelector('header')!
     let port = heading.parentElement
     while (
@@ -450,7 +480,8 @@ const reviewHeaderOverArguments: Story = {
       port = port.parentElement
     if (!port) throw new Error('The review needs a scroll viewport')
     const scrollPort = port
-    // The header sticks only once the review scrolls, so measure again after each move.
+    // The header sticks only once the review scrolls, and the drawer animates in,
+    // so measure and probe again after each move.
     await waitFor(() => {
       const before = heading.getBoundingClientRect()
       const stuck = header.getBoundingClientRect()
@@ -459,10 +490,12 @@ const reviewHeaderOverArguments: Story = {
       const pinned = header.getBoundingClientRect()
       expect(behind.top).toBeGreaterThanOrEqual(pinned.top)
       expect(behind.bottom).toBeLessThanOrEqual(pinned.bottom)
+      const topmost = canvasElement.ownerDocument.elementFromPoint(
+        behind.left + behind.width / 2,
+        behind.top + behind.height / 2,
+      )
+      expect(header.contains(topmost)).toBe(true)
     })
-    const { left, top, width, height } = heading.getBoundingClientRect()
-    const topmost = canvasElement.ownerDocument.elementFromPoint(left + width / 2, top + height / 2)
-    await expect(header.contains(topmost)).toBe(true)
   },
 }
 export const ReviewHeaderOverArgumentsLight: Story = {

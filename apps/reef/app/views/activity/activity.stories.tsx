@@ -19,6 +19,59 @@ import type {
 const codeContaining = (text: string) => (_: string, element: Element | null) =>
   element?.textContent?.includes(text) ?? false
 
+/** Each panel header centres its icon (when it has one), its heading's first line, its status
+ * and its close control on one line, whether the heading wraps or not. */
+async function expectAlignedHeaders(dialog: HTMLElement) {
+  const centre = (element: Element) => {
+    const box = element.getBoundingClientRect()
+    return box.top + box.height / 2
+  }
+  const headers = [...dialog.querySelectorAll('header')].filter((header) =>
+    header.querySelector(':scope > div > h2, :scope > div > h3'),
+  )
+  await expect(headers.length).toBeGreaterThan(0)
+  for (const header of headers) {
+    const heading = header.querySelector('h2, h3')!
+    const style = getComputedStyle(heading)
+    const firstLine =
+      heading.getBoundingClientRect().top +
+      parseFloat(style.paddingTop) +
+      parseFloat(style.lineHeight) / 2
+    // The heading's own container is never a leading mark; only a sibling icon is.
+    const leadingIcon = header.firstElementChild!.contains(heading)
+      ? []
+      : [header.firstElementChild!]
+    const marks = [...leadingIcon, ...header.lastElementChild!.children]
+    for (const mark of marks)
+      await expect(Math.abs(centre(mark) - firstLine)).toBeLessThanOrEqual(1)
+  }
+}
+
+/** Reading the evidence never scrolls the decision out of the drawer. */
+async function expectPinnedFooter(dialog: HTMLElement, names: string[]) {
+  const controls = names.map((name) => within(dialog).getByRole('button', { name }))
+  await waitFor(() => expect(dialog.scrollHeight).toBeGreaterThan(dialog.clientHeight * 2))
+  const shown = () => {
+    const edge = dialog.getBoundingClientRect()
+    return controls.every((control) => {
+      const box = control.getBoundingClientRect()
+      return box.top >= edge.top && box.bottom <= edge.bottom
+    })
+  }
+  for (const fraction of [0, 0.5, 1]) {
+    dialog.scrollTop = (dialog.scrollHeight - dialog.clientHeight) * fraction
+    await waitFor(() => expect(shown()).toBe(true))
+  }
+  // Long content wraps or scrolls inside its block, never the drawer sideways.
+  await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+}
+
+/** A short phone screen: Chromatic reads `viewports`; the Vitest run reads the `viewport` global. */
+const shortScreen = { viewport: { value: 'mobile1', isRotated: false } }
+
+const openDrawer = async (canvasElement: HTMLElement, name?: string) =>
+  within(canvasElement.ownerDocument.body).findByRole('dialog', name ? { name } : undefined)
+
 const workspace = 'workspaces/finance'
 const task = `${workspace}/tasks/invoices`
 const run = `${workspace}/runs/8f3c`
@@ -40,6 +93,8 @@ const execution: ActivityRow & { kind: 'run' } = {
   name: run,
   workspace,
   actor: 'Collections agent',
+  actorLabel: 'You',
+  workspaceLabel: 'Finance',
   agent: '',
   task,
   state: 'running',
@@ -229,10 +284,11 @@ type Story = StoryObj<typeof meta>
 export const MixedHistory: Story = {
   play: async ({ canvasElement }) => {
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
-    await expect(drawer.getByText('Exact logical arguments')).toBeVisible()
+    await expect(drawer.getByText('Arguments (3)')).toBeVisible()
     await expect(drawer.getByRole('button', { name: 'Close details' })).toBeVisible()
     await expect(drawer.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     await expect(drawer.queryByText('Copy link')).not.toBeInTheDocument()
+    await expectAlignedHeaders(await openDrawer(canvasElement))
   },
 }
 export const CompletionFeedback: Story = {
@@ -248,6 +304,17 @@ export const CompletionFeedback: Story = {
           'I could not find an operation to export invoices.\nSearch returned no matching operations.',
       },
     },
+  },
+  // On a phone the Task heading wraps; its status and close control still centre on its first line.
+  globals: shortScreen,
+  play: async ({ canvasElement }) => {
+    const dialog = await openDrawer(canvasElement, 'Activity details')
+    const heading = within(dialog).getByRole('heading', { level: 2, name: goal.intent })
+    const line = parseFloat(getComputedStyle(heading).lineHeight)
+    await expect(heading.getBoundingClientRect().height).toBeGreaterThan(line * 2)
+    await expectAlignedHeaders(dialog)
+    // Nothing to decide leaves no footer bar.
+    for (const footer of dialog.querySelectorAll('footer')) await expect(footer).not.toBeVisible()
   },
 }
 export const StreamingHistory: Story = {
@@ -840,6 +907,9 @@ export const StandaloneExecution: Story = {
       },
     },
   },
+  play: async ({ canvasElement }) => {
+    await expectAlignedHeaders(await openDrawer(canvasElement, 'Activity details'))
+  },
 }
 export const RetainedSource: Story = {
   args: {
@@ -1028,6 +1098,18 @@ export const EmissionAfterFailure: Story = {
       },
     },
   },
+  play: async ({ canvasElement }) => {
+    const dialog = await openDrawer(canvasElement, 'Activity details')
+    await expectAlignedHeaders(dialog)
+    // The emission names its call and record and shows its exact value; no technical details.
+    await expect(
+      within(dialog).getByRole('heading', { level: 2, name: 'coral.emit #7' }),
+    ).toBeVisible()
+    await expect(within(dialog).getByRole('region', { name: 'Emitted value' })).toHaveTextContent(
+      '"groupedBy"',
+    )
+    await expect(dialog).not.toHaveTextContent('Technical details')
+  },
 }
 const searched: DiscoveryContext = {
   kind: 'search',
@@ -1080,12 +1162,28 @@ const openDetail = async (canvasElement: HTMLElement) =>
 export const HistoricalSearch: Story = {
   args: discovery(searched, stored.complete),
   play: async ({ canvasElement }) => {
+    await expectAlignedHeaders(await openDrawer(canvasElement))
     const opened = await openDetail(canvasElement)
-    // The intent and the query are different texts, each under its own label.
+    // The intent titles the panel; the query stays under its own label, once.
     await expect(
-      opened.getByText('Intent: Find the operation that merges a pull request'),
+      opened.getByRole('heading', {
+        level: 2,
+        name: 'Find the operation that merges a pull request',
+      }),
     ).toBeVisible()
+    await expect(opened.queryByText('Intent', { selector: 'dt' })).toBeNull()
     await expect(opened.getByText('Query').nextElementSibling).toHaveTextContent('“github pulls”')
+    // One Result heading leads coverage and results.
+    await expect(opened.getByRole('region', { name: 'Result' })).toContainElement(
+      opened.getByRole('list', { name: 'Results in rank order' }),
+    )
+    // What the search asked comes first, under Search.
+    const asked = opened.getByRole('region', { name: 'Search' })
+    await expect(
+      within(asked)
+        .getAllByRole('term')
+        .map((term) => term.textContent),
+    ).toEqual(['Query', 'Provider', 'Page'])
     // Every retriever searched, so the page states only that more results remain.
     const coverage = opened.getByRole('group', { name: 'Search coverage' })
     await expect(coverage).toHaveTextContent(/^More results were available after this page\.$/)
@@ -1093,8 +1191,10 @@ export const HistoricalSearch: Story = {
     await expect(results.getAllByRole('listitem')).toHaveLength(5)
     // A hit names no title, so its path under the namespace heads it.
     await expect(results.getByText('pulls.updateBranch')).toBeVisible()
-    // The stored response stays available, closed, after the results.
-    await expect(opened.getByText('Raw response').closest('details')).not.toHaveAttribute('open')
+    // A search shows only its results: no raw response and no technical details.
+    const dialog = await openDrawer(canvasElement)
+    await expect(dialog).not.toHaveTextContent('Raw response')
+    await expect(dialog).not.toHaveTextContent('Technical details')
   },
 }
 /** A page retained before Coral trimmed Search Hits, with titles, full coverage, and paths. */
@@ -1102,13 +1202,17 @@ export const HistoricalSearchUntrimmed: Story = {
   args: discovery(searched, stored.untrimmed),
   play: async ({ canvasElement }) => {
     const opened = await openDetail(canvasElement)
+    // Each badge states the count; a "+" says more matched than Coral returned.
     const coverage = within(opened.getByRole('group', { name: 'Search coverage' }))
-    await expect(coverage.getByText('100 found')).toBeVisible()
-    await expect(coverage.getByText('1 of 1 providers searched, more available')).toBeVisible()
+    await expect(coverage.getByText('100+ found')).toBeVisible()
     await expect(coverage.getByText('none match')).toBeVisible()
+    await expect(coverage.queryByText(/searched|more available/)).toBeNull()
+    // The "+" already says more remain, so the page does not repeat it.
+    await expect(coverage.queryByText(/after this page/)).toBeNull()
     const results = within(opened.getByRole('list', { name: 'Results in rank order' }))
     await expect(results.getByText('Update a pull request branch')).toBeVisible()
-    await expect(results.getByText('Matched declaration paths (1)')).toBeVisible()
+    // A retained page lists its matched declaration paths as a count on the compact row.
+    await expect(results.getByText('1 declaration path')).toBeVisible()
   },
 }
 export const HistoricalSearchPartialCoverage: Story = {
@@ -1139,12 +1243,20 @@ export const HistoricalSearchMixedResults: Story = {
     const results = opened.getByRole('list', { name: 'Results in rank order' })
     const [savedFunction, merge] = within(results).getAllByRole('listitem')
     await expect(within(savedFunction).getByText('saved function')).toBeVisible()
-    await expect(
-      within(savedFunction).getByRole('link', { name: 'Open current function' }),
-    ).toBeVisible()
-    for (const flag of ['approval required', 'destructive', 'not idempotent', 'tag: pulls'])
+    // An icon beside the call path opens today's function, named with its path.
+    const current = within(savedFunction).getByRole('link', {
+      name: /^Open current function coral\.functions\./,
+    })
+    await expect(current).toBeVisible()
+    await expect(current.getAttribute('href')).toMatch(/\/functions\//)
+    // Approval shows as the Providers page's named hand; other flags keep their text.
+    await expect(within(merge).getByRole('img', { name: /^Needs approval/ })).toBeVisible()
+    for (const flag of ['destructive', 'not idempotent', 'tag: pulls'])
       await expect(within(merge).getByText(flag)).toBeVisible()
-    await expect(within(merge).getByText('Guidance: API method documentation')).toBeVisible()
+    await expect(within(results).queryByText(/Matched declaration paths/)).toBeNull()
+    // A compact row: the catalog keeps the signature, description and guidance.
+    await expect(merge.querySelector('pre')).toBeNull()
+    await expect(merge).not.toHaveTextContent('Guidance:')
     // Reef says what Coral stored in its own words. Only the raw response keeps Coral's.
     for (const copy of [opened.getByRole('group', { name: 'Search coverage' }), results])
       await expect(copy).not.toHaveTextContent(/retriever|saved_function|results_found/)
@@ -1248,24 +1360,35 @@ export const PendingApproval: Story = {
         context: approvalContext,
         request: {
           kind: 'approval',
+          taskIntent: goal.intent,
           actionable: true,
           name: `${workspace}/approvals/mail`,
           run,
           invocation,
           provider: call.provider,
+          providerLabel: 'Mail',
           callPath: call.callPath,
           arguments: JSON.stringify({
             recipient: 'owner@example.com',
             lines: Array.from({ length: 80 }, (_, i) => `Invoice ${i + 1}`),
           }),
           state: 'pending',
-          deadline: at,
+          // A pending approval is still open, so its deadline is ahead of whoever views it.
+          deadline: new Date(Date.now() + 15 * 60_000).toISOString(),
           approver: '',
           decidedAt: null,
           comment: null,
         },
       },
     },
+  },
+  globals: shortScreen,
+  play: async ({ canvasElement, userEvent }) => {
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    await expectAlignedHeaders(dialog)
+    await userEvent.click(within(dialog).getByText('Technical details', { selector: 'summary' }))
+    await userEvent.click(within(dialog).getByText('Program body', { selector: 'summary' }))
+    await expectPinnedFooter(dialog, ['Deny this call', 'Approve this call'])
   },
 }
 export const ResolvedApproval: Story = {
@@ -1277,10 +1400,12 @@ export const ResolvedApproval: Story = {
         context: approvalContext,
         request: {
           kind: 'approval',
+          taskIntent: goal.intent,
           name: `${workspace}/approvals/mail`,
           run,
           invocation,
           provider: call.provider,
+          providerLabel: 'Mail',
           callPath: call.callPath,
           arguments: detail.arguments,
           state: 'approved',
@@ -1291,5 +1416,116 @@ export const ResolvedApproval: Story = {
         },
       },
     },
+  },
+}
+const connection = `${workspace}/accountConnections/linear`
+/** A Run that waits on your shared account connection, not on one call's approval. */
+export const PendingConnectionFooter: Story = {
+  globals: shortScreen,
+  parameters: { chromatic: { viewports: [390] } },
+  args: {
+    page: {
+      ...page,
+      selected: run,
+      selectedRow: execution,
+      detail: {
+        kind: 'run',
+        run: {
+          ...execution,
+          actionPage: {
+            total: '1',
+            next: '',
+            actions: [
+              {
+                kind: 'account_connection',
+                name: connection,
+                callPath: '',
+                providerLabel: 'Linear',
+                deadline: new Date(Date.now() + 15 * 60_000).toISOString(),
+              },
+            ],
+          },
+        },
+        submission: execution.submission,
+        request: {
+          kind: 'account_connection',
+          name: connection,
+          provider: `${workspace}/providers/linear`,
+          state: 'pending',
+          expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+        },
+        source: 'return null',
+        linkedFunctions: [],
+        terminal: { kind: 'unavailable' },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await expect(canvasElement.ownerDocument.defaultView!.innerHeight).toBeLessThanOrEqual(568)
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    // The Run's header and the shared connection's own header align alike.
+    await expectAlignedHeaders(dialog)
+    // A Run panel keeps no long retained source: the decision shows whole in its footer.
+    const edge = dialog.getBoundingClientRect()
+    for (const name of ['Decline', 'Connect Linear']) {
+      const control = within(dialog).getByRole('button', { name })
+      await expect(control.closest('footer')).not.toBeNull()
+      const box = control.getBoundingClientRect()
+      await expect(box.top >= edge.top && box.bottom <= edge.bottom).toBe(true)
+    }
+  },
+}
+/** A call selected on its own, beside the evidence and source of the Run that made it. */
+export const InvocationWithRunEvidence: Story = {
+  args: {
+    page: {
+      ...page,
+      detail: {
+        ...detail,
+        invocation: {
+          ...call,
+          state: 'ended',
+          outcome: 'upstream_outcome',
+          endedAt: at,
+          dispatchedAt: at,
+          waitingNanos: '0',
+          requiresAction: false,
+        },
+        requests: [],
+        result: { kind: 'upstream_outcome', value: '{"metadata":{"status":202}}' },
+        context: {
+          ...approvalContext,
+          run: { ...execution, state: 'failed', endedAt: at, requiresAction: false },
+          linkedFunctions: [
+            {
+              savedFunction: 'old-function-id',
+              path: 'billing.remind',
+              source: 'export default () => "snapshot"',
+            },
+          ],
+          terminal: {
+            kind: 'failed',
+            code: 'program_execution_failed',
+            message: 'The program failed after this call returned.',
+            error: null,
+          },
+        },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const drawer = within(
+      await within(canvasElement.ownerDocument.body).findByRole('dialog', {
+        name: 'Activity details',
+      }),
+    )
+    await expect(drawer.getByRole('heading', { level: 2, name: 'mail.send' })).toBeVisible()
+    await expectAlignedHeaders(await openDrawer(canvasElement, 'Activity details'))
+    const evidence = drawer.getByRole('region', { name: 'Run evidence' })
+    await expect(evidence).toHaveTextContent('The program failed after this call returned.')
+    await expect(drawer.getByText('Operation outcome', { selector: 'summary' })).toBeVisible()
+    await expect(
+      drawer.getByText('Accepted program source', { selector: 'summary' }),
+    ).not.toBeVisible()
   },
 }

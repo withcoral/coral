@@ -57,6 +57,26 @@ export const stickyHeader = style({
   alignItems: 'start',
 })
 
+// Decision controls at the end of a card.
+export const footer = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '12px',
+  justifyContent: 'flex-end',
+  minWidth: 0,
+})
+
+export const stickyFooter = style({
+  position: 'sticky',
+  bottom: 0,
+  zIndex: 1,
+  // Pinned content needs an opaque surface, like the sticky header.
+  background: theme.surface.floating,
+  borderTop: `1px solid ${theme.stroke.secondary}`,
+  paddingBlock: 12,
+})
+
 // Copy owns its case: interface words stay lowercase.
 export const title = style({
   flexShrink: 1,

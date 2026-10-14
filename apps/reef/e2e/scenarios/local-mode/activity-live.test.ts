@@ -89,14 +89,17 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
           await page.getByRole('button', { name: 'Deny this call', exact: true }).click()
           await page.getByText('Denied', { exact: true }).waitFor()
         } else {
-          await page.locator('summary').filter({ hasText: 'Technical details' }).click()
           await page.getByRole('button', { name: 'Cancel run', exact: true }).click()
           await page
             .getByRole('dialog', { name: 'Cancel this run?' })
             .getByRole('button', { name: 'Cancel run', exact: true })
             .click()
           // Run owns a five-second shutdown grace before terminal publication.
-          await page.getByText('Run state: canceled', { exact: true }).waitFor({ timeout: 10_000 })
+          await page
+            .getByRole('dialog', { name: 'Activity details' })
+            .locator('header')
+            .getByText('canceled', { exact: true })
+            .waitFor({ timeout: 10_000 })
         }
         await expect
           .poll(
@@ -111,13 +114,18 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
         `/${workspace.name}/activity?record=${encodeURIComponent(`${workspace.name}/tasks/${first.taskId()}`)}`,
       )
       await page.getByText('Local completion 🪸', { exact: true }).waitFor()
-      await page.getByText('Goal outcome: success', { exact: true }).waitFor()
+      // The header badge states the Task outcome above its feedback.
+      await page
+        .getByRole('dialog')
+        .locator('header')
+        .getByText('success', { exact: true })
+        .waitFor()
       // The open detail leaves the list usable: another goal replaces it in place.
       await page.getByRole('link', { name: 'Second local goal', exact: true }).click()
       const detail = page.getByRole('dialog', { name: 'Activity details' })
       await detail.getByRole('heading', { name: 'Second local goal', exact: true }).waitFor()
       expect(await page.getByRole('dialog').count()).toBe(1)
-      expect(await page.getByText('Completion feedback', { exact: true }).count()).toBe(0)
+      expect(await page.locator('dt:text-is("Feedback")').count()).toBe(0)
     })
   })
 })

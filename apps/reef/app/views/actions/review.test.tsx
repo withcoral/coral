@@ -1,12 +1,12 @@
 /** @vitest-environment happy-dom */
 
-import { act, screen } from '@testing-library/react'
+import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect, useState } from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { renderRoute } from '@/test-support/route'
-import { approvalRequest as approval } from '../activity/fixtures'
+import { approvalContext, approvalRequest as approval } from '../activity/fixtures'
 import { ActivityArchivedContext } from '../activity/live'
 import { ActionReviewSession, ApprovalReview } from './review'
 
@@ -30,7 +30,11 @@ function renderReview() {
     }, [])
     return (
       <ActionReviewSession request={request}>
-        {request ? <ApprovalReview detail={request} /> : <p>Reconnecting to the exact review.</p>}
+        {request ? (
+          <ApprovalReview detail={request} context={approvalContext} />
+        ) : (
+          <p>Reconnecting to the exact review.</p>
+        )}
       </ActionReviewSession>
     )
   }
@@ -266,19 +270,155 @@ describe('exact approval review', () => {
   })
 })
 
+/** The disclosure whose summary reads `title`. */
+function disclosure(title: string) {
+  const summary = screen.getByText(title, { selector: 'summary' })
+  return summary.closest('details')!
+}
+/** Label and value of each row in `scope`, in order. */
+function rows(scope: HTMLElement) {
+  const terms = within(scope).queryAllByRole('term')
+  const values = within(scope).queryAllByRole('definition')
+  return terms.map((term, index) => [term.textContent, values[index].textContent])
+}
+
+function renderStatic(detail: Approval) {
+  return renderRoute(
+    <ActionReviewSession request={detail}>
+      <ApprovalReview detail={detail} context={approvalContext} />
+    </ActionReviewSession>,
+    { entry: '/activity', csrf: 'test-csrf' },
+  )
+}
+
+describe('approval review layout', () => {
+  it('orients the reviewer before the exact arguments and keeps supporting detail collapsed', () => {
+    renderStatic({ ...approval, providerLabel: 'Mail', taskIntent: 'Chase overdue invoices' })
+    const review = screen.getByRole('region', { name: `Review ${approval.callPath}` })
+    expect(within(review).getByRole('heading', { name: approval.callPath })).toBeInTheDocument()
+    expect(within(review).getByText('approval request')).toBeInTheDocument()
+    expect(review).toHaveTextContent('Provider: Mail')
+    expect(review).toHaveTextContent('Approval required')
+    expect(rows(screen.getByRole('region', { name: 'Context' }))).toEqual([
+      ['Task intent', 'Chase overdue invoices'],
+      ['Exec intent', 'Send invoice reminders'],
+      ['Requested by', 'Collections agent · Finance'],
+    ])
+    expect(disclosure('Arguments (1)')).toHaveAttribute('open')
+    expect(disclosure('Program body')).not.toHaveAttribute('open')
+    expect(disclosure('Program body')).toHaveTextContent(approvalContext.source)
+    expect(disclosure('Add a comment')).not.toHaveAttribute('open')
+    expect(rows(disclosure('Technical details'))).toEqual([
+      ['Workspace', approvalContext.run.workspace],
+      ['Provider', approval.provider],
+      ['Deadline', approval.deadline],
+      ['Approval request ID', approval.name],
+    ])
+    expect(review).not.toHaveTextContent('Approval applies only to this call')
+    // The order a reviewer reads: why, what exactly, then how to decide.
+    const order = ['Context', 'Arguments (1)', 'Program body', 'Technical details', 'Add a comment']
+    const positions = order.map((text) => review.textContent!.indexOf(text))
+    expect(positions).toEqual(positions.toSorted((a, b) => a - b))
+    expect(review.textContent!.indexOf('Add a comment')).toBeLessThan(
+      review.textContent!.indexOf('Approve this call'),
+    )
+  })
+
+  it('omits context it does not have instead of inventing it', () => {
+    renderStatic({ ...approval, taskIntent: undefined })
+    expect(rows(screen.getByRole('region', { name: 'Context' }))).toEqual([
+      ['Exec intent', 'Send invoice reminders'],
+      ['Requested by', 'Collections agent · Finance'],
+    ])
+  })
+
+  it.each([
+    [
+      'an object as one row per field',
+      '{"to":"owner@example.com","cc":["a@example.com"],"limit":2,"draft":false}',
+      'Arguments (4)',
+      [
+        ['to', '"owner@example.com"'],
+        ['cc', '["a@example.com"]'],
+        ['limit', '2'],
+        ['draft', 'false'],
+      ],
+    ],
+    [
+      'strings apart from the values they spell',
+      '{"limit":"2","note":""}',
+      'Arguments (2)',
+      [
+        ['limit', '"2"'],
+        ['note', '""'],
+      ],
+    ],
+    ['an empty object without rows', '{}', 'Arguments (0)', []],
+    ['an array as exact JSON', '["owner@example.com",2]', 'Arguments', []],
+    ['a scalar as exact JSON', '"owner@example.com"', 'Arguments', []],
+    ['invalid JSON unchanged', '{"to":', 'Arguments', []],
+    // Parsing would round the number or drop the first key, so the rows would not be exact.
+    ['an imprecise number as exact JSON', '{"id":12345678901234567890}', 'Arguments', []],
+    ['a duplicate key as exact JSON', '{"to":"a","to":"b"}', 'Arguments', []],
+  ])('shows %s', (_label, value, title, expected) => {
+    renderStatic({ ...approval, arguments: value })
+    const section = disclosure(title)
+    expect(section).toHaveAttribute('open')
+    expect(rows(section)).toEqual(expected)
+    // The fallback formats whitespace only, so the original tokens remain.
+    if (value === '{}') expect(section).toHaveTextContent('This call has no arguments.')
+    else if (!expected.length)
+      expect(section.textContent!.replace(/\s/g, '')).toContain(value.replace(/\s/g, ''))
+  })
+
+  it.each([
+    ['approved', true, 'Approved'],
+    ['declined', true, 'Denied'],
+    ['expired', false, 'Expired'],
+    ['pending', false, 'Approval unavailable'],
+  ])('settles a %s review without decision controls', (state, decided, label) => {
+    renderStatic({
+      ...approval,
+      state,
+      actionable: false,
+      ...(decided && {
+        approver: 'owner',
+        approverLabel: 'You',
+        decidedAt: '2026-09-22T09:01:00Z',
+        comment: 'Checked the recipient.',
+      }),
+    })
+    expect(statuses()).toEqual([label])
+    expect(screen.queryByText('Approval required')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /this call/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Add a comment')).not.toBeInTheDocument()
+    expect(screen.queryByText('Program body')).not.toBeInTheDocument()
+    const decision = screen.queryByRole('region', { name: 'Decision' })
+    if (decided)
+      expect(rows(decision!)).toEqual([
+        ['Reviewed by', 'You'],
+        ['Decided', '2026-09-22T09:01:00Z'],
+        ['Comment', 'Checked the recipient.'],
+      ])
+    else expect(decision).not.toBeInTheDocument()
+  })
+})
+
 // Catches: an archived workspace offering a decision that Coral refuses.
 it('an archived workspace shows the arguments but tells you to restore it before you decide', () => {
   renderRoute(
     <ActivityArchivedContext value="member">
       <ActionReviewSession request={approval}>
-        <ApprovalReview detail={approval} />
+        <ApprovalReview detail={approval} context={approvalContext} />
       </ActionReviewSession>
     </ActivityArchivedContext>,
     { entry: '/activity?record=one&request=one', csrf: 'test-csrf' },
   )
-  expect(screen.getByRole('heading', { name: 'Arguments to review' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: approval.callPath })).toBeInTheDocument()
+  expect(disclosure('Arguments (1)')).toHaveAttribute('open')
   expect(
     screen.getByText('Ask a workspace owner to restore this workspace. Then decide.'),
   ).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /this call$/ })).toBeNull()
+  expect(screen.queryByText('Add a comment')).toBeNull()
 })

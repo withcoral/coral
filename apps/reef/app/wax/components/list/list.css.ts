@@ -13,6 +13,10 @@ export const container = style({
   display: 'flex',
   flexDirection: 'column',
   gap: '16px',
+  // An `ol` or `ul` container lays out its items like a `div`.
+  listStyle: 'none',
+  margin: 0,
+  padding: 0,
 })
 
 export const item = style({

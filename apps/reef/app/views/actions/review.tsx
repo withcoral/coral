@@ -11,12 +11,16 @@ import { useBeforeUnload, useBlocker, useFetcher } from 'react-router'
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
 import * as Dialog from '@/wax/components/dialog'
 import { Disclosure } from '@/wax/components/disclosure'
-import * as Card from '@/wax/components/card'
 import { CodeBlock } from '@/wax/components/code-block'
 import { Deadline } from '@/wax/components/deadline'
-import type { RequestDetail } from '../activity/types'
+import * as DescriptionList from '@/wax/components/description-list'
+import type { IconName, IconPlateTone } from '@/wax/components/icon'
+import { Pill } from '@/wax/components/pill'
+import type { RequestDetail, RunDetail } from '../activity/types'
 import { restoreFirst, useActivityArchived, useActivityConnected } from '../activity/live'
 import { settledApproval } from './approval-state'
+import { PanelFooter, PanelHeader } from '../activity/panel'
+import { Arguments } from './arguments'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action } from '@/routes/activity-resolve'
 import * as styles from './actions.css'
@@ -127,7 +131,16 @@ export function useUnsentComment() {
 }
 
 /** One exact call, one draft, one durable decision in Activity. */
-export function ApprovalReview({ detail }: { detail: Approval }) {
+export function ApprovalReview({
+  detail,
+  context,
+  runControls,
+}: {
+  detail: Approval
+  context: RunDetail
+  /** Run-level links and controls, shown after the request's technical details. */
+  runControls?: ReactNode
+}) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
   const archived = useActivityArchived()
@@ -137,6 +150,7 @@ export function ApprovalReview({ detail }: { detail: Approval }) {
   const comment = session.draft.name === detail.name ? session.draft.comment : ''
   const setComment = (value: string) => session.update({ name: detail.name, comment: value })
   const id = useId()
+  const formId = `${id}-decision`
   const available = detail.actionable === true
   const pending = fetcher.state !== 'idle'
   // `in` narrowing leaves `state` unknown on the error and cancel results.
@@ -152,40 +166,84 @@ export function ApprovalReview({ detail }: { detail: Approval }) {
   }, [settled, settle, detail.name])
   const commentInvalid = new TextEncoder().encode(comment).length > 1024 || comment.includes('\0')
   const state = winning ?? detail.state
-  const stateLabel = settledApproval(state)?.label ?? 'Approval unavailable'
+  const deciding = available && !settled
+  const tone = deciding ? 'amber' : (tones[state] ?? 'gray')
+  const run = context.run
+  const execIntent = context.submission?.intent || run.intent
   return (
     <section className={styles.review} aria-label={`Review ${detail.callPath}`}>
-      <Card.Header sticky>
-        <div className={styles.summary}>
-          <Typography.HeadingSmall as="h3" className={styles.title}>
-            {detail.callPath}
-          </Typography.HeadingSmall>
-          <Typography.BodySmall>
-            {detail.providerLabel || 'Provider unavailable'}
-          </Typography.BodySmall>
-          {state !== 'pending' && (
-            <Typography.BodyStrong role="status">{stateLabel}</Typography.BodyStrong>
-          )}
-          {state === 'pending' && !available && (
-            <Typography.BodyStrong role="status">Approval unavailable</Typography.BodyStrong>
-          )}
-          {available && !settled && <Deadline at={detail.deadline} />}
-        </div>
-      </Card.Header>
-      <Typography.HeadingSmall as="h4">Arguments to review</Typography.HeadingSmall>
-      <CodeBlock value={detail.arguments} format="json" />
-      {detail.approver && (
-        <Typography.BodySmall>
-          Reviewed by: {detail.approverLabel || 'Previous reviewer'}
-        </Typography.BodySmall>
+      <PanelHeader
+        icon={plateIcons[tone]}
+        tone={tone}
+        heading="h3"
+        title={detail.callPath}
+        details={
+          <>
+            <Typography.BodySmall variant="tertiary">approval request</Typography.BodySmall>
+            <Typography.BodySmall variant="tertiary">
+              Provider: {detail.providerLabel || 'unavailable'}
+            </Typography.BodySmall>
+            {deciding && <Deadline at={detail.deadline} variant="tertiary" />}
+          </>
+        }
+        status={
+          deciding ? (
+            <Pill color={tone}>Approval required</Pill>
+          ) : (
+            <Pill color={tone} role="status">
+              {settledApproval(state)?.label ?? 'Approval unavailable'}
+            </Pill>
+          )
+        }
+      />
+      <DescriptionList.List title="Context">
+        {detail.taskIntent && (
+          <DescriptionList.Row label="Task intent">{detail.taskIntent}</DescriptionList.Row>
+        )}
+        {execIntent && <DescriptionList.Row label="Exec intent">{execIntent}</DescriptionList.Row>}
+        <DescriptionList.Row label="Requested by">
+          {run.actorLabel || (run.agent ? 'Agent unavailable' : 'You')} ·{' '}
+          {run.workspaceLabel || 'Workspace unavailable'}
+        </DescriptionList.Row>
+      </DescriptionList.List>
+      <Arguments source={detail.arguments} />
+      {deciding && (
+        <Disclosure title="Program body">
+          <CodeBlock value={context.source} format="typescript" />
+        </Disclosure>
       )}
-      {detail.comment !== null && <CodeBlock value={detail.comment} />}
-      <fetcher.Form method="post" action="/activity/resolve" className={styles.stack}>
+      <Disclosure title="Technical details">
+        <DescriptionList.List>
+          <DescriptionList.Row label="Workspace">{run.workspace}</DescriptionList.Row>
+          <DescriptionList.Row label="Provider">{detail.provider}</DescriptionList.Row>
+          <DescriptionList.Row label="Deadline">{detail.deadline}</DescriptionList.Row>
+          <DescriptionList.Row label="Approval request ID">{detail.name}</DescriptionList.Row>
+        </DescriptionList.List>
+        {runControls && <div className={styles.controls}>{runControls}</div>}
+      </Disclosure>
+      {!deciding && (detail.approver || detail.decidedAt || detail.comment !== null) && (
+        <DescriptionList.List title="Decision">
+          {detail.approver && (
+            <DescriptionList.Row label="Reviewed by">
+              {detail.approverLabel || 'Previous reviewer'}
+            </DescriptionList.Row>
+          )}
+          {detail.decidedAt && (
+            <DescriptionList.Row label="Decided">
+              <time dateTime={detail.decidedAt}>{detail.decidedAt}</time>
+            </DescriptionList.Row>
+          )}
+          {detail.comment !== null && (
+            <DescriptionList.Row label="Comment">{detail.comment}</DescriptionList.Row>
+          )}
+        </DescriptionList.List>
+      )}
+      <fetcher.Form id={formId} method="post" action="/activity/resolve" className={styles.stack}>
         <input type="hidden" name="csrf" value={csrf} />
         <input type="hidden" name="name" value={detail.name} />
-        {available && !settled && archived ? (
+        {deciding && archived ? (
           <Typography.Body role="status">{restoreFirst(archived, 'decide')}</Typography.Body>
-        ) : available && !settled ? (
+        ) : deciding ? (
           <>
             <Disclosure title="Add a comment" open={Boolean(comment)}>
               <Typography.BodySmall as="label" htmlFor={id}>
@@ -208,37 +266,50 @@ export function ApprovalReview({ detail }: { detail: Approval }) {
                 Reconnecting. Wait for the current approval state before you decide.
               </Banner>
             )}
-            <div className={styles.actions}>
-              <Button.TextButton
-                type="submit"
-                name="intent"
-                value="decline"
-                variant="destructive"
-                disabled={pending || !connected || commentInvalid}
-              >
-                {pending && fetcher.formData?.get('intent') === 'decline'
-                  ? 'Denying…'
-                  : 'Deny this call'}
-              </Button.TextButton>
-              <Button.TextButton
-                type="submit"
-                name="intent"
-                value="approve"
-                disabled={pending || !connected || commentInvalid}
-              >
-                {pending && fetcher.formData?.get('intent') === 'approve'
-                  ? 'Approving…'
-                  : 'Approve this call'}
-              </Button.TextButton>
-            </div>
           </>
         ) : null}
         {fetcher.data && 'error' in fetcher.data && (
           <Banner variant="error">{fetcher.data.error}</Banner>
         )}
       </fetcher.Form>
+      {/* The decision stays in view while you read. The buttons submit the form above. */}
+      {deciding && !archived && (
+        <PanelFooter>
+          <Button.TextButton
+            type="submit"
+            form={formId}
+            name="intent"
+            value="decline"
+            variant="destructive"
+            disabled={pending || !connected || commentInvalid}
+          >
+            {pending && fetcher.formData?.get('intent') === 'decline'
+              ? 'Denying…'
+              : 'Deny this call'}
+          </Button.TextButton>
+          <Button.TextButton
+            type="submit"
+            form={formId}
+            name="intent"
+            value="approve"
+            disabled={pending || !connected || commentInvalid}
+          >
+            {pending && fetcher.formData?.get('intent') === 'approve'
+              ? 'Approving…'
+              : 'Approve this call'}
+          </Button.TextButton>
+        </PanelFooter>
+      )}
     </section>
   )
+}
+
+const tones: Record<string, IconPlateTone> = { approved: 'green', declined: 'red' }
+const plateIcons: Record<IconPlateTone, IconName> = {
+  amber: 'ShieldAlert',
+  green: 'ShieldCheck',
+  red: 'ShieldX',
+  gray: 'Shield',
 }
 
 /** Approves or denies one exact request from the queue without opening its review.
@@ -283,26 +354,14 @@ export function QuickDecision({ name, label }: { name: string; label: string }) 
   )
 }
 
-/** Evidence shared by Run and operation inspection, inside their technical disclosure. */
-export function ApprovalTechnicalDetails({ detail }: { detail: Approval }) {
-  return (
-    <>
-      <Typography.BodySmall>
-        Approval applies only to this call. Coral checks access again before it sends the call.
-      </Typography.BodySmall>
-      <Typography.Code className={styles.technical}>{detail.name}</Typography.Code>
-      <Typography.BodySmall>provider: {detail.provider}</Typography.BodySmall>
-      <Typography.BodySmall>Deadline: {detail.deadline}</Typography.BodySmall>
-      {detail.decidedAt && (
-        <Typography.BodySmall as="time" dateTime={detail.decidedAt}>
-          Decided: {detail.decidedAt}
-        </Typography.BodySmall>
-      )}
-    </>
-  )
-}
-
-export function CancelRun({ name }: { name: string }) {
+/** Cancels the whole Run after a confirmation. A Run panel shows it as a destructive button. */
+export function CancelRun({
+  name,
+  variant = 'bare',
+}: {
+  name: string
+  variant?: 'bare' | 'destructive'
+}) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
   const fetcher = useFetcher<typeof action>()
@@ -310,7 +369,7 @@ export function CancelRun({ name }: { name: string }) {
   return (
     <>
       <Button.TextButton
-        variant="bare"
+        variant={variant}
         disabled={!connected || fetcher.state !== 'idle'}
         onClick={() => setConfirming(true)}
       >
