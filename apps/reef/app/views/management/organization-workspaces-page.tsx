@@ -1,11 +1,12 @@
-import { useDeferredValue, useId, useRef, useState } from 'react'
+import { useDeferredValue, useRef, useState } from 'react'
 import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
-import { Button, Combobox, Menu, Table, Typography } from '@/wax/components'
+import { Button, Menu, Table } from '@/wax/components'
 import { Pill } from '@/wax/components/pill'
 import { TruncatedList } from '@/components/truncated-list'
 import { StatePill } from './access'
 import { ActionDialog } from './forms'
 import { ManagementLayout, trail } from './layout'
+import { PeopleField } from './people-field'
 import { personLabel, personName } from './person'
 import type {
   FormContext,
@@ -13,7 +14,6 @@ import type {
   OrganizationWorkspaceView,
   OwnerView,
 } from './types'
-import * as styles from './management.css'
 
 type StateFilter = 'all' | OrganizationWorkspaceView['state']
 
@@ -241,98 +241,19 @@ function WorkspaceActions({
         }}
       >
         {action === 'assign' && (
-          <OwnersField
+          <PeopleField
+            name="owner"
             // People who already own the workspace are not offered.
-            people={candidates.filter((c) => !w.owners.some((o) => o.user === c.profile.user))}
+            people={candidates
+              .filter((c) => !w.owners.some((o) => o.user === c.profile.user))
+              .map((c) => ({ value: c.name, person: c.profile }))}
             currentUser={currentUser}
+            placeholder="Search people"
             value={owners}
             onChange={setOwners}
           />
         )}
       </ActionDialog>
     </>
-  )
-}
-
-/**
- * Picks organization members by name or email. The value is their
- * organization membership names.
- */
-function OwnersField({
-  people,
-  currentUser,
-  value,
-  onChange,
-}: {
-  people: OrganizationPersonView[]
-  currentUser: string
-  value: string[]
-  onChange: (owners: string[]) => void
-}) {
-  const id = useId()
-  const [query, setQuery] = useState('')
-  // The combobox filters on its item strings, so each holds the name and email.
-  const item = (p: OrganizationPersonView) =>
-    p.profile.email
-      ? `${personName(p.profile, currentUser)} (${p.profile.email})`
-      : personName(p.profile, currentUser)
-  const byItem = new Map(people.map((p) => [item(p), p]))
-  const byName = new Map(people.map((p) => [p.name, p]))
-  return (
-    <div className={styles.addField}>
-      <Typography.BodySmallStrong as="label" htmlFor={id}>
-        People
-      </Typography.BodySmallStrong>
-      {value.map((owner) => (
-        <input key={owner} type="hidden" name="owner" value={owner} />
-      ))}
-      <Combobox.Root
-        autoHighlight
-        hideWhenEmpty
-        items={[...byItem.keys()]}
-        multiple
-        inputValue={query}
-        onInputValueChange={setQuery}
-        value={value.flatMap((owner) => {
-          const p = byName.get(owner)
-          return p ? [item(p)] : []
-        })}
-        onValueChange={(next) => {
-          onChange((Array.isArray(next) ? next : []).flatMap((i) => byItem.get(i)?.name ?? []))
-          setQuery('')
-        }}
-      >
-        <Combobox.InputGroup>
-          <Combobox.Chips>
-            <Combobox.Value>
-              {(chosen) =>
-                Array.isArray(chosen)
-                  ? chosen.map((i) => {
-                      const p = byItem.get(i)
-                      const name = p ? personName(p.profile, currentUser) : i
-                      return (
-                        <Combobox.Chip key={i}>
-                          <Combobox.ChipLabel>{name}</Combobox.ChipLabel>
-                          <Combobox.ChipRemove aria-label={`Remove ${name}`} />
-                        </Combobox.Chip>
-                      )
-                    })
-                  : null
-              }
-            </Combobox.Value>
-            <Combobox.Input id={id} bare placeholder={value.length > 0 ? '' : 'Search people'} />
-          </Combobox.Chips>
-        </Combobox.InputGroup>
-        <Combobox.Content>
-          <Combobox.List>
-            {(i: string) => (
-              <Combobox.Item key={i} value={i}>
-                {i}
-              </Combobox.Item>
-            )}
-          </Combobox.List>
-        </Combobox.Content>
-      </Combobox.Root>
-    </div>
   )
 }

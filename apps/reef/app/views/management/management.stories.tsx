@@ -898,6 +898,10 @@ export const AssignWorkspaceOwners: Story = {
       'Sam Rivera (sam@example.com)',
       'Riley Park (riley@example.com)',
     ])
+    // Only organization members can own a workspace, so a typed email is not offered.
+    await userEvent.keyboard('new@example.com')
+    await expect(body.queryByRole('option', { name: /new@example\.com/ })).not.toBeInTheDocument()
+    await userEvent.clear(dialog.getByRole('combobox', { name: 'People' }))
     await userEvent.keyboard('{Escape}')
     await pickPerson(dialog, canvasElement, /Sam Rivera/)
     await pickPerson(dialog, canvasElement, /Riley Park/)
