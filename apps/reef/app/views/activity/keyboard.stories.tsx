@@ -355,9 +355,20 @@ export const KeysDuringLoads: Story = {
         await heading(rail()!, 'Task 1')
         await press('{ArrowDown}')
         await heading(rail()!, 'Task 2')
-        // Space collapses Task 2 again, so the next pass starts from the same list.
-        await press(' ')
+        // The same, with ↓ and Space in one burst: Space replaces the step before
+        // the router reports it. Space toggles Task 2 back, so the next pass starts
+        // from the same list.
+        await press('{Escape}')
+        await waitFor(() => expect(rail()).toBeNull())
+        await open('Task 1')
+        loads.hold()
+        await press('{ArrowDown} ')
+        loads.open()
         await waitFor(() => expect(address()).not.toContain('expand='))
+        await waitFor(() => expect(cursor()).toBe('Task 1'))
+        await heading(rail()!, 'Task 1')
+        await press('{ArrowDown}')
+        await heading(rail()!, 'Task 2')
         await press('{Escape}')
         await waitFor(() => expect(rail()).toBeNull())
       } finally {

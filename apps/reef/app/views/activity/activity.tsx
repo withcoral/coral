@@ -537,20 +537,14 @@ export function Activity({
     if (stop?.kind !== 'record') setCursor(null)
     else if (stop.row.name !== cursor.name) setCursor(stopPosition(stop))
   }
-  // A key step, from the record the rail shows to where it is going. The router
+  // A key step, from the address the rail shows to where it is going. The router
   // reports it pending only later, so the next key starts from here meanwhile.
-  // Once the router has reported it, the step ends with its navigation: it lands,
-  // or another navigation, a failed load or a close cancels it.
-  const [keyStep, setKeyStep] = useState<{
-    from: string
-    to: StopPosition
-    seen: boolean
-  } | null>(null)
-  const stepPending = transition.state !== 'idle' && pending === keyStep?.to.name
-  if (keyStep && !open) setKeyStep(null)
-  else if (keyStep && stepPending && !keyStep.seen) setKeyStep({ ...keyStep, seen: true })
-  else if (keyStep?.seen && !stepPending) setKeyStep(null)
-  const stepping = open && keyStep?.from === shownRecord ? keyStep.to : null
+  // It holds only while that address is current: any navigation that commits,
+  // the step's own included, ends it, and so does any other navigation the rail
+  // starts, or a close.
+  const [keyStep, setKeyStep] = useState<{ at: string; to: StopPosition } | null>(null)
+  if (keyStep && (!open || keyStep.at !== locationKey)) setKeyStep(null)
+  const stepping = open && keyStep?.at === locationKey ? keyStep.to : null
   const position: StopPosition | null = !open
     ? cursor
     : (stepping ?? (pendingStop?.kind === 'record' ? stopPosition(pendingStop) : shownPosition))
@@ -580,6 +574,7 @@ export function Activity({
     activeStop,
     full,
     unsent,
+    locationKey,
     expanded: page.expanded,
     selectedRow: page.selectedRow,
     close,
@@ -629,7 +624,7 @@ export function Activity({
         current.open &&
         current.expanded.includes(name) &&
         Boolean(current.shownPosition?.parents.includes(name))
-      if (hides) setKeyStep(null)
+      setKeyStep(null)
       void current.navigate(hides ? current.nav.collapseHref(name) : current.nav.toggleHref(name), {
         preventScrollReset: true,
         replace: keyboard && hides,
@@ -650,8 +645,7 @@ export function Activity({
       // With an unsent comment the review asks first; the table and rail stay put.
       if (!current.unsent) setReveal((value) => ({ ...value, record: next.row.name }))
       if (!current.open) return setCursor(target)
-      if (!current.unsent && current.shownRecord)
-        setKeyStep({ from: current.shownRecord, to: target, seen: false })
+      if (!current.unsent) setKeyStep({ at: current.locationKey, to: target })
       void current.navigate(current.nav.recordHref(next.row.name), {
         preventScrollReset: true,
         replace: true,

@@ -151,9 +151,16 @@ async function surface(canvasElement: HTMLElement) {
   const link = (label: string) => within(table).getByRole('link', { name: label })
   const row = (label: string) => link(label).closest<HTMLElement>('[role="row"]')!
   return {
-    /** Focus rests on the table itself, and its cursor row is the record's. */
-    focusedOn: (label: string) =>
-      document.activeElement === table && row(label).hasAttribute('data-active'),
+    /** Where focus rests, and the record the table's cursor row shows: "table on Task 1". */
+    focus: () => {
+      const focused = document.activeElement
+      const where =
+        focused === table
+          ? 'table'
+          : (focused?.getAttribute('aria-label') ?? focused?.textContent ?? 'nothing')
+      const cursor = table.querySelector('[data-active] a[href]')?.textContent ?? 'no row'
+      return `${where} on ${cursor}`
+    },
     canvas,
     screen,
     table,
@@ -191,7 +198,7 @@ async function quiet(canvasElement: HTMLElement) {
 export const PointerAndHistory: Story = {
   play: async ({ canvasElement, userEvent }) => {
     loads.open()
-    const { canvas, screen, table, link, row, address, rail, heading, focusedOn } =
+    const { canvas, screen, table, link, row, address, rail, heading, focus } =
       await surface(canvasElement)
     await userEvent.click(link('Task 1'))
     const opened = await screen.findByRole('dialog', { name: 'Activity details' })
@@ -202,12 +209,12 @@ export const PointerAndHistory: Story = {
     await userEvent.click(link('Task 2'))
     await heading(opened, 'Task 2')
     await expect(rail()).toBe(opened)
-    await waitFor(() => expect(focusedOn('Task 2')).toBe(true))
+    await waitFor(() => expect(focus()).toBe('table on Task 2'))
     // A click on the row outside its link does the same.
     await userEvent.click(within(row('Task 3')).getAllByRole('cell')[0])
     await heading(opened, 'Task 3')
     await expect(rail()).toBe(opened)
-    await waitFor(() => expect(focusedOn('Task 3')).toBe(true))
+    await waitFor(() => expect(focus()).toBe('table on Task 3'))
 
     // The open record does nothing: no load, and no history entry.
     const selected = address()
@@ -237,7 +244,7 @@ export const PointerAndHistory: Story = {
 
     // Tab follows the document: from the table into the rail and back.
     await userEvent.click(link('Task 1'))
-    await waitFor(() => expect(focusedOn('Task 1')).toBe(true))
+    await waitFor(() => expect(focus()).toBe('table on Task 1'))
     const close = within(reopened).getByRole('button', { name: 'Close details' })
     for (let step = 0; step < 20 && table.contains(document.activeElement); step++)
       await userEvent.tab()
@@ -338,7 +345,7 @@ export const LoadingAndClosing: Story = {
 export const LinkClickFocus: Story = {
   play: async ({ canvasElement }) => {
     loads.open()
-    const { screen, link, shows, focusedOn } = await surface(canvasElement)
+    const { screen, link, shows, focus } = await surface(canvasElement)
     link('Task 1').click()
     await shows('Task 1')
     const opened = screen.getByRole('dialog', { name: 'Activity details' })
@@ -348,7 +355,7 @@ export const LinkClickFocus: Story = {
     // Picking another record leaves focus on the table, on its row, whatever the browser does.
     link('Task 2').click()
     await shows('Task 2')
-    await waitFor(() => expect(focusedOn('Task 2')).toBe(true))
+    await waitFor(() => expect(focus()).toBe('table on Task 2'))
   },
 }
 
@@ -503,7 +510,7 @@ export const UnsentComment: Story = {
   },
   play: async ({ canvasElement, userEvent }) => {
     loads.open()
-    const { screen, link, address, rail, heading, focusedOn } = await surface(canvasElement)
+    const { screen, link, address, rail, heading, focus } = await surface(canvasElement)
     const review = await screen.findByRole('dialog', { name: 'Activity details' })
     const comment = () => openCommentBox(review, userEvent)
     const confirm = () => screen.findByRole('dialog', { name: 'Discard your comment?' })
@@ -527,7 +534,7 @@ export const UnsentComment: Story = {
     await expect(await comment()).toHaveValue('Check the recipient')
     await expect(address()).toBe(reviewing)
     // Focus is back on the table, whose cursor row is still the record under review.
-    await waitFor(() => expect(focusedOn('Reminder run')).toBe(true))
+    await waitFor(() => expect(focus()).toBe('table on Reminder run'))
     // Discard opens the record in the same rail.
     await userEvent.click(link('Task 1'))
     await choose('Discard comment')
