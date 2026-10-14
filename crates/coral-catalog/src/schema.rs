@@ -806,11 +806,12 @@ impl<'a> TypeScriptProjector<'a> {
         }
         let object = schema.as_object().ok_or_else(invalid_schema)?;
         if !self.graph.semantics().nullable_applies()
-            && object.get("nullable").and_then(Value::as_bool) == Some(true)
+            && declares_nullable(object)
+            && !type_admits_null(object)
         {
             self.warn(
                 "nullable_ignored",
-                "nullable has an effect only in OpenAPI 3.0; include null in type instead",
+                "nullable has no effect in JSON Schema; include null in type instead",
             );
         }
         if let Some(reference) = object.get("$ref") {
@@ -881,7 +882,7 @@ impl<'a> TypeScriptProjector<'a> {
                     .iter()
                     .map(|branch| self.project_schema(branch, direction))
                     .collect::<Result<Vec<_>, _>>()
-                    .map(|types| format!("({})", types.join(" | ")));
+                    .map(|types| self.with_nullable(object, format!("({})", types.join(" | "))));
             }
         }
         if let Some(branches) = object.get("allOf") {
@@ -893,7 +894,7 @@ impl<'a> TypeScriptProjector<'a> {
                 .iter()
                 .map(|branch| self.project_schema(branch, direction))
                 .collect::<Result<Vec<_>, _>>()
-                .map(|types| format!("({})", types.join(" & ")));
+                .map(|types| self.with_nullable(object, format!("({})", types.join(" & "))));
         }
         if object.contains_key("not")
             || object.contains_key("if")
@@ -1135,7 +1136,7 @@ impl<'a> TypeScriptProjector<'a> {
 
     fn with_nullable(&self, schema: &Map<String, Value>, projected: String) -> String {
         if self.graph.semantics().nullable_applies()
-            && schema.get("nullable").and_then(Value::as_bool) == Some(true)
+            && declares_nullable(schema)
             && !projected.split(" | ").any(|kind| kind == "null")
         {
             format!("{projected} | null")
@@ -1315,6 +1316,19 @@ fn cyclic_alias_indices(edges: &[Vec<usize>]) -> Vec<usize> {
             (component_sizes[components[node]] > 1 || targets.contains(&node)).then_some(node)
         })
         .collect()
+}
+
+/// Whether a schema sets OpenAPI 3.0's `nullable` keyword.
+pub(crate) fn declares_nullable(schema: &Map<String, Value>) -> bool {
+    schema.get("nullable").and_then(Value::as_bool) == Some(true)
+}
+
+fn type_admits_null(schema: &Map<String, Value>) -> bool {
+    match schema.get("type") {
+        Some(Value::String(kind)) => kind == "null",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "null"),
+        _ => false,
+    }
 }
 
 fn literal_type(value: &Value) -> Option<String> {

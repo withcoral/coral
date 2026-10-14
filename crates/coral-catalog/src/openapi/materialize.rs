@@ -1976,9 +1976,7 @@ fn schema_value_is_text_serializable(
     let Some(schema) = schema.as_object() else {
         return false;
     };
-    if schemas.semantics().nullable_applies()
-        && schema.get("nullable").and_then(Value::as_bool) == Some(true)
-    {
+    if schemas.semantics().nullable_applies() && crate::schema::declares_nullable(schema) {
         return false;
     }
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {

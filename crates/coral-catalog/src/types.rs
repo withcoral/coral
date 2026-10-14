@@ -387,7 +387,7 @@ impl SchemaSemantics {
         matches!(self, Self::JsonSchema2020_12)
     }
 
-    /// Only the OpenAPI 3.0 dialect defines `nullable`; elsewhere it admits nothing.
+    /// Only the OpenAPI 3.0 dialect defines `nullable`; elsewhere it has no effect.
     pub(crate) const fn nullable_applies(self) -> bool {
         matches!(self, Self::OpenApiV3_0)
     }
