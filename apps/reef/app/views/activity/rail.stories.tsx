@@ -354,6 +354,8 @@ export const HistoryWhileLoading: Story = {
     await history('back')
     await userEvent.click(link('Task 2'))
     loads.open()
+    // The address and rail already show the record; wait for the navigation to land.
+    await quiet(canvasElement)
     await waitFor(() => expect(address()).toContain('t2'))
     await shows('Task 2')
     await history('back')
@@ -364,6 +366,7 @@ export const HistoryWhileLoading: Story = {
     await history('forward')
     await userEvent.click(link('Task 1'))
     loads.open()
+    await quiet(canvasElement)
     await waitFor(() => expect(address()).toContain('t1'))
     await shows('Task 1')
     await history('back')
@@ -383,6 +386,7 @@ export const HistoryWhileLoading: Story = {
     await history('back')
     await userEvent.click(link('Task 2'))
     loads.open()
+    await quiet(canvasElement)
     await waitFor(() => expect(address()).toContain('t2'))
     await shows('Task 2')
     await history('back')
@@ -397,10 +401,90 @@ export const HistoryWhileLoading: Story = {
     await userEvent.click(link('Task 3'))
     await userEvent.click(link('Task 2'))
     loads.open()
+    await quiet(canvasElement)
     await waitFor(() => expect(address()).toContain('t2'))
     await shows('Task 2')
     await history('back')
     await shows('Task 1')
+  },
+}
+
+/**
+ * A record picked while its own close loads cancels the close. The close never
+ * reached history, so Back from the record returns to the list.
+ */
+export const PickWhileClosing: Story = {
+  play: async ({ canvasElement, userEvent }) => {
+    loads.open()
+    const { canvas, screen, link, address, rail, shows } = await surface(canvasElement)
+    const back = async () => {
+      await userEvent.click(canvas.getByRole('button', { name: 'History back' }))
+      await quiet(canvasElement)
+    }
+    const loading = () =>
+      waitFor(() =>
+        expect(within(canvasElement).getByLabelText('Navigation')).toHaveTextContent('loading'),
+      )
+    const closeButton = () => within(rail()!).getByRole('button', { name: 'Close details' })
+    const discardPrompt = () => screen.findByRole('dialog', { name: 'Discard your comment?' })
+    const typeComment = async (text: string) => {
+      const summary = within(rail()!).getByText('Add a comment')
+      if (!summary.closest('details')!.open) await userEvent.click(summary)
+      await userEvent.type(
+        within(rail()!).getByRole('textbox', { name: 'Comment (optional)' }),
+        text,
+      )
+    }
+    const pickBackToList = async (label: string, heading: string) => {
+      await userEvent.click(link(label))
+      loads.open()
+      await quiet(canvasElement)
+      await shows(heading)
+      await back()
+      await waitFor(() => expect(rail()).toBeNull())
+      await expect(address()).not.toContain('record=')
+    }
+
+    // Without a comment, the close starts at once.
+    await userEvent.click(link('Task 1'))
+    await shows('Task 1')
+    await quiet(canvasElement)
+    loads.hold()
+    await userEvent.click(closeButton())
+    await loading()
+    await pickBackToList('Task 1', 'Task 1')
+
+    // With an unsent comment, the close starts once you discard it.
+    await userEvent.click(link('Reminder run'))
+    await shows('Send invoice reminders')
+    await quiet(canvasElement)
+    await typeComment('Check the recipient')
+    loads.hold()
+    await userEvent.click(closeButton())
+    await userEvent.click(
+      within(await discardPrompt()).getByRole('button', { name: 'Discard comment' }),
+    )
+    await loading()
+    await pickBackToList('Reminder run', 'Send invoice reminders')
+
+    // Keep editing cancels the close; a later discarded close behaves the same.
+    await userEvent.click(link('Reminder run'))
+    await shows('Send invoice reminders')
+    await quiet(canvasElement)
+    await typeComment('Check the amount')
+    await userEvent.click(closeButton())
+    await userEvent.click(
+      within(await discardPrompt()).getByRole('button', { name: 'Keep editing' }),
+    )
+    await quiet(canvasElement)
+    await expect(address()).toContain('runs')
+    loads.hold()
+    await userEvent.click(closeButton())
+    await userEvent.click(
+      within(await discardPrompt()).getByRole('button', { name: 'Discard comment' }),
+    )
+    await loading()
+    await pickBackToList('Reminder run', 'Send invoice reminders')
   },
 }
 

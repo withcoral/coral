@@ -241,27 +241,36 @@ const railToken = (state: unknown) =>
  * under it, so replacing the address adds no entry and loses none.
  *
  * Each of the rail's navigations carries a fresh token. A token stops matching once
- * its navigation ends, because Back or Forward can later reach the entry it made.
- * Back or Forward reaches a location this view has already shown, so once one is
- * under way, nothing replaces until navigation is idle again. Tokens are unique to
- * this mount, so an entry an earlier rail left in history never matches.
+ * its navigation commits, because Back or Forward can later reach the entry it made.
+ * A token whose navigation never commits, such as one cancelled at the discard
+ * prompt, is on no entry, so nothing can match it. Back or Forward reaches a
+ * location this view has already shown, so once one is under way, nothing replaces
+ * until the next location commits. Tokens are unique to this mount, so an entry an
+ * earlier rail left in history never matches.
  */
 function railTokens() {
   const mount = Math.random().toString(36).slice(2)
   const shown = new Set<string>()
+  let committed: string | undefined
   let count = 0
   let latest: string | undefined
   let moved = false
   return {
     next: () => ({ activityRail: (latest = `${mount}-${++count}`) }),
     current: (token: unknown) => !moved && latest !== undefined && token === latest,
-    /** Records the shown location and the pending one, if a navigation is under way. */
-    observe: (location: string, pending: string | undefined) => {
-      shown.add(location)
-      if (pending === undefined) {
-        latest = undefined
+    /**
+     * Records the shown location, with its token, and the pending one, if a
+     * navigation is under way. Only a commit settles anything: the router can look
+     * idle while the rail's navigation waits to start or waits on a blocker.
+     */
+    observe: (location: string, token: unknown, pending: string | undefined) => {
+      if (location !== committed) {
+        committed = location
+        shown.add(location)
         moved = false
-      } else if (shown.has(pending)) moved = true
+        if (token !== undefined && token === latest) latest = undefined
+      }
+      if (pending !== undefined && shown.has(pending)) moved = true
     },
   }
 }
@@ -424,7 +433,7 @@ export function Activity({
   const [lostPosition, setLostPosition] = useState<string>()
   const nav = useActivityNavigation(page)
   const navigate = useNavigate()
-  const { search, key: locationKey } = useLocation()
+  const { search, key: locationKey, state: locationState } = useLocation()
   const selected = page.selected ?? null
   const transition = useNavigation()
   // The record a navigation in this list is about to select: null when it clears
@@ -462,7 +471,11 @@ export function Activity({
   const latest = useRef({ nav, navigate, live, more, selected, pending, pendingToken, closing })
   useLayoutEffect(() => {
     latest.current = { nav, navigate, live, more, selected, pending, pendingToken, closing }
-    tokens.observe(locationKey, transition.state === 'idle' ? undefined : transition.location?.key)
+    tokens.observe(
+      locationKey,
+      railToken(locationState),
+      transition.state === 'idle' ? undefined : transition.location?.key,
+    )
   })
   const [actions] = useState<RowActions>(() => ({
     select: (row) => {
