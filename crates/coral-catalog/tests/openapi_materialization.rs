@@ -450,8 +450,9 @@ paths:
     let probe = declaration("probe");
 
     for range in ["2xx", "4xx", "5xx"] {
-        let alias =
-            format!("type HttpStatus{range} = number & {{ readonly __statusRange: \"{range}\" }};");
+        let alias = format!(
+            "type HttpStatus{range} = number & {{ readonly [HttpStatusRangeBrand]: \"{range}\" }};"
+        );
         assert_eq!(
             probe.lines().filter(|line| *line == alias).count(),
             1,
@@ -466,6 +467,14 @@ paths:
     ] {
         assert!(probe.contains(branch), "missing `{branch}` in:\n{probe}");
     }
+    assert_eq!(
+        probe
+            .lines()
+            .filter(|line| *line == "const HttpStatusRangeBrand: unique symbol;")
+            .count(),
+        1,
+        "the brand is declared once in:\n{probe}"
+    );
     for absent in ["HttpStatus1xx", "HttpStatus3xx", "418"] {
         assert!(
             !probe.contains(absent),
@@ -3253,7 +3262,7 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
         r#"type HttpUnknownResult2 = "component named HttpUnknownResult";"#,
         r#"type BinaryValue2 = "component named BinaryValue";"#,
         r#"type HttpStatus4xx2 = "component named HttpStatus4xx";"#,
-        r#"type HttpStatus4xx = number & { readonly __statusRange: "4xx" };"#,
+        r#"type HttpStatus4xx = number & { readonly [HttpStatusRangeBrand]: "4xx" };"#,
     ] {
         assert!(
             scope.lines().any(|line| line == expected),

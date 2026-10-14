@@ -31,6 +31,9 @@ const HTTP_STATUS_RANGES: [&str; 5] = [
     "HttpStatus4xx",
     "HttpStatus5xx",
 ];
+/// The `unique symbol` that brands each status range type. Programs cannot
+/// name it, so no Program reads a brand the runtime status never carries.
+const HTTP_STATUS_RANGE_BRAND: &str = "HttpStatusRangeBrand";
 /// Every type name an HTTP Operation's declaration declares itself.
 pub(crate) const DECLARED_TYPE_NAMES: [&str; 7] = [
     HTTP_RESULT,
@@ -118,10 +121,13 @@ pub(super) fn project_typescript(
     }
     outputs.sort();
     outputs.dedup();
-    let mut result_declarations = ranges
-        .into_iter()
-        .map(status_range_declaration)
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut result_declarations = Vec::new();
+    if !ranges.is_empty() {
+        result_declarations.push(format!("const {HTTP_STATUS_RANGE_BRAND}: unique symbol;"));
+    }
+    for range in ranges {
+        result_declarations.push(status_range_declaration(range)?);
+    }
     if !outputs.is_empty() {
         result_declarations.push(http_result_declaration());
     }
@@ -190,7 +196,7 @@ fn status_range_name(range: u16) -> Result<&'static str, CatalogDiagnostic> {
 
 fn status_range_declaration(range: u16) -> Result<String, CatalogDiagnostic> {
     Ok(format!(
-        "type {} = number & {{ readonly __statusRange: \"{range}xx\" }};",
+        "type {} = number & {{ readonly [{HTTP_STATUS_RANGE_BRAND}]: \"{range}xx\" }};",
         status_range_name(range)?
     ))
 }

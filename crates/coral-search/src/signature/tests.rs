@@ -54,9 +54,10 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             ("Outage", "HttpStatus5xx"),
         ]);
         format!(
-            "{aliases}type HttpStatus2xx = number & {{ readonly __statusRange: \"2xx\" }};\n\
-             type HttpStatus4xx = number & {{ readonly __statusRange: \"4xx\" }};\n\
-             type HttpStatus5xx = number & {{ readonly __statusRange: \"5xx\" }};\n\
+            "{aliases}const HttpStatusRangeBrand: unique symbol;\n\
+             type HttpStatus2xx = number & {{ readonly [HttpStatusRangeBrand]: \"2xx\" }};\n\
+             type HttpStatus4xx = number & {{ readonly [HttpStatusRangeBrand]: \"4xx\" }};\n\
+             type HttpStatus5xx = number & {{ readonly [HttpStatusRangeBrand]: \"5xx\" }};\n\
              function names(): {result};"
         )
     };
