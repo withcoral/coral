@@ -8,7 +8,8 @@ import { createWorkspace, programRunner } from '../../support/providers.ts'
 test('The implicit local Owner works through a Membership and does not bypass lifecycle rules', async (context) => {
   await withBrowserSession(context, async ({ page, target, step }) => {
     const api = managementClients()
-    const id = await createWorkspace(undefined, `Local authority ${crypto.randomUUID()}`)
+    const displayName = `Local authority ${crypto.randomUUID()}`
+    const id = await createWorkspace(undefined, displayName)
     const name = `workspaces/${id}`
     await step('Keep working through the designated Owner Membership', async () => {
       const workspace = await api.workspaces.getWorkspace({ name })
@@ -43,14 +44,19 @@ test('The implicit local Owner works through a Membership and does not bypass li
       expect(result.structuredContent.final_value).toEqual({ kind: 'value', value: 'local owner' })
     })
     await step('Apply the normal archive fence to the local Owner', async () => {
-      await page.goto(`/${name}/settings`)
-      await page.getByRole('button', { name: 'Archive workspace', exact: true }).click()
       await page
-        .getByRole('dialog', { name: 'Archive workspace', exact: true })
+        .getByRole('navigation', { name: 'Coral', exact: true })
+        .getByRole('button', { name: `Archive ${displayName}`, exact: true })
+        .click()
+      await page
+        .getByRole('dialog', { name: `Archive ${displayName}`, exact: true })
         .getByRole('button', { name: 'Archive workspace', exact: true })
         .click()
-      await page.getByText('Archived', { exact: true }).first().waitFor()
-      expect(await page.getByRole('button', { name: 'Save name', exact: true }).count()).toBe(0)
+      await page.waitForURL((url) => url.pathname === `/${name}/activity`)
+      await page.getByText('This workspace is archived', { exact: true }).waitFor()
+      expect(
+        await page.getByRole('button', { name: 'Edit workspace name', exact: true }).count(),
+      ).toBe(0)
       const workspace = await api.workspaces.getWorkspace({ name })
       await expect(
         api.workspaces.updateWorkspace({

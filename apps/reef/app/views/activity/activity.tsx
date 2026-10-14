@@ -39,7 +39,7 @@ import {
   type StopPosition,
 } from './navigation'
 import { ActivityDetail } from './detail'
-import { ActivityConnectedContext } from './live'
+import { ActivityConnectedContext, restoreFirst, useActivityArchived } from './live'
 import { PendingActions } from './pending'
 import { useUnsentComment } from '../actions/review'
 import { ContextImpact } from './context-impact'
@@ -459,6 +459,7 @@ export function Activity({
   connect,
   more,
 }: ActivityViewProps) {
+  const archived = useActivityArchived()
   const [lostPosition, setLostPosition] = useState<string>()
   const nav = useActivityNavigation(page)
   const navigate = useNavigate()
@@ -873,13 +874,15 @@ export function Activity({
                     <EmptyPage
                       fullSize={false}
                       iconName="Activity"
-                      title="No activity yet"
+                      title={archived ? 'No activity' : 'No activity yet'}
                       description={
-                        connect
-                          ? 'Connect an MCP client to this workspace. Its calls show here.'
-                          : page.agent
-                            ? "The agent's calls show here."
-                            : 'Your calls show here.'
+                        archived
+                          ? restoreFirst(archived, 'start new runs')
+                          : connect
+                            ? 'Connect an MCP client to this workspace. Its calls show here.'
+                            : page.agent
+                              ? "The agent's calls show here."
+                              : 'Your calls show here.'
                       }
                       action={connect && <CopyMcpEndpoint {...connect} />}
                     />

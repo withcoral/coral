@@ -6,6 +6,7 @@ import '../app/wax/theme/global.css'
 import { theme } from '../app/wax/theme/theme.css'
 import { getThemeClass, useTheme } from '../app/wax/theme/theme-provider'
 import { themeComparisonDecorator } from './addons/theme-comparison'
+import { ShellFormContext } from '../app/views/management/forms'
 
 const withThemeDecorator: Decorator = (Story, context) => {
   let { themeClass } = useTheme()
@@ -31,8 +32,15 @@ const withThemeDecorator: Decorator = (Story, context) => {
   )
 }
 
+// The app shell provides its form context to every page.
+const withShellForm: Decorator = (Story) => (
+  <ShellFormContext value={{ csrf: 'storybook', requestId: 'storybook' }}>
+    <Story />
+  </ShellFormContext>
+)
+
 const preview: Preview = {
-  decorators: [themeComparisonDecorator, withThemeDecorator],
+  decorators: [themeComparisonDecorator, withThemeDecorator, withShellForm],
   initialGlobals: {
     themeComparison: false,
   },

@@ -172,8 +172,7 @@ export function failureReason(
       : [503, 'Coral is not available.']
   const reasons: Record<string, string> = {
     AMBIGUOUS_EMAIL: 'More than one person matches this email. Coral granted no access.',
-    WORKSPACE_ARCHIVED:
-      'This workspace is archived. Restore it in settings before you make changes.',
+    WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it before you make changes.',
     LAST_WORKSPACE_OWNER: 'This workspace must keep one owner. Assign another owner first.',
     OWNER_TRANSFER_REQUIRED:
       'This person is the only owner of a workspace. Choose a person to take over their workspaces.',

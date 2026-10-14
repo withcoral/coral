@@ -12,18 +12,15 @@ use coral_run::RUN_TIMEOUT_MAX_MS;
 use coral_search::SEARCH_DEFAULT_LIMIT;
 use coral_task::{TASK_FEEDBACK_MAX_CHARS, TASK_INTENT_MAX_CHARS};
 
-const TASK_ID_DESCRIPTION: &str = "Task identifier returned by start_task for this unit of attributed work; canonical lowercase hyphenated UUID.";
-const RUN_ID_DESCRIPTION: &str =
-    "Coral-generated Program Run identifier; canonical lowercase hyphenated UUID.";
-const CALL_INTENT_DESCRIPTION: &str = "Nonblank natural-language reason this call is needed for the attributed Task. No null characters. At most 80 Unicode characters, including whitespace; not trimmed.";
-const DESCRIBE_INTENT_DESCRIPTION: &str = "What you need to learn from this contract that the search result did not show. Nonblank, with no null characters. At most 80 Unicode characters, including whitespace; not trimmed.";
-const FUNCTION_PATH_DESCRIPTION: &str = "Dotted path relative to coral.functions (omit that prefix), such as reports.summarize. Use 1 to 16 safe JavaScript identifier segments; Unicode identifiers are supported. Reserved segments __proto__, prototype, constructor and then are forbidden. At most 256 UTF-8 bytes (not characters), checked by the domain.";
-const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, describe the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.
-Retriever states:
-- `partial`: some Providers or Saved Functions are not indexed yet, or failed; results may be missing.
-- `error`: the retriever could not rank; its results are missing.";
-const RUN_CURSOR_DESCRIPTION: &str =
-    "Optional opaque Run cursor. Reuse the returned next_cursor unchanged for the same Run.";
+const TASK_ID_DESCRIPTION: &str = "The task_id from start_task.";
+const RUN_ID_DESCRIPTION: &str = "The run_id from exec.";
+const CALL_INTENT_DESCRIPTION: &str = "Why this call is needed, in one short phrase.";
+const DESCRIBE_INTENT_DESCRIPTION: &str =
+    "What the search result did not show that you need from this declaration.";
+const FUNCTION_PATH_DESCRIPTION: &str =
+    "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
+const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
+const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous wait on this Run.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
@@ -39,7 +36,7 @@ pub(crate) trait ToolArguments: DeserializeOwned + JsonSchema + Any {
 pub(crate) struct StartTaskArguments {
     #[schemars(
         length(min = 1, max = TASK_INTENT_MAX_CHARS),
-        description = "Nonblank natural-language description of the work this Task should group. No null characters. At most 80 Unicode characters, including whitespace; not trimmed."
+        description = "What the user asked for, in one short phrase."
     )]
     pub(crate) intent: String,
 }
@@ -61,24 +58,24 @@ pub(crate) struct SearchArguments {
     pub(crate) intent: String,
     #[schemars(
         length(min = 1),
-        description = "Optional nonblank catalog discovery query, not a request for upstream records. Describe the capability you need. Leave out people, record titles, IDs, dates and other record values. No null characters; not trimmed. At most 4096 UTF-8 bytes (not characters), including whitespace, checked by the domain. Omit or use null to list visible items; an empty string is invalid."
+        description = format!("Keywords for the capability you need, such as `list pull requests`. Omit only to page through visible items, {SEARCH_DEFAULT_LIMIT} per page.")
     )]
     pub(crate) query: Option<String>,
     #[schemars(
         length(min = 1, max = 128),
         regex(pattern = r"^[A-Za-z_$][A-Za-z0-9_$]*$"),
-        description = "Optional Provider namespace filter: the second segment of the Provider's Call Paths, as in coral.providers.<namespace>.<operation>. Not a display name or id. Pass it when the user names the service. Otherwise, leave it out. The start_task result lists the namespaces you can search; Coral refuses any other value. It narrows Operations only; Saved Functions stay."
+        description = "Namespace from coral.providers.<namespace>.<operation>, as listed by start_task. Omit unless the user names the service."
     )]
     pub(crate) provider: Option<String>,
     #[schemars(
         range(min = 1, max = 50),
         extend("default" = SEARCH_DEFAULT_LIMIT),
-        description = format!("Maximum complete Authoring Descriptions to return. Omit or use null for {SEARCH_DEFAULT_LIMIT}. The server applies this default; this annotation does not require clients to insert a value.")
+        description = format!("Maximum results. Default {SEARCH_DEFAULT_LIMIT}.")
     )]
     pub(crate) limit: Option<u16>,
     #[schemars(
         length(min = 1),
-        description = "Optional opaque query-bound continuation cursor, at most 8192 UTF-8 bytes. Reuse the returned next_cursor unchanged with the same query and Provider."
+        description = "The next_cursor from the previous page, with the same query and provider."
     )]
     pub(crate) cursor: Option<String>,
 }
@@ -100,12 +97,12 @@ pub(crate) struct DescribeArguments {
     pub(crate) intent: String,
     #[schemars(
         length(min = 1),
-        description = "Complete Call Path: coral.providers.<namespace>.<operation> or coral.functions.<path>, not a relative path. Every segment must be a safe JavaScript identifier; Unicode identifiers are supported. For Saved Functions, the relative path has at most 16 segments and 256 UTF-8 bytes (not characters); reserved segments __proto__, prototype, constructor and then are forbidden. The complete path is at most 1024 UTF-8 bytes (not characters). Identifier and byte constraints are checked by the domain."
+        description = "Complete Call Path: coral.providers.<namespace>.<operation> or coral.functions.<path>."
     )]
     pub(crate) path: String,
     #[schemars(
         length(max = 32),
-        description = "Names of types in this path's declaration, as a describe result's comments name them. Returns those types whole instead of the inputs and the function, and a Saved Function without its source. At most 32 names of at most 256 UTF-8 bytes each, checked by the domain."
+        description = "Type names from this path's declaration. Returns those types whole instead of the inputs and the function."
     )]
     pub(crate) types: Option<Vec<String>>,
 }
@@ -132,12 +129,12 @@ pub(crate) struct SaveFunctionArguments {
     pub(crate) path: String,
     #[schemars(
         length(min = 1),
-        description = "One or two sentences on what the function does and when to use it. Coral shows its TypeScript declaration beside the description, so do not restate input or return types. One line: no line breaks, surrounding whitespace, or other control characters (including null). At most 4 KiB (4096 UTF-8 bytes, not characters), checked by the domain."
+        description = "One line, one or two sentences: what the function does and when to use it. Do not restate input or return types; the declaration is shown beside it."
     )]
     pub(crate) description: String,
     #[schemars(
         length(min = 1),
-        description = "Nonempty no-import TypeScript module with one default callable export. No null characters. At most 64 KiB (65536 UTF-8 bytes, not characters), checked by the domain."
+        description = "TypeScript module with one default callable export and no imports. At most 64 KiB."
     )]
     pub(crate) source: String,
 }
@@ -179,20 +176,18 @@ pub(crate) struct ExecArguments {
         description = CALL_INTENT_DESCRIPTION
     )]
     pub(crate) intent: String,
-    #[schemars(
-        description = "TypeScript async-function body to execute. Empty input is valid. No null characters. At most 64 KiB (65536 UTF-8 bytes, not characters), checked by the domain."
-    )]
+    #[schemars(description = "TypeScript async-function body to run. At most 64 KiB.")]
     pub(crate) program: String,
     #[schemars(
         range(min = 1, max = RUN_TIMEOUT_MAX_MS),
         extend("default" = DEFAULT_RUN_TIMEOUT_MS),
-        description = format!("Optional positive Run timeout in milliseconds, up to 15 minutes. Omit or use null for {DEFAULT_RUN_TIMEOUT_MS} milliseconds. One wall-clock deadline starts at durable acceptance; observation and human action do not renew it. The server applies this default; this annotation does not require clients to insert a value.")
+        description = format!("Run timeout in milliseconds. Default and maximum {DEFAULT_RUN_TIMEOUT_MS} (15 minutes). Waiting and human action do not extend it.")
     )]
     pub(crate) run_timeout_ms: Option<u64>,
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_EXEC_WAIT_MS),
-        description = format!("Initial observation wait in milliseconds, independent of the Run lifetime. Omit or use null for {DEFAULT_EXEC_WAIT_MS} milliseconds. Zero returns immediately. Batches authored output until the Run ends, human action is required, or this wait expires. The server applies this default; this annotation does not require clients to insert a value.")
+        description = format!("How long this call waits for output before returning, in milliseconds. Default {DEFAULT_EXEC_WAIT_MS}. 0 returns at once.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -218,7 +213,7 @@ pub(crate) struct WaitArguments {
     #[schemars(
         range(min = 0, max = MAX_WAIT_MS),
         extend("default" = DEFAULT_WAIT_MS),
-        description = format!("Optional wait in milliseconds for authored output, changed required actions, or terminal state. Omit or use null for {DEFAULT_WAIT_MS} milliseconds. Zero reads immediately. The server applies this default; this annotation does not require clients to insert a value.")
+        description = format!("How long to wait for new output, a required action, or the end of the Run, in milliseconds. Default {DEFAULT_WAIT_MS}.")
     )]
     pub(crate) wait_ms: Option<u64>,
 }
@@ -265,7 +260,7 @@ pub(crate) struct EndTaskArguments {
     pub(crate) outcome: TaskOutcomeArgument,
     #[schemars(
         length(min = 1, max = TASK_FEEDBACK_MAX_CHARS),
-        description = "Optional completion feedback for either outcome. Nonblank, without null characters. At most 4096 Unicode characters, including whitespace; not trimmed. Domain-validated and private with the Task."
+        description = format!("Optional notes on how the Task went. At most {TASK_FEEDBACK_MAX_CHARS} characters.")
     )]
     pub(crate) feedback: Option<String>,
 }
@@ -380,11 +375,10 @@ fn mutation_annotations(
 mod tests {
     use super::*;
 
-    /// The `types` schema and description state the limits the domain
-    /// enforces. The byte limit stays in the description: JSON Schema's
-    /// `maxLength` counts characters, not bytes.
+    /// The `types` schema caps the item count; the per-name byte limit is
+    /// domain-validated and not advertised.
     #[test]
-    fn describe_types_schema_states_the_domain_limits() {
+    fn describe_types_schema_caps_the_item_count() {
         let tools = tools();
         let describe = tools
             .iter()
@@ -399,16 +393,6 @@ mod tests {
             types.get("maxItems").and_then(Value::as_u64),
             u64::try_from(coral_search::DESCRIBE_TYPES_MAX).ok()
         );
-        let description = types
-            .get("description")
-            .and_then(Value::as_str)
-            .expect("types description");
-        let limits = format!(
-            "At most {} names of at most {} UTF-8 bytes each",
-            coral_search::DESCRIBE_TYPES_MAX,
-            coral_search::DESCRIBE_TYPE_NAME_MAX_BYTES
-        );
-        assert!(description.contains(&limits), "{description}");
     }
 
     /// Reef's Activity detail parses retained `search` and `describe`

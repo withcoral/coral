@@ -187,10 +187,7 @@ describe('actionFailure', () => {
 
   it.each([
     ['AMBIGUOUS_EMAIL', 'More than one person matches this email. Coral granted no access.'],
-    [
-      'WORKSPACE_ARCHIVED',
-      'This workspace is archived. Restore it in settings before you make changes.',
-    ],
+    ['WORKSPACE_ARCHIVED', 'This workspace is archived. Restore it before you make changes.'],
     ['LAST_WORKSPACE_OWNER', 'This workspace must keep one owner. Assign another owner first.'],
     [
       'OWNER_TRANSFER_REQUIRED',

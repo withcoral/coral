@@ -38,7 +38,11 @@ enum Retriever {
     SavedFunction,
 }
 
-/// Results may be missing: retry shortly or list without a query.
+/// - `partial`: some Providers or Saved Functions are not indexed yet, or
+///   failed; results may be missing.
+/// - `error`: the retriever could not rank; its results are missing.
+///
+/// Retry shortly or list without a query.
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum RetrieverState {

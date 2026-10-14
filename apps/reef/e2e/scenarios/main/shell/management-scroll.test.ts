@@ -18,11 +18,12 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       .getByRole('button', { name: 'Create workspace', exact: true })
       .click()
     await breadcrumb(page, name).waitFor()
-    const settings = page.getByRole('dialog', { name: 'Workspace settings', exact: true })
-    await page.getByRole('link', { name: `${name} settings`, exact: true }).click()
-    await settings.getByRole('button', { name: 'Archive workspace', exact: true }).waitFor()
-    await page.setViewportSize({ width: 1000, height: 300 })
-    const bottom = settings.getByRole('button', { name: 'Archive workspace', exact: true })
+    const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
+    const confirmation = page.getByRole('dialog', { name: `Archive ${name}`, exact: true })
+    const bottom = confirmation.getByRole('button', { name: 'Archive workspace', exact: true })
+    await nav.getByRole('button', { name: `Archive ${name}`, exact: true }).click()
+    await bottom.waitFor()
+    await page.setViewportSize({ width: 1000, height: 220 })
     // The dialog scrolls its own content, so the action must sit inside both
     // the dialog's box and the viewport.
     const visibleInViewport = () =>
@@ -39,23 +40,23 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
     // before that end. Wait for the dialog's scrollend before the next input.
     type Scroller = HTMLElement & { scrolled?: Promise<void> }
     const scrollAndSettle = async (scroll: () => Promise<void>) => {
-      await settings.evaluate((element: Scroller) => {
+      await confirmation.evaluate((element: Scroller) => {
         element.scrolled = new Promise((resolve, reject) => {
           element.addEventListener('scrollend', () => resolve(), { once: true })
           setTimeout(() => reject(new Error('The dialog did not finish scrolling')), 5000)
         })
       })
       await scroll()
-      await settings.evaluate((element: Scroller) => element.scrolled)
+      await confirmation.evaluate((element: Scroller) => element.scrolled)
     }
     const center = async () => {
-      const box = (await settings.boundingBox())!
+      const box = (await confirmation.boundingBox())!
       return [box.x + box.width / 2, box.y + box.height / 2] as const
     }
-    await step('Wheel to the bottom action of the settings dialog', async () => {
+    await step('Wheel to the bottom action of the archive confirmation', async () => {
       // The popup animates to its new maximum height, then scrolls.
       await expect
-        .poll(() => settings.evaluate((element) => element.scrollHeight > element.clientHeight))
+        .poll(() => confirmation.evaluate((element) => element.scrollHeight > element.clientHeight))
         .toBe(true)
       await expect.poll(visibleInViewport).toBe(false)
       await page.mouse.move(...(await center()))
@@ -63,16 +64,18 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       expect(await visibleInViewport()).toBe(true)
     })
     await step('Keyboard scrolling also reaches the bottom action', async () => {
-      // Keys scroll the focused scroll container. Opening the dialog focuses
-      // its name field, so move focus to the dialog, which scrolls itself.
-      await settings.focus()
-      expect(await settings.evaluate((element) => element === document.activeElement)).toBe(true)
+      // Keys scroll the focused scroll container. Move focus from the dialog's
+      // first button to the dialog, which scrolls itself.
+      await confirmation.focus()
+      expect(await confirmation.evaluate((element) => element === document.activeElement)).toBe(
+        true,
+      )
       await scrollAndSettle(() => page.keyboard.press('Home'))
       expect(await visibleInViewport()).toBe(false)
       await scrollAndSettle(() => page.keyboard.press('Control+End'))
       expect(await visibleInViewport()).toBe(true)
       await page.keyboard.press('Escape')
-      await expect.poll(() => settings.count()).toBe(0)
+      await expect.poll(() => confirmation.count()).toBe(0)
     })
     const agents = page.getByRole('table', { name: 'Agents', exact: true })
     const filter = page.getByRole('searchbox', { name: 'Filter agents', exact: true })
@@ -169,7 +172,7 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       },
     )
     await step(
-      'Mobile drawer closes on navigation and opens settings with a nested dialog',
+      'Mobile drawer closes on navigation and opens the archive confirmation',
       async () => {
         await page.setViewportSize({ width: 390, height: 360 })
         const drawer = page.getByRole('dialog', { name: 'Navigation', exact: true })
@@ -181,27 +184,18 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
         await expect
           .poll(() => openNavigation.evaluate((element) => document.activeElement === element))
           .toBe(true)
-        // Settings opens from the drawer's Workspace header, over the Overview.
+        // The confirmation opens from the drawer's Workspace header.
         await openNavigation.click()
-        await drawer.getByRole('link', { name: `${name} settings`, exact: true }).click()
-        await settings.waitFor()
-        await expect.poll(() => drawer.count()).toBe(0)
+        await drawer.getByRole('button', { name: `Archive ${name}`, exact: true }).click()
+        await bottom.waitFor()
         await page.mouse.move(195, 180)
         await page.mouse.wheel(0, 3000)
         await expect.poll(visibleInViewport).toBe(true)
-        await bottom.click()
-        const dialog = page.getByRole('dialog', { name: 'Archive workspace', exact: true })
-        await dialog.getByRole('button', { name: 'Archive workspace', exact: true }).focus()
-        expect(
-          await dialog
-            .getByRole('button', { name: 'Archive workspace', exact: true })
-            .evaluate((element) => element.getBoundingClientRect().bottom < innerHeight),
-        ).toBe(true)
-        await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-        await expect.poll(() => dialog.count()).toBe(0)
+        await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click()
+        await expect.poll(() => confirmation.count()).toBe(0)
         await page.keyboard.press('Escape')
         await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
-        await breadcrumb(page, name).waitFor()
+        await breadcrumb(page, 'Members').waitFor()
       },
     )
   })

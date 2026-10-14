@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { Banner, Button, Typography } from '@/wax/components'
+import { Banner, Typography } from '@/wax/components'
+import { RestoreWorkspaceButton } from './restore-workspace'
 import type { Segment } from '@/wax/components/breadcrumbs/breadcrumbs'
 import { PageLayout } from '@/wax/components/page-layout'
 import type { Crumb, WorkspaceView } from './types'
@@ -79,7 +80,7 @@ export function Section({
   )
 }
 
-/** Says the Workspace is archived and what that blocks. Only an Owner gets the restore link. */
+/** Says the Workspace is archived and what that blocks. Only an Owner can restore it here. */
 export function ArchivedBanner({
   workspace,
   children,
@@ -94,9 +95,7 @@ export function ArchivedBanner({
       title="This workspace is archived"
       action={
         workspace.effectiveRole === 'owner' ? (
-          <Button.InternalLink to={`${workspace.path}/settings`} size="small">
-            Restore in settings
-          </Button.InternalLink>
+          <RestoreWorkspaceButton workspace={workspace} />
         ) : undefined
       }
     >
