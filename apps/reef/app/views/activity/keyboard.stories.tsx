@@ -56,7 +56,15 @@ function pageFor(url: URL): ActivityPage {
                 run: selectedRow,
                 source: Array.from({ length: 120 }, (_, line) => `// line ${line}`).join('\n'),
                 linkedFunctions: [],
-                terminal: { kind: 'unavailable' },
+                // A tall final value: the Run panel shows it open, unlike its source.
+                terminal: {
+                  kind: 'succeeded',
+                  finalValue: JSON.stringify(
+                    Array.from({ length: 60 }, (_, line) => `line ${line}`),
+                    null,
+                    2,
+                  ),
+                },
               }
             : null,
   })

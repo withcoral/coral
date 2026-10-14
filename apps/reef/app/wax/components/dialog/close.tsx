@@ -9,12 +9,14 @@ export interface CloseProps {
   ariaLabel?: string
   className?: string
   ref?: React.Ref<HTMLButtonElement>
+  /** Sit in the flow of a header the content owns instead of the popup corner. */
+  inline?: boolean
 }
 
-export function Close({ ariaLabel = 'Close', className, ref }: CloseProps) {
+export function Close({ ariaLabel = 'Close', className, ref, inline }: CloseProps) {
   return (
     <BaseDialog.Close
-      className={classNames(styles.close, className)}
+      className={classNames(inline ? styles.closeInline : styles.close, className)}
       ref={ref}
       // A focused close button must not open a tooltip that consumes the first Escape key.
       render={<Button.IconButton name="X" size="22" ariaLabel={ariaLabel} variant="bare" />}

@@ -149,7 +149,11 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           `/workspaces/${first}/activity?record=${encodeURIComponent(`workspaces/${first}/tasks/${task}`)}`,
         )
         await page.getByText('No invoice export operation 🪸', { exact: true }).waitFor()
-        await page.getByText('Goal outcome: failure', { exact: true }).waitFor()
+        await page
+          .getByRole('dialog')
+          .locator('header')
+          .getByText('failure', { exact: true })
+          .waitFor()
         expect(await page.content()).not.toContain('Must not replace feedback')
         expect(
           await page
@@ -366,13 +370,9 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
       )
       await step('Open a stable Run link in its workspace', async () => {
         await page.goto(`/workspaces/${first}/runs/${run}`)
-        await page.locator('summary').filter({ hasText: 'Technical details' }).click()
-        await page
-          .locator('summary')
-          .filter({ hasText: 'Saved-function snapshot:' })
-          .first()
-          .click()
-        await page.locator('pre').filter({ hasText: original }).first().waitFor()
+        // A Run panel leads with its timing; it keeps no source or snapshots.
+        const started = page.getByRole('dialog').getByText('Started', { exact: true })
+        await started.waitFor()
         // A Run page sits in its workspace, like the workspace's other pages.
         expect(
           await page
@@ -382,7 +382,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         ).toEqual([firstName, 'Activity'])
         expect(await page.content()).not.toContain('replacement-source-249')
         await page.setViewportSize({ width: 390, height: 844 })
-        await page.locator('pre').filter({ hasText: original }).first().waitFor()
+        await started.waitFor()
       })
       await step('Inspect a real Invocation without preloading its logical arguments', async () => {
         await page.setViewportSize({ width: 1440, height: 900 })
@@ -427,7 +427,8 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
         expect(await table.getByLabel('20 B added', { exact: true }).count()).toBe(3)
         expect(await table.getByLabel('No net context change', { exact: true }).count()).toBe(1)
         await operationLink.click()
-        await page.locator('pre').filter({ hasText: 'exact-arguments-249' }).first().waitFor()
+        // The one scalar argument shows under its own field, with its exact JSON spelling.
+        await page.getByText('"exact-arguments-249"', { exact: true }).waitFor()
         await page.getByText('Coral failure: operation_disabled', { exact: true }).waitFor()
       })
       await step(
@@ -473,21 +474,6 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
           ).toEqual([firstName, 'Agents', 'History worker'])
           expect(await page.content()).not.toContain(issued.credential)
           await page.goto(`/${runName}?tree=1`)
-          await page.locator('pre').filter({ hasText: 'retained-agent-output' }).first().waitFor()
-          await page.getByRole('link', { name: 'View in history', exact: true }).click()
-          await page.waitForURL(
-            (url) => url.pathname === `/${name}` && url.searchParams.get('anchor') === taskName,
-          )
-          expect(new URL(page.url()).searchParams.get('record')).toBeNull()
-          await page.getByRole('dialog').waitFor({ state: 'hidden' })
-          // Router location can update before the revealed tree finishes rendering.
-          await page
-            .getByText('Outside this workspace or page:', { exact: true })
-            .waitFor({ state: 'hidden' })
-          expect(
-            await page.getByText('Outside this workspace or page:', { exact: true }).count(),
-          ).toBe(0)
-          await page.getByRole('link', { name: 'Call one Operation', exact: true }).click()
           await page.locator('pre').filter({ hasText: 'retained-agent-output' }).first().waitFor()
         },
       )

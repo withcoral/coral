@@ -186,6 +186,8 @@ export type RequestDetail =
       provider: string
       providerLabel?: string
       approverLabel?: string
+      /** Intent of the Task that owns the Run; absent when that Task is unavailable. */
+      taskIntent?: string
       callPath: string
       arguments: string
       state: string

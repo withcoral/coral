@@ -929,7 +929,8 @@ describe('hierarchical activity through the private server interface', () => {
       after: '',
       anchor: task,
     })
-    expect(calls.find((call) => call.method === 'task')?.input).toMatchObject({
+    // The approval review also reads its Task once for the intent; the branch read is last.
+    expect(calls.findLast((call) => call.method === 'task')?.input).toMatchObject({
       viewport: { offset: 125n, anchor: interaction, preceding: 25 },
       pageSize: ACTIVITY_CHILD_WINDOW,
     })
@@ -1087,8 +1088,42 @@ describe('hierarchical activity through the private server interface', () => {
     await loadActivity(request({ expand: run, tree: '1' }), api, { scope })
     expect(loaded(calls, ...DETAIL_OR_CHILD)).toBe(0)
   })
+  it.each([
+    ['from its Run', run, false, goal.intent],
+    ['from its operation', invocation, false, goal.intent],
+    // An unavailable Task leaves the intent out, not the review.
+    ['from its operation, with its Task unavailable', invocation, true, undefined],
+  ])(
+    'reviews an approval selected %s with the intent of the Task that owns the Run',
+    async (_label, record, taskUnavailable, taskIntent) => {
+      const { api, calls } = coral(
+        list(),
+        runDetail(),
+        invocationDetail(),
+        approvalDetail(),
+        taskDetail({ taskUnavailable }),
+      )
+      const page = await loadActivity(request({ record, request: approval, tree: '1' }), api, {
+        scope,
+      })
+      expect(page.detail).toMatchObject({
+        kind: 'invocation',
+        requestUnavailable: false,
+        request: { name: approval },
+      })
+      const review = page.detail?.kind === 'invocation' ? page.detail.request : null
+      expect(review?.kind === 'approval' && review.taskIntent).toBe(taskIntent ?? undefined)
+      expect(calls.find((call) => call.method === 'task')?.input).toMatchObject({ name: task })
+    },
+  )
   it('keeps exact operation detail selected outside the list and opens only its own approval', async () => {
-    const { api, calls } = coral(list(), runDetail(), invocationDetail(), approvalDetail())
+    const { api, calls } = coral(
+      list(),
+      runDetail(),
+      invocationDetail(),
+      approvalDetail(),
+      taskDetail(),
+    )
     const page = await loadActivity(request({ record: invocation, tree: '1' }), api, { scope })
     expect(page.detail).toMatchObject({
       kind: 'invocation',
@@ -1295,6 +1330,7 @@ describe('hierarchical activity through the private server interface', () => {
         runDetail({ resolved: true }),
         invocationDetail({ resolved: true }),
         approvalDetail({ resolved: true }),
+        taskDetail(),
       ).api,
       { scope },
     )
@@ -1312,6 +1348,7 @@ describe('hierarchical activity through the private server interface', () => {
       runDetail({ resolved: true }),
       invocationDetail({ resolved: true }),
       approvalDetail({ resolved: true }),
+      taskDetail(),
     )
     const page = await loadActivity(
       request({ record: invocation, request: approval, tree: '1' }),
@@ -1339,7 +1376,13 @@ describe('hierarchical activity through the private server interface', () => {
   it('independently authorizes exact detail when the list scope is unavailable', async () => {
     const page = await loadActivity(
       request({ record: invocation, tree: '1' }),
-      coral(list({ listConcealed: true }), runDetail(), invocationDetail(), approvalDetail()).api,
+      coral(
+        list({ listConcealed: true }),
+        runDetail(),
+        invocationDetail(),
+        approvalDetail(),
+        taskDetail(),
+      ).api,
       { scope: { workspace, agent } },
     )
     expect(page.listUnavailable).toBe(true)

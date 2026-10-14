@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { isCustomIcon } from '@/wax/components/icon/custom-icons/custom-icons'
 import { darkTheme } from '@/wax/theme/theme-dark.css'
 
-import { Icon } from './icon'
+import { Icon, IconPlate } from './icon'
 import type { IconColor, IconName } from './icon'
 
 const meta = {
@@ -157,6 +157,19 @@ export const Variants: Story = {
           <Icon name="Check" size="16" />
         </div>
       </div>
+    </div>
+  ),
+}
+
+/** A plate per review state: required, approved, denied, other. */
+export const Plates: Story = {
+  args: { name: 'Shield' },
+  render: () => (
+    <div style={{ display: 'flex', gap: 16 }}>
+      <IconPlate name="ShieldAlert" tone="amber" />
+      <IconPlate name="ShieldCheck" tone="green" />
+      <IconPlate name="ShieldX" tone="red" />
+      <IconPlate name="Shield" tone="gray" />
     </div>
   ),
 }

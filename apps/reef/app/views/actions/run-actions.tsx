@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { useFetcher } from 'react-router'
 import { Button, Typography } from '@/wax/components'
 import { Deadline } from '@/wax/components/deadline'
@@ -5,8 +6,10 @@ import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action as resolve } from '@/routes/activity-resolve'
 import { ConnectButton } from '../accounts/connect-button'
 import { ApprovalReview } from './review'
+import { PanelFooter } from '../activity/panel'
+import { DetailHeader } from '../activity/detail-header'
 import { useActivityArchived, useActivityConnected, restoreFirst } from '../activity/live'
-import type { ActionPage, RequestDetail } from '../activity/types'
+import type { ActionPage, RequestDetail, RunDetail } from '../activity/types'
 import type { ConnectionState } from '../accounts/types'
 import * as styles from './actions.css'
 
@@ -19,6 +22,8 @@ export function connectHref(provider: string, returnTo: string) {
 /** The review of one exact request. When no current request is selected, the Run lists
  * its current actions, each opening its own review. */
 export function RunActions({
+  context,
+  runControls,
   page,
   request,
   unavailable,
@@ -27,6 +32,10 @@ export function RunActions({
   firstHref,
   nextHref,
 }: {
+  /** The Run the actions belong to; an approval review shows it as context. */
+  context: RunDetail
+  /** Run-level links and controls an approval review shows in its technical details. */
+  runControls?: ReactNode
   page?: ActionPage
   request?: RequestDetail | null
   unavailable?: boolean
@@ -35,7 +44,6 @@ export function RunActions({
   firstHref?: string
   nextHref?: string
 }) {
-  const connected = useActivityConnected()
   const actions = page?.actions ?? []
   // A settled or unrelated selection still shows what the Run waits on now.
   const current = request ? actions.some((item) => item.name === request.name) : false
@@ -43,13 +51,19 @@ export function RunActions({
   return (
     <section className={styles.stack} aria-label="Run actions">
       {unavailable && <Typography.Body role="status">This request is unavailable.</Typography.Body>}
-      {request?.kind === 'approval' && <ApprovalReview key={request.name} detail={request} />}
+      {request?.kind === 'approval' && (
+        <ApprovalReview
+          key={request.name}
+          detail={request}
+          context={context}
+          runControls={runControls}
+        />
+      )}
       {request?.kind === 'account_connection' && (
         <ConnectionAction
           request={request}
           providerLabel={actions.find((item) => item.name === request.name)?.providerLabel}
           returnTo={returnTo}
-          connected={connected}
         />
       )}
       {!current && page && page.total !== '0' && (
@@ -99,52 +113,62 @@ function ConnectionAction({
   request,
   providerLabel,
   returnTo,
-  connected,
 }: {
   request: Extract<RequestDetail, { kind: 'account_connection' }>
   providerLabel?: string
   returnTo: string
-  connected: boolean
 }) {
   const csrf = useShellCsrf()
+  const connected = useActivityConnected()
   const decline = useFetcher<typeof resolve>({ key: request.name })
   const provider = providerLabel || 'provider'
   const archived = useActivityArchived()
   if (request.state !== 'pending')
     return <Typography.Body role="status">{settled[request.state]}</Typography.Body>
-  if (archived)
-    return (
-      <Typography.Body role="status">
-        {restoreFirst(archived, `connect your ${provider} account`)}
-      </Typography.Body>
-    )
   return (
     <div className={styles.stack}>
-      <Typography.BodySmall>
-        Connect your {provider} account to continue. One connection can unblock several waiting
-        calls.
-      </Typography.BodySmall>
-      <div className={styles.controls}>
-        <ConnectButton
-          action={connectHref(request.provider, returnTo)}
-          csrf={csrf}
-          label={`Connect ${provider}`}
-          disabled={!connected}
-        />
-        <decline.Form method="post" action="/activity/resolve">
-          <input type="hidden" name="csrf" value={csrf} />
-          <input type="hidden" name="name" value={request.name} />
-          <input type="hidden" name="intent" value="decline_connection" />
-          <Button.TextButton
-            type="submit"
-            variant="secondary"
-            disabled={!connected || decline.state !== 'idle'}
-          >
-            Decline
-          </Button.TextButton>
-        </decline.Form>
-        {request.expiresAt && <Deadline at={request.expiresAt} />}
-      </div>
+      {/* A shared Account Connection Request is not this one call's Approval. */}
+      <DetailHeader
+        title={`Connect your ${provider} account`}
+        status={request.state}
+        kind="account connection request"
+        sticky={false}
+        heading="h3"
+      />
+      {archived ? (
+        <Typography.Body role="status">
+          {restoreFirst(archived, `connect your ${provider} account`)}
+        </Typography.Body>
+      ) : (
+        <>
+          <Typography.BodySmall>
+            Connect your {provider} account to continue. One connection can unblock several waiting
+            calls.
+          </Typography.BodySmall>
+          {/* Like an approval: the deadline and the secondary choice lead, the primary one ends. */}
+          <PanelFooter>
+            {request.expiresAt && <Deadline at={request.expiresAt} />}
+            <decline.Form method="post" action="/activity/resolve">
+              <input type="hidden" name="csrf" value={csrf} />
+              <input type="hidden" name="name" value={request.name} />
+              <input type="hidden" name="intent" value="decline_connection" />
+              <Button.TextButton
+                type="submit"
+                variant="secondary"
+                disabled={!connected || decline.state !== 'idle'}
+              >
+                Decline
+              </Button.TextButton>
+            </decline.Form>
+            <ConnectButton
+              action={connectHref(request.provider, returnTo)}
+              csrf={csrf}
+              label={`Connect ${provider}`}
+              disabled={!connected}
+            />
+          </PanelFooter>
+        </>
+      )}
     </div>
   )
 }

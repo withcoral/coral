@@ -1,12 +1,17 @@
 import classNames from 'classnames'
 import { Link } from 'react-router'
-import { Banner, Typography } from '@/wax/components'
+import { useId } from 'react'
+import { Banner, Button, List, Typography } from '@/wax/components'
 import { CodeBlock } from '@/wax/components/code-block'
 import { CodeChip } from '@/wax/components/code-chip'
+import * as DescriptionList from '@/wax/components/description-list'
 import { Disclosure } from '@/wax/components/disclosure'
 import { Markdown } from '@/wax/components/markdown'
 import { Pill } from '@/wax/components/pill'
 import type { OperationHintsView } from '@/views/providers/types'
+import { policyOptions } from '@/components/policy-toggle'
+import { Icon } from '@/wax/components/icon'
+import { Tooltip } from '@/wax/components/tooltip'
 import type {
   Description,
   DiscoveryContext,
@@ -31,7 +36,6 @@ export function DiscoveryEvidence({
   const { context, view, response } = evidence
   return (
     <div className={styles.stack}>
-      {context.kind === 'search' && <SearchRequest context={context} />}
       {context.kind === 'describe' && (
         <dl className={styles.facts}>
           <Fact label="Call path">
@@ -56,12 +60,15 @@ export function DiscoveryEvidence({
             Reef cannot show this response in the current layout. The stored response follows.
           </Banner>
         ))}
+      {/* A search shows only its results; a response Reef cannot read shows as stored. */}
       {view.kind === 'raw' ? (
         <RawResponse response={response} />
       ) : (
-        <Disclosure title="Raw response">
-          <RawResponse response={response} />
-        </Disclosure>
+        context.kind !== 'search' && (
+          <Disclosure title="Raw response">
+            <RawResponse response={response} />
+          </Disclosure>
+        )
       )}
     </div>
   )
@@ -78,31 +85,39 @@ function RawResponse({ response }: { response: string }) {
   )
 }
 
-/** What the agent asked for, apart from the intent it gave for the call. */
-function SearchRequest({ context }: { context: Extract<DiscoveryContext, { kind: 'search' }> }) {
+/** What a search asked for, apart from the intent the agent gave for the call. */
+export function SearchParameters({
+  context,
+}: {
+  context: Extract<DiscoveryContext, { kind: 'search' }>
+}) {
   return (
-    <dl className={styles.facts}>
-      <Fact label="Query">
+    <DescriptionList.List title="Search">
+      <DescriptionList.Row label="Query">
         {context.query === null ? (
           'None. The agent listed without a query.'
         ) : (
           <Typography.BodySmallStrong>“{context.query}”</Typography.BodySmallStrong>
         )}
-      </Fact>
-      <Fact label="Provider">
+      </DescriptionList.Row>
+      <DescriptionList.Row label="Provider">
         {context.provider === null ? 'all providers' : <CodeChip>{context.provider}</CodeChip>}
-      </Fact>
-      <Fact label="Page">
+      </DescriptionList.Row>
+      <DescriptionList.Row label="Page">
         {context.cursor === null ? 'first page' : 'a later page'}, up to {context.limit} results
-      </Fact>
-    </dl>
+      </DescriptionList.Row>
+    </DescriptionList.List>
   )
 }
 
 const toneColors = { success: 'green', neutral: 'gray', warning: 'amber', error: 'red' } as const
 
+/** A "+" on a count says more matched. A trimmed page lists no such count, so it says it once. */
 function CoverageStrip({ page }: { page: SearchPage }) {
   const tone = worstTone(page.coverage)
+  const counted = page.coverage.some(
+    (coverage) => coverage.state === 'results_found' && coverage.hasMore,
+  )
   return (
     <div
       className={classNames(styles.coverage, {
@@ -116,8 +131,8 @@ function CoverageStrip({ page }: { page: SearchPage }) {
         const line = coverageLine(coverage)
         return <CoverageRow key={coverage.kind} {...line} />
       })}
-      {page.hasMore && (
-        <Typography.BodySmall variant="tertiary" className={styles.coverageNote}>
+      {page.hasMore && !counted && (
+        <Typography.BodySmall variant="tertiary">
           More results were available after this page.
         </Typography.BodySmall>
       )}
@@ -148,58 +163,44 @@ function CoverageRow({
 
 /** A trimmed page states coverage only for a kind whose results may be missing. */
 function SearchLedger({ page }: { page: SearchPage }) {
+  const id = useId()
   return (
-    <>
+    <section className={styles.stack} aria-labelledby={id}>
+      <Typography.BodySmallStrong as="h4" id={id}>
+        Result
+      </Typography.BodySmallStrong>
       {(page.coverage.length > 0 || page.hasMore) && <CoverageStrip page={page} />}
       {page.hits.length === 0 ? (
         <Typography.Body>This page has no results.</Typography.Body>
       ) : (
-        <ol className={styles.hits} aria-label="Results in rank order">
-          {page.hits.map((hit, index) => (
-            <li key={hit.callPath} className={styles.hit}>
-              <span className={styles.rank} aria-hidden>
-                {index + 1}
-              </span>
+        <List.Container as="ol" aria-label="Results in rank order">
+          {page.hits.map((hit) => (
+            <List.Item as="li" key={hit.callPath}>
               <Hit hit={hit} />
-            </li>
+            </List.Item>
           ))}
-        </ol>
+        </List.Container>
       )}
-    </>
+    </section>
   )
 }
 
+/** One compact result: what it is, where it lives, and why it matched. Today's catalog page
+ * holds its signature and description. */
 function Hit({ hit }: { hit: SearchHit }) {
   return (
-    <div className={styles.hitBody}>
+    <>
       <div className={styles.row}>
-        <Typography.BodyStrong>{hit.title}</Typography.BodyStrong>
+        <List.Title>{hit.title}</List.Title>
         <KindPill kind={hit.kind} />
-        {hit.operation && <Flags operation={hit.operation} />}
+        {hit.operation && <Flags operation={hit.operation} approval="icon" />}
       </div>
-      <div>
+      <div className={styles.row}>
         <CodeChip>{hit.callPath}</CodeChip>
+        <CurrentIconLink target={hit} />
       </div>
-      <CodeBlock value={hit.signatureLine} format="typescript" framed wrap />
-      <Typography.Body className={styles.snippet}>{hit.descriptionSnippet}</Typography.Body>
-      {hit.guidanceSnippet !== null && (
-        <Typography.BodySmall>Guidance: {hit.guidanceSnippet}</Typography.BodySmall>
-      )}
       <MatchedIn matched={hit.matched} />
-      {hit.matched.paths.length > 0 && (
-        <Disclosure
-          variant="inline"
-          title={`Matched declaration paths (${hit.matched.paths.length})`}
-        >
-          <div className={styles.row}>
-            {hit.matched.paths.map((path) => (
-              <CodeChip key={path}>{path}</CodeChip>
-            ))}
-          </div>
-        </Disclosure>
-      )}
-      <CurrentLink target={hit} />
-    </div>
+    </>
   )
 }
 
@@ -222,14 +223,24 @@ const hintLabels: [keyof OperationHintsView, string][] = [
   ['openWorld', 'open world'],
 ]
 /** A hint shows only when the provider declared it; a declared false reads "not". */
-function Flags({ operation }: { operation: OperationFlags }) {
+function Flags({
+  operation,
+  approval = 'pill',
+}: {
+  operation: OperationFlags
+  /** A compact search result shows approval as the policy hand the Providers page uses. */
+  approval?: 'pill' | 'icon'
+}) {
   return (
     <>
-      {operation.approvalRequired && (
-        <Pill color="amber" size="small">
-          approval required
-        </Pill>
-      )}
+      {operation.approvalRequired &&
+        (approval === 'icon' ? (
+          <NeedsApproval />
+        ) : (
+          <Pill color="amber" size="small">
+            approval required
+          </Pill>
+        ))}
       {operation.deprecated && (
         <Pill color="orange" size="small">
           deprecated
@@ -244,6 +255,32 @@ function Flags({ operation }: { operation: OperationFlags }) {
         )
       })}
     </>
+  )
+}
+
+const needsApproval = policyOptions.find((option) => option.value === 'approval_required')!
+/** The policy hand, named and explained as the Providers page's policy control does. */
+function NeedsApproval() {
+  const { label, icon, description } = needsApproval
+  return (
+    <Tooltip
+      content={
+        <>
+          {label}
+          <br />
+          {description}
+        </>
+      }
+    >
+      <span
+        role="img"
+        aria-label={`${label}. ${description}`}
+        tabIndex={0}
+        className={styles.approval}
+      >
+        <Icon name={icon} size="14" color="inherit" />
+      </span>
+    </Tooltip>
   )
 }
 
@@ -281,6 +318,24 @@ function MatchedIn({ matched }: { matched: SearchHit['matched'] }) {
 }
 
 /** The link opens today's catalog, not the one the agent saw. A target that is gone has none. */
+/** Today's catalog page for a search result, beside its exact call path. A target gone from
+ * the catalog has no link. */
+function CurrentIconLink({
+  target,
+}: {
+  target: Pick<SearchHit, 'kind' | 'callPath' | 'currentHref'>
+}) {
+  if (target.currentHref === null) return null
+  const subject = target.kind === 'operation' ? 'operation' : 'function'
+  return (
+    <Button.IconLink
+      name="ExternalLink"
+      to={target.currentHref}
+      tooltipText={`Open current ${subject} ${target.callPath}`}
+      size="22"
+    />
+  )
+}
 function CurrentLink({ target }: { target: Pick<SearchHit, 'kind' | 'currentHref'> }) {
   if (target.currentHref === null) return null
   return (

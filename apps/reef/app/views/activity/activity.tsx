@@ -39,6 +39,7 @@ import {
   type StopPosition,
 } from './navigation'
 import { ActivityDetail } from './detail'
+import { PanelClose } from './panel'
 import { ActivityConnectedContext, restoreFirst, useActivityArchived } from './live'
 import { PendingActions } from './pending'
 import { useUnsentComment } from '../actions/review'
@@ -491,6 +492,16 @@ export function Activity({
     setShown({ page, record: shownRecord })
   const detail = selected ? { page, record: shownRecord } : shown
   const detailPage = detail.page
+  // Every detail panel names its own record, so it replaces the rail's generic header.
+  const ownHeader = !detailPage.unavailable && Boolean(detailPage.detail)
+  // A request review narrows the rail to one decision; name it apart from a record glimpse.
+  const reviewingAction =
+    ownHeader &&
+    ((detailPage.detail?.kind === 'invocation' &&
+      detailPage.detail.request?.kind === 'approval' &&
+      Boolean(detailPage.detail.context)) ||
+      (detailPage.detail?.kind === 'run' &&
+        detailPage.detail.request?.kind === 'account_connection'))
   const unsent = useUnsentComment()
   // The token of the rail's latest pick or close. A pending navigation with this
   // token is the rail's own and has no history entry yet.
@@ -958,21 +969,25 @@ export function Activity({
                 // Closing returns focus to the table, where the cursor shows the record.
                 finalFocus={() => tableRef.current ?? true}
               >
-                <Dialog.Header>
-                  <Dialog.Title>
-                    {(detailPage.detail?.kind === 'invocation' &&
-                      detailPage.detail.request?.kind === 'approval') ||
-                    (detailPage.detail?.kind === 'run' &&
-                      detailPage.detail.request?.kind === 'account_connection')
-                      ? 'Review action'
-                      : 'Activity details'}
+                {/* Each detail panel heads the rail with the record it names. */}
+                {ownHeader ? (
+                  <Dialog.Title hidden>
+                    {reviewingAction ? 'Review action' : 'Activity details'}
                   </Dialog.Title>
-                  <Dialog.Close ariaLabel="Close details" />
-                </Dialog.Header>
+                ) : (
+                  <Dialog.Header>
+                    <Dialog.Title>Activity details</Dialog.Title>
+                    <Dialog.Close ariaLabel="Close details" />
+                  </Dialog.Header>
+                )}
                 {detailPage.unavailable ? (
                   <Typography.Body>This history is unavailable.</Typography.Body>
                 ) : (
-                  <ActivityDetail key={detail.record} page={detailPage} />
+                  <PanelClose
+                    value={ownHeader ? <Dialog.Close ariaLabel="Close details" inline /> : null}
+                  >
+                    <ActivityDetail key={detail.record} page={detailPage} />
+                  </PanelClose>
                 )}
                 {outside &&
                   page.detail?.kind !== 'run' &&
