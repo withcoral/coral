@@ -1,6 +1,7 @@
 import type { Page } from 'playwright'
 import { expect, test } from 'vitest'
 import { withOwnerSession, mcpToken } from '../../../support/actors.ts'
+import { waitForHydration } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
 import { observeRun, programRunner } from '../../../support/providers.ts'
 
@@ -67,6 +68,7 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
     await step('↓ from the page background enters the table on the same press', async () => {
       await page.goto(`/workspaces/${id}/activity`)
       await table.getByRole('link', { name: 'Keyboard goal', exact: true }).waitFor()
+      await waitForHydration(page)
       await toBackground(page)
       await page.keyboard.press('ArrowDown')
       expect(await tableFocused(page)).toBe(true)
@@ -200,6 +202,7 @@ test('The keyboard drives Agent Activity', async (context) => {
     await step('The Agent page takes the same keys', async () => {
       await page.goto(`/${issued.agent!.name.split('/').map(encodeURIComponent).join('/')}`)
       await table.getByRole('link', { name: 'Agent goal', exact: true }).waitFor()
+      await waitForHydration(page)
       await toBackground(page)
       await page.keyboard.press('ArrowDown')
       expect(await tableFocused(page)).toBe(true)

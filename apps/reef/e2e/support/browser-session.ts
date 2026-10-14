@@ -41,6 +41,15 @@ const sessionSequences = new WeakMap<TestContext['task'], number>()
 
 // Tests retain raw Playwright access. The only abstraction is resource/evidence
 // ownership; no product workflow or authorization rules live here.
+/**
+ * Waits until React has hydrated a page that a document load rendered. The
+ * server's markup shows first, and a key or click that lands before hydration
+ * does nothing.
+ */
+export async function waitForHydration(page: Page) {
+  await page.locator('html[data-hydrated]').waitFor({ state: 'attached' })
+}
+
 export async function withBrowserSession(
   test: TestContext,
   body: (session: Session) => Promise<void>,
