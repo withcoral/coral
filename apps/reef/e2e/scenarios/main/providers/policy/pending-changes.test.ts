@@ -81,7 +81,11 @@ async function openPolicies(page: Page, accessToken: string) {
   await publishWorkspaceProvider(
     accessToken,
     `workspaces/${workspace}`,
-    openApiDocument('Pending', { first: {}, second: {}, third: {} }),
+    openApiDocument('Pending', {
+      first: { method: 'post' },
+      second: { method: 'post' },
+      third: { method: 'post' },
+    }),
     'pending',
   )
   await page.goto(`/workspaces/${workspace}/providers`)

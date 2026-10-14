@@ -71,6 +71,7 @@ impl EntityRetriever for OperationRetriever {
                     provider.provider().id(),
                     target.key(),
                     target.hints(),
+                    target.http_method(),
                 )
                 .is_none()
                 {
@@ -385,6 +386,7 @@ fn describe_material(
         material.provider_id(),
         material.operation_key(),
         material.hints(),
+        material.http_method(),
     ) else {
         return Ok(None);
     };

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coral_catalog::{OperationHints, OperationKey};
+use coral_catalog::{HttpMethod, OperationHints, OperationKey};
 use coral_provider::ProviderId;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId, WorkspaceId};
@@ -95,19 +95,20 @@ impl ExactOperationRules {
     }
 
     /// Returns the Workspace decision for one Operation: its exact rule, else
-    /// the default that its declared hints give.
+    /// the default that its declared hints and HTTP method give.
     #[must_use]
     pub fn access_state(
         &self,
         provider_id: &ProviderId,
         operation_key: &OperationKey,
         hints: OperationHints,
+        http_method: Option<HttpMethod>,
     ) -> OperationAccessState {
         self.rules
             .get(provider_id)
             .and_then(|operations| operations.get(operation_key))
             .copied()
-            .unwrap_or_else(|| crate::default_access_state(hints))
+            .unwrap_or_else(|| crate::default_access_state(hints, http_method))
     }
 
     /// Returns every Operation that an exact rule disables. No default is

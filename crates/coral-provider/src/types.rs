@@ -449,6 +449,7 @@ pub struct OperationAuthoringMaterial {
     summary: String,
     presentation: coral_catalog::OperationPresentation,
     hints: coral_catalog::OperationHints,
+    http_method: Option<coral_catalog::HttpMethod>,
     typescript_declaration: String,
 }
 
@@ -467,6 +468,7 @@ impl OperationAuthoringMaterial {
             summary: operation.summary().to_string(),
             presentation: operation.presentation().clone(),
             hints: operation.hints(),
+            http_method: operation.http_method(),
             typescript_declaration: operation.typescript_declaration().to_string(),
         }
     }
@@ -517,6 +519,12 @@ impl OperationAuthoringMaterial {
     #[must_use]
     pub const fn hints(&self) -> coral_catalog::OperationHints {
         self.hints
+    }
+
+    /// Returns the method of an HTTP Operation; `None` for other protocols.
+    #[must_use]
+    pub const fn http_method(&self) -> Option<coral_catalog::HttpMethod> {
+        self.http_method
     }
 
     /// Returns the complete self-contained TypeScript declaration.

@@ -121,10 +121,22 @@ impl HintColumns {
     }
 }
 
+/// Reads an Operation's method column; NULL for a protocol other than HTTP.
+fn decode_http_method(method: Option<&str>) -> Result<Option<HttpMethod>, Error> {
+    method
+        .map(|method| {
+            HttpMethod::parse(method).ok_or_else(|| {
+                Error::CorruptData("Materialized Operation has invalid HTTP method".to_string())
+            })
+        })
+        .transpose()
+}
+
 #[derive(Debug, FromRow)]
 struct SearchTargetRow {
     operation_key: String,
     relative_path: String,
+    method: Option<String>,
     #[sqlx(flatten)]
     hints: HintColumns,
 }
@@ -143,6 +155,7 @@ impl SearchTargetRow {
             key,
             self.relative_path,
             self.hints.decode(),
+            decode_http_method(self.method.as_deref())?,
         ))
     }
 }
@@ -689,6 +702,7 @@ pub(super) async fn available_search_targets(
                 .columns([
                     MaterializedOperations::OperationKey,
                     MaterializedOperations::RelativePath,
+                    MaterializedOperations::Method,
                     MaterializedOperations::ReadOnlyHint,
                     MaterializedOperations::DestructiveHint,
                     MaterializedOperations::IdempotentHint,
@@ -790,10 +804,14 @@ pub(super) async fn load_operation_hints(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
     keys: &[OperationKey],
-) -> Result<std::collections::BTreeMap<OperationKey, crate::OperationHints>, Error> {
+) -> Result<
+    std::collections::BTreeMap<OperationKey, (crate::OperationHints, Option<HttpMethod>)>,
+    Error,
+> {
     #[derive(FromRow)]
     struct Row {
         operation_key: String,
+        method: Option<String>,
         #[sqlx(flatten)]
         hints: HintColumns,
     }
@@ -803,6 +821,7 @@ pub(super) async fn load_operation_hints(
             Query::select()
                 .columns([
                     MaterializedOperations::OperationKey,
+                    MaterializedOperations::Method,
                     MaterializedOperations::ReadOnlyHint,
                     MaterializedOperations::DestructiveHint,
                     MaterializedOperations::IdempotentHint,
@@ -825,7 +844,8 @@ pub(super) async fn load_operation_hints(
             let key = OperationKey::parse(&row.operation_key).map_err(|_error| {
                 Error::CorruptData("Operation hints have an invalid key".into())
             })?;
-            Ok((key, row.hints.decode()))
+            let method = decode_http_method(row.method.as_deref())?;
+            Ok((key, (row.hints.decode(), method)))
         })
         .collect()
 }

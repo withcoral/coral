@@ -1,6 +1,6 @@
 //! Exact policy selection for payload-free pending-approval projections.
 use crate::{OperationAccessState, default_access_state};
-use coral_catalog::OperationHints;
+use coral_catalog::{HttpMethod, OperationHints};
 use sea_query::{
     Alias, ColumnRef, Expr, ExprTrait as _, Func, Query, SimpleExpr, SubQueryStatement,
 };
@@ -31,12 +31,20 @@ pub fn approval_required(
         )),
     );
     let read_only = OperationHints::new(Some(true), None, None, None);
+    let undeclared = OperationHints::default();
     let fallback: SimpleExpr = Expr::case(
-        coral_catalog::history_repository::declares_read_only(generation, operation),
-        Expr::val(default_access_state(read_only).as_storage_str()),
+        coral_catalog::history_repository::declares_read_only(
+            generation.clone(),
+            operation.clone(),
+        ),
+        Expr::val(default_access_state(read_only, None).as_storage_str()),
+    )
+    .case(
+        coral_catalog::history_repository::has_safe_http_method(generation, operation),
+        Expr::val(default_access_state(undeclared, Some(HttpMethod::Get)).as_storage_str()),
     )
     .finally(Expr::val(
-        default_access_state(OperationHints::default()).as_storage_str(),
+        default_access_state(undeclared, None).as_storage_str(),
     ))
     .into();
     Expr::expr(Func::coalesce([explicit, fallback]))

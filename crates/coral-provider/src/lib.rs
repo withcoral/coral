@@ -588,10 +588,11 @@ pub async fn provider_search_catalogs_in_transaction(
     Ok(catalogs)
 }
 
-/// Resolves the declared effect hints for an exact current Provider Operation.
+/// Resolves the declared effect hints and HTTP method for an exact current
+/// Provider Operation.
 ///
 /// This narrow transaction-compatible facet lets the Operation Policy Module
-/// validate its target and derive the hint-based default without reading
+/// validate its target and derive its default without reading
 /// Provider or Catalog persistence itself. The caller owns commit or rollback.
 ///
 /// # Errors
@@ -604,7 +605,13 @@ pub async fn operation_policy_hints_in_transaction(
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
     operation_key: &OperationKey,
-) -> Result<Option<coral_catalog::OperationHints>, Error> {
+) -> Result<
+    Option<(
+        coral_catalog::OperationHints,
+        Option<coral_catalog::HttpMethod>,
+    )>,
+    Error,
+> {
     Ok(operation_policy_hints_batch_in_transaction(
         transaction,
         workspace_id,
@@ -615,7 +622,7 @@ pub async fn operation_policy_hints_in_transaction(
     .remove(operation_key))
 }
 
-/// Resolves hints for a bounded selection in one Provider's current catalog.
+/// Resolves hints and HTTP methods for a bounded selection in one Provider's current catalog.
 /// Missing Providers or keys are omitted. Definitions and schemas stay lazy.
 /// The caller owns authority and the coherent read transaction.
 /// # Errors
@@ -625,7 +632,16 @@ pub async fn operation_policy_hints_batch_in_transaction(
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
     operation_keys: &[OperationKey],
-) -> Result<std::collections::BTreeMap<OperationKey, coral_catalog::OperationHints>, Error> {
+) -> Result<
+    std::collections::BTreeMap<
+        OperationKey,
+        (
+            coral_catalog::OperationHints,
+            Option<coral_catalog::HttpMethod>,
+        ),
+    >,
+    Error,
+> {
     let Some(provider_id) =
         crate::access::provider_id_in_transaction(transaction, workspace_id, provider_id).await?
     else {

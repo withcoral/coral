@@ -82,7 +82,13 @@ async fn disabled_provider_remains_a_valid_operation_policy_target() {
         .rollback()
         .await
         .expect("finish policy target resolution");
-    assert_eq!(hints, Some(OperationHints::default()));
+    assert_eq!(
+        hints,
+        Some((
+            OperationHints::default(),
+            Some(coral_catalog::HttpMethod::Get)
+        ))
+    );
 }
 
 pub(crate) async fn publish_provider(

@@ -1,4 +1,4 @@
-use coral_catalog::{OperationHints, OperationKey};
+use coral_catalog::{HttpMethod, OperationHints, OperationKey};
 use coral_outbound::DestinationPolicy;
 use coral_provider::access::{CredentialRoute, ProviderNamespace};
 use coral_provider::{
@@ -38,6 +38,7 @@ const EFFECT_MCP: &str = r#"{
   ]
 }"#;
 
+// POST, so both Operations default to approval.
 const WEATHER_OPENAPI: &str = r#"openapi: 3.1.0
 info:
   title: Weather
@@ -47,18 +48,180 @@ servers:
 security: []
 paths:
   /forecast:
-    get:
+    post:
       operationId: getForecast
       responses:
         "200":
           description: Forecast
   /alerts:
-    get:
+    post:
       operationId: getAlerts
       responses:
         "200":
           description: Alerts
 "#;
+
+const METHODS_OPENAPI: &str = r#"openapi: 3.1.0
+info:
+  title: Methods
+  version: 1.0.0
+servers:
+  - url: https://methods.example
+security: []
+paths:
+  /value:
+    get: { operationId: getValue, responses: { "200": { description: OK } } }
+    head: { operationId: headValue, responses: { "200": { description: OK } } }
+    options: { operationId: optionsValue, responses: { "200": { description: OK } } }
+    trace: { operationId: traceValue, responses: { "200": { description: OK } } }
+    post: { operationId: postValue, responses: { "200": { description: OK } } }
+    put: { operationId: putValue, responses: { "200": { description: OK } } }
+    patch: { operationId: patchValue, responses: { "200": { description: OK } } }
+    delete: { operationId: deleteValue, responses: { "200": { description: OK } } }
+"#;
+
+#[tokio::test]
+async fn safe_http_methods_drive_default_policy_through_the_module_interface() {
+    let (fixture, workspaces, providers, policies) = test_modules().await;
+    let owner = organization_user(
+        policies.database.clone(),
+        "user:http-method-policy",
+        OrganizationRole::Member,
+    )
+    .await;
+    let workspace = workspaces
+        .create(
+            &change(owner.clone(), 10, '1'),
+            WorkspaceDisplayName::parse("HTTP method policy").expect("display name"),
+        )
+        .await
+        .expect("create Workspace");
+    let published = publish_operation(
+        &providers,
+        &owner,
+        workspace.id(),
+        METHODS_OPENAPI,
+        "methods",
+        "getValue",
+        20,
+    )
+    .await;
+    // RFC 9110 safe methods run without approval; every other method asks.
+    for (operation, expected) in [
+        ("getValue", OperationAccessState::Enabled),
+        ("headValue", OperationAccessState::Enabled),
+        ("optionsValue", OperationAccessState::Enabled),
+        ("traceValue", OperationAccessState::Enabled),
+        ("postValue", OperationAccessState::ApprovalRequired),
+        ("putValue", OperationAccessState::ApprovalRequired),
+        ("patchValue", OperationAccessState::ApprovalRequired),
+        ("deleteValue", OperationAccessState::ApprovalRequired),
+    ] {
+        let target = OperationPolicyTarget::new(
+            workspace.id().clone(),
+            published.provider_id().clone(),
+            OperationKey::parse(operation).expect("Operation Key"),
+        );
+        let decision = policies.decision(&owner, &target).await.expect("decision");
+        assert_eq!(decision.access_state(), expected, "{operation}");
+        assert!(!decision.is_explicit(), "{operation}");
+    }
+
+    // Pending-approval queries select with the SQL mirror; it agrees with
+    // the Module, exact rules included.
+    let target = |key: &str| {
+        OperationPolicyTarget::new(
+            workspace.id().clone(),
+            published.provider_id().clone(),
+            OperationKey::parse(key).expect("Operation Key"),
+        )
+    };
+    policies
+        .set_access_states(
+            &change(owner.clone(), 30, '3'),
+            vec![
+                (target("getValue"), OperationAccessState::ApprovalRequired),
+                (target("postValue"), OperationAccessState::Enabled),
+            ],
+        )
+        .await
+        .expect("set exact rules");
+    let keys = [
+        "getValue",
+        "headValue",
+        "optionsValue",
+        "traceValue",
+        "postValue",
+        "putValue",
+        "patchValue",
+        "deleteValue",
+    ];
+    let mut by_module = policies
+        .decisions(&owner, &keys.map(target))
+        .await
+        .expect("decisions")
+        .into_iter()
+        .filter(|decision| decision.access_state() == OperationAccessState::ApprovalRequired)
+        .map(|decision| decision.target().operation_key().as_str().to_string())
+        .collect::<Vec<_>>();
+    by_module.sort();
+    let by_sql = approval_required_by_sql(&fixture, &published).await;
+    assert_eq!(
+        by_sql,
+        ["deleteValue", "getValue", "patchValue", "putValue"],
+        "SQL mirror"
+    );
+    assert_eq!(by_sql, by_module);
+}
+
+/// Operation Keys of one Provider that the SQL mirror selects as approval-required.
+async fn approval_required_by_sql(
+    fixture: &TestDatabase,
+    provider: &OperationPolicyTarget,
+) -> Vec<String> {
+    use sea_query::{Alias, Expr, IntoColumnRef as _, Order, Query};
+
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        operation_key: String,
+    }
+    let column = |name: &str| (Alias::new("candidate"), Alias::new(name)).into_column_ref();
+    let candidates = Query::select()
+        .expr_as(
+            Expr::val(provider.workspace_id().to_string()),
+            Alias::new("workspace_id"),
+        )
+        .expr_as(
+            Expr::val(provider.provider_id().to_string()),
+            Alias::new("provider_id"),
+        )
+        .columns([
+            Alias::new("provider_generation_id"),
+            Alias::new("operation_key"),
+        ])
+        .from(Alias::new("materialized_operations"))
+        .to_owned();
+    let database = fixture.database();
+    let mut transaction = database.begin_read_snapshot().await.expect("begin read");
+    let rows: Vec<Row> = transaction
+        .fetch_all(
+            Query::select()
+                .column(column("operation_key"))
+                .from_subquery(candidates, Alias::new("candidate"))
+                .and_where(crate::history_repository::approval_required(
+                    column("workspace_id"),
+                    column("provider_id"),
+                    column("provider_generation_id"),
+                    column("operation_key"),
+                ))
+                .order_by(column("operation_key"), Order::Asc)
+                .to_owned(),
+        )
+        .await
+        .expect("select approval-required Operations");
+    transaction.rollback().await.expect("finish read");
+    rows.into_iter().map(|row| row.operation_key).collect()
+}
 
 #[tokio::test]
 async fn openapi_forecast_defaults_to_approval_and_owner_can_enable_it() {
@@ -708,35 +871,50 @@ async fn exact_rules_read_returns_one_workspaces_disabled_rules_and_resolves_def
         ),
     ] {
         assert_eq!(
-            rules.access_state(target.provider_id(), target.operation_key(), hints),
+            rules.access_state(target.provider_id(), target.operation_key(), hints, None),
             expected,
             "an exact rule wins over the hint default"
         );
     }
     let unruled = OperationKey::parse("getAlerts").expect("Operation Key");
-    for (hints, expected) in [
-        (read_only, OperationAccessState::Enabled),
+    let (get, post) = (Some(HttpMethod::Get), Some(HttpMethod::Post));
+    for (hints, http_method, expected) in [
+        (read_only, None, OperationAccessState::Enabled),
         (
             OperationHints::new(Some(true), Some(true), None, None),
+            None,
             OperationAccessState::Enabled,
         ),
         (
             OperationHints::new(Some(false), None, None, None),
+            None,
             OperationAccessState::ApprovalRequired,
         ),
         (
             OperationHints::new(None, Some(false), Some(true), Some(false)),
+            None,
             OperationAccessState::ApprovalRequired,
         ),
         (
             OperationHints::default(),
+            None,
+            OperationAccessState::ApprovalRequired,
+        ),
+        (
+            OperationHints::default(),
+            get,
+            OperationAccessState::Enabled,
+        ),
+        (
+            OperationHints::default(),
+            post,
             OperationAccessState::ApprovalRequired,
         ),
     ] {
         assert_eq!(
-            rules.access_state(secondary.provider_id(), &unruled, hints),
+            rules.access_state(secondary.provider_id(), &unruled, hints, http_method),
             expected,
-            "an Operation without a rule takes its hint default: {hints:?}"
+            "an Operation without a rule takes its default: {hints:?} {http_method:?}"
         );
     }
 }

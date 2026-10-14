@@ -400,9 +400,9 @@ read-only (see Operation Hints) as possibly effectful. _Avoid_: Write operation,
 **Operation Hints**: The effect hints an Operation's provider source declares: read-only, destructive, idempotent, and
 open-world. Coral takes each hint at catalog materialization only when the source declares it, from an MCP tool's
 annotations in v1, and never assumes a protocol default, so an undeclared hint says nothing. OpenAPI/HTTP-sourced
-Operations declare none in v1; Coral's MCP resource read is read-only by protocol definition. Hints are provider claims,
-not caller-configurable, and only a declared read-only hint affects policy. _Avoid_: Effect classification, `unknown`
-effect, tool annotations
+Operations declare none in v1, and their HTTP method is not a hint; Coral's MCP resource read is read-only by protocol
+definition. Hints are provider claims, not caller-configurable, and only a declared read-only hint affects policy among
+them. _Avoid_: Effect classification, `unknown` effect, tool annotations
 _In Reef_: one label per hint declared true: "Read-only", "Destructive", "Idempotent", "Open world"; none when undeclared
 
 **Operation Access State**: The Workspace decision that one Operation is `enabled`, `approval_required`, or `disabled`.
@@ -411,10 +411,11 @@ Organization policy does not set Operation access in v1, and there are no Princi
 Credential Route-specific rules, patterns, ordered rules, or globs. A reusable Program in one Workspace therefore has
 one Operation policy for one Provider regardless of its Invoking Principal. A Principal can still have different
 discoverability and readiness because Credential Route, Provider Accounts, and Agent state are not policy (see
-Discoverable Operation); a stale Invocation fails safely. If no exact rule matches, the Operation's Operation Hints supply
-the default: an Operation that declares itself read-only defaults to `enabled`; every other Operation defaults to
-`approval_required`. Because v1 OpenAPI/HTTP-sourced Operations declare no hints, those Operations require approval
-until a Workspace rule enables them. Provider signature and execution-binding changes do not
+Discoverable Operation); a stale Invocation fails safely. If no exact rule matches, a default applies: an Operation that
+declares itself read-only, or an OpenAPI/HTTP-sourced Operation with a safe HTTP method (GET, HEAD, OPTIONS, or TRACE),
+defaults to `enabled`; every other Operation defaults to `approval_required`. The default applies to every Operation
+without an exact rule, including those of existing Providers, and a Workspace Owner overrides it with an exact rule, for
+example for an upstream that changes state on GET. Provider signature and execution-binding changes do not
 stale an exact rule in v1. A changed Operation Key does. Policy for one Provider does not affect another Provider.
 A Principal that needs a different Operation set belongs in a different Workspace.
 _Avoid_: Principal policy, Agent policy, Account-specific policy, Credential Route policy, Provider permission,

@@ -936,6 +936,7 @@ pub struct CatalogSearchTarget {
     key: OperationKey,
     relative_path: String,
     hints: OperationHints,
+    http_method: Option<crate::HttpMethod>,
 }
 
 impl CatalogSearchTarget {
@@ -943,11 +944,13 @@ impl CatalogSearchTarget {
         key: OperationKey,
         relative_path: String,
         hints: OperationHints,
+        http_method: Option<crate::HttpMethod>,
     ) -> Self {
         Self {
             key,
             relative_path,
             hints,
+            http_method,
         }
     }
 
@@ -967,6 +970,12 @@ impl CatalogSearchTarget {
     #[must_use]
     pub const fn hints(&self) -> OperationHints {
         self.hints
+    }
+
+    /// Returns the method of an HTTP Operation; `None` for other protocols.
+    #[must_use]
+    pub const fn http_method(&self) -> Option<crate::HttpMethod> {
+        self.http_method
     }
 }
 
@@ -1073,6 +1082,15 @@ impl MaterializedOperation {
     #[must_use]
     pub const fn hints(&self) -> OperationHints {
         self.hints
+    }
+
+    /// Returns the method of an HTTP Operation; `None` for other protocols.
+    #[must_use]
+    pub const fn http_method(&self) -> Option<crate::HttpMethod> {
+        match &self.execution_binding {
+            ExecutionBinding::Http(binding) => Some(binding.method()),
+            ExecutionBinding::Mcp(_) => None,
+        }
     }
 
     pub(crate) fn binding_json(&self) -> &str {
