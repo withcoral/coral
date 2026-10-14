@@ -38,7 +38,6 @@ export const searchPageSchema = z.object({
       signature_line: z.string(),
       description_snippet: z.string(),
       guidance_snippet: z.string().nullish(),
-      matched_fields: z.array(z.string()).optional(),
       matched_tags: z.array(z.string()).optional(),
       hints: hints.optional(),
       approval_required: z.boolean().optional(),
@@ -206,7 +205,7 @@ function searchPage(value: z.infer<typeof searchPageSchema>): SearchPage {
         descriptionSnippet: hit.description_snippet,
         guidanceSnippet: hit.guidance_snippet ?? null,
         operation: kind === 'operation' ? operationFlags(hit) : null,
-        matched: { fields: hit.matched_fields ?? [], tags: hit.matched_tags ?? [], paths: [] },
+        matched: { fields: [], tags: hit.matched_tags ?? [], paths: [] },
         currentHref: null,
       }
     }),

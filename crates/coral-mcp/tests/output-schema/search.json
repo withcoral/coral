@@ -64,13 +64,6 @@
           ],
           "description": "Present only when a query term matched the guidance."
         },
-        "matched_fields": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "The fields a query term matched; `declaration` when it matched an\ninput or result field. Absent without a query."
-        },
         "matched_tags": {
           "type": "array",
           "items": {

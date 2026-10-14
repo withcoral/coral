@@ -203,7 +203,6 @@ impl OutputContracts {
             ("/state", json!("unknown_state")),
             ("/outcome", json!("running")),
             ("/kind", json!("provider_schema")),
-            ("/hits/0/matched_fields", json!(false)),
             ("/hits/0/signature_line", json!({})),
             ("/events/0/kind", json!("invocation.started")),
             (

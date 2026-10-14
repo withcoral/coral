@@ -36,18 +36,7 @@ it('reads a search page into hits, with no coverage when every retriever searche
     kind: 'operation',
     // A hit names no title, so Reef shows the path under the namespace.
     title: 'pulls.updateBranch',
-    matched: {
-      fields: [
-        'call_path',
-        'declaration',
-        'description',
-        'provider_display_name',
-        'provider_namespace',
-        'tags',
-      ],
-      tags: ['pulls'],
-      paths: [],
-    },
+    matched: { fields: [], tags: ['pulls'], paths: [] },
   })
 })
 

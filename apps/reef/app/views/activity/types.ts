@@ -332,7 +332,7 @@ export interface SearchHit {
   descriptionSnippet: string
   guidanceSnippet: string | null
   operation: OperationFlags | null
-  /** Why the hit matched: field names, tags, and the declaration paths an untrimmed page lists. */
+  /** Why the hit matched: tags, and the field names and declaration paths an untrimmed page lists. */
   matched: { fields: string[]; tags: string[]; paths: string[] }
   /** Today's catalog page for the target; null when the target is gone. */
   currentHref: string | null

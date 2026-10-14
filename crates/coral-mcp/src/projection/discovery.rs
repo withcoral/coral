@@ -74,10 +74,6 @@ struct SearchHit {
     /// Present only when a query term matched the guidance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     guidance_snippet: Option<String>,
-    /// The fields a query term matched; `declaration` when it matched an
-    /// input or result field. Absent without a query.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    matched_fields: Vec<String>,
     /// The tags a query term matched; absent when none did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     matched_tags: Vec<String>,

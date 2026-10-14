@@ -1075,11 +1075,6 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     assert!(first_search_result.get("summary").is_none());
     assert_eq!(structured(&searched)["has_more"], false);
     assert!(structured(&searched).get("next_cursor").is_none());
-    assert!(
-        first_search_result
-            .get("matched_fields")
-            .is_some_and(Value::is_array)
-    );
     assert!(first_search_result.get("score").is_none());
     assert!(
         serde_json::to_vec(structured(&searched))

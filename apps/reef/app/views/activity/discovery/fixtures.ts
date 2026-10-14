@@ -11,7 +11,7 @@
  *
  * Built from those captures, to show each branch:
  * - `complete`: the captured page as Coral writes it now.
- * - `mixed`: a Saved Function hit, a guidance match, flags, and a declaration match.
+ * - `mixed`: a Saved Function hit, a guidance match, and flags.
  * - `partial` and `error`: the same hits with incomplete Search Coverage.
  * - `earlierShape`: the response before Search Hits. The parser rejects it.
  */
@@ -165,25 +165,21 @@ interface UntrimmedHit {
   [key: string]: unknown
 }
 /**
- * One captured hit as Coral writes it now. It drops what the Call Path or
- * describe states, and the flags and hints that are not set. One
- * `declaration` stands for its matched declaration paths.
+ * One captured hit as Coral writes it now. It drops what the Call Path, the
+ * rank, or describe states, and the flags and hints that are not set.
  */
 function trimmed({
   kind: _kind,
   title: _title,
   provider_display_name: _provider,
-  evidence,
+  evidence: _evidence,
   hints = {},
   approval_required,
   deprecated,
   ...kept
 }: UntrimmedHit) {
-  const fields =
-    evidence.paths.length > 0 ? [...evidence.fields, 'declaration'].toSorted() : evidence.fields
   return {
     ...kept,
-    ...(fields.length > 0 && { matched_fields: fields }),
     ...(Object.keys(hints).length > 0 && { hints }),
     ...(approval_required && { approval_required }),
     ...(deprecated && { deprecated }),
@@ -234,10 +230,6 @@ const mixed = {
     {
       ...githubHits[2],
       guidance_snippet: 'API method documentation',
-      evidence: {
-        fields: [...githubHits[2].evidence.fields, 'guidance'],
-        paths: [],
-      },
       approval_required: true,
       hints: { destructive: true, idempotent: false },
     },

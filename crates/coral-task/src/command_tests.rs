@@ -1919,10 +1919,6 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
             Some("Find an answer")
         );
         assert_eq!(
-            item.get("matched_fields"),
-            Some(&serde_json::json!(["description"]))
-        );
-        assert_eq!(
             response.get("has_more"),
             Some(&serde_json::Value::Bool(true))
         );

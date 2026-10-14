@@ -68,7 +68,6 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
             json!({
                 "call_path": "coral.providers.github.pulls.list",
                 "guidance_snippet": "Prefer search for one author.",
-                "matched_fields": ["call_path", "declaration", "tags", "title"],
                 "matched_tags": ["pulls"],
                 "hints": { "read_only": true, "open_world": false },
                 "approval_required": true,
@@ -76,16 +75,13 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
             }),
         ),
         (
-            "a Saved Function that matched only in its declaration",
+            "a Saved Function that matched in its declaration",
             SearchHit::from_saved_function(
                 CallPath::saved_function("github.openPulls").expect("Call Path"),
                 text(None, &[]),
-                SearchEvidence::new(Vec::new(), vec!["input.repo".into()]),
+                SearchEvidence::new(vec!["title".into()], vec!["input.repo".into()]),
             ),
-            json!({
-                "call_path": "coral.functions.github.openPulls",
-                "matched_fields": ["declaration"],
-            }),
+            json!({ "call_path": "coral.functions.github.openPulls" }),
         ),
     ] {
         let mut expected = expected;

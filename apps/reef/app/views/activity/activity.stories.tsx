@@ -1131,7 +1131,7 @@ export const HistoricalSearchFailedCoverage: Story = {
     await expect(coverage.getByText('Results are missing.')).toBeVisible()
   },
 }
-/** Both kinds of result, with flags, a guidance match, and a declaration match. */
+/** Both kinds of result, with flags and a guidance match. */
 export const HistoricalSearchMixedResults: Story = {
   args: discovery({ ...searched, query: 'github issues by label' }, stored.mixed),
   play: async ({ canvasElement }) => {
@@ -1142,7 +1142,6 @@ export const HistoricalSearchMixedResults: Story = {
     await expect(
       within(savedFunction).getByRole('link', { name: 'Open current function' }),
     ).toBeVisible()
-    await expect(within(savedFunction).getByText('declaration')).toBeVisible()
     for (const flag of ['approval required', 'destructive', 'not idempotent', 'tag: pulls'])
       await expect(within(merge).getByText(flag)).toBeVisible()
     await expect(within(merge).getByText('Guidance: API method documentation')).toBeVisible()

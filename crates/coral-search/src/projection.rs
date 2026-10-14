@@ -1,7 +1,7 @@
 //! Safe discovery responses, shared by current callers and historical snapshots.
 use crate::{
     ApprovalRequirement, AuthoringDescription, EntityKind, ExactAuthoringDescription,
-    RetrieverState, RetrieverStatus, SearchEvidence, SearchHit, SearchPage,
+    RetrieverState, RetrieverStatus, SearchHit, SearchPage,
 };
 use coral_catalog::OperationHints;
 use serde_json::{Map, Value, json};
@@ -42,9 +42,9 @@ pub fn search(page: &SearchPage) -> Value {
 }
 
 /// One Search Hit, cut to what the agent needs to choose and call it. The Call
-/// Path already names the kind and the Provider, and `describe` gives the
-/// rest. A flag appears only when set, a hint only when declared, and a match
-/// only where a query term matched.
+/// Path already names the kind and the Provider, the rank already reflects the
+/// evidence, and `describe` gives the rest. A flag appears only when set, a
+/// hint only when declared, and a match only where a query term matched.
 fn hit(hit: &SearchHit) -> Value {
     let mut fields = Map::from_iter([
         ("call_path".to_string(), json!(hit.call_path().as_str())),
@@ -56,10 +56,6 @@ fn hit(hit: &SearchHit) -> Value {
     ]);
     if let Some(guidance) = hit.guidance_snippet() {
         fields.insert("guidance_snippet".to_string(), json!(guidance));
-    }
-    let matched = matched_fields(hit.evidence());
-    if !matched.is_empty() {
-        fields.insert("matched_fields".to_string(), json!(matched));
     }
     if !hit.matched_tags().is_empty() {
         fields.insert("matched_tags".to_string(), json!(hit.matched_tags()));
@@ -76,22 +72,6 @@ fn hit(hit: &SearchHit) -> Value {
         }
     }
     Value::Object(fields)
-}
-
-/// The fields a query term matched, in name order. One `declaration` stands
-/// for every matched input or result path: a common word matches dozens, and
-/// they explain the ranking rather than the choice.
-fn matched_fields(evidence: &SearchEvidence) -> Vec<&str> {
-    let mut fields = evidence
-        .fields()
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    if !evidence.paths().is_empty() {
-        fields.push("declaration");
-        fields.sort_unstable();
-    }
-    fields
 }
 
 fn retriever_status(status: &RetrieverStatus) -> Value {
