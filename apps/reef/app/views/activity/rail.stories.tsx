@@ -134,6 +134,16 @@ async function surface(canvasElement: HTMLElement) {
     rail: () => screen.queryByRole('dialog', { name: 'Activity details' }),
     heading: (rail: HTMLElement, name: string) =>
       waitFor(() => expect(within(rail).getByRole('heading', { name, level: 2 })).toBeVisible()),
+    /** Waits until the rail shows `name`. A rail that closed and reopened is a new element. */
+    shows: (name: string) =>
+      waitFor(() =>
+        expect(
+          within(screen.getByRole('dialog', { name: 'Activity details' })).getByRole('heading', {
+            name,
+            level: 2,
+          }),
+        ).toBeVisible(),
+      ),
   }
 }
 
@@ -211,13 +221,13 @@ export const PointerAndHistory: Story = {
 
 export const LoadingAndClosing: Story = {
   play: async ({ canvasElement, userEvent }) => {
-    const { screen, link, address, rail, heading } = await surface(canvasElement)
+    const { link, address, rail, shows } = await surface(canvasElement)
     const close = () =>
       userEvent.click(within(rail()!).getByRole('button', { name: 'Close details' }))
     const open = async (label: string) => {
       loads.open()
       await userEvent.click(link(label))
-      await heading(await screen.findByRole('dialog', { name: 'Activity details' }), label)
+      await shows(label)
     }
     for (const reduced of [false, true]) {
       await emulateReducedMotion(reduced)
@@ -240,9 +250,9 @@ export const LoadingAndClosing: Story = {
         await close()
         await userEvent.click(link('Task 3'))
         loads.open()
-        await heading(await screen.findByRole('dialog', { name: 'Activity details' }), 'Task 3')
+        await shows('Task 3')
         await settle()
-        await heading(rail()!, 'Task 3')
+        await shows('Task 3')
         await expect(address()).toContain('t3')
 
         // Returning to the open record while another loads stays on it, without a history entry.
@@ -251,9 +261,9 @@ export const LoadingAndClosing: Story = {
         await userEvent.click(link('Task 3'))
         loads.open()
         await settle()
-        await heading(rail()!, 'Task 3')
+        await shows('Task 3')
         await userEvent.click(within(canvasElement).getByRole('button', { name: 'History back' }))
-        await heading(rail()!, 'Task 1')
+        await shows('Task 1')
         await open('Task 3')
 
         // Picking the closing record again keeps it open.
@@ -262,16 +272,16 @@ export const LoadingAndClosing: Story = {
         await userEvent.click(link('Task 3'))
         loads.open()
         await settle()
-        await heading(rail()!, 'Task 3')
+        await shows('Task 3')
         await expect(address()).toContain('t3')
 
         // A record picked once the close has already reached the address opens too.
         await close()
         await waitFor(() => expect(address()).not.toContain('record='))
         await userEvent.click(link('Task 2'))
-        await heading(await screen.findByRole('dialog', { name: 'Activity details' }), 'Task 2')
+        await shows('Task 2')
         await settle()
-        await heading(rail()!, 'Task 2')
+        await shows('Task 2')
         await close()
         await waitFor(() => expect(rail()).toBeNull())
       } finally {
