@@ -113,9 +113,12 @@ async function driveActivity(
       if (at.label === previous.label) {
         expect(previous.beforeGap, `${at.label} stops only at a gap`).toBe(true)
         stops++
-        // The existing loader now brings the emissions after the gap.
+        // The existing loader now brings the emissions after the gap. The next
+        // ↓ waits until they replace the unloaded marker after the cursor.
         release()
-        await page.waitForTimeout(50)
+        await expect
+          .poll(async () => (await cursorAt(table)).beforeGap, { timeout: 15_000 })
+          .toBe(false)
       } else if (at.window === previous.window && at.index !== null) {
         expect(at.index, `${at.label} follows ${previous.label}`).toBe(previous.index! + 1)
       }
