@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createClient, Code, ConnectError } from '@connectrpc/connect'
 import { data, type RouterContextProvider } from 'react-router'
 import { validateCsrfToken } from '@/auth/csrf.server'
@@ -195,4 +195,18 @@ export function actionFailure(
 ) {
   const [status, message] = failureReason(error, operation, notFoundMessage)
   return data({ error: message, credential: null }, { status, headers: privateHeaders })
+}
+
+/**
+ * One request per person in a batch form, each with its own idempotency key.
+ * Deriving it from the form's key keeps a resubmitted form from applying
+ * anything twice.
+ */
+export function requestIdFor(requestId: string, key: string) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requestId))
+    throw new Response('Invalid form', { status: 400, headers: privateHeaders })
+  const hex = createHash('sha256').update(`${requestId}\0${key}`).digest('hex')
+  // UUIDv8: custom bits, with the version and RFC 9562 variant set.
+  const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }

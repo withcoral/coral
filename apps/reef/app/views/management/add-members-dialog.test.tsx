@@ -21,6 +21,7 @@ it('keeps naming the picked person when someone else later shares their email', 
   const { router } = renderRoute(() => (
     <AddMembersDialog
       candidates={candidates}
+      currentUser="users/me"
       disabled={false}
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
     />
@@ -46,6 +47,7 @@ it('submits the email of a picked person who has left the list', async () => {
   const { router } = renderRoute(() => (
     <AddMembersDialog
       candidates={candidates}
+      currentUser="users/me"
       disabled={false}
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
     />

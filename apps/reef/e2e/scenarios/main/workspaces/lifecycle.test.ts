@@ -17,7 +17,7 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar an
         .getByRole('button', { name: 'Create workspace', exact: true })
         .click()
       await breadcrumb(page, name).waitFor()
-      await page.getByText(`${actor.label} · You`, { exact: true }).waitFor()
+      await page.getByText(`${actor.label} (You)`, { exact: true }).waitFor()
       overview = page.url()
     })
     await step('Copy the Workspace MCP endpoint from its sidebar header', async () => {

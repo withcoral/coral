@@ -20,10 +20,16 @@ const member = (id: string, enabled = true) => ({
 })
 let calls: unknown[]
 let refuse: ConnectError | null
+/** Refuses only an assignment of this owner. */
+let refuseOwner: { owner: string; error: ConnectError } | null
+/** Every owner the action asked Coral to assign, refused or not. */
+let tried: string[]
 
 beforeEach(() => {
   calls = []
   refuse = null
+  refuseOwner = null
+  tried = []
   const mutation = (method: string) => (request: object) => {
     if (refuse) throw refuse
     // Only the fields the form set, without the message's own metadata.
@@ -57,7 +63,11 @@ beforeEach(() => {
           nextPageToken: pageToken ? '' : 'p2',
         }
       },
-      assignWorkspaceOwner: mutation('assign'),
+      assignWorkspaceOwner: (request) => {
+        tried.push(request.owner)
+        if (request.owner === refuseOwner?.owner) throw refuseOwner.error
+        return mutation('assign')(request)
+      },
       archiveOrganizationWorkspace: mutation('archive'),
       restoreOrganizationWorkspace: mutation('restore'),
     },
@@ -65,12 +75,15 @@ beforeEach(() => {
 })
 
 const load = (search = '') => loader(authRouteTestArgs(new Request(url + search), {}, null))
-const submit = (fields: Record<string, string>) => {
+const submit = (fields: Record<string, string | string[]>) => {
   const form = new FormData()
   form.set('name', name)
   form.set('etag', 'v1')
   form.set('requestId', requestId)
-  for (const [key, value] of Object.entries(fields)) form.set(key, value)
+  for (const [key, value] of Object.entries(fields)) {
+    form.delete(key)
+    for (const v of [value].flat()) form.append(key, v)
+  }
   return action(
     authRouteTestArgs(
       new Request(url, { method: 'POST', headers: { origin }, body: form }),
@@ -113,15 +126,9 @@ it('gives someone who is not an organization owner a permission error', async ()
   expect((await thrown(load()))?.status).toBe(403)
 })
 
-// Catches: an action sent to the wrong method, or without the owner, etag or
-// request ID that makes it safe to repeat.
+// Catches: an action sent to the wrong method, or without the etag that makes
+// it safe to repeat.
 it.each([
-  [
-    'an owner assignment',
-    { intent: 'assignOwner', owner: 'organizationMemberships/ada' },
-    ['assign', { name, owner: 'organizationMemberships/ada', requestId }],
-    'Owner assigned.',
-  ],
   [
     'an archive',
     { intent: 'archiveWorkspace' },
@@ -138,6 +145,78 @@ it.each([
   const result = await submit(fields)
   expect(result).toMatchObject({ data: { error: null, message } })
   expect(calls).toEqual([call])
+})
+
+const ada = 'organizationMemberships/ada'
+const bo = 'organizationMemberships/bo'
+const cy = 'organizationMemberships/cy'
+const assigned = () => calls.map((c) => (c as [string, { owner: string }])[1].owner)
+const requestIds = () => calls.map((c) => (c as [string, { requestId: string }])[1].requestId)
+
+// Catches: owners sent under one request ID, so Coral applies only the first;
+// a key shared by every workspace row; a resubmitted form that assigns with
+// new IDs; or one person assigned twice.
+it.each([
+  ['one owner', [ada], [ada], 'Owner assigned.'],
+  ['the same owner twice', [ada, ada], [ada], 'Owner assigned.'],
+  ['several owners', [ada, bo], [ada, bo], '2 owners assigned.'],
+])('assigns %s, each with its own stable request ID', async (_, owners, expected, message) => {
+  const result = await submit({ intent: 'assignOwner', owner: owners })
+  expect(result).toMatchObject({ data: { error: null, message } })
+  expect(calls).toEqual(
+    expected.map((owner) => ['assign', { name, owner, requestId: expect.any(String) }]),
+  )
+  const ids = requestIds()
+  expect(new Set([...ids, requestId]).size).toBe(expected.length + 1)
+  calls = []
+  await submit({ intent: 'assignOwner', owner: owners })
+  expect(requestIds()).toEqual(ids)
+  calls = []
+  await submit({
+    intent: 'assignOwner',
+    owner: owners,
+    name: 'workspaces/00000000-0000-4000-8000-000000000002',
+  })
+  expect(requestIds().some((id) => ids.includes(id))).toBe(false)
+})
+
+// Catches: a partial assignment that hides who Coral did not assign, so a
+// retry cannot keep only them; or a batch-wide failure sent again for every
+// remaining owner.
+it.each([
+  [
+    'goes on past a person Coral refuses',
+    [bo, ada, cy],
+    new ConnectError('OWNER_TARGET_NOT_ENABLED', Code.FailedPrecondition),
+    [bo, ada, cy],
+    [bo],
+    409,
+    'Coral could not assign 1 of 3 owners. This person does not have an enabled organization membership. Choose another person.',
+  ],
+  [
+    'stops when the workspace is archived',
+    [ada, bo, cy],
+    new ConnectError('WORKSPACE_ARCHIVED', Code.FailedPrecondition),
+    [ada, bo],
+    [bo, cy],
+    409,
+    'Coral could not assign 2 of 3 owners. This workspace is archived. Restore it before you assign an owner.',
+  ],
+  [
+    'stops when Coral is not available',
+    [bo, ada],
+    new ConnectError('down', Code.Unavailable),
+    [bo],
+    [bo, ada],
+    503,
+    'Coral could not assign 2 of 2 owners. Coral could not assign this owner. Coral is not available.',
+  ],
+])('%s', async (_, owners, error, attempted, refused, status, message) => {
+  refuseOwner = { owner: bo, error }
+  const result = await submit({ intent: 'assignOwner', owner: owners })
+  expect(result).toMatchObject({ init: { status }, data: { error: message, refused } })
+  expect(tried).toEqual(attempted)
+  expect(assigned()).toEqual(attempted.filter((o) => !refused.includes(o)))
 })
 
 // Catches: a refusal that tells an organization owner to use workspace
@@ -161,6 +240,16 @@ it.each([
   ['an action named like an inherited object key', { intent: 'constructor' }],
   ['a target that is not a workspace', { intent: 'archiveWorkspace', name: 'users/ada' }],
   ['an owner that is not an organization member', { intent: 'assignOwner', owner: 'users/ada' }],
+  [
+    'a batch with one owner that is not an organization member',
+    { intent: 'assignOwner', owner: ['organizationMemberships/ada', 'users/bo'] },
+  ],
+  ['an assignment with no owner', { intent: 'assignOwner' }],
+  [
+    'an owner longer than a form field',
+    { intent: 'assignOwner', owner: `organizationMemberships/${'a'.repeat(4096)}` },
+  ],
+  ['a request ID that is not a UUID', { intent: 'assignOwner', owner: ada, requestId: 'x' }],
 ])('refuses %s', async (_, fields) => {
   expect((await thrown(submit(fields)))?.status).toBe(400)
   expect(calls).toEqual([])

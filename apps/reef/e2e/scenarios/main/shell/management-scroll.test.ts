@@ -116,7 +116,7 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       await expect
         .poll(() =>
           page
-            .getByText(`${actor.label} · You`, { exact: true })
+            .getByText(`${actor.label} (You)`, { exact: true })
             .last()
             .evaluate((element) => element.getBoundingClientRect().bottom <= innerHeight),
         )
