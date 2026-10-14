@@ -70,7 +70,7 @@ async fn disabled_provider_remains_a_valid_operation_policy_target() {
         .begin()
         .await
         .expect("begin policy target resolution");
-    let hints = crate::operation_policy_hints_in_transaction(
+    let found = crate::operation_hints_and_method_in_transaction(
         &mut transaction,
         workspace.id(),
         provider.id(),
@@ -83,7 +83,7 @@ async fn disabled_provider_remains_a_valid_operation_policy_target() {
         .await
         .expect("finish policy target resolution");
     assert_eq!(
-        hints,
+        found,
         Some((
             OperationHints::default(),
             Some(coral_catalog::HttpMethod::Get)

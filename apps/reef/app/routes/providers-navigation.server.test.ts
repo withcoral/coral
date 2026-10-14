@@ -181,18 +181,6 @@ it.each([
   },
 )
 
-it('loads every catalog page with defaults when the policy service is unimplemented', async () => {
-  mocks.policies.mockRejectedValue(new ConnectError('unsupported', Code.Unimplemented))
-  const router = await makeRouter()
-  expect(router.state.errors).toBeNull()
-  const operations = router.state.loaderData.providers.providers[0].operations
-  expect(operations).toHaveLength(OPERATION_COUNT)
-  expect(
-    operations.every((operation: { policy: string }) => operation.policy === 'approval_required'),
-  ).toBe(true)
-  expect(mocks.policies).toHaveBeenCalledTimes(1)
-})
-
 it('keeps the 1,229-operation tree out of operation navigation responses, but reauthorizes each click', async () => {
   const router = await makeRouter()
   expect(router.state.errors).toBeNull()

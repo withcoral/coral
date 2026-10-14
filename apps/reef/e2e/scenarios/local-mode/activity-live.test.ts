@@ -50,11 +50,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
       await addProviderFromFile(
         page,
         id,
-        openApiDocument(
-          'Local actions',
-          { read: { summary: 'Read a value', method: 'post' } },
-          {},
-        ),
+        openApiDocument('Local actions', { read: { summary: 'Read a value', method: 'post' } }, {}),
         'localActions',
       )
       const runner = programRunner(page, target, id, { waitMs: 1000 })

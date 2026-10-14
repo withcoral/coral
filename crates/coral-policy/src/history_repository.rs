@@ -39,6 +39,7 @@ pub fn approval_required(
         ),
         Expr::val(default_access_state(read_only, None).as_storage_str()),
     )
+    // GET stands for every safe method; the default does not tell them apart.
     .case(
         coral_catalog::history_repository::has_safe_http_method(generation, operation),
         Expr::val(default_access_state(undeclared, Some(HttpMethod::Get)).as_storage_str()),

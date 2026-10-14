@@ -321,7 +321,7 @@ pub async fn operation_in_transaction(
 /// Absent keys are omitted; structurally unavailable Operations remain included.
 /// # Errors
 /// Returns invalid-size, persistence or corrupt-generation failures.
-pub async fn operation_hints_in_transaction(
+pub async fn operation_hints_and_methods_in_transaction(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
     keys: &[OperationKey],
@@ -331,7 +331,7 @@ pub async fn operation_hints_in_transaction(
             "invalid Operation hints batch size".into(),
         ));
     }
-    repository::load_operation_hints(transaction, generation_id, keys).await
+    repository::load_operation_hints_and_methods(transaction, generation_id, keys).await
 }
 
 /// Reads one summary page in Operation Key order, plus at most one lookahead row.

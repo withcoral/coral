@@ -800,7 +800,7 @@ pub(super) async fn load_operation(
     .await
 }
 
-pub(super) async fn load_operation_hints(
+pub(super) async fn load_operation_hints_and_methods(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
     keys: &[OperationKey],

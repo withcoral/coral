@@ -127,7 +127,7 @@ impl OperationPolicyModule {
             .iter()
             .map(|target| target.operation_key().clone())
             .collect();
-        let defaults = coral_provider::operation_policy_hints_batch_in_transaction(
+        let hints_and_methods = coral_provider::operation_hints_and_methods_batch_in_transaction(
             &mut transaction,
             first.workspace_id(),
             first.provider_id(),
@@ -144,7 +144,7 @@ impl OperationPolicyModule {
         let decisions = targets
             .iter()
             .map(|target| {
-                let (hints, http_method) = defaults
+                let (hints, http_method) = hints_and_methods
                     .get(target.operation_key())
                     .ok_or(Error::OperationNotFound)?;
                 Ok(resolved_decision(
@@ -273,7 +273,7 @@ async fn require_operation_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     target: &OperationPolicyTarget,
 ) -> Result<(), Error> {
-    coral_provider::operation_policy_hints_in_transaction(
+    coral_provider::operation_hints_and_method_in_transaction(
         transaction,
         target.workspace_id(),
         target.provider_id(),

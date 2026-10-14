@@ -600,7 +600,7 @@ pub async fn provider_search_catalogs_in_transaction(
 /// Returns a persistence or corrupt Provider-package failure. `Ok(None)` means
 /// either the Provider is outside the exact Workspace or its current
 /// catalog has no matching Operation Key.
-pub async fn operation_policy_hints_in_transaction(
+pub async fn operation_hints_and_method_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
@@ -612,7 +612,7 @@ pub async fn operation_policy_hints_in_transaction(
     )>,
     Error,
 > {
-    Ok(operation_policy_hints_batch_in_transaction(
+    Ok(operation_hints_and_methods_batch_in_transaction(
         transaction,
         workspace_id,
         provider_id,
@@ -627,7 +627,7 @@ pub async fn operation_policy_hints_in_transaction(
 /// The caller owns authority and the coherent read transaction.
 /// # Errors
 /// Returns invalid-size, persistence or corrupt Provider-package failures.
-pub async fn operation_policy_hints_batch_in_transaction(
+pub async fn operation_hints_and_methods_batch_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
@@ -654,10 +654,12 @@ pub async fn operation_policy_hints_batch_in_transaction(
     )
     .await?
     .ok_or_else(|| Error::CorruptData("Provider has no current Provider Generation".to_string()))?;
-    Ok(
-        coral_catalog::operation_hints_in_transaction(transaction, &generation_id, operation_keys)
-            .await?,
+    Ok(coral_catalog::operation_hints_and_methods_in_transaction(
+        transaction,
+        &generation_id,
+        operation_keys,
     )
+    .await?)
 }
 
 /// Atomically resolves one active Call Path for Invocation admission.
