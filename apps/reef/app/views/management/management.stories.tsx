@@ -664,25 +664,16 @@ export const FilterOrganizationMembers: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const page = within(canvasElement.ownerDocument.body)
-    // The filters apply through a deferred value, so the rows can lag a render.
-    const shown = (expected: string[]) =>
-      waitFor(() =>
-        expect(
-          canvas
-            .getAllByRole('button', { name: /^Actions for / })
-            .map((button) => button.getAttribute('aria-label')),
-        ).toEqual(expected),
-      )
 
     await userEvent.click(canvas.getByRole('button', { name: 'Filter members by role: All roles' }))
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'Member' }))
-    await shown(['Actions for Alice Chen'])
+    await shownRows(canvas, ['Actions for Alice Chen'])
 
     await userEvent.click(canvas.getByRole('button', { name: 'Filter members by role: Member' }))
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'All roles' }))
     // The filter matches an email as well as a name.
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter members' }), 'jordan@')
-    await shown(['Actions for Jordan Lee'])
+    await shownRows(canvas, ['Actions for Jordan Lee'])
   },
 }
 export const OrganizationMembersEmpty: Story = {
@@ -808,21 +799,12 @@ export const FilterOrganizationWorkspaces: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const page = within(canvasElement.ownerDocument.body)
-    // The filters apply through a deferred value, so the rows can lag a render.
-    const shown = (expected: string[]) =>
-      waitFor(() =>
-        expect(
-          canvas
-            .queryAllByRole('button', { name: /^Actions for / })
-            .map((button) => button.getAttribute('aria-label')),
-        ).toEqual(expected),
-      )
 
     await userEvent.click(
       canvas.getByRole('button', { name: 'Filter workspaces by state: All states' }),
     )
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'Archived' }))
-    await shown(['Actions for Research'])
+    await shownRows(canvas, ['Actions for Research'])
 
     await userEvent.click(
       canvas.getByRole('button', { name: 'Filter workspaces by state: Archived' }),
@@ -831,11 +813,11 @@ export const FilterOrganizationWorkspaces: Story = {
     // The filter matches an owner's email as well as the workspace name.
     const filter = canvas.getByRole('searchbox', { name: 'Filter workspaces' })
     await userEvent.type(filter, sam.email)
-    await shown(['Actions for Research'])
+    await shownRows(canvas, ['Actions for Research'])
 
     await userEvent.clear(filter)
     await userEvent.type(filter, 'nothing')
-    await shown([])
+    await shownRows(canvas, [])
     await expect(canvas.getByText('No workspaces match “nothing”.')).toBeVisible()
   },
 }
@@ -1000,6 +982,19 @@ export const StaleConfiguration: Story = {
 async function openAddMembers(canvas: ReturnType<typeof within>, root: HTMLElement) {
   await userEvent.click(canvas.getByRole('button', { name: 'Add members' }))
   return within(await within(root.ownerDocument.body).findByRole('dialog', { name: 'Add members' }))
+}
+/**
+ * Waits for the rows a filter shows. The filter applies through a deferred
+ * value, so the rows can lag a render.
+ */
+function shownRows(canvas: ReturnType<typeof within>, expected: string[]) {
+  return waitFor(() =>
+    expect(
+      canvas
+        .queryAllByRole('button', { name: /^Actions for / })
+        .map((button: HTMLElement) => button.getAttribute('aria-label')),
+    ).toEqual(expected),
+  )
 }
 /** Picks one person, then closes the list, which hides the rest of the dialog while open. */
 async function pickPerson(dialog: ReturnType<typeof within>, root: HTMLElement, name: RegExp) {

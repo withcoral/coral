@@ -66,25 +66,30 @@ export async function action({ request, context }: Route.ActionArgs) {
       const fields = form.getAll('owner')
       if (
         fields.length === 0 ||
-        fields.some((o) => typeof o !== 'string' || !/^organizationMemberships\/[^/]+$/.test(o))
+        fields.some(
+          (o) =>
+            typeof o !== 'string' || o.length > 4096 || !/^organizationMemberships\/[^/]+$/.test(o),
+        )
       )
         throw new Response('Invalid target', { status: 400 })
       const owners = [...new Set(fields as string[])]
-      const requestId = field(form, 'requestId')
+      // The workspace is in the key: every row on the page shares the form's key.
+      const requestIds = owners.map((o) => requestIdFor(field(form, 'requestId'), `${name}\0${o}`))
       const refused: { owner: string; status: number; message: string }[] = []
-      for (const owner of owners) {
+      for (const [i, owner] of owners.entries()) {
         try {
-          await api.assignWorkspaceOwner({
-            name,
-            owner,
-            requestId: owners.length === 1 ? requestId : requestIdFor(requestId, owner),
-          })
+          await api.assignWorkspaceOwner({ name, owner, requestId: requestIds[i] })
         } catch (error) {
-          // Every other owner would meet the same refusal.
-          if (error instanceof ConnectError && error.rawMessage === 'WORKSPACE_ARCHIVED')
-            throw error
-          const [status, message] = failureReason(error, failed.assignOwner)
+          const [status, message] =
+            error instanceof ConnectError && error.rawMessage === 'WORKSPACE_ARCHIVED'
+              ? [409, 'This workspace is archived. Restore it before you assign an owner.']
+              : failureReason(error, failed.assignOwner)
           refused.push({ owner, status, message })
+          // Only a refusal of this one person lets the others go ahead.
+          if (!(error instanceof ConnectError && error.rawMessage === 'OWNER_TARGET_NOT_ENABLED')) {
+            refused.push(...owners.slice(i + 1).map((o) => ({ owner: o, status, message })))
+            break
+          }
         }
       }
       if (refused.length > 0)
@@ -120,15 +125,6 @@ export async function action({ request, context }: Route.ActionArgs) {
       { headers: privateHeaders },
     )
   } catch (error) {
-    // An organization owner restores here, not in the workspace's settings.
-    if (error instanceof ConnectError && error.rawMessage === 'WORKSPACE_ARCHIVED')
-      return data(
-        {
-          error: 'This workspace is archived. Restore it before you assign an owner.',
-          credential: null,
-        },
-        { status: 409, headers: privateHeaders },
-      )
     return actionFailure(error, failed[intent])
   }
 }

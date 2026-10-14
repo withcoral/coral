@@ -204,6 +204,8 @@ export function actionFailure(
  * anything twice.
  */
 export function requestIdFor(requestId: string, key: string) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requestId))
+    throw new Response('Invalid form', { status: 400, headers: privateHeaders })
   const hex = createHash('sha256').update(`${requestId}\0${key}`).digest('hex')
   // UUIDv8: custom bits, with the version and RFC 9562 variant set.
   const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)

@@ -27,5 +27,6 @@ export async function organizationWorkspaceRow(page: Page, name: string): Promis
     await page.waitForURL((url) => url.href !== previous)
     await page.getByRole('table', { name: 'Workspaces', exact: true }).waitFor()
   }
+  if ((await row.count()) === 0) throw new Error(`No organization Workspaces page lists ${name}`)
   return row
 }
