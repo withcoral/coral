@@ -4,7 +4,7 @@ import { useFetcher } from 'react-router'
 import { Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
 import type { ButtonSize } from '@/wax/components/button/button.css'
 
-import { personLabel } from './person'
+import { personName } from './person'
 import type { ActionResult, FormContext, OrganizationPersonView } from './types'
 import * as styles from './management.css'
 
@@ -118,8 +118,7 @@ export function PersonField({
   onChange?: (membership: string) => void
 }) {
   const [chosen, setChosen] = useState('')
-  const text = (p: OrganizationPersonView) =>
-    `${personLabel(p.profile)}${p.profile.user === currentUser ? ' · You' : ''}`
+  const text = (p: OrganizationPersonView) => personName(p.profile, currentUser)
   const person = people.find((p) => p.name === chosen)
   return (
     <div className={styles.field}>

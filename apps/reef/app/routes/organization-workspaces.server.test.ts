@@ -20,10 +20,13 @@ const member = (id: string, enabled = true) => ({
 })
 let calls: unknown[]
 let refuse: ConnectError | null
+/** Refuses only an assignment of this owner. */
+let refuseOwner: string | null
 
 beforeEach(() => {
   calls = []
   refuse = null
+  refuseOwner = null
   const mutation = (method: string) => (request: object) => {
     if (refuse) throw refuse
     // Only the fields the form set, without the message's own metadata.
@@ -57,7 +60,11 @@ beforeEach(() => {
           nextPageToken: pageToken ? '' : 'p2',
         }
       },
-      assignWorkspaceOwner: mutation('assign'),
+      assignWorkspaceOwner: (request) => {
+        if (request.owner === refuseOwner)
+          throw new ConnectError('OWNER_TARGET_NOT_ENABLED', Code.FailedPrecondition)
+        return mutation('assign')(request)
+      },
       archiveOrganizationWorkspace: mutation('archive'),
       restoreOrganizationWorkspace: mutation('restore'),
     },
@@ -65,12 +72,15 @@ beforeEach(() => {
 })
 
 const load = (search = '') => loader(authRouteTestArgs(new Request(url + search), {}, null))
-const submit = (fields: Record<string, string>) => {
+const submit = (fields: Record<string, string | string[]>) => {
   const form = new FormData()
   form.set('name', name)
   form.set('etag', 'v1')
   form.set('requestId', requestId)
-  for (const [key, value] of Object.entries(fields)) form.set(key, value)
+  for (const [key, value] of Object.entries(fields)) {
+    form.delete(key)
+    for (const v of [value].flat()) form.append(key, v)
+  }
   return action(
     authRouteTestArgs(
       new Request(url, { method: 'POST', headers: { origin }, body: form }),
@@ -140,6 +150,41 @@ it.each([
   expect(calls).toEqual([call])
 })
 
+// Catches: several owners sent under one request ID, so Coral applies only the
+// first, or a resubmitted form that assigns with new IDs.
+it('assigns several owners, each with its own stable request ID', async () => {
+  const owners = ['organizationMemberships/ada', 'organizationMemberships/bo']
+  const result = await submit({ intent: 'assignOwner', owner: owners })
+  expect(result).toMatchObject({ data: { error: null, message: '2 owners assigned.' } })
+  const ids = calls.map((c) => (c as [string, { requestId: string }])[1].requestId)
+  expect(calls.map((c) => (c as [string, { owner: string }])[1].owner)).toEqual(owners)
+  expect(new Set([...ids, requestId]).size).toBe(3)
+  calls = []
+  await submit({ intent: 'assignOwner', owner: owners })
+  expect(calls.map((c) => (c as [string, { requestId: string }])[1].requestId)).toEqual(ids)
+})
+
+// Catches: a partial assignment that hides who Coral refused, so a retry
+// cannot keep only them.
+it('returns the refused owners when only some assignments apply', async () => {
+  refuseOwner = 'organizationMemberships/bo'
+  const result = await submit({
+    intent: 'assignOwner',
+    owner: ['organizationMemberships/ada', 'organizationMemberships/bo'],
+  })
+  expect(result).toMatchObject({
+    init: { status: 409 },
+    data: {
+      error:
+        'Coral could not assign 1 of 2 owners. This person does not have an enabled organization membership. Choose another person.',
+      refused: ['organizationMemberships/bo'],
+    },
+  })
+  expect(calls.map((c) => (c as [string, { owner: string }])[1].owner)).toEqual([
+    'organizationMemberships/ada',
+  ])
+})
+
 // Catches: a refusal that tells an organization owner to use workspace
 // settings they cannot open, or that hides why the person cannot be an owner.
 it.each([
@@ -161,6 +206,11 @@ it.each([
   ['an action named like an inherited object key', { intent: 'constructor' }],
   ['a target that is not a workspace', { intent: 'archiveWorkspace', name: 'users/ada' }],
   ['an owner that is not an organization member', { intent: 'assignOwner', owner: 'users/ada' }],
+  [
+    'a batch with one owner that is not an organization member',
+    { intent: 'assignOwner', owner: ['organizationMemberships/ada', 'users/bo'] },
+  ],
+  ['an assignment with no owner', { intent: 'assignOwner' }],
 ])('refuses %s', async (_, fields) => {
   expect((await thrown(submit(fields)))?.status).toBe(400)
   expect(calls).toEqual([])

@@ -3,12 +3,14 @@ import { data } from 'react-router'
 import type { Route } from './+types/organization-workspaces'
 import {
   actionFailure,
+  failureReason,
   field,
   formContext,
   management,
   managementFailure,
   mutationForm,
   privateHeaders,
+  requestIdFor,
 } from '@/lib/management.server'
 import { enabledOrganizationPeople, organizationWorkspaceView } from '@/lib/organization.server'
 import { OrganizationWorkspacesPage } from '@/views/management/organization-workspaces-page'
@@ -61,10 +63,53 @@ export async function action({ request, context }: Route.ActionArgs) {
   const api = management(request, context).organizationWorkspaces
   try {
     if (intent === 'assignOwner') {
-      const owner = field(form, 'owner')
-      if (!/^organizationMemberships\/[^/]+$/.test(owner))
+      const fields = form.getAll('owner')
+      if (
+        fields.length === 0 ||
+        fields.some((o) => typeof o !== 'string' || !/^organizationMemberships\/[^/]+$/.test(o))
+      )
         throw new Response('Invalid target', { status: 400 })
-      await api.assignWorkspaceOwner({ name, owner, requestId: field(form, 'requestId') })
+      const owners = [...new Set(fields as string[])]
+      const requestId = field(form, 'requestId')
+      const refused: { owner: string; status: number; message: string }[] = []
+      for (const owner of owners) {
+        try {
+          await api.assignWorkspaceOwner({
+            name,
+            owner,
+            requestId: owners.length === 1 ? requestId : requestIdFor(requestId, owner),
+          })
+        } catch (error) {
+          // Every other owner would meet the same refusal.
+          if (error instanceof ConnectError && error.rawMessage === 'WORKSPACE_ARCHIVED')
+            throw error
+          const [status, message] = failureReason(error, failed.assignOwner)
+          refused.push({ owner, status, message })
+        }
+      }
+      if (refused.length > 0)
+        return data(
+          {
+            error:
+              owners.length === 1
+                ? refused[0].message
+                : [
+                    `Coral could not assign ${refused.length} of ${owners.length} owners.`,
+                    ...new Set(refused.map((r) => r.message)),
+                  ].join(' '),
+            credential: null,
+            refused: refused.map((r) => r.owner),
+          },
+          { status: refused[0].status, headers: privateHeaders },
+        )
+      return data(
+        {
+          error: null,
+          credential: null,
+          message: owners.length === 1 ? 'Owner assigned.' : `${owners.length} owners assigned.`,
+        },
+        { headers: privateHeaders },
+      )
     } else if (intent === 'archiveWorkspace') {
       await api.archiveOrganizationWorkspace({ name, etag: field(form, 'etag') })
     } else {

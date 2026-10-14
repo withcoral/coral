@@ -1,11 +1,29 @@
-import { useRef, useState } from 'react'
-import { Button, Menu, Table, Typography } from '@/wax/components'
+import { useDeferredValue, useId, useRef, useState } from 'react'
+import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
+import { Button, Combobox, Menu, Table, Typography } from '@/wax/components'
+import { Pill } from '@/wax/components/pill'
+import { TruncatedList } from '@/components/truncated-list'
 import { StatePill } from './access'
-import { ActionDialog, PersonField } from './forms'
-import { ManagementLayout, PageIntro, trail } from './layout'
-import { Person } from './person'
-import type { FormContext, OrganizationPersonView, OrganizationWorkspaceView } from './types'
+import { ActionDialog } from './forms'
+import { ManagementLayout, trail } from './layout'
+import { personLabel, personName } from './person'
+import type {
+  FormContext,
+  OrganizationPersonView,
+  OrganizationWorkspaceView,
+  OwnerView,
+} from './types'
 import * as styles from './management.css'
+
+type StateFilter = 'all' | OrganizationWorkspaceView['state']
+
+const STATE_FILTERS: CatalogFilterOptions<StateFilter> = [
+  { value: 'all', label: 'All states', icon: 'ListFilter' },
+  { value: 'active', label: 'Active', icon: 'CircleCheck' },
+  { value: 'archived', label: 'Archived', icon: 'Archive' },
+]
+
+const FILTER_ID = 'workspaces-filter'
 
 /**
  * Every workspace in the organization, for an organization owner. It shows
@@ -25,18 +43,43 @@ export function OrganizationWorkspacesPage({
   nextPage: string
   form: FormContext
 }) {
+  const [input, setInput] = useState('')
+  const [state, setState] = useState<StateFilter>('all')
+  const query = useDeferredValue(input).trim()
+  // The filter matches the workspace name and its owners' names and emails.
+  const shown = workspaces.filter(
+    (w) =>
+      (state === 'all' || w.state === state) &&
+      [w.displayName, ...w.owners.flatMap((o) => [personLabel(o.profile), o.profile.email])].some(
+        (text) => text.toLowerCase().includes(query.toLowerCase()),
+      ),
+  )
   return (
     <ManagementLayout breadcrumbs={trail([], 'Workspaces')}>
-      <PageIntro>
-        {workspaces.some((w) => w.state === 'archived') && (
-          <Typography.BodySmall as="p">
-            Restore an archived workspace before you assign an owner.
-          </Typography.BodySmall>
-        )}
-      </PageIntro>
+      {workspaces.length > 0 && (
+        <CatalogToolbar
+          filter={{
+            id: FILTER_ID,
+            label: 'Filter workspaces',
+            shortcut: '$mod+f',
+            value: input,
+            onChange: setInput,
+          }}
+        >
+          <CatalogFilterMenu
+            ariaLabel="Filter workspaces by state"
+            options={STATE_FILTERS}
+            value={state}
+            onChange={setState}
+          />
+        </CatalogToolbar>
+      )}
       <Table.Container
         ariaLabel="Workspaces"
+        variant="card"
         layout="fixed"
+        // Organization owners manage a workspace from its actions, not a page.
+        staticRows
         columns={[
           { label: 'Name', width: { fill: 2 } },
           { label: 'State', width: 'fill' },
@@ -45,30 +88,24 @@ export function OrganizationWorkspacesPage({
         ]}
       >
         <Table.Head />
+        {workspaces.length === 0 && <Table.Status>No workspaces on this page.</Table.Status>}
+        {workspaces.length > 0 && shown.length === 0 && (
+          <Table.Status>
+            {query ? `No workspaces match “${query}”.` : 'No workspaces match.'}
+          </Table.Status>
+        )}
         <Table.Body>
-          {workspaces.length === 0 && <Table.Status>No workspaces on this page.</Table.Status>}
-          {workspaces.map((w) => (
+          {shown.map((w) => (
             <Table.Row key={w.name}>
               <Table.Cell wrap>{w.displayName}</Table.Cell>
               <Table.Cell wrap>
                 <StatePill workspace={w} />
               </Table.Cell>
-              <Table.Cell wrap>
+              <Table.Cell>
                 {w.owners.length === 0 ? (
                   'No owner'
                 ) : (
-                  <ul className={styles.owners} aria-label={`Owners of ${w.displayName}`}>
-                    {w.owners.map((o) => (
-                      <li key={o.user}>
-                        <Person
-                          person={o.profile}
-                          currentUser={currentUser}
-                          compact
-                          disabled={!o.enabled}
-                        />
-                      </li>
-                    ))}
-                  </ul>
+                  <OwnerPills owners={w.owners} currentUser={currentUser} />
                 )}
               </Table.Cell>
               <Table.Cell actions>
@@ -92,6 +129,31 @@ export function OrganizationWorkspacesPage({
   )
 }
 
+/** The owners on one line. Owners that do not fit move to a "+N" tooltip. */
+function OwnerPills({ owners, currentUser }: { owners: OwnerView[]; currentUser: string }) {
+  const pill = (o: OwnerView) => {
+    const label = personName(o.profile, currentUser)
+    return (
+      <Pill key={o.user} title={o.profile.email || undefined}>
+        {o.enabled ? label : `${label} · Disabled`}
+      </Pill>
+    )
+  }
+  return (
+    <TruncatedList
+      items={owners}
+      getKey={(o) => o.user}
+      renderItem={pill}
+      renderOverflowContent={(hidden) => hidden.map(pill)}
+      renderOverflowTrigger={(count) => (
+        <Pill as="button" aria-label={`${count} more owners`}>
+          +{count}
+        </Pill>
+      )}
+    />
+  )
+}
+
 function WorkspaceActions({
   workspace: w,
   candidates,
@@ -104,13 +166,14 @@ function WorkspaceActions({
   form: FormContext
 }) {
   const [action, setAction] = useState<'assign' | 'archive' | 'restore' | null>(null)
-  const [owner, setOwner] = useState('')
+  const [owners, setOwners] = useState<string[]>([])
   const trigger = useRef<HTMLButtonElement>(null)
   const dialog = {
     assign: {
-      title: 'Assign owner',
+      title: 'Assign owners',
       intent: 'assignOwner',
-      description: `Choose a person to own ${w.displayName}. Coral adds them to the workspace as an owner.`,
+      description: `Choose people to own ${w.displayName}. They join the workspace as owners.`,
+      submit: owners.length > 1 ? `Assign ${owners.length} owners` : 'Assign owner',
     },
     archive: {
       title: 'Archive workspace',
@@ -143,11 +206,11 @@ function WorkspaceActions({
             <>
               <Menu.Item
                 onClick={() => {
-                  setOwner('')
+                  setOwners([])
                   setAction('assign')
                 }}
               >
-                Assign owner
+                Assign owners
               </Menu.Item>
               <Menu.Item onClick={() => setAction('archive')}>Archive workspace</Menu.Item>
             </>
@@ -162,25 +225,114 @@ function WorkspaceActions({
           if (!open) setAction(null)
         }}
         finalFocus={trigger}
+        size={action === 'assign' ? 'l' : undefined}
         title={dialog.title}
         description={dialog.description}
+        submit={'submit' in dialog ? dialog.submit : undefined}
         intent={dialog.intent}
         name={w.name}
         etag={w.etag}
         form={form}
         destructive={action === 'archive'}
-        disabled={action === 'assign' && !owner}
+        disabled={action === 'assign' && owners.length === 0}
+        // A partial assignment keeps only the refused people, so a retry assigns no one twice.
+        onError={(result) => {
+          if (result.refused?.length) setOwners(result.refused)
+        }}
       >
         {action === 'assign' && (
-          <PersonField
-            label="Owner"
-            name="owner"
-            people={candidates}
+          <OwnersField
+            // People who already own the workspace are not offered.
+            people={candidates.filter((c) => !w.owners.some((o) => o.user === c.profile.user))}
             currentUser={currentUser}
-            onChange={setOwner}
+            value={owners}
+            onChange={setOwners}
           />
         )}
       </ActionDialog>
     </>
+  )
+}
+
+/**
+ * Picks organization members by name or email. The value is their
+ * organization membership names.
+ */
+function OwnersField({
+  people,
+  currentUser,
+  value,
+  onChange,
+}: {
+  people: OrganizationPersonView[]
+  currentUser: string
+  value: string[]
+  onChange: (owners: string[]) => void
+}) {
+  const id = useId()
+  const [query, setQuery] = useState('')
+  // The combobox filters on its item strings, so each holds the name and email.
+  const item = (p: OrganizationPersonView) =>
+    p.profile.email
+      ? `${personName(p.profile, currentUser)} (${p.profile.email})`
+      : personName(p.profile, currentUser)
+  const byItem = new Map(people.map((p) => [item(p), p]))
+  const byName = new Map(people.map((p) => [p.name, p]))
+  return (
+    <div className={styles.addField}>
+      <Typography.BodySmallStrong as="label" htmlFor={id}>
+        People
+      </Typography.BodySmallStrong>
+      {value.map((owner) => (
+        <input key={owner} type="hidden" name="owner" value={owner} />
+      ))}
+      <Combobox.Root
+        autoHighlight
+        hideWhenEmpty
+        items={[...byItem.keys()]}
+        multiple
+        inputValue={query}
+        onInputValueChange={setQuery}
+        value={value.flatMap((owner) => {
+          const p = byName.get(owner)
+          return p ? [item(p)] : []
+        })}
+        onValueChange={(next) => {
+          onChange((Array.isArray(next) ? next : []).flatMap((i) => byItem.get(i)?.name ?? []))
+          setQuery('')
+        }}
+      >
+        <Combobox.InputGroup>
+          <Combobox.Chips>
+            <Combobox.Value>
+              {(chosen) =>
+                Array.isArray(chosen)
+                  ? chosen.map((i) => {
+                      const p = byItem.get(i)
+                      const name = p ? personName(p.profile, currentUser) : i
+                      return (
+                        <Combobox.Chip key={i}>
+                          <Combobox.ChipLabel>{name}</Combobox.ChipLabel>
+                          <Combobox.ChipRemove aria-label={`Remove ${name}`} />
+                        </Combobox.Chip>
+                      )
+                    })
+                  : null
+              }
+            </Combobox.Value>
+            <Combobox.Input id={id} bare placeholder={value.length > 0 ? '' : 'Search people'} />
+          </Combobox.Chips>
+        </Combobox.InputGroup>
+        <Combobox.Content>
+          <Combobox.List>
+            {(i: string) => (
+              <Combobox.Item key={i} value={i}>
+                {i}
+              </Combobox.Item>
+            )}
+          </Combobox.List>
+        </Combobox.Content>
+      </Combobox.Root>
+    </div>
   )
 }

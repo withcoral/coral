@@ -56,7 +56,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
           name: `${workspace.name}/memberships/${owner.userId}`,
         })
       await step('The last Owner cannot change their role to Member', async () => {
-        expect(await page.getByText(`${owner.label} · You`, { exact: true }).count()).toBe(1)
+        expect(await page.getByText(`${owner.label} (You)`, { exact: true }).count()).toBe(1)
         await page.getByRole('button', { name: `Actions for ${owner.label}`, exact: true }).click()
         await page.getByRole('menuitem', { name: 'Change role', exact: true }).click()
         await page.getByRole('button', { name: `Role for ${owner.label}`, exact: true }).click()
@@ -108,7 +108,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
           expect(memberships.map((m) => [m.user, m.role])).toEqual([
             [`users/${owner.userId}`, WorkspaceRole.OWNER],
           ])
-          expect(await page.getByText(`${owner.label} · You`, { exact: true }).count()).toBe(1)
+          expect(await page.getByText(`${owner.label} (You)`, { exact: true }).count()).toBe(1)
         },
       )
     },
