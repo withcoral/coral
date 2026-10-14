@@ -292,6 +292,65 @@ export const LoadingAndClosing: Story = {
   },
 }
 
+/**
+ * Safari does not focus a link on a mouse click. A DOM `click()` does not move focus
+ * either, so it stands in for that click here. WebKit itself does not run in this suite.
+ */
+export const LinkClickFocus: Story = {
+  play: async ({ canvasElement }) => {
+    loads.open()
+    const { screen, link, shows } = await surface(canvasElement)
+    link('Task 1').click()
+    await shows('Task 1')
+    const opened = screen.getByRole('dialog', { name: 'Activity details' })
+    // The rail takes focus as it opens; let that land before moving it.
+    await waitFor(() => expect(opened.contains(document.activeElement)).toBe(true))
+    within(opened).getByRole('button', { name: 'Close details' }).focus()
+    // Picking another record leaves focus on its row, whatever the browser does.
+    link('Task 2').click()
+    await shows('Task 2')
+    await expect(link('Task 2')).toHaveFocus()
+  },
+}
+
+export const HistoryWhileLoading: Story = {
+  play: async ({ canvasElement, userEvent }) => {
+    loads.open()
+    const { canvas, link, address, rail, shows } = await surface(canvasElement)
+    const history = (direction: 'back' | 'forward') =>
+      userEvent.click(canvas.getByRole('button', { name: `History ${direction}` }))
+    await userEvent.click(link('Task 1'))
+    await shows('Task 1')
+    await userEvent.click(link('Task 2'))
+    await shows('Task 2')
+
+    // Back is under way when you pick the record still shown. The pick is a new
+    // entry after Task 1, so the entries before it stay.
+    loads.hold()
+    await history('back')
+    await userEvent.click(link('Task 2'))
+    loads.open()
+    await waitFor(() => expect(address()).toContain('t2'))
+    await shows('Task 2')
+    await history('back')
+    await shows('Task 1')
+
+    // The same with Forward: the pick follows the entry Forward reached.
+    loads.hold()
+    await history('forward')
+    await userEvent.click(link('Task 1'))
+    loads.open()
+    await waitFor(() => expect(address()).toContain('t1'))
+    await shows('Task 1')
+    await history('back')
+    await shows('Task 2')
+    await history('back')
+    await shows('Task 1')
+    await history('back')
+    await waitFor(() => expect(rail()).toBeNull())
+  },
+}
+
 export const UnsentComment: Story = {
   parameters: {
     initialEntry: `/workspaces/finance/activity?tree=1&record=${encodeURIComponent(waiting.name)}`,

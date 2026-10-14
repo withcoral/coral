@@ -297,6 +297,8 @@ const RecordRow = memo(function RecordRow({
             onClick={(event) => {
               if (!plainClick(event)) return
               event.preventDefault()
+              // Safari does not focus a clicked link; focus rests on the picked row everywhere.
+              event.currentTarget.focus({ preventScroll: true })
               actions.select(row)
             }}
           >
@@ -406,9 +408,13 @@ export function Activity({
   if (selected && shown !== page) setShown(page)
   const detailPage = selected ? page : shown
   const unsent = useUnsentComment()
+  // Where the rail's own pending navigation goes: a record, or null for a close.
+  // Undefined when the pending navigation is not the rail's, such as Back.
+  const own = useRef<string | null>(undefined)
   const close = () => {
     // With an unsent comment, the rail stays while the review asks whether to discard it.
     if (!unsent) setClosing(selected)
+    own.current = null
     void navigate(nav.backHref, { preventScrollReset: true })
   }
   const listRef = useRef<HTMLDivElement>(null)
@@ -421,6 +427,7 @@ export function Activity({
   const latest = useRef({ nav, navigate, live, more, selected, pending, closing })
   useLayoutEffect(() => {
     latest.current = { nav, navigate, live, more, selected, pending, closing }
+    if (pending === undefined) own.current = undefined
   })
   const [actions] = useState<RowActions>(() => ({
     select: (row) => {
@@ -436,10 +443,17 @@ export function Activity({
             : current.selected
       if (row.name === target) return
       if (row.name === current.closing) setClosing(null)
-      // Returning to the selected record replaces the address rather than adding to history.
+      // Going back to the selected record cancels the rail's own pending navigation,
+      // which has no history entry yet, so the address is replaced. Back or Forward
+      // already moved through history, so a pick after either is a new entry.
+      const replace =
+        row.name === current.selected &&
+        current.pending !== undefined &&
+        current.pending === own.current
+      own.current = row.name
       void current.navigate(current.nav.recordHref(row.name), {
         preventScrollReset: true,
-        replace: row.name === current.selected,
+        replace,
       })
     },
     toggle: (name) =>
@@ -606,6 +620,7 @@ export function Activity({
                           onClick={(event) => {
                             if (!plainClick(event)) return
                             event.preventDefault()
+                            event.currentTarget.focus({ preventScroll: true })
                             actions.select(outside)
                           }}
                         >
