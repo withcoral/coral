@@ -63,7 +63,7 @@ export function PeopleField({
     const key = e.value.toLowerCase()
     byValue.set(key, [...(byValue.get(key) ?? []), item])
   }
-  // A value's item is its pick, or the one person with that value.
+  // A value's item is its pick, its one matching person, or the value itself.
   const itemOf = (v: string) => {
     const key = v.toLowerCase()
     for (const [item, e] of picked) if (e.value.toLowerCase() === key) return item

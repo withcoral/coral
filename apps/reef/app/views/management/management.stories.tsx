@@ -993,7 +993,8 @@ export const AddMembersLookalikes: Story = {
     />
   ),
   play: async ({ canvas, canvasElement }) => {
-    await openAddMembers(canvas, canvasElement)
+    const dialog = await openAddMembers(canvas, canvasElement)
+    await userEvent.click(dialog.getByRole('combobox', { name: 'People' }))
   },
 }
 async function openAddMembers(canvas: ReturnType<typeof within>, root: HTMLElement) {
@@ -1024,7 +1025,8 @@ async function pickPerson(dialog: ReturnType<typeof within>, root: HTMLElement, 
 export const AddMemberDialog: Story = {
   ...OwnerMembers,
   play: async ({ canvas, canvasElement }) => {
-    await openAddMembers(canvas, canvasElement)
+    const dialog = await openAddMembers(canvas, canvasElement)
+    await userEvent.click(dialog.getByRole('combobox', { name: 'People' }))
   },
 }
 // Catches: the picker sending names instead of emails, or a label that does

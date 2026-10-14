@@ -102,6 +102,16 @@ it('lists people who share an email and keeps one of them picked', async () => {
   expect(submitted(dialog)).toEqual(['ada@example.com'])
 })
 
+// Catches: two people with the same name and email listed as one option,
+// because the list told its options apart by their text.
+it('lists two people with the same name and email', async () => {
+  renderDialog([person('ada', 'Ada', 'ada@example.com'), person('ada2', 'Ada', 'ada@example.com')])
+  const user = userEvent.setup()
+  const { people } = await openDialog(user)
+  await user.type(people, 'example')
+  expect(screen.getAllByRole('option', { name: 'Ada (ada@example.com)' })).toHaveLength(2)
+})
+
 // Catches: two people with one name listed as one, or picked as two chips you
 // cannot tell apart.
 it('lists people who share a name and shows their emails on their chips', async () => {
