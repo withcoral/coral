@@ -30,6 +30,11 @@ const DraftContext = createContext<{
   settle: (name: string) => void
 } | null>(null)
 
+/** Whether an unsent comment would make the session ask before a navigation. */
+export function useUnsentComment() {
+  return Boolean(useContext(DraftContext)?.draft.comment)
+}
+
 /** Keeps only one unsent draft across concealed/reconnecting exact reads, never server evidence. */
 export function ActionReviewSession({
   children,

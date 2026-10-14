@@ -66,7 +66,7 @@ export function Group({
    * Record identity and interaction for a heading that is itself a record row.
    * Its cells keep their row layout, so nothing moves when the record expands.
    */
-  headingRow?: Pick<RowProps, 'recordKey' | 'selected' | 'status' | 'onClick'>
+  headingRow?: Pick<RowProps, 'recordKey' | 'selected' | 'active' | 'status' | 'onClick'>
   children: ReactNode
 }) {
   const labelId = useId()

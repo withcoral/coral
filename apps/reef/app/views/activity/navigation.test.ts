@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { activityPage } from './fixtures'
-import { activityNavigation } from './navigation'
+import { activityNavigation, activitySelection } from './navigation'
 import type { ActivityPage } from './types'
 
 const task = 'workspaces/w/tasks/t'
@@ -208,4 +208,22 @@ it('names no anchor at the newest records and drops the coordinates of page link
   const query = target(nav.recordHref(run))
   for (const key of ['anchor', 'after', 'before', 'rootMode', 'root'])
     expect(query.has(key)).toBe(false)
+})
+
+// Catches: links and observation keeping the window the URL named after the loader
+// moved a Run's window to hold the selected final value.
+it('pins the Run window the loader moved for a selected final value', () => {
+  const query = activitySelection(
+    activityPage({ selected: run, initialRecord: `${run}/final`, expanded: [run] }),
+    new URLSearchParams({
+      record: `${run}/final`,
+      [`offset.${run}`]: '0',
+      [`anchor.${run}`]: `${run}/events/2`,
+      [`preceding.${run}`]: '0',
+    }).toString(),
+  )
+  expect(Object.fromEntries(query)).toEqual({
+    record: `${run}/final`,
+    [`anchor.${run}`]: `${run}/final`,
+  })
 })
