@@ -687,6 +687,12 @@ fn unsupported_serialization_or_media_makes_the_operation_unavailable() {
             "requestBody:\n  content:\n    text/plain:\n      schema: { allOf: [{ type: string }, { minLength: 1 }] }".to_string(),
             None,
         ),
+        // OpenAPI 3.1 ignores `nullable`, so the schema is still a string.
+        (
+            "post",
+            "requestBody:\n  content:\n    text/plain:\n      schema: { type: string, nullable: true }".to_string(),
+            None,
+        ),
     ] {
         let request = request.replace('\n', "\n      ");
         let prepared = ready(&format!(
@@ -754,15 +760,59 @@ paths:
     );
 }
 
+/// OpenAPI 3.0's `nullable` admits null. OpenAPI 3.1 gives it no meaning, so
+/// the projection and the validator both ignore it, and materialization warns.
 #[test]
-fn openapi_30_nullable_enum_includes_null() {
-    let prepared = ready(
-        r#"openapi: 3.0.3
-info:
-  title: Nullable enum
-  version: "1"
-servers:
-  - url: https://api.example.test
+fn nullable_follows_the_declared_openapi_version() {
+    // (version, response schema, projected data type or `None` to skip, accepts null, warns)
+    for (version, schema, projection, accepts_null, warns) in [
+        (
+            "3.0.3",
+            "{ type: string, nullable: true }",
+            Some("string | null"),
+            true,
+            false,
+        ),
+        (
+            "3.0.3",
+            "{ type: string, enum: [open], nullable: true }",
+            Some("\"open\" | null"),
+            true,
+            false,
+        ),
+        (
+            "3.1.0",
+            "{ type: string, nullable: true }",
+            Some("string"),
+            false,
+            true,
+        ),
+        (
+            "3.1.0",
+            "{ type: string, enum: [open], nullable: true }",
+            Some("\"open\""),
+            false,
+            true,
+        ),
+        (
+            "3.1.0",
+            "{ allOf: [{ type: string }, { nullable: true }] }",
+            None,
+            false,
+            true,
+        ),
+        (
+            "3.1.0",
+            "{ type: [string, \"null\"] }",
+            Some("null | string"),
+            true,
+            false,
+        ),
+    ] {
+        let prepared = ready(&format!(
+            r#"openapi: {version}
+info: {{ title: Nullable, version: "1" }}
+servers: [{{ url: https://api.example.test }}]
 paths:
   /state:
     get:
@@ -772,34 +822,29 @@ paths:
           description: state
           content:
             application/json:
-              schema:
-                type: string
-                enum: [open]
-                nullable: true
-"#,
-    );
-    assert_eq!(
-        prepared.schema_graph().semantics(),
-        coral_catalog::SchemaSemantics::OpenApiV3_0
-    );
-    let operation = &prepared.operations()[0];
-    assert!(
-        operation
-            .typescript_declaration()
-            .contains("\"open\" | null")
-    );
-    let schema = http_binding(operation).responses()[0].content()[0].schema();
-    assert!(prepared.schema_graph().accepts(schema, &Value::Null));
-    assert!(
-        prepared
-            .schema_graph()
-            .accepts(schema, &Value::from("open"))
-    );
-    assert!(
-        !prepared
-            .schema_graph()
-            .accepts(schema, &Value::from("closed"))
-    );
+              schema: {schema}
+"#
+        ));
+        let operation = &prepared.operations()[0];
+        let response = http_binding(operation).responses()[0].content()[0].schema();
+        assert_eq!(
+            (
+                projection.is_none_or(|projection| {
+                    operation
+                        .typescript_declaration()
+                        .contains(&format!("HttpResult<{projection}, 200,"))
+                }),
+                prepared.schema_graph().accepts(response, &Value::Null),
+                operation
+                    .diagnostics()
+                    .iter()
+                    .any(|diagnostic| diagnostic.code() == "nullable_ignored"),
+            ),
+            (true, accepts_null, warns),
+            "{version} {schema}\n{}",
+            operation.typescript_declaration()
+        );
+    }
 }
 
 #[test]

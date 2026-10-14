@@ -386,6 +386,11 @@ impl SchemaSemantics {
     pub(crate) const fn ref_siblings_apply(self) -> bool {
         matches!(self, Self::JsonSchema2020_12)
     }
+
+    /// Only the OpenAPI 3.0 dialect defines `nullable`; elsewhere it admits nothing.
+    pub(crate) const fn nullable_applies(self) -> bool {
+        matches!(self, Self::OpenApiV3_0)
+    }
 }
 
 /// Complete authoritative package-local schema graph.
@@ -602,7 +607,7 @@ fn rewrite_schema_references(
             if graph.semantics == SchemaSemantics::OpenApiV3_0 {
                 normalize_openapi_30_numeric_bounds(object);
             }
-            if graph.semantics == SchemaSemantics::OpenApiV3_0
+            if graph.semantics.nullable_applies()
                 && object.remove("nullable") == Some(Value::Bool(true))
             {
                 let non_null = Value::Object(std::mem::take(object));
