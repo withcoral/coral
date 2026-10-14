@@ -127,7 +127,7 @@ lock without a write fence is the shape the evidence rejects.
 - **Readers never read owner memory.** `wait`, Reef, the approval page, required actions and the activity stream read
   Recorded state from a snapshot, as today, and show a countdown beside a recorded deadline rather than deriving state
   from `now`.
-- **Measurement before and after.** The load harness (PR withcoral/lagoon#498) is the comparison tool: the admission burst, `begin`
+- **Measurement before and after.** The load harness (PR #2392) is the comparison tool: the admission burst, `begin`
   and readiness during the burst, admit p95 and the lock-wait ceiling should move; the emit-to-visible numbers from
   the withcoral/lagoon#484 spike must hold behind `RunModule` with V8, the fence and the probes.
 - **Out of this decision.** The first-time `operation_access_rules` row race (an absent row locks nothing, withcoral/lagoon#449);
@@ -138,5 +138,5 @@ lock without a write fence is the shape the evidence rejects.
 
 Throwaway prototypes on the `wayfinder/447-assets` branch: the ledger-writers state model (withcoral/lagoon#450), the owner-loop state
 model with its burst table (withcoral/lagoon#453), and the chunk-cadence Rust spike (withcoral/lagoon#484). The load harness and its baseline on
-today's shape are in PR withcoral/lagoon#498 (withcoral/lagoon#452). None of them prove integration with the real engine, authorization or both
+today's shape are in PR #2392 (withcoral/lagoon#452). None of them prove integration with the real engine, authorization or both
 backends; the implementation slices under #2378 do.
