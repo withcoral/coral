@@ -163,7 +163,9 @@ it.each([
 ])('assigns %s, each with its own stable request ID', async (_, owners, expected, message) => {
   const result = await submit({ intent: 'assignOwner', owner: owners })
   expect(result).toMatchObject({ data: { error: null, message } })
-  expect(assigned()).toEqual(expected)
+  expect(calls).toEqual(
+    expected.map((owner) => ['assign', { name, owner, requestId: expect.any(String) }]),
+  )
   const ids = requestIds()
   expect(new Set([...ids, requestId]).size).toBe(expected.length + 1)
   calls = []
