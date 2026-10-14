@@ -979,6 +979,23 @@ export const StaleConfiguration: Story = {
     />
   ),
 }
+// Two people share an email, and two share a name. Each is a choice of its own.
+export const AddMembersLookalikes: Story = {
+  render: () => (
+    <WorkspaceMembersPage
+      {...members}
+      candidates={[
+        { user: 'users/sam', name: 'Sam Rivera', email: 'sam@example.com', local: false },
+        { user: 'users/sam2', name: 'Sam Rivera', email: 'sam@other.com', local: false },
+        { user: 'users/priya', name: 'Priya Natarajan', email: 'priya@example.com', local: false },
+        { user: 'users/pat', name: 'Pat Natarajan', email: 'priya@example.com', local: false },
+      ]}
+    />
+  ),
+  play: async ({ canvas, canvasElement }) => {
+    await openAddMembers(canvas, canvasElement)
+  },
+}
 async function openAddMembers(canvas: ReturnType<typeof within>, root: HTMLElement) {
   await userEvent.click(canvas.getByRole('button', { name: 'Add members' }))
   return within(await within(root.ownerDocument.body).findByRole('dialog', { name: 'Add members' }))

@@ -37,33 +37,38 @@ export function PeopleField({
 }) {
   const id = useId()
   const [query, setQuery] = useState('')
-  // Each picked item, its value and its chip. Values are not unique, so a person
-  // who later shares one must not take over the chip; and a chip keeps its value
-  // and its name after its person leaves the list.
-  const [picked, setPicked] = useState(new Map<string, { value: string; chip: string }>())
-  // The combobox filters on its item strings, so each holds the name and email.
-  const label = (p: PersonView) =>
-    p.name && p.email ? `${personName(p, currentUser)} (${p.email})` : personName(p, currentUser)
-  const byLabel = new Map(people.map((p) => [label(p.person), p]))
-  const byValue = new Map<string, PickablePerson[]>()
-  for (const p of people) {
-    const key = p.value.toLowerCase()
-    byValue.set(key, [...(byValue.get(key) ?? []), p])
+  // Each item is a key: a person's user, or a value that names no one person.
+  // Keys keep two people with the same name or value apart.
+  const listed = new Map<string, Entry>(
+    people.map((p) => [
+      `person:${p.person.user}`,
+      {
+        value: p.value,
+        label: label(p.person, currentUser),
+        name: personName(p.person, currentUser),
+      },
+    ]),
+  )
+  // Each picked item, kept so a chip keeps its value and its name after its
+  // person leaves the list, or after another person shares its value.
+  const [picked, setPicked] = useState(new Map<string, Entry>())
+  const entryOf = (item: string): Entry => {
+    const known = picked.get(item) ?? listed.get(item)
+    if (known) return known
+    const v = item.slice('value:'.length)
+    return { value: v, label: v, name: v }
   }
-  // An item is a person's label when exactly one person has its value; otherwise, it is the value.
+  const byValue = new Map<string, string[]>()
+  for (const [item, e] of listed) {
+    const key = e.value.toLowerCase()
+    byValue.set(key, [...(byValue.get(key) ?? []), item])
+  }
+  // A value's item is its pick, or the one person with that value.
   const itemOf = (v: string) => {
     const key = v.toLowerCase()
-    for (const [item, p] of picked) if (p.value.toLowerCase() === key) return item
+    for (const [item, e] of picked) if (e.value.toLowerCase() === key) return item
     const matches = byValue.get(key)
-    return matches?.length === 1 ? label(matches[0].person) : v
-  }
-  const pick = (item: string) => {
-    const known = picked.get(item)
-    if (known) return known
-    const p = byLabel.get(item)
-    return p
-      ? { value: p.value, chip: personName(p.person, currentUser) }
-      : { value: item, chip: item }
+    return matches?.length === 1 ? matches[0] : `value:${v}`
   }
   const selected = value.map(itemOf)
   const typed = query.trim()
@@ -74,9 +79,9 @@ export function PeopleField({
     fromTyped &&
     !byValue.has(fromTyped.toLowerCase()) &&
     !value.some((v) => v.toLowerCase() === fromTyped.toLowerCase())
-      ? [fromTyped]
+      ? [`value:${fromTyped}`]
       : []
-  const items = [...extra, ...selected.filter((i) => !byLabel.has(i)), ...byLabel.keys()]
+  const items = [...extra, ...selected.filter((i) => !listed.has(i)), ...listed.keys()]
   return (
     <div className={styles.addField}>
       <Typography.BodySmallStrong as="label" htmlFor={id}>
@@ -89,13 +94,23 @@ export function PeopleField({
         autoHighlight
         hideWhenEmpty
         items={[...new Set(items)]}
+        itemToStringLabel={(item) => entryOf(item).label}
         multiple
         inputValue={query}
         onInputValueChange={setQuery}
         value={selected}
         onValueChange={(next) => {
           const chosen = Array.isArray(next) ? next : []
-          const picks = new Map(chosen.map((item) => [item, pick(item)]))
+          // The form submits values, so one value names one pick: a new pick
+          // replaces an earlier one with the same value.
+          const seen = new Set<string>()
+          const kept = chosen.toReversed().filter((item) => {
+            const key = entryOf(item).value.toLowerCase()
+            if (seen.has(key)) return false
+            seen.add(key)
+            return true
+          })
+          const picks = new Map(kept.toReversed().map((item) => [item, entryOf(item)]))
           setPicked(picks)
           onChange([...picks.values()].map((p) => p.value))
           setQuery('')
@@ -106,8 +121,11 @@ export function PeopleField({
             <Combobox.Value>
               {(chosen) =>
                 Array.isArray(chosen)
-                  ? chosen.map((item) => {
-                      const chip = pick(item).chip
+                  ? chosen.map((item, _, all) => {
+                      // Two chips with one name show their emails too.
+                      const { name: chipName, label: full } = entryOf(item)
+                      const twin = all.some((o) => o !== item && entryOf(o).name === chipName)
+                      const chip = twin ? full : chipName
                       return (
                         <Combobox.Chip key={item}>
                           <Combobox.ChipLabel>{chip}</Combobox.ChipLabel>
@@ -130,7 +148,7 @@ export function PeopleField({
           <Combobox.List>
             {(item: string) => (
               <Combobox.Item key={item} value={item}>
-                {extra.includes(item) ? `Add ${item}` : item}
+                {extra.includes(item) ? `Add ${entryOf(item).label}` : entryOf(item).label}
               </Combobox.Item>
             )}
           </Combobox.List>
@@ -138,4 +156,18 @@ export function PeopleField({
       </Combobox.Root>
     </div>
   )
+}
+
+/** An item's value, its text in the list, and its name on a chip. */
+interface Entry {
+  value: string
+  label: string
+  name: string
+}
+
+// The combobox matches an item on its label, so the label holds the name and email.
+function label(p: PersonView, currentUser: string) {
+  return p.name && p.email
+    ? `${personName(p, currentUser)} (${p.email})`
+    : personName(p, currentUser)
 }

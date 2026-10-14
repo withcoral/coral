@@ -64,3 +64,54 @@ it('submits the email of a picked person who has left the list', async () => {
   const emails = [...dialog.querySelectorAll<HTMLInputElement>('input[name=email]')]
   expect(emails.map((e) => e.value)).toEqual(['ada@example.com', 'ben@example.com'])
 })
+
+const renderDialog = (candidates: PersonView[]) => {
+  renderRoute(() => (
+    <AddMembersDialog
+      candidates={candidates}
+      currentUser="users/me"
+      disabled={false}
+      form={{ csrf: 'test-csrf', requestId: 'test-request' }}
+    />
+  ))
+}
+const openDialog = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(screen.getByRole('button', { name: 'Add members' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Add members' })
+  return { dialog, people: within(dialog).getByRole('combobox', { name: 'People' }) }
+}
+const submitted = (dialog: HTMLElement) =>
+  [...dialog.querySelectorAll<HTMLInputElement>('input[name=email]')].map((e) => e.value)
+
+// Catches: two people who share an email listed as one, or both chips named
+// after the first pick. Both are listed; the email names one pick at a time.
+it('lists people who share an email and keeps one of them picked', async () => {
+  renderDialog([person('ada', 'Ada', 'ada@example.com'), person('eve', 'Eve', 'ada@example.com')])
+  const user = userEvent.setup()
+  const { dialog, people } = await openDialog(user)
+  await user.type(people, 'Ada{Enter}')
+  await user.type(people, 'example')
+  const ada = screen.getByRole('option', { name: 'Ada (ada@example.com)' })
+  const eve = screen.getByRole('option', { name: 'Eve (ada@example.com)' })
+  expect(ada.getAttribute('aria-selected')).toBe('true')
+  expect(eve.getAttribute('aria-selected')).toBe('false')
+
+  await user.click(eve)
+  expect(within(dialog).getByRole('button', { name: 'Remove Eve' })).toBeTruthy()
+  expect(within(dialog).queryByRole('button', { name: 'Remove Ada' })).toBeNull()
+  expect(submitted(dialog)).toEqual(['ada@example.com'])
+})
+
+// Catches: two people with one name listed as one, or picked as two chips you
+// cannot tell apart.
+it('lists people who share a name and shows their emails on their chips', async () => {
+  renderDialog([person('ada', 'Ada', 'ada@example.com'), person('ada2', 'Ada', 'ada@other.com')])
+  const user = userEvent.setup()
+  const { dialog, people } = await openDialog(user)
+  await user.type(people, 'example.com{Enter}')
+  expect(within(dialog).getByRole('button', { name: 'Remove Ada' })).toBeTruthy()
+  await user.type(people, 'other.com{Enter}')
+  expect(within(dialog).getByRole('button', { name: 'Remove Ada (ada@example.com)' })).toBeTruthy()
+  expect(within(dialog).getByRole('button', { name: 'Remove Ada (ada@other.com)' })).toBeTruthy()
+  expect(submitted(dialog)).toEqual(['ada@example.com', 'ada@other.com'])
+})
