@@ -827,8 +827,9 @@ const NULLABLE_CASES: [NullableCase; 9] = [
     },
     NullableCase {
         version: "3.1.0",
-        schema: "{ allOf: [{ type: string }, { nullable: true }] }",
-        projection: None,
+        // OpenAI's shape: a reference made "nullable" by an `allOf` sibling.
+        schema: "{ allOf: [{ $ref: \"#/components/schemas/Truncation\" }, { nullable: true }] }",
+        projection: Some("(Truncation & unknown)"),
         accepts_null: false,
         rejects: None,
         warns: true,
@@ -877,6 +878,9 @@ paths:
           content:
             application/json:
               schema: {schema}
+components:
+  schemas:
+    Truncation: {{ type: string }}
 "#
         ));
         let operation = &prepared.operations()[0];
