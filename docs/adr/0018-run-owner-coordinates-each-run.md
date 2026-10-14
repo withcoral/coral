@@ -15,8 +15,7 @@ credential refresh, or an upstream call.
 This replaces the shape where a `hold_run` row lock on the Run row served as the Run's work queue, serial Event ledger
 and live authority fence at once, with compare-and-set counters (`next_event_sequence`, `accumulated_output_bytes`) as
 the real invariant underneath. The decision was charted on
-[map #2389](https://github.com/withcoral/coral/issues/2389) from the synthesis in
-[#423](https://github.com/withcoral/lagoon/issues/423). Each ticket linked below holds the reasoning and rejected
+[map #2389](https://github.com/withcoral/coral/issues/2389). Each ticket linked below holds the reasoning and rejected
 alternatives for its part; this record states the shape and the contract every implementation slice keeps.
 
 ## Why
