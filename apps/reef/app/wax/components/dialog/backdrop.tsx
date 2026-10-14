@@ -3,7 +3,7 @@ import classNames from 'classnames'
 import { useContext } from 'react'
 
 import * as styles from './dialog.css'
-import { OwnBackdropContext, RailContext } from './rail'
+import { ForceBackdropContext, RailContext } from './rail'
 
 export interface BackdropProps extends React.HTMLAttributes<HTMLDivElement> {
   ref?: React.Ref<HTMLDivElement>
@@ -11,13 +11,13 @@ export interface BackdropProps extends React.HTMLAttributes<HTMLDivElement> {
 
 export function Backdrop({ className, ref, ...props }: BackdropProps) {
   const rail = useContext(RailContext)
-  const own = useContext(OwnBackdropContext)
+  const force = useContext(ForceBackdropContext)
   // A rail beside the page leaves the page in view and usable.
   if (rail && !rail.modal) return null
   return (
     <BaseDialog.Backdrop
       className={classNames(styles.backdrop, className)}
-      forceRender={own}
+      forceRender={force}
       ref={ref}
       {...props}
     />

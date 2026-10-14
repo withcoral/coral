@@ -644,12 +644,13 @@ export function Activity({
                 placement="right"
                 fullWidthOnMobile
                 ref={popupRef}
-                // Closing returns focus to the record's row, when the table shows it.
+                // Closing returns focus to the table: the record's row, or its first row.
                 finalFocus={() =>
                   (detailPage.selected &&
                     listRef.current?.querySelector<HTMLElement>(
                       `[data-record-key="${CSS.escape(detailPage.selected)}"] a[href]`,
                     )) ||
+                  listRef.current?.querySelector<HTMLElement>('[data-record-key] a[href]') ||
                   true
                 }
               >

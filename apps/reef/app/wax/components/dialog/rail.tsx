@@ -16,7 +16,7 @@ export const RailContext = createContext<RailMode | null>(null)
  * Set inside a rail beside the page. A nested dialog shares its parent's backdrop,
  * but such a rail has none, so a dialog opened from it draws its own.
  */
-export const OwnBackdropContext = createContext(false)
+export const ForceBackdropContext = createContext(false)
 
 const subscribe = (change: () => void) => {
   const query = window.matchMedia(mobile)
