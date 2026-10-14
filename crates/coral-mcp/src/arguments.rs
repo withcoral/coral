@@ -58,7 +58,7 @@ pub(crate) struct SearchArguments {
     pub(crate) intent: String,
     #[schemars(
         length(min = 1),
-        description = "Keywords for the capability you need, such as `list pull requests`. Omit to list all visible items."
+        description = format!("Keywords for the capability you need, such as `list pull requests`. Omit only to page through visible items, {SEARCH_DEFAULT_LIMIT} per page.")
     )]
     pub(crate) query: Option<String>,
     #[schemars(
