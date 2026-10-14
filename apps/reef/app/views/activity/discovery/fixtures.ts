@@ -2,14 +2,16 @@
  * Stored discovery responses for stories and tests, in the shape Coral retains
  * as the `response_json` of a `search` or `describe` attempt.
  *
- * Captured from a local Coral server on 2026-10-02:
- * - `complete`: the page for the query "github pulls", limit 5, no provider filter.
+ * Captured from a local Coral server on 2026-10-02, before Coral trimmed
+ * Search Hits:
+ * - `untrimmed`: the page for the query "github pulls", limit 5, no provider filter.
  * - `describeOperation`: the describe answer for `issues.create`.
  * - `describeFunction`: the describe answer for a function saved for the
  *   purpose. Its diagnostic is real.
  *
  * Built from those captures, to show each branch:
- * - `mixed`: a Saved Function hit, a guidance match, flags, and declaration paths.
+ * - `complete`: the captured page as Coral writes it now.
+ * - `mixed`: a Saved Function hit, a guidance match, flags, and a declaration match.
  * - `partial` and `error`: the same hits with incomplete Search Coverage.
  * - `earlierShape`: the response before Search Hits. The parser rejects it.
  */
@@ -155,7 +157,40 @@ const functionHit = {
   evidence: { fields: ['call_path', 'description'], paths: ['input.label'] },
 }
 
-const complete = {
+interface UntrimmedHit {
+  evidence: { fields: string[]; paths: string[] }
+  hints?: Record<string, boolean>
+  approval_required?: boolean
+  deprecated?: boolean
+  [key: string]: unknown
+}
+/**
+ * One captured hit as Coral writes it now. It drops what the Call Path or
+ * describe states, and the flags and hints that are not set. One
+ * `declaration` stands for its matched declaration paths.
+ */
+function trimmed({
+  kind: _kind,
+  title: _title,
+  provider_display_name: _provider,
+  evidence,
+  hints = {},
+  approval_required,
+  deprecated,
+  ...kept
+}: UntrimmedHit) {
+  const fields =
+    evidence.paths.length > 0 ? [...evidence.fields, 'declaration'].toSorted() : evidence.fields
+  return {
+    ...kept,
+    ...(fields.length > 0 && { matched_fields: fields }),
+    ...(Object.keys(hints).length > 0 && { hints }),
+    ...(approval_required && { approval_required }),
+    ...(deprecated && { deprecated }),
+  }
+}
+
+const untrimmed = {
   hits: githubHits,
   next_cursor:
     'eyJ2ZXJzaW9uIjoxLCJwb3NpdGlvbiI6NSwiZGlnZXN0IjoiNWMyMDc2MWY2MzJkZjYyZWI2NzY0MDNiMjY3Y2Q4NGMxZTE2NzNlM2Y0MTMyMDI2Y2M0N2ZhNDRiOTcyYWE3NiJ9',
@@ -186,6 +221,13 @@ const complete = {
   ],
 }
 
+/** Every retriever searched the captured page, so Coral states no coverage. */
+const complete = {
+  hits: githubHits.map(trimmed),
+  next_cursor: untrimmed.next_cursor,
+  has_more: true,
+}
+
 const mixed = {
   hits: [
     functionHit,
@@ -203,51 +245,15 @@ const mixed = {
     { ...githubHits[0], deprecated: true },
     githubHits[3],
     githubHits[4],
-  ],
-  next_cursor: complete.next_cursor,
+  ].map(trimmed),
+  next_cursor: untrimmed.next_cursor,
   has_more: true,
-  retriever_statuses: [
-    {
-      retriever: 'saved_function',
-      state: 'results_found',
-      coverage: {
-        eligible_units: 3,
-        searched_units: 3,
-        failed_units: 0,
-        returned_count: 1,
-        has_more: false,
-      },
-    },
-    {
-      retriever: 'operation',
-      state: 'results_found',
-      coverage: {
-        eligible_units: 3,
-        searched_units: 3,
-        failed_units: 0,
-        returned_count: 100,
-        has_more: true,
-      },
-    },
-  ],
 }
 
 const partial = {
-  hits: githubHits.slice(0, 3),
-  next_cursor: null,
+  hits: githubHits.slice(0, 3).map(trimmed),
   has_more: false,
   retriever_statuses: [
-    {
-      retriever: 'saved_function',
-      state: 'empty',
-      coverage: {
-        eligible_units: 0,
-        searched_units: 0,
-        failed_units: 0,
-        returned_count: 0,
-        has_more: false,
-      },
-    },
     {
       retriever: 'operation',
       state: 'partial',
@@ -263,21 +269,9 @@ const partial = {
 }
 
 const error = {
-  hits: [functionHit],
-  next_cursor: null,
+  hits: [trimmed(functionHit)],
   has_more: false,
   retriever_statuses: [
-    {
-      retriever: 'saved_function',
-      state: 'results_found',
-      coverage: {
-        eligible_units: 3,
-        searched_units: 3,
-        failed_units: 0,
-        returned_count: 1,
-        has_more: false,
-      },
-    },
     {
       retriever: 'operation',
       state: 'error',
@@ -330,6 +324,7 @@ const describeFunction = {
 /** Each response as the stored JSON text. */
 export const stored = {
   complete: JSON.stringify(complete),
+  untrimmed: JSON.stringify(untrimmed),
   mixed: JSON.stringify(mixed),
   partial: JSON.stringify(partial),
   error: JSON.stringify(error),

@@ -1919,7 +1919,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
             Some("Find an answer")
         );
         assert_eq!(
-            item.pointer("/evidence/fields"),
+            item.get("matched_fields"),
             Some(&serde_json::json!(["description"]))
         );
         assert_eq!(
@@ -1998,24 +1998,6 @@ async fn empty_filtered_search_retains_exact_accepted_query_provider_and_limit()
     assert_eq!(response.get("hits"), Some(&serde_json::json!([])));
 }
 
-/// The statuses of a page that found nothing and searched no unit.
-fn empty_statuses() -> serde_json::Value {
-    let status = |retriever: &str| {
-        serde_json::json!({
-            "retriever": retriever,
-            "state": "empty",
-            "coverage": {
-                "eligible_units": 0,
-                "searched_units": 0,
-                "failed_units": 0,
-                "returned_count": 0,
-                "has_more": false,
-            },
-        })
-    };
-    serde_json::json!([status("saved_function"), status("operation")])
-}
-
 #[tokio::test]
 async fn repeated_empty_searches_are_distinct_complete_attempts_and_closure_rejects_new_work() {
     let fixture = Fixture::new().await;
@@ -2071,12 +2053,7 @@ async fn repeated_empty_searches_are_distinct_complete_attempts_and_closure_reje
     );
     assert_eq!(
         response,
-        serde_json::json!({
-            "hits": [],
-            "next_cursor": null,
-            "has_more": false,
-            "retriever_statuses": empty_statuses(),
-        })
+        serde_json::json!({ "hits": [], "has_more": false })
     );
     fixture
         .tasks

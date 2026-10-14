@@ -14,8 +14,82 @@ const search: DiscoveryContext = {
   cursor: null,
 }
 
-it('reads a stored search page into hits and Search Coverage', () => {
+const updateBranch = {
+  callPath: 'coral.providers.github.pulls.updateBranch',
+  signatureLine:
+    'updateBranch(input: { body?: PutReposOwnerRepoPullsPull_numberUpdateBranchBodyInput; owner: string; pull_number: number; repo: string }): Promise<{ data: object }>',
+  descriptionSnippet:
+    'Updates the pull request branch with the latest upstream changes by merging HEAD from the base branch into the pull request branch.\nNote: If making a request on behalf of a GitHub App you must also have permissions to write the contents of the head repository.',
+  guidanceSnippet: null,
+  operation: { approvalRequired: false, deprecated: false, hints: {} },
+  currentHref: null,
+}
+
+it('reads a search page into hits, with no coverage when every retriever searched', () => {
   const view = discoveryView(search, stored.complete)
+  if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
+  expect(view.page.hasMore).toBe(true)
+  expect(view.page.coverage).toEqual([])
+  expect(view.page.hits).toHaveLength(5)
+  expect(view.page.hits[4]).toEqual({
+    ...updateBranch,
+    kind: 'operation',
+    // A hit names no title, so Reef shows the path under the namespace.
+    title: 'pulls.updateBranch',
+    matched: {
+      fields: [
+        'call_path',
+        'declaration',
+        'description',
+        'provider_display_name',
+        'provider_namespace',
+        'tags',
+      ],
+      tags: ['pulls'],
+      paths: [],
+    },
+  })
+})
+
+it('reads the kind of each hit from its Call Path, and an absent flag as unset', () => {
+  const view = discoveryView(search, stored.mixed)
+  if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
+  const [savedFunction, merge, subIssues] = view.page.hits
+  expect(savedFunction).toMatchObject({
+    kind: 'saved_function',
+    title: 'github.openIssuesByLabel',
+    operation: null,
+  })
+  expect(merge).toMatchObject({
+    kind: 'operation',
+    guidanceSnippet: 'API method documentation',
+    operation: {
+      approvalRequired: true,
+      deprecated: false,
+      hints: { destructive: true, idempotent: false },
+    },
+  })
+  expect(subIssues.operation).toEqual({ approvalRequired: false, deprecated: false, hints: {} })
+})
+
+it('reads Search Coverage for a kind whose results may be missing', () => {
+  const view = discoveryView(search, stored.partial)
+  if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
+  expect(view.page.coverage).toEqual([
+    {
+      kind: 'operation',
+      state: 'partial',
+      eligible: 3,
+      searched: 2,
+      failed: 1,
+      returned: 3,
+      hasMore: false,
+    },
+  ])
+})
+
+it('reads an untrimmed page with its titles, full coverage, and declaration paths', () => {
+  const view = discoveryView(search, stored.untrimmed)
   if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
   expect(view.page.hasMore).toBe(true)
   expect(view.page.coverage).toEqual([
@@ -40,21 +114,27 @@ it('reads a stored search page into hits and Search Coverage', () => {
   ])
   expect(view.page.hits).toHaveLength(5)
   expect(view.page.hits[4]).toEqual({
+    ...updateBranch,
     kind: 'operation',
-    callPath: 'coral.providers.github.pulls.updateBranch',
     title: 'Update a pull request branch',
-    signatureLine:
-      'updateBranch(input: { body?: PutReposOwnerRepoPullsPull_numberUpdateBranchBodyInput; owner: string; pull_number: number; repo: string }): Promise<{ data: object }>',
-    descriptionSnippet:
-      'Updates the pull request branch with the latest upstream changes by merging HEAD from the base branch into the pull request branch.\nNote: If making a request on behalf of a GitHub App you must also have permissions to write the contents of the head repository.',
-    guidanceSnippet: null,
-    operation: { providerLabel: 'GitHub', approvalRequired: false, deprecated: false, hints: {} },
     matched: {
       fields: ['call_path', 'description', 'provider_display_name', 'provider_namespace', 'tags'],
       tags: ['pulls'],
       paths: ['input.body.expected_head_sha'],
     },
-    currentHref: null,
+  })
+})
+
+it('keeps the titles and paths of an untrimmed page whose coverage the current shape accepts', () => {
+  const page = JSON.parse(stored.untrimmed)
+  page.retriever_statuses = page.retriever_statuses
+    .slice(1)
+    .map((status: object) => ({ ...status, state: 'partial' }))
+  const view = discoveryView(search, JSON.stringify(page))
+  if (view.kind !== 'search') throw new Error(`expected a search page, got ${view.kind}`)
+  expect(view.page.hits[4]).toMatchObject({
+    title: 'Update a pull request branch',
+    matched: { paths: ['input.body.expected_head_sha'] },
   })
 })
 
@@ -122,6 +202,7 @@ it('reads a stored Operation description with its provider facts', () => {
 
 it.each([
   ['complete', search, 'search'],
+  ['untrimmed', search, 'search'],
   ['mixed', search, 'search'],
   ['partial', search, 'search'],
   ['error', search, 'search'],
@@ -268,20 +349,23 @@ suite('the parser and the advertised output schemas', () => {
     ])
   })
 
-  it('differ when Coral adds a coverage state or a kind of Search Entity', () => {
+  it('differ when Coral adds a coverage state or a kind of description', () => {
     expect(
       differences('search', (definitions) => {
         definitions.RetrieverState.enum.push('stale')
-        definitions.SearchHit.oneOf.push({
-          type: 'object',
-          properties: { kind: { type: 'string', const: 'recipe' } },
-        })
       }),
     ).toEqual([
-      'search.hits[]: only Coral has the kind recipe',
       expect.stringMatching(
         /^search\.retriever_statuses\[\]\.state: Reef reads .* Coral advertises .*"stale"/,
       ),
     ])
+    expect(
+      differences('describe', (definitions) => {
+        definitions.Description.oneOf.push({
+          type: 'object',
+          properties: { kind: { type: 'string', const: 'recipe' } },
+        })
+      }),
+    ).toEqual(['describe: only Coral has the kind recipe'])
   })
 })

@@ -1,7 +1,7 @@
 //! Safe discovery responses, shared by current callers and historical snapshots.
 use crate::{
     ApprovalRequirement, AuthoringDescription, EntityKind, ExactAuthoringDescription,
-    RetrieverState, RetrieverStatus, SearchHit, SearchPage,
+    RetrieverState, RetrieverStatus, SearchEvidence, SearchHit, SearchPage,
 };
 use coral_catalog::OperationHints;
 use serde_json::{Map, Value, json};
@@ -9,63 +9,89 @@ use serde_json::{Map, Value, json};
 #[cfg(test)]
 mod tests;
 
-/// Projects every ordered hit, continuation metadata, and one status per
-/// retriever, without truncation.
+/// Projects every ordered hit, and only what the agent acts on besides: the
+/// cursor while more remain, and the status of each retriever whose results
+/// may be missing.
 #[must_use]
 pub fn search(page: &SearchPage) -> Value {
-    json!({
-        "hits": page.hits().iter().map(hit).collect::<Vec<_>>(),
-        "next_cursor": page.next_cursor().map(ToString::to_string),
-        "has_more": page.has_more(),
-        "retriever_statuses": page
-            .retriever_statuses()
-            .iter()
-            .map(retriever_status)
-            .collect::<Vec<_>>(),
-    })
+    let mut fields = Map::from_iter([
+        (
+            "hits".to_string(),
+            json!(page.hits().iter().map(hit).collect::<Vec<_>>()),
+        ),
+        ("has_more".to_string(), json!(page.has_more())),
+    ]);
+    if let Some(cursor) = page.next_cursor() {
+        fields.insert("next_cursor".to_string(), json!(cursor.to_string()));
+    }
+    let incomplete = page
+        .retriever_statuses()
+        .iter()
+        .filter(|status| {
+            matches!(
+                status.state(),
+                RetrieverState::Partial | RetrieverState::Error
+            )
+        })
+        .map(retriever_status)
+        .collect::<Vec<_>>();
+    if !incomplete.is_empty() {
+        fields.insert("retriever_statuses".to_string(), json!(incomplete));
+    }
+    Value::Object(fields)
 }
 
-/// One Search Hit. Keys absent for a Saved Function do not apply to it; the
-/// Guidance Snippet and matched tags appear only on a match.
+/// One Search Hit, cut to what the agent needs to choose and call it. The Call
+/// Path already names the kind and the Provider, and `describe` gives the
+/// rest. A flag appears only when set, a hint only when declared, and a match
+/// only where a query term matched.
 fn hit(hit: &SearchHit) -> Value {
     let mut fields = Map::from_iter([
-        ("kind".to_string(), json!(entity_kind(hit.kind()))),
         ("call_path".to_string(), json!(hit.call_path().as_str())),
         ("signature_line".to_string(), json!(hit.signature_line())),
         (
             "description_snippet".to_string(),
             json!(hit.description_snippet()),
         ),
-        (
-            "evidence".to_string(),
-            json!({
-                "fields": hit.evidence().fields(),
-                "paths": hit.evidence().paths(),
-            }),
-        ),
     ]);
-    if let Some(operation) = hit.operation() {
-        fields.extend([
-            (
-                "provider_display_name".to_string(),
-                json!(operation.provider_display_name()),
-            ),
-            ("title".to_string(), json!(operation.title())),
-            ("hints".to_string(), hints(operation.hints())),
-            (
-                "approval_required".to_string(),
-                json!(operation.approval_requirement() == ApprovalRequirement::Required),
-            ),
-            ("deprecated".to_string(), json!(operation.deprecated())),
-        ]);
-    }
     if let Some(guidance) = hit.guidance_snippet() {
         fields.insert("guidance_snippet".to_string(), json!(guidance));
+    }
+    let matched = matched_fields(hit.evidence());
+    if !matched.is_empty() {
+        fields.insert("matched_fields".to_string(), json!(matched));
     }
     if !hit.matched_tags().is_empty() {
         fields.insert("matched_tags".to_string(), json!(hit.matched_tags()));
     }
+    if let Some(operation) = hit.operation() {
+        if operation.hints() != OperationHints::default() {
+            fields.insert("hints".to_string(), hints(operation.hints()));
+        }
+        if operation.approval_requirement() == ApprovalRequirement::Required {
+            fields.insert("approval_required".to_string(), json!(true));
+        }
+        if operation.deprecated() {
+            fields.insert("deprecated".to_string(), json!(true));
+        }
+    }
     Value::Object(fields)
+}
+
+/// The fields a query term matched, in name order. One `declaration` stands
+/// for every matched input or result path: a common word matches dozens, and
+/// they explain the ranking rather than the choice.
+fn matched_fields(evidence: &SearchEvidence) -> Vec<&str> {
+    let mut fields = evidence
+        .fields()
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !evidence.paths().is_empty() {
+        fields.push("declaration");
+        fields.sort_unstable();
+    }
+    fields
 }
 
 fn retriever_status(status: &RetrieverStatus) -> Value {

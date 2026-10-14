@@ -346,14 +346,17 @@ Function save hands to Universal Search to index. An Operation whose declaration
 keeps only its shallower paths and carries a warning. Universal Search returns a Search Hit for it, and describe its
 Authoring Description, never the Entity's private material. _Avoid_: Authoring Kind, search document
 
-**Search Hit**: One item of a search page: a Search Entity's kind and Call Path, its Provider display name, title,
-signature line, Description Snippet, Operation Hints, approval requirement, deprecation flag, and the evidence for why it
-matched; a Guidance Snippet and matched tags only where a query term matched them. Never the declaration.
+**Search Hit**: One item of a search page, cut to what an agent needs to choose and call a Search Entity: its Call
+Path, signature line, Description Snippet, and the fields a query term matched; a Guidance Snippet and matched tags only
+where a query term matched them; for an Operation, its declared Operation Hints, and its approval requirement and
+deprecation flag only when set. The Call Path names the kind and the Provider, and describe gives the rest. Never the
+declaration.
 
 **Search Coverage**: What one search page states, per kind of Search Entity, about how much of the Principal's Search
 Entities it examined and why results may be missing: how many Providers or Saved Functions were eligible, searched, and
 failed, how many results the kind returned, and whether more remain. A kind that the Provider filter leaves out is
-skipped, not incomplete. Coverage describes one page at the time of the search, not the current catalog.
+skipped, not incomplete. A page states coverage only for a kind whose results may be missing. Coverage describes one
+page at the time of the search, not the current catalog.
 
 **Description Snippet**: The bounded window of an Entity's description that a Search Hit shows: around the first
 matched query term when the description matched, otherwise its beginning.

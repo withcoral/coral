@@ -1057,12 +1057,15 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     );
     assert!(first_search_result["signature_line"].is_string());
     assert!(first_search_result["description_snippet"].is_string());
-    assert!(first_search_result["title"].is_string());
     for gone in [
         "description",
         "typescript_declaration",
         "provider_id",
         "provider_access",
+        "kind",
+        "title",
+        "provider_display_name",
+        "evidence",
     ] {
         assert!(
             first_search_result.get(gone).is_none(),
@@ -1071,15 +1074,10 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
     }
     assert!(first_search_result.get("summary").is_none());
     assert_eq!(structured(&searched)["has_more"], false);
-    assert!(structured(&searched)["next_cursor"].is_null());
+    assert!(structured(&searched).get("next_cursor").is_none());
     assert!(
         first_search_result
-            .pointer("/evidence/fields")
-            .is_some_and(Value::is_array)
-    );
-    assert!(
-        first_search_result
-            .pointer("/evidence/paths")
+            .get("matched_fields")
             .is_some_and(Value::is_array)
     );
     assert!(first_search_result.get("score").is_none());
