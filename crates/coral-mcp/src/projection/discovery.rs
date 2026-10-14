@@ -81,6 +81,10 @@ struct SearchHit {
     /// The tags a query term matched; absent when none did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     matched_tags: Vec<String>,
+    /// The arguments a query term matched that the signature line does not
+    /// show; absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    matched_inputs: Vec<String>,
     /// Present only when the Provider declared a hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Hints")]

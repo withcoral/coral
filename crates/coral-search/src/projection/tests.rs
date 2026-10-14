@@ -75,6 +75,28 @@ fn a_hit_carries_only_what_the_agent_chooses_and_calls_by() {
             }),
         ),
         (
+            "an Operation with a matched argument its signature line does not show",
+            operation_hit(
+                text(None, &[]),
+                SearchEvidence::new(
+                    vec!["description".into()],
+                    vec![
+                        "input.query".into(),
+                        "input.query.text".into(),
+                        "input.repo".into(),
+                        "result.data[].query".into(),
+                    ],
+                ),
+                OperationHints::default(),
+                ApprovalRequirement::NotRequired,
+                false,
+            ),
+            json!({
+                "call_path": "coral.providers.github.pulls.list",
+                "matched_inputs": ["query"],
+            }),
+        ),
+        (
             "a Saved Function that matched in its declaration",
             SearchHit::from_saved_function(
                 CallPath::saved_function("github.openPulls").expect("Call Path"),

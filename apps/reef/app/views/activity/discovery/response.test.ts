@@ -59,6 +59,8 @@ it('reads the kind of each hit from its Call Path, and an absent flag as unset',
     },
   })
   expect(subIssues.operation).toEqual({ approvalRequired: false, deprecated: false, hints: {} })
+  // An argument the signature line could not show reads as its declaration path.
+  expect(subIssues.matched.paths).toEqual(['input.per_page'])
 })
 
 it('reads Search Coverage for a kind whose results may be missing', () => {

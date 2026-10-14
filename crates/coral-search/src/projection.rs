@@ -60,6 +60,10 @@ fn hit(hit: &SearchHit) -> Value {
     if !hit.matched_tags().is_empty() {
         fields.insert("matched_tags".to_string(), json!(hit.matched_tags()));
     }
+    let hidden = matched_inputs(hit);
+    if !hidden.is_empty() {
+        fields.insert("matched_inputs".to_string(), json!(hidden));
+    }
     if let Some(operation) = hit.operation() {
         if operation.hints() != OperationHints::default() {
             fields.insert("hints".to_string(), hints(operation.hints()));
@@ -72,6 +76,29 @@ fn hit(hit: &SearchHit) -> Value {
         }
     }
     Value::Object(fields)
+}
+
+/// The top-level arguments a query term matched that the cut signature line
+/// does not show, in name order: a long argument can push the one the agent
+/// needs past the cut.
+fn matched_inputs(hit: &SearchHit) -> Vec<&str> {
+    let line = hit.signature_line();
+    let mut names = hit
+        .evidence()
+        .paths()
+        .iter()
+        .filter_map(|path| path.strip_prefix("input."))
+        .filter_map(|rest| rest.split(['.', '[']).next())
+        .filter(|name| {
+            !["{ ", "; "].iter().any(|before| {
+                line.contains(&format!("{before}{name}:"))
+                    || line.contains(&format!("{before}{name}?:"))
+            })
+        })
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 fn retriever_status(status: &RetrieverStatus) -> Value {

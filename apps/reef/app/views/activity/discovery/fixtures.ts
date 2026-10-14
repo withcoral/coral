@@ -11,7 +11,7 @@
  *
  * Built from those captures, to show each branch:
  * - `complete`: the captured page as Coral writes it now.
- * - `mixed`: a Saved Function hit, a guidance match, and flags.
+ * - `mixed`: a Saved Function hit, a guidance match, a matched input, and flags.
  * - `partial` and `error`: the same hits with incomplete Search Coverage.
  * - `earlierShape`: the response before Search Hits. The parser rejects it.
  */
@@ -233,7 +233,7 @@ const mixed = {
       approval_required: true,
       hints: { destructive: true, idempotent: false },
     },
-    subIssuesHit,
+    { ...subIssuesHit, matched_inputs: ['per_page'] },
     { ...githubHits[0], deprecated: true },
     githubHits[3],
     githubHits[4],

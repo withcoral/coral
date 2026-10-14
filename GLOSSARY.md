@@ -348,7 +348,8 @@ Authoring Description, never the Entity's private material. _Avoid_: Authoring K
 
 **Search Hit**: One item of a search page, cut to what an agent needs to choose and call a Search Entity: its Call
 Path, signature line, and Description Snippet; a Guidance Snippet and matched tags only where a query term matched
-them; for an Operation, its declared Operation Hints, and its approval requirement and deprecation flag only when set.
+them, and the matched arguments that its cut signature line does not show; for an Operation, its declared Operation
+Hints, and its approval requirement and deprecation flag only when set.
 The Call Path names the kind and the Provider, the rank reflects why the hit matched, and describe gives the rest.
 Never the declaration.
 
