@@ -96,8 +96,8 @@ pub use mcp::{
     McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
 };
 pub use openapi::{
-    HTTP_RESULT, HTTP_UNKNOWN_RESULT, HttpContentBinding, HttpCredentialSlot, HttpEncodingBinding,
-    HttpExecutionBinding, HttpHeaderBinding, HttpMethod, HttpParameterBinding,
+    HTTP_RESULT, HTTP_SUCCESS_STATUS, HTTP_UNKNOWN_RESULT, HttpContentBinding, HttpCredentialSlot,
+    HttpEncodingBinding, HttpExecutionBinding, HttpHeaderBinding, HttpMethod, HttpParameterBinding,
     HttpParameterLocation, HttpParameterStyle, HttpRedirectPolicy, HttpRequestBodyBinding,
     HttpResponseBinding, HttpResponseStatus, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument,
     validate_openapi_configuration,

@@ -592,10 +592,7 @@ impl ProjectionOptions {
         Self {
             honor_property_access: true,
             binary_string_type: Some("BinaryValue"),
-            declared_type_names: &[
-                crate::openapi::HTTP_RESULT,
-                crate::openapi::HTTP_UNKNOWN_RESULT,
-            ],
+            declared_type_names: &crate::openapi::DECLARED_TYPE_NAMES,
             disambiguation_source_prefix: None,
             widen_unguarded_reference_cycles: true,
             use_recursive_map_index_signatures: true,
