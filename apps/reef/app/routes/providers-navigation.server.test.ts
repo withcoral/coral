@@ -181,6 +181,18 @@ it.each([
   },
 )
 
+// Catches: an operation without a policy decision displaying a guessed default.
+it('rejects the page when Coral leaves an operation without a policy decision', async () => {
+  const respond = mocks.policies.getMockImplementation()!
+  mocks.policies.mockImplementation(async (request: { operations: string[] }) => {
+    const { policies } = await respond(request)
+    return { policies: policies.slice(1) }
+  })
+  const router = await makeRouter()
+  expect(Object.values(router.state.errors ?? {})).toHaveLength(1)
+  expect(router.state.loaderData.providers).toBeUndefined()
+})
+
 it('keeps the 1,229-operation tree out of operation navigation responses, but reauthorizes each click', async () => {
   const router = await makeRouter()
   expect(router.state.errors).toBeNull()

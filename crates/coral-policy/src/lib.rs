@@ -312,10 +312,10 @@ pub async fn discovery_decision_in_transaction(
 /// Reads every exact Operation rule of one Workspace for Universal Search.
 ///
 /// Discovery reads the rules once per request instead of one decision per
-/// Operation. The caller owns a coherent read transaction and supplies declared
-/// hints and HTTP methods from current structurally available Provider authoring
-/// material.
-/// This facet does not lock or write policy.
+/// Operation. The caller owns a coherent read transaction. It resolves each
+/// Operation with [`ExactOperationRules::access_state`], passing the declared
+/// hints and HTTP method from current structurally available Provider
+/// authoring material. This facet does not lock or write policy.
 ///
 /// # Errors
 ///

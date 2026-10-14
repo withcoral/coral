@@ -132,7 +132,7 @@ test('OpenAPI OAuth with one shared account: consent, resume, forged callbacks, 
     await step('A Program run resolves the shared account', async () => {
       // A GET Operation runs without approval, so the call reaches upstream
       // with the shared account's token.
-      const run = programRunner(page, target, workspace, { waitMs: 1000 })
+      const run = programRunner(page, target, workspace)
       const result = await run('return await coral.providers.records.listRecords({});')
       expect(result).toContain('"state":"succeeded"')
       expect(result).toContain('Hello from the OAuth API')
