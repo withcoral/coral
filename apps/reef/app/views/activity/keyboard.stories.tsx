@@ -8,6 +8,7 @@ import { ActionReviewSession } from '../actions/review'
 import { activityPage, runRow, taskRow, toolRow } from './fixtures'
 import type { ActivityPage, ActivityRow } from './types'
 import {
+  click,
   emulateReducedMotion,
   inTestBrowser,
   press,
@@ -135,7 +136,7 @@ async function surface(canvasElement: HTMLElement) {
     address: () => canvas.getByLabelText('Address').textContent ?? '',
     rail: () => screen.queryByRole('dialog', { name: 'Activity details' }),
     /** The label of the row the cursor shows on. */
-    cursor: () => table.querySelector('[data-active] [data-record-link]')?.textContent ?? null,
+    cursor: () => table.querySelector('[data-active] a[href]')?.textContent ?? null,
     heading: (rail: HTMLElement, name: string) =>
       waitFor(() => expect(within(rail).getByRole('heading', { name, level: 2 })).toBeVisible()),
   }
@@ -284,7 +285,9 @@ export const KeysDuringLoads: Story = {
         name: 'Activity details',
       })
       await heading(opened, label)
-      // Opening focuses the rail. A click on the open record's row returns focus to it.
+      // The rail takes focus as it opens; let that land before moving it. A click
+      // on the open record's row then returns focus to the table.
+      await waitFor(() => expect(opened.contains(document.activeElement)).toBe(true))
       await userEvent.click(within(row(label)).getByRole('link'))
       await waitFor(() => expect(table.contains(document.activeElement)).toBe(true))
       return opened
@@ -367,5 +370,56 @@ export const Mobile: Story = {
     })
     await heading(reopened, 'Task 2')
     await waitFor(() => expect(reopened.contains(document.activeElement)).toBe(true))
+  },
+}
+
+/**
+ * One indicator shows where the keys act: the table holds focus and its cursor row
+ * shows the record, after clicks, Enter and Escape alike. No link or table ring joins it.
+ */
+export const SingleFocusIndicator: Story = {
+  play: async ({ canvasElement }) => {
+    loads.open()
+    if (!(await inTestBrowser())) return
+    const { table, row, rail, heading } = await surface(canvasElement)
+    const link = (label: string) => within(row(label)).getByRole('link')
+    const indicatesOnly = async (label: string) => {
+      await waitFor(() => expect(table).toHaveFocus())
+      await waitFor(() => expect(table.querySelectorAll('[data-active]')).toHaveLength(1))
+      await expect(row(label)).toHaveAttribute('data-active')
+      await expect(getComputedStyle(row(label)).boxShadow).not.toBe('none')
+      await expect(getComputedStyle(table).outlineStyle).toBe('none')
+      await expect(table.querySelector(':focus')).toBeNull()
+    }
+    // A click opens the first record; the rail takes focus as it opens.
+    await click(link('Task 1'))
+    const opened = await within(document.body).findByRole('dialog', { name: 'Activity details' })
+    await heading(opened, 'Task 1')
+    await waitFor(() => expect(opened.contains(document.activeElement)).toBe(true))
+    // A click on another record's link, beside the open rail.
+    await click(link('Task 2'))
+    await heading(opened, 'Task 2')
+    await indicatesOnly('Task 2')
+    // Enter with the rail open changes nothing.
+    await press('{Enter}')
+    await indicatesOnly('Task 2')
+    // Escape closes the rail; the cursor row keeps the record.
+    await press('{Escape}')
+    await waitFor(() => expect(rail()).toBeNull())
+    await indicatesOnly('Task 2')
+    // Enter opens it again, beside the table.
+    await press('{Enter}')
+    await heading(
+      await within(document.body).findByRole('dialog', { name: 'Activity details' }),
+      'Task 2',
+    )
+    await indicatesOnly('Task 2')
+    // A click on a row away from its link.
+    await click(within(row('Task 3')).getAllByRole('cell')[0]!)
+    await heading(rail()!, 'Task 3')
+    await indicatesOnly('Task 3')
+    await press('{Escape}')
+    await waitFor(() => expect(rail()).toBeNull())
+    await indicatesOnly('Task 3')
   },
 }

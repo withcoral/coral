@@ -148,11 +148,13 @@ const detailHeading = (dialog: HTMLElement | null) =>
 it('with the rail open, ↑ and ↓ step the shown record and keep focus where they started', async () => {
   const { user, table, link, record, router, cursor } = await renderActivity(opened(invoices.name))
   const dialog = rail()!
-  // A click on another row replaces the detail and leaves focus on its link.
+  // A click on another row replaces the detail; focus rests on the table.
   await user.click(link('Find operations'))
   expect(record()).toBe(search.name)
-  expect(link('Find operations')).toHaveFocus()
-  // The next ↓ continues from the clicked record; the table takes focus.
+  // Focus rests on the table, whose cursor row shows the clicked record.
+  expect(table).toHaveFocus()
+  expect(cursor()).toBe('Find operations')
+  // The next ↓ continues from the clicked record.
   await user.keyboard('{ArrowDown}')
   expect(record()).toBe(reminder.name)
   expect(router.state.historyAction).toBe('REPLACE')
@@ -352,15 +354,18 @@ it('Discard after Escape closes the rail onto the record it showed', async () =>
 // acting on the cursor record instead of the control.
 it("Enter and Space on a focused control stay the control's own", async () => {
   const { user, cursor, record, router } = await renderActivity()
-  await user.keyboard('{ArrowDown}')
-  expect(cursor()).toBe('Find invoices')
+  const expanded = () => new URLSearchParams(router.state.location.search).getAll('expand')
+  // The cursor rests on a collapsed Task, so a key that leaks to the table would
+  // expand it or open it.
+  await user.keyboard('{ArrowUp}')
+  expect(cursor()).toBe('Send reminders')
   act(() => screen.getByRole('button', { name: 'Outside' }).focus())
   await user.keyboard('{Enter}[Space]')
-  expect(record()).toBeNull()
-  // The expand control toggles once, from its own activation, and opens nothing.
-  act(() => screen.getAllByRole('button', { name: 'Collapse record' })[0]!.focus())
+  expect(router.state.location.search).toBe('')
+  // The expand control collapses its own Task once, and nothing else changes.
+  act(() => screen.getByRole('button', { name: 'Collapse record' }).focus())
   await user.keyboard('[Space]')
-  expect(new URLSearchParams(router.state.location.search).getAll('expand')).toEqual([])
+  expect(expanded()).toEqual([])
   expect(record()).toBeNull()
 })
 

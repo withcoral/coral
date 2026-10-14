@@ -28,7 +28,7 @@ function cursor(page: Page) {
     const port = table.getBoundingClientRect()
     return {
       key: row.dataset.recordKey!,
-      label: row.querySelector('[data-record-link]')?.textContent ?? '',
+      label: row.querySelector('a[href]')?.textContent ?? '',
       index: item ? Number(item.dataset.windowIndex) : null,
       inView: box.top >= top - 1 && box.bottom <= port.top + table.clientHeight + 1,
     }
@@ -159,9 +159,11 @@ test('The keyboard drives workspace Activity records, sparse child windows and t
       expect(await rail.getAttribute('data-reel')).toBe('opened')
       expect(await page.evaluate(() => history.length)).toBe(entries)
       expect(await tableFocused(page)).toBe(true)
-      // The step's window can arrive without the record for a moment; the cursor
-      // waits for it rather than resting anywhere else.
-      await expect.poll(async () => (await cursor(page))?.key).toBe(record(page))
+      // The step's window can arrive without the record until the live reader
+      // restores it; the cursor waits for it rather than resting anywhere else.
+      await expect
+        .poll(async () => (await cursor(page))?.key, { timeout: 10_000 })
+        .toBe(record(page))
     })
 
     await step('Escape closes the rail onto the record it showed', async () => {

@@ -63,3 +63,11 @@ export async function press(keys: string) {
 export async function inTestBrowser() {
   return (await browser()) !== null
 }
+
+/** Clicks an element with the test browser's own mouse, so the browser moves focus. */
+export async function click(element: Element) {
+  const context = await browser()
+  if (!context) return false
+  await context.userEvent.click(element)
+  return true
+}

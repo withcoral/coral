@@ -371,8 +371,8 @@ const RecordRow = memo(function RecordRow({
         >
           <Link
             to={scope.href(row)}
-            // The table's keys reach it: a click leaves focus here. Only a glimpse,
-            // which takes no keys, gives each record a Tab stop.
+            // The table's cursor row stands for it. Only a glimpse, which takes no
+            // keys, gives each record a Tab stop.
             data-record-link
             tabIndex={scope.glimpse ? undefined : -1}
             preventScrollReset
@@ -679,12 +679,12 @@ export function Activity({
         '[role="dialog"][aria-modal="true"], [role="alertdialog"]',
       )
       if (dialog && dialog !== rail) return
-      // Activity acts only on the table, its record links, the rail itself, and the
-      // page background. Every other control keeps its keys.
+      // Activity acts only on the table itself, the rail itself, and the page
+      // background. Every other control keeps its keys.
       const owner =
         rail && target === rail
           ? 'rail'
-          : target === table || (table.contains(target) && target.matches('[data-record-link]'))
+          : target === table
             ? 'table'
             : target === document.body || target === document.documentElement
               ? 'page'
@@ -696,17 +696,15 @@ export function Activity({
         event.preventDefault()
         // A closing rail takes no more steps.
         if (owner === 'rail' && !current.open) return
-        // The keys keep focus where they act; from the page, the open rail takes it.
-        const focus = owner === 'rail' || (owner === 'page' && current.open) ? rail : table
-        if (focus !== target) focus?.focus({ preventScroll: true })
+        // From the page, the open rail takes focus, or else the table.
+        if (owner === 'page') (current.open ? rail : table)?.focus({ preventScroll: true })
         return move(step)
       }
       if (owner === 'page' || event.repeat) return
       if (event.key === ' ') {
         if (toggle(owner)) event.preventDefault()
       } else if (event.key === 'Enter') {
-        // A record link opens itself.
-        if (target !== table || current.open || !current.activeStop) return
+        if (owner !== 'table' || current.open || !current.activeStop) return
         event.preventDefault()
         actions.select(current.activeStop.row, true)
       } else if (event.key === 'Escape' && owner === 'table' && current.open) {
@@ -801,7 +799,18 @@ export function Activity({
           <div
             className={styles.list}
             ref={listRef}
-            onFocus={(event) => setTableFocused(Boolean(tableRef.current?.contains(event.target)))}
+            onFocus={(event) => {
+              const table = tableRef.current
+              // A record's link is not a Tab stop of its own. Focus that lands on one,
+              // as a click on it leaves it, rests on the table, whose cursor row shows it.
+              if (
+                !glimpse &&
+                table?.contains(event.target) &&
+                event.target.matches('[data-record-link]')
+              )
+                return table.focus({ preventScroll: true })
+              setTableFocused(Boolean(table?.contains(event.target)))
+            }}
             onBlur={(event) =>
               setTableFocused(Boolean(tableRef.current?.contains(event.relatedTarget)))
             }
