@@ -21,7 +21,7 @@ See [Toolbox's integration catalog](https://mcp-toolbox.dev/integrations/) for t
 ## Run Toolbox
 
 1. [Install Toolbox](https://mcp-toolbox.dev/documentation/introduction/) on a host that can reach your database.
-2. Choose a [prebuilt configuration](https://mcp-toolbox.dev/documentation/configuration/prebuilt-configs/) for your database.
+2. For trusted development, choose a [prebuilt configuration](https://mcp-toolbox.dev/documentation/configuration/prebuilt-configs/) for your database.
 3. Set the connection and credential environment variables listed in that configuration's documentation.
 
 For example, after setting the [PostgreSQL environment variables](https://mcp-toolbox.dev/integrations/postgres/prebuilt-configs/postgresql/), start a local server:
@@ -32,6 +32,9 @@ toolbox --prebuilt postgres --address 127.0.0.1 --port 5000
 
 This loads Toolbox's built-in PostgreSQL tools without a `tools.yaml` file.
 For custom tools or databases without a prebuilt configuration, [define `tools.yaml`](https://mcp-toolbox.dev/documentation/configuration/) and use `--config tools.yaml` instead.
+
+Coral recommends exposing only an `execute_sql` tool, using a database account with the minimum permissions required for your agent's work.
+See [Toolbox's security guidance](https://mcp-toolbox.dev/documentation/configuration/prebuilt-configs/#security-for-dynamic-sql-tools).
 
 Its MCP endpoint is `http://127.0.0.1:5000/mcp`.
 To expose a specific toolset, use `/mcp/<toolset-name>` instead.
@@ -90,5 +93,10 @@ For a Service named `toolbox` in the `coral` namespace, use `http://toolbox.cora
 Adjust the namespace, port, and cluster domain to match your deployment.
 
 For each deployment, include the provider URL's hostname and port in Toolbox's `--allowed-hosts`.
-Configure Coral's [outbound permissions](/reference/configuration#outbound) to allow the connection.
-Private HTTP endpoints require `private_networks = "http-and-https"` in Coral's `[outbound]` configuration.
+Configure Coral's [outbound permissions](/reference/configuration#outbound) for the endpoint in its `[outbound]` configuration:
+
+- For loopback HTTP endpoints, including `127.0.0.1` sidecars, set `loopback = "http-and-https"`.
+- For private network HTTP endpoints, including Compose services and Kubernetes ClusterIP Services, set `private_networks = "http-and-https"`.
+
+These permissions are independent and default to `deny` in server deployments.
+Desktop and implicit-user local deployments allow both by default, unless you explicitly override them.
