@@ -1,5 +1,5 @@
 import { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router'
+import { Link, useLocation, useNavigate, useNavigation } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
 import { Button, Typography } from '@/wax/components'
@@ -20,6 +20,7 @@ import { revealHref, selectionKeys, useActivityNavigation } from './navigation'
 import { ActivityDetail } from './detail'
 import { ActivityConnectedContext } from './live'
 import { PendingActions } from './pending'
+import { useUnsentComment } from '../actions/review'
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
 import { activityDays, utcDay } from '@/lib/activity-list'
@@ -257,7 +258,10 @@ const RecordRow = memo(function RecordRow({
     selected: row.name === scope.selected,
     status: rowStatus(row),
     onClick: (event: React.MouseEvent<HTMLElement>) => {
-      if (!(event.target as HTMLElement).closest('a,button,input,select')) actions.select(row)
+      if ((event.target as HTMLElement).closest('a,button,input,select')) return
+      // Focus rests on the clicked row, as a click on its link leaves it.
+      event.currentTarget.querySelector<HTMLElement>('a[href]')?.focus({ preventScroll: true })
+      actions.select(row)
     },
   }
   const cells = (
@@ -385,20 +389,58 @@ export function Activity({
   const nav = useActivityNavigation(page)
   const navigate = useNavigate()
   const { search } = useLocation()
-  const drawer = Dialog.useCloseAfterExit(page.selected ?? null, () =>
-    navigate(nav.backHref, { preventScrollReset: true }),
-  )
-  // Rows navigate with the reader's latest position, read when the click happens.
-  const latest = useRef({ nav, navigate, live, more })
+  const selected = page.selected ?? null
+  const transition = useNavigation()
+  // The record a navigation in this list is about to select: null when it clears
+  // the selection, undefined when no navigation is under way.
+  const pending =
+    transition.location?.pathname === page.listPath
+      ? new URLSearchParams(transition.location.search).get('record')
+      : undefined
+  // The record whose rail is closing. It plays its exit while the address catches
+  // up, and a load that lands meanwhile cannot reopen it. A new selection ends it.
+  const [closing, setClosing] = useState<string | null>(null)
+  if (closing !== null && closing !== selected) setClosing(null)
+  // A closing rail keeps showing its record until its exit ends.
+  const [shown, setShown] = useState(page)
+  if (selected && shown !== page) setShown(page)
+  const detailPage = selected ? page : shown
+  const unsent = useUnsentComment()
+  const close = () => {
+    // With an unsent comment, the rail stays while the review asks whether to discard it.
+    if (!unsent) setClosing(selected)
+    void navigate(nav.backHref, { preventScrollReset: true })
+  }
+  const listRef = useRef<HTMLDivElement>(null)
+  const popupRef = useRef<HTMLDivElement>(null)
+  // Another record starts at its top, in the same rail.
   useLayoutEffect(() => {
-    latest.current = { nav, navigate, live, more }
+    if (selected && popupRef.current) popupRef.current.scrollTop = 0
+  }, [selected])
+  // Rows navigate with the reader's latest position, read when the click happens.
+  const latest = useRef({ nav, navigate, live, more, selected, pending, closing })
+  useLayoutEffect(() => {
+    latest.current = { nav, navigate, live, more, selected, pending, closing }
   })
   const [actions] = useState<RowActions>(() => ({
     select: (row) => {
       const current = latest.current
       // A glimpse opens the record on its Activity page, at the top of that page.
-      if (current.more) void current.navigate(revealHref(row))
-      else void current.navigate(current.nav.recordHref(row.name), { preventScrollReset: true })
+      if (current.more) return void current.navigate(revealHref(row))
+      // The record the rail shows, or is about to show. Picking it again does nothing.
+      const target =
+        current.closing !== null
+          ? null
+          : current.pending !== undefined
+            ? current.pending
+            : current.selected
+      if (row.name === target) return
+      if (row.name === current.closing) setClosing(null)
+      // Returning to the selected record replaces the address rather than adding to history.
+      void current.navigate(current.nav.recordHref(row.name), {
+        preventScrollReset: true,
+        replace: row.name === current.selected,
+      })
     },
     toggle: (name) =>
       void latest.current.navigate(latest.current.nav.toggleHref(name), {
@@ -477,7 +519,7 @@ export function Activity({
             )}
           </div>
           <PendingActions page={page} />
-          <div className={styles.list}>
+          <div className={styles.list} ref={listRef}>
             {!page.agent && (
               <Typography.HeadingSmall as="h2">Your recent activity</Typography.HeadingSmall>
             )}
@@ -558,7 +600,15 @@ export function Activity({
                           </>
                         }
                       >
-                        <Link to={nav.recordHref(outside.name)} preventScrollReset>
+                        <Link
+                          to={nav.recordHref(outside.name)}
+                          preventScrollReset
+                          onClick={(event) => {
+                            if (!plainClick(event)) return
+                            event.preventDefault()
+                            actions.select(outside)
+                          }}
+                        >
                           {rowLabel(outside)}
                         </Link>
                       </Table.Record>
@@ -582,25 +632,42 @@ export function Activity({
               </div>
             )}
           </div>
-          <Dialog.Root key={page.selected ?? 'closed'} {...drawer}>
+          {/* One rail for every record: another selection replaces its content in place. */}
+          <Dialog.Rail
+            open={selected !== null && closing === null}
+            onOpenChange={(open) => !open && close()}
+          >
             <Dialog.Portal>
               <Dialog.Backdrop />
-              <Dialog.Popup size="xl" placement="right" fullWidthOnMobile>
+              <Dialog.Popup
+                size="xl"
+                placement="right"
+                fullWidthOnMobile
+                ref={popupRef}
+                // Closing returns focus to the record's row, when the table shows it.
+                finalFocus={() =>
+                  (detailPage.selected &&
+                    listRef.current?.querySelector<HTMLElement>(
+                      `[data-record-key="${CSS.escape(detailPage.selected)}"] a[href]`,
+                    )) ||
+                  true
+                }
+              >
                 <Dialog.Header>
                   <Dialog.Title>
-                    {(page.detail?.kind === 'invocation' &&
-                      page.detail.request?.kind === 'approval') ||
-                    (page.detail?.kind === 'run' &&
-                      page.detail.request?.kind === 'account_connection')
+                    {(detailPage.detail?.kind === 'invocation' &&
+                      detailPage.detail.request?.kind === 'approval') ||
+                    (detailPage.detail?.kind === 'run' &&
+                      detailPage.detail.request?.kind === 'account_connection')
                       ? 'Review action'
                       : 'Activity details'}
                   </Dialog.Title>
                   <Dialog.Close ariaLabel="Close details" />
                 </Dialog.Header>
-                {page.unavailable ? (
+                {detailPage.unavailable ? (
                   <Typography.Body>This history is unavailable.</Typography.Body>
                 ) : (
-                  <ActivityDetail key={page.selected} page={page} />
+                  <ActivityDetail key={detailPage.selected} page={detailPage} />
                 )}
                 {outside &&
                   page.detail?.kind !== 'run' &&
@@ -616,7 +683,7 @@ export function Activity({
                   )}
               </Dialog.Popup>
             </Dialog.Portal>
-          </Dialog.Root>
+          </Dialog.Rail>
         </div>
       </ActivityConnectedContext>
     </RowActionsContext>

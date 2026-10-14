@@ -119,6 +119,11 @@ export function ActionReviewSession({
   )
 }
 
+/** Whether leaving the review would lose an unsent comment, so the session asks first. */
+export function useUnsentComment() {
+  return Boolean(useContext(DraftContext)?.draft.comment)
+}
+
 /** One exact call, one draft, one durable decision in Activity. */
 export function ApprovalReview({ detail }: { detail: Approval }) {
   const csrf = useShellCsrf()

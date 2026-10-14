@@ -1,7 +1,11 @@
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import classNames from 'classnames'
+import { useContext } from 'react'
+
+import { useComposedRefs } from '@/utils/compose-refs'
 
 import * as styles from './dialog.css'
+import { OwnBackdropContext, RailContext } from './rail'
 
 export interface PopupProps extends BaseDialog.Popup.Props {
   children: React.ReactNode
@@ -24,6 +28,9 @@ export function Popup({
   fullWidthOnMobile = false,
   ...props
 }: PopupProps) {
+  const rail = useContext(RailContext)
+  const besidePage = rail !== null && !rail.modal
+  const composedRef = useComposedRefs(ref, rail?.popup)
   return (
     <BaseDialog.Popup
       className={classNames(
@@ -32,12 +39,16 @@ export function Popup({
         placement !== 'center' && styles.drawer,
         placement === 'right' && styles.rightDrawer,
         fullWidthOnMobile && styles.fullWidthOnMobile,
+        besidePage && styles.besidePage,
         className,
       )}
-      ref={ref}
+      ref={composedRef}
       {...props}
     >
-      {children}
+      {/* The mode is this rail's own: a dialog opened from its content is a plain dialog. */}
+      <RailContext value={null}>
+        <OwnBackdropContext value={besidePage}>{children}</OwnBackdropContext>
+      </RailContext>
     </BaseDialog.Popup>
   )
 }

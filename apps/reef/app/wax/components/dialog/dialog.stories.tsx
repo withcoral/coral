@@ -1,9 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { useState } from 'react'
-import { expect, within } from 'storybook/test'
+import { expect, waitFor, within } from 'storybook/test'
 
-import { Button, Dialog } from '@/wax/components'
+import { Button, Dialog, Menu } from '@/wax/components'
+import { Tooltip } from '@/wax/components/tooltip'
+
+import { resizeViewport } from '../../../../.storybook/browser'
 
 const meta: Meta = {
   parameters: {
@@ -206,6 +209,41 @@ export const Confirmation: Story = {
   },
 }
 
+/** The z-index an element paints at among the document's portals. */
+function layer(element: Element) {
+  let z = 0
+  for (
+    let node: Element | null = element;
+    node && node !== document.body;
+    node = node.parentElement
+  ) {
+    const value = Number.parseInt(getComputedStyle(node).zIndex, 10)
+    if (!Number.isNaN(value)) z = value
+  }
+  return z
+}
+
+/** Whether a point on the left edge reaches the page, rather than a backdrop or a popup. */
+const pageReachable = (canvas: HTMLElement) =>
+  canvas.contains(document.elementFromPoint(8, window.innerHeight / 2))
+
+/** Whether the page behind is locked against scrolling, on whichever element scrolls it. */
+const scrollLocked = () =>
+  [document.documentElement, document.body].some((element) =>
+    /hidden|clip/.test(getComputedStyle(element).overflowY),
+  )
+
+/** Whether a visible backdrop dims the left edge of the page. */
+const dimmed = () =>
+  document.elementsFromPoint(8, window.innerHeight / 2).some((element) => {
+    const style = getComputedStyle(element)
+    return (
+      style.position === 'fixed' &&
+      Number(style.opacity) > 0 &&
+      style.backgroundColor !== 'rgba(0, 0, 0, 0)'
+    )
+  })
+
 /** Mounts open, like a drawer a route renders, and closes the way a route navigates away. */
 function RouteDrawer() {
   const [route, setRoute] = useState<'list' | 'record'>('record')
@@ -236,6 +274,9 @@ export const RightDrawer: Story = {
     const dialog = await body.findByRole('dialog', { name: 'Drawer' })
     // The reveal plays even though the drawer mounted already open.
     await expect(dialog.getAnimations().length).toBeGreaterThan(0)
+    // Unlike a rail, a drawer is modal at every width.
+    await waitFor(() => expect(dimmed()).toBe(true))
+    await expect(scrollLocked()).toBe(true)
     await userEvent.click(within(dialog).getByRole('button', { name: /close/i }))
     // The route changes only after the exit ends.
     await expect(canvas.queryByRole('button', { name: 'Open drawer' })).toBeNull()
@@ -243,4 +284,145 @@ export const RightDrawer: Story = {
     await expect(body.queryByRole('dialog')).toBeNull()
   },
   render: () => <RouteDrawer />,
+}
+
+function RailPage() {
+  const [record, setRecord] = useState<number | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  return (
+    <div style={{ minHeight: '200vh', padding: 24 }}>
+      <Menu.Container>
+        <Menu.Trigger render={<Button.Container variant="secondary" />}>
+          <Button.Text>Page actions</Button.Text>
+        </Menu.Trigger>
+        <Menu.Content>
+          <Menu.Item>Export</Menu.Item>
+        </Menu.Content>
+      </Menu.Container>
+      {[1, 2, 3].map((value) => (
+        <Button.TextButton key={value} variant="secondary" onClick={() => setRecord(value)}>
+          {`Record ${value}`}
+        </Button.TextButton>
+      ))}
+      <Dialog.Rail open={record !== null} onOpenChange={(open) => !open && setRecord(null)}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup size="xl" placement="right" fullWidthOnMobile>
+            <Dialog.Header>
+              <Dialog.Title>{`Record ${record}`}</Dialog.Title>
+              <Dialog.Close />
+            </Dialog.Header>
+            <Dialog.Description>Pick another record while this stays open.</Dialog.Description>
+            <Tooltip content="The record's hint" delay={0}>
+              <Button.TextButton variant="secondary">Hint</Button.TextButton>
+            </Tooltip>
+            <Button.TextButton variant="destructive" onClick={() => setConfirming(true)}>
+              Delete record
+            </Button.TextButton>
+            <Dialog.Root open={confirming} onOpenChange={setConfirming}>
+              <Dialog.Portal>
+                <Dialog.Backdrop />
+                <Dialog.Popup>
+                  <Dialog.Title>Delete this record?</Dialog.Title>
+                  <Dialog.Close />
+                </Dialog.Popup>
+              </Dialog.Portal>
+            </Dialog.Root>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Rail>
+      <Button.TextButton variant="secondary">After the rail</Button.TextButton>
+    </div>
+  )
+}
+
+/**
+ * A rail beside the page above 640px; a full-screen modal at 640px or less. The
+ * play resizes the viewport across the breakpoint while the rail stays open.
+ */
+export const Rail: Story = {
+  parameters: { layout: 'fullscreen' },
+  render: () => <RailPage />,
+  play: async ({ canvas, canvasElement, userEvent }) => {
+    const body = within(document.body)
+    await userEvent.click(canvas.getByRole('button', { name: 'Record 1' }))
+    const rail = await body.findByRole('dialog', { name: 'Record 1' })
+    // Opening from closed focuses the rail.
+    await waitFor(() => expect(rail.contains(document.activeElement)).toBe(true))
+    await expect(rail).not.toHaveAttribute('aria-modal', 'true')
+    await expect(pageReachable(canvasElement)).toBe(true)
+    await expect(dimmed()).toBe(false)
+    await expect(scrollLocked()).toBe(false)
+
+    // The page stays usable: a click switches the record in the same rail and keeps focus.
+    await userEvent.click(canvas.getByRole('button', { name: 'Record 2' }))
+    await expect(body.getByRole('dialog', { name: 'Record 2' })).toBe(rail)
+    await expect(canvas.getByRole('button', { name: 'Record 2' })).toHaveFocus()
+    // Escape outside the rail is not the rail's.
+    await userEvent.keyboard('{Escape}')
+    await expect(body.getByRole('dialog', { name: 'Record 2' })).toBe(rail)
+
+    // Tab follows the document: from the page into the rail, then on past it.
+    await userEvent.click(canvas.getByRole('button', { name: 'Record 3' }))
+    await userEvent.tab()
+    await expect(within(rail).getByRole('button', { name: 'Close' })).toHaveFocus()
+    await userEvent.tab()
+    await userEvent.tab()
+    await expect(within(rail).getByRole('button', { name: 'Delete record' })).toHaveFocus()
+    await userEvent.tab()
+    await expect(canvas.getByRole('button', { name: 'After the rail' })).toHaveFocus()
+    await userEvent.tab({ shift: true })
+    await expect(within(rail).getByRole('button', { name: 'Delete record' })).toHaveFocus()
+    await userEvent.click(canvas.getByRole('button', { name: 'Record 3' }))
+    await userEvent.tab()
+    await userEvent.tab({ shift: true })
+    await expect(canvas.getByRole('button', { name: 'Record 3' })).toHaveFocus()
+    // Focus left the rail, and it stays open.
+    await expect(body.getByRole('dialog', { name: 'Record 3' })).toBe(rail)
+
+    // A page menu draws above the rail and keeps its Escape.
+    await userEvent.click(canvas.getByRole('button', { name: 'Page actions' }))
+    const menu = await body.findByRole('menu')
+    await expect(layer(menu)).toBeGreaterThan(layer(rail))
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(body.queryByRole('menu')).toBeNull())
+    await expect(body.getByRole('dialog', { name: 'Record 3' })).toBe(rail)
+
+    // A tooltip in the rail draws above it.
+    await userEvent.hover(within(rail).getByRole('button', { name: 'Hint' }))
+    await expect(layer(await body.findByText("The record's hint"))).toBeGreaterThan(layer(rail))
+    await userEvent.unhover(within(rail).getByRole('button', { name: 'Hint' }))
+
+    // A dialog opened from the rail is modal, above it, with its own backdrop and Escape.
+    await userEvent.click(within(rail).getByRole('button', { name: 'Delete record' }))
+    const confirm = await body.findByRole('dialog', { name: 'Delete this record?' })
+    await expect(layer(confirm)).toBeGreaterThan(layer(rail))
+    await waitFor(() => expect(dimmed()).toBe(true))
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() =>
+      expect(body.queryByRole('dialog', { name: 'Delete this record?' })).toBeNull(),
+    )
+    await expect(body.getByRole('dialog', { name: 'Record 3' })).toBe(rail)
+
+    // At 640px or less the open rail turns modal and takes focus.
+    await userEvent.click(canvas.getByRole('button', { name: 'Record 3' }))
+    if (!(await resizeViewport(600, 800))) return
+    await waitFor(() => expect(rail.contains(document.activeElement)).toBe(true))
+    await expect(body.getByRole('dialog', { name: 'Record 3' })).toBe(rail)
+    await expect(canvas.queryByRole('button', { name: 'Record 1' })).toBeNull()
+    await expect(pageReachable(canvasElement)).toBe(false)
+    await expect(scrollLocked()).toBe(true)
+
+    // Back beside the page, focus stays where it is and the page is usable again.
+    const focused = document.activeElement
+    await resizeViewport(1200, 900)
+    await waitFor(() => expect(canvas.queryByRole('button', { name: 'Record 1' })).not.toBeNull())
+    await expect(document.activeElement).toBe(focused)
+    await expect(pageReachable(canvasElement)).toBe(true)
+    await expect(scrollLocked()).toBe(false)
+
+    // Escape inside the rail still closes it.
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(body.queryByRole('dialog')).toBeNull())
+  },
 }

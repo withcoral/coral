@@ -108,9 +108,11 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
       )
       await page.getByText('Local completion 🪸', { exact: true }).waitFor()
       await page.getByText('Goal outcome: success', { exact: true }).waitFor()
-      await page.getByRole('button', { name: 'Close details', exact: true }).click()
+      // The open detail leaves the list usable: another goal replaces it in place.
       await page.getByRole('link', { name: 'Second local goal', exact: true }).click()
-      await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
+      const detail = page.getByRole('dialog', { name: 'Activity details' })
+      await detail.getByRole('heading', { name: 'Second local goal', exact: true }).waitFor()
+      expect(await page.getByRole('dialog').count()).toBe(1)
       expect(await page.getByText('Completion feedback', { exact: true }).count()).toBe(0)
     })
   })
