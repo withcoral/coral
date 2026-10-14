@@ -25,7 +25,9 @@ const reminder = runRow('reminder', invoices.name, {
   requiresAction: true,
   position: 1,
 })
-const rows: ActivityRow[] = [invoices, search, reminder, reminders]
+// The rail can show a record the list does not reach, as a direct link opens it.
+const elsewhere = taskRow('elsewhere', 'Elsewhere')
+const rows: ActivityRow[] = [invoices, search, reminder, reminders, elsewhere]
 const list = activityPage().listPath
 /** The list as live updates leave it: its roots, and the first Task's children. */
 interface Lists {
@@ -391,4 +393,14 @@ it('a collapse with the rail closed moves the cursor to the collapsed record', a
   await user.click(screen.getAllByRole('button', { name: 'Collapse record' })[0]!)
   act(() => table.focus())
   await waitFor(() => expect(cursor()).toBe('Find invoices'))
+})
+
+// Catches: a click on the synthetic outside-page row leaving focus on its link,
+// where the table's keys do nothing.
+it('a click on a record outside the list rests focus on the table', async () => {
+  const { user, table, record } = await renderActivity(opened(elsewhere.name))
+  await user.click(within(table).getByRole('link', { name: 'Elsewhere' }))
+  expect(table).toHaveFocus()
+  await user.keyboard('{Escape}')
+  expect(record()).toBeNull()
 })

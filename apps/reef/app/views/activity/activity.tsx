@@ -909,7 +909,9 @@ export function Activity({
                       >
                         <Link
                           to={nav.recordHref(outside.name)}
-                          // The rail shows this record already; its Reveal link is the keys' way in.
+                          // The rail shows this record already. Like every record link, it
+                          // is no Tab stop, and focus on it rests on the table.
+                          data-record-link
                           tabIndex={-1}
                           preventScrollReset
                           onClick={(event) => pickFromLink(event, () => actions.select(outside))}
