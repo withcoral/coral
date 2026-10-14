@@ -1,4 +1,13 @@
-import { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { Link, useLocation, useNavigate, useNavigation } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
@@ -16,7 +25,19 @@ import {
   type ActivityRow,
   type RunState,
 } from './types'
-import { revealHref, selectionKeys, useActivityNavigation } from './navigation'
+import {
+  activityStops,
+  childWindow,
+  finalValue,
+  recordParents,
+  resolveStop,
+  revealHref,
+  selectionKeys,
+  stepStop,
+  stopPosition,
+  useActivityNavigation,
+  type StopPosition,
+} from './navigation'
 import { ActivityDetail } from './detail'
 import { ActivityConnectedContext } from './live'
 import { PendingActions } from './pending'
@@ -206,7 +227,10 @@ function LoadRecords({
  * navigation, not on scroll or live snapshots, so memoized rows skip those renders.
  */
 interface RowScope {
+  /** The record the detail shows, by its exact identity. */
   selected: string | null
+  /** The record the keyboard cursor rests on, while focus is in the table. */
+  active: string | null
   expanded: Set<string>
   /** The expansion bound is reached; collapsed records cannot expand. */
   full: boolean
@@ -224,8 +248,10 @@ interface RowScope {
 }
 /** Navigation that reads the reader's latest position when it runs, not when rows rendered. */
 interface RowActions {
-  select: (row: ActivityRow) => void
-  toggle: (name: string) => void
+  /** `keyboard`: Enter in the table, which keeps focus in the table. */
+  select: (row: ActivityRow, keyboard?: boolean) => void
+  /** From the keyboard, a collapse that also changes the selection replaces the address. */
+  toggle: (name: string, keyboard?: boolean) => void
   viewport: (parent: string, value: Table.WindowViewport) => void
 }
 const RowActionsContext = createContext<RowActions>({
@@ -305,6 +331,7 @@ const RecordRow = memo(function RecordRow({
   const recordRowProps = {
     recordKey: row.name,
     selected: row.name === scope.selected,
+    active: row.name === scope.active,
     status: rowStatus(row),
     onClick: (event: React.MouseEvent<HTMLElement>) => {
       if ((event.target as HTMLElement).closest('a,button,input,select')) return
@@ -321,6 +348,8 @@ const RecordRow = memo(function RecordRow({
       <Table.Cell mono={row.kind === 'invocation'}>
         <Table.Record
           depth={depth}
+          // The full table is one Tab stop; its keys reach the records.
+          tabbable={scope.glimpse}
           icon={rowIcon(row)}
           expanded={expanded}
           disabled={!expanded && scope.full}
@@ -342,6 +371,10 @@ const RecordRow = memo(function RecordRow({
         >
           <Link
             to={scope.href(row)}
+            // The table's keys reach it: a click leaves focus here. Only a glimpse,
+            // which takes no keys, gives each record a Tab stop.
+            data-record-link
+            tabIndex={scope.glimpse ? undefined : -1}
             preventScrollReset
             onClick={(event) => pickFromLink(event, () => actions.select(row))}
           >
@@ -361,6 +394,7 @@ const RecordRow = memo(function RecordRow({
   // Only a Task or Run expands; anything else stays a plain row.
   if (!branch || (row.kind !== 'task' && row.kind !== 'run'))
     return <Table.Row {...recordRowProps}>{cells}</Table.Row>
+  const children = childWindow(branch)
   // The expanded record heads its children and pins while they scroll.
   return (
     <Table.Group label={rowLabel(row)} heading={cells} headingRow={recordRowProps}>
@@ -371,19 +405,14 @@ const RecordRow = memo(function RecordRow({
       ) : (
         <Table.Window
           label={`${rowLabel(row)} records`}
-          total={Math.max(
-            Number(branch.total ?? branch.rows.length),
-            ...branch.rows.map(
-              (child, index) => (child.position ?? (branch.offset ?? 0) + index) + 1,
-            ),
-          )}
+          total={children.total}
           size={ACTIVITY_CHILD_WINDOW}
           onViewportChange={
             scope.observed ? (value) => actions.viewport(row.name, value) : undefined
           }
-          items={branch.rows.map((child, index) => ({
+          items={children.items.map(({ row: child, index }) => ({
             key: activityRowIdentity(child),
-            index: child.position ?? (branch.offset ?? 0) + index,
+            index,
             content: (
               <RecordRow
                 row={child}
@@ -448,10 +477,18 @@ export function Activity({
   // up, and a load that lands meanwhile cannot reopen it. A new selection ends it.
   const [closing, setClosing] = useState<string | null>(null)
   if (closing !== null && closing !== selected) setClosing(null)
+  // The record the rail shows, exactly: a Run's final value has its own name,
+  // although its Run's detail shows it.
+  const shownRecord =
+    selected && new URLSearchParams(search).get('record') === finalValue(selected)
+      ? finalValue(selected)
+      : selected
   // A closing rail keeps showing its record until its exit ends.
-  const [shown, setShown] = useState(page)
-  if (selected && shown !== page) setShown(page)
-  const detailPage = selected ? page : shown
+  const [shown, setShown] = useState({ page, record: shownRecord })
+  if (selected && (shown.page !== page || shown.record !== shownRecord))
+    setShown({ page, record: shownRecord })
+  const detail = selected ? { page, record: shownRecord } : shown
+  const detailPage = detail.page
   const unsent = useUnsentComment()
   // The token of the rail's latest pick or close. A pending navigation with this
   // token is the rail's own and has no history entry yet.
@@ -462,23 +499,94 @@ export function Activity({
     void navigate(nav.backHref, { preventScrollReset: true, state: tokens.next() })
   }
   const listRef = useRef<HTMLDivElement>(null)
+  const tableRef = useRef<HTMLDivElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
   // Another record starts at its top, in the same rail.
   useLayoutEffect(() => {
-    if (selected && popupRef.current) popupRef.current.scrollTop = 0
-  }, [selected])
-  // Rows navigate with the reader's latest position, read when the click happens.
-  const latest = useRef({ nav, navigate, live, more, selected, pending, pendingToken, closing })
+    if (shownRecord && popupRef.current) popupRef.current.scrollTop = 0
+  }, [shownRecord])
+  const observed = live !== undefined
+  const glimpse = more !== undefined
+  // A glimpse never loads more, and lists only the latest roots a live update merged in.
+  const roots = useMemo(
+    () => (more ? page.rows.slice(0, more.roots) : page.rows),
+    [more, page.rows],
+  )
+  // Where ↑ and ↓ go. A glimpse takes no keys.
+  const stops = useMemo(() => (glimpse ? [] : activityStops(page, roots)), [glimpse, page, roots])
+  const open = selected !== null && closing === null
+  // With the rail open, the keys start from the record it shows, or is about to.
+  const shownPosition: StopPosition | null = shownRecord
+    ? {
+        name: shownRecord,
+        parents: page.selectedRow ? recordParents(page.selectedRow, shownRecord) : [],
+      }
+    : null
+  const pendingStop =
+    open && pending
+      ? stops.find((stop) => stop.kind === 'record' && stop.row.name === pending)
+      : undefined
+  // With the rail closed, the keyboard cursor: the last record the rail showed, or
+  // where ↑ and ↓ left it. A collapse that hides it moves it to that record; a
+  // record that leaves the table takes it along.
+  const [cursor, setCursor] = useState<StopPosition | null>(null)
+  if (open) {
+    if (shownPosition && cursor?.name !== shownPosition.name) setCursor(shownPosition)
+  } else if (cursor) {
+    const stop = stops[resolveStop(stops, cursor)]
+    if (stop?.kind !== 'record') setCursor(null)
+    else if (stop.row.name !== cursor.name) setCursor(stopPosition(stop))
+  }
+  // A key step, from the record the rail shows to where it is going. The router
+  // reports it pending only later, so the next key starts from here meanwhile.
+  const [keyStep, setKeyStep] = useState<{ from: string; to: StopPosition } | null>(null)
+  const stepping = open && keyStep?.from === shownRecord ? keyStep.to : null
+  const position: StopPosition | null = !open
+    ? cursor
+    : (stepping ?? (pendingStop?.kind === 'record' ? stopPosition(pendingStop) : shownPosition))
+  const positionStop = position ? stops[resolveStop(stops, position)] : undefined
+  const activeStop = positionStop?.kind === 'record' ? positionStop : null
+  const [tableFocused, setTableFocused] = useState(false)
+  // The table reveals the record a key moved to, until its route names another.
+  const [reveal, setReveal] = useState({ route: revealRecord, record: revealRecord })
+  if (reveal.route !== revealRecord) setReveal({ route: revealRecord, record: revealRecord })
+  const full = page.expanded.length >= MAX_EXPANDED_RECORDS
+  // Rows and keys navigate with the reader's latest position, read when they act.
+  const now = {
+    nav,
+    navigate,
+    live,
+    more,
+    selected,
+    shownRecord,
+    shownPosition,
+    pending,
+    pendingToken,
+    closing,
+    open,
+    stops,
+    cursor,
+    position,
+    activeStop,
+    full,
+    unsent,
+    expanded: page.expanded,
+    selectedRow: page.selectedRow,
+    close,
+  }
+  const latest = useRef(now)
   useLayoutEffect(() => {
-    latest.current = { nav, navigate, live, more, selected, pending, pendingToken, closing }
+    latest.current = now
     tokens.observe(
       locationKey,
       railToken(locationState),
       transition.state === 'idle' ? undefined : transition.location?.key,
     )
   })
+  // Whether Enter in the table opened the rail, which then leaves focus there.
+  const openedByKey = useRef(false)
   const [actions] = useState<RowActions>(() => ({
-    select: (row) => {
+    select: (row, keyboard = false) => {
       const current = latest.current
       // A glimpse opens the record on its Activity page, at the top of that page.
       if (current.more) return void current.navigate(revealHref(row))
@@ -488,38 +596,141 @@ export function Activity({
           ? null
           : current.pending !== undefined
             ? current.pending
-            : current.selected
+            : current.shownRecord
       if (row.name === target) return
       if (row.name === current.closing) setClosing(null)
-      // Going back to the selected record cancels the rail's own pending navigation,
+      setKeyStep(null)
+      openedByKey.current = keyboard
+      // Going back to the shown record cancels the rail's own pending navigation,
       // which has no history entry yet, so the address is replaced. Back or Forward
       // already moved through history, so a pick after either is a new entry.
-      const replace = row.name === current.selected && tokens.current(current.pendingToken)
+      const replace = row.name === current.shownRecord && tokens.current(current.pendingToken)
       void current.navigate(current.nav.recordHref(row.name), {
         preventScrollReset: true,
         replace,
         state: tokens.next(),
       })
     },
-    toggle: (name) =>
-      void latest.current.navigate(latest.current.nav.toggleHref(name), {
+    toggle: (name, keyboard = false) => {
+      const current = latest.current
+      // A collapse that hides the record the rail shows opens that record instead.
+      // From the keyboard it replaces the address, as a step does.
+      const hides =
+        current.open &&
+        current.expanded.includes(name) &&
+        Boolean(current.shownPosition?.parents.includes(name))
+      if (hides) setKeyStep(null)
+      void current.navigate(hides ? current.nav.collapseHref(name) : current.nav.toggleHref(name), {
         preventScrollReset: true,
-      }),
+        replace: keyboard && hides,
+        // A switch to the collapsed record is the rail's own navigation.
+        state: hides ? tokens.next() : undefined,
+      })
+    },
     viewport: (parent, value) => latest.current.live?.viewport(parent, value),
   }))
+  useEffect(() => {
+    if (glimpse) return
+    /** Moves the rail's record, or the cursor, one record up or down. */
+    const move = (step: 1 | -1) => {
+      const current = latest.current
+      const next = stepStop(current.stops, current.open ? current.position : current.cursor, step)
+      if (!next) return
+      const target = stopPosition(next)
+      // With an unsent comment the review asks first; the table and rail stay put.
+      if (!current.unsent) setReveal((value) => ({ ...value, record: next.row.name }))
+      if (!current.open) return setCursor(target)
+      if (!current.unsent && current.shownRecord)
+        setKeyStep({ from: current.shownRecord, to: target })
+      void current.navigate(current.nav.recordHref(next.row.name), {
+        preventScrollReset: true,
+        replace: true,
+        state: tokens.next(),
+      })
+    }
+    /** Space: whether it toggled a Task or Run. */
+    const toggle = (owner: 'table' | 'rail') => {
+      const current = latest.current
+      const row = owner === 'rail' ? current.selectedRow : current.activeStop?.row
+      // The rail toggles only a Task or Run it shows itself, never a final value.
+      if (!row || (owner === 'rail' && (!current.open || row.name !== current.shownRecord)))
+        return false
+      if (row.kind === 'task' || row.kind === 'run') {
+        if (!current.expanded.includes(row.name) && current.full) return false
+        actions.toggle(row.name, true)
+        return true
+      }
+      // In the table, any other record collapses the closest Task or Run around it.
+      const parent = owner === 'table' && current.activeStop?.parents[0]
+      if (!parent) return false
+      actions.toggle(parent, true)
+      return true
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+      if (!['ArrowUp', 'ArrowDown', ' ', 'Enter', 'Escape'].includes(event.key)) return
+      const table = tableRef.current
+      const rail = popupRef.current
+      const target = event.target
+      if (!table || !(target instanceof Element)) return
+      // Another dialog, such as the comment confirmation, keeps every key.
+      const dialog = document.querySelector(
+        '[role="dialog"][aria-modal="true"], [role="alertdialog"]',
+      )
+      if (dialog && dialog !== rail) return
+      // Activity acts only on the table, its record links, the rail itself, and the
+      // page background. Every other control keeps its keys.
+      const owner =
+        rail && target === rail
+          ? 'rail'
+          : target === table || (table.contains(target) && target.matches('[data-record-link]'))
+            ? 'table'
+            : target === document.body || target === document.documentElement
+              ? 'page'
+              : null
+      if (!owner) return
+      const current = latest.current
+      const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0
+      if (step) {
+        event.preventDefault()
+        // A closing rail takes no more steps.
+        if (owner === 'rail' && !current.open) return
+        // The keys keep focus where they act; from the page, the open rail takes it.
+        const focus = owner === 'rail' || (owner === 'page' && current.open) ? rail : table
+        if (focus !== target) focus?.focus({ preventScroll: true })
+        return move(step)
+      }
+      if (owner === 'page' || event.repeat) return
+      if (event.key === ' ') {
+        if (toggle(owner)) event.preventDefault()
+      } else if (event.key === 'Enter') {
+        // A record link opens itself.
+        if (target !== table || current.open || !current.activeStop) return
+        event.preventDefault()
+        actions.select(current.activeStop.row, true)
+      } else if (event.key === 'Escape' && owner === 'table' && current.open) {
+        event.preventDefault()
+        current.close()
+      }
+    }
+    // The rail's popup stops arrows from bubbling out of it, so listen before it does.
+    // Only elements without keys of their own own these keys, so none is overtaken.
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [glimpse, actions, tokens])
+  // The cursor row shows while focus is in the table.
+  const activeRecord = tableFocused ? (activeStop?.row.name ?? null) : null
   const expandedKey = page.expanded.join('\n')
   const finalValueRun =
     page.selectedRow?.kind === 'run' && page.selectedRow.hasFinalValue
       ? page.selectedRow.name
       : null
-  const observed = live !== undefined
-  const glimpse = more !== undefined
-  // A glimpse never loads more, and lists only the latest roots a live update merged in.
-  const roots = more ? page.rows.slice(0, more.roots) : page.rows
   const loadable = more ? undefined : list
   const scope = useMemo<RowScope>(
     () => ({
-      selected: page.selected,
+      selected: shownRecord,
+      active: activeRecord,
       expanded: new Set(expandedKey ? expandedKey.split('\n') : []),
       full: (expandedKey ? expandedKey.split('\n').length : 0) >= MAX_EXPANDED_RECORDS,
       finalValueRun,
@@ -527,7 +738,16 @@ export function Activity({
       observed,
       glimpse,
     }),
-    [page.selected, expandedKey, finalValueRun, page.listPath, search, observed, glimpse],
+    [
+      shownRecord,
+      activeRecord,
+      expandedKey,
+      finalValueRun,
+      page.listPath,
+      search,
+      observed,
+      glimpse,
+    ],
   )
   const rows = (items: ActivityRow[]) =>
     items.map((row) => (
@@ -578,7 +798,14 @@ export function Activity({
             )}
           </div>
           <PendingActions page={page} />
-          <div className={styles.list} ref={listRef}>
+          <div
+            className={styles.list}
+            ref={listRef}
+            onFocus={(event) => setTableFocused(Boolean(tableRef.current?.contains(event.target)))}
+            onBlur={(event) =>
+              setTableFocused(Boolean(tableRef.current?.contains(event.relatedTarget)))
+            }
+          >
             {!page.agent && (
               <Typography.HeadingSmall as="h2">Your recent activity</Typography.HeadingSmall>
             )}
@@ -608,10 +835,12 @@ export function Activity({
               readingPaused={live && !live.connected}
               readingFollowStart={live?.followRoot}
               onReadingStartChange={live?.atStart}
-              revealRecord={revealRecord}
+              revealRecord={reveal.record}
               onReadingPositionLost={() => setLostPosition(windowKey)}
               onVisibleRecordsChange={live?.visible}
               ariaLabel="Activity records"
+              ref={tableRef}
+              focusable={!glimpse}
               density="compact"
               layout="scroll"
               columns={[
@@ -661,6 +890,8 @@ export function Activity({
                       >
                         <Link
                           to={nav.recordHref(outside.name)}
+                          // The rail shows this record already; its Reveal link is the keys' way in.
+                          tabIndex={-1}
                           preventScrollReset
                           onClick={(event) => pickFromLink(event, () => actions.select(outside))}
                         >
@@ -690,7 +921,7 @@ export function Activity({
           {/* One rail for every record: another selection replaces its content in place. */}
           <Dialog.Rail
             open={selected !== null && closing === null}
-            onOpenChange={(open) => !open && close()}
+            onOpenChange={(next) => !next && close()}
           >
             <Dialog.Portal>
               <Dialog.Backdrop />
@@ -699,15 +930,14 @@ export function Activity({
                 placement="right"
                 fullWidthOnMobile
                 ref={popupRef}
-                // Closing returns focus to the table: the record's row, or its first row.
-                finalFocus={() =>
-                  (detailPage.selected &&
-                    listRef.current?.querySelector<HTMLElement>(
-                      `[data-record-key="${CSS.escape(detailPage.selected)}"] a[href]`,
-                    )) ||
-                  listRef.current?.querySelector<HTMLElement>('[data-record-key] a[href]') ||
-                  true
-                }
+                // Enter in the table opens the rail and leaves focus in the table.
+                initialFocus={() => {
+                  const keep = openedByKey.current
+                  openedByKey.current = false
+                  return !keep
+                }}
+                // Closing returns focus to the table, where the cursor shows the record.
+                finalFocus={() => tableRef.current ?? true}
               >
                 <Dialog.Header>
                   <Dialog.Title>
@@ -723,7 +953,7 @@ export function Activity({
                 {detailPage.unavailable ? (
                   <Typography.Body>This history is unavailable.</Typography.Body>
                 ) : (
-                  <ActivityDetail key={detailPage.selected} page={detailPage} />
+                  <ActivityDetail key={detail.record} page={detailPage} />
                 )}
                 {outside &&
                   page.detail?.kind !== 'run' &&

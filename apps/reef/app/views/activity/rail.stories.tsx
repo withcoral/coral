@@ -247,8 +247,8 @@ export const PointerAndHistory: Story = {
     close.focus()
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(rail()).toBeNull())
-    // Closing returns focus to the record's row in the table.
-    await expect(link('Task 1')).toHaveFocus()
+    // Closing returns focus to the table, the one Tab stop of its records.
+    await waitFor(() => expect(table).toHaveFocus())
     await expect(address()).not.toContain('record=')
   },
 }
@@ -579,6 +579,6 @@ export const Mobile: Story = {
     )
     await userEvent.click(within(opened).getByRole('button', { name: 'Close details' }))
     await waitFor(() => expect(rail()).toBeNull())
-    await expect(link('Task 2')).toHaveFocus()
+    await waitFor(() => expect(table).toHaveFocus())
   },
 }

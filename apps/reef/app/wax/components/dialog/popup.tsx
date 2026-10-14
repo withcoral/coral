@@ -26,6 +26,7 @@ export function Popup({
   size = 'm',
   placement = 'center',
   fullWidthOnMobile = false,
+  initialFocus,
   ...props
 }: PopupProps) {
   const rail = useContext(RailContext)
@@ -43,6 +44,8 @@ export function Popup({
         className,
       )}
       ref={composedRef}
+      // A modal rail always takes focus; beside the page, the caller may keep it where it is.
+      initialFocus={rail?.modal ? undefined : initialFocus}
       {...props}
     >
       {/* The mode is this rail's own: a dialog opened from its content is a plain dialog. */}

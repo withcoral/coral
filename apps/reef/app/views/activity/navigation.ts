@@ -6,7 +6,7 @@ import {
   readingWindow,
   type ActivityViewport,
 } from '@/lib/activity-live-types'
-import type { ActivityPage, ActivityRow } from './types'
+import type { ActivityBranch, ActivityPage, ActivityRow } from './types'
 
 export const ActivityNavigationContext = createContext<ReturnType<
   typeof activityNavigation
@@ -144,12 +144,21 @@ export function activityNavigation(
         ? page.expanded.filter((item) => item !== name)
         : [...page.expanded, name],
     })
+  /** Collapses `name` and selects it, for a collapse that hides the selected record. */
+  const collapseHref = (name: string) =>
+    href({
+      ...clearSelection,
+      record: name,
+      tree: '1',
+      expand: page.expanded.filter((item) => item !== name),
+    })
   const backHref = href(clearSelection)
   return {
     query,
     href,
     recordHref,
     toggleHref,
+    collapseHref,
     revealHref,
     backHref,
   }
@@ -160,4 +169,123 @@ export function useActivityNavigation(page: ActivityPage) {
   const [query] = useSearchParams()
   const { pathname } = useLocation()
   return reader ?? activityNavigation(page, pathname, query.toString())
+}
+
+/** A branch's loaded children at their ordinals, and how many ordinals it has. */
+export function childWindow(branch: ActivityBranch) {
+  const items = branch.rows.map((row, index) => ({
+    row,
+    index: row.position ?? (branch.offset ?? 0) + index,
+  }))
+  return {
+    items,
+    total: Math.max(
+      Number(branch.total ?? branch.rows.length),
+      ...items.map(({ index }) => index + 1),
+    ),
+  }
+}
+
+/** Where ↑ and ↓ rest: a record the table shows, with its enclosing Tasks and Runs. */
+export interface RecordStop {
+  kind: 'record'
+  row: ActivityRow
+  /** Enclosing records, nearest first. */
+  parents: string[]
+  /** It shows its children below it. */
+  expanded: boolean
+}
+/** In table order, the records ↑ and ↓ reach and the boundaries they stop at. */
+export type ActivityStop = RecordStop | { kind: 'boundary' }
+/** A record the keys start from, which the table may not show. */
+export interface StopPosition {
+  name: string
+  parents: string[]
+}
+
+/** A Run's final value is its own record, although its Run's detail shows it. */
+export const finalValue = (run: string) => `${run}/final`
+
+/** Where the keys start from when they rest on `stop`. */
+export const stopPosition = (stop: RecordStop): StopPosition => ({
+  name: stop.row.name,
+  parents: stop.parents,
+})
+
+/** The Tasks and Runs that enclose a record, nearest first. `shown` names a final value. */
+export function recordParents(row: ActivityRow, shown = row.name): string[] {
+  const own = shown === finalValue(row.name) ? [row.name] : []
+  const run = row.kind === 'invocation' || row.kind === 'output' ? row.run : ''
+  const task = row.kind === 'task' ? '' : (row.task ?? '')
+  return [...own, run, task].filter(Boolean)
+}
+
+/**
+ * The displayed record tree in order. An unloaded run of child ordinals and an
+ * unavailable history are boundaries, so the keys never skip records.
+ */
+export function activityStops(page: ActivityPage, roots: ActivityRow[]): ActivityStop[] {
+  const stops: ActivityStop[] = []
+  const visit = (rows: ActivityRow[], parents: string[]) => {
+    for (const row of rows) {
+      const expandable = row.kind === 'task' || row.kind === 'run'
+      const expanded = expandable && page.expanded.includes(row.name)
+      stops.push({ kind: 'record', row, parents, expanded })
+      if (!expanded) continue
+      const branch = page.branches[row.name]
+      if (!branch || branch.unavailable) {
+        stops.push({ kind: 'boundary' })
+        continue
+      }
+      const { items, total } = childWindow(branch)
+      let next = 0
+      for (const item of items.toSorted((x, y) => x.index - y.index)) {
+        if (item.index > next) stops.push({ kind: 'boundary' })
+        visit([item.row], [row.name, ...parents])
+        next = item.index + 1
+      }
+      if (total > next) stops.push({ kind: 'boundary' })
+    }
+  }
+  visit(roots, [])
+  return stops
+}
+
+/**
+ * Where a position rests: its own record, or the nearest collapsed record that
+ * hides it. An expanded record whose window lacks it never stands in. -1 for none.
+ */
+export function resolveStop(stops: ActivityStop[], position: StopPosition): number {
+  const at = (name: string) =>
+    stops.findIndex(
+      (stop) =>
+        stop.kind === 'record' &&
+        (stop.row.name === name || activityRowIdentity(stop.row) === name),
+    )
+  const own = at(position.name)
+  if (own >= 0) return own
+  for (const parent of position.parents) {
+    const index = at(parent)
+    if (index < 0) continue
+    return (stops[index] as RecordStop).expanded ? -1 : index
+  }
+  return -1
+}
+
+/**
+ * The record one step from a position. Without a position, ↓ starts at the first
+ * record and ↑ at the last. It stops at either end and at every boundary.
+ */
+export function stepStop(
+  stops: ActivityStop[],
+  position: StopPosition | null,
+  step: 1 | -1,
+): RecordStop | null {
+  if (!position) {
+    const ends = step > 0 ? stops : stops.toReversed()
+    return ends.find((stop): stop is RecordStop => stop.kind === 'record') ?? null
+  }
+  const from = resolveStop(stops, position)
+  const next = from < 0 ? undefined : stops[from + step]
+  return next?.kind === 'record' ? next : null
 }

@@ -47,3 +47,19 @@ export async function emulateReducedMotion(reduce: boolean) {
   )
   return true
 }
+
+/**
+ * Presses keys in the test browser itself, as a person would, so the browser moves
+ * focus on Tab. Takes user-event's keyboard syntax, such as `{Shift>}{Tab}{/Shift}`.
+ */
+export async function press(keys: string) {
+  const context = await browser()
+  if (!context) return false
+  await context.userEvent.keyboard(keys)
+  return true
+}
+
+/** Whether a story runs in the test browser, where `press` reaches the page. */
+export async function inTestBrowser() {
+  return (await browser()) !== null
+}
