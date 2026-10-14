@@ -130,6 +130,17 @@ const meta = {
 } satisfies Meta
 export default meta
 type Story = StoryObj<typeof meta>
+type PlayUserEvent = Parameters<NonNullable<Story['play']>>[0]['userEvent']
+
+/**
+ * Opens the comment disclosure in the rail if it is closed and returns its textbox.
+ * Testing Library counts a closed disclosure's content as visible, so open it first.
+ */
+async function openCommentBox(rail: HTMLElement, userEvent: PlayUserEvent) {
+  const summary = within(rail).getByText('Add a comment')
+  if (!summary.closest('details')!.open) await userEvent.click(summary)
+  return within(rail).getByRole('textbox', { name: 'Comment (optional)' })
+}
 
 /** The page's parts a play reaches for. */
 async function surface(canvasElement: HTMLElement) {
@@ -427,14 +438,8 @@ export const PickWhileClosing: Story = {
       )
     const closeButton = () => within(rail()!).getByRole('button', { name: 'Close details' })
     const discardPrompt = () => screen.findByRole('dialog', { name: 'Discard your comment?' })
-    const typeComment = async (text: string) => {
-      const summary = within(rail()!).getByText('Add a comment')
-      if (!summary.closest('details')!.open) await userEvent.click(summary)
-      await userEvent.type(
-        within(rail()!).getByRole('textbox', { name: 'Comment (optional)' }),
-        text,
-      )
-    }
+    const typeComment = async (text: string) =>
+      userEvent.type(await openCommentBox(rail()!, userEvent), text)
     const pickBackToList = async (label: string, heading: string) => {
       await userEvent.click(link(label))
       loads.open()
@@ -496,12 +501,7 @@ export const UnsentComment: Story = {
     loads.open()
     const { screen, link, address, rail, heading } = await surface(canvasElement)
     const review = await screen.findByRole('dialog', { name: 'Activity details' })
-    const comment = async () => {
-      // Testing Library counts a closed disclosure's content as visible, so open it first.
-      const summary = within(review).getByText('Add a comment')
-      if (!summary.closest('details')!.open) await userEvent.click(summary)
-      return within(review).getByRole('textbox', { name: 'Comment (optional)' })
-    }
+    const comment = () => openCommentBox(review, userEvent)
     const confirm = () => screen.findByRole('dialog', { name: 'Discard your comment?' })
     const choose = async (name: 'Keep editing' | 'Discard comment') => {
       await userEvent.click(within(await confirm()).getByRole('button', { name }))
