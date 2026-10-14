@@ -202,12 +202,12 @@ export const PointerAndHistory: Story = {
     await userEvent.click(link('Task 2'))
     await heading(opened, 'Task 2')
     await expect(rail()).toBe(opened)
-    await expect(focusedOn('Task 2')).toBe(true)
+    await waitFor(() => expect(focusedOn('Task 2')).toBe(true))
     // A click on the row outside its link does the same.
     await userEvent.click(within(row('Task 3')).getAllByRole('cell')[0])
     await heading(opened, 'Task 3')
     await expect(rail()).toBe(opened)
-    await expect(focusedOn('Task 3')).toBe(true)
+    await waitFor(() => expect(focusedOn('Task 3')).toBe(true))
 
     // The open record does nothing: no load, and no history entry.
     const selected = address()
@@ -237,7 +237,7 @@ export const PointerAndHistory: Story = {
 
     // Tab follows the document: from the table into the rail and back.
     await userEvent.click(link('Task 1'))
-    await expect(focusedOn('Task 1')).toBe(true)
+    await waitFor(() => expect(focusedOn('Task 1')).toBe(true))
     const close = within(reopened).getByRole('button', { name: 'Close details' })
     for (let step = 0; step < 20 && table.contains(document.activeElement); step++)
       await userEvent.tab()
@@ -348,7 +348,7 @@ export const LinkClickFocus: Story = {
     // Picking another record leaves focus on the table, on its row, whatever the browser does.
     link('Task 2').click()
     await shows('Task 2')
-    await expect(focusedOn('Task 2')).toBe(true)
+    await waitFor(() => expect(focusedOn('Task 2')).toBe(true))
   },
 }
 

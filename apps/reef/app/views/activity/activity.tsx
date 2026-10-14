@@ -539,7 +539,17 @@ export function Activity({
   }
   // A key step, from the record the rail shows to where it is going. The router
   // reports it pending only later, so the next key starts from here meanwhile.
-  const [keyStep, setKeyStep] = useState<{ from: string; to: StopPosition } | null>(null)
+  // Once the router has reported it, the step ends with its navigation: it lands,
+  // or another navigation, a failed load or a close cancels it.
+  const [keyStep, setKeyStep] = useState<{
+    from: string
+    to: StopPosition
+    seen: boolean
+  } | null>(null)
+  const stepPending = transition.state !== 'idle' && pending === keyStep?.to.name
+  if (keyStep && !open) setKeyStep(null)
+  else if (keyStep && stepPending && !keyStep.seen) setKeyStep({ ...keyStep, seen: true })
+  else if (keyStep?.seen && !stepPending) setKeyStep(null)
   const stepping = open && keyStep?.from === shownRecord ? keyStep.to : null
   const position: StopPosition | null = !open
     ? cursor
@@ -641,7 +651,7 @@ export function Activity({
       if (!current.unsent) setReveal((value) => ({ ...value, record: next.row.name }))
       if (!current.open) return setCursor(target)
       if (!current.unsent && current.shownRecord)
-        setKeyStep({ from: current.shownRecord, to: target })
+        setKeyStep({ from: current.shownRecord, to: target, seen: false })
       void current.navigate(current.nav.recordHref(next.row.name), {
         preventScrollReset: true,
         replace: true,

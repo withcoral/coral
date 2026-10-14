@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react'
-import { createRoutesStub, useLoaderData, useLocation } from 'react-router'
+import { createRoutesStub, useLoaderData, useLocation, useNavigate } from 'react-router'
 import { expect, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
@@ -79,9 +79,13 @@ const loads = {
 function KeyboardRoute() {
   const page = useLoaderData<ActivityPage>()
   const { search } = useLocation()
+  const navigate = useNavigate()
   return (
     <ActionReviewSession request={null}>
       <code aria-label="Address">{search}</code>
+      <button type="button" onClick={() => navigate(-1)}>
+        History back
+      </button>
       <button type="button">Before the table</button>
       {/* The live route always names its reading window. */}
       <Activity page={page} windowKey="keyboard" />
@@ -299,9 +303,8 @@ export const KeysDuringLoads: Story = {
         await open('Task 1')
         const started = loads.finished
         loads.hold()
-        await press('{ArrowDown}')
-        await waitFor(() => expect(cursor()).toBe('Task 2'))
-        await press('{Escape}')
+        // ↓ and Escape in one burst: the close lands before the step registers.
+        await press('{ArrowDown}{Escape}')
         await waitFor(() => expect(rail()).toBeNull())
         loads.open()
         await landed(started + 1)
@@ -310,6 +313,15 @@ export const KeysDuringLoads: Story = {
         // Focus and the cursor return to the record the rail last showed.
         await waitFor(() => expect(table.contains(document.activeElement)).toBe(true))
         await expect(cursor()).toBe('Task 1')
+        // Back reopens the record; the cancelled step is gone, so ↓ starts from it.
+        await userEvent.click(within(canvasElement).getByRole('button', { name: 'History back' }))
+        await waitFor(() => expect(rail()?.contains(document.activeElement)).toBe(true))
+        await heading(rail()!, 'Task 1')
+        table.focus()
+        await press('{ArrowDown}')
+        await heading(rail()!, 'Task 2')
+        await press('{Escape}')
+        await waitFor(() => expect(rail()).toBeNull())
 
         // Rapid steps each start from the step before, not from the record shown.
         await open('Task 1')
@@ -329,6 +341,23 @@ export const KeysDuringLoads: Story = {
         await heading(opened, 'Task 1')
         await landed(clicked + 1)
         await heading(rail()!, 'Task 1')
+
+        // A step another navigation cancels leaves nothing behind: Space toggles the
+        // step's target in place of the step, and the next key starts from the record
+        // the rail still shows.
+        loads.hold()
+        await press('{ArrowDown}')
+        await waitFor(() => expect(cursor()).toBe('Task 2'))
+        await press(' ')
+        loads.open()
+        await waitFor(() => expect(address()).toContain('expand='))
+        await waitFor(() => expect(cursor()).toBe('Task 1'))
+        await heading(rail()!, 'Task 1')
+        await press('{ArrowDown}')
+        await heading(rail()!, 'Task 2')
+        // Space collapses Task 2 again, so the next pass starts from the same list.
+        await press(' ')
+        await waitFor(() => expect(address()).not.toContain('expand='))
         await press('{Escape}')
         await waitFor(() => expect(rail()).toBeNull())
       } finally {
