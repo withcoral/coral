@@ -319,6 +319,14 @@ function RailPage() {
             <Button.TextButton variant="destructive" onClick={() => setConfirming(true)}>
               Delete record
             </Button.TextButton>
+            <Menu.Container>
+              <Menu.Trigger render={<Button.Container variant="secondary" />}>
+                <Button.Text>Record actions</Button.Text>
+              </Menu.Trigger>
+              <Menu.Content>
+                <Menu.Item>Duplicate</Menu.Item>
+              </Menu.Content>
+            </Menu.Container>
             <Dialog.Root open={confirming} onOpenChange={setConfirming}>
               <Dialog.Portal>
                 <Dialog.Backdrop />
@@ -370,9 +378,11 @@ export const Rail: Story = {
     await userEvent.tab()
     await expect(within(rail).getByRole('button', { name: 'Delete record' })).toHaveFocus()
     await userEvent.tab()
+    await expect(within(rail).getByRole('button', { name: 'Record actions' })).toHaveFocus()
+    await userEvent.tab()
     await expect(canvas.getByRole('button', { name: 'After the rail' })).toHaveFocus()
     await userEvent.tab({ shift: true })
-    await expect(within(rail).getByRole('button', { name: 'Delete record' })).toHaveFocus()
+    await expect(within(rail).getByRole('button', { name: 'Record actions' })).toHaveFocus()
     await userEvent.click(canvas.getByRole('button', { name: 'Record 3' }))
     await userEvent.tab()
     await userEvent.tab({ shift: true })
@@ -384,6 +394,15 @@ export const Rail: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Page actions' }))
     const menu = await body.findByRole('menu')
     await expect(layer(menu)).toBeGreaterThan(layer(rail))
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(body.queryByRole('menu')).toBeNull())
+    await expect(body.getByRole('dialog', { name: 'Record 3' })).toBe(rail)
+
+    // A menu opened in the rail is portaled out of it, draws above it and keeps its Escape.
+    await userEvent.click(within(rail).getByRole('button', { name: 'Record actions' }))
+    const railMenu = await body.findByRole('menu')
+    await expect(rail.contains(railMenu)).toBe(false)
+    await expect(layer(railMenu)).toBeGreaterThan(layer(rail))
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(body.queryByRole('menu')).toBeNull())
     await expect(body.getByRole('dialog', { name: 'Record 3' })).toBe(rail)
@@ -406,6 +425,7 @@ export const Rail: Story = {
 
     // At 640px or less the open rail turns modal and takes focus.
     await userEvent.click(canvas.getByRole('button', { name: 'Record 3' }))
+    // Storybook's own UI cannot resize its viewport; the rest needs the test runner.
     if (!(await resizeViewport(600, 800))) return
     await waitFor(() => expect(rail.contains(document.activeElement)).toBe(true))
     await expect(body.getByRole('dialog', { name: 'Record 3' })).toBe(rail)

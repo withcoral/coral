@@ -26,6 +26,8 @@ type Approval = Extract<RequestDetail, { kind: 'approval' }>
 type Draft = { name: string; comment: string }
 const DraftContext = createContext<{
   draft: Draft
+  /** An unsent comment would be lost, so leaving asks first. */
+  dirty: boolean
   update: (value: Draft) => void
   settle: (name: string) => void
 } | null>(null)
@@ -78,7 +80,7 @@ export function ActionReviewSession({
     }
   })
   return (
-    <DraftContext value={{ draft, update, settle }}>
+    <DraftContext value={{ draft, dirty, update, settle }}>
       {children}
       <Dialog.Root
         open={blocker.state === 'blocked'}
@@ -121,7 +123,7 @@ export function ActionReviewSession({
 
 /** Whether leaving the review would lose an unsent comment, so the session asks first. */
 export function useUnsentComment() {
-  return Boolean(useContext(DraftContext)?.draft.comment)
+  return useContext(DraftContext)?.dirty ?? false
 }
 
 /** One exact call, one draft, one durable decision in Activity. */

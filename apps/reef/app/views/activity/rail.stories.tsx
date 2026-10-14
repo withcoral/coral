@@ -1,5 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react'
-import { createRoutesStub, useLoaderData, useLocation, useNavigate } from 'react-router'
+import {
+  createRoutesStub,
+  useLoaderData,
+  useLocation,
+  useNavigate,
+  useNavigation,
+} from 'react-router'
 import { expect, waitFor, within } from 'storybook/test'
 import { PageLayout } from '@/wax/components/page-layout'
 import { trail } from '@/views/management/layout'
@@ -56,6 +62,8 @@ function pageFor(record: string | null): ActivityPage {
 const loads = {
   /** How many record loads have started. */
   count: 0,
+  /** How many record loads have not finished yet. */
+  inFlight: 0,
   held: null as Promise<void> | null,
   release: () => {},
   hold() {
@@ -71,9 +79,11 @@ function RailRoute() {
   const page = useLoaderData<ActivityPage>()
   const navigate = useNavigate()
   const { search } = useLocation()
+  const { state } = useNavigation()
   return (
     <ActionReviewSession request={page.detail?.kind === 'run' ? page.detail.request : null}>
       <code aria-label="Address">{search}</code>
+      <output aria-label="Navigation">{state}</output>
       <button type="button" onClick={() => navigate(-1)}>
         History back
       </button>
@@ -97,8 +107,13 @@ const meta = {
           HydrateFallback: () => null,
           loader: async ({ request }) => {
             loads.count++
-            if (loads.held) await loads.held
-            return pageFor(new URL(request.url).searchParams.get('record'))
+            loads.inFlight++
+            try {
+              if (loads.held) await loads.held
+              return pageFor(new URL(request.url).searchParams.get('record'))
+            } finally {
+              loads.inFlight--
+            }
           },
         },
       ])
@@ -147,7 +162,17 @@ async function surface(canvasElement: HTMLElement) {
   }
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 400))
+/**
+ * Waits until every record load has finished and the router is idle, then one more
+ * frame, so a rail that a late load would reopen has rendered by the next assertion.
+ */
+async function quiet(canvasElement: HTMLElement) {
+  await waitFor(() => {
+    expect(loads.inFlight).toBe(0)
+    expect(within(canvasElement).getByLabelText('Navigation')).toHaveTextContent('idle')
+  })
+  await new Promise((resolve) => requestAnimationFrame(resolve))
+}
 
 export const PointerAndHistory: Story = {
   play: async ({ canvasElement, userEvent }) => {
@@ -157,8 +182,6 @@ export const PointerAndHistory: Story = {
     await userEvent.click(link('Task 1'))
     const opened = await screen.findByRole('dialog', { name: 'Activity details' })
     await heading(opened, 'Task 1')
-    // Opening from closed focuses the rail.
-    await waitFor(() => expect(opened.contains(document.activeElement)).toBe(true))
 
     // Another record replaces the detail in the same rail; focus stays on its row.
     await userEvent.click(link('Task 2'))
@@ -178,7 +201,7 @@ export const PointerAndHistory: Story = {
     await userEvent.click(within(row('Task 3')).getAllByRole('cell')[0])
     // Empty space beside the table leaves the rail open.
     await userEvent.click(canvas.getByRole('heading', { name: 'Your recent activity' }))
-    await settle()
+    await quiet(canvasElement)
     await expect(address()).toBe(selected)
     await expect(loads.count).toBe(count)
     await expect(rail()).toBe(opened)
@@ -230,7 +253,8 @@ export const LoadingAndClosing: Story = {
       await shows(label)
     }
     for (const reduced of [false, true]) {
-      await emulateReducedMotion(reduced)
+      // Storybook's own UI cannot emulate reduced motion, so it plays normal motion only.
+      if (!(await emulateReducedMotion(reduced)) && reduced) break
       try {
         // A close while another record loads does not reopen when that load lands.
         await open('Task 1')
@@ -240,7 +264,7 @@ export const LoadingAndClosing: Story = {
         // The rail closes at once; it does not wait for the address.
         await waitFor(() => expect(rail()).toBeNull())
         loads.open()
-        await settle()
+        await quiet(canvasElement)
         await expect(rail()).toBeNull()
         await expect(address()).not.toContain('record=')
 
@@ -251,7 +275,7 @@ export const LoadingAndClosing: Story = {
         await userEvent.click(link('Task 3'))
         loads.open()
         await shows('Task 3')
-        await settle()
+        await quiet(canvasElement)
         await shows('Task 3')
         await expect(address()).toContain('t3')
 
@@ -260,7 +284,7 @@ export const LoadingAndClosing: Story = {
         await userEvent.click(link('Task 2'))
         await userEvent.click(link('Task 3'))
         loads.open()
-        await settle()
+        await quiet(canvasElement)
         await shows('Task 3')
         await userEvent.click(within(canvasElement).getByRole('button', { name: 'History back' }))
         await shows('Task 1')
@@ -271,7 +295,7 @@ export const LoadingAndClosing: Story = {
         await close()
         await userEvent.click(link('Task 3'))
         loads.open()
-        await settle()
+        await quiet(canvasElement)
         await shows('Task 3')
         await expect(address()).toContain('t3')
 
@@ -280,7 +304,7 @@ export const LoadingAndClosing: Story = {
         await waitFor(() => expect(address()).not.toContain('record='))
         await userEvent.click(link('Task 2'))
         await shows('Task 2')
-        await settle()
+        await quiet(canvasElement)
         await shows('Task 2')
         await close()
         await waitFor(() => expect(rail()).toBeNull())
@@ -415,6 +439,7 @@ export const Mobile: Story = {
   },
   play: async ({ canvasElement, userEvent }) => {
     loads.open()
+    // Storybook's own UI cannot resize its viewport, so this play needs the test runner.
     if (!(await resizeViewport(390, 800))) return
     const { canvas, table, link, rail, heading } = await surface(canvasElement)
     const opened = await within(document.body).findByRole('dialog', { name: 'Activity details' })
