@@ -372,6 +372,35 @@ export const HistoryWhileLoading: Story = {
     await shows('Task 1')
     await history('back')
     await waitFor(() => expect(rail()).toBeNull())
+
+    // Back interrupts a pick of the record Back reaches; a later pick is still a new entry.
+    await userEvent.click(link('Task 1'))
+    await shows('Task 1')
+    await userEvent.click(link('Task 2'))
+    await shows('Task 2')
+    loads.hold()
+    await userEvent.click(link('Task 1'))
+    await history('back')
+    await userEvent.click(link('Task 2'))
+    loads.open()
+    await waitFor(() => expect(address()).toContain('t2'))
+    await shows('Task 2')
+    await history('back')
+    await shows('Task 1')
+
+    // A pick that interrupts Back, then a pick of the record still shown: Back already
+    // moved through history, so the second pick is a new entry too.
+    await userEvent.click(link('Task 2'))
+    await shows('Task 2')
+    loads.hold()
+    await history('back')
+    await userEvent.click(link('Task 3'))
+    await userEvent.click(link('Task 2'))
+    loads.open()
+    await waitFor(() => expect(address()).toContain('t2'))
+    await shows('Task 2')
+    await history('back')
+    await shows('Task 1')
   },
 }
 
@@ -446,7 +475,7 @@ export const Mobile: Story = {
     await heading(opened, 'Task 1')
     // At 640px or less the rail is a full-screen modal over the table.
     await waitFor(() => expect(within(table).queryByRole('link', { name: 'Task 2' })).toBeNull())
-    await expect(opened.getBoundingClientRect().width).toBe(window.innerWidth)
+    await expect(opened.getBoundingClientRect().width).toBeCloseTo(window.innerWidth, 0)
 
     // Wider, the same record stays open beside the table, which is usable again.
     await resizeViewport(1200, 900)

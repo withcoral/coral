@@ -276,7 +276,9 @@ test('Activity automatically streams new rows and continuously loads bounded chi
         await page.getByRole('button', { name: 'Close details', exact: true }).click()
         await page.waitForURL((url) => !url.searchParams.has('record'))
         // Back must reopen the detail, not find the one still exiting.
-        await page.getByRole('dialog').waitFor({ state: 'detached' })
+        await page
+          .getByRole('dialog', { name: 'Activity details', exact: true })
+          .waitFor({ state: 'detached' })
         await expect.poll(relativePosition, { timeout: 10_000 }).toBeCloseTo(top, 0)
         await page.goBack()
         await page.waitForURL((url) => url.searchParams.get('record') === selected)

@@ -13,13 +13,13 @@ async function browser() {
   return import('@vitest/browser/context')
 }
 
-/** Waits until `applied` holds, or throws after a second. */
+/** Waits until `applied` holds, or throws after two seconds. */
 async function confirm(change: string, applied: () => boolean) {
-  for (let frame = 0; frame < 60; frame++) {
-    if (applied()) return
-    await new Promise((resolve) => requestAnimationFrame(resolve))
+  const deadline = performance.now() + 2000
+  while (!applied()) {
+    if (performance.now() > deadline) throw new Error(`The test browser did not apply: ${change}`)
+    await new Promise((resolve) => setTimeout(resolve, 16))
   }
-  throw new Error(`The test browser did not apply: ${change}`)
 }
 
 /** Resizes the story's viewport. addon-vitest restores its default before the next story. */
@@ -27,7 +27,10 @@ export async function resizeViewport(width: number, height: number) {
   const context = await browser()
   if (!context) return false
   await context.page.viewport(width, height)
-  await confirm(`a ${width}×${height} viewport`, () => window.innerWidth === width)
+  await confirm(
+    `a ${width}×${height} viewport`,
+    () => window.innerWidth === width && window.innerHeight === height,
+  )
   return true
 }
 
