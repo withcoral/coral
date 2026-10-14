@@ -133,7 +133,7 @@ lock without a write fence is the shape the evidence rejects.
   the withcoral/lagoon#484 spike must hold behind `RunModule` with V8, the fence and the probes.
 - **Out of this decision.** The first-time `operation_access_rules` row race (an absent row locks nothing, withcoral/lagoon#449);
   sign-in's own serialisation on the Organization authority guard (withcoral/lagoon#495); pool size, acquire timeout and pool metrics
-  (withcoral/lagoon#390); Reef's activity stream and `wait` subscriptions (withcoral/lagoon#468).
+  (#2391); Reef's activity stream and `wait` subscriptions (withcoral/lagoon#468).
 
 ## Evidence
 
