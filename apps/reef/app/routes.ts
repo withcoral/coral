@@ -27,10 +27,7 @@ export default [
       route('workspaces/:workspace/runs/:run', 'routes/run.tsx'),
       route('organization/members', 'routes/organization-members.tsx'),
       route('organization/workspaces', 'routes/organization-workspaces.tsx'),
-      // Settings is a dialog over the overview. Its URL stays shareable.
-      route('workspaces/:workspace', 'routes/workspace.tsx', [
-        route('settings', 'routes/settings.tsx'),
-      ]),
+      route('workspaces/:workspace', 'routes/workspace.tsx'),
       route('workspaces/:workspace/agents', 'routes/agents.tsx'),
       route('workspaces/:workspace/agents/:agent', 'routes/agent.tsx'),
       route('workspaces/:workspace/agents/:agent/settings', 'routes/agent-settings.tsx'),

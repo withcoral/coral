@@ -1,4 +1,4 @@
-import { keyframes, style, styleVariants } from '@vanilla-extract/css'
+import { globalStyle, keyframes, style, styleVariants } from '@vanilla-extract/css'
 import { animation, theme, zIndex } from '@/wax/theme/theme.css'
 export const sidebar = style({
   backgroundColor: theme.surface.main,
@@ -128,6 +128,17 @@ export const workspaceActions = style({
     },
   },
 })
+// Archived Workspaces sit below the active ones, set apart by a rule and muted text.
+export const archived = style({
+  borderTop: `1px solid ${theme.stroke.secondary}`,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  marginTop: 8,
+  paddingTop: 8,
+})
+export const mutedButton = style({})
+globalStyle(`${mutedButton}:not([aria-current]) > *`, { color: theme.content.tertiary })
 // Child icons line up under the Workspace name: the header's 18px chevron plus
 // SidebarButton's 10px gap.
 export const workspaceChildren = style({

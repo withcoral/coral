@@ -331,7 +331,7 @@ const reasons: Record<string, string> = {
     'This provider changed. Reload the page. Review the changes before you try again.',
   NAMESPACE_IN_USE: 'This program name is in use in this workspace. Select a different name.',
   ACCOUNT_REQUIRED: 'This choice needs an account. Sign in first.',
-  WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it in settings before you make changes.',
+  WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it before you make changes.',
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',

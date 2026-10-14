@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
-import { userEvent } from 'storybook/test'
+import { userEvent, within } from 'storybook/test'
 import { ContentContainer } from '@/components/content-container'
 import { Typography } from '@/wax/components/typography'
 import { Sidebar } from './sidebar'
@@ -32,6 +32,7 @@ const meta = {
       displayName: 'Operations team',
       effectiveRole: 'owner',
       mcpEndpoint: 'https://coral.example.com/mcp',
+      etag: 'etag',
     },
     workspaces: [
       {
@@ -39,12 +40,14 @@ const meta = {
         path: '/workspaces/demo',
         effectiveRole: 'owner',
         mcpEndpoint: 'https://coral.example.com/mcp',
+        etag: 'etag',
       },
       {
         displayName: 'Research',
         path: '/workspaces/research',
         effectiveRole: 'member',
         mcpEndpoint: 'https://coral.example.com/mcp',
+        etag: 'etag',
       },
     ],
     form: { csrf: 'storybook', requestId: 'storybook' },
@@ -102,6 +105,7 @@ export const CollapsedManyWorkspaces: Story = {
       path: i === 0 ? '/workspaces/demo' : `/workspaces/w${i}`,
       effectiveRole: 'owner',
       mcpEndpoint: 'https://coral.example.com/mcp',
+      etag: 'etag',
     })),
   },
   parameters: { initialEntry: '/workspaces/demo/providers' },
@@ -114,6 +118,7 @@ export const ManyWorkspaces: Story = {
       path: i === 0 ? '/workspaces/demo' : `/workspaces/w${i}`,
       effectiveRole: 'owner',
       mcpEndpoint: 'https://coral.example.com/mcp',
+      etag: 'etag',
     })),
   },
   parameters: { initialEntry: '/workspaces/demo/providers' },
@@ -138,6 +143,7 @@ export const Member: Story = {
       displayName: 'Operations team',
       effectiveRole: 'member',
       mcpEndpoint: 'https://coral.example.com/mcp',
+      etag: 'etag',
     },
   },
 }
@@ -148,6 +154,7 @@ export const LongWorkspaceName: Story = {
       displayName: 'A Workspace with a display name long enough to truncate',
       effectiveRole: 'owner',
       mcpEndpoint: 'https://coral.example.com/mcp',
+      etag: 'etag',
     },
   },
 }
@@ -159,23 +166,45 @@ export const Agents: Story = { parameters: { initialEntry: '/workspaces/demo/age
 export const Functions: Story = {
   parameters: { initialEntry: '/workspaces/demo/functions/finance.monthlyTotals' },
 }
-export const Settings: Story = { parameters: { initialEntry: '/workspaces/demo/settings' } }
+export const ArchiveConfirmation: Story = {
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body)
+    await userEvent.click(body.getByRole('button', { name: 'Archive Operations team' }))
+    await body.findByRole('dialog', { name: 'Archive Operations team' })
+  },
+}
 export const OpenAnotherWorkspace: Story = {
   play: async ({ canvas }) => {
     await userEvent.click(canvas.getByRole('button', { name: 'Research' }))
   },
 }
-// The list holds active workspaces; an archived one shows while it is open.
-export const ArchivedWorkspace: Story = {
-  args: {
-    workspace: {
-      path: '/workspaces/archived',
-      displayName: 'Archived workspace',
-      effectiveRole: 'owner',
-      mcpEndpoint: 'https://coral.example.com/mcp',
-    },
+const archivedWorkspaces = [
+  {
+    path: '/workspaces/archived',
+    displayName: 'Archived workspace',
+    effectiveRole: 'owner',
+    mcpEndpoint: '',
+    etag: 'etag',
   },
-  parameters: { initialEntry: '/workspaces/archived' },
+  {
+    path: '/workspaces/old-research',
+    displayName: 'Old research',
+    effectiveRole: 'member',
+    mcpEndpoint: '',
+    etag: 'etag',
+  },
+]
+// Archived workspaces sit in their own group, collapsed until you open one.
+export const ArchivedGroup: Story = { args: { archivedWorkspaces } }
+// An open archived workspace expands the group and shows as current there.
+export const ArchivedWorkspace: Story = {
+  args: { archivedWorkspaces, workspace: archivedWorkspaces[0] },
+  parameters: { initialEntry: '/workspaces/archived/activity' },
+}
+// Collapsed, one tile holds the archived workspaces and rings while you are in one.
+export const CollapsedArchivedWorkspace: Story = {
+  ...ArchivedWorkspace,
+  args: { ...ArchivedWorkspace.args, initialIsMinimized: true },
 }
 export const CreateWorkspace: Story = {
   play: async ({ canvas }) => {

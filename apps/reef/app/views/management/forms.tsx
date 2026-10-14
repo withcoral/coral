@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { createContext, useEffect, useId, useRef, useState } from 'react'
 import { useFetcher } from 'react-router'
 
 import { Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
@@ -7,6 +7,9 @@ import type { ButtonSize } from '@/wax/components/button/button.css'
 import { personLabel } from './person'
 import type { ActionResult, FormContext, OrganizationPersonView } from './types'
 import * as styles from './management.css'
+
+/** The app shell's form context, for controls that sit outside any one page's loader. */
+export const ShellFormContext = createContext<FormContext | undefined>(undefined)
 
 export function NameInput({ label, defaultValue }: { label: string; defaultValue?: string }) {
   const id = useId()

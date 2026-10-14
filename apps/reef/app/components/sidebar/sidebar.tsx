@@ -6,13 +6,14 @@ import { Button, Menu, ScrollArea } from '@/wax/components'
 import { Avatar } from '@/wax/components/avatar'
 import { Brand } from '@/wax/components/brand'
 import { Icon } from '@/wax/components/icon'
-import { Tooltip } from '@/wax/components/tooltip'
 import type { IconName } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { SidebarBadge, SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 import { NavigationFrame } from '@/wax/components/navigation-frame/navigation-frame'
 import { useTheme } from '@/wax/theme/theme-provider'
 import { ActionDialog, NameInput } from '@/views/management/forms'
+import { ArchiveWorkspaceButton } from '@/views/management/archive-workspace'
+import { RestoreWorkspaceButton } from '@/views/management/restore-workspace'
 import type { FormContext, WorkspaceView } from '@/views/management/types'
 import type { ActionCounts } from '@/lib/activity-live-types'
 import * as styles from './sidebar.css'
@@ -20,7 +21,7 @@ import { useSidebarState } from './use-sidebar-state'
 
 export type SidebarWorkspace = Pick<
   WorkspaceView,
-  'displayName' | 'path' | 'effectiveRole' | 'mcpEndpoint'
+  'displayName' | 'path' | 'effectiveRole' | 'mcpEndpoint' | 'etag'
 >
 
 interface SidebarProps {
@@ -31,6 +32,8 @@ interface SidebarProps {
   userName?: string
   initialIsMinimized: boolean
   workspaces?: SidebarWorkspace[]
+  /** Archived Workspaces you are a member of. Each opens on its Activity. */
+  archivedWorkspaces?: SidebarWorkspace[]
   workspace?: SidebarWorkspace
   form?: FormContext
 }
@@ -135,6 +138,7 @@ function SidebarNavigation({
   auth = { mode: 'disabled' },
   userName,
   workspaces = [],
+  archivedWorkspaces = [],
   workspace,
   form,
   isMinimized,
@@ -176,13 +180,26 @@ function SidebarNavigation({
     setOpenPaths(next)
   }
   // You open a Workspace only as its member, so every entry here is one of yours.
-  // The route's Workspace is fresher than the list. The list holds active
-  // Workspaces, so an archived one appears only while you have it open.
-  const tree = !workspace
-    ? workspaces
-    : workspaces.some((w) => w.path === workspace.path)
-      ? workspaces.map((w) => (w.path === workspace.path ? workspace : w))
-      : [workspace, ...workspaces]
+  // The route's Workspace is fresher than the list. An archived Workspace stays
+  // in its own group, even while you have it open.
+  const currentArchived = archivedWorkspaces.some((w) => w.path === workspace?.path)
+  const tree =
+    !workspace || currentArchived
+      ? workspaces
+      : workspaces.some((w) => w.path === workspace.path)
+        ? workspaces.map((w) => (w.path === workspace.path ? workspace : w))
+        : [workspace, ...workspaces]
+  // The group opens when you open an archived Workspace, or archive the one you are in.
+  const currentArchivedPath = currentArchived ? workspace?.path : undefined
+  const [archivedOpen, setArchivedOpen] = useState(currentArchived)
+  const [archivedOpenFor, setArchivedOpenFor] = useState(currentArchivedPath)
+  if (archivedOpenFor !== currentArchivedPath) {
+    setArchivedOpenFor(currentArchivedPath)
+    if (currentArchivedPath) setArchivedOpen(true)
+  }
+  const archivedLabel = currentArchived
+    ? `Archived: ${workspace?.displayName}`
+    : 'Archived workspaces'
   const isCurrent = (d: Destination) =>
     d.exact
       ? location.pathname === d.to
@@ -273,6 +290,25 @@ function SidebarNavigation({
               </div>
             )
           })}
+          {/* One tile holds every archived Workspace. It shows as current in any of them. */}
+          {archivedWorkspaces.length > 0 && (
+            <div className={styles.railWorkspace}>
+              <SidebarButton
+                icon="Archive"
+                aria-label={archivedLabel}
+                title={archivedLabel}
+                aria-current={currentArchived ? 'page' : undefined}
+                isMinimized
+                className={classNames(currentArchived && styles.railTileCurrent)}
+                onClick={() => {
+                  setArchivedOpen(true)
+                  toggleSidebar()
+                }}
+              >
+                Archived
+              </SidebarButton>
+            </div>
+          )}
         </div>
       )}
       {!isMinimized && (
@@ -339,22 +375,7 @@ function SidebarNavigation({
                               variant="bare"
                             />
                           )}
-                          {owner && (
-                            <Tooltip content="Workspace settings">
-                              <Button.Container
-                                as={Link}
-                                to={`${w.path}/settings`}
-                                ariaLabel={`${w.displayName} settings`}
-                                aria-current={
-                                  location.pathname === `${w.path}/settings` ? 'page' : undefined
-                                }
-                                size="22"
-                                variant="bare"
-                              >
-                                <Button.Icon name="Settings" />
-                              </Button.Container>
-                            </Tooltip>
-                          )}
+                          {owner && form && <ArchiveWorkspaceButton workspace={w} form={form} />}
                         </div>
                       )}
                     </div>
@@ -371,6 +392,58 @@ function SidebarNavigation({
                   </div>
                 )
               })}
+              {archivedWorkspaces.length > 0 && (
+                <div className={styles.archived}>
+                  <SidebarButton
+                    id={`${treeId}-archived`}
+                    icon={archivedOpen ? 'ChevronDown' : 'ChevronRight'}
+                    aria-expanded={archivedOpen}
+                    aria-controls={archivedOpen ? `${treeId}-archived-list` : undefined}
+                    className={styles.mutedButton}
+                    onClick={() => setArchivedOpen(!archivedOpen)}
+                  >
+                    Archived
+                  </SidebarButton>
+                  {archivedOpen && (
+                    <div
+                      id={`${treeId}-archived-list`}
+                      role="group"
+                      aria-labelledby={`${treeId}-archived`}
+                      className={styles.workspaceChildren}
+                    >
+                      {archivedWorkspaces.map((w) => {
+                        const owner = w.effectiveRole === 'owner'
+                        const current = w.path === workspace?.path
+                        return (
+                          <div key={w.path} className={styles.workspaceHeader}>
+                            <SidebarButton
+                              as={Link}
+                              to={`${w.path}/activity`}
+                              icon="Archive"
+                              aria-label={`${w.displayName}, archived`}
+                              title={w.displayName}
+                              isActive={current}
+                              aria-current={current ? 'page' : undefined}
+                              className={classNames(
+                                styles.headerButton,
+                                styles.mutedButton,
+                                styles.headerActionsSpace[owner ? 1 : 0],
+                              )}
+                            >
+                              {w.displayName}
+                            </SidebarButton>
+                            {owner && (
+                              <div className={styles.workspaceActions}>
+                                <RestoreWorkspaceButton workspace={w} form={form} compact />
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </ScrollArea.Container>
         </div>

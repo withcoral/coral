@@ -162,7 +162,6 @@ export const secret = style({
   userSelect: 'all',
   padding: 16,
 })
-export const dialogHeading = style({ display: 'flex', alignItems: 'center', gap: 8 })
 
 // One line under the breadcrumb: context on the left, page actions on the right.
 export const pageIntro = style({
@@ -186,3 +185,36 @@ export const addFields = style({
 // The role menu alone, as wide as the role column in the add dialog.
 export const roleField = style({ display: 'flex', flexDirection: 'column', gap: 8, width: 140 })
 export const addField = style({ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 })
+
+// A page's name as its heading, with an editor in its place while you rename it.
+export const nameHeading = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: 4,
+  minWidth: 0,
+})
+export const nameForm = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  minWidth: 0,
+})
+export const nameRow = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 8,
+  minWidth: 0,
+})
+export const nameInput = style({ flex: '1 1 240px', maxWidth: 480, minWidth: 0 })
+
+// What a confirmed action changes, as a short list between two sentences.
+export const consequences = style({ display: 'flex', flexDirection: 'column', gap: 8 })
+export const bulletList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  margin: 0,
+  paddingLeft: 20,
+  listStyle: 'disc',
+})

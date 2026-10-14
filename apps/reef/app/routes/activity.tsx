@@ -11,7 +11,7 @@ import { loadActivityPage } from '@/lib/activity-page-fetch'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import { LiveActivity } from './activity-live'
 import { PageLayout } from '@/wax/components/page-layout'
-import { trail } from '@/views/management/layout'
+import { ArchivedBanner, trail } from '@/views/management/layout'
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
 export async function loader({ request, context, params }: Route.LoaderArgs) {
@@ -32,13 +32,24 @@ export function clientLoader({ request, serverLoader }: Route.ClientLoaderArgs) 
   return loadActivityPage(request, serverLoader)
 }
 export default function ActivityRoute({ loaderData }: Route.ComponentProps) {
+  const archived = loaderData.workspace.state === 'archived'
   return (
-    <PageLayout variant="split" breadcrumbs={trail([], 'Activity')}>
+    <PageLayout
+      variant="split"
+      breadcrumbs={trail([], 'Activity')}
+      header={
+        archived && (
+          <ArchivedBanner workspace={loaderData.workspace}>
+            You can read its history. Restore it to start new runs.
+          </ArchivedBanner>
+        )
+      }
+    >
+      {/* An archived workspace takes no new calls, so it offers no endpoint. */}
       <LiveActivity
         initial={loaderData}
-        connect={{
-          endpoint: loaderData.workspace.mcpEndpoint,
-        }}
+        connect={archived ? undefined : { endpoint: loaderData.workspace.mcpEndpoint }}
+        archived={archived}
       />
     </PageLayout>
   )

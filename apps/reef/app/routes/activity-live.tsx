@@ -8,10 +8,12 @@ import type { ActivityPage, ActivityViewProps } from '@/views/activity/types'
 export function LiveActivity({
   initial,
   connect,
+  archived,
   more,
 }: {
   initial: ActivityPage
   connect?: ActivityViewProps['connect']
+  archived?: boolean
   more?: ActivityViewProps['more']
 }) {
   const { navigation, ...activity } = useActivityReader(initial)
@@ -24,7 +26,7 @@ export function LiveActivity({
       }
     >
       <ActivityNavigationContext value={navigation}>
-        <Activity {...activity} connect={connect} more={more} />
+        <Activity {...activity} connect={connect} archived={archived} more={more} />
       </ActivityNavigationContext>
     </ActionReviewSession>
   )

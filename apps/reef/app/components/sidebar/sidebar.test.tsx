@@ -46,15 +46,12 @@ test('navigating into a workspace opens it without closing the others', async ()
 test('a member workspace hides owner-only destinations', async () => {
   const { container } = render('/workspaces/research')
   expect(links(container)).not.toContain('/workspaces/research/agents')
-  expect(settingsLinks(container)).not.toContain('/workspaces/research/settings')
 })
 
-test('settings is a header control for owners, not a destination', async () => {
-  const { container } = render('/workspaces/ops/settings')
-  expect(links(container)).not.toContain('/workspaces/ops/settings')
-  expect(settingsLinks(container)).toEqual(['/workspaces/ops/settings'])
-  const cog = container.querySelector('a[href="/workspaces/ops/settings"]')!
-  expect(cog).toHaveAttribute('aria-current', 'page')
+test('only an owner can archive a workspace, from its header', async () => {
+  render('/workspaces/research')
+  expect(screen.getByRole('button', { name: 'Archive Operations' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Archive Research' })).toBeNull()
 })
 
 test('every workspace header copies its MCP endpoint', async () => {
@@ -75,13 +72,93 @@ test('every workspace header copies its MCP endpoint', async () => {
   expect(copied).toBe('https://coral.example.com/mcp/research')
 })
 
-// Catches: an archived workspace losing its navigation while you have it open.
-// The list holds only active workspaces.
+// Catches: the current workspace vanishing when the shell could not list workspaces.
 test('an open workspace missing from the active list still appears', async () => {
   const archived = workspace('archived', 'Archived', 'owner')
   const { container } = render('/workspaces/archived', archived)
   expect(header('Archived')).toHaveAttribute('aria-expanded', 'true')
   expect(links(container)).toEqual(ownerLinks('archived'))
+})
+
+// Catches: an archived workspace leaving the sidebar, or joining the active tree
+// with destinations it cannot use.
+test('archived workspaces wait in a collapsed group that opens on the current one', async () => {
+  const { router } = render('/workspaces/ops', undefined, false, undefined, false, signedIn, [
+    workspace('old', 'Old ops', 'owner'),
+  ])
+  expect(header('Archived')).toHaveAttribute('aria-expanded', 'false')
+  expect(screen.queryByRole('link', { name: 'Old ops, archived' })).toBeNull()
+
+  await act(async () => router.navigate('/workspaces/old/activity'))
+  expect(header('Archived')).toHaveAttribute('aria-expanded', 'true')
+  const entry = screen.getByRole('link', { name: 'Old ops, archived' })
+  expect(entry).toHaveAttribute('href', '/workspaces/old/activity')
+  expect(entry).toHaveAttribute('aria-current', 'page')
+  expect(screen.queryByRole('button', { name: 'Old ops' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Restore Old ops' })).toBeInTheDocument()
+})
+
+// Catches: archiving the workspace you are in hiding it from the sidebar: the
+// active tree drops it while the Archived group stays shut.
+test('archiving the current workspace opens the archived group on it', async () => {
+  const ops = workspace('ops', 'Operations', 'owner')
+  // The shell's lists before and after the archive revalidates them; the path stays.
+  let lists = { active: [ops], archived: [] as SidebarWorkspace[] }
+  const { router } = renderRoute(
+    () => (
+      <Sidebar
+        auth={signedIn}
+        initialIsMinimized={false}
+        workspaces={lists.active}
+        archivedWorkspaces={lists.archived}
+        workspace={ops}
+        form={{ csrf: 'test-csrf', requestId: 'test-request' }}
+      />
+    ),
+    { entry: '/workspaces/ops/activity' },
+  )
+  lists = { active: [], archived: [ops] }
+  await act(async () => router.navigate('/workspaces/ops/activity', { replace: true }))
+  expect(header('Archived')).toHaveAttribute('aria-expanded', 'true')
+  expect(screen.getByRole('link', { name: 'Operations, archived' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  )
+})
+
+// Catches: the collapsed sidebar losing your place in an archived workspace.
+test('collapsed, one archived tile marks every archived workspace and opens the group', async () => {
+  // Opening the group expands the sidebar, which saves the preference.
+  onTestFinished(clearSidebarCookie)
+  const archived = [workspace('old', 'Old ops', 'owner'), workspace('older', 'Older ops', 'owner')]
+  const { router } = render(
+    '/workspaces/ops',
+    undefined,
+    true,
+    undefined,
+    false,
+    signedIn,
+    archived,
+  )
+  expect(screen.getByRole('button', { name: 'Archived workspaces' })).not.toHaveAttribute(
+    'aria-current',
+  )
+  for (const [path, name] of [
+    ['/workspaces/old/activity', 'Old ops'],
+    ['/workspaces/older/activity', 'Older ops'],
+  ]) {
+    await act(async () => router.navigate(path))
+    expect(screen.getByRole('button', { name: `Archived: ${name}` })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+  }
+  await userEvent.click(screen.getByRole('button', { name: 'Archived: Older ops' }))
+  expect(header('Archived')).toHaveAttribute('aria-expanded', 'true')
+  expect(screen.getByRole('link', { name: 'Older ops, archived' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  )
 })
 
 // Catches: a member seeing organization pages they cannot open, or an
@@ -250,6 +327,7 @@ function workspace(id: string, displayName: string, effectiveRole: string): Side
     displayName,
     effectiveRole,
     mcpEndpoint: `https://coral.example.com/mcp/${id}`,
+    etag: 'etag',
   }
 }
 
@@ -273,10 +351,11 @@ function render(
   actionCounts?: ActionCounts | null,
   organizationOwner = false,
   auth: BrowserAuth = signedIn,
+  archived: SidebarWorkspace[] = [],
 ) {
   function Harness() {
     const { pathname } = useLocation()
-    const current = [...listed, extra].find(
+    const current = [...listed, extra, ...archived].find(
       (w) => w && (pathname === w.path || pathname.startsWith(`${w.path}/`)),
     )
     return (
@@ -284,9 +363,11 @@ function render(
         auth={auth}
         initialIsMinimized={minimized}
         workspaces={listed}
+        archivedWorkspaces={archived}
         workspace={current}
         actionCounts={actionCounts}
         organizationOwner={organizationOwner}
+        form={{ csrf: 'test-csrf', requestId: 'test-request' }}
       />
     )
   }
@@ -312,8 +393,4 @@ function links(container: HTMLElement) {
   return [
     ...container.querySelectorAll('[role="group"] [role="group"] a, [aria-label="Workspaces"] a'),
   ].map((a) => a.getAttribute('href'))
-}
-
-function settingsLinks(container: HTMLElement) {
-  return [...container.querySelectorAll('a[href$="/settings"]')].map((a) => a.getAttribute('href'))
 }

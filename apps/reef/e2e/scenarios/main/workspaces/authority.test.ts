@@ -187,7 +187,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
         const csrf = await page.getByRole('dialog').locator('input[name=csrf]').inputValue()
         await page.getByRole('button', { name: 'Cancel', exact: true }).click()
         const workspace = await api.workspaces.getWorkspace({ name: parent })
-        const response = await page.request.post(`${path}/settings`, {
+        const response = await page.request.post(path, {
           headers: { Origin: new URL(page.url()).origin },
           form: { csrf, intent: 'rename', etag: workspace.etag, displayName: 'Forbidden rename' },
         })

@@ -28,20 +28,15 @@ function workspace(id: number, state = WorkspaceState.ACTIVE) {
   }
 }
 
-it('lists every active Workspace across pages, because the sidebar is the only listing', async () => {
+const paths = (list: { path: string }[]) => list.map((w) => w.path)
+
+it('lists every Workspace across pages, archived ones apart, because the sidebar is the only listing', async () => {
   const result = await loader(authRouteTestArgs(new Request('http://reef/activity'), {}, null))
-  expect(result.data.workspaces).toEqual([
-    {
-      displayName: 'Workspace 1',
-      path: '/workspaces/00000000-0000-4000-8000-000000000001',
-      effectiveRole: 'member',
-      mcpEndpoint: 'https://coral.example.com/mcp/1',
-    },
-    {
-      displayName: 'Workspace 3',
-      path: '/workspaces/00000000-0000-4000-8000-000000000003',
-      effectiveRole: 'member',
-      mcpEndpoint: 'https://coral.example.com/mcp/3',
-    },
+  expect(paths(result.data.workspaces)).toEqual([
+    '/workspaces/00000000-0000-4000-8000-000000000001',
+    '/workspaces/00000000-0000-4000-8000-000000000003',
+  ])
+  expect(paths(result.data.archivedWorkspaces)).toEqual([
+    '/workspaces/00000000-0000-4000-8000-000000000002',
   ])
 })

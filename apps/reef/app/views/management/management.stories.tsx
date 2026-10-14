@@ -8,7 +8,6 @@ import { ManagementError } from './management-error'
 import { OrganizationMembersPage } from './organization-members-page'
 import { OrganizationWorkspacesPage } from './organization-workspaces-page'
 import { WorkspaceMembersPage, type WorkspaceMembersPageProps } from './workspace-members-page'
-import { SettingsDialog } from './settings-dialog'
 import { Activity } from '@/views/activity/activity'
 import type { ActivityRow } from '@/views/activity/types'
 import { WorkspaceOverview, type WorkspaceOverviewProps } from './workspace-overview'
@@ -258,9 +257,6 @@ export const DisabledOwnerOverview: Story = {
     ).toBeVisible()
     await expect(card.getAllByText('Disabled')).toHaveLength(1)
   },
-}
-export const ArchivedOverview: Story = {
-  render: () => <WorkspaceOverview {...overview} workspace={archived} />,
 }
 export const NoEndpointOverview: Story = {
   render: () => <WorkspaceOverview {...overview} workspace={{ ...workspace, mcpEndpoint: '' }} />,
@@ -1144,33 +1140,6 @@ export const LocalUser: Story = {
       owners={null}
     />
   ),
-}
-
-// Settings
-export const WorkspaceSettings: Story = {
-  render: () => <SettingsDialog workspace={workspace} form={form} />,
-  parameters: { initialEntry: '/workspaces/demo/settings' },
-}
-export const ArchivedSettings: Story = {
-  render: () => <SettingsDialog workspace={archived} form={form} />,
-  parameters: { initialEntry: '/workspaces/demo/settings' },
-}
-export const SubmissionPending: Story = {
-  render: () => <SettingsDialog workspace={workspace} form={form} pending />,
-  parameters: { initialEntry: '/workspaces/demo/settings' },
-}
-export const ArchiveConfirmation: Story = {
-  ...WorkspaceSettings,
-  play: async ({ canvasElement }) => {
-    const body = within(canvasElement.ownerDocument.body)
-    await userEvent.click(await body.findByRole('button', { name: 'Archive workspace' }))
-    const dialog = await body.findByRole('dialog', {
-      name: 'Archive workspace',
-    })
-    await waitFor(() =>
-      expect(within(dialog).getByRole('button', { name: 'Archive workspace' })).toBeVisible(),
-    )
-  },
 }
 
 // Themes and widths
