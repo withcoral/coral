@@ -109,7 +109,7 @@ export CORAL_TEST_POSTGRES_URL LOCAL_POSTGRES_IMAGE LOCAL_POSTGRES_CONTAINER LOC
 postgres-tests:
 	@node scripts/postgres-tests.mjs $(RUST_WORKSPACE_TESTS) --profile postgres
 
-# Run fan-out load harness (withcoral/lagoon#452). Not a gate: it measures one
+# Run fan-out load harness. Not a gate: it measures one
 # Run with many approval-gated calls against the probes the rest of the server
 # runs. Options and reports are described in scripts/load.mjs.
 #   make load-test LOAD_ARGS="--calls 30,101 --latency 0,5,20"

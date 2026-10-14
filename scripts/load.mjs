@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Run fan-out load harness (withcoral/lagoon#452, #2391).
+// Run fan-out load harness (#2391).
 //
 // Drives `run_fan_out_load` in `crates/coral-grpc/tests/grpc/load.rs` once per
 // cell (calls × added latency), against the disposable Postgres from
@@ -28,7 +28,7 @@
 // 28474) and LOAD_TOXIPROXY_PG_PORT (default 28432).
 //
 // Latency is added on the downstream stream only (server to client), like the
-// #2391 and withcoral/lagoon#408 measurements. The sampler that reads `pg_stat_activity` connects
+// #2391 measurements. The sampler that reads `pg_stat_activity` connects
 // directly, outside the proxy, so it never competes with the pool.
 import { execFile, spawn } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'

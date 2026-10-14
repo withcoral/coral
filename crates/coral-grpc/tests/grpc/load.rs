@@ -1,4 +1,4 @@
-//! Load harness for Run fan-out (withcoral/lagoon#452, #2391).
+//! Load harness for Run fan-out (#2391).
 //!
 //! One Run makes `CORAL_LOAD_CALLS` parallel approval-gated calls. While they are
 //! admitted, wait, and (in `approve` mode) dispatch, four probes measure what the
@@ -621,7 +621,7 @@ fn counts<'a>(values: impl Iterator<Item = &'a str>) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "load harness: run through scripts/load.mjs (withcoral/lagoon#452)"]
+#[ignore = "load harness: run through scripts/load.mjs"]
 #[expect(clippy::too_many_lines, reason = "one scripted measurement run")]
 async fn run_fan_out_load() {
     let calls = setting_u64("CORAL_LOAD_CALLS", 30);
