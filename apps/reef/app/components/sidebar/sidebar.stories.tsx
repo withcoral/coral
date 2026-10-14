@@ -33,6 +33,7 @@ const meta = {
       effectiveRole: 'owner',
       mcpEndpoint: 'https://coral.example.com/mcp',
       etag: 'etag',
+      state: 'active',
     },
     workspaces: [
       {
@@ -41,6 +42,7 @@ const meta = {
         effectiveRole: 'owner',
         mcpEndpoint: 'https://coral.example.com/mcp',
         etag: 'etag',
+        state: 'active',
       },
       {
         displayName: 'Research',
@@ -48,6 +50,7 @@ const meta = {
         effectiveRole: 'member',
         mcpEndpoint: 'https://coral.example.com/mcp',
         etag: 'etag',
+        state: 'active',
       },
     ],
     form: { csrf: 'storybook', requestId: 'storybook' },
@@ -106,6 +109,7 @@ export const CollapsedManyWorkspaces: Story = {
       effectiveRole: 'owner',
       mcpEndpoint: 'https://coral.example.com/mcp',
       etag: 'etag',
+      state: 'active',
     })),
   },
   parameters: { initialEntry: '/workspaces/demo/providers' },
@@ -119,6 +123,7 @@ export const ManyWorkspaces: Story = {
       effectiveRole: 'owner',
       mcpEndpoint: 'https://coral.example.com/mcp',
       etag: 'etag',
+      state: 'active',
     })),
   },
   parameters: { initialEntry: '/workspaces/demo/providers' },
@@ -144,6 +149,7 @@ export const Member: Story = {
       effectiveRole: 'member',
       mcpEndpoint: 'https://coral.example.com/mcp',
       etag: 'etag',
+      state: 'active',
     },
   },
 }
@@ -155,6 +161,7 @@ export const LongWorkspaceName: Story = {
       effectiveRole: 'owner',
       mcpEndpoint: 'https://coral.example.com/mcp',
       etag: 'etag',
+      state: 'active',
     },
   },
 }
@@ -185,6 +192,7 @@ const archivedWorkspaces = [
     effectiveRole: 'owner',
     mcpEndpoint: '',
     etag: 'etag',
+    state: 'archived',
   },
   {
     path: '/workspaces/old-research',
@@ -192,6 +200,7 @@ const archivedWorkspaces = [
     effectiveRole: 'member',
     mcpEndpoint: '',
     etag: 'etag',
+    state: 'archived',
   },
 ]
 // Archived workspaces sit in their own group, collapsed until you open one.

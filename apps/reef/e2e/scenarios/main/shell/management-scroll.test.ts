@@ -172,7 +172,7 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       },
     )
     await step(
-      'Mobile drawer closes on navigation and opens the archive confirmation over itself',
+      'Mobile drawer closes on navigation and opens the archive confirmation',
       async () => {
         await page.setViewportSize({ width: 390, height: 360 })
         const drawer = page.getByRole('dialog', { name: 'Navigation', exact: true })
@@ -184,7 +184,7 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
         await expect
           .poll(() => openNavigation.evaluate((element) => document.activeElement === element))
           .toBe(true)
-        // The confirmation opens from the drawer's Workspace header, over the drawer.
+        // The confirmation opens from the drawer's Workspace header.
         await openNavigation.click()
         await drawer.getByRole('button', { name: `Archive ${name}`, exact: true }).click()
         await bottom.waitFor()

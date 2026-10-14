@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { markupRoute, renderRoute } from '@/test-support/route'
 import { Activity } from './activity'
+import { ActivityArchivedContext } from './live'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, approval, approvalRequest, run as waiting, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
@@ -179,6 +180,23 @@ it.each<[string, ActivityViewProps['connect'], boolean, string]>([
   expect(screen.getByText('No activity yet')).toBeInTheDocument()
   expect(screen.getByText(description)).toBeInTheDocument()
   expect(screen.queryAllByRole('button', { name: 'Copy MCP URL' })).toHaveLength(offered ? 1 : 0)
+})
+
+// Catches: an archived workspace offering an endpoint that takes no calls, or
+// telling an owner to ask an owner.
+it.each<['owner' | 'member', string]>([
+  ['owner', 'Restore this workspace to start new runs.'],
+  ['member', 'Ask a workspace owner to restore this workspace. Then you can start new runs.'],
+])('empty archived activity tells the %s how to start new runs', (role, description) => {
+  renderRoute(
+    <ActivityArchivedContext value={role}>
+      <Activity page={activityPage()} />
+    </ActivityArchivedContext>,
+    { entry: '/activity' },
+  )
+  expect(screen.getByText('No activity')).toBeInTheDocument()
+  expect(screen.getByText(description)).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Copy MCP URL' })).toBeNull()
 })
 
 // The Overview shows a glimpse: one link to the full list replaces paging.

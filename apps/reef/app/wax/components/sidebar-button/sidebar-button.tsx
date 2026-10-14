@@ -29,7 +29,8 @@ export interface SidebarButtonProps<T extends ElementType = 'button'> {
   variant?: SidebarButtonVariant
 }
 
-export type SidebarButtonVariant = 'accent' | 'default'
+/** `muted` quiets the label at rest, for entries set apart from the rest. */
+export type SidebarButtonVariant = 'accent' | 'default' | 'muted'
 
 type PolymorphicProps<T extends ElementType> = Omit<
   React.ComponentPropsWithoutRef<T>,

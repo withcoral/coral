@@ -15,7 +15,7 @@ import * as Card from '@/wax/components/card'
 import { CodeBlock } from '@/wax/components/code-block'
 import { Deadline } from '@/wax/components/deadline'
 import type { RequestDetail } from '../activity/types'
-import { useActivityConnected } from '../activity/live'
+import { restoreFirst, useActivityArchived, useActivityConnected } from '../activity/live'
 import { settledApproval } from './approval-state'
 import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action } from '@/routes/activity-resolve'
@@ -123,6 +123,7 @@ export function ActionReviewSession({
 export function ApprovalReview({ detail }: { detail: Approval }) {
   const csrf = useShellCsrf()
   const connected = useActivityConnected()
+  const archived = useActivityArchived()
   const fetcher = useFetcher<typeof action>({ key: detail.name })
   const session = useContext(DraftContext)
   if (!session) throw new Error('Approval review needs its action review session')
@@ -175,7 +176,9 @@ export function ApprovalReview({ detail }: { detail: Approval }) {
       <fetcher.Form method="post" action="/activity/resolve" className={styles.stack}>
         <input type="hidden" name="csrf" value={csrf} />
         <input type="hidden" name="name" value={detail.name} />
-        {available && !settled ? (
+        {available && !settled && archived ? (
+          <Typography.Body role="status">{restoreFirst(archived, 'decide')}</Typography.Body>
+        ) : available && !settled ? (
           <>
             <Disclosure title="Add a comment" open={Boolean(comment)}>
               <Typography.BodySmall as="label" htmlFor={id}>

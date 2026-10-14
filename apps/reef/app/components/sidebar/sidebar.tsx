@@ -21,7 +21,7 @@ import { useSidebarState } from './use-sidebar-state'
 
 export type SidebarWorkspace = Pick<
   WorkspaceView,
-  'displayName' | 'path' | 'effectiveRole' | 'mcpEndpoint' | 'etag'
+  'displayName' | 'path' | 'effectiveRole' | 'mcpEndpoint' | 'etag' | 'state'
 >
 
 interface SidebarProps {
@@ -180,15 +180,19 @@ function SidebarNavigation({
     setOpenPaths(next)
   }
   // You open a Workspace only as its member, so every entry here is one of yours.
-  // The route's Workspace is fresher than the list. An archived Workspace stays
-  // in its own group, even while you have it open.
-  const currentArchived = archivedWorkspaces.some((w) => w.path === workspace?.path)
-  const tree =
-    !workspace || currentArchived
-      ? workspaces
-      : workspaces.some((w) => w.path === workspace.path)
-        ? workspaces.map((w) => (w.path === workspace.path ? workspace : w))
-        : [workspace, ...workspaces]
+  // The route's Workspace is fresher than the lists, and stands in when they
+  // failed to load. Its state decides its group, even while you have it open.
+  const currentArchived = workspace?.state === 'archived'
+  const place = (list: SidebarWorkspace[], here: boolean) =>
+    !workspace
+      ? list
+      : !here
+        ? list.filter((w) => w.path !== workspace.path)
+        : list.some((w) => w.path === workspace.path)
+          ? list.map((w) => (w.path === workspace.path ? workspace : w))
+          : [workspace, ...list]
+  const tree = place(workspaces, !currentArchived)
+  const archived = place(archivedWorkspaces, currentArchived)
   // The group opens when you open an archived Workspace, or archive the one you are in.
   const currentArchivedPath = currentArchived ? workspace?.path : undefined
   const [archivedOpen, setArchivedOpen] = useState(currentArchived)
@@ -291,7 +295,7 @@ function SidebarNavigation({
             )
           })}
           {/* One tile holds every archived Workspace. It shows as current in any of them. */}
-          {archivedWorkspaces.length > 0 && (
+          {archived.length > 0 && (
             <div className={styles.railWorkspace}>
               <SidebarButton
                 icon="Archive"
@@ -392,14 +396,14 @@ function SidebarNavigation({
                   </div>
                 )
               })}
-              {archivedWorkspaces.length > 0 && (
+              {archived.length > 0 && (
                 <div className={styles.archived}>
                   <SidebarButton
                     id={`${treeId}-archived`}
                     icon={archivedOpen ? 'ChevronDown' : 'ChevronRight'}
                     aria-expanded={archivedOpen}
                     aria-controls={archivedOpen ? `${treeId}-archived-list` : undefined}
-                    className={styles.mutedButton}
+                    variant="muted"
                     onClick={() => setArchivedOpen(!archivedOpen)}
                   >
                     Archived
@@ -411,7 +415,7 @@ function SidebarNavigation({
                       aria-labelledby={`${treeId}-archived`}
                       className={styles.workspaceChildren}
                     >
-                      {archivedWorkspaces.map((w) => {
+                      {archived.map((w) => {
                         const owner = w.effectiveRole === 'owner'
                         const current = w.path === workspace?.path
                         return (
@@ -423,10 +427,10 @@ function SidebarNavigation({
                               aria-label={`${w.displayName}, archived`}
                               title={w.displayName}
                               isActive={current}
+                              variant="muted"
                               aria-current={current ? 'page' : undefined}
                               className={classNames(
                                 styles.headerButton,
-                                styles.mutedButton,
                                 styles.headerActionsSpace[owner ? 1 : 0],
                               )}
                             >

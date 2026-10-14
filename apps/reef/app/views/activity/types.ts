@@ -12,8 +12,6 @@ export interface ActivityViewProps {
    * none: an Agent connects with its API key, which its page explains.
    */
   connect?: { endpoint: string }
-  /** The Workspace is archived: its history can only stay as it is. */
-  archived?: boolean
   /** Replaces paging with one link to the full list, for a short glimpse of the latest roots. */
   more?: {
     to: string

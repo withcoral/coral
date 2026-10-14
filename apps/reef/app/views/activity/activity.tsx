@@ -18,7 +18,7 @@ import {
 } from './types'
 import { revealHref, selectionKeys, useActivityNavigation } from './navigation'
 import { ActivityDetail } from './detail'
-import { ActivityConnectedContext } from './live'
+import { ActivityConnectedContext, restoreFirst, useActivityArchived } from './live'
 import { PendingActions } from './pending'
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
@@ -379,9 +379,9 @@ export function Activity({
   windowKey,
   revealRecord,
   connect,
-  archived = false,
   more,
 }: ActivityViewProps) {
+  const archived = useActivityArchived()
   const [lostPosition, setLostPosition] = useState<string>()
   const nav = useActivityNavigation(page)
   const navigate = useNavigate()
@@ -534,7 +534,7 @@ export function Activity({
                       title={archived ? 'No activity' : 'No activity yet'}
                       description={
                         archived
-                          ? 'This workspace has no history.'
+                          ? restoreFirst(archived, 'start new runs')
                           : connect
                             ? 'Connect an MCP client to this workspace. Its calls show here.'
                             : page.agent

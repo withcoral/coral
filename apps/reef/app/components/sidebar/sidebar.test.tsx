@@ -73,19 +73,33 @@ test('every workspace header copies its MCP endpoint', async () => {
 })
 
 // Catches: the current workspace vanishing when the shell could not list workspaces.
-test('an open workspace missing from the active list still appears', async () => {
-  const archived = workspace('archived', 'Archived', 'owner')
-  const { container } = render('/workspaces/archived', archived)
+test('an open active workspace missing from the lists still appears', async () => {
+  const { container } = render('/workspaces/unlisted', {
+    extra: workspace('unlisted', 'Unlisted', 'owner'),
+  })
+  expect(header('Unlisted')).toHaveAttribute('aria-expanded', 'true')
+  expect(links(container)).toEqual(ownerLinks('unlisted'))
+})
+
+// Catches: an unlisted archived workspace joining the active tree with destinations it cannot use.
+test('an open archived workspace missing from the lists still appears as archived', async () => {
+  render('/workspaces/unlisted/activity', {
+    extra: workspace('unlisted', 'Unlisted', 'owner', 'archived'),
+  })
   expect(header('Archived')).toHaveAttribute('aria-expanded', 'true')
-  expect(links(container)).toEqual(ownerLinks('archived'))
+  expect(screen.getByRole('link', { name: 'Unlisted, archived' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  )
+  expect(screen.queryByRole('button', { name: 'Unlisted' })).toBeNull()
 })
 
 // Catches: an archived workspace leaving the sidebar, or joining the active tree
 // with destinations it cannot use.
 test('archived workspaces wait in a collapsed group that opens on the current one', async () => {
-  const { router } = render('/workspaces/ops', undefined, false, undefined, false, signedIn, [
-    workspace('old', 'Old ops', 'owner'),
-  ])
+  const { router } = render('/workspaces/ops', {
+    archived: [workspace('old', 'Old ops', 'owner', 'archived')],
+  })
   expect(header('Archived')).toHaveAttribute('aria-expanded', 'false')
   expect(screen.queryByRole('link', { name: 'Old ops, archived' })).toBeNull()
 
@@ -102,22 +116,11 @@ test('archived workspaces wait in a collapsed group that opens on the current on
 // active tree drops it while the Archived group stays shut.
 test('archiving the current workspace opens the archived group on it', async () => {
   const ops = workspace('ops', 'Operations', 'owner')
-  // The shell's lists before and after the archive revalidates them; the path stays.
-  let lists = { active: [ops], archived: [] as SidebarWorkspace[] }
-  const { router } = renderRoute(
-    () => (
-      <Sidebar
-        auth={signedIn}
-        initialIsMinimized={false}
-        workspaces={lists.active}
-        archivedWorkspaces={lists.archived}
-        workspace={ops}
-        form={{ csrf: 'test-csrf', requestId: 'test-request' }}
-      />
-    ),
-    { entry: '/workspaces/ops/activity' },
-  )
-  lists = { active: [], archived: [ops] }
+  const options: RenderOptions = { active: [ops] }
+  const { router } = render('/workspaces/ops/activity', options)
+  // The archive revalidates the shell's lists and the route; the path stays.
+  options.active = []
+  options.archived = [{ ...ops, state: 'archived' }]
   await act(async () => router.navigate('/workspaces/ops/activity', { replace: true }))
   expect(header('Archived')).toHaveAttribute('aria-expanded', 'true')
   expect(screen.getByRole('link', { name: 'Operations, archived' })).toHaveAttribute(
@@ -130,16 +133,11 @@ test('archiving the current workspace opens the archived group on it', async () 
 test('collapsed, one archived tile marks every archived workspace and opens the group', async () => {
   // Opening the group expands the sidebar, which saves the preference.
   onTestFinished(clearSidebarCookie)
-  const archived = [workspace('old', 'Old ops', 'owner'), workspace('older', 'Older ops', 'owner')]
-  const { router } = render(
-    '/workspaces/ops',
-    undefined,
-    true,
-    undefined,
-    false,
-    signedIn,
-    archived,
-  )
+  const archived = [
+    workspace('old', 'Old ops', 'owner', 'archived'),
+    workspace('older', 'Older ops', 'owner', 'archived'),
+  ]
+  const { router } = render('/workspaces/ops', { minimized: true, archived })
   expect(screen.getByRole('button', { name: 'Archived workspaces' })).not.toHaveAttribute(
     'aria-current',
   )
@@ -167,7 +165,7 @@ test.each([
   ['an organization owner', true, ['/organization/members', '/organization/workspaces']],
   ['an organization member', false, []],
 ])('the account menu links the organization pages for %s only', async (_, owner, hrefs) => {
-  render('/workspaces/ops', undefined, false, undefined, owner)
+  render('/workspaces/ops', { organizationOwner: owner })
   await userEvent.click(screen.getByRole('button', { name: /^Open account menu/ }))
   await screen.findByRole('menuitem', { name: 'Appearance' })
   const items = ['Members', 'Workspaces'].flatMap((name) =>
@@ -177,7 +175,7 @@ test.each([
 })
 
 test('collapsed, every workspace is a tile and only the current one shows its destinations', async () => {
-  render('/workspaces/ops/providers', undefined, true)
+  render('/workspaces/ops/providers', { minimized: true })
   const rail = screen.getByRole('group', { name: 'Workspaces' })
   const tiles = [...rail.querySelectorAll(':scope > div > a')]
   expect(tiles.map((a) => [a.getAttribute('aria-label'), a.getAttribute('href')])).toEqual([
@@ -222,7 +220,7 @@ test('the sidebar preference holds for the next load', async () => {
 })
 
 test('collapsed, the help menu holds the external links', async () => {
-  render('/workspaces/ops', undefined, true)
+  render('/workspaces/ops', { minimized: true })
   expect(screen.queryByRole('link', { name: 'Chat on Slack' })).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Get help' }))
   const items = ['Chat on Slack', 'Star on GitHub'].map((name) =>
@@ -240,7 +238,7 @@ test.each<[string, boolean, BrowserAuth]>([
   ['a signed-in deployment', true, signedIn],
   ['a local deployment', false, { mode: 'disabled' }],
 ])('%s shows people management: %s', async (_, shown, auth) => {
-  const { container } = render('/workspaces/ops', undefined, false, undefined, true, auth)
+  const { container } = render('/workspaces/ops', { organizationOwner: true, auth })
   expect(links(container).includes('/workspaces/ops/members')).toBe(shown)
   await userEvent.click(screen.getByRole('button', { name: /^Open account menu/ }))
   const members = screen.queryByRole('menuitem', { name: 'Members' })
@@ -275,7 +273,7 @@ test.each(['/workspaces/ops/activity', '/workspaces/ops/runs/r'])(
   },
 )
 test('an open workspace shows its count on Activity, a closed one on its name', () => {
-  render('/workspaces/ops/providers', undefined, false, counts)
+  render('/workspaces/ops/providers', { actionCounts: counts })
   expect(activityLink()).toHaveAccessibleName('Activity. 3 pending actions')
   expect(header('Operations')).toHaveAccessibleName('Operations')
   expect(header(/^Research/)).toHaveAccessibleName('Research. 5 pending actions')
@@ -285,7 +283,7 @@ test('an open workspace shows its count on Activity, a closed one on its name', 
   expect(within(header(/^Research/)).getByText('5')).toBeInTheDocument()
 })
 test('collapsed, the current workspace shows its count on Activity and the others on their tile', () => {
-  render('/workspaces/ops/providers', undefined, true, counts)
+  render('/workspaces/ops/providers', { minimized: true, actionCounts: counts })
   const rail = screen.getByRole('group', { name: 'Workspaces' })
   expect(within(rail).getByRole('link', { name: 'Operations' })).toBeInTheDocument()
   expect(activityLink()).toHaveAccessibleName('Activity. 3 pending actions')
@@ -315,19 +313,25 @@ test.each([
     '?',
   ],
 ])('%s', (_, actionCounts, name, badge) => {
-  render('/workspaces/ops', undefined, false, actionCounts)
+  render('/workspaces/ops', { actionCounts })
   expect(activityLink()).toHaveAccessibleName(name)
   if (badge) expect(within(activityLink()).getByText(badge)).toBeInTheDocument()
   else expect(activityLink().textContent).toBe('Activity')
 })
 
-function workspace(id: string, displayName: string, effectiveRole: string): SidebarWorkspace {
+function workspace(
+  id: string,
+  displayName: string,
+  effectiveRole: string,
+  state = 'active',
+): SidebarWorkspace {
   return {
     path: `/workspaces/${id}`,
     displayName,
     effectiveRole,
     mcpEndpoint: `https://coral.example.com/mcp/${id}`,
     etag: 'etag',
+    state,
   }
 }
 
@@ -344,29 +348,34 @@ function ownerLinks(id: string) {
   ]
 }
 
-function render(
-  initialEntry: string,
-  extra?: SidebarWorkspace,
-  minimized = false,
-  actionCounts?: ActionCounts | null,
-  organizationOwner = false,
-  auth: BrowserAuth = signedIn,
-  archived: SidebarWorkspace[] = [],
-) {
+interface RenderOptions {
+  /** The shell's lists. They are read on each render, so a test can change them and navigate. */
+  active?: SidebarWorkspace[]
+  archived?: SidebarWorkspace[]
+  /** The route's workspace when the shell could not list it. */
+  extra?: SidebarWorkspace
+  minimized?: boolean
+  actionCounts?: ActionCounts | null
+  organizationOwner?: boolean
+  auth?: BrowserAuth
+}
+
+function render(initialEntry: string, options: RenderOptions = {}) {
   function Harness() {
     const { pathname } = useLocation()
-    const current = [...listed, extra, ...archived].find(
+    const { active = listed, archived = [], extra } = options
+    const current = [...active, extra, ...archived].find(
       (w) => w && (pathname === w.path || pathname.startsWith(`${w.path}/`)),
     )
     return (
       <Sidebar
-        auth={auth}
-        initialIsMinimized={minimized}
-        workspaces={listed}
+        auth={options.auth ?? signedIn}
+        initialIsMinimized={options.minimized ?? false}
+        workspaces={active}
         archivedWorkspaces={archived}
         workspace={current}
-        actionCounts={actionCounts}
-        organizationOwner={organizationOwner}
+        actionCounts={options.actionCounts}
+        organizationOwner={options.organizationOwner ?? false}
         form={{ csrf: 'test-csrf', requestId: 'test-request' }}
       />
     )

@@ -9,7 +9,9 @@ import * as styles from './management.css'
 /**
  * A page's name as its heading. A pencil beside it swaps the text for an
  * input: Enter or Save saves, Escape or Cancel discards, and leaving the
- * field does neither. A failed save keeps the draft beside its error.
+ * field does neither. A failed save keeps the draft beside its error. The save
+ * carries the etag from when the editor opened, so a change made meanwhile
+ * refuses it instead of being overwritten.
  */
 export function NameHeading({
   name,
@@ -41,6 +43,7 @@ export function NameHeading({
   // The result the last edit started from: anything newer belongs to this edit.
   const [earlier, setEarlier] = useState<ActionResult | undefined>(undefined)
   const [draft, setDraft] = useState(name)
+  const [openedAt, setOpenedAt] = useState(etag)
   const pencil = useRef<HTMLButtonElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const saving = fetcher.state !== 'idle'
@@ -68,6 +71,7 @@ export function NameHeading({
             tooltipText={`Edit ${noun} name`}
             onClick={() => {
               setDraft(name)
+              setOpenedAt(etag)
               setEarlier(fetcher.data)
               setOpen(true)
             }}
@@ -85,7 +89,7 @@ export function NameHeading({
       className={styles.nameForm}
       aria-busy={saving}
     >
-      <Fields form={form} intent={intent} etag={etag} />
+      <Fields form={form} intent={intent} etag={openedAt} />
       {fields}
       <div className={styles.nameRow}>
         <div className={styles.nameInput}>
@@ -94,6 +98,7 @@ export function NameHeading({
             name="displayName"
             value={draft}
             onChange={setDraft}
+            readOnly={saving}
             autoFocus
             required
             maxLength={256}
@@ -101,7 +106,7 @@ export function NameHeading({
             onKeyDown={(event) => {
               if (event.key === 'Escape') {
                 event.preventDefault()
-                cancel()
+                if (!saving) cancel()
               } else if (event.key === 'Enter') {
                 event.preventDefault()
                 if (!saving) formRef.current?.requestSubmit()

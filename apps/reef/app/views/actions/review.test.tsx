@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import { renderRoute } from '@/test-support/route'
 import { approvalRequest as approval } from '../activity/fixtures'
+import { ActivityArchivedContext } from '../activity/live'
 import { ActionReviewSession, ApprovalReview } from './review'
 
 type Approval = typeof approval
@@ -263,4 +264,21 @@ describe('exact approval review', () => {
     await click('Discard comment')
     expect(page.container.textContent).toBe('Another page')
   })
+})
+
+// Catches: an archived workspace offering a decision that Coral refuses.
+it('an archived workspace shows the arguments but tells you to restore it before you decide', () => {
+  renderRoute(
+    <ActivityArchivedContext value="member">
+      <ActionReviewSession request={approval}>
+        <ApprovalReview detail={approval} />
+      </ActionReviewSession>
+    </ActivityArchivedContext>,
+    { entry: '/activity?record=one&request=one', csrf: 'test-csrf' },
+  )
+  expect(screen.getByRole('heading', { name: 'Arguments to review' })).toBeInTheDocument()
+  expect(
+    screen.getByText('Ask a workspace owner to restore this workspace. Then you can decide.'),
+  ).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /this call$/ })).toBeNull()
 })

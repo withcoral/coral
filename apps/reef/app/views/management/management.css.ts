@@ -192,6 +192,7 @@ export const nameHeading = style({
   display: 'flex',
   gap: 4,
   minWidth: 0,
+  overflowWrap: 'anywhere',
 })
 export const nameForm = style({
   display: 'flex',

@@ -52,6 +52,7 @@ export function sidebarWorkspaceView(w: Workspace) {
     effectiveRole: roleLabel(w.effectiveRole),
     mcpEndpoint: w.mcpEndpoint,
     etag: w.etag,
+    state: workspaceView(w).state,
   }
 }
 /** An agent's settings page; its own path is its activity. */

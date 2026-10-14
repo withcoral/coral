@@ -25,18 +25,24 @@ function workspace(id: number, state = WorkspaceState.ACTIVE) {
     state,
     effectiveRole: WorkspaceRole.MEMBER,
     mcpEndpoint: `https://coral.example.com/mcp/${id}`,
+    etag: `etag-${id}`,
   }
 }
 
-const paths = (list: { path: string }[]) => list.map((w) => w.path)
+// What the sidebar shows for the fixture Workspace `id`.
+function sidebarEntry(id: number, state: 'active' | 'archived') {
+  return {
+    displayName: `Workspace ${id}`,
+    path: `/workspaces/00000000-0000-4000-8000-00000000000${id}`,
+    effectiveRole: 'member',
+    mcpEndpoint: `https://coral.example.com/mcp/${id}`,
+    etag: `etag-${id}`,
+    state,
+  }
+}
 
 it('lists every Workspace across pages, archived ones apart, because the sidebar is the only listing', async () => {
   const result = await loader(authRouteTestArgs(new Request('http://reef/activity'), {}, null))
-  expect(paths(result.data.workspaces)).toEqual([
-    '/workspaces/00000000-0000-4000-8000-000000000001',
-    '/workspaces/00000000-0000-4000-8000-000000000003',
-  ])
-  expect(paths(result.data.archivedWorkspaces)).toEqual([
-    '/workspaces/00000000-0000-4000-8000-000000000002',
-  ])
+  expect(result.data.workspaces).toEqual([sidebarEntry(1, 'active'), sidebarEntry(3, 'active')])
+  expect(result.data.archivedWorkspaces).toEqual([sidebarEntry(2, 'archived')])
 })
