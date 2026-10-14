@@ -278,7 +278,7 @@ it('an archived workspace shows the arguments but tells you to restore it before
   )
   expect(screen.getByRole('heading', { name: 'Arguments to review' })).toBeInTheDocument()
   expect(
-    screen.getByText('Ask a workspace owner to restore this workspace. Then you can decide.'),
+    screen.getByText('Ask a workspace owner to restore this workspace. Then decide.'),
   ).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /this call$/ })).toBeNull()
 })

@@ -186,7 +186,7 @@ it.each<[string, ActivityViewProps['connect'], boolean, string]>([
 // telling an owner to ask an owner.
 it.each<['owner' | 'member', string]>([
   ['owner', 'Restore this workspace to start new runs.'],
-  ['member', 'Ask a workspace owner to restore this workspace. Then you can start new runs.'],
+  ['member', 'Ask a workspace owner to restore this workspace. Then start new runs.'],
 ])('empty archived activity tells the %s how to start new runs', (role, description) => {
   renderRoute(
     <ActivityArchivedContext value={role}>

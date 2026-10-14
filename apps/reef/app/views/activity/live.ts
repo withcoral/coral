@@ -22,5 +22,5 @@ export function useActivityArchived() {
 export function restoreFirst(role: 'owner' | 'member', then: string) {
   return role === 'owner'
     ? `Restore this workspace to ${then}.`
-    : `Ask a workspace owner to restore this workspace. Then you can ${then}.`
+    : `Ask a workspace owner to restore this workspace. Then ${then}.`
 }
