@@ -263,7 +263,7 @@ async fn context_impact_is_partial_while_a_run_runs_and_skips_an_unmeasured_chil
             &f.actor,
             &f.workspace,
             running.run_id(),
-            &coral_run::RunObservation::immediate(None, 1)
+            &coral_run::RunObservation::immediate(Some(running.next_cursor().clone()), 1)
                 .unwrap()
                 .with_wait(std::time::Duration::from_secs(10))
                 .unwrap(),

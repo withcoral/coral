@@ -20,7 +20,7 @@ const DESCRIBE_INTENT_DESCRIPTION: &str =
 const FUNCTION_PATH_DESCRIPTION: &str =
     "Dotted path under coral.functions, without that prefix, such as reports.summarize.";
 const SEARCH_TOOL_DESCRIPTION: &str = "Search current visible Operations and Saved Functions. In `query`, give keywords for the capability you need. Leave out people, record titles, IDs, dates and other record values. Each result is a summary with a signature line. Call a read directly when its signature line is complete. Call describe first when the line was cut, its input names a type you do not see, or before a write. When the user names the service, pass its namespace in `provider`. Otherwise, leave `provider` out. `start_task` lists the namespaces you can search. The filter narrows Operations to one Provider; Saved Functions stay. A page lists `retriever_statuses` only when results may be missing; retry shortly or list without a query.";
-const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous wait on this Run.";
+const RUN_CURSOR_DESCRIPTION: &str = "The next_cursor from the previous exec or wait on this Run. Without it, the response returns the Run's events from the start.";
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 10_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
