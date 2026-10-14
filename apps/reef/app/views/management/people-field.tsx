@@ -50,7 +50,7 @@ export function PeopleField({
     const key = p.value.toLowerCase()
     byValue.set(key, [...(byValue.get(key) ?? []), p])
   }
-  // An item is a person's label, or a value that matches no one person.
+  // An item is a person's label when exactly one person has its value; otherwise, it is the value.
   const itemOf = (v: string) => {
     const key = v.toLowerCase()
     for (const [item, p] of picked) if (p.value.toLowerCase() === key) return item
