@@ -48,7 +48,8 @@ function op(
     callPath: base ? `coral.providers.${base}.${relativePath}` : relativePath,
     summary,
     description: '',
-    // Mirrors the domain default: read-only is enabled, anything else needs approval.
+    // Mirrors the domain default for these fixtures, which carry no HTTP method:
+    // read-only is enabled, anything else needs approval.
     hints: {},
     policy: readOnly ? 'enabled' : 'approval_required',
     available: true,

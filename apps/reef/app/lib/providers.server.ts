@@ -162,15 +162,9 @@ export function operationGroup(o: { tags: readonly string[]; relativePath: strin
 
 export function operationView(
   o: ProviderOperation,
-  options: { namespace: string; basePath: string; policy?: OperationPolicy },
+  options: { namespace: string; basePath: string; policy: OperationPolicy },
 ): OperationView {
   const hints = operationHints(o.hints)
-  // Coral's default when no rule exists: only a declared read-only operation runs freely.
-  const policyState =
-    options.policy?.accessState ??
-    (hints.readOnly === true
-      ? OperationAccessState.ENABLED
-      : OperationAccessState.APPROVAL_REQUIRED)
   return {
     name: o.name,
     relativePath: o.relativePath,
@@ -180,7 +174,7 @@ export function operationView(
     summary: o.summary,
     description: o.description,
     hints,
-    policy: accessState(policyState),
+    policy: accessState(options.policy.accessState),
     available: o.available,
     reasons: o.diagnostics.map((d) => d.message),
     group: operationGroup(o),
@@ -194,21 +188,12 @@ async function operationPolicies(
   operations: readonly ProviderOperation[],
 ) {
   if (operations.length === 0) return []
-  try {
-    return (
-      await api.policies.getOperationPolicies({
-        parent,
-        operations: operations.map((o) => o.name),
-      })
-    ).policies
-  } catch (error) {
-    // A deployment without the policy service reports Unimplemented; showing
-    // classification defaults is correct there. Any other failure — expired
-    // auth, permission, transient — must not render defaults as the saved
-    // policy on the screen an operator reviews policy from.
-    if (error instanceof ConnectError && error.code === Code.Unimplemented) return null
-    throw error
-  }
+  return (
+    await api.policies.getOperationPolicies({
+      parent,
+      operations: operations.map((o) => o.name),
+    })
+  ).policies
 }
 
 function enabled(state: ProviderState) {
@@ -232,7 +217,6 @@ export async function providerView(
   const path = providerPath(workspacePath, provider.name)
   const operations: ProviderOperation[] = []
   const policies = new Map<string, OperationPolicy>()
-  let hasPolicies = true
   const readPage = (pageToken: string) =>
     api.providers.listOperations({ parent: provider.name, pageSize: 100, pageToken })
   let page = await readPage('')
@@ -240,26 +224,20 @@ export async function providerView(
     // Keep at most one policy read and one catalog read in flight per provider.
     // Both promises are observed together, so either failure rejects the load.
     const [decisions, next] = await Promise.all([
-      hasPolicies ? operationPolicies(api, provider.name, page.operations) : [],
+      operationPolicies(api, provider.name, page.operations),
       page.nextPageToken ? readPage(page.nextPageToken) : undefined,
     ])
     operations.push(...page.operations)
-    if (decisions === null) {
-      hasPolicies = false
-      policies.clear()
-    } else {
-      for (const policy of decisions) policies.set(policy.operation, policy)
-    }
+    for (const policy of decisions) policies.set(policy.operation, policy)
     if (!next) break
     page = next
   }
-  const ops = operations.map((o) =>
-    operationView(o, {
-      namespace: provider.namespace,
-      basePath: path,
-      policy: policies.get(o.name),
-    }),
-  )
+  const ops = operations.map((o) => {
+    // Coral decides every requested operation, so a gap is a broken response.
+    const policy = policies.get(o.name)
+    if (!policy) throw new Error(`Coral returned no policy for ${o.name}`)
+    return operationView(o, { namespace: provider.namespace, basePath: path, policy })
+  })
   const id = provider.name.split('/').at(-1)!
   const isEnabled = enabled(provider.state)
   return {
@@ -331,7 +309,7 @@ const reasons: Record<string, string> = {
     'This provider changed. Reload the page. Review the changes before you try again.',
   NAMESPACE_IN_USE: 'This program name is in use in this workspace. Select a different name.',
   ACCOUNT_REQUIRED: 'This choice needs an account. Sign in first.',
-  WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it in settings before you make changes.',
+  WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it before you make changes.',
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',

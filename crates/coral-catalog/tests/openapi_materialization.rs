@@ -321,10 +321,6 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
     let json = |schema: Value| serde_json::json!({"application/json": {"schema": schema}});
     let reference =
         |name: &str| serde_json::json!({"$ref": format!("#/components/schemas/{name}")});
-    let two_hundreds = (200..300)
-        .map(|status| status.to_string())
-        .collect::<Vec<_>>()
-        .join(" | ");
     let application_json = Some("\"application/json\"");
     let cases = [
         (
@@ -339,16 +335,6 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
                 previous_typed("BasicError", "404", application_json),
                 previous_typed("Branch", "200", application_json),
             ],
-        ),
-        (
-            "listNames",
-            serde_json::json!({"2XX": {"description": "ok",
-                "content": json(serde_json::json!({"type": "array", "items": {"type": "string"}}))}}),
-            vec![previous_typed(
-                "Array<string>",
-                &two_hundreds,
-                application_json,
-            )],
         ),
         (
             "getWithDefault",
@@ -425,6 +411,88 @@ fn http_result_declarations_are_mutually_assignable_with_their_previous_form() {
              type CurrentIsPrevious = Assignable<Current, Previous>;"
         ));
     }
+}
+
+#[test]
+fn status_ranges_project_as_one_named_type_per_range() {
+    let document = r"
+openapi: 3.1.0
+info: { title: Range status, version: '1' }
+servers: [{ url: https://api.example.test }]
+paths:
+  /probe:
+    get:
+      operationId: probe
+      responses:
+        '2XX': { description: ok }
+        '4XX':
+          description: error
+          content:
+            application/json:
+              schema: { type: object }
+        '5XX': { description: failure }
+        default: { description: other }
+  /exact:
+    get:
+      operationId: exact
+      responses:
+        '200': { description: ok }
+";
+    let prepared = ready(document);
+    let declaration = |key: &str| {
+        prepared
+            .operations()
+            .iter()
+            .find(|operation| operation.key().as_str() == key)
+            .expect("declared Operation")
+            .typescript_declaration()
+    };
+    let probe = declaration("probe");
+
+    for range in ["2xx", "4xx", "5xx"] {
+        let alias = format!(
+            "type HttpStatus{range} = number & {{ readonly [HttpStatusRangeBrand]: \"{range}\" }};"
+        );
+        assert_eq!(
+            probe.lines().filter(|line| *line == alias).count(),
+            1,
+            "`{alias}` is declared once in:\n{probe}"
+        );
+    }
+    for branch in [
+        "HttpResult<({} & Record<string, unknown>), HttpStatus4xx, \"application/json\">",
+        "HttpResult<null, HttpStatus2xx, string | null>",
+        "HttpResult<null, HttpStatus5xx, string | null>",
+        "HttpResult<null, number, string | null>",
+    ] {
+        assert!(probe.contains(branch), "missing `{branch}` in:\n{probe}");
+    }
+    assert_eq!(
+        probe
+            .lines()
+            .filter(|line| *line == "const HttpStatusRangeBrand: unique symbol;")
+            .count(),
+        1,
+        "the brand is declared once in:\n{probe}"
+    );
+    for absent in ["HttpStatus1xx", "HttpStatus3xx", "418"] {
+        assert!(
+            !probe.contains(absent),
+            "unexpected `{absent}` in:\n{probe}"
+        );
+    }
+    assert!(
+        !declaration("exact").contains("HttpStatus"),
+        "an Operation without ranges declares none"
+    );
+    assert_strict_compiling_declaration(&format!(
+        "{probe}\n\
+         type Holds<Claim extends true> = Claim;\n\
+         type Statuses = Awaited<ReturnType<typeof probe>>[\"metadata\"][\"status\"];\n\
+         type RangeIsNotDefault = Holds<number extends HttpStatus4xx ? false : true>;\n\
+         type RangesAreDistinct = Holds<HttpStatus4xx extends HttpStatus5xx ? false : true>;\n\
+         type StatusIsANumber = Holds<Statuses extends number ? true : false>;"
+    ));
 }
 
 #[test]
@@ -686,15 +754,120 @@ paths:
     );
 }
 
+/// One schema's expected behaviour under the `nullable` rules.
+struct NullableCase {
+    version: &'static str,
+    schema: &'static str,
+    /// The projected response data type, or `None` to leave it unchecked.
+    projection: Option<&'static str>,
+    accepts_null: bool,
+    /// A string the schema must still reject.
+    rejects: Option<&'static str>,
+    warns: bool,
+    /// Whether a `text/plain` request body with this schema stays available,
+    /// or `None` to leave it unchecked.
+    text_body_available: Option<bool>,
+}
+
+const NULLABLE_CASES: [NullableCase; 9] = [
+    NullableCase {
+        version: "3.0.3",
+        schema: "{ type: string, nullable: true }",
+        projection: Some("string | null"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        // Null has no text form.
+        text_body_available: Some(false),
+    },
+    NullableCase {
+        version: "3.0.3",
+        schema: "{ type: string, enum: [open], nullable: true }",
+        projection: Some("\"open\" | null"),
+        accepts_null: true,
+        rejects: Some("closed"),
+        warns: false,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.0.3",
+        schema: "{ oneOf: [{ type: string }, { type: boolean }], nullable: true }",
+        projection: Some("(string | boolean) | null"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.0.3",
+        schema: "{ allOf: [{ type: string }], nullable: true }",
+        projection: Some("(string) | null"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.1.0",
+        schema: "{ type: string, nullable: true }",
+        projection: Some("string"),
+        accepts_null: false,
+        rejects: None,
+        warns: true,
+        text_body_available: Some(true),
+    },
+    NullableCase {
+        version: "3.1.0",
+        schema: "{ type: string, enum: [open], nullable: true }",
+        projection: Some("\"open\""),
+        accepts_null: false,
+        rejects: Some("closed"),
+        warns: true,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.1.0",
+        // OpenAI's shape: a reference made "nullable" by an `allOf` sibling.
+        schema: "{ allOf: [{ $ref: \"#/components/schemas/Truncation\" }, { nullable: true }] }",
+        projection: Some("(Truncation & unknown)"),
+        accepts_null: false,
+        rejects: None,
+        warns: true,
+        text_body_available: None,
+    },
+    NullableCase {
+        version: "3.1.0",
+        schema: "{ type: [string, \"null\"] }",
+        projection: Some("null | string"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        text_body_available: None,
+    },
+    // The type already admits null, so `nullable` changes nothing.
+    NullableCase {
+        version: "3.1.0",
+        schema: "{ type: [string, \"null\"], nullable: true }",
+        projection: Some("null | string"),
+        accepts_null: true,
+        rejects: None,
+        warns: false,
+        text_body_available: None,
+    },
+];
+
+/// OpenAPI 3.0's `nullable` admits null. OpenAPI 3.1 gives it no meaning, so
+/// the projection and the validator both ignore it, and materialization warns.
 #[test]
-fn openapi_30_nullable_enum_includes_null() {
-    let prepared = ready(
-        r#"openapi: 3.0.3
-info:
-  title: Nullable enum
-  version: "1"
-servers:
-  - url: https://api.example.test
+fn nullable_follows_the_declared_openapi_version() {
+    for case in NULLABLE_CASES {
+        let NullableCase {
+            version, schema, ..
+        } = case;
+        let prepared = ready(&format!(
+            r#"openapi: {version}
+info: {{ title: Nullable, version: "1" }}
+servers: [{{ url: https://api.example.test }}]
 paths:
   /state:
     get:
@@ -704,34 +877,63 @@ paths:
           description: state
           content:
             application/json:
-              schema:
-                type: string
-                enum: [open]
-                nullable: true
-"#,
-    );
-    assert_eq!(
-        prepared.schema_graph().semantics(),
-        coral_catalog::SchemaSemantics::OpenApiV3_0
-    );
-    let operation = &prepared.operations()[0];
-    assert!(
-        operation
-            .typescript_declaration()
-            .contains("\"open\" | null")
-    );
-    let schema = http_binding(operation).responses()[0].content()[0].schema();
-    assert!(prepared.schema_graph().accepts(schema, &Value::Null));
-    assert!(
-        prepared
-            .schema_graph()
-            .accepts(schema, &Value::from("open"))
-    );
-    assert!(
-        !prepared
-            .schema_graph()
-            .accepts(schema, &Value::from("closed"))
-    );
+              schema: {schema}
+components:
+  schemas:
+    Truncation: {{ type: string }}
+"#
+        ));
+        let operation = &prepared.operations()[0];
+        let response = http_binding(operation).responses()[0].content()[0].schema();
+        let graph = prepared.schema_graph();
+        assert_eq!(
+            (
+                case.projection.is_none_or(|projection| {
+                    operation
+                        .typescript_declaration()
+                        .contains(&format!("HttpResult<{projection}, 200,"))
+                }),
+                graph.accepts(response, &Value::Null),
+                graph.accepts(response, &Value::from("open")),
+                case.rejects
+                    .is_none_or(|rejected| !graph.accepts(response, &Value::from(rejected))),
+                operation
+                    .diagnostics()
+                    .iter()
+                    .any(|diagnostic| diagnostic.code() == "nullable_ignored"),
+            ),
+            (true, case.accepts_null, true, true, case.warns),
+            "{version} {schema}\n{}",
+            operation.typescript_declaration()
+        );
+
+        if let Some(available) = case.text_body_available {
+            let prepared = ready(&format!(
+                r#"openapi: {version}
+info: {{ title: Nullable text, version: "1" }}
+servers: [{{ url: https://api.example.test }}]
+paths:
+  /state:
+    post:
+      operationId: setState
+      requestBody:
+        content:
+          text/plain:
+            schema: {schema}
+      responses: {{ "204": {{ description: set }} }}
+"#
+            ));
+            assert_eq!(
+                prepared.operations()[0].availability(),
+                if available {
+                    OperationAvailability::Available
+                } else {
+                    OperationAvailability::Unavailable
+                },
+                "{version} {schema} as a text/plain request body"
+            );
+        }
+    }
 }
 
 #[test]
@@ -3234,7 +3436,7 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
             "/items/id": {"get": {
                 "operationId": "byLiteral",
                 "parameters": query("literal"),
-                "responses": {"200": {"description": "ok"}}
+                "responses": {"200": {"description": "ok"}, "4XX": {"description": "error"}}
             }},
             "/settings": {"put": {
                 "operationId": "putSettings",
@@ -3250,7 +3452,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
                     "anyOf": [
                         reference("HttpResult"),
                         reference("HttpUnknownResult"),
-                        reference("BinaryValue")
+                        reference("BinaryValue"),
+                        reference("HttpStatus4xx")
                     ]
                 }))
             }}
@@ -3262,7 +3465,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
             "SettingsInput": {"const": "component named SettingsInput"},
             "HttpResult": {"const": "component named HttpResult"},
             "HttpUnknownResult": {"const": "component named HttpUnknownResult"},
-            "BinaryValue": {"const": "component named BinaryValue"}
+            "BinaryValue": {"const": "component named BinaryValue"},
+            "HttpStatus4xx": {"const": "component named HttpStatus4xx"}
         }}
     });
     let prepared = ready(&document.to_string());
@@ -3285,6 +3489,8 @@ fn declarations_of_every_operation_compile_together_in_one_scope() {
         r#"type HttpResult2 = "component named HttpResult";"#,
         r#"type HttpUnknownResult2 = "component named HttpUnknownResult";"#,
         r#"type BinaryValue2 = "component named BinaryValue";"#,
+        r#"type HttpStatus4xx2 = "component named HttpStatus4xx";"#,
+        r#"type HttpStatus4xx = number & { readonly [HttpStatusRangeBrand]: "4xx" };"#,
     ] {
         assert!(
             scope.lines().any(|line| line == expected),

@@ -1,13 +1,18 @@
-import { Outlet, data } from 'react-router'
+import { data, redirect } from 'react-router'
 import type { Route } from './+types/workspace'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
 import { OVERVIEW_ACTIVITY_ROOTS } from '@/lib/activity-live-types'
 import { loadActivity } from '@/lib/activity.server'
 import {
+  actionFailure,
+  field,
   formContext,
   isLocalDeployment,
+  management,
   managementFailure,
+  mutationForm,
   privateHeaders,
+  workspaceName,
 } from '@/lib/management.server'
 import { agentView, membershipView, ownerView } from '@/lib/management-views.server'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
@@ -25,6 +30,8 @@ export function shouldRevalidate() {
 export async function loader({ request, context, params }: Route.LoaderArgs) {
   try {
     const { api, workspace: w } = await authorizedWorkspace(request, context, params.workspace)
+    // An archived Workspace has only its history to show.
+    if (w.state === 'archived') return redirect(`${w.path}/activity`, { headers: privateHeaders })
     const owner = w.effectiveRole === 'owner'
     const people = !isLocalDeployment(context)
     const [agents, providers, owners, own, activity] = await Promise.all([
@@ -70,25 +77,58 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
   }
 }
 
+const saved: Record<string, string> = {
+  rename: 'Workspace name saved.',
+  archive: 'Workspace archived.',
+  restore: 'Workspace restored.',
+}
+const failed: Record<string, string> = {
+  rename: 'Coral could not save the workspace name. ',
+  archive: 'Coral could not archive the workspace. ',
+  restore: 'Coral could not restore the workspace. ',
+}
+
+/** Renames, archives and restores the Workspace. The sidebar and banners post here from any page. */
+export async function action({ request, context, params }: Route.ActionArgs) {
+  const form = await mutationForm(request, context)
+  const intent = field(form, 'intent')
+  if (!Object.hasOwn(saved, intent)) throw new Response('Invalid action', { status: 400 })
+  const api = management(request, context).workspaces
+  const name = workspaceName(params.workspace)
+  const etag = field(form, 'etag')
+  try {
+    if (intent === 'rename')
+      await api.updateWorkspace({
+        workspace: { name, etag, displayName: field(form, 'displayName') },
+        updateMask: { paths: ['display_name'] },
+      })
+    else if (intent === 'archive') await api.archiveWorkspace({ name, etag })
+    else await api.restoreWorkspace({ name, etag })
+    return data(
+      { error: null, credential: null, message: saved[intent] },
+      { headers: privateHeaders },
+    )
+  } catch (error) {
+    return actionFailure(error, failed[intent])
+  }
+}
+
 export default function WorkspaceRoute({ loaderData }: Route.ComponentProps) {
   // Keyed by workspace, not location: the activity reader navigates within this page.
   return (
-    <>
-      <WorkspaceOverview
-        key={loaderData.workspace.name}
-        {...loaderData}
-        activity={
-          <LiveActivity
-            initial={loaderData.activity}
-            more={{
-              to: `${loaderData.workspace.path}/activity`,
-              label: 'View all activity',
-              roots: OVERVIEW_ACTIVITY_ROOTS,
-            }}
-          />
-        }
-      />
-      <Outlet />
-    </>
+    <WorkspaceOverview
+      key={loaderData.workspace.name}
+      {...loaderData}
+      activity={
+        <LiveActivity
+          initial={loaderData.activity}
+          more={{
+            to: `${loaderData.workspace.path}/activity`,
+            label: 'View all activity',
+            roots: OVERVIEW_ACTIVITY_ROOTS,
+          }}
+        />
+      }
+    />
   )
 }

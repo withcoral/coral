@@ -579,26 +579,6 @@ export const settingsSourceActions = style({
 })
 
 // The provider name heads the page; the pencil sits right beside it.
-export const nameHeading = style({
-  alignItems: 'center',
-  display: 'flex',
-  gap: 4,
-  minWidth: 0,
-})
-export const nameForm = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-  minWidth: 0,
-})
-export const nameRow = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 8,
-  minWidth: 0,
-})
-export const nameInput = style({ flex: '1 1 240px', maxWidth: 480, minWidth: 0 })
 
 // The scopes take the row; the separator picker keeps its width beside them.
 export const scopesRow = style({

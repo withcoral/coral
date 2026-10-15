@@ -3,6 +3,7 @@ import { screen, within } from '@testing-library/react'
 import { expect, it } from 'vitest'
 import { markupRoute, renderRoute } from '@/test-support/route'
 import { Activity } from './activity'
+import { ActivityArchivedContext } from './live'
 import { ActionReviewSession } from '../actions/review'
 import { approval, pendingPage, run } from './fixtures'
 import type { ActivityPage } from './types'
@@ -52,6 +53,20 @@ it('decides an approval from its row, bound to that exact request', () => {
   expect(html).toContain('name="name" value="workspaces/finance/approvals/one"')
   expect(html).toContain('aria-label="Approve: Send invoice reminders?"')
   expect(html).toContain('aria-label="Deny: Send invoice reminders?"')
+})
+// Catches: an archived workspace offering decisions that Coral refuses.
+it('an archived workspace keeps the review link but drops the row decisions', () => {
+  renderRoute(
+    <ActivityArchivedContext value="owner">
+      <ActionReviewSession>
+        <Activity page={pendingPage} />
+      </ActionReviewSession>
+    </ActivityArchivedContext>,
+    { entry: '/activity' },
+  )
+  const pending = screen.getByRole('region', { name: 'Needs your action' })
+  expect(within(pending).getByRole('link', { name: 'Review' })).toBeInTheDocument()
+  expect(within(pending).queryByRole('button', { name: /^(Approve|Deny):/ })).toBeNull()
 })
 it('lists parallel calls to one Operation as separate rows with separate decisions', () => {
   const second = { ...approval, name: 'workspaces/finance/approvals/two' }

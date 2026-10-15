@@ -22,9 +22,9 @@ export async function authorizedWorkspace(
   return { api, workspace }
 }
 
-/** Every active Workspace the caller can open, in listing order. The sidebar and the
- * landing page both need the whole list, so this reads every page. */
-export async function activeWorkspaces(
+/** Every Workspace the caller is a member of, active or archived, in listing order.
+ * The sidebar and the landing page both need the whole list, so this reads every page. */
+export async function memberWorkspaces(
   api: Pick<ReturnType<typeof management>, 'workspaces'>,
   signal?: AbortSignal,
 ) {
@@ -35,5 +35,13 @@ export async function activeWorkspaces(
     workspaces.push(...page.workspaces)
     pageToken = page.nextPageToken
   } while (pageToken)
-  return workspaces.filter((w) => w.state === WorkspaceState.ACTIVE)
+  return workspaces
+}
+
+/** Every active Workspace the caller can open, in listing order. */
+export async function activeWorkspaces(
+  api: Pick<ReturnType<typeof management>, 'workspaces'>,
+  signal?: AbortSignal,
+) {
+  return (await memberWorkspaces(api, signal)).filter((w) => w.state === WorkspaceState.ACTIVE)
 }

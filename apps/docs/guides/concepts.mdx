@@ -76,6 +76,8 @@ You can add the same provider multiple times, with different account settings. F
 - Needs approval, the call pauses until a person decides. A user approves their own calls. A [workspace](#workspaces) owner approves an agent's calls.
 - Disabled, the operation cannot be called, and is hidden from the agent altogether
 
+Until you set a policy, an operation is Always allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. Every other operation needs approval. Set Needs approval on an operation that changes data through one of these methods.
+
 ## Principals
 
 A **principal** is an authenticated actor that Coral attributes work to. It is a human user or an autonomous agent.

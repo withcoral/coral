@@ -48,12 +48,15 @@ impl RunModule {
         } else {
             self.database.subscribe_changes().ok()
         };
+        let mut seen_sequence = None;
         loop {
             let update = self
                 .observe_snapshot(actor, workspace_id, run_id, observation)
                 .await?;
             let read_at = tokio::time::Instant::now();
-            if observation.is_ready(&update) || read_at >= deadline {
+            let seen_sequence =
+                *seen_sequence.get_or_insert_with(|| observation.seen_sequence(&update));
+            if observation.is_ready(&update, seen_sequence) || read_at >= deadline {
                 return Ok(update);
             }
             // Expiry changes action visibility without a commit.

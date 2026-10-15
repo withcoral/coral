@@ -92,6 +92,25 @@ export const DefaultVariant: Story = {
   ),
 }
 
+// Quiet at rest; the current entry reads as strongly as any other.
+export const MutedVariant: Story = {
+  args: {
+    children: 'Archived',
+    icon: 'Archive',
+    variant: 'muted',
+  },
+  render: () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 200 }}>
+      <SidebarButton icon="Archive" variant="muted">
+        Archived
+      </SidebarButton>
+      <SidebarButton icon="Archive" isActive variant="muted">
+        Archived (active)
+      </SidebarButton>
+    </div>
+  ),
+}
+
 function PendingActions() {
   const [count, setCount] = useState(0)
   return (

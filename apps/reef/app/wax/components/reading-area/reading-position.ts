@@ -100,6 +100,20 @@ export class ReadingPosition extends Component<ReadingPositionProps> {
       : null
     return heading?.getBoundingClientRect().bottom ?? port.getBoundingClientRect().top
   }
+  /** Where a revealed row must start: below the heading and every heading pinned above it. */
+  private revealTop(row: HTMLElement) {
+    let top = this.headingBottom()
+    const { pinnedSelector } = this.props
+    const port = this.props.element.current!
+    if (!pinnedSelector) return top
+    // Each enclosing group's heading pins above the row while its rows scroll.
+    for (let group = row.parentElement; group && group !== port; group = group.parentElement) {
+      const heading = group.firstElementChild
+      if (heading !== row && heading instanceof HTMLElement && heading.matches(pinnedSelector))
+        top += heading.getBoundingClientRect().height
+    }
+    return top
+  }
   private entries(section: HTMLElement) {
     return [...section.children].filter(
       (child): child is HTMLElement => child instanceof HTMLElement,
@@ -234,8 +248,8 @@ export class ReadingPosition extends Component<ReadingPositionProps> {
       if (row) {
         const box = this.anchorBox(row)
         const bottom = port.getBoundingClientRect().top + port.clientHeight
-        if (box.top < this.headingBottom() || box.height > bottom - this.headingBottom())
-          port.scrollTop += box.top - this.headingBottom()
+        const top = this.revealTop(row)
+        if (box.top < top || box.height > bottom - top) port.scrollTop += box.top - top
         else if (box.bottom > bottom) port.scrollTop += box.bottom - bottom
         this.revealed = reveal
         onStartChange?.(port.scrollTop <= 1)
