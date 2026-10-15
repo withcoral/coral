@@ -187,6 +187,90 @@ test('Refresh keeps a saved document URL through configuration edits and clears 
   })
 })
 
+test('Start a canceled settings change again against the provider as it is now', async (context) => {
+  // A source that counts its reads, so each Start again shows which source it read.
+  const serve = async () => {
+    const counter = { reads: 0, origin: '' }
+    const fixture = await listen(
+      context,
+      createServer((request, response) => {
+        if (request.method !== 'GET') {
+          response.writeHead(404).end()
+          return
+        }
+        counter.reads++
+        response
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(openApiDocument('Records', { listRecords: {} }))
+      }),
+    )
+    counter.origin = fixture.origin
+    return counter
+  }
+  const original = await serve()
+  const replacement = await serve()
+  await withOwnerSession(context, async ({ page, step, actor }) => {
+    const workspace = await createWorkspace(actor.accessToken, `Start again ${crypto.randomUUID()}`)
+    await page.goto(`/workspaces/${workspace}/providers/new`)
+    await openCustomSource(page)
+    await page.getByLabel('OpenAPI URL', { exact: true }).fill(original.origin)
+    await page.getByRole('button', { name: 'Read', exact: true }).click()
+    await confirmConfiguration(page, 'No authentication')
+    await acceptOperations(page)
+    await page.getByRole('button', { name: 'Add provider', exact: true }).click()
+    await waitForPublication(page)
+    const providerPath = new URL(page.url()).pathname
+    const setupId = () => new URL(page.url()).searchParams.get('setup')
+    // Back returns from settings to the setup that Cancel ended.
+    const returnToEnded = async () => {
+      await page.goBack()
+      await page.getByText('This setup is canceled', { exact: true }).waitFor()
+    }
+    await step('Start a canceled edit again after the provider changed', async () => {
+      await openProviderSettings(page)
+      await page.getByRole('button', { name: 'Edit configuration', exact: true }).click()
+      await page.getByLabel('Display name', { exact: true }).waitFor()
+      const ended = setupId()
+      expect(ended).toBeTruthy()
+      // Cancel with no changes leaves at once.
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await saved(page)
+      // Another change moves the provider on. The ended setup's address keeps the
+      // version it began with; the new setup must start from the version now.
+      await setProviderEnabled(actor.accessToken, providerPath, false)
+      await setProviderEnabled(actor.accessToken, providerPath, true)
+      await returnToEnded()
+      await page.getByRole('button', { name: 'Start again', exact: true }).click()
+      await page.getByLabel('Display name', { exact: true }).fill('Renamed records')
+      expect(setupId()).not.toBe(ended)
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await saved(page)
+      await page.getByRole('heading', { level: 2, name: 'Renamed records', exact: true }).waitFor()
+    })
+    await step('Start a canceled replacement again from the replacement URL', async () => {
+      await page.getByRole('link', { name: 'Replace source', exact: true }).click()
+      await page.getByLabel('OpenAPI URL', { exact: true }).fill(replacement.origin)
+      await page.getByRole('button', { name: 'Read', exact: true }).click()
+      await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
+      expect(replacement.reads).toBe(1)
+      const ended = setupId()
+      expect(ended).toBeTruthy()
+      // A read source is an unsaved change, so Cancel asks first.
+      await discardSettingsChange(page)
+      await returnToEnded()
+      const originalReads = original.reads
+      await page.getByRole('button', { name: 'Start again', exact: true }).click()
+      await page.getByRole('button', { name: 'Save', exact: true }).waitFor()
+      expect(setupId()).not.toBe(ended)
+      expect(replacement.reads).toBe(2)
+      expect(original.reads).toBe(originalReads)
+      await save(page)
+      await page.getByRole('link', { name: 'Check for updates', exact: true }).click()
+      await page.getByText(`${replacement.origin}/`, { exact: true }).waitFor()
+    })
+  })
+})
+
 test('Recover a different-account sign-in and review configuration-triggered rediscovery', async (context) => {
   const token = 'fixture-update-recovery'
   const upstream = await oauthMcpServer(context, token)

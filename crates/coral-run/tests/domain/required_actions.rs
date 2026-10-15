@@ -1483,10 +1483,11 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
     }
 }
 
+/// Publishes `public.getForecast` as POST, so it needs approval by default.
 async fn publish_approval_provider(fixture: &TestModules, operation: &OperationFixture) {
     let context = change(operation.user.clone(), 40, '4');
     let setup = fixture.providers.prepare_openapi_fixture(&context, &operation.workspace_id,
-        OpenApiDocument::parse(r#"{"openapi":"3.1.0","info":{"title":"Public weather","version":"1"},"servers":[{"url":"https://upstream.example"}],"paths":{"/forecast":{"get":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}}"#).unwrap(),
+        OpenApiDocument::parse(r#"{"openapi":"3.1.0","info":{"title":"Public weather","version":"1"},"servers":[{"url":"https://upstream.example"}],"paths":{"/forecast":{"post":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}}"#).unwrap(),
     ).await.unwrap();
     fixture
         .providers

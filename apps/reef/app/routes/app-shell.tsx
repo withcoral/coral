@@ -15,7 +15,9 @@ import { Sidebar } from '@/components/sidebar'
 import { loadActionCounts } from '@/lib/action-count.server'
 import { LocalDeploymentContext } from '@/lib/deployment'
 import { useActionCounts } from '@/lib/use-action-count'
-import { activeWorkspaces } from '@/lib/workspace-route.server'
+import { memberWorkspaces } from '@/lib/workspace-route.server'
+import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
+import { ShellFormContext } from '@/views/management/forms'
 import { ToastContainer } from '@/wax/components/toast'
 import { BreadcrumbRoot } from '@/wax/components/breadcrumbs/breadcrumbs'
 import { formContext, management, managementFailure, privateHeaders } from '@/lib/management.server'
@@ -26,10 +28,12 @@ import * as styles from './app-shell.css'
 export async function loader({ request, context }: Route.LoaderArgs) {
   try {
     const api = management(request, context)
-    const [workspaces, membership] = await Promise.all([
-      activeWorkspaces(api).catch(() => []),
+    const [all, membership] = await Promise.all([
+      memberWorkspaces(api).catch(() => []),
       api.organizationMemberships.getCurrentOrganizationMembership({}).catch(() => null),
     ])
+    const workspaces = all.filter((w) => w.state === WorkspaceState.ACTIVE)
+    const archived = all.filter((w) => w.state === WorkspaceState.ARCHIVED)
     const profile = membership?.profile
     return data(
       {
@@ -38,6 +42,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         auth: browserAuth(context.get(requestAuthContext)),
         userName: profile?.displayName.trim() || profile?.email.trim() || undefined,
         workspaces: workspaces.map(sidebarWorkspaceView),
+        archivedWorkspaces: archived.map(sidebarWorkspaceView),
         form: formContext(context),
       },
       { headers: privateHeaders },
@@ -78,31 +83,39 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
     .find((w) => w && (location.pathname === w.path || location.pathname.startsWith(`${w.path}/`)))
   return (
     <LocalDeploymentContext value={loaderData.auth.mode === 'disabled'}>
-      <div className={styles.layout}>
-        <Sidebar
-          actionCounts={actionCounts}
-          auth={loaderData.auth}
-          organizationOwner={loaderData.organizationOwner}
-          userName={loaderData.userName}
-          initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
-          workspaces={loaderData.workspaces}
-          workspace={workspace}
-          form={loaderData.form}
-        />
-        <ContentContainer>
-          <ToastContainer />
-          {/* Every page in a workspace names it first in its breadcrumb. */}
-          <BreadcrumbRoot
-            value={
-              workspace
-                ? { id: 'workspace', type: 'link', text: workspace.displayName, to: workspace.path }
-                : null
-            }
-          >
-            <Outlet />
-          </BreadcrumbRoot>
-        </ContentContainer>
-      </div>
+      <ShellFormContext value={loaderData.form}>
+        <div className={styles.layout}>
+          <Sidebar
+            actionCounts={actionCounts}
+            auth={loaderData.auth}
+            organizationOwner={loaderData.organizationOwner}
+            userName={loaderData.userName}
+            initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
+            workspaces={loaderData.workspaces}
+            archivedWorkspaces={loaderData.archivedWorkspaces}
+            workspace={workspace}
+            form={loaderData.form}
+          />
+          <ContentContainer>
+            <ToastContainer />
+            {/* Every page in a workspace names it first in its breadcrumb. */}
+            <BreadcrumbRoot
+              value={
+                workspace
+                  ? {
+                      id: 'workspace',
+                      type: 'link',
+                      text: workspace.displayName,
+                      to: workspace.path,
+                    }
+                  : null
+              }
+            >
+              <Outlet />
+            </BreadcrumbRoot>
+          </ContentContainer>
+        </div>
+      </ShellFormContext>
     </LocalDeploymentContext>
   )
 }

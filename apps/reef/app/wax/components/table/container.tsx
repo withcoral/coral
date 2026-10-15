@@ -36,6 +36,11 @@ interface ContainerBaseProps {
   columns: readonly Column[]
   density?: TableDensity
   /**
+   * The table itself is a Tab stop, for a caller that moves a keyboard cursor
+   * (`Table.Row active`) through it. It draws no outline while a cursor row shows.
+   */
+  focusable?: boolean
+  /**
    * The rows do nothing when clicked, so they take no hover colour. Use it when
    * each row's own controls are the only things to act on.
    */
@@ -134,6 +139,7 @@ export function Container({
   bounded = false,
   columns,
   density = 'default',
+  focusable = false,
   groupHeadings = 'plain',
   layout = 'auto',
   maxHeight,
@@ -194,10 +200,12 @@ export function Container({
             bounded && styles.boundedRows,
             groupHeadings === 'prominent' && styles.prominentGroupHeadings,
             staticRows && styles.staticRows,
+            focusable && styles.focusableTable,
             className,
           )}
           ref={readingRef}
           role="table"
+          tabIndex={focusable ? 0 : undefined}
           onScroll={onScroll}
           style={
             {

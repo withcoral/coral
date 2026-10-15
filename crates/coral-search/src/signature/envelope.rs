@@ -12,7 +12,8 @@ use super::tree::{Member, Type};
 impl Renderer<'_> {
     /// An Operation's result: the envelope with the `data` types of its
     /// success responses. An `HttpResult` is a success when its status is
-    /// 2xx; any other envelope counts as success unless its data is `unknown`.
+    /// 2xx codes or the 2xx range; any other envelope counts as success
+    /// unless its data is `unknown`.
     pub(super) fn operation_result(&self, result: &Type) -> String {
         let Some(envelopes) = envelopes(result) else {
             return self.result(result, &mut HashSet::new());
@@ -97,7 +98,13 @@ pub(super) fn status_is_success(status: &Type) -> bool {
         Type::Union(parts) => parts.iter().collect::<Vec<_>>(),
         single => vec![single],
     };
-    codes.into_iter().all(|code| {
-        matches!(code, Type::Plain(code) if code.parse::<u16>().is_ok_and(|code| (200..300).contains(&code)))
+    codes.into_iter().all(|code| match code {
+        Type::Plain(code) => code
+            .parse::<u16>()
+            .is_ok_and(|code| (200..300).contains(&code)),
+        Type::Named { name, arguments } => {
+            arguments.is_empty() && name == coral_catalog::HTTP_SUCCESS_STATUS
+        }
+        _ => false,
     })
 }

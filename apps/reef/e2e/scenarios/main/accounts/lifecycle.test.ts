@@ -46,7 +46,7 @@ test('Connect, reconnect and disconnect retain one exact caller account', async 
       await openYourAccount(page)
       await page.getByRole('heading', { name: 'Accounts account', exact: true, level: 2 }).waitFor()
       await page
-        .getByText('Enter the credentials from Accounts. Coral does not show them again.', {
+        .getByText('Enter the credentials from Accounts.', {
           exact: true,
         })
         .waitFor()

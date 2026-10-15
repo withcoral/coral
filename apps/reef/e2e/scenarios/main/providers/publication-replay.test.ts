@@ -179,11 +179,12 @@ test('Workspace creation and Update recover exact publication requests', async (
 
 test('Recover a lost Add response by replaying the same request identity', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
+    const displayName = `Replay ${crypto.randomUUID()}`
     let workspace = ''
     let requestId = ''
     let committedBody = ''
     await step('Reach the last step', async () => {
-      workspace = await createWorkspace(actor.accessToken, `Replay ${crypto.randomUUID()}`)
+      workspace = await createWorkspace(actor.accessToken, displayName)
       await page.goto(`/workspaces/${workspace}/providers/new`)
       await chooseFile(page, 'replay.json', openApiDocument('Replay API', { hello: {} }))
       await page.getByRole('button', { name: 'Read', exact: true }).click()
@@ -214,13 +215,16 @@ test('Recover a lost Add response by replaying the same request identity', async
     await step('Archive the Workspace from another tab meanwhile', async () => {
       const other = await page.context().newPage()
       try {
-        await other.goto(`/workspaces/${workspace}/settings`)
-        await other.getByRole('button', { name: 'Archive workspace', exact: true }).click()
+        await other.goto(`/workspaces/${workspace}`)
         await other
-          .getByRole('dialog', { name: 'Archive workspace', exact: true })
+          .getByRole('navigation', { name: 'Coral', exact: true })
+          .getByRole('button', { name: `Archive ${displayName}`, exact: true })
+          .click()
+        await other
+          .getByRole('dialog', { name: `Archive ${displayName}`, exact: true })
           .getByRole('button', { name: 'Archive workspace', exact: true })
           .click()
-        await other.getByText('Archived', { exact: true }).first().waitFor()
+        await other.getByText('This workspace is archived', { exact: true }).waitFor()
       } finally {
         await other.close()
       }

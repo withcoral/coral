@@ -34,9 +34,12 @@ export async function withOwner(test: TestContext, body: (session: OwnerSession)
       ...session,
       accessToken,
       async approveConsent() {
+        const approve = page.getByRole('link', { name: 'Approve fixture access', exact: true })
+        // The consent page follows the response that names the page, so read it once that page shows.
+        await approve.waitFor()
         const progress = returnTo
         returnTo = ''
-        await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
+        await approve.click()
         if (remote) return
         if (!progress) throw new Error('Reef named no page to return to after consent')
         await page.getByText(/Return to Coral to check your connection\./).waitFor()

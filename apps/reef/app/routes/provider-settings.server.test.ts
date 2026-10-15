@@ -1,3 +1,4 @@
+import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, expect, it, vi } from 'vitest'
 
@@ -8,6 +9,7 @@ import {
   ProviderState,
 } from '@/generated/coral/management/v1/provider_pb'
 import {
+  GetProviderAccountResponseSchema,
   ProviderAccountScope,
   ProviderAccountState,
 } from '@/generated/coral/management/v1/account_pb'
@@ -40,7 +42,11 @@ function recordingApi() {
               calls.push(`${service}.${method}`)
               const respond = responses[`${service}.${method}`]
               if (!respond) throw new Error(`Unexpected call ${service}.${method}`)
-              return respond(request)
+              const response = await respond(request)
+              // As Coral answers: every field of the message, defaults included.
+              return `${service}.${method}` === 'accounts.getProviderAccount'
+                ? create(GetProviderAccountResponseSchema, response as object)
+                : response
             },
           },
         ),
@@ -88,7 +94,7 @@ beforeEach(() => {
   responses = {
     'providers.getProvider': () => provider(),
     'providers.getProviderSource': () => ({
-      url: 'https://reader:secret@gitlab.example.com/api/v4/openapi.json?private_token=abc',
+      url: 'https://reader:fixture-password@gitlab.example.com/api/v4/openapi.json?private_token=fixture-token',
       kind: ProviderSetupInputKind.OPENAPI,
     }),
     'accounts.getProviderAccount': () => ({
@@ -147,8 +153,9 @@ it('gives owners the source kind and a redacted URL', async () => {
       host: 'gitlab.example.com',
     },
   })
-  expect(JSON.stringify(data)).not.toContain('secret')
-  expect(JSON.stringify(data)).not.toContain('abc')
+  // The URL's password and secret query value never reach the page.
+  expect(JSON.stringify(data)).not.toContain('fixture-password')
+  expect(JSON.stringify(data)).not.toContain('fixture-token')
 })
 
 it('tells an uploaded document apart from a failed source read', async () => {

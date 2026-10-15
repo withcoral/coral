@@ -26,10 +26,9 @@
 //! # Invariants
 //!
 //! The current active Provider catalog proves that the exact target exists.
-//! Without an exact rule, the Operation's declared hints supply the default:
-//! only a declared read-only Operation is enabled. OpenAPI Operations declare
-//! no hints in v1 and are therefore approval-required. A
-//! policy change and its safe lifecycle Event commit in one transaction.
+//! Without an exact rule, a declared read-only Operation and an HTTP Operation
+//! with a safe method are enabled; every other Operation is approval-required.
+//! A policy change and its safe lifecycle Event commit in one transaction.
 //!
 //! The Module reads no process environment. Adapters supply authenticated User,
 //! timestamp, trace, and exact target values explicitly. Persistence rows and
@@ -42,7 +41,7 @@ mod types;
 
 use std::sync::Arc;
 
-use coral_catalog::OperationHints;
+use coral_catalog::{HttpMethod, OperationHints};
 use coral_db::Database;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
@@ -128,7 +127,7 @@ impl OperationPolicyModule {
             .iter()
             .map(|target| target.operation_key().clone())
             .collect();
-        let hints = coral_provider::operation_policy_hints_batch_in_transaction(
+        let hints_and_methods = coral_provider::operation_hints_and_methods_batch_in_transaction(
             &mut transaction,
             first.workspace_id(),
             first.provider_id(),
@@ -145,12 +144,13 @@ impl OperationPolicyModule {
         let decisions = targets
             .iter()
             .map(|target| {
-                let hints = hints
+                let (hints, http_method) = hints_and_methods
                     .get(target.operation_key())
                     .ok_or(Error::OperationNotFound)?;
                 Ok(resolved_decision(
                     target,
                     *hints,
+                    *http_method,
                     explicit.get(target.operation_key()).copied(),
                 ))
             })
@@ -205,7 +205,7 @@ impl OperationPolicyModule {
             .await?;
         let mut decisions = Vec::with_capacity(updates.len());
         for (target, access_state) in updates {
-            operation_hints_in_transaction(&mut transaction, &target).await?;
+            require_operation_in_transaction(&mut transaction, &target).await?;
             if repository::access_state_in_transaction(&mut transaction, &target).await?
                 != Some(access_state)
             {
@@ -269,26 +269,27 @@ impl OperationPolicyModule {
     }
 }
 
-async fn operation_hints_in_transaction(
+async fn require_operation_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     target: &OperationPolicyTarget,
-) -> Result<OperationHints, Error> {
-    coral_provider::operation_policy_hints_in_transaction(
+) -> Result<(), Error> {
+    coral_provider::operation_hints_and_method_in_transaction(
         transaction,
         target.workspace_id(),
         target.provider_id(),
         target.operation_key(),
     )
     .await?
+    .map(|_| ())
     .ok_or(Error::OperationNotFound)
 }
 
 /// Reads one exact current Operation decision without holding it.
 ///
-/// The caller owns a coherent read transaction and supplies declared hints
-/// from current structurally available Provider authoring material. This facet
-/// does not lock or write policy and does not independently resolve Provider
-/// persistence.
+/// The caller owns a coherent read transaction and supplies declared hints and
+/// the HTTP method from current structurally available Provider authoring
+/// material. This facet does not lock or write policy and does not
+/// independently resolve Provider persistence.
 ///
 /// # Errors
 ///
@@ -297,17 +298,24 @@ pub async fn discovery_decision_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     target: &OperationPolicyTarget,
     current_hints: OperationHints,
+    current_http_method: Option<HttpMethod>,
 ) -> Result<OperationPolicyDecision, Error> {
     let explicit = repository::access_state_in_transaction(transaction, target).await?;
-    Ok(resolved_decision(target, current_hints, explicit))
+    Ok(resolved_decision(
+        target,
+        current_hints,
+        current_http_method,
+        explicit,
+    ))
 }
 
 /// Reads every exact Operation rule of one Workspace for Universal Search.
 ///
 /// Discovery reads the rules once per request instead of one decision per
-/// Operation. The caller owns a coherent read transaction and supplies declared
-/// hints from current structurally available Provider authoring material.
-/// This facet does not lock or write policy.
+/// Operation. The caller owns a coherent read transaction. It resolves each
+/// Operation with [`ExactOperationRules::access_state`], passing the declared
+/// hints and HTTP method from current structurally available Provider
+/// authoring material. This facet does not lock or write policy.
 ///
 /// # Errors
 ///
@@ -322,8 +330,8 @@ pub async fn exact_operation_rules_in_transaction(
 /// Rechecks and holds one exact Operation policy decision for Invocation work.
 ///
 /// The caller owns the transaction that either admits an Invocation or writes
-/// its dispatch fence and supplies declared hints from the exact retained
-/// Provider Generation. Holding an explicit rule serializes the decision with
+/// its dispatch fence and supplies declared hints and the HTTP method from the
+/// exact retained Provider Generation. Holding an explicit rule serializes the decision with
 /// a concurrent policy change on both supported persistence Adapters.
 ///
 /// # Errors
@@ -333,10 +341,16 @@ pub async fn invocation_decision_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     target: &OperationPolicyTarget,
     retained_hints: OperationHints,
+    retained_http_method: Option<HttpMethod>,
 ) -> Result<OperationPolicyDecision, Error> {
     let _held = repository::hold_access_state_in_transaction(transaction, target).await?;
     let explicit = repository::access_state_in_transaction(transaction, target).await?;
-    Ok(resolved_decision(target, retained_hints, explicit))
+    Ok(resolved_decision(
+        target,
+        retained_hints,
+        retained_http_method,
+        explicit,
+    ))
 }
 
 /// Reads the same decision as [`invocation_decision_in_transaction`] without
@@ -350,27 +364,38 @@ pub async fn invocation_decision_in_snapshot(
     transaction: &mut coral_db::Transaction<'_>,
     target: &OperationPolicyTarget,
     retained_hints: OperationHints,
+    retained_http_method: Option<HttpMethod>,
 ) -> Result<OperationPolicyDecision, Error> {
     let explicit = repository::access_state_in_transaction(transaction, target).await?;
-    Ok(resolved_decision(target, retained_hints, explicit))
+    Ok(resolved_decision(
+        target,
+        retained_hints,
+        retained_http_method,
+        explicit,
+    ))
 }
 
 fn resolved_decision(
     target: &OperationPolicyTarget,
     hints: OperationHints,
+    http_method: Option<HttpMethod>,
     explicit: Option<OperationAccessState>,
 ) -> OperationPolicyDecision {
     OperationPolicyDecision::new(
         target.clone(),
-        explicit.unwrap_or_else(|| default_access_state(hints)),
+        explicit.unwrap_or_else(|| default_access_state(hints, http_method)),
         explicit.is_some(),
     )
 }
 
-/// Only an Operation that declares it changes nothing runs without approval.
-/// An undeclared hint is not evidence, so it takes the cautious default.
-pub(crate) const fn default_access_state(hints: OperationHints) -> OperationAccessState {
-    if hints.declares_read_only() {
+/// An Operation runs without approval when it declares it changes nothing or
+/// its HTTP method is safe. An undeclared hint is not evidence, so any other
+/// Operation takes the cautious default.
+pub(crate) fn default_access_state(
+    hints: OperationHints,
+    http_method: Option<HttpMethod>,
+) -> OperationAccessState {
+    if hints.declares_read_only() || http_method.is_some_and(HttpMethod::is_safe) {
         OperationAccessState::Enabled
     } else {
         OperationAccessState::ApprovalRequired
