@@ -856,6 +856,74 @@ const NULLABLE_CASES: [NullableCase; 9] = [
     },
 ];
 
+#[test]
+fn operations_sharing_a_named_type_each_carry_its_declaration_and_diagnostics() {
+    let prepared = ready(
+        r##"openapi: 3.1.0
+info:
+  title: Shared type
+  version: "1"
+servers:
+  - url: https://api.example.test
+paths:
+  /first:
+    get:
+      operationId: getFirst
+      responses:
+        "200":
+          description: first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Attachment"
+  /second:
+    get:
+      operationId: getSecond
+      responses:
+        "200":
+          description: second
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Attachment"
+components:
+  schemas:
+    Attachment:
+      type: object
+      properties:
+        size:
+          type: integer
+          format: int64
+        content:
+          type: string
+          format: binary
+"##,
+    );
+    assert_eq!(prepared.operations().len(), 2);
+    for operation in prepared.operations() {
+        let declaration = operation.typescript_declaration();
+        assert!(
+            declaration
+                .contains(r#"type Attachment = ({ "content"?: BinaryValue; "size"?: number }"#),
+            "{}: {declaration}",
+            operation.key().as_str()
+        );
+        assert!(
+            declaration.contains("type BinaryValue = "),
+            "{}: {declaration}",
+            operation.key().as_str()
+        );
+        assert!(
+            operation
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code() == "typescript_integer_widened"),
+            "{}",
+            operation.key().as_str()
+        );
+    }
+}
+
 /// OpenAPI 3.0's `nullable` admits null. OpenAPI 3.1 gives it no meaning, so
 /// the projection and the validator both ignore it, and materialization warns.
 #[test]

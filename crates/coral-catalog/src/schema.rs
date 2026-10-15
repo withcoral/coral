@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 use serde_json::{Map, Value};
 
@@ -659,6 +661,27 @@ pub(super) fn property_is_visible(
 
 type ProjectionKey = (SchemaId, Direction);
 
+/// One named schema's projection, kept for the Provider's later Operations.
+///
+/// A named body does not depend on the Operation that reaches it: references
+/// inside it project as names, and its reference guard starts at zero. What
+/// does depend on the Operation is which diagnostics are new and which named
+/// types are not yet rendered, so the render keeps its effects in order and
+/// each Operation replays them.
+struct NamedRender {
+    body: String,
+    effects: Vec<RenderEffect>,
+}
+
+enum RenderEffect {
+    Warn(&'static str, &'static str),
+    NamedScalar(&'static str),
+    Reference {
+        target: ProjectionKey,
+        guarded: bool,
+    },
+}
+
 /// TypeScript names for every schema of one Provider, in both directions.
 ///
 /// Every Operation of the Provider projects through the same table, so a name
@@ -666,6 +689,11 @@ type ProjectionKey = (SchemaId, Direction);
 /// share one scope.
 pub(crate) struct TypeScriptNames {
     names: HashMap<ProjectionKey, String>,
+    options: ProjectionOptions,
+    /// Named schemas already projected for an earlier Operation. Projecting
+    /// each Operation from scratch repeats the whole reachable type graph,
+    /// which large Providers such as Microsoft Graph cannot afford.
+    renders: RefCell<HashMap<ProjectionKey, Rc<NamedRender>>>,
 }
 
 impl TypeScriptNames {
@@ -706,11 +734,23 @@ impl TypeScriptNames {
             }
             names.insert(key, name);
         }
-        Self { names }
+        Self {
+            names,
+            options,
+            renders: RefCell::default(),
+        }
     }
 
     fn get(&self, id: &SchemaId, direction: Direction) -> Option<&String> {
         self.names.get(&(id.clone(), direction))
+    }
+
+    fn render(&self, key: &ProjectionKey) -> Option<Rc<NamedRender>> {
+        self.renders.borrow().get(key).cloned()
+    }
+
+    fn keep_render(&self, key: ProjectionKey, render: NamedRender) {
+        self.renders.borrow_mut().insert(key, Rc::new(render));
     }
 }
 
@@ -727,6 +767,8 @@ pub(super) struct TypeScriptProjector<'a> {
     diagnostics: Vec<CatalogDiagnostic>,
     diagnostic_codes: HashSet<&'static str>,
     used_named_scalars: BTreeSet<&'static str>,
+    /// Effects of each named render in progress, innermost last.
+    recording: Vec<Vec<RenderEffect>>,
 }
 
 impl<'a> TypeScriptProjector<'a> {
@@ -735,6 +777,10 @@ impl<'a> TypeScriptProjector<'a> {
         type_names: &'a TypeScriptNames,
         options: ProjectionOptions,
     ) -> Self {
+        debug_assert_eq!(
+            type_names.options, options,
+            "kept renders are valid only for the options that named the schemas"
+        );
         Self {
             graph,
             type_names,
@@ -748,6 +794,7 @@ impl<'a> TypeScriptProjector<'a> {
             diagnostics: Vec::new(),
             diagnostic_codes: HashSet::new(),
             used_named_scalars: BTreeSet::new(),
+            recording: Vec::new(),
         }
     }
 
@@ -765,7 +812,8 @@ impl<'a> TypeScriptProjector<'a> {
         direction: Direction,
         named: bool,
     ) -> Result<String, CatalogDiagnostic> {
-        let schema = self.graph.schema(id).cloned().ok_or_else(|| {
+        let graph = self.graph;
+        let schema = graph.schema(id).ok_or_else(|| {
             CatalogDiagnostic::stable(
                 "invalid_schema_graph",
                 "an Operation references a missing package-local schema",
@@ -780,16 +828,52 @@ impl<'a> TypeScriptProjector<'a> {
             self.resolving.insert(key.clone());
             self.rendering.push(key.clone());
             let caller_guard_depth = std::mem::take(&mut self.reference_guard_depth);
-            let rendered = self.project_schema(&schema, direction);
+            self.recording.push(Vec::new());
+            let rendered = match self.type_names.render(&key) {
+                Some(kept) => self.replay(&key, &kept).map(|()| kept.body.clone()),
+                None => self.project_schema(schema, direction),
+            };
+            let effects = self.recording.pop().unwrap_or_default();
             self.reference_guard_depth = caller_guard_depth;
             self.rendering.pop();
             self.resolving.remove(&key);
             let rendered = rendered?;
+            if self.type_names.render(&key).is_none() {
+                self.type_names.keep_render(
+                    key.clone(),
+                    NamedRender {
+                        body: rendered.clone(),
+                        effects,
+                    },
+                );
+            }
             self.rendered.insert(key, rendered);
             Ok(name)
         } else {
-            self.project_schema(&schema, direction)
+            self.project_schema(schema, direction)
         }
+    }
+
+    /// Applies a kept render's effects to this Operation in their original order.
+    fn replay(&mut self, key: &ProjectionKey, kept: &NamedRender) -> Result<(), CatalogDiagnostic> {
+        for effect in &kept.effects {
+            match effect {
+                RenderEffect::Warn(code, message) => self.warn(code, message),
+                RenderEffect::NamedScalar(name) => {
+                    self.used_named_scalars.insert(name);
+                }
+                RenderEffect::Reference { target, guarded } => {
+                    if !guarded {
+                        self.unguarded_reference_edges
+                            .entry(key.clone())
+                            .or_default()
+                            .push(target.clone());
+                    }
+                    let _name = self.project_id(&target.0, target.1, true)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     #[expect(
@@ -819,6 +903,12 @@ impl<'a> TypeScriptProjector<'a> {
             let id = SchemaId::from_storage(reference.to_string())
                 .map_err(|_error| invalid_schema_reference())?;
             let target = (id.clone(), direction);
+            if let Some(effects) = self.recording.last_mut() {
+                effects.push(RenderEffect::Reference {
+                    target: target.clone(),
+                    guarded: self.reference_guard_depth != 0,
+                });
+            }
             if self.reference_guard_depth == 0
                 && let Some(source) = self.rendering.last()
             {
@@ -959,6 +1049,9 @@ impl<'a> TypeScriptProjector<'a> {
                         Some("binary" | "base64")
                     )
                 {
+                    if let Some(effects) = self.recording.last_mut() {
+                        effects.push(RenderEffect::NamedScalar(binary_type));
+                    }
                     self.used_named_scalars.insert(binary_type);
                     Ok(binary_type.to_string())
                 } else {
@@ -1146,6 +1239,9 @@ impl<'a> TypeScriptProjector<'a> {
     }
 
     fn warn(&mut self, code: &'static str, message: &'static str) {
+        if let Some(effects) = self.recording.last_mut() {
+            effects.push(RenderEffect::Warn(code, message));
+        }
         if self.diagnostic_codes.insert(code) {
             self.diagnostics
                 .push(CatalogDiagnostic::warning(code, message));
