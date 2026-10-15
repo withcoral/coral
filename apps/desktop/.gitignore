@@ -4,3 +4,5 @@ dist*/
 # Written by `npm run stage`
 resources/coral/
 resources/reef/
+resources/toolbox/
+resources/.toolbox-*/

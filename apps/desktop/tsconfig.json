@@ -13,5 +13,10 @@
     "types": ["node", "electron"],
     "lib": ["ES2024"]
   },
-  "include": ["electron-builder.config.ts", "electron-builder.config.test.ts", "src/**/*.ts"]
+  "include": [
+    "electron-builder.config.ts",
+    "electron-builder.config.test.ts",
+    "src/**/*.ts",
+    "scripts/**/*.ts"
+  ]
 }

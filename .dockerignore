@@ -20,6 +20,8 @@ apps/desktop/out
 apps/desktop/dist
 apps/desktop/resources/coral
 apps/desktop/resources/reef
+apps/desktop/resources/toolbox
+apps/desktop/resources/.toolbox-*
 apps/reef/.react-router
 apps/reef/app/generated
 apps/reef/storybook-static

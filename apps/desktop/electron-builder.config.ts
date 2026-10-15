@@ -5,10 +5,12 @@ import type { Configuration } from 'electron-builder'
 
 import { APP_ID } from './src/shared/app-id.ts'
 
-// `npm run stage` writes these; a package without them cannot start.
+// `npm run stage` writes these; every package must contain them.
 const STAGED = [
   join('resources', 'reef', 'server.mjs'),
   join('resources', 'reef', 'build', 'client'),
+  join('resources', 'toolbox', 'LICENSE'),
+  join('resources', 'toolbox', 'VERSION'),
 ]
 
 // The v1 update feed: GitHub releases in a repository of its own. It must
@@ -57,6 +59,7 @@ export function createConfig(
     extraResources: [
       { from: 'resources/coral/', to: 'coral/' },
       { from: 'resources/reef/', to: 'reef/' },
+      { from: 'resources/toolbox/', to: 'toolbox/' },
       {
         from: 'resources/icons/',
         to: 'icons/',
@@ -69,7 +72,12 @@ export function createConfig(
         'coral',
         electronPlatformName === 'win32' ? 'coral.exe' : 'coral',
       )
-      const missing = [runtime, ...STAGED].filter(
+      const toolbox = join(
+        'resources',
+        'toolbox',
+        electronPlatformName === 'win32' ? 'toolbox.exe' : 'toolbox',
+      )
+      const missing = [runtime, toolbox, ...STAGED].filter(
         (path) => !existsSync(join(import.meta.dirname, path)),
       )
       if (missing.length)
@@ -141,7 +149,7 @@ export function createConfig(
     win: {
       icon: 'resources/icons/icon.ico',
       target: [{ target: 'nsis', arch: ['x64'] }],
-      // electron-builder signs Coral.exe, the runtime and the installer. The
+      // electron-builder signs Coral.exe, the runtime, Toolbox and the installer. The
       // publisher name also goes into app-update.yml: the updater installs
       // only an installer signed by that publisher.
       azureSignOptions: azure,

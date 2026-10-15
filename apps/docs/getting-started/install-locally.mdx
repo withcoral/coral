@@ -50,6 +50,25 @@ The Windows app is x64 only.
 
 Coral keeps running in the background after you close the window, so your agents can still reach it.
 
+## Bundled MCP Toolbox
+
+Coral includes [MCP Toolbox for Databases](https://mcp-toolbox.dev/documentation/introduction/).
+Your agent can launch it and configure database connections using the [Query databases guide](/guides/query-databases).
+Coral does not start Toolbox automatically or add it to your `PATH`.
+
+Use these paths for the default installation locations:
+
+| Platform | Toolbox executable |
+| --- | --- |
+| macOS | `/Applications/Coral.app/Contents/Resources/toolbox/toolbox` |
+| Windows | `%LOCALAPPDATA%\Programs\Coral\resources\toolbox\toolbox.exe` |
+| Linux | `squashfs-root/resources/toolbox/toolbox` after extracting the AppImage |
+
+On Linux, run `./coral-app-linux-x86_64.AppImage --appimage-extract` in a directory of your choice.
+Use the extracted executable's absolute path, and extract again after upgrading Coral to update that copy.
+On macOS and Windows, adjust the path if you installed Coral elsewhere.
+Keep Toolbox configuration and database credentials outside the application installation directory.
+
 ## Upgrade
 
 The desktop app updates itself. It downloads updates in the background.

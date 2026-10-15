@@ -20,7 +20,7 @@ See [Toolbox's integration catalog](https://mcp-toolbox.dev/integrations/) for t
 
 ## Run Toolbox
 
-1. [Install Toolbox](https://mcp-toolbox.dev/documentation/introduction/) on a host that can reach your database.
+1. Use [Toolbox bundled with Coral Desktop](/getting-started/install-locally#bundled-mcp-toolbox), or [install Toolbox](https://mcp-toolbox.dev/documentation/introduction/) on a host that can reach your database.
 2. For trusted development, choose a [prebuilt configuration](https://mcp-toolbox.dev/documentation/configuration/prebuilt-configs/) for your database.
 3. Set the connection and credential environment variables listed in that configuration's documentation.
 
@@ -30,6 +30,7 @@ For example, after setting the [PostgreSQL environment variables](https://mcp-to
 toolbox --prebuilt postgres --address 127.0.0.1 --port 5000
 ```
 
+For the bundled copy, replace `toolbox` with its full executable path.
 This loads Toolbox's built-in PostgreSQL tools without a `tools.yaml` file.
 For custom tools or databases without a prebuilt configuration, [define `tools.yaml`](https://mcp-toolbox.dev/documentation/configuration/) and use `--config tools.yaml` instead.
 

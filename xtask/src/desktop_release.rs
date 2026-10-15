@@ -80,6 +80,19 @@ pub(crate) fn package(args: &PackageArgs) -> Result<bool> {
     }
 
     let update_config = dist.join(args.platform.unpacked_update_config());
+    let toolbox = update_config
+        .parent()
+        .context("the update config must be inside packaged resources")?
+        .join("toolbox")
+        .join(if args.platform == DesktopPlatform::Win {
+            "toolbox.exe"
+        } else {
+            "toolbox"
+        });
+    run_command(
+        Command::new(&toolbox).arg("--version"),
+        "checking the bundled Toolbox executable starts",
+    )?;
     let contents = fs::read_to_string(&update_config)
         .with_context(|| format!("reading {}", update_config.display()))?;
     verify_update_config(&contents, args.platform, &args.feed_repo)?;
@@ -113,6 +126,12 @@ fn package_mac(work_dir: &Path) -> Result<()> {
             .args(["--verify", "--deep", "--strict", "--verbose=2"])
             .arg(&app),
         "verifying the app's signature",
+    )?;
+    run_command(
+        Command::new("codesign")
+            .args(["--verify", "--strict", "--verbose=2"])
+            .arg(app.join("Contents/Resources/toolbox/toolbox")),
+        "verifying Toolbox's signature",
     )?;
     run_command(
         Command::new("xcrun")
@@ -157,8 +176,8 @@ fn verify_jit(code: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Checks the Authenticode signatures of the installer, the app and the
-/// runtime it supervises.
+/// Checks the Authenticode signatures of the installer, the app, the
+/// runtime it supervises, and the bundled Toolbox executable.
 fn verify_windows_signatures(dist: &Path) -> Result<()> {
     let platform = DesktopPlatform::Win;
     let installer = single_file(dist, platform.package_prefix(), platform.update_package())?;
@@ -167,6 +186,10 @@ fn verify_windows_signatures(dist: &Path) -> Result<()> {
         installer,
         unpacked.join("Coral.exe"),
         unpacked.join("resources").join("coral").join("coral.exe"),
+        unpacked
+            .join("resources")
+            .join("toolbox")
+            .join("toolbox.exe"),
     ] {
         let status = authenticode_status(&code)?;
         if status != "Valid" {

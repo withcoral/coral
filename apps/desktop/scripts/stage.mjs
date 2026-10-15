@@ -3,6 +3,7 @@
 //   resources/coral/coral       the runtime (coral.exe on Windows)
 //   resources/reef/server.mjs   Reef's bundled server, with every dependency
 //   resources/reef/build/client
+//   resources/toolbox/         MCP Toolbox executable, license and version
 //
 // npm run stage -- [--runtime <path to a built coral binary>]
 //
@@ -14,6 +15,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { buildRuntime, repoRoot } from './runtime.mjs'
+import { stageToolbox } from './toolbox.ts'
 
 const desktopRoot = resolve(import.meta.dirname, '..')
 const resources = join(desktopRoot, 'resources')
@@ -21,6 +23,7 @@ const { values } = parseArgs({ options: { runtime: { type: 'string' } } })
 
 // npm runs this script in apps/desktop; resolve a relative path from where
 // the person ran npm.
+await stageToolbox(join(resources, 'toolbox'), process.platform)
 await stageRuntime(values.runtime && resolve(process.env.INIT_CWD ?? '.', values.runtime))
 await stageReef()
 

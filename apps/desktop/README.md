@@ -101,7 +101,7 @@ npm run stage --prefix apps/desktop
 npm run package --prefix apps/desktop
 ```
 
-`npm run stage` puts two things in `resources/`, which the package carries
+`npm run stage` puts three things in `resources/`, which the package carries
 outside the asar:
 
 - `coral/coral`: a release runtime, `coral.exe` on Windows. On macOS it is
@@ -110,6 +110,13 @@ outside the asar:
 - `reef/`: Reef's bundled `server.mjs` and its client files, built in a
   scratch directory. It is the same Reef build that Docker ships. The bundle
   carries every dependency, so the package has no `node_modules`.
+- `toolbox/`: the pinned MCP Toolbox for Databases executable, upstream `LICENSE`,
+  and `VERSION`. Staging downloads the official release for the package's target
+  and verifies SHA-256 checksums before replacing the staged copy. The version,
+  download paths, and checksums live in `scripts/toolbox.ts`; update them together
+  when upgrading Toolbox. Toolbox ships with app updates and is never started
+  by Desktop. Agents launch and configure it separately. See the
+  [installed paths](../docs/getting-started/install-locally.mdx#bundled-mcp-toolbox).
 
 `npm run package` builds the main process and runs electron-builder for this
 platform: an Apple silicon (arm64) dmg and zip on macOS, an AppImage on Linux,
@@ -158,8 +165,12 @@ Each platform job stages and builds with no credentials. Then
   it runs Programs in V8, which aborts at startup without it. xtask verifies
   the signatures and the staple, and checks JIT on the app and the runtime.
 - Windows: electron-builder signs the app, the runtime and the installer with
-  Azure Trusted Signing. xtask verifies their Authenticode signatures.
+  Azure Trusted Signing. It also signs the bundled Toolbox executable. xtask
+  verifies their Authenticode signatures.
 - Linux: the AppImage is unsigned.
+
+xtask verifies Toolbox's macOS signature explicitly and runs the packaged
+`toolbox --version` on each platform before publishing release assets.
 
 A release build fails when a credential is missing. xtask also checks that each
 feed matches its packages and that the packed `app-update.yml` names the v1
