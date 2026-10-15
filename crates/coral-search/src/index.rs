@@ -224,6 +224,7 @@ impl SearchIndex {
     /// Replaces the default one-minute limit on each index write. A test can
     /// shorten it rather than wait out the real one; a search-quality eval can
     /// lengthen it to index a Provider too large for the default.
+    #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use]
     pub const fn with_write_limit(mut self, limit: Duration) -> Self {
         self.write_limit = limit;

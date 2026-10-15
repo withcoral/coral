@@ -1,10 +1,16 @@
-//! Universal Search quality eval. It runs by hand, not in CI: large Providers
-//! take minutes to index, and their documents are not in the repository.
+//! Universal Search smoke test. It checks that a change has not made search
+//! unusable; it cannot rank two tunings, since a few dozen hand-written
+//! queries leave gaps of 0.05 to 0.08 in the noise. Measure ranking decisions
+//! in coral-benchmarks (`tools/universal-search`).
 //!
-//! It publishes one OpenAPI document, waits for the index, runs each query in
-//! a query file through search, and prints where the first accepted Operation
-//! ranks in the first page of hits. It fails only when a query file names an
-//! Operation the document does not have.
+//! Each run publishes one OpenAPI document, waits for the index, runs each
+//! query in a query file through search, and prints where the first accepted
+//! Operation ranks in the first page of hits.
+//!
+//! `github_search_stays_usable` runs in CI against a pinned copy of GitHub's
+//! document and fails when hit@10 falls below a floor. `search_quality_eval`
+//! runs by hand against any document, such as Microsoft Graph, which takes
+//! minutes to index:
 //!
 //! ```sh
 //! SEARCH_EVAL_DOC=graph.yaml \
@@ -34,8 +40,8 @@
 //!
 //! A `*` matches any run of characters, dots included, so one pattern can
 //! accept every path to the same action. Quote a pattern that has one, since
-//! YAML reads a leading `*` as an alias. Every path or pattern must match at
-//! least one indexed Operation.
+//! YAML reads a leading `*` as an alias. Every query must accept at least one
+//! path, and every path or pattern must match at least one indexed Operation.
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -91,6 +97,31 @@ fn variable(name: &str) -> Option<String> {
 /// on the first page is accepted.
 type Rank = Option<usize>;
 
+/// GitHub's document, pinned at github/rest-api-description
+/// 507b88ecbdccb4789ce77228fa2f2fde4bdeaf1f. Keep it frozen: a new copy moves
+/// the scores and adds 10 MB to history.
+const GITHUB_DOCUMENT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/tests/search_eval/github.openapi.yaml"
+);
+const GITHUB_QUERIES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/tests/search_eval/github.yaml"
+);
+/// Well below today's GitHub hit@10, so only a change that breaks search
+/// trips it.
+const GITHUB_HIT_AT_10_FLOOR: f64 = 0.7;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn github_search_stays_usable() {
+    let scores = evaluate(GITHUB_DOCUMENT, GITHUB_QUERIES, None, None).await;
+    assert!(
+        scores.hit_at_10 >= GITHUB_HIT_AT_10_FLOOR,
+        "GitHub hit@10 {:.2} is below the floor {GITHUB_HIT_AT_10_FLOOR}",
+        scores.hit_at_10
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "search-quality eval; run by hand with SEARCH_EVAL_DOC and SEARCH_EVAL_QUERIES"]
 async fn search_quality_eval() {
@@ -100,11 +131,29 @@ async fn search_quality_eval() {
     let write_limit = Duration::from_secs(
         variable("SEARCH_EVAL_WRITE_LIMIT_SECS").map_or(3600, |secs| secs.parse().unwrap()),
     );
-    let document = std::fs::read_to_string(&document_path).unwrap();
-    let cases: Vec<Case> =
-        serde_yaml::from_str(&std::fs::read_to_string(&queries_path).unwrap()).unwrap();
+    evaluate(
+        &document_path,
+        &queries_path,
+        Some(write_limit),
+        variable("SEARCH_EVAL_DUMP"),
+    )
+    .await;
+}
 
-    let f = Fixture::with_write_limit(Some(write_limit)).await;
+/// Publishes the document, runs every query, reports each rank, and returns
+/// the scores. Index writes may run for `write_limit`, or for the index's
+/// default when `None`; `dump` names a file for every indexed Operation path.
+async fn evaluate(
+    document_path: &str,
+    queries_path: &str,
+    write_limit: Option<Duration>,
+    dump: Option<String>,
+) -> Scores {
+    let document = std::fs::read_to_string(document_path).unwrap();
+    let cases: Vec<Case> =
+        serde_yaml::from_str(&std::fs::read_to_string(queries_path).unwrap()).unwrap();
+
+    let f = Fixture::with_write_limit(write_limit).await;
     let setup = f.setup(&document).await;
     let started = Instant::now();
     let publication = f
@@ -134,7 +183,7 @@ async fn search_quality_eval() {
         .into_iter()
         .map(|(call_path, _)| relative(&call_path).to_string())
         .collect::<BTreeSet<_>>();
-    if let Some(dump) = variable("SEARCH_EVAL_DUMP") {
+    if let Some(dump) = dump {
         let lines = operations.iter().fold(String::new(), |mut lines, path| {
             writeln!(lines, "{path}").unwrap();
             lines
@@ -185,38 +234,57 @@ async fn search_quality_eval() {
         .unwrap();
     }
     let searched = started.elapsed();
+    let scores = Scores::of(&ranks);
     report(&format!(
-        "\nsearch eval: {document_path}\n{} Operations, {} queries; publish {published:.1?}, index {indexed:.1?}, search {searched:.1?} in all\n\nrank  query\n{lines}\n{}\n",
+        "\nsearch eval: {document_path}\n{} Operations, {} queries; publish {published:.1?}, index {indexed:.1?}, search {searched:.1?} in all\n\nrank  query\n{lines}\n{scores}\n",
         operations.len(),
         cases.len(),
-        scores(&ranks),
     ));
+    scores
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "query counts and ranks are small"
-)]
-fn scores(ranks: &[Rank]) -> String {
-    let count = ranks.len() as f64;
-    let share = |within: usize| {
-        ranks
-            .iter()
-            .filter(|rank| rank.is_some_and(|rank| rank <= within))
-            .count() as f64
-            / count
-    };
-    let reciprocal_rank = ranks
-        .iter()
-        .map(|rank| rank.map_or(0.0, |rank| 1.0 / rank as f64))
-        .sum::<f64>()
-        / count;
-    format!(
-        "hit@1 {:.2}  hit@5 {:.2}  hit@10 {:.2}  MRR {reciprocal_rank:.3}",
-        share(1),
-        share(5),
-        share(10),
-    )
+struct Scores {
+    hit_at_1: f64,
+    hit_at_5: f64,
+    hit_at_10: f64,
+    reciprocal_rank: f64,
+}
+
+impl Scores {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "query counts and ranks are small"
+    )]
+    fn of(ranks: &[Rank]) -> Self {
+        let count = ranks.len() as f64;
+        let share = |within: usize| {
+            ranks
+                .iter()
+                .filter(|rank| rank.is_some_and(|rank| rank <= within))
+                .count() as f64
+                / count
+        };
+        Self {
+            hit_at_1: share(1),
+            hit_at_5: share(5),
+            hit_at_10: share(10),
+            reciprocal_rank: ranks
+                .iter()
+                .map(|rank| rank.map_or(0.0, |rank| 1.0 / rank as f64))
+                .sum::<f64>()
+                / count,
+        }
+    }
+}
+
+impl std::fmt::Display for Scores {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "hit@1 {:.2}  hit@5 {:.2}  hit@10 {:.2}  MRR {:.3}",
+            self.hit_at_1, self.hit_at_5, self.hit_at_10, self.reciprocal_rank,
+        )
+    }
 }
 
 #[expect(
