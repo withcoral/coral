@@ -13,7 +13,7 @@ import { PageLayout } from '@/wax/components/page-layout'
 import { Picker } from '@/wax/components/picker'
 import { Pill, type PillColor } from '@/wax/components/pill'
 import { StatusDot } from '@/wax/components/status'
-import { Tooltip } from '@/wax/components/tooltip'
+import { InfoTip, Tooltip } from '@/wax/components/tooltip'
 import * as Table from '@/wax/components/table'
 import { CELL_HEIGHT_PX, groupHeadingHeightPx } from '@/wax/components/table'
 import { CatalogLayout, CatalogRail, CatalogRailItem, CatalogToolbar } from '@/components/catalog'
@@ -195,9 +195,9 @@ function WorkspaceProvidersContent({
       header={
         <>
           {!owner && (
-            <Typography.BodySmall as="p">
-              Owners add, remove, and change providers.
-            </Typography.BodySmall>
+            <InfoTip label="Workspace providers">
+              As a member, you use the providers. Owners add, remove, and change them.
+            </InfoTip>
           )}
           {!active && (
             <ArchivedBanner workspace={w}>

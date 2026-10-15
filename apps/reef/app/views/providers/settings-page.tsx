@@ -229,14 +229,15 @@ function AccountSection({
           </Banner>
         )}
         {provider.connection === 'unknown' && (
-          <Typography.BodySmall as="p">
-            {`Coral could not read ${whose}. Open it to see its state.`}
-          </Typography.BodySmall>
+          <Banner
+            variant="warning"
+            title={`Cannot read ${shared ? 'the shared account' : 'your account'}`}
+          >
+            Open it to see its state.
+          </Banner>
         )}
         {shared && !owner && !connected && (
-          <Typography.BodySmall as="p">
-            Ask a workspace owner to connect the shared account.
-          </Typography.BodySmall>
+          <Banner variant="info">Ask a workspace owner to connect the shared account.</Banner>
         )}
         {(connection || canChange) && (
           <div className={styles.rowActions}>

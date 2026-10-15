@@ -55,3 +55,25 @@ export const arrow = style({
   height: '8px',
   width: '12px',
 })
+
+export const infoTipLabel = style({
+  alignItems: 'center',
+  display: 'inline-flex',
+  gap: '6px',
+})
+
+export const infoTip = style({
+  alignItems: 'center',
+  background: 'none',
+  border: 'none',
+  borderRadius: '50%',
+  cursor: 'help',
+  display: 'inline-flex',
+  padding: 0,
+  selectors: {
+    '&:focus-visible': {
+      outline: `2px solid ${theme.stroke.focused}`,
+      outlineOffset: 2,
+    },
+  },
+})
