@@ -60,6 +60,8 @@ pub enum RunEntry {
         occurred_at: i64,
         /// Returned payload bytes. For run.ended this is the optional Final Value.
         context_impact_bytes: i64,
+        /// Where authored source made an Emission or Log, when recorded.
+        source_location: Option<crate::SourceLocation>,
     },
 }
 /// One bounded summary page and independently authorized parent metadata.
@@ -177,6 +179,7 @@ impl RunModule {
                     kind: row.kind,
                     occurred_at: row.occurred_at,
                     context_impact_bytes: row.context_impact_bytes,
+                    source_location: row.source_location,
                 }
             });
         }

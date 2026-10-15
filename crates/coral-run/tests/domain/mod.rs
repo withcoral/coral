@@ -10,6 +10,7 @@ mod emissions;
 mod fence;
 mod history;
 mod invocations;
+mod locations;
 mod mcp;
 mod memory;
 mod observation;

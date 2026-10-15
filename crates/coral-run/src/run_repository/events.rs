@@ -2,14 +2,15 @@
 
 use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalId, WorkspaceId};
-use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
+use sea_query::{Alias, Expr, ExprTrait as _, Iden, IntoIden as _, Order, Query};
 use sqlx::FromRow;
 
 use super::{ProgramRunRecords, principal_kind_from_storage};
 use crate::lifecycle::RunRecord;
+use crate::source_location_repository::{self, StoredSourceLocation};
 use crate::{
     Error, InvocationId, InvocationResultKind, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel,
-    ProgramValue, RunEvent, RunEventKind, RunId, RunState,
+    ProgramValue, RunEvent, RunEventKind, RunId, RunState, SourceLocation,
 };
 
 #[derive(Iden)]
@@ -44,6 +45,8 @@ struct EventRow {
     program_value_json: Option<String>,
     log_level: Option<String>,
     log_message: Option<String>,
+    #[sqlx(flatten)]
+    source_location: StoredSourceLocation,
 }
 
 impl EventRow {
@@ -54,8 +57,9 @@ impl EventRow {
             .ok_or_else(|| Error::CorruptData("Run Event has invalid sequence".to_string()))?;
         let missing =
             |field| Error::CorruptData(format!("{} Event has no {field}", self.event_type));
-        // The table CHECK constrains unrelated columns to NULL. Decode and
+        // The table CHECKs constrain unrelated columns to NULL. Decode and
         // validate only the payload owned by this Event kind.
+        let source_location = self.source_location.decode()?;
         let kind = match self.event_type.as_str() {
             "run.started" => RunEventKind::Started,
             "cancellation.requested" => {
@@ -138,7 +142,8 @@ impl EventRow {
                 )));
             }
         };
-        Ok(RunEvent::new(sequence, kind, self.occurred_at_unix_nanos))
+        Ok(RunEvent::new(sequence, kind, self.occurred_at_unix_nanos)
+            .with_source_location(source_location))
     }
 }
 
@@ -148,8 +153,8 @@ pub(crate) enum NewEvent<'a> {
     Ended(RunState, usize),
     InvocationStarted(&'a InvocationId),
     InvocationEnded(&'a InvocationId, InvocationResultKind),
-    Emitted(&'a ProgramValue),
-    Logged(ProgramLogLevel, &'a str),
+    Emitted(&'a ProgramValue, Option<&'a SourceLocation>),
+    Logged(ProgramLogLevel, &'a str, Option<&'a SourceLocation>),
 }
 
 pub(crate) async fn insert_event(
@@ -163,13 +168,17 @@ pub(crate) async fn insert_event(
     use ProgramRunEvents as Events;
 
     let output_bytes = match &event {
-        NewEvent::Emitted(value) => value.encoded_json().len(),
-        NewEvent::Logged(_, message) => message.len(),
+        NewEvent::Emitted(value, _) => value.encoded_json().len(),
+        NewEvent::Logged(_, message, _) => message.len(),
         NewEvent::Ended(_, bytes) => *bytes,
         _ => 0,
     };
     let output_bytes = i64::try_from(output_bytes)
         .map_err(|_overflow| Error::CorruptData("Event byte count overflow".into()))?;
+    let source_location = match &event {
+        NewEvent::Emitted(_, location) | NewEvent::Logged(_, _, location) => *location,
+        _ => None,
+    };
     let (event_type, mut fields) = match event {
         NewEvent::Started => ("run.started", Vec::new()),
         NewEvent::CancellationRequested(principal) => (
@@ -197,11 +206,11 @@ pub(crate) async fn insert_event(
                 (Events::ResultKind, Expr::val(kind.as_storage_str())),
             ],
         ),
-        NewEvent::Emitted(value) => (
+        NewEvent::Emitted(value, _) => (
             "program.emitted",
             vec![(Events::ProgramValueJson, Expr::val(value.encoded_json()))],
         ),
-        NewEvent::Logged(level, message) => (
+        NewEvent::Logged(level, message, _) => (
             "program.logged",
             vec![
                 (Events::LogLevel, Expr::val(level.as_storage_str())),
@@ -222,7 +231,14 @@ pub(crate) async fn insert_event(
             Expr::val(occurred_at_unix_nanos),
         ),
     ]);
-    let (columns, values): (Vec<_>, Vec<_>) = fields.into_iter().unzip();
+    let (columns, values): (Vec<_>, Vec<_>) = fields
+        .into_iter()
+        .map(|(column, value)| (column.into_iden(), value))
+        .chain(
+            source_location_repository::values(source_location)
+                .map(|(column, value)| (column.into_iden(), value)),
+        )
+        .unzip();
     let statement = Query::insert()
         .into_table(Events::Table)
         .columns(columns)
@@ -446,6 +462,7 @@ async fn event_page(
             ProgramRunEvents::LogLevel,
             ProgramRunEvents::LogMessage,
         ])
+        .columns(source_location_repository::COLUMNS.map(Alias::new))
         .from(ProgramRunEvents::Table)
         .and_where(Expr::col(ProgramRunEvents::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(ProgramRunEvents::RunId).eq(run_id.to_string()))

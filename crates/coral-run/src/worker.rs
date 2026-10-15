@@ -1,6 +1,7 @@
 //! One worker's execution of an accepted Run: the leased claim, the durable
 //! execution-start mark, claim heartbeats, and the completing terminal write.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use coral_workspace::AuthenticatedPrincipal;
@@ -61,7 +62,7 @@ impl RunModule {
             .active_executions
             .register(accepted.id.clone(), claim_id.clone());
         let active = registration.active();
-        let Some(package) = self
+        let Some((package, linked_snapshots)) = self
             .start_claimed_execution(&accepted, &actor, &claim_id)
             .await?
         else {
@@ -97,6 +98,7 @@ impl RunModule {
         let completion = engine::execute(
             self.engine.clone(),
             package,
+            linked_snapshots,
             invoker,
             output,
             accepted.value_limits,
@@ -169,7 +171,7 @@ impl RunModule {
         accepted: &AcceptedRun,
         actor: &AuthenticatedPrincipal,
         claim_id: &str,
-    ) -> Result<Option<ProgramPackage>, Error> {
+    ) -> Result<Option<(ProgramPackage, HashMap<String, String>)>, Error> {
         let mut transaction = self.database.begin().await?;
         let Some(run) =
             run_repository::hold_run(&mut transaction, &accepted.workspace_id, &accepted.id)
@@ -228,6 +230,12 @@ impl RunModule {
         )
         .await?
         .ok_or_else(|| Error::CorruptData("accepted Run has no Program package".to_string()))?;
+        let linked_snapshots = run_repository::linked_snapshot_ids_in_transaction(
+            &mut transaction,
+            &accepted.workspace_id,
+            &accepted.id,
+        )
+        .await?;
         let started_at = self.now()?.max(run.accepted_at_unix_nanos);
         if let Err(error) = authority.and_then(|evidence| {
             evidence.require_current_at(started_at)?;
@@ -254,7 +262,7 @@ impl RunModule {
             run_repository::mark_execution_started(&mut transaction, &run, claim_id, started_at)
                 .await?;
         transaction.commit().await?;
-        Ok(started.then_some(package))
+        Ok(started.then_some((package, linked_snapshots)))
     }
 
     fn schedule_claim_heartbeat(

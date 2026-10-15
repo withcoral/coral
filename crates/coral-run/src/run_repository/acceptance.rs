@@ -178,6 +178,27 @@ pub(crate) async fn load_package_in_transaction(
     row.map(PackageRow::decode).transpose()
 }
 
+/// Maps each linked path to the Saved Function identity of the Run's snapshot.
+pub(crate) async fn linked_snapshot_ids_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+) -> Result<std::collections::HashMap<String, String>, Error> {
+    let statement = Query::select()
+        .columns([
+            ProgramRunSavedFunctionSnapshots::Path,
+            ProgramRunSavedFunctionSnapshots::SavedFunctionId,
+        ])
+        .from(ProgramRunSavedFunctionSnapshots::Table)
+        .and_where(
+            Expr::col(ProgramRunSavedFunctionSnapshots::WorkspaceId).eq(workspace_id.to_string()),
+        )
+        .and_where(Expr::col(ProgramRunSavedFunctionSnapshots::RunId).eq(run_id.to_string()))
+        .to_owned();
+    let rows: Vec<(String, String)> = transaction.fetch_all(statement).await?;
+    Ok(rows.into_iter().collect())
+}
+
 fn stored_usize(value: usize) -> Result<i64, Error> {
     i64::try_from(value)
         .map_err(|_error| Error::CorruptData("Program limit exceeds durable range".to_string()))

@@ -260,6 +260,8 @@ message ActivityInvocation {
   optional int64 dispatched_at_unix_nanos = 15;
   // workspaces/{workspace}/agents/{agent} if an Agent made the call; empty for a User.
   string agent = 16;
+  // Where the Run's accepted source made the call. Absent if not recorded.
+  ActivitySourceLocation source_location = 18;
 }
 // Selects one Run. List filters do not apply.
 message InspectRunRequest {
@@ -279,16 +281,39 @@ message InspectRunRequest {
 }
 // Source of a Saved Function as it was when the Run was accepted.
 message ActivitySourceSnapshot {
-  // Saved Function name at the time. It may have changed or been deleted since.
+  // workspaces/{workspace}/savedFunctions/{saved_function} at the time. Unique among
+  // the Run's snapshots. The Saved Function may have changed or been deleted since.
   string saved_function = 1;
   // Path the Program called it by.
   string path = 2;
   // TypeScript source as accepted.
   string source = 3;
 }
+// Where the Run's accepted source made one record: an Operation call, an
+// emitted value or a log message. Absent when Coral did not record one,
+// including for every record made before Coral recorded them.
+message ActivitySourceLocation {
+  // The accepted source that holds the call. Absent for a kind unknown to this
+  // client: treat the location as unavailable.
+  oneof document {
+    // The Run's submitted Program source.
+    ActivityEmpty program = 1;
+    // workspaces/{workspace}/savedFunctions/{saved_function}: the saved_function of
+    // exactly one of the Run's linked_functions snapshots.
+    string saved_function = 2;
+  }
+  // Line number, starting at 1. Lines end at every ECMAScript line terminator:
+  // CRLF, CR, LF, U+2028 and U+2029, also inside strings and comments.
+  uint32 line = 3;
+  // Column number, starting at 1, in UTF-16 code units. For a call such as
+  // console.log(...), the start of the called name. A binding passed to a
+  // builtin, as in items.forEach(console.log), records the builtin's call.
+  uint32 column = 4;
+}
 // One stack frame in code the author wrote.
 message ActivityErrorFrame {
-  // Program or Saved Function name.
+  // "Program" or "Saved Function coral.functions.{path}". Unlike
+  // ActivitySourceLocation, it names a Saved Function by path, not by snapshot.
   string source = 1;
   // Line number, starting at 1.
   uint32 line = 2;
@@ -444,6 +469,9 @@ message ActivityRunEvent {
     // The Run ended.
     ActivityRunEnded ended = 9;
   }
+  // Where the Run's accepted source emitted or logged. Absent for other
+  // kinds, or if not recorded.
+  ActivitySourceLocation source_location = 10;
 }
 // Link to an approval or connection request. It may no longer be pending.
 message ActivityRequestReference {
@@ -798,6 +826,9 @@ message ActivityEventSummary {
   string kind = 2;
   // When it happened.
   int64 occurred_at_unix_nanos = 3;
+  // Where the Run's accepted source emitted or logged. Absent for other
+  // kinds, or if not recorded.
+  ActivitySourceLocation source_location = 5;
 }
 // One child row of a Run, in order.
 message ActivityRunEntry {

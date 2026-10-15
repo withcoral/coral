@@ -5431,6 +5431,9 @@ pub struct ActivityInvocation {
     /// workspaces/{workspace}/agents/{agent} if an Agent made the call; empty for a User.
     #[prost(string, tag = "16")]
     pub agent: ::prost::alloc::string::String,
+    /// Where the Run's accepted source made the call. Absent if not recorded.
+    #[prost(message, optional, tag = "18")]
+    pub source_location: ::core::option::Option<ActivitySourceLocation>,
 }
 /// Selects one Run. List filters do not apply.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -5457,7 +5460,8 @@ pub struct InspectRunRequest {
 /// Source of a Saved Function as it was when the Run was accepted.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivitySourceSnapshot {
-    /// Saved Function name at the time. It may have changed or been deleted since.
+    /// workspaces/{workspace}/savedFunctions/{saved_function} at the time. Unique among
+    /// the Run's snapshots. The Saved Function may have changed or been deleted since.
     #[prost(string, tag = "1")]
     pub saved_function: ::prost::alloc::string::String,
     /// Path the Program called it by.
@@ -5467,10 +5471,45 @@ pub struct ActivitySourceSnapshot {
     #[prost(string, tag = "3")]
     pub source: ::prost::alloc::string::String,
 }
+/// Where the Run's accepted source made one record: an Operation call, an
+/// emitted value or a log message. Absent when Coral did not record one,
+/// including for every record made before Coral recorded them.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActivitySourceLocation {
+    /// Line number, starting at 1. Lines end at every ECMAScript line terminator:
+    /// CRLF, CR, LF, U+2028 and U+2029, also inside strings and comments.
+    #[prost(uint32, tag = "3")]
+    pub line: u32,
+    /// Column number, starting at 1, in UTF-16 code units. For a call such as
+    /// console.log(...), the start of the called name. A binding passed to a
+    /// builtin, as in items.forEach(console.log), records the builtin's call.
+    #[prost(uint32, tag = "4")]
+    pub column: u32,
+    /// The accepted source that holds the call. Absent for a kind unknown to this
+    /// client: treat the location as unavailable.
+    #[prost(oneof = "activity_source_location::Document", tags = "1, 2")]
+    pub document: ::core::option::Option<activity_source_location::Document>,
+}
+/// Nested message and enum types in `ActivitySourceLocation`.
+pub mod activity_source_location {
+    /// The accepted source that holds the call. Absent for a kind unknown to this
+    /// client: treat the location as unavailable.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Document {
+        /// The Run's submitted Program source.
+        #[prost(message, tag = "1")]
+        Program(super::ActivityEmpty),
+        /// workspaces/{workspace}/savedFunctions/{saved_function}: the saved_function of
+        /// exactly one of the Run's linked_functions snapshots.
+        #[prost(string, tag = "2")]
+        SavedFunction(::prost::alloc::string::String),
+    }
+}
 /// One stack frame in code the author wrote.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActivityErrorFrame {
-    /// Program or Saved Function name.
+    /// "Program" or "Saved Function coral.functions.{path}". Unlike
+    /// ActivitySourceLocation, it names a Saved Function by path, not by snapshot.
     #[prost(string, tag = "1")]
     pub source: ::prost::alloc::string::String,
     /// Line number, starting at 1.
@@ -5580,6 +5619,10 @@ pub struct ActivityRunEvent {
     /// When it happened. Set even when the kind is unknown to this client.
     #[prost(int64, tag = "2")]
     pub occurred_at_unix_nanos: i64,
+    /// Where the Run's accepted source emitted or logged. Absent for other
+    /// kinds, or if not recorded.
+    #[prost(message, optional, tag = "10")]
+    pub source_location: ::core::option::Option<ActivitySourceLocation>,
     /// What happened. Absent for a kind unknown to this client.
     #[prost(oneof = "activity_run_event::Payload", tags = "3, 4, 5, 6, 7, 8, 9")]
     pub payload: ::core::option::Option<activity_run_event::Payload>,
@@ -6119,6 +6162,10 @@ pub struct ActivityEventSummary {
     /// When it happened.
     #[prost(int64, tag = "3")]
     pub occurred_at_unix_nanos: i64,
+    /// Where the Run's accepted source emitted or logged. Absent for other
+    /// kinds, or if not recorded.
+    #[prost(message, optional, tag = "5")]
+    pub source_location: ::core::option::Option<ActivitySourceLocation>,
 }
 /// One child row of a Run, in order.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -300,6 +300,8 @@ struct InvocationRow {
     dispatched_at: Option<i64>,
     duration: i64,
     requires_action: bool,
+    #[sqlx(flatten)]
+    source_location: crate::source_location_repository::StoredSourceLocation,
 }
 pub(crate) async fn exact_invocation(
     tx: &mut Transaction<'_>,
@@ -331,6 +333,8 @@ pub(crate) async fn exact_invocation(
                 "result_kind",
                 "result_bytes",
             ]
+            .into_iter()
+            .chain(crate::source_location_repository::COLUMNS)
             .map(|name| (Alias::new("i"), Alias::new(name))),
         )
         .expr_as(col("i", "admitted_at_unix_nanos"), Alias::new("started_at"))
@@ -382,5 +386,6 @@ pub(crate) async fn exact_invocation(
         dispatched_at: row.dispatched_at,
         duration: row.duration,
         requires_action: row.requires_action,
+        source_location: row.source_location.decode()?,
     })
 }

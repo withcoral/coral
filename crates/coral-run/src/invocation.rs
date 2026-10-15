@@ -236,6 +236,7 @@ impl OperationInvoker {
         &self,
         call_path: &str,
         arguments: serde_json::Value,
+        source_location: Option<crate::SourceLocation>,
     ) -> Result<String, InvocationHostError> {
         let arguments_json = serde_json::to_string(&arguments).map_err(Error::ProgramValueJson)?;
         self.limits
@@ -247,7 +248,9 @@ impl OperationInvoker {
                 })
             })?;
         let address = CallPath::parse(call_path)?;
-        let (mut admitted, policy) = self.admit(call_path, &address, arguments_json).await?;
+        let (mut admitted, policy) = self
+            .admit(call_path, &address, arguments_json, source_location)
+            .await?;
         if policy == OperationAccessState::Disabled {
             return Err(self
                 .finish_failure(&admitted, CoralFailure::OperationDisabled)
@@ -405,6 +408,7 @@ impl OperationInvoker {
         call_path: &str,
         address: &CallPath,
         arguments_json: String,
+        source_location: Option<crate::SourceLocation>,
     ) -> Result<(AdmittedInvocation, OperationAccessState), Error> {
         let mut transaction = self.database.begin().await?;
         let Some(run) =
@@ -456,6 +460,7 @@ impl OperationInvoker {
             target,
             call_path: call_path.to_string(),
             arguments_json,
+            source_location,
             admitted_at_unix_nanos: admitted_at,
             dispatch_started: false,
             credential_evidence: None,
@@ -1164,6 +1169,7 @@ pub(super) struct AdmittedInvocation {
     pub(super) target: ResolvedInvocationOperation,
     pub(super) call_path: String,
     pub(super) arguments_json: String,
+    pub(super) source_location: Option<crate::SourceLocation>,
     pub(super) admitted_at_unix_nanos: i64,
     pub(super) dispatch_started: bool,
 }

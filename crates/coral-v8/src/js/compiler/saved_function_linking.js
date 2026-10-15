@@ -239,7 +239,7 @@ function savedFunctionRuntimeBody(source, target) {
       });
     }
     blocks.push(block);
-    generatedLineOffset += block.split("\n").length;
+    generatedLineOffset += sourceLineCount(block);
   }
   const privateReturn = printer.printNode(
     ts.EmitHint.Unspecified,
@@ -296,8 +296,10 @@ function linkedProgramSource(body, savedFunctions, target) {
   const authoredMappings = [];
   let generatedLine = 0;
   function append(text) {
+    // A CR ending the previous part and this LF form one CRLF terminator.
+    const joinsCrLf = sourceParts.at(-1)?.endsWith("\r") && text.startsWith("\n");
     sourceParts.push(text);
-    generatedLine += text.split("\n").length - 1;
+    generatedLine += sourceLineCount(text) - 1 - (joinsCrLf ? 1 : 0);
   }
 
   append(`(async () => {

@@ -217,9 +217,11 @@ impl ProgramEngine for InvokingEngine {
         host: Arc<dyn coral_v8::ProgramHost>,
         _stop: Arc<crate::execution::ExecutionStop>,
     ) -> ExecutionCompletion {
-        match tokio::runtime::Handle::current()
-            .block_on(host.invoke(self.call_path.clone(), "{}".to_string()))
-        {
+        match tokio::runtime::Handle::current().block_on(host.invoke(
+            self.call_path.clone(),
+            "{}".to_string(),
+            None,
+        )) {
             Ok(result_json) => match ProgramValue::from_encoded_json(result_json) {
                 Ok(value) => ExecutionCompletion::Succeeded(FinalValue::Present(value)),
                 Err(error) => ExecutionCompletion::Failed(crate::RunFailure::new(
@@ -291,10 +293,10 @@ impl ProgramEngine for StaleClaimEngine {
             return ExecutionCompletion::ProgramHostTerminated;
         }
         self.emission_succeeded
-            .store(host.emit("42").is_ok(), Ordering::SeqCst);
+            .store(host.emit("42", None).is_ok(), Ordering::SeqCst);
         self.invocation_succeeded.store(
             tokio::runtime::Handle::current()
-                .block_on(host.invoke(self.call_path.clone(), "{}".to_string()))
+                .block_on(host.invoke(self.call_path.clone(), "{}".to_string(), None))
                 .is_ok(),
             Ordering::SeqCst,
         );
@@ -332,8 +334,11 @@ impl ProgramEngine for CompletionAttemptingEngine {
         host: Arc<dyn coral_v8::ProgramHost>,
         _stop: Arc<crate::execution::ExecutionStop>,
     ) -> ExecutionCompletion {
-        let _host_result = tokio::runtime::Handle::current()
-            .block_on(host.invoke(self.call_path.clone(), "{}".to_string()));
+        let _host_result = tokio::runtime::Handle::current().block_on(host.invoke(
+            self.call_path.clone(),
+            "{}".to_string(),
+            None,
+        ));
         self.finished.store(true, Ordering::SeqCst);
         ExecutionCompletion::Succeeded(FinalValue::Absent)
     }

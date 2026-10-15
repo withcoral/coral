@@ -5,9 +5,10 @@ use coral_value as _;
 use std::sync::{Arc, Mutex};
 
 use coral_v8::{
-    CompiledProgram, ConsoleLevel, Error, IsolateLimits, LinkedSavedFunctionSource,
-    OperationHostError, ProgramCompiler, ProgramExecutionControl, ProgramExecutor, ProgramHost,
-    ProgramOutputHostError, SavedFunctionReference, TYPESCRIPT_PROFILE,
+    AuthoredLocation, AuthoredSource, CompiledProgram, ConsoleLevel, Error, IsolateLimits,
+    LinkedSavedFunctionSource, OperationHostError, ProgramCompiler, ProgramExecutionControl,
+    ProgramExecutor, ProgramHost, ProgramOutputHostError, SavedFunctionReference,
+    TYPESCRIPT_PROFILE,
 };
 use deno_core_icudata as _;
 use serde as _;
@@ -1108,6 +1109,7 @@ impl ProgramHost for CapturingOperationHost {
         self: Arc<Self>,
         call_path: String,
         arguments_json: String,
+        _location: Option<AuthoredLocation>,
     ) -> coral_v8::OperationFuture {
         self.calls
             .lock()
@@ -1116,11 +1118,20 @@ impl ProgramHost for CapturingOperationHost {
         Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
     }
 
-    fn emit(&self, _value_json: &str) -> Result<(), ProgramOutputHostError> {
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
         Err(ProgramOutputHostError::Fatal)
     }
 
-    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
         Err(ProgramOutputHostError::Fatal)
     }
 }
@@ -1162,6 +1173,7 @@ impl ProgramHost for RejectingOperationHost {
         self: Arc<Self>,
         call_path: String,
         _arguments_json: String,
+        _location: Option<AuthoredLocation>,
     ) -> coral_v8::OperationFuture {
         Box::pin(async move {
             Err(OperationHostError::Rejected {
@@ -1174,11 +1186,20 @@ impl ProgramHost for RejectingOperationHost {
         })
     }
 
-    fn emit(&self, _value_json: &str) -> Result<(), ProgramOutputHostError> {
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
         Err(ProgramOutputHostError::Fatal)
     }
 
-    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
         Err(ProgramOutputHostError::Fatal)
     }
 }
@@ -1190,15 +1211,25 @@ impl ProgramHost for FatalOperationHost {
         self: Arc<Self>,
         _call_path: String,
         _arguments_json: String,
+        _location: Option<AuthoredLocation>,
     ) -> coral_v8::OperationFuture {
         Box::pin(async { Err(OperationHostError::Fatal) })
     }
 
-    fn emit(&self, _value_json: &str) -> Result<(), ProgramOutputHostError> {
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
         Err(ProgramOutputHostError::Fatal)
     }
 
-    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
         Err(ProgramOutputHostError::Fatal)
     }
 }
@@ -1223,7 +1254,7 @@ fn failure_stacks_name_only_authored_locations() {
         "export default async function fetch() {\n    await coral.providers.weather.getForecast();\n}",
     );
     // (Program, its Saved Functions, the failure's message, its authored frames)
-    let cases: [(&str, Vec<LinkedSavedFunctionSource>, &str, &[&str]); 7] = [
+    let cases: [(&str, Vec<LinkedSavedFunctionSource>, &str, &[&str]); 8] = [
         (
             "const meaning: number = 42;\nvoid meaning;\nthrow new Error(\"private rejection canary\");",
             vec![],
@@ -1262,6 +1293,13 @@ fn failure_stacks_name_only_authored_locations() {
             vec![],
             "",
             &["at Program:2:"],
+        ),
+        // Frames count ECMAScript line terminators, not only LF.
+        (
+            "const meaning = 1;\r\u{2028}throw new Error(\"terminator canary\");",
+            vec![],
+            "Error: terminator canary\n",
+            &["at Program:3:7"],
         ),
         (
             "Error.stackTraceLimit = 0;\nError.prepareStackTrace = () => 'spoofed';\nawait coral.providers.weather.getForecast();",
@@ -1578,7 +1616,12 @@ struct GatedOperationHost {
 }
 
 impl ProgramHost for GatedOperationHost {
-    fn invoke(self: Arc<Self>, _path: String, _arguments: String) -> coral_v8::OperationFuture {
+    fn invoke(
+        self: Arc<Self>,
+        _path: String,
+        _arguments: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::OperationFuture {
         let gate = Arc::new(OperationGate::default());
         self.started
             .send(gate.clone())
@@ -1594,10 +1637,19 @@ impl ProgramHost for GatedOperationHost {
         }))
     }
 
-    fn emit(&self, _json: &str) -> Result<(), ProgramOutputHostError> {
+    fn emit(
+        &self,
+        _json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
         Ok(())
     }
-    fn log(&self, _level: ConsoleLevel, _message: &str) -> Result<(), ProgramOutputHostError> {
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
         Ok(())
     }
 }
@@ -1704,6 +1756,8 @@ struct RecordingHost {
     emitted: Mutex<Vec<String>>,
     logs: Mutex<Vec<(ConsoleLevel, String)>>,
     calls: Mutex<Vec<String>>,
+    /// Every host call in arrival order: its kind and authored location.
+    locations: Mutex<Vec<(&'static str, Option<AuthoredLocation>)>>,
 }
 
 /// Each value crossing to the host may encode to at most this many bytes.
@@ -1716,7 +1770,15 @@ impl RecordingHost {
             emitted: Mutex::default(),
             logs: Mutex::default(),
             calls: Mutex::default(),
+            locations: Mutex::default(),
         })
+    }
+
+    fn record(&self, kind: &'static str, location: Option<AuthoredLocation>) {
+        self.locations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((kind, location));
     }
 }
 
@@ -1729,7 +1791,9 @@ impl ProgramHost for RecordingHost {
         self: Arc<Self>,
         _call_path: String,
         arguments_json: String,
+        location: Option<AuthoredLocation>,
     ) -> coral_v8::OperationFuture {
+        self.record("invoke", location);
         self.calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1737,7 +1801,12 @@ impl ProgramHost for RecordingHost {
         Box::pin(async { Ok(r#"{"data":null,"metadata":{"kind":"http"}}"#.to_string()) })
     }
 
-    fn emit(&self, value_json: &str) -> Result<(), ProgramOutputHostError> {
+    fn emit(
+        &self,
+        value_json: &str,
+        location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        self.record("emit", location);
         self.emitted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1745,7 +1814,13 @@ impl ProgramHost for RecordingHost {
         Ok(())
     }
 
-    fn log(&self, level: ConsoleLevel, message: &str) -> Result<(), ProgramOutputHostError> {
+    fn log(
+        &self,
+        level: ConsoleLevel,
+        message: &str,
+        location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        self.record("log", location);
         self.logs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1755,9 +1830,16 @@ impl ProgramHost for RecordingHost {
 }
 
 fn run_with_recording_host(source: &str) -> (Option<String>, Arc<RecordingHost>) {
+    run_linked_with_recording_host(source, &[])
+}
+
+fn run_linked_with_recording_host(
+    source: &str,
+    functions: &[LinkedSavedFunctionSource],
+) -> (Option<String>, Arc<RecordingHost>) {
     let program = ProgramCompiler::new(IsolateLimits::default())
         .expect("start compiler")
-        .compile(compilation_deadline(), source)
+        .compile_with_saved_functions(compilation_deadline(), source, functions)
         .expect("compile output probe");
     let host = RecordingHost::new(
         coral_value::ValueLimits::new(1024, HOST_BYTES, 1024, 1024).expect("limits"),
@@ -1766,6 +1848,165 @@ fn run_with_recording_host(source: &str) -> (Option<String>, Arc<RecordingHost>)
         .execute_with_host(&program, host.clone())
         .expect("execute output probe");
     (output.final_value_json().map(str::to_string), host)
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "table rows compare the optional location each host call receives"
+)]
+fn at(line: u32, column: u32) -> Option<AuthoredLocation> {
+    Some(AuthoredLocation {
+        source: AuthoredSource::Program,
+        line,
+        column,
+    })
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "table rows compare the optional location each host call receives"
+)]
+fn in_saved_function(path: &str, line: u32, column: u32) -> Option<AuthoredLocation> {
+    Some(AuthoredLocation {
+        source: AuthoredSource::SavedFunction {
+            path: path.to_string(),
+        },
+        line,
+        column,
+    })
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of every call-site shape the location rule covers"
+)]
+fn host_calls_carry_the_authored_location_of_each_call() {
+    let helpers = linked_source(
+        &["debug", "fetch"],
+        "console.info(\"linked\");\n\nexport default async function fetch(id: number) {\n    return coral.providers.demo.getItem({ id });\n}",
+    );
+    // (Program, Saved Functions, every host call in arrival order)
+    #[expect(clippy::type_complexity, reason = "one readable table of cases")]
+    let cases: Vec<(
+        &str,
+        Vec<LinkedSavedFunctionSource>,
+        Vec<(&str, Option<AuthoredLocation>)>,
+    )> = vec![
+        // One call per line: the column is the called name, after type syntax
+        // that TypeScript removes.
+        (
+            "const label: string = \"x\";\nawait coral.emit({ label });\nconsole.warn(label);\nawait coral.providers.demo.getItem({});",
+            vec![],
+            vec![
+                ("emit", at(2, 13)),
+                ("log", at(3, 9)),
+                ("invoke", at(4, 28)),
+            ],
+        ),
+        // The same call site in a loop records the same location each time.
+        (
+            "for (let index: number = 0; index < 3; index += 1) {\n    console.log(index);\n}",
+            vec![],
+            vec![("log", at(2, 13)), ("log", at(2, 13)), ("log", at(2, 13))],
+        ),
+        // Parallel calls through a helper record the helper's call site, and
+        // each Promise.all member keeps its own invocation.
+        (
+            "async function one(id: number): Promise<unknown> {\n    return coral.providers.demo.getItem({ id });\n}\nawait Promise.all([one(1), one(2)]);\nawait coral.providers.demo.getItem({}); await coral.providers.demo.getItem({});",
+            vec![],
+            vec![
+                ("invoke", at(2, 33)),
+                ("invoke", at(2, 33)),
+                ("invoke", at(5, 28)),
+                ("invoke", at(5, 68)),
+            ],
+        ),
+        // After an await, the continuation keeps its own call site.
+        (
+            "await Promise.resolve();\n  coral.emit(1);",
+            vec![],
+            vec![("emit", at(2, 9))],
+        ),
+        // UTF-16 code units: the astral character before the call counts as two.
+        (
+            "const s = \"\u{1F600}\"; console.log(s);",
+            vec![],
+            vec![("log", at(1, 25))],
+        ),
+        // A call inside a Saved Function names that Saved Function's source,
+        // including its top-level initialization before the Program body.
+        (
+            "\nawait coral.functions.debug.fetch(7);",
+            vec![helpers],
+            vec![
+                ("log", in_saved_function("debug.fetch", 1, 9)),
+                ("invoke", in_saved_function("debug.fetch", 4, 33)),
+            ],
+        ),
+        // Lines follow ECMAScript line terminators: CRLF counts once, and a lone
+        // CR, U+2028 or U+2029 ends a line, even inside a string literal.
+        (
+            "console.log(1);\r\nconsole.log(2);",
+            vec![],
+            vec![("log", at(1, 9)), ("log", at(2, 9))],
+        ),
+        (
+            "console.log(1);\rconsole.log(2);",
+            vec![],
+            vec![("log", at(1, 9)), ("log", at(2, 9))],
+        ),
+        (
+            "console.log(1);\u{2028}console.log(2);\u{2029}console.log(3);",
+            vec![],
+            vec![("log", at(1, 9)), ("log", at(2, 9)), ("log", at(3, 9))],
+        ),
+        (
+            "const s = \"a\u{2028}b\"; console.log(s);\nconsole.log(s);",
+            vec![],
+            vec![("log", at(2, 13)), ("log", at(3, 9))],
+        ),
+        (
+            "coral.functions.debug.mixed();\r\nconsole.log(0);",
+            vec![linked_source(
+                &["debug", "mixed"],
+                "console.info(1);\rexport default function mixed() {\r\n    console.warn(\"a\u{2029}b\");\r}",
+            )],
+            vec![
+                ("log", in_saved_function("debug.mixed", 1, 9)),
+                ("log", in_saved_function("debug.mixed", 3, 13)),
+                ("log", at(2, 9)),
+            ],
+        ),
+        // A trailing CR ends the last authored line; nothing maps past it.
+        (
+            "console.debug(1); console.error(2);\r",
+            vec![],
+            vec![("log", at(1, 9)), ("log", at(1, 27))],
+        ),
+        // A binding passed to a builtin records the authored call into the builtin.
+        (
+            "\n[1].forEach(console.log);",
+            vec![],
+            vec![("log", at(2, 5))],
+        ),
+        // A binding called with no authored frame on the stack has no location.
+        (
+            "await Promise.resolve(\"x\").then(console.log);\nawait Promise.resolve(2).then(coral.emit);",
+            vec![],
+            vec![("log", None), ("emit", None)],
+        ),
+    ];
+    let mismatches = cases
+        .into_iter()
+        .filter_map(|(source, functions, expected)| {
+            let (_, host) = run_linked_with_recording_host(source, &functions);
+            let locations = host.locations.lock().expect("locations").clone();
+            (locations != expected)
+                .then(|| format!("{source:?}\n  got {locations:?}\n want {expected:?}"))
+        })
+        .collect::<Vec<_>>();
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
 #[test]

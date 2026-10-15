@@ -1,7 +1,7 @@
 use crate::lifecycle::RunRecord;
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
-use sea_query::{Expr, ExprTrait as _, Iden, Order, Query, SelectStatement, SimpleExpr};
+use sea_query::{Expr, ExprTrait as _, Iden, IntoIden, Order, Query, SelectStatement, SimpleExpr};
 use sqlx::FromRow;
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
@@ -64,42 +64,55 @@ pub(super) async fn insert_admission(
     admitted: &AdmittedInvocation,
     run: &RunRecord,
 ) -> Result<(), Error> {
+    let (location_columns, location_values): (Vec<_>, Vec<_>) =
+        crate::source_location_repository::values(admitted.source_location.as_ref())
+            .into_iter()
+            .unzip();
     let statement = Query::insert()
         .into_table(OperationInvocations::Table)
-        .columns([
-            OperationInvocations::Id,
-            OperationInvocations::WorkspaceId,
-            OperationInvocations::RunId,
-            OperationInvocations::ProviderId,
-            OperationInvocations::ProviderAccountSettingVersion,
-            OperationInvocations::CredentialRoute,
-            OperationInvocations::ProviderGenerationId,
-            OperationInvocations::OperationKey,
-            OperationInvocations::CallPath,
-            OperationInvocations::ArgumentsJson,
-            OperationInvocations::State,
-            OperationInvocations::AdmittedAtUnixNanos,
-        ])
-        .values_panic([
-            Expr::val(admitted.id.to_string()),
-            Expr::val(admitted.workspace_id.to_string()),
-            Expr::val(admitted.run_id.to_string()),
-            Expr::val(admitted.target.provider_access().id().to_string()),
-            Expr::val(admitted.target.provider_access().version()),
-            Expr::val(
-                admitted
-                    .target
-                    .provider_access()
-                    .credential_route()
-                    .as_storage_str(),
-            ),
-            Expr::val(admitted.target.provider_generation_id().to_string()),
-            Expr::val(admitted.target.operation().key().as_str()),
-            Expr::val(&admitted.call_path),
-            Expr::val(&admitted.arguments_json),
-            Expr::val(InvocationState::Pending.as_storage_str()),
-            Expr::val(admitted.admitted_at_unix_nanos),
-        ])
+        .columns(
+            [
+                OperationInvocations::Id,
+                OperationInvocations::WorkspaceId,
+                OperationInvocations::RunId,
+                OperationInvocations::ProviderId,
+                OperationInvocations::ProviderAccountSettingVersion,
+                OperationInvocations::CredentialRoute,
+                OperationInvocations::ProviderGenerationId,
+                OperationInvocations::OperationKey,
+                OperationInvocations::CallPath,
+                OperationInvocations::ArgumentsJson,
+                OperationInvocations::State,
+                OperationInvocations::AdmittedAtUnixNanos,
+            ]
+            .into_iter()
+            .map(IntoIden::into_iden)
+            .chain(location_columns.into_iter().map(IntoIden::into_iden)),
+        )
+        .values_panic(
+            [
+                Expr::val(admitted.id.to_string()),
+                Expr::val(admitted.workspace_id.to_string()),
+                Expr::val(admitted.run_id.to_string()),
+                Expr::val(admitted.target.provider_access().id().to_string()),
+                Expr::val(admitted.target.provider_access().version()),
+                Expr::val(
+                    admitted
+                        .target
+                        .provider_access()
+                        .credential_route()
+                        .as_storage_str(),
+                ),
+                Expr::val(admitted.target.provider_generation_id().to_string()),
+                Expr::val(admitted.target.operation().key().as_str()),
+                Expr::val(&admitted.call_path),
+                Expr::val(&admitted.arguments_json),
+                Expr::val(InvocationState::Pending.as_storage_str()),
+                Expr::val(admitted.admitted_at_unix_nanos),
+            ]
+            .into_iter()
+            .chain(location_values),
+        )
         .to_owned();
     transaction.execute(statement).await?;
     run_repository::advance_event_sequence(transaction, run, &admitted.claim_id, 1, 0).await?;

@@ -1,17 +1,19 @@
 //! V8 host callbacks and the synchronous/asynchronous execution bridge.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::execution::ExecutionStop;
 use crate::invocation::{InvocationHostError, OperationInvoker};
 use crate::program_output::{ProgramOutputWriteError, ProgramOutputWriter};
-use crate::{CoralFailure, ProgramLogLevel, ValueLimits};
+use crate::{CoralFailure, ProgramLogLevel, SourceDocument, SourceLocation, ValueLimits};
 
 use super::{ExecutionCompletion, ProgramEngine, ProgramPackage};
 
 pub(crate) async fn execute(
     engine: Arc<dyn ProgramEngine>,
     package: ProgramPackage,
+    linked_snapshots: HashMap<String, String>,
     invoker: OperationInvoker,
     output: ProgramOutputWriter,
     value_limits: ValueLimits,
@@ -21,6 +23,7 @@ pub(crate) async fn execute(
         runtime: tokio::runtime::Handle::current(),
         value_limits,
         stop: stop.clone(),
+        linked_snapshots,
         invoker,
         output,
     });
@@ -33,8 +36,32 @@ struct RunProgramHost {
     runtime: tokio::runtime::Handle,
     value_limits: ValueLimits,
     stop: Arc<ExecutionStop>,
+    /// Linked Saved Function path to the identity of the Run's snapshot.
+    linked_snapshots: HashMap<String, String>,
     invoker: OperationInvoker,
     output: ProgramOutputWriter,
+}
+
+impl RunProgramHost {
+    /// Names the Run's retained source for one V8 call site. A Saved Function
+    /// path without a retained snapshot gives no location rather than a guess.
+    fn source_location(
+        &self,
+        location: Option<coral_v8::AuthoredLocation>,
+    ) -> Option<SourceLocation> {
+        let location = location?;
+        let document = match location.source {
+            coral_v8::AuthoredSource::Program => SourceDocument::Program,
+            coral_v8::AuthoredSource::SavedFunction { path } => SourceDocument::SavedFunction {
+                saved_function_id: self.linked_snapshots.get(&path)?.clone(),
+            },
+        };
+        Some(SourceLocation {
+            document,
+            line: location.line,
+            column: location.column,
+        })
+    }
 }
 
 // A task panic must stop even noncooperative JavaScript, which may never poll
@@ -58,7 +85,9 @@ impl coral_v8::ProgramHost for RunProgramHost {
         self: Arc<Self>,
         call_path: String,
         arguments_json: String,
+        location: Option<coral_v8::AuthoredLocation>,
     ) -> coral_v8::OperationFuture {
+        let source_location = self.source_location(location);
         let runtime = self.runtime.clone();
         // Start independently of V8 polling. Run termination owns cancellation
         // and durable child shutdown even if execution drops this JoinHandle.
@@ -72,7 +101,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
                 }
             })?;
             self.invoker
-                .invoke(&call_path, arguments)
+                .invoke(&call_path, arguments, source_location)
                 .await
                 .map_err(|error| match error {
                     InvocationHostError::Rejected(failure) => {
@@ -97,9 +126,13 @@ impl coral_v8::ProgramHost for RunProgramHost {
         })
     }
 
-    fn emit(&self, value_json: &str) -> Result<(), coral_v8::ProgramOutputHostError> {
+    fn emit(
+        &self,
+        value_json: &str,
+        location: Option<coral_v8::AuthoredLocation>,
+    ) -> Result<(), coral_v8::ProgramOutputHostError> {
         self.runtime
-            .block_on(self.output.emit(value_json))
+            .block_on(self.output.emit(value_json, self.source_location(location)))
             .map_err(map_program_output_error)
     }
 
@@ -107,6 +140,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
         &self,
         level: coral_v8::ConsoleLevel,
         message: &str,
+        location: Option<coral_v8::AuthoredLocation>,
     ) -> Result<(), coral_v8::ProgramOutputHostError> {
         let level = match level {
             coral_v8::ConsoleLevel::Debug => ProgramLogLevel::Debug,
@@ -115,7 +149,10 @@ impl coral_v8::ProgramHost for RunProgramHost {
             coral_v8::ConsoleLevel::Error => ProgramLogLevel::Error,
         };
         self.runtime
-            .block_on(self.output.log(level, message))
+            .block_on(
+                self.output
+                    .log(level, message, self.source_location(location)),
+            )
             .map_err(map_program_output_error)
     }
 }

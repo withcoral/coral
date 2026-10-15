@@ -17,7 +17,9 @@ mod retention;
 mod run_row;
 mod termination;
 
-pub(crate) use acceptance::{insert_acceptance, load_package_in_transaction};
+pub(crate) use acceptance::{
+    insert_acceptance, linked_snapshot_ids_in_transaction, load_package_in_transaction,
+};
 pub(crate) use claims::{
     claim_execution_worker, mark_execution_started, release_unstarted_worker_claim,
     renew_worker_claim,

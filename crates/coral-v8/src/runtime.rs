@@ -3,11 +3,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
-use crate::source_map::decode_authored;
+use crate::source_map::{authored_location, decode_authored};
 use crate::v8_support::{evaluate_script, run_script};
 use crate::{
-    CompiledProgram, ConsoleLevel, Error, ExecutionOutput, IsolateLimits, OperationFuture,
-    OperationHostError, ProgramExecutionControl, ProgramHost, ProgramOutputHostError,
+    AuthoredLocation, CompiledProgram, ConsoleLevel, Error, ExecutionOutput, IsolateLimits,
+    OperationFuture, OperationHostError, ProgramExecutionControl, ProgramHost,
+    ProgramOutputHostError,
 };
 
 const FORBIDDEN_AMBIENT_GLOBALS: &str = include_str!("js/forbidden_ambient_globals.js");
@@ -18,6 +19,8 @@ const INVALID_FINAL_VALUE_MESSAGE: &str = "Final Value could not be serialized a
 const INVALID_EMISSION_MESSAGE: &str = "Program Emission is not a valid Program Value";
 const OUTPUT_LIMIT_MESSAGE: &str = "Program output exceeds its limit";
 const HOST_ERROR_PRIVATE_KEY: &str = "withcoral.ProgramHost#errorKind";
+// A host binding sits a few private and native frames above its authored caller.
+const HOST_STACK_MAX_FRAMES: usize = 16;
 
 /// Stateless executor that gives each Program a fresh V8 isolate.
 #[derive(Clone, Copy, Debug, Default)]
@@ -117,6 +120,7 @@ impl ProgramExecutor {
         if let Some(host) = host {
             isolate.set_slot(ProgramHostSlot {
                 host,
+                source_map: source_map.clone(),
                 terminated: Cell::new(false),
                 unhandled_invalid_outputs: Cell::new(0),
                 unhandled_output_limits: Cell::new(0),
@@ -215,6 +219,7 @@ impl ProgramExecutor {
 
 struct ProgramHostSlot {
     host: Arc<dyn ProgramHost>,
+    source_map: sourcemap::SourceMap,
     terminated: Cell<bool>,
     unhandled_invalid_outputs: Cell<usize>,
     unhandled_output_limits: Cell<usize>,
@@ -482,7 +487,9 @@ fn operation_callback(
     };
     return_value.set(resolver.get_promise(scope).into());
     let resolver = v8::Global::new(scope, resolver);
-    let call_stack = capture_operation_call_stack(scope);
+    let frames = capture_program_frames(scope);
+    let call_stack = operation_call_stack(&frames);
+    let location = authored_location_of(scope, &frames);
     if let Err(error) = host.value_limits().validate_json(&arguments_json) {
         let resolver = v8::Local::new(scope, resolver);
         let (code, message) = match error {
@@ -497,7 +504,7 @@ fn operation_callback(
         reject_coral_failure(scope, resolver, code, message, None, &call_stack);
         return;
     }
-    let operation = host.invoke(path, arguments_json);
+    let operation = host.invoke(path, arguments_json, location);
     scope
         .get_slot_mut::<ProgramHostSlot>()
         .expect("host installed")
@@ -505,26 +512,55 @@ fn operation_callback(
         .push((resolver, operation, call_stack));
 }
 
-fn capture_operation_call_stack(scope: &v8::PinScope<'_, '_>) -> String {
-    // Capture native frames while JavaScript is still on the stack, without
-    // consulting Program-controlled Error.stackTraceLimit or prepareStackTrace.
-    // Retain only bounded locations; existing source-map projection handles them.
-    let Some(stack) = v8::StackTrace::current_stack_trace(scope, 16) else {
-        return String::new();
+/// Captures the private emitted script's frames, innermost first, while the
+/// binding's caller is still on the stack and before any asynchronous host work.
+///
+/// Reads V8's native stack, so Program-controlled `Error.stackTraceLimit` and
+/// `prepareStackTrace` cannot change it. Bootstrap and builtin frames are not
+/// part of the emitted script and are skipped.
+fn capture_program_frames(scope: &v8::PinScope<'_, '_>) -> Vec<(usize, usize)> {
+    let Some(stack) = v8::StackTrace::current_stack_trace(scope, HOST_STACK_MAX_FRAMES) else {
+        return Vec::new();
     };
     (0..stack.get_frame_count())
         .filter_map(|index| {
             let frame = stack.get_frame(scope, index)?;
             let name = frame.get_script_name(scope)?;
-            (name.to_rust_string_lossy(scope) == "program.js").then(|| {
-                format!(
-                    "at program.js:{}:{}\n",
-                    frame.get_line_number(),
-                    frame.get_column()
-                )
-            })
+            (name.to_rust_string_lossy(scope) == "program.js")
+                .then(|| (frame.get_line_number(), frame.get_column()))
         })
         .collect()
+}
+
+/// Maps the innermost emitted frame to its authored location. A private
+/// wrapper position there, or no emitted frame at all, means no location
+/// rather than a guess at an outer caller.
+fn authored_location_of(
+    scope: &v8::PinScope<'_, '_>,
+    frames: &[(usize, usize)],
+) -> Option<AuthoredLocation> {
+    let &(line, column) = frames.first()?;
+    let slot = scope.get_slot::<ProgramHostSlot>()?;
+    authored_location(
+        &slot.source_map,
+        u32::try_from(line).ok()?,
+        u32::try_from(column).ok()?,
+    )
+}
+
+fn capture_authored_location(scope: &v8::PinScope<'_, '_>) -> Option<AuthoredLocation> {
+    authored_location_of(scope, &capture_program_frames(scope))
+}
+
+// Bounded emitted locations; existing source-map projection handles them.
+fn operation_call_stack(frames: &[(usize, usize)]) -> String {
+    use std::fmt::Write as _;
+    frames
+        .iter()
+        .fold(String::new(), |mut stack, (line, column)| {
+            let _infallible = writeln!(stack, "at program.js:{line}:{column}");
+            stack
+        })
 }
 
 #[expect(
@@ -550,6 +586,7 @@ fn program_emission_callback(
         return;
     };
     let encoded = encoded.to_rust_string_lossy(scope);
+    let location = capture_authored_location(scope);
     let Some(host) = scope
         .get_slot::<ProgramHostSlot>()
         .map(|slot| slot.host.clone())
@@ -564,7 +601,7 @@ fn program_emission_callback(
             coral_value::ValueError::Invalid => ProgramOutputHostError::InvalidValue,
             coral_value::ValueError::TooLarge => ProgramOutputHostError::LimitExceeded,
         });
-    match validated.and_then(|_value| host.emit(&encoded)) {
+    match validated.and_then(|_value| host.emit(&encoded, location)) {
         Ok(()) => resolve_void_promise(scope, &mut return_value),
         Err(
             error @ (ProgramOutputHostError::InvalidValue | ProgramOutputHostError::LimitExceeded),
@@ -601,6 +638,7 @@ fn program_log_callback(
         }
     };
     let message = message.to_rust_string_lossy(scope);
+    let location = capture_authored_location(scope);
     let Some(host) = scope
         .get_slot::<ProgramHostSlot>()
         .map(|slot| slot.host.clone())
@@ -608,7 +646,7 @@ fn program_log_callback(
         terminate_program_host(scope);
         return;
     };
-    match host.log(level, &message) {
+    match host.log(level, &message, location) {
         Ok(()) => {}
         Err(
             error @ (ProgramOutputHostError::InvalidValue | ProgramOutputHostError::LimitExceeded),
@@ -848,7 +886,7 @@ fn reject_operation_promise(
         terminate_program_host(scope);
         return;
     };
-    let call_stack = capture_operation_call_stack(scope);
+    let call_stack = operation_call_stack(&capture_program_frames(scope));
     reject_coral_failure(scope, resolver, code, message, None, &call_stack);
     return_value.set(resolver.get_promise(scope).into());
 }

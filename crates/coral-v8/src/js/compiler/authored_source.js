@@ -1,7 +1,16 @@
+// Counts lines by ECMAScript line terminators, as TypeScript's emitter and V8
+// do: CRLF once, and each CR, LF, U+2028 or U+2029 otherwise.
+function sourceLineCount(text) {
+  return ts.computeLineStarts(text).length;
+}
+
 function programAuthoredMappings(body, generatedLineOffset = 1) {
   const mappings = [];
   if (body.length > 0) {
-    body.split("\n").forEach((_line, index) => {
+    // A trailing CR joins the wrapper's next LF into one CRLF, so the empty
+    // authored line after it never reaches the compiled source.
+    const lineCount = sourceLineCount(body) - (body.endsWith("\r") ? 1 : 0);
+    for (let index = 0; index < lineCount; index += 1) {
       mappings.push({
         generatedLine: generatedLineOffset + index,
         generatedColumn: 0,
@@ -9,7 +18,7 @@ function programAuthoredMappings(body, generatedLineOffset = 1) {
         line: index,
         column: 0,
       });
-    });
+    }
   }
   return mappings;
 }

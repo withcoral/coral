@@ -11,6 +11,8 @@ mod health_service_tests;
 mod oidc_login_tests;
 #[path = "grpc/private_access_tests.rs"]
 mod private_access_tests;
+#[path = "grpc/record_locations_tests.rs"]
+mod record_locations_tests;
 #[path = "grpc/server_lifecycle_tests.rs"]
 mod server_lifecycle_tests;
 #[path = "grpc/session_auth.rs"]

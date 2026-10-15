@@ -7,7 +7,8 @@ use coral_workspace::WorkspaceId;
 
 use crate::engine::Clock;
 use crate::{
-    Error, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel, ProgramValue, RunId, run_repository,
+    Error, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel, ProgramValue, RunId, SourceLocation,
+    run_repository,
 };
 
 #[derive(Clone)]
@@ -39,7 +40,11 @@ impl ProgramOutputWriter {
         }
     }
 
-    pub(crate) async fn emit(&self, encoded_json: &str) -> Result<(), ProgramOutputWriteError> {
+    pub(crate) async fn emit(
+        &self,
+        encoded_json: &str,
+        location: Option<SourceLocation>,
+    ) -> Result<(), ProgramOutputWriteError> {
         let value = match ProgramValue::with_limits(encoded_json.to_string(), self.limits) {
             Ok(value) => value,
             Err(Error::ProgramValueTooLarge) => {
@@ -50,7 +55,7 @@ impl ProgramOutputWriter {
             }
             Err(error) => return Err(ProgramOutputWriteError::Fatal(error)),
         };
-        self.append(Output::Emission(value))
+        self.append(Output::Emission(value), location)
             .await
             .map_err(output_error)
     }
@@ -59,19 +64,23 @@ impl ProgramOutputWriter {
         &self,
         level: ProgramLogLevel,
         message: &str,
+        location: Option<SourceLocation>,
     ) -> Result<(), ProgramOutputWriteError> {
         if message.len() > PROGRAM_LOG_MESSAGE_MAX_BYTES {
             return Err(ProgramOutputWriteError::LimitExceeded);
         }
-        self.append(Output::Log {
-            level,
-            message: message.to_string(),
-        })
+        self.append(
+            Output::Log {
+                level,
+                message: message.to_string(),
+            },
+            location,
+        )
         .await
         .map_err(output_error)
     }
 
-    async fn append(&self, output: Output) -> Result<(), Error> {
+    async fn append(&self, output: Output, location: Option<SourceLocation>) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let Some(run) =
             run_repository::hold_run(&mut transaction, &self.workspace_id, &self.run_id).await?
@@ -89,8 +98,14 @@ impl ProgramOutputWriter {
         }
         let occurred_at_unix_nanos = occurred_at_unix_nanos.max(run.accepted_at_unix_nanos);
         let (bytes, event) = match &output {
-            Output::Emission(value) => (value.encoded_json().len(), NewEvent::Emitted(value)),
-            Output::Log { level, message } => (message.len(), NewEvent::Logged(*level, message)),
+            Output::Emission(value) => (
+                value.encoded_json().len(),
+                NewEvent::Emitted(value, location.as_ref()),
+            ),
+            Output::Log { level, message } => (
+                message.len(),
+                NewEvent::Logged(*level, message, location.as_ref()),
+            ),
         };
         if !run.output_fits(bytes) {
             return Err(Error::ProgramValueTooLarge);
