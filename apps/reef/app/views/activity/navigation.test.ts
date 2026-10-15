@@ -1,7 +1,16 @@
-import { expect, it } from 'vitest'
-import { activityPage } from './fixtures'
-import { activityNavigation } from './navigation'
-import type { ActivityPage } from './types'
+import { describe, expect, it } from 'vitest'
+import { activityPage, runRow, taskRow, toolRow } from './fixtures'
+import {
+  activityNavigation,
+  activityStops,
+  recordParents,
+  resolveStop,
+  stepStop,
+  stopPosition,
+  type ActivityStop,
+  type StopPosition,
+} from './navigation'
+import type { ActivityPage, ActivityRow } from './types'
 
 const task = 'workspaces/w/tasks/t'
 const run = 'workspaces/w/runs/r'
@@ -208,4 +217,115 @@ it('names no anchor at the newest records and drops the coordinates of page link
   const query = target(nav.recordHref(run))
   for (const key of ['anchor', 'after', 'before', 'rootMode', 'root'])
     expect(query.has(key)).toBe(false)
+})
+
+const output = (parent: string, id: string, position: number): ActivityRow => ({
+  kind: 'output',
+  name: `${parent}/${id}`,
+  workspace: 'workspaces/finance',
+  run: parent,
+  label: id,
+  startedAt: '2026-09-18T14:02:00.000Z',
+  eventKind: 'program.emitted',
+  agent: '',
+  position,
+})
+const childPage = (rows: ActivityRow[], total: number) => ({
+  rows,
+  total: String(total),
+  next: '',
+  unavailable: false,
+})
+const positionOf = (row: ActivityRow): StopPosition => ({
+  name: row.name,
+  parents: recordParents(row),
+})
+/** The record a position rests on, if any. */
+const restsOn = (list: ActivityStop[], position: StopPosition) => {
+  const stop = list[resolveStop(list, position)]
+  return stop?.kind === 'record' ? stop.row.name : undefined
+}
+
+describe('keyboard traversal', () => {
+  const [a, c, d, e] = ['a', 'c', 'd', 'e'].map((id) => taskRow(id))
+  const b = runRow('b', a.name, { position: 1 })
+  const first = toolRow(a.name, 'first', { position: 0 })
+  const last = toolRow(a.name, 'last', { position: 3 })
+  const emitted = output(b.name, 'events/1', 0)
+  const logged = output(b.name, 'events/2', 1)
+  const final = output(b.name, 'final', 4)
+  // a ▸ first, b ▸ (emitted, logged, ·gap·, final), ·gap·, last; c collapsed;
+  // d's history is unavailable; e.
+  const tree = activityPage({
+    rows: [a, c, d, e],
+    expanded: [a.name, b.name, d.name],
+    branches: {
+      [a.name]: childPage([first, b, last], 4),
+      [b.name]: childPage([emitted, logged, final], 5),
+      [d.name]: { ...childPage([], 0), unavailable: true },
+    },
+  })
+  const stops = activityStops(tree, tree.rows)
+  /** Every record ↓ or ↑ reaches from `from`, until it stops. */
+  const walk = (from: ActivityRow | null, step: 1 | -1) => {
+    const reached: string[] = []
+    let position = from && positionOf(from)
+    for (let next = stepStop(stops, position, step); next; next = stepStop(stops, position, step)) {
+      reached.push(next.row.name)
+      position = stopPosition(next)
+    }
+    return reached
+  }
+
+  it.each<[string, ActivityRow | null, 1 | -1, ActivityRow[]]>([
+    [
+      '↓ with no cursor starts at the first record and stops at a gap',
+      null,
+      1,
+      [a, first, b, emitted, logged],
+    ],
+    ['↑ with no cursor starts at the last record and stops at unavailable history', null, -1, [e]],
+    ['↑ from the first record does not wrap', a, -1, []],
+    ['↓ from the last record does not wrap', e, 1, []],
+    ['↓ stops before a gap between child ordinals', logged, 1, []],
+    ['↑ stops after a gap between child ordinals', final, -1, []],
+    ['↓ from a final value stops at the gap that follows its Run', final, 1, []],
+    ['↓ leaves a branch for the next loaded sibling', last, 1, [c, d]],
+    ['↑ from a collapsed record reaches the record above its sibling branch', c, -1, [last]],
+    ['↓ stops at unavailable history', c, 1, [d]],
+    ['↑ stops at unavailable history from below', e, -1, []],
+  ])('%s', (_name, from, step, expected) => {
+    expect(walk(from, step)).toEqual(expected.map((row) => row.name))
+  })
+
+  it('does nothing in an empty table', () => {
+    expect(stepStop(activityStops(activityPage(), []), null, 1)).toBeNull()
+  })
+
+  it('rests a record inside a collapsed branch on that branch, and an expanded branch never stands in', () => {
+    const collapsed = activityStops({ ...tree, expanded: [a.name, d.name] }, tree.rows)
+    const hidden = positionOf(final)
+    expect(restsOn(collapsed, hidden)).toBe(b.name)
+    // The gap at ordinal 2 follows b, as when it shows its children.
+    expect(stepStop(collapsed, hidden, 1)).toBeNull()
+    expect(stepStop(collapsed, hidden, -1)?.row.name).toBe(first.name)
+    // b is expanded but its window lacks this record: no stop until it arrives.
+    expect(resolveStop(stops, positionOf(output(b.name, 'events/3', 2)))).toBe(-1)
+    expect(stepStop(stops, positionOf(output(b.name, 'events/3', 2)), 1)).toBeNull()
+  })
+
+  it('names the parents of a final value that only its URL identifies', () => {
+    expect(recordParents(b, `${b.name}/final`)).toEqual([b.name, a.name])
+    expect(recordParents(b)).toEqual([a.name])
+  })
+
+  it('follows a submission to the Run it was accepted as', () => {
+    const submission = toolRow(a.name, 'submitted', { position: 1, acceptedRun: b.name })
+    const accepted = { ...b, submission: { ...submission, position: undefined } } as ActivityRow
+    const replaced = activityStops(
+      { ...tree, branches: { ...tree.branches, [a.name]: childPage([first, accepted, last], 4) } },
+      tree.rows,
+    )
+    expect(restsOn(replaced, positionOf(submission))).toBe(b.name)
+  })
 })

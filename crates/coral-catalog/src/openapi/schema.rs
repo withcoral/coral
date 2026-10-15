@@ -147,6 +147,10 @@ impl<'a> OpenApiSchemaGraphBuilder<'a> {
         self.schemas.schema(id)
     }
 
+    pub(super) const fn semantics(&self) -> SchemaSemantics {
+        self.semantics
+    }
+
     pub(super) fn finish(self) -> Result<SchemaGraph, CatalogDiagnostic> {
         self.schemas.finish()
     }

@@ -31,7 +31,10 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
         openApiDocument(
           'Keys',
           Object.fromEntries(
-            Array.from({ length: 150 }, (_, index) => [`op${String(index).padStart(3, '0')}`, {}]),
+            Array.from({ length: 150 }, (_, index) => [
+              `op${String(index).padStart(3, '0')}`,
+              { method: 'post' as const },
+            ]),
           ),
         ),
         'keys',
@@ -39,7 +42,7 @@ test('The keyboard drives the operations table, its drawer, and its policy', asy
       await publishWorkspaceProvider(
         actor.accessToken,
         `workspaces/${workspace}`,
-        openApiDocument('Aside', { other: {} }),
+        openApiDocument('Aside', { other: { method: 'post' } }),
         'aside',
       )
       // A short viewport keeps most of the large catalog out of view.

@@ -5,7 +5,7 @@ import { joinAsOwner, managementClients } from '../../../support/management.ts'
 import { pickPerson } from '../../../support/members.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
 
-test('Open Add members dialogs respect archive, restoration and live self-demotion', async (context) => {
+test('Open Add members dialogs respect archive, in-place restoration and live self-demotion', async (context) => {
   const { owner, alice, bob } = await createActors(context)
   const api = managementClients(owner.accessToken)
   const workspace = await managementClients(alice.accessToken).workspaces.createWorkspace({
@@ -42,13 +42,12 @@ test('Open Add members dialogs respect archive, restoration and live self-demoti
           ).memberships.some((m) => m.user === `users/${bob.userId}`),
         ).toBe(false)
         await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-        await page.getByRole('link', { name: 'Live authority settings', exact: true }).click()
-        const settings = page.getByRole('dialog', { name: 'Workspace settings', exact: true })
-        await settings.getByRole('button', { name: 'Restore workspace', exact: true }).click()
-        await settings.getByRole('button', { name: 'Save name', exact: true }).waitFor()
-        await page.keyboard.press('Escape')
-        await expect.poll(() => settings.count()).toBe(0)
-        await page.getByRole('link', { name: 'Members', exact: true }).click()
+        // The banner restores the Workspace in place, without leaving Members.
+        const banner = page.getByText('This workspace is archived', { exact: true })
+        await banner.waitFor()
+        await page.getByRole('button', { name: 'Restore workspace', exact: true }).click()
+        await expect.poll(() => banner.count()).toBe(0)
+        expect(new URL(page.url()).pathname).toBe(`${path}/members`)
       })
       await step(
         'Live demotion defeats the already-open Owner form and refreshes navigation',
@@ -73,31 +72,19 @@ test('Open Add members dialogs respect archive, restoration and live self-demoti
           await expect
             .poll(() => page.getByRole('button', { name: 'Add members', exact: true }).count())
             .toBe(0)
-          expect(
-            await page.getByRole('link', { name: 'Live authority settings', exact: true }).count(),
-          ).toBe(0)
+          const archive = page.getByRole('button', { name: 'Archive Live authority', exact: true })
+          expect(await archive.count()).toBe(0)
           expect(
             (
               await api.memberships.listWorkspaceMemberships({ parent: workspace.name })
             ).memberships.some((m) => m.user === `users/${bob.userId}`),
           ).toBe(false)
           await page.reload()
-          expect(
-            await page.getByRole('link', { name: 'Live authority settings', exact: true }).count(),
-          ).toBe(0)
-          const denied = await page.goto(`${path}/settings`)
-          expect(denied?.status()).toBe(403)
-          // The error replaces the Overview rather than rendering beneath it.
+          // The header still offers its endpoint, beside where the archive icon was.
           await page
-            .getByRole('navigation', { name: 'breadcrumb', exact: true })
-            .getByRole('heading', { name: 'Error', exact: true, level: 1 })
+            .getByRole('button', { name: 'Copy Live authority MCP endpoint', exact: true })
             .waitFor()
-          expect(
-            await page.getByRole('heading', { name: 'Live authority', exact: true }).count(),
-          ).toBe(0)
-          expect(
-            await page.getByRole('link', { name: 'Live authority settings', exact: true }).count(),
-          ).toBe(0)
+          expect(await archive.count()).toBe(0)
         },
       )
     },

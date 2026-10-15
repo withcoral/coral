@@ -29,7 +29,7 @@ export interface AddProviderEntryProps {
 }
 
 /** Source details must be answered before a catalog recipe can be read. */
-function needsSourceDetails(recipe: SourceChoice) {
+export function needsSourceDetails(recipe: SourceChoice) {
   return (
     Boolean(recipe.sourceInputs?.length) ||
     (recipe.requestHeaders?.some((header) => !header.value) ?? false)

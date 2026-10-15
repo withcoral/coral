@@ -79,7 +79,7 @@ export function AuthorizationPage({
               {(input) => <Inputs.CredentialInput {...input} />}
             </CredentialFields>
             <Typography.BodySmall as="p">
-              Enter the credentials from {v.providerName}. Coral does not show them again.
+              Enter the credentials from {v.providerName}.
             </Typography.BodySmall>
             <Button.TextButton type="submit">Connect account</Button.TextButton>
           </form>

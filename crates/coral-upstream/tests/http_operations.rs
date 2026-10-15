@@ -883,6 +883,17 @@ async fn complete_responses_decode_by_their_declared_media_and_schema() {
             charset: None,
             diagnostics: &["schema_incompatible"],
         },
+        // OpenAPI 3.1 ignores `nullable`, so null keeps its data but is reported.
+        DecodeCase {
+            status: 200,
+            content_type: Some("application/json"),
+            body: b"null",
+            declared: "application/json:\n  schema: { type: string, nullable: true }",
+            data: serde_json::Value::Null,
+            media_type: Some("application/json"),
+            charset: Some("utf-8"),
+            diagnostics: &["schema_incompatible"],
+        },
         DecodeCase {
             status: 200,
             content_type: Some("application/json; charset=windows-1252"),

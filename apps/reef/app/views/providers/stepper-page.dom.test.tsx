@@ -1,0 +1,82 @@
+/** @vitest-environment happy-dom */
+
+import { screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { expect, it, vi } from 'vitest'
+import { renderRoute } from '@/test-support/route'
+
+import { StepperPage } from './stepper-page'
+import type { SetupView } from './types'
+
+vi.mock('@/wax/components/toast', () => ({ addToast: vi.fn() }))
+
+const basePath = '/workspaces/demo/providers/new'
+const typed = 'https://records.example.com/mcp?token=secret'
+const setup: SetupView = {
+  id: '11111111-1111-4111-8111-111111111111',
+  kind: 'mcp',
+  state: 'expired',
+  credentialMethod: 'none',
+  credentialFields: [],
+  authorized: false,
+  grantedScope: '',
+  authorization: null,
+  discoveryFailure: '',
+  expiresAt: '',
+  sourceLabel: typed,
+  sourceHost: 'records.example.com',
+  serverName: '',
+}
+
+// Catches: a typed URL, which can hold a token, sent in the action's address
+// where access logs keep it; or a failed Start again with no way to fix the source.
+it('starts a typed URL again without it in the address, and offers the source form after a refusal', async () => {
+  const posts: { url: URL; sourceUrl: FormDataEntryValue | null }[] = []
+  renderRoute(
+    <StepperPage
+      workspace={{
+        name: 'workspaces/demo',
+        displayName: 'Demo',
+        state: 'active',
+        etag: 'workspace-etag',
+        effectiveRole: 'owner',
+        currentUser: 'users/test',
+        profile: { user: 'users/test', name: 'Test', email: '', local: true },
+        mcpEndpoint: '',
+        path: '/workspaces/demo',
+      }}
+      basePath={basePath}
+      cancelPath="/workspaces/demo/providers"
+      setup={setup}
+      attempt={{
+        state: 'draft',
+        kind: 'workspace',
+        setupId: setup.id,
+        configure: false,
+        operationsAccepted: false,
+        account: null,
+        namespace: '',
+      }}
+      callbackUrl=""
+      form={{ csrf: 'test-csrf', requestId: 'test-request' }}
+    />,
+    {
+      entry: `${basePath}?setup=${setup.id}`,
+      action: async ({ request }) => {
+        const fields = await request.formData()
+        posts.push({ url: new URL(request.url), sourceUrl: fields.get('sourceUrl') })
+        return { error: 'Coral cannot reach this server.' }
+      },
+    },
+  )
+  expect(screen.queryByRole('link', { name: 'Choose a source' })).not.toBeInTheDocument()
+
+  await userEvent.click(screen.getByRole('button', { name: 'Start again' }))
+  const choose = await screen.findByRole('link', { name: 'Choose a source' })
+  expect(posts).toHaveLength(1)
+  expect(posts[0].url.pathname).toBe(basePath)
+  expect(posts[0].url.search).not.toContain('records.example.com')
+  expect(posts[0].sourceUrl).toBe(typed)
+  expect(choose).toHaveAttribute('href', basePath)
+  expect(screen.getByRole('button', { name: 'Start again' })).toBeEnabled()
+})
