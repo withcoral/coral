@@ -13,6 +13,7 @@
   "$defs": {
     "SearchResult": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "hits": {
           "type": "array",
@@ -20,153 +21,82 @@
             "$ref": "#/$defs/SearchHit"
           }
         },
-        "next_cursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "has_more": {
           "type": "boolean"
+        },
+        "next_cursor": {
+          "type": "string",
+          "description": "Present only while `has_more` is true."
         },
         "retriever_statuses": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/RetrieverStatus"
           },
-          "description": "One status per retriever: whether it ranked, and how much it searched."
+          "description": "The retrievers whose results may be missing; absent when none are."
         }
       },
       "required": [
         "hits",
-        "next_cursor",
-        "has_more",
-        "retriever_statuses"
+        "has_more"
       ]
     },
     "SearchHit": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "call_path": {
-              "type": "string"
-            },
-            "signature_line": {
-              "type": "string",
-              "description": "The callable's input members one level deep and its result type by\nname, at most 512 UTF-8 bytes."
-            },
-            "description_snippet": {
-              "type": "string",
-              "description": "At most 512 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
-            },
-            "evidence": {
-              "$ref": "#/$defs/Evidence"
-            },
-            "provider_display_name": {
-              "type": "string"
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "hints": {
-              "$ref": "#/$defs/Hints"
-            },
-            "approval_required": {
-              "type": "boolean"
-            },
-            "deprecated": {
-              "type": "boolean"
-            },
-            "guidance_snippet": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "description": "Present only when a query term matched the guidance."
-            },
-            "matched_tags": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "The tags a query term matched; absent when none did."
-            },
-            "kind": {
-              "type": "string",
-              "const": "operation"
-            }
-          },
-          "required": [
-            "kind",
-            "call_path",
-            "signature_line",
-            "description_snippet",
-            "evidence",
-            "provider_display_name",
-            "title",
-            "hints",
-            "approval_required",
-            "deprecated"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "call_path": {
-              "type": "string"
-            },
-            "signature_line": {
-              "type": "string",
-              "description": "The callable's input members one level deep and its result type by\nname, at most 512 UTF-8 bytes."
-            },
-            "description_snippet": {
-              "type": "string",
-              "description": "At most 512 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
-            },
-            "evidence": {
-              "$ref": "#/$defs/Evidence"
-            },
-            "kind": {
-              "type": "string",
-              "const": "saved_function"
-            }
-          },
-          "required": [
-            "kind",
-            "call_path",
-            "signature_line",
-            "description_snippet",
-            "evidence"
-          ]
-        }
-      ],
-      "description": "One Search Hit. Call a read from it when its signature line is complete:\nno cut marker (`…`) and no type named in its input that the line does not\nshow. Describe first otherwise, and before a write."
-    },
-    "Evidence": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "fields": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        "call_path": {
+          "type": "string",
+          "description": "`coral.providers.<namespace>.…` for an Operation,\n`coral.functions.…` for a Saved Function."
         },
-        "paths": {
+        "signature_line": {
+          "type": "string",
+          "description": "The callable's input members one level deep and its result type by\nname, at most 512 UTF-8 bytes."
+        },
+        "description_snippet": {
+          "type": "string",
+          "description": "At most 512 UTF-8 bytes of the description, around the first matched\nterm; `…` marks cut text."
+        },
+        "guidance_snippet": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Present only when a query term matched the guidance."
+        },
+        "matched_tags": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "The tags a query term matched; absent when none did."
+        },
+        "matched_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The arguments a query term matched that the signature line does not\nshow; absent when there are none."
+        },
+        "hints": {
+          "$ref": "#/$defs/Hints",
+          "description": "Present only when the Provider declared a hint."
+        },
+        "approval_required": {
+          "type": "boolean",
+          "description": "Present, and true, only when a person must approve each call."
+        },
+        "deprecated": {
+          "type": "boolean",
+          "description": "Present, and true, only when the Operation is deprecated."
         }
       },
       "required": [
-        "fields",
-        "paths"
-      ]
+        "call_path",
+        "signature_line",
+        "description_snippet"
+      ],
+      "description": "One Search Hit. Call a read from it when its signature line is complete:\nno cut marker (`…`) and no type named in its input that the line does not\nshow. Describe first otherwise, and before a write."
     },
     "Hints": {
       "type": "object",
@@ -217,13 +147,10 @@
     "RetrieverState": {
       "type": "string",
       "enum": [
-        "results_found",
-        "empty",
-        "skipped",
         "partial",
         "error"
       ],
-      "description": "`partial` and `error` mean results may be missing: retry shortly or list\nwithout a query. Only a search that an earlier Coral retained holds\n`skipped`: its Provider filter left this kind out."
+      "description": "- `partial`: some Providers or Saved Functions are not indexed yet, or\n  failed; results may be missing.\n- `error`: the retriever could not rank; its results are missing.\n\nRetry shortly or list without a query."
     },
     "RetrieverCoverage": {
       "type": "object",

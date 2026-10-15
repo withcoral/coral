@@ -436,6 +436,7 @@ impl OperationInvoker {
             &mut transaction,
             &policy_target,
             target.operation().hints(),
+            target.operation().http_method(),
         )
         .await?
         .access_state();
@@ -618,6 +619,7 @@ impl OperationInvoker {
             tx,
             &policy_target(&self.workspace_id, &admitted.target),
             admitted.target.operation().hints(),
+            admitted.target.operation().http_method(),
         )
         .await
         .ok()
@@ -950,6 +952,7 @@ impl OperationInvoker {
             tx,
             &policy_target(&self.workspace_id, &admitted.target),
             admitted.target.operation().hints(),
+            admitted.target.operation().http_method(),
         )
         .await
         .map_err(|error| match error {

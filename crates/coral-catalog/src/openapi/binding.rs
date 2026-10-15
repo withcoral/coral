@@ -25,6 +25,15 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
+    /// The methods RFC 9110 defines as safe: a client does not request a state change.
+    pub const SAFE: [Self; 4] = [Self::Get, Self::Head, Self::Options, Self::Trace];
+
+    /// Returns whether RFC 9110 defines this method as safe.
+    #[must_use]
+    pub fn is_safe(self) -> bool {
+        Self::SAFE.contains(&self)
+    }
+
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "get" => Some(Self::Get),

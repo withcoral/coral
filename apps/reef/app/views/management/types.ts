@@ -17,7 +17,7 @@ export interface ActionResult {
   error: string | null
   credential: string | null
   message?: string
-  /** The emails an add refused, so the dialog keeps only them for a retry. */
+  /** The people a batch refused, so the dialog keeps only them for a retry. */
   refused?: string[]
   agentDisplayName?: string
   mcpEndpoint?: string

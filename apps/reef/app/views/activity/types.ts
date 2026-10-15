@@ -314,23 +314,25 @@ export type DiscoveryContext =
 /** A kind of Search Entity, as Coral stores it. */
 export type DiscoveryEntityKind = 'operation' | 'saved_function'
 /** What an Operation's provider and Workspace policy state about a call. */
-export interface OperationFacts {
-  providerLabel: string
+export interface OperationFlags {
   approvalRequired: boolean
   deprecated: boolean
   hints: OperationHintsView
 }
+export interface OperationFacts extends OperationFlags {
+  providerLabel: string
+}
 export interface SearchHit {
   kind: DiscoveryEntityKind
   callPath: string
-  /** The Operation's title, or the path a Saved Function has under `coral.functions`. */
+  /** The Operation's title when the page states it, otherwise the path under its namespace. */
   title: string
   signatureLine: string
   /** Cut Markdown. Show it as text. */
   descriptionSnippet: string
   guidanceSnippet: string | null
-  operation: OperationFacts | null
-  /** Why the hit matched: field names, tags, and declaration paths. */
+  operation: OperationFlags | null
+  /** Why the hit matched: tags, and the field names and declaration paths an untrimmed page lists. */
   matched: { fields: string[]; tags: string[]; paths: string[] }
   /** Today's catalog page for the target; null when the target is gone. */
   currentHref: string | null

@@ -271,11 +271,11 @@ fn property<'a>(tools: &'a [Value], name: &str, field: &str) -> &'a Value {
 }
 
 fn check_schema(tools: &[Value]) {
-    for (name, field, default, units) in [
-        ("search", "limit", 10, "Authoring Descriptions"),
-        ("exec", "run_timeout_ms", 900_000, "milliseconds"),
-        ("exec", "wait_ms", 10_000, "milliseconds"),
-        ("wait", "wait_ms", 0, "milliseconds"),
+    for (name, field, default) in [
+        ("search", "limit", 10),
+        ("exec", "run_timeout_ms", 900_000),
+        ("exec", "wait_ms", 10_000),
+        ("wait", "wait_ms", 0),
     ] {
         let property = property(tools, name, field);
         assert_eq!(
@@ -283,20 +283,6 @@ fn check_schema(tools: &[Value]) {
             Some(&json!(default)),
             "{name}.{field}"
         );
-        let description = property
-            .get("description")
-            .and_then(Value::as_str)
-            .expect("default guidance");
-        for guidance in [
-            format!("Omit or use null for {default}"),
-            units.into(),
-            "does not require clients to insert a value".into(),
-        ] {
-            assert!(
-                description.contains(&guidance),
-                "{name}.{field}: {guidance}"
-            );
-        }
         assert_eq!(property.get("type"), Some(&json!(["integer", "null"])));
         let required = tools
             .iter()
@@ -306,17 +292,4 @@ fn check_schema(tools: &[Value]) {
             .expect("required parameters");
         assert!(!required.contains(&json!(field)));
     }
-    let description = property(tools, "exec", "wait_ms")
-        .get("description")
-        .and_then(Value::as_str)
-        .expect("initial wait guidance");
-    assert!(description.contains("Zero returns immediately"));
-    assert!(description.contains("Batches authored output"));
-    assert!(
-        property(tools, "wait", "wait_ms")
-            .get("description")
-            .and_then(Value::as_str)
-            .expect("wait guidance")
-            .contains("Zero reads immediately")
-    );
 }

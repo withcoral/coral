@@ -12,7 +12,7 @@ import type {
   DiscoveryContext,
   DiscoveryEntityKind,
   InteractionEvidence,
-  OperationFacts,
+  OperationFlags,
   SearchHit,
   SearchPage,
 } from '../types'
@@ -146,10 +146,11 @@ function CoverageRow({
   )
 }
 
+/** A trimmed page states coverage only for a kind whose results may be missing. */
 function SearchLedger({ page }: { page: SearchPage }) {
   return (
     <>
-      <CoverageStrip page={page} />
+      {(page.coverage.length > 0 || page.hasMore) && <CoverageStrip page={page} />}
       {page.hits.length === 0 ? (
         <Typography.Body>This page has no results.</Typography.Body>
       ) : (
@@ -221,7 +222,7 @@ const hintLabels: [keyof OperationHintsView, string][] = [
   ['openWorld', 'open world'],
 ]
 /** A hint shows only when the provider declared it; a declared false reads "not". */
-function Flags({ operation }: { operation: OperationFacts }) {
+function Flags({ operation }: { operation: OperationFlags }) {
   return (
     <>
       {operation.approvalRequired && (

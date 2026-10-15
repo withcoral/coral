@@ -396,6 +396,8 @@ export interface UpdatePageProps {
   application?: { clientId: string; secretConfigured: boolean; problem: boolean }
   callbackUrl?: string
   displayName: string
+  /** The provider's version now. Start again opens a new Setup against it. */
+  etag?: string
   basePath: string
   cancelPath: string
   /** The provider's settings, where Edit configuration opens from. */

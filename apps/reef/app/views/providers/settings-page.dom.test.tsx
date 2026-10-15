@@ -91,6 +91,10 @@ async function render(
   return { submissions }
 }
 
+// Your account under Accounts, with the way back to these settings.
+const yourAccountPath = `/workspaces/demo/accounts/${provider.id}?${new URLSearchParams({
+  returnTo: `${provider.path}/settings`,
+})}`
 const text = () => document.body.textContent ?? ''
 const byLabel = (label: string) => document.querySelector<HTMLElement>(`[aria-label="${label}"]`)
 const named = (role: 'button' | 'link', name: string) =>
@@ -203,13 +207,11 @@ test('each account setting explains whose account calls use', async () => {
   expect(byLabel('Individual accounts')?.textContent).toContain('Not connected')
   // The account's actions sit inside its card.
   expect(byLabel('Individual accounts')?.textContent).toContain('Change account setting')
+  // Your own account connects in a dialog on this page.
   expect(
-    named('link', 'Connect your account')?.closest('[aria-label="Individual accounts"]'),
+    named('button', 'Connect your account')?.closest('[aria-label="Individual accounts"]'),
   ).not.toBeNull()
-  expect(named('link', 'Connect your account')?.getAttribute('href')).toBe(
-    // Your own account has its page under Accounts.
-    `/workspaces/demo/accounts/${provider.id}`,
-  )
+  expect(named('link', 'Connect your account')).toBeUndefined()
   act(() => roots.pop()!.unmount())
 
   await render({ provider: { account: 'fixed', connection: 'connected' } })
@@ -241,7 +243,7 @@ test('a member sees readable settings and only their own account action', async 
   expect(document.querySelector('[aria-label="Source"]')).toBeNull()
   expect(named('button', 'Change account setting')).toBeUndefined()
   expect(named('button', 'Remove provider')).toBeUndefined()
-  expect(named('link', 'Connect your account')).toBeDefined()
+  expect(named('button', 'Connect your account')).toBeDefined()
 })
 
 test('a member of a shared-account provider is told who connects it', async () => {
@@ -263,9 +265,9 @@ test('an archived workspace is read-only with a notice', async () => {
   expect(text()).toContain('This workspace is archived')
   expect(byLabel('Edit provider name')).toBeNull()
   expect(document.querySelector('[aria-label="Configuration"]')).toBeNull()
-  for (const name of ['Change account setting', 'Remove provider'])
+  for (const name of ['Change account setting', 'Remove provider', 'Connect your account'])
     expect(named('button', name)).toBeUndefined()
-  for (const name of ['Check for updates', 'Replace source', 'Connect your account'])
+  for (const name of ['Check for updates', 'Replace source'])
     expect(named('link', name)).toBeUndefined()
   // Owners still read the source where Coral lets them.
   expect(text()).toContain('https://gitlab.com/api/v4/openapi.json')
@@ -336,24 +338,20 @@ test('the account card shows a reconnect and hides refused connects', async () =
   await render({ provider: { account: 'caller', connection: 'needs_reconnect' } })
   // The same words as your account's own page under Accounts.
   expect(byLabel('Individual accounts')?.textContent).toContain('Needs reconnect')
-  expect(named('link', 'Reconnect your account')?.getAttribute('href')).toBe(
-    // Your own account has its page under Accounts.
-    `/workspaces/demo/accounts/${provider.id}`,
-  )
+  expect(named('button', 'Reconnect your account')).toBeDefined()
   act(() => roots.pop()!.unmount())
 
   await render({ provider: { account: 'caller', connection: 'not_connected', canConnect: false } })
-  expect(named('link', 'Connect your account')).toBeUndefined()
+  expect(named('button', 'Connect your account')).toBeUndefined()
   act(() => roots.pop()!.unmount())
 
   // A reconnect Coral refuses leaves the account to open, not to reconnect.
   await render({
     provider: { account: 'caller', connection: 'needs_reconnect', canReconnect: false },
   })
-  expect(named('link', 'Reconnect your account')).toBeUndefined()
-  expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(
-    `/workspaces/demo/accounts/${provider.id}`,
-  )
+  expect(named('button', 'Reconnect your account')).toBeUndefined()
+  // Manage opens your account under Accounts, which brings you back here.
+  expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(yourAccountPath)
 })
 
 // Catches: a disabled provider looking the same as an active one.
@@ -390,9 +388,7 @@ test('an unreadable account says so and still links to it', async () => {
   const card = byLabel('Individual accounts')!
   expect(card.textContent).not.toMatch(/Connected|Not connected|Needs reconnect/)
   expect(text()).toContain('Coral could not read your account. Open it to see its state.')
-  expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(
-    `/workspaces/demo/accounts/${provider.id}`,
-  )
+  expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(yourAccountPath)
 })
 
 // The card opens the provider's operations.
@@ -416,4 +412,20 @@ test('configuration is a card with its edit action inside', async () => {
   expect(card.textContent).toContain('Configuration')
   expect(card.textContent).toContain('Change destinations or sign-in settings.')
   expect(card.querySelector('form')?.textContent).toBe('Edit configuration')
+})
+
+// Catches: connecting your own account sending you away from settings, or
+// starting anyone's account but yours.
+test('connects your own account in a dialog on this page', async () => {
+  const { submissions } = await render({ provider: { connection: 'not_connected' } }, () => ({
+    error: 'Stopped here.',
+    credential: null,
+  }))
+  await click(named('button', 'Connect your account'))
+  // Opening the dialog starts your connection through this page's action.
+  await expect.poll(() => submissions.length).toBe(1)
+  expect(submissions[0]!.get('intent')).toBe('connectAccount')
+  const dialog = document.querySelector('[role="dialog"]')!
+  expect(dialog.textContent).toContain('Connect GitLab.com')
+  expect(dialog.textContent).toContain('Stopped here.')
 })

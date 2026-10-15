@@ -10,11 +10,16 @@ use super::ToolFailure;
 use super::diagnostics::{Diagnostic, saved_diagnostics};
 
 #[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SearchResult {
     hits: Vec<SearchHit>,
-    next_cursor: Option<String>,
     has_more: bool,
-    /// One status per retriever: whether it ranked, and how much it searched.
+    /// Present only while `has_more` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    next_cursor: Option<String>,
+    /// The retrievers whose results may be missing; absent when none are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retriever_statuses: Vec<RetrieverStatus>,
 }
 
@@ -33,15 +38,14 @@ enum Retriever {
     SavedFunction,
 }
 
-/// `partial` and `error` mean results may be missing: retry shortly or list
-/// without a query. Only a search that an earlier Coral retained holds
-/// `skipped`: its Provider filter left this kind out.
+/// - `partial`: some Providers or Saved Functions are not indexed yet, or
+///   failed; results may be missing.
+/// - `error`: the retriever could not rank; its results are missing.
+///
+/// Retry shortly or list without a query.
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum RetrieverState {
-    ResultsFound,
-    Empty,
-    Skipped,
     Partial,
     Error,
 }
@@ -60,31 +64,10 @@ struct RetrieverCoverage {
 /// no cut marker (`…`) and no type named in its input that the line does not
 /// show. Describe first otherwise, and before a write.
 #[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum SearchHit {
-    Operation {
-        #[serde(flatten)]
-        common: HitCommon,
-        provider_display_name: String,
-        title: Option<String>,
-        hints: Hints,
-        approval_required: bool,
-        deprecated: bool,
-        /// Present only when a query term matched the guidance.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        guidance_snippet: Option<String>,
-        /// The tags a query term matched; absent when none did.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        matched_tags: Vec<String>,
-    },
-    SavedFunction {
-        #[serde(flatten)]
-        common: HitCommon,
-    },
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-struct HitCommon {
+#[serde(deny_unknown_fields)]
+struct SearchHit {
+    /// `coral.providers.<namespace>.…` for an Operation,
+    /// `coral.functions.…` for a Saved Function.
     call_path: String,
     /// The callable's input members one level deep and its result type by
     /// name, at most 512 UTF-8 bytes.
@@ -92,14 +75,26 @@ struct HitCommon {
     /// At most 512 UTF-8 bytes of the description, around the first matched
     /// term; `…` marks cut text.
     description_snippet: String,
-    evidence: Evidence,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct Evidence {
-    fields: Vec<String>,
-    paths: Vec<String>,
+    /// Present only when a query term matched the guidance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    guidance_snippet: Option<String>,
+    /// The tags a query term matched; absent when none did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    matched_tags: Vec<String>,
+    /// The arguments a query term matched that the signature line does not
+    /// show; absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    matched_inputs: Vec<String>,
+    /// Present only when the Provider declared a hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Hints")]
+    hints: Option<Hints>,
+    /// Present, and true, only when a person must approve each call.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    approval_required: bool,
+    /// Present, and true, only when the Operation is deprecated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    deprecated: bool,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]

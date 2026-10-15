@@ -85,7 +85,8 @@
       {
         "group": "Guides",
         "pages": [
-          "guides/concepts"
+          "guides/concepts",
+          "guides/query-databases"
         ]
       },
       {

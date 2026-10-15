@@ -91,10 +91,16 @@ function json(response: ServerResponse, status: number, value: unknown, headers 
     .end(JSON.stringify(value))
 }
 
-/** Public HTTPS declarations need no live server; callers that dispatch supply a fixture origin. */
+/**
+ * Public HTTPS declarations need no live server; callers that dispatch supply a fixture origin.
+ * Operations are GET, which runs without approval by default, unless they set `method`.
+ */
 export function openApiDocument(
   title: string,
-  operations: Record<string, { summary?: string; tags?: string[]; broken?: boolean }>,
+  operations: Record<
+    string,
+    { summary?: string; tags?: string[]; broken?: boolean; method?: 'get' | 'post' }
+  >,
   options: {
     server?: string
     security?: 'bearer' | 'oauth'
@@ -110,7 +116,7 @@ export function openApiDocument(
       Object.entries(operations).map(([id, o]) => [
         `/${id}`,
         {
-          get: {
+          [o.method ?? 'get']: {
             operationId: id,
             summary: o.summary,
             tags: o.tags,
