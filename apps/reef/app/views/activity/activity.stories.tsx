@@ -1530,6 +1530,48 @@ export const PendingApproval: Story = {
     await expect(header).toContainElement(close)
   },
 }
+/** Operation Middleware held one Program Emission for approval. It has no operation,
+ * so its Run carries the review: the exact value to emit, and no Provider. */
+export const PendingEmissionApproval: Story = {
+  args: {
+    page: {
+      ...page,
+      selected: run,
+      detail: {
+        ...approvalContext,
+        request: {
+          kind: 'approval',
+          subject: 'emission',
+          taskIntent: goal.intent,
+          actionable: true,
+          name: `${workspace}/approvals/emission`,
+          run,
+          invocation: '',
+          provider: '',
+          providerLabel: '',
+          callPath: 'coral.emit',
+          arguments: JSON.stringify({ invoice: 'INV-7', total: 1250, to: 'owner@example.com' }),
+          state: 'pending',
+          deadline: new Date(Date.now() + 15 * 60_000).toISOString(),
+          approver: '',
+          decidedAt: null,
+          comment: null,
+        },
+      },
+    },
+  },
+  globals: shortScreen,
+  play: async ({ canvasElement }) => {
+    const dialog = await openDrawer(canvasElement, 'Review action')
+    const review = within(dialog).getByRole('region', { name: 'Review coral.emit' })
+    await expect(within(review).getByText('Value to emit', { selector: 'summary' })).toBeVisible()
+    await expect(within(review).queryByText(/Provider/)).not.toBeInTheDocument()
+    // The decisions sit in the panel's footer, outside the review region.
+    await expect(
+      within(dialog).getByRole('button', { name: 'Approve this emission' }),
+    ).toBeVisible()
+  },
+}
 export const ResolvedApproval: Story = {
   args: {
     page: {

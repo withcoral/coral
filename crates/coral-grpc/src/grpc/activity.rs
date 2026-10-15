@@ -449,10 +449,34 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
         } else {
             String::new()
         };
+        let (subject, invocation, provider, source_location) = match &value.subject {
+            coral_run::ApprovalSubject::Invocation {
+                invocation_id,
+                provider_id,
+                ..
+            } => (
+                wire::ActivityApprovalSubject::Invocation,
+                format!("workspaces/{workspace}/invocations/{invocation_id}"),
+                format!("workspaces/{workspace}/providers/{provider_id}"),
+                None,
+            ),
+            coral_run::ApprovalSubject::Emission { source_location } => (
+                wire::ActivityApprovalSubject::Emission,
+                String::new(),
+                String::new(),
+                source_location
+                    .as_ref()
+                    .map(|location| execution::source_location(&workspace, location)),
+            ),
+        };
         Ok(Response::new(wire::InspectApprovalResponse {
-            provider_label: value
-                .provider_label
-                .unwrap_or_else(|| execution::UNAVAILABLE_PROVIDER.into()),
+            provider_label: if subject == wire::ActivityApprovalSubject::Emission {
+                String::new()
+            } else {
+                value
+                    .provider_label
+                    .unwrap_or_else(|| execution::UNAVAILABLE_PROVIDER.into())
+            },
             actor_label: execution::actor_label(
                 &value.invoking_principal,
                 value.agent_label.as_deref(),
@@ -460,8 +484,10 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             approver_label,
             name: input.name,
             run: format!("workspaces/{workspace}/runs/{}", value.run_id),
-            invocation: format!("workspaces/{workspace}/invocations/{}", value.invocation_id),
-            provider: format!("workspaces/{workspace}/providers/{}", value.provider_id),
+            invocation,
+            provider,
+            subject: subject.into(),
+            source_location,
             call_path: value.call_path,
             arguments_json: value.arguments.to_string(),
             state: approval_state(value.state).into(),

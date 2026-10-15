@@ -457,6 +457,10 @@ fn install_program_host(
             v8::Function::new(scope, call_location_callback),
         ),
         (
+            "__coralProgramEmitWithPolicy",
+            v8::Function::new(scope, program_emission_policy_callback),
+        ),
+        (
             "__coralMiddlewareStarted",
             v8::Function::new(scope, middleware_started_callback),
         ),
@@ -799,6 +803,80 @@ fn program_emission_callback(
         ) => reject_output_promise(scope, &mut return_value, error),
         Err(ProgramOutputHostError::Fatal) => terminate_program_host(scope),
     }
+}
+
+/// The center of the Operation Middleware onion for one intercepted Program
+/// Emission whose final policy is not plainly `enabled`. Called only by the
+/// private runtime with `(encoded, policy, location)`.
+///
+/// Values the host would refuse fail exactly as an ordinary Emission does. A
+/// `disabled` or `approval_required` policy goes to the host, and the Promise
+/// settles only after the host's durable outcome.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "V8's native Function callback Interface requires arguments by value"
+)]
+fn program_emission_policy_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    arguments: v8::FunctionCallbackArguments<'_>,
+    mut return_value: v8::ReturnValue,
+) {
+    let Ok(encoded) = v8::Local::<v8::String>::try_from(arguments.get(0)) else {
+        reject_output_promise(
+            scope,
+            &mut return_value,
+            ProgramOutputHostError::InvalidValue,
+        );
+        return;
+    };
+    let encoded = encoded.to_rust_string_lossy(scope);
+    let policy = arguments
+        .get(1)
+        .to_string(scope)
+        .and_then(|policy| OperationPolicy::parse(&policy.to_rust_string_lossy(scope)));
+    let Some(policy) = policy else {
+        reject_operation_promise(
+            scope,
+            &mut return_value,
+            "invalid_input",
+            "Middleware selected an invalid Operation policy",
+        );
+        return;
+    };
+    let location = passed_location(scope, arguments.get(2));
+    let Some(host) = host_of(scope) else { return };
+    if let Err(error) = host.value_limits().validate_json(&encoded) {
+        let error = match error {
+            coral_value::ValueError::Invalid => ProgramOutputHostError::InvalidValue,
+            coral_value::ValueError::TooLarge => ProgramOutputHostError::LimitExceeded,
+        };
+        reject_output_promise(scope, &mut return_value, error);
+        return;
+    }
+    if policy == OperationPolicy::Enabled {
+        match host.emit(&encoded, location) {
+            Ok(()) => resolve_void_promise(scope, &mut return_value),
+            Err(
+                error @ (ProgramOutputHostError::InvalidValue
+                | ProgramOutputHostError::LimitExceeded),
+            ) => reject_output_promise(scope, &mut return_value, error),
+            Err(ProgramOutputHostError::Fatal) => terminate_program_host(scope),
+        }
+        return;
+    }
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        terminate_program_host(scope);
+        return;
+    };
+    return_value.set(resolver.get_promise(scope).into());
+    let resolver = v8::Global::new(scope, resolver);
+    let call_stack = operation_call_stack(&capture_program_frames(scope));
+    let emission = host.emit_with_policy(encoded, policy, location);
+    scope
+        .get_slot_mut::<ProgramHostSlot>()
+        .expect("host installed")
+        .pending_operations
+        .push((resolver, emission, call_stack));
 }
 
 #[expect(

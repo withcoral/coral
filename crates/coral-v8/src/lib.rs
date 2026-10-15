@@ -331,6 +331,34 @@ pub trait ProgramHost: Send + Sync {
         Err(ProgramOutputHostError::Fatal)
     }
 
+    /// Applies the final policy that Operation Middleware selected for one
+    /// intercepted Program Emission made at `location`, and appends it when
+    /// the policy permits. Middleware chooses only `disabled` or
+    /// `approval_required` here; an `enabled` Emission takes [`Self::emit`].
+    ///
+    /// `disabled` rejects without an Emission. `approval_required` waits for a
+    /// human decision on these exact bytes and appends only after approval.
+    /// The future resolves to `null` once the Emission is durable.
+    ///
+    /// # Errors
+    ///
+    /// Rejects with a catchable Coral Failure after any required evidence is
+    /// durable. The default fails closed for a host without Middleware.
+    fn emit_with_policy(
+        self: Arc<Self>,
+        _value_json: String,
+        _policy: OperationPolicy,
+        _location: Option<AuthoredLocation>,
+    ) -> OperationFuture {
+        Box::pin(async {
+            Err(OperationHostError::Rejected {
+                code: "middleware_unavailable",
+                message: "Middleware is not available for this Run",
+                trace_id: None,
+            })
+        })
+    }
+
     /// Durably appends one Emission made by a running Middleware execution.
     /// It bypasses Middleware interception but stays attributed to the execution.
     ///

@@ -100,7 +100,28 @@ User decision, recorded after V1 implementation started. It supersedes any assum
 
 ### Settled emit decisions (confirmed through Hermes)
 
-- `coral.emit` has no `originalPolicy` or `currentPolicy`. Middleware blocks an emit by throwing or by not calling `next()`.
+- ~~`coral.emit` has no `originalPolicy` or `currentPolicy`.~~ Superseded by the emit policy decision below. Middleware can still block an emit by throwing or by not calling `next()`.
 - An emit shows Middleware `ctx.kind === "operation"`, `ctx.path === "coral.emit"`, and `ctx.args` as the emitted value, which Middleware can edit. The Program's `coral.emit` Promise still resolves to `undefined`, even when Middleware returns a replacement value.
 - Program emits keep their call order, including emits the Program does not await.
 - Middleware-originated emits bypass interception. They appear in Run Updates (MCP `wait`) and in Activity, attributed to their Middleware execution.
+
+## Design update: emit policy and approval
+
+User decision, recorded 2026-10-15. It supersedes the settled decision that `coral.emit` has no policy fields.
+
+- An intercepted `coral.emit` has an immutable `ctx.originalPolicy`, always `enabled`, and a mutable `ctx.currentPolicy`, which starts `enabled`. Middleware may set it to `enabled`, `approval_required` or `disabled`, and later Middleware may change it again, exactly as for an Operation Invocation.
+- The center of the onion applies the final policy to the final edited value, before anything is durable:
+  - `enabled` emits.
+  - `disabled` emits nothing. The Program's Promise rejects with a catchable `OperationError` whose code is `operation_disabled`.
+  - `approval_required` creates a real Approval Request bound to the exact final payload bytes, then waits. Nothing is emitted while it waits. Approval appends exactly those bytes. A decline rejects with `approval_declined`, an expiry with `approval_expired`, and a loss of the invoking Principal's Workspace authority with `dispatch_authority_lost`. Run cancellation, timeout or termination closes the request and emits nothing.
+- The request is an ordinary Approval Request in the same identity space as Invocation approvals. It shares their decision interface (`InspectApproval`, `DecideApproval`, Action Prompts), required actions, Run Updates, lifecycle evidence, deadline bound (the earlier of 15 minutes and the Run deadline) and decision authority: the invoking User for their own Run, and a Workspace Owner for an Agent Run. It has no Provider, Account or Operation target. Its review shows the Call Path `coral.emit` and the exact value to emit.
+- Program emits keep their call order while one waits for approval, including emits the Program does not await.
+- Middleware-originated emits keep the trusted bypass. No policy applies to them, whatever policy the Middleware sets for the emit it wraps.
+- The Program's `coral.emit` Promise resolves to `undefined` once the Emission is durable.
+
+### Implementation choices to confirm through Hermes
+
+- A final `disabled` policy rejects with `operation_disabled` and the Operation message, because Middleware sees an emit as an Operation. A dedicated `emission_disabled` code is the alternative.
+- A request closed while the invoking Principal lacks Workspace authority rejects with `dispatch_authority_lost`, whether the host or a decision attempt closed it. Other closures reject with `approval_required`, as for Invocations.
+- Emission approvals reuse the Invocation approval deadline bound. A held emit appears in Activity only through its Run's required action and review. It has no Activity row of its own until it is emitted.
+

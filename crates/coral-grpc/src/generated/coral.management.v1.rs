@@ -5706,6 +5706,7 @@ pub struct ActivityActionSummary {
     #[prost(string, tag = "2")]
     pub call_path: ::prost::alloc::string::String,
     /// The Provider's current display name, or "Unavailable provider" if it was removed.
+    /// Empty for an Emission request, which has no Provider.
     #[prost(string, tag = "3")]
     pub provider_label: ::prost::alloc::string::String,
     /// When this Run stops waiting: the request's deadline or the Run's, whichever is first.
@@ -5802,16 +5803,18 @@ pub struct InspectApprovalResponse {
     /// workspaces/{workspace}/runs/{run} that is waiting.
     #[prost(string, tag = "2")]
     pub run: ::prost::alloc::string::String,
-    /// workspaces/{workspace}/invocations/{invocation} that needs approval.
+    /// workspaces/{workspace}/invocations/{invocation} that needs approval. Empty for an
+    /// Emission request.
     #[prost(string, tag = "3")]
     pub invocation: ::prost::alloc::string::String,
-    /// workspaces/{workspace}/providers/{provider} at the time of the call.
+    /// workspaces/{workspace}/providers/{provider} at the time of the call. Empty for an
+    /// Emission request.
     #[prost(string, tag = "4")]
     pub provider: ::prost::alloc::string::String,
-    /// Path the Program called.
+    /// Path the Program called; coral.emit for an Emission request.
     #[prost(string, tag = "5")]
     pub call_path: ::prost::alloc::string::String,
-    /// Arguments of this call, as JSON.
+    /// Arguments of this call, or the exact value an Emission request would emit, as JSON.
     #[prost(string, tag = "6")]
     pub arguments_json: ::prost::alloc::string::String,
     /// pending, approved, declined, expired or closed. Use actionable to decide whether to
@@ -5834,6 +5837,7 @@ pub struct InspectApprovalResponse {
     #[prost(bool, tag = "12")]
     pub actionable: bool,
     /// The Provider's current display name, or "Unavailable provider" if it was removed.
+    /// Empty for an Emission request, which has no Provider.
     #[prost(string, tag = "13")]
     pub provider_label: ::prost::alloc::string::String,
     /// Label for who decided: "You", their name, or "Unavailable user". Empty if nobody decided.
@@ -5842,6 +5846,13 @@ pub struct InspectApprovalResponse {
     /// Label for who started the Run: "You", the Agent's name, or "Unavailable agent".
     #[prost(string, tag = "15")]
     pub actor_label: ::prost::alloc::string::String,
+    /// What approval permits: one Operation call, or one Program Emission.
+    #[prost(enumeration = "ActivityApprovalSubject", tag = "16")]
+    pub subject: i32,
+    /// Where the Run's accepted source called coral.emit, for an Emission request. Absent
+    /// if not recorded, and for Invocation requests, whose call carries its own location.
+    #[prost(message, optional, tag = "17")]
+    pub source_location: ::core::option::Option<ActivitySourceLocation>,
 }
 /// Selects which pending requests to count.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -6567,6 +6578,39 @@ impl ActivityRunFailureCode {
             "ACTIVITY_RUN_FAILURE_CODE_RUN_AUTHORITY_LOST" => {
                 Some(Self::RunAuthorityLost)
             }
+            _ => None,
+        }
+    }
+}
+/// What one Approval Request would permit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActivityApprovalSubject {
+    /// Unknown to this client.
+    Unspecified = 0,
+    /// One pending Operation call.
+    Invocation = 1,
+    /// One Program Emission of exactly arguments_json. Operation Middleware required approval.
+    Emission = 2,
+}
+impl ActivityApprovalSubject {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ACTIVITY_APPROVAL_SUBJECT_UNSPECIFIED",
+            Self::Invocation => "ACTIVITY_APPROVAL_SUBJECT_INVOCATION",
+            Self::Emission => "ACTIVITY_APPROVAL_SUBJECT_EMISSION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ACTIVITY_APPROVAL_SUBJECT_UNSPECIFIED" => Some(Self::Unspecified),
+            "ACTIVITY_APPROVAL_SUBJECT_INVOCATION" => Some(Self::Invocation),
+            "ACTIVITY_APPROVAL_SUBJECT_EMISSION" => Some(Self::Emission),
             _ => None,
         }
     }

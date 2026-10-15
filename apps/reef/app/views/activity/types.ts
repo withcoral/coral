@@ -220,9 +220,12 @@ export type ActionSummary = Exclude<RequestReference, { kind: 'unknown' }> & {
 export type RequestDetail =
   | {
       kind: 'approval'
+      /** One Program Emission that Middleware held for approval; absent for an operation call. */
+      subject?: 'emission'
       actionable?: boolean
       name: string
       run: string
+      /** Empty for an Emission request. */
       invocation: string
       provider: string
       providerLabel?: string

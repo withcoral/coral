@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::emission_approval::EmissionApprovals;
 use crate::execution::ExecutionStop;
 use crate::invocation::{InvocationHostError, OperationInvoker};
 use crate::middleware::MiddlewareRecorder;
@@ -16,6 +17,7 @@ pub(crate) struct RunEvidence {
     pub(crate) invoker: OperationInvoker,
     pub(crate) output: ProgramOutputWriter,
     pub(crate) middleware: MiddlewareRecorder,
+    pub(crate) emission_approvals: EmissionApprovals,
 }
 
 pub(crate) async fn execute(
@@ -30,6 +32,7 @@ pub(crate) async fn execute(
         invoker,
         output,
         middleware,
+        emission_approvals,
     } = evidence;
     let host = Arc::new(RunProgramHost {
         runtime: tokio::runtime::Handle::current(),
@@ -39,6 +42,7 @@ pub(crate) async fn execute(
         invoker,
         output,
         middleware,
+        emission_approvals,
     });
     tokio::task::spawn_blocking(move || engine.execute(package, host, stop))
         .await
@@ -54,6 +58,7 @@ struct RunProgramHost {
     invoker: OperationInvoker,
     output: ProgramOutputWriter,
     middleware: MiddlewareRecorder,
+    emission_approvals: EmissionApprovals,
 }
 
 impl RunProgramHost {
@@ -71,6 +76,19 @@ impl RunProgramHost {
                 coral_v8::OperationHostError::Fatal
             }
         }
+    }
+
+    fn emission_rejection(&self, error: ProgramOutputWriteError) -> coral_v8::OperationHostError {
+        self.host_rejection(match error {
+            ProgramOutputWriteError::Rejected(failure) => InvocationHostError::Rejected(failure),
+            ProgramOutputWriteError::LimitExceeded => {
+                InvocationHostError::Rejected(CoralFailure::RunOutputTooLarge)
+            }
+            ProgramOutputWriteError::InvalidValue => {
+                InvocationHostError::Rejected(CoralFailure::InvalidInput)
+            }
+            ProgramOutputWriteError::Fatal(error) => InvocationHostError::Fatal(error),
+        })
     }
 
     fn middleware_evidence<T>(
@@ -232,7 +250,52 @@ impl coral_v8::ProgramHost for RunProgramHost {
                 self.output
                     .emit(value_json, self.source_location(location), None),
             )
-            .map_err(map_program_output_error)
+            .map_err(|error| map_program_output_error(&error))
+    }
+
+    fn emit_with_policy(
+        self: Arc<Self>,
+        value_json: String,
+        policy: coral_v8::OperationPolicy,
+        location: Option<coral_v8::AuthoredLocation>,
+    ) -> coral_v8::OperationFuture {
+        let source_location = self.source_location(location);
+        let runtime = self.runtime.clone();
+        // A human decides off the V8 thread; the Program's Promise settles after
+        // the durable outcome, as an Invocation's does.
+        let emission = runtime.spawn(async move {
+            let _panic_guard = StopPanickingInvocation(self.stop.clone());
+            match policy {
+                coral_v8::OperationPolicy::Disabled => {
+                    return Err(self.host_rejection(InvocationHostError::Rejected(
+                        CoralFailure::OperationDisabled,
+                    )));
+                }
+                coral_v8::OperationPolicy::Enabled => {
+                    self.output
+                        .emit(&value_json, source_location, None)
+                        .await
+                        .map_err(|error| self.emission_rejection(error))?;
+                }
+                coral_v8::OperationPolicy::ApprovalRequired => {
+                    let (value, approval) = self
+                        .emission_approvals
+                        .wait_for_approval(value_json, source_location.as_ref())
+                        .await
+                        .map_err(|error| self.host_rejection(error))?;
+                    self.output
+                        .emit_approved(value, source_location, &approval)
+                        .await
+                        .map_err(|error| self.emission_rejection(error))?;
+                }
+            }
+            Ok("null".to_string())
+        });
+        Box::pin(async move {
+            emission
+                .await
+                .unwrap_or(Err(coral_v8::OperationHostError::Fatal))
+        })
     }
 
     fn middleware_emit(
@@ -242,7 +305,7 @@ impl coral_v8::ProgramHost for RunProgramHost {
     ) -> Result<(), coral_v8::ProgramOutputHostError> {
         self.runtime
             .block_on(self.output.emit(value_json, None, Some(execution_id)))
-            .map_err(map_program_output_error)
+            .map_err(|error| map_program_output_error(&error))
     }
 
     fn log(
@@ -262,14 +325,16 @@ impl coral_v8::ProgramHost for RunProgramHost {
                 self.output
                     .log(level, message, self.source_location(location)),
             )
-            .map_err(map_program_output_error)
+            .map_err(|error| map_program_output_error(&error))
     }
 }
 
-fn map_program_output_error(error: ProgramOutputWriteError) -> coral_v8::ProgramOutputHostError {
+fn map_program_output_error(error: &ProgramOutputWriteError) -> coral_v8::ProgramOutputHostError {
     match error {
         ProgramOutputWriteError::InvalidValue => coral_v8::ProgramOutputHostError::InvalidValue,
         ProgramOutputWriteError::LimitExceeded => coral_v8::ProgramOutputHostError::LimitExceeded,
-        ProgramOutputWriteError::Fatal(_private_error) => coral_v8::ProgramOutputHostError::Fatal,
+        ProgramOutputWriteError::Rejected(_) | ProgramOutputWriteError::Fatal(_) => {
+            coral_v8::ProgramOutputHostError::Fatal
+        }
     }
 }

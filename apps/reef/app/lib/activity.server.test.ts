@@ -8,6 +8,7 @@ import { activityNavigation } from '@/views/activity/navigation'
 import { stored } from '@/views/activity/discovery/fixtures'
 import type { ActivityPage } from '@/views/activity/types'
 import {
+  ActivityApprovalSubject,
   ActivityRunState,
   ActivityInvocationState,
   ActivityMiddlewarePhase,
@@ -809,6 +810,40 @@ describe('hierarchical activity through the private server interface', () => {
         retainedConnection ? 1 : 0,
       )
     }
+  })
+  // Catches: an Emission approval treated as an Invocation's, so its review was
+  // unavailable, or one that read an operation the Emission does not have.
+  it('reviews an Emission approval on its Run with the exact value to emit', async () => {
+    const emission: Handlers = {
+      activity: {
+        inspectApproval: () => ({
+          name: approval,
+          run,
+          invocation: '',
+          provider: '',
+          callPath: 'coral.emit',
+          argumentsJson: '{"invoice":"INV-7","reviewed":"final"}',
+          subject: ActivityApprovalSubject.EMISSION,
+          state: 'pending',
+          actionable: true,
+        }),
+      },
+    }
+    const { api, calls } = coral(list(), taskDetail(), runEntries(), runDetail(), emission)
+    const page = await loadActivity(request({ record: run, request: approval }), api, { scope })
+    expect(page.unavailable).toBe(false)
+    expect(page.detail).toMatchObject({
+      kind: 'run',
+      request: {
+        kind: 'approval',
+        subject: 'emission',
+        name: approval,
+        callPath: 'coral.emit',
+        arguments: '{"invoice":"INV-7","reviewed":"final"}',
+        actionable: true,
+      },
+    })
+    expect(loaded(calls, 'operation')).toBe(0)
   })
   it('continues the selected Run action window without discarding an independently authorized review', async () => {
     const { api, calls } = coral(list(), ...reviewReads())

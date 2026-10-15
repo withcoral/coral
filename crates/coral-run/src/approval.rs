@@ -28,6 +28,7 @@ use coral_workspace::{
 use uuid::Uuid;
 
 use crate::approval_repository::{self, StoredApproval};
+use crate::emission_approval_repository;
 use crate::engine::{Clock, SystemClock};
 use crate::invocation::AdmittedInvocation;
 use crate::{
@@ -35,12 +36,16 @@ use crate::{
 };
 
 /// Host approval wait limit, further bounded by the accepted Run deadline.
-const APPROVAL_WAIT_NANOS: i64 = 900_000_000_000;
+pub(crate) const APPROVAL_WAIT_NANOS: i64 = 900_000_000_000;
 
 /// Opaque, non-authorizing Approval Request identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalId(Uuid);
 impl ApprovalId {
+    pub(crate) fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
     /// Parses a canonical lowercase UUID.
     /// # Errors
     /// Rejects malformed or noncanonical identifiers.
@@ -116,23 +121,16 @@ pub struct ApprovalRequest {
     pub agent_label: Option<String>,
     /// Non-authorizing identity.
     pub id: ApprovalId,
-    /// Exact child Invocation.
-    pub invocation_id: InvocationId,
+    /// What the request would permit.
+    pub subject: ApprovalSubject,
     /// Exact containing Run.
     pub run_id: RunId,
     /// Accountable caller, not the credential owner or approver.
     pub invoking_principal: Principal,
-    /// Exact Provider.
-    pub provider_id: ProviderId,
-    /// Retained Provider account-setting version.
-    pub provider_account_setting_version: i64,
-    /// Retained Credential Route.
-    pub credential_route: CredentialRoute,
-    /// Selected Provider Account, absent only for a credential-free route.
-    pub provider_account_id: Option<ProviderAccountId>,
-    /// Retained Program Call Path.
+    /// Retained Program Call Path; `coral.emit` for an Emission.
     pub call_path: String,
-    /// Exact logical arguments, available only through authorized detail.
+    /// Exact logical arguments, or the exact Emission payload, available only
+    /// through authorized detail.
     pub arguments: serde_json::Value,
     /// Current durable decision.
     pub state: ApprovalState,
@@ -148,6 +146,29 @@ pub struct ApprovalRequest {
     pub decided_at_unix_nanos: Option<i64>,
     /// Optional human comment, excluded from lifecycle evidence and telemetry.
     pub comment: Option<String>,
+}
+
+/// What one Approval Request would permit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalSubject {
+    /// One pending Operation Invocation, with its once-selected credentials.
+    Invocation {
+        /// Exact child Invocation.
+        invocation_id: InvocationId,
+        /// Exact Provider.
+        provider_id: ProviderId,
+        /// Retained Provider account-setting version.
+        provider_account_setting_version: i64,
+        /// Retained Credential Route.
+        credential_route: CredentialRoute,
+        /// Selected Provider Account, absent only for a credential-free route.
+        provider_account_id: Option<ProviderAccountId>,
+    },
+    /// One intercepted Program Emission of exactly [`ApprovalRequest::arguments`].
+    Emission {
+        /// Where the Run's accepted source called `coral.emit`, if recorded.
+        source_location: Option<crate::SourceLocation>,
+    },
 }
 
 /// Safe immutable evidence of a first terminal approval transition.
@@ -220,6 +241,21 @@ impl ApprovalModule {
                 .await?,
             );
         }
+        for row in emission_approval_repository::list_for_run(&mut tx, workspace, &run.id).await? {
+            requests.push(
+                emission_view(
+                    &mut tx,
+                    &self.workspaces,
+                    actor,
+                    workspace,
+                    &run,
+                    row,
+                    self.now()?,
+                )
+                .await?,
+            );
+        }
+        requests.sort_by_key(|request| request.id.to_string());
         tx.commit().await?;
         Ok(requests)
     }
@@ -234,6 +270,23 @@ impl ApprovalModule {
         id: &ApprovalId,
     ) -> Result<ApprovalRequest, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
+        if let Some(row) = emission_approval_repository::find(&mut tx, workspace, id).await? {
+            let run = self
+                .visible_run(&mut tx, actor, workspace, &row.run_id)
+                .await?;
+            let request = emission_view(
+                &mut tx,
+                &self.workspaces,
+                actor,
+                workspace,
+                &run,
+                row,
+                self.now()?,
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(request);
+        }
         let row = approval_repository::load(&mut tx, workspace, id).await?;
         let run = self
             .visible_run(&mut tx, actor, workspace, &row.run_id)
@@ -274,6 +327,29 @@ impl ApprovalModule {
             ));
         }
         let mut tx = self.database.begin().await?;
+        if let Some(row) = emission_approval_repository::find(&mut tx, workspace, id).await? {
+            return self
+                .decide_emission(tx, actor, workspace, row, decision, comment, trace)
+                .await;
+        }
+        self.decide_invocation(tx, actor, workspace, id, decision, comment, trace)
+            .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one decision carries its open transaction and every decided fact"
+    )]
+    async fn decide_invocation(
+        &self,
+        mut tx: Transaction<'_>,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        id: &ApprovalId,
+        decision: ApprovalDecision,
+        comment: Option<&str>,
+        trace: &TraceId,
+    ) -> Result<ApprovalRequest, Error> {
         // An approval never changes Run. Conceal it before holding that Run.
         let run_id = approval_repository::load(&mut tx, workspace, id)
             .await?
@@ -380,9 +456,15 @@ impl ApprovalModule {
         id: &ApprovalId,
     ) -> Result<Vec<ApprovalLifecycleEvent>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        let row = approval_repository::load(&mut tx, workspace, id).await?;
-        self.visible_run(&mut tx, actor, workspace, &row.run_id)
-            .await?;
+        let run_id = match emission_approval_repository::find(&mut tx, workspace, id).await? {
+            Some(row) => row.run_id,
+            None => {
+                approval_repository::load(&mut tx, workspace, id)
+                    .await?
+                    .run_id
+            }
+        };
+        self.visible_run(&mut tx, actor, workspace, &run_id).await?;
         let events = approval_repository::list_lifecycle_events(&mut tx, workspace, id)
             .await?
             .into_iter()
@@ -398,6 +480,67 @@ impl ApprovalModule {
             .collect();
         tx.commit().await?;
         Ok(events)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one decision carries its open transaction and every decided fact"
+    )]
+    async fn decide_emission(
+        &self,
+        mut tx: Transaction<'_>,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        row: emission_approval_repository::StoredEmissionApproval,
+        decision: ApprovalDecision,
+        comment: Option<&str>,
+        trace: &TraceId,
+    ) -> Result<ApprovalRequest, Error> {
+        // Conceal before holding the Run, exactly as for an Invocation request.
+        let run_id = row.run_id.clone();
+        self.visible_run(&mut tx, actor, workspace, &run_id).await?;
+        let Some(_) = run_repository::hold_run(&mut tx, workspace, &run_id).await? else {
+            return Err(Error::ApprovalNotFound);
+        };
+        let run = self.visible_run(&mut tx, actor, workspace, &run_id).await?;
+        let mut row = emission_approval_repository::find(&mut tx, workspace, &row.id)
+            .await?
+            .ok_or(Error::ApprovalNotFound)?;
+        if row.state == ApprovalState::Pending {
+            let now = self.now()?;
+            let authority = self
+                .workspaces
+                .check_principal_inspection_in_transaction(&mut tx, actor, workspace, now)
+                .await
+                .map_err(conceal)?;
+            if run.principal.kind() == coral_workspace::PrincipalKind::Agent
+                && authority.effective_user_role() != Some(WorkspaceRole::Owner)
+            {
+                return Err(Error::ApprovalNotFound);
+            }
+            crate::emission_approval::decide(
+                &mut tx,
+                &run,
+                &mut row,
+                (actor.principal(), comment),
+                decision,
+                now,
+                trace,
+            )
+            .await?;
+        }
+        let request = emission_view(
+            &mut tx,
+            &self.workspaces,
+            actor,
+            workspace,
+            &run,
+            row,
+            self.now()?,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(request)
     }
 
     async fn visible_run(
@@ -541,34 +684,83 @@ async fn view(
         );
     let (provider_label, agent_label) =
         crate::inspection_repository::approval_labels(tx, workspace, &row.invocation_id).await?;
-    let approver_name = if let Some(approver) = &row.approver {
-        let user = actor.authenticated_user().ok_or(Error::ApprovalNotFound)?;
-        let id = coral_workspace::UserId::parse(approver.id().as_str())?;
-        match workspaces
-            .inspect_user_profile_in_transaction(tx, user, workspace, &id)
-            .await
-        {
-            Ok(profile) => profile.name.filter(|name| !name.trim().is_empty()),
-            Err(coral_workspace::Error::MembershipNotFound) => None,
-            Err(error) => return Err(error.into()),
-        }
-    } else {
-        None
-    };
+    let approver_name =
+        approver_name(tx, workspaces, actor, workspace, row.approver.as_ref()).await?;
     Ok(ApprovalRequest {
         approver_name,
         provider_label,
         agent_label,
         id: row.id,
-        invocation_id: row.invocation_id,
+        subject: ApprovalSubject::Invocation {
+            invocation_id: row.invocation_id,
+            provider_id: target.provider_id,
+            provider_account_setting_version: target.provider_account_setting_version,
+            credential_route: target.credential_route,
+            provider_account_id: target.provider_account_id,
+        },
         run_id: run.id.clone(),
         invoking_principal: run.principal.clone(),
-        provider_id: target.provider_id,
-        provider_account_setting_version: target.provider_account_setting_version,
-        credential_route: target.credential_route,
-        provider_account_id: target.provider_account_id,
         call_path: target.call_path,
         arguments: target.arguments,
+        state: row.state,
+        actionable,
+        deadline_at_unix_nanos: row.deadline_at_unix_nanos,
+        approver: row.approver,
+        decided_at_unix_nanos: row.decided_at_unix_nanos,
+        comment: row.comment,
+    })
+}
+
+/// The current approver name, only when Workspace profile rules authorize it.
+async fn approver_name(
+    tx: &mut Transaction<'_>,
+    workspaces: &WorkspaceModule,
+    actor: &AuthenticatedPrincipal,
+    workspace: &WorkspaceId,
+    approver: Option<&Principal>,
+) -> Result<Option<String>, Error> {
+    let Some(approver) = approver else {
+        return Ok(None);
+    };
+    let user = actor.authenticated_user().ok_or(Error::ApprovalNotFound)?;
+    let id = coral_workspace::UserId::parse(approver.id().as_str())?;
+    match workspaces
+        .inspect_user_profile_in_transaction(tx, user, workspace, &id)
+        .await
+    {
+        Ok(profile) => Ok(profile.name.filter(|name| !name.trim().is_empty())),
+        Err(coral_workspace::Error::MembershipNotFound) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn emission_view(
+    tx: &mut Transaction<'_>,
+    workspaces: &WorkspaceModule,
+    actor: &AuthenticatedPrincipal,
+    workspace: &WorkspaceId,
+    run: &RunRecord,
+    row: emission_approval_repository::StoredEmissionApproval,
+    now: i64,
+) -> Result<ApprovalRequest, Error> {
+    let actionable = crate::emission_approval::actionable(&row, run, now)
+        && crate::history_repository::invoking_authority_current(tx, run, now).await?;
+    let agent_label = crate::inspection_repository::run_agent_label(tx, workspace, &run.id).await?;
+    let approver_name =
+        approver_name(tx, workspaces, actor, workspace, row.approver.as_ref()).await?;
+    let arguments = serde_json::from_str(&row.payload_json).map_err(Error::ProgramValueJson)?;
+    Ok(ApprovalRequest {
+        approver_name,
+        provider_label: None,
+        agent_label,
+        id: row.id,
+        subject: ApprovalSubject::Emission {
+            source_location: row.source_location,
+        },
+        run_id: run.id.clone(),
+        invoking_principal: run.principal.clone(),
+        call_path: emission_approval_repository::EMIT_CALL_PATH.to_string(),
+        arguments,
         state: row.state,
         actionable,
         deadline_at_unix_nanos: row.deadline_at_unix_nanos,
@@ -584,7 +776,13 @@ pub(super) async fn pending_for_run(
     run: &RunRecord,
     now: i64,
 ) -> Result<Vec<(ApprovalId, i64)>, Error> {
-    approval_repository::pending_for_run(tx, &run.workspace_id, &run.id, now).await
+    let mut pending =
+        approval_repository::pending_for_run(tx, &run.workspace_id, &run.id, now).await?;
+    pending.extend(
+        emission_approval_repository::pending_for_run(tx, &run.workspace_id, &run.id, now).await?,
+    );
+    pending.sort_by_key(|(id, _)| id.to_string());
+    Ok(pending)
 }
 
 // All private facets join the Invocation-owned transaction with its Run hold.

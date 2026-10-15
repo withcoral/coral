@@ -292,6 +292,31 @@ function renderStatic(detail: Approval) {
 }
 
 describe('approval review layout', () => {
+  // Catches: an Emission review that names a Provider it does not have, or splits the
+  // value to emit into fields that the reviewer cannot compare to the exact bytes.
+  it('shows an Emission request as the exact value to emit, without a Provider', () => {
+    const value = '{"invoice":"INV-7","total":12.50}'
+    renderStatic({
+      ...approval,
+      subject: 'emission',
+      invocation: '',
+      provider: '',
+      providerLabel: '',
+      callPath: 'coral.emit',
+      arguments: value,
+    })
+    const review = screen.getByRole('region', { name: 'Review coral.emit' })
+    expect(within(review).getByText('emission approval request')).toBeInTheDocument()
+    expect(review).not.toHaveTextContent('Provider')
+    expect(review).not.toHaveTextContent('Arguments')
+    const emitted = within(review).getByText('Value to emit').closest('details')
+    expect(emitted).toHaveAttribute('open')
+    // Formatting changes only whitespace: the exact tokens, including 12.50, remain.
+    expect(emitted?.querySelector('pre')?.textContent?.replace(/\s+/g, '')).toBe(value)
+    expect(within(review).getByRole('button', { name: 'Approve this emission' })).toBeEnabled()
+    expect(within(review).getByRole('button', { name: 'Deny this emission' })).toBeEnabled()
+  })
+
   it('orients the reviewer before the exact arguments and keeps supporting detail collapsed', () => {
     renderStatic({ ...approval, providerLabel: 'Mail', taskIntent: 'Chase overdue invoices' })
     const review = screen.getByRole('region', { name: `Review ${approval.callPath}` })

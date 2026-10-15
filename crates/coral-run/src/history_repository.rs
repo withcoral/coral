@@ -161,6 +161,7 @@ fn run_action(now: i64) -> SimpleExpr {
             .and_where(invocation_action(now))
             .to_owned(),
     )
+    .or(crate::emission_approval_repository::run_has_pending(now))
 }
 fn run_select(now: i64) -> SelectStatement {
     Query::select()

@@ -595,7 +595,10 @@ export function Activity({
       detailPage.detail.request?.kind === 'approval' &&
       Boolean(detailPage.detail.context)) ||
       (detailPage.detail?.kind === 'run' &&
-        detailPage.detail.request?.kind === 'account_connection'))
+        // An Emission approval has no operation, so its Run carries the review.
+        (detailPage.detail.request?.kind === 'account_connection' ||
+          (detailPage.detail.request?.kind === 'approval' &&
+            detailPage.detail.request.subject === 'emission'))))
   // A record inside a Run shows that Run's accepted source beside its own detail.
   const runContext = detailPage.unavailable ? undefined : runContextOf(detailPage.detail)
   const unsent = useUnsentComment()

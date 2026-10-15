@@ -61,9 +61,23 @@ impl ProgramOutputWriter {
         self.append(
             Output::Emission(value, middleware_execution.map(str::to_owned)),
             location,
+            None,
         )
         .await
         .map_err(output_error)
+    }
+
+    /// Appends exactly the bytes of an approved Emission request, checking the
+    /// approval in the same transaction as the Emission.
+    pub(crate) async fn emit_approved(
+        &self,
+        value: ProgramValue,
+        location: Option<SourceLocation>,
+        approval: &crate::approval::ApprovalId,
+    ) -> Result<(), ProgramOutputWriteError> {
+        self.append(Output::Emission(value, None), location, Some(approval))
+            .await
+            .map_err(output_error)
     }
 
     pub(crate) async fn log(
@@ -81,12 +95,18 @@ impl ProgramOutputWriter {
                 message: message.to_string(),
             },
             location,
+            None,
         )
         .await
         .map_err(output_error)
     }
 
-    async fn append(&self, output: Output, location: Option<SourceLocation>) -> Result<(), Error> {
+    async fn append(
+        &self,
+        output: Output,
+        location: Option<SourceLocation>,
+        approval: Option<&crate::approval::ApprovalId>,
+    ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let Some(run) =
             run_repository::hold_run(&mut transaction, &self.workspace_id, &self.run_id).await?
@@ -116,6 +136,16 @@ impl ProgramOutputWriter {
             return Err(Error::RunEventPersistence(
                 "Middleware Emission has no running execution".to_string(),
             ));
+        }
+        if let (Some(approval), Output::Emission(value, _)) = (approval, &output) {
+            crate::emission_approval::require_approved(
+                &mut transaction,
+                &run,
+                approval,
+                value,
+                occurred_at_unix_nanos,
+            )
+            .await?;
         }
         let (bytes, event) = match &output {
             Output::Emission(value, middleware_execution) => (
@@ -149,6 +179,7 @@ impl ProgramOutputWriter {
 fn output_error(error: Error) -> ProgramOutputWriteError {
     match error {
         Error::ProgramValueTooLarge => ProgramOutputWriteError::LimitExceeded,
+        Error::InvocationRejected(failure) => ProgramOutputWriteError::Rejected(failure),
         error => ProgramOutputWriteError::Fatal(error),
     }
 }
@@ -164,5 +195,7 @@ enum Output {
 pub(crate) enum ProgramOutputWriteError {
     InvalidValue,
     LimitExceeded,
+    /// A catchable Coral Failure, such as an approval that expired at the fence.
+    Rejected(crate::CoralFailure),
     Fatal(Error),
 }

@@ -505,6 +505,7 @@ message ActivityActionSummary {
   // Path the Program called. Empty if a shared connection request covers several paths.
   string call_path = 2;
   // The Provider's current display name, or "Unavailable provider" if it was removed.
+  // Empty for an Emission request, which has no Provider.
   string provider_label = 3;
   // When this Run stops waiting: the request's deadline or the Run's, whichever is first.
   int64 deadline_at_unix_nanos = 4;
@@ -584,13 +585,15 @@ message InspectApprovalResponse {
   string name = 1;
   // workspaces/{workspace}/runs/{run} that is waiting.
   string run = 2;
-  // workspaces/{workspace}/invocations/{invocation} that needs approval.
+  // workspaces/{workspace}/invocations/{invocation} that needs approval. Empty for an
+  // Emission request.
   string invocation = 3;
-  // workspaces/{workspace}/providers/{provider} at the time of the call.
+  // workspaces/{workspace}/providers/{provider} at the time of the call. Empty for an
+  // Emission request.
   string provider = 4;
-  // Path the Program called.
+  // Path the Program called; coral.emit for an Emission request.
   string call_path = 5;
-  // Arguments of this call, as JSON.
+  // Arguments of this call, or the exact value an Emission request would emit, as JSON.
   string arguments_json = 6;
   // pending, approved, declined, expired or closed. Use actionable to decide whether to
   // offer a decision.
@@ -606,11 +609,26 @@ message InspectApprovalResponse {
   // True if the caller can decide the request now. A pending state alone is not enough.
   bool actionable = 12;
   // The Provider's current display name, or "Unavailable provider" if it was removed.
+  // Empty for an Emission request, which has no Provider.
   string provider_label = 13;
   // Label for who decided: "You", their name, or "Unavailable user". Empty if nobody decided.
   string approver_label = 14;
   // Label for who started the Run: "You", the Agent's name, or "Unavailable agent".
   string actor_label = 15;
+  // What approval permits: one Operation call, or one Program Emission.
+  ActivityApprovalSubject subject = 16;
+  // Where the Run's accepted source called coral.emit, for an Emission request. Absent
+  // if not recorded, and for Invocation requests, whose call carries its own location.
+  ActivitySourceLocation source_location = 17;
+}
+// What one Approval Request would permit.
+enum ActivityApprovalSubject {
+  // Unknown to this client.
+  ACTIVITY_APPROVAL_SUBJECT_UNSPECIFIED = 0;
+  // One pending Operation call.
+  ACTIVITY_APPROVAL_SUBJECT_INVOCATION = 1;
+  // One Program Emission of exactly arguments_json. Operation Middleware required approval.
+  ACTIVITY_APPROVAL_SUBJECT_EMISSION = 2;
 }
 // Selects which pending requests to count.
 message CountRequiredActionsRequest {

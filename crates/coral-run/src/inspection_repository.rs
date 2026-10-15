@@ -38,6 +38,25 @@ pub(crate) async fn approval_labels(
     tx.fetch_optional(select).await?.ok_or(Error::RunNotFound)
 }
 
+/// The safe retained invoking Agent label of a Run, absent for User work.
+pub(crate) async fn run_agent_label(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &RunId,
+) -> Result<Option<String>, Error> {
+    let mut select = Query::select();
+    select
+        .from_as(Alias::new("program_run_records"), Alias::new("r"))
+        .expr(coral_workspace::history_repository::agent_label(
+            column("r", "workspace_id"),
+            column("r", "principal_id"),
+        ))
+        .and_where(Expr::col(column("r", "workspace_id")).eq(workspace.to_string()))
+        .and_where(Expr::col(column("r", "id")).eq(run.to_string()));
+    let (label,): (Option<String>,) = tx.fetch_optional(select).await?.ok_or(Error::RunNotFound)?;
+    Ok(label)
+}
+
 fn scoped(
     table: &str,
     workspace: &WorkspaceId,

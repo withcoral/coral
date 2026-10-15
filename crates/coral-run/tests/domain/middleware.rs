@@ -5,6 +5,7 @@ use coral_middleware::{
     MiddlewareSave, MiddlewareScopes, MiddlewareSource,
 };
 
+use crate::approval::ApprovalState;
 use crate::{MiddlewareExecutionStatus, MiddlewarePhase, MiddlewareScope, RunEntry};
 
 const RUN: MiddlewareScopes = MiddlewareScopes {
@@ -348,6 +349,394 @@ async fn output_middleware_controls_program_emissions_and_attributes_its_own() {
         [
             (serde_json::json!({"token": "[redacted]"}), false),
             (serde_json::json!({"reviewed": true}), true),
+        ]
+    );
+}
+
+const REVIEW: &str = r#"
+    export default async function review(ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next) {
+        if (ctx.kind !== "operation" || ctx.path !== "coral.emit") return next();
+        const args = ctx.args as Record<string, unknown>;
+        if (args.review) {
+            ctx.currentPolicy = "approval_required";
+            ctx.args = { ...args, reviewed: "final" };
+        }
+        return next();
+    }
+"#;
+
+impl MiddlewareFixture {
+    async fn start(&self, program: &str) -> crate::RunId {
+        self.modules
+            .runs
+            .start(
+                &self.operation.principal,
+                &self.operation.workspace_id,
+                submission(program),
+            )
+            .await
+            .unwrap()
+            .run_id()
+            .clone()
+    }
+
+    /// The Run's one pending Approval Request, once Run Updates show it.
+    async fn pending_approval(&self, run: &crate::RunId) -> crate::approval::ApprovalId {
+        let update = wait_for_actions(
+            &self.modules.runs,
+            &self.operation.principal,
+            &self.operation.workspace_id,
+            run,
+            1,
+            0,
+        )
+        .await;
+        let action = update
+            .required_actions()
+            .first()
+            .expect("one required action");
+        match &action.request {
+            crate::RequiredActionRequest::InvocationApproval(id) => id.clone(),
+            other @ crate::RequiredActionRequest::AccountConnection(_) => {
+                panic!("expected an Approval Request: {other:?}")
+            }
+        }
+    }
+
+    async fn decide(
+        &self,
+        id: &crate::approval::ApprovalId,
+        decision: crate::approval::ApprovalDecision,
+    ) -> crate::approval::ApprovalRequest {
+        self.modules
+            .runs
+            .decide_approval(
+                &self.operation.principal,
+                &self.operation.workspace_id,
+                id,
+                decision,
+                None,
+                &trace('d'),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn inspect(&self, id: &crate::approval::ApprovalId) -> crate::approval::ApprovalRequest {
+        self.modules
+            .runs
+            .inspect_approval(&self.operation.principal, &self.operation.workspace_id, id)
+            .await
+            .unwrap()
+    }
+
+    async fn emissions(&self, run: &crate::RunId) -> Vec<serde_json::Value> {
+        retained_events(
+            &self.modules.runs,
+            &self.operation.principal,
+            &self.operation.workspace_id,
+            run,
+        )
+        .await
+        .into_iter()
+        .filter_map(|event| match event.kind() {
+            RunEventKind::ProgramEmitted { value, .. } => Some(value.as_json().clone()),
+            _ => None,
+        })
+        .collect()
+    }
+
+    async fn terminal(&self, run: &crate::RunId) -> crate::RunUpdate {
+        wait_for_terminal(
+            &self.modules.runs,
+            &self.operation.principal,
+            &self.operation.workspace_id,
+            run,
+        )
+        .await
+    }
+}
+
+// Catches: an approval-gated Emission written before a human decides, an approval
+// bound to the pre-Middleware value, or one another Workspace Member can read or decide.
+#[tokio::test]
+async fn an_approved_emission_appends_exactly_the_final_payload_once() {
+    let f = MiddlewareFixture::new("user:emit-approve").await;
+    f.enable("review", OPERATION, REVIEW).await;
+    let run = f
+        .start(
+            r#"
+                await coral.emit({ review: true, secret: "s3cret" });
+                return "emitted";
+            "#,
+        )
+        .await;
+    let id = f.pending_approval(&run).await;
+    assert!(
+        f.emissions(&run).await.is_empty(),
+        "nothing emits while it waits"
+    );
+    let request = f.inspect(&id).await;
+    assert_eq!(request.call_path, "coral.emit");
+    assert!(matches!(
+        request.subject,
+        crate::ApprovalSubject::Emission { .. }
+    ));
+    assert_eq!(
+        request.arguments,
+        serde_json::json!({"review": true, "secret": "s3cret", "reviewed": "final"})
+    );
+    assert_eq!(request.state, ApprovalState::Pending);
+    assert!(request.actionable);
+
+    let member = AuthenticatedPrincipal::user(
+        f.modules
+            .workspace_user(
+                &f.operation.workspace_id,
+                &f.operation.user,
+                "user:emit-other-member",
+                WorkspaceRole::Member,
+            )
+            .await,
+    );
+    let concealed = f
+        .modules
+        .runs
+        .decide_approval(
+            &member,
+            &f.operation.workspace_id,
+            &id,
+            crate::approval::ApprovalDecision::Approve,
+            None,
+            &trace('b'),
+        )
+        .await;
+    assert!(
+        matches!(concealed, Err(Error::ApprovalNotFound)),
+        "{concealed:?}"
+    );
+    assert!(matches!(
+        f.modules
+            .runs
+            .inspect_approval(&member, &f.operation.workspace_id, &id)
+            .await,
+        Err(Error::ApprovalNotFound)
+    ));
+    assert_eq!(f.inspect(&id).await.state, ApprovalState::Pending);
+    assert!(f.emissions(&run).await.is_empty());
+
+    let decided = f
+        .decide(&id, crate::approval::ApprovalDecision::Approve)
+        .await;
+    assert_eq!(decided.state, ApprovalState::Approved);
+    let terminal = f.terminal(&run).await;
+    assert_eq!(final_json(&terminal), serde_json::json!("emitted"));
+    assert_eq!(
+        f.emissions(&run).await,
+        [serde_json::json!({"review": true, "secret": "s3cret", "reviewed": "final"})]
+    );
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Outcome {
+    Decline,
+    Expire,
+    Cancel,
+    LoseAuthority,
+}
+
+// Catches: an Emission written after a decline, an expiry, the Run's cancellation or
+// the invoking User's loss of Workspace authority, or a waiting Program that settles
+// before the durable outcome.
+#[tokio::test]
+async fn a_declined_expired_or_canceled_emission_emits_nothing() {
+    for (outcome, code, state) in [
+        (
+            Outcome::Decline,
+            Some("approval_declined"),
+            ApprovalState::Declined,
+        ),
+        (
+            Outcome::Expire,
+            Some("approval_expired"),
+            ApprovalState::Expired,
+        ),
+        (Outcome::Cancel, None, ApprovalState::Closed),
+        (
+            Outcome::LoseAuthority,
+            Some("dispatch_authority_lost"),
+            ApprovalState::Closed,
+        ),
+    ] {
+        let f = MiddlewareFixture::new(&format!("user:emit-{outcome:?}").to_lowercase()).await;
+        f.enable("review", OPERATION, REVIEW).await;
+        let run = f
+            .start(
+                r#"
+                    try {
+                        await coral.emit({ review: true });
+                        return "emitted";
+                    } catch (error: any) {
+                        return error.code;
+                    }
+                "#,
+            )
+            .await;
+        let id = f.pending_approval(&run).await;
+        match outcome {
+            Outcome::Decline => {
+                f.decide(&id, crate::approval::ApprovalDecision::Decline)
+                    .await;
+            }
+            Outcome::Expire => {
+                f.modules
+                    .inject_fault(&format!(
+                        "UPDATE emission_approvals SET deadline_at_unix_nanos = created_at_unix_nanos WHERE id = '{id}'"
+                    ))
+                    .await;
+            }
+            Outcome::LoseAuthority => {
+                f.modules
+                    .workspaces
+                    .archive(
+                        &change(f.operation.user.clone(), 70, '7'),
+                        &f.operation.workspace_id,
+                    )
+                    .await
+                    .unwrap();
+            }
+            Outcome::Cancel => {
+                f.modules
+                    .runs
+                    .cancel(
+                        &f.operation.principal,
+                        &f.operation.workspace_id,
+                        &run,
+                        &immediate(None, 100),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+        let terminal = f.terminal(&run).await;
+        match code {
+            Some(code) => assert_eq!(
+                final_json(&terminal),
+                serde_json::json!(code),
+                "{outcome:?}"
+            ),
+            None => assert_eq!(terminal.state(), RunState::Canceled, "{outcome:?}"),
+        }
+        assert!(f.emissions(&run).await.is_empty(), "{outcome:?}");
+        assert_eq!(f.inspect(&id).await.state, state, "{outcome:?}");
+        assert!(!f.inspect(&id).await.actionable, "{outcome:?}");
+    }
+}
+
+// Catches: an emit gated by the Workspace, a disabled Emission written anyway, or an
+// earlier Middleware's policy winning over a later one.
+#[tokio::test]
+async fn emit_policy_starts_enabled_and_the_innermost_change_decides() {
+    let f = MiddlewareFixture::new("user:emit-compose").await;
+    f.enable(
+        "lock",
+        OPERATION,
+        r#"
+            export default async function lock(ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next) {
+                if (ctx.kind !== "operation" || ctx.path !== "coral.emit") return next();
+                const args = ctx.args as Record<string, unknown>;
+                if (ctx.originalPolicy !== "enabled") throw new Error("emit starts enabled");
+                if (args.lock) ctx.currentPolicy = "disabled";
+                return next();
+            }
+        "#,
+    )
+    .await;
+    f.enable(
+        "unlock",
+        OPERATION,
+        r#"
+            export default async function unlock(ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next) {
+                if (ctx.kind !== "operation" || ctx.path !== "coral.emit") return next();
+                const args = ctx.args as Record<string, unknown>;
+                if (args.unlock) ctx.currentPolicy = "enabled";
+                return next();
+            }
+        "#,
+    )
+    .await;
+    let terminal = f
+        .run(
+            r#"
+                await coral.emit({ plain: true });
+                let locked = "emitted";
+                try {
+                    await coral.emit({ lock: true });
+                } catch (error: any) {
+                    locked = error.code;
+                }
+                await coral.emit({ lock: true, unlock: true });
+                return locked;
+            "#,
+        )
+        .await;
+    assert_eq!(
+        final_json(&terminal),
+        serde_json::json!("operation_disabled")
+    );
+    assert_eq!(
+        f.emissions(terminal.run_id()).await,
+        [
+            serde_json::json!({"plain": true}),
+            serde_json::json!({"lock": true, "unlock": true}),
+        ]
+    );
+    assert!(
+        f.modules
+            .approvals()
+            .list_for_run(
+                &f.operation.principal,
+                &f.operation.workspace_id,
+                terminal.run_id()
+            )
+            .await
+            .unwrap()
+            .is_empty(),
+        "no policy here needs a human"
+    );
+}
+
+// Catches: a later emit, including one the Program does not await, overtaking an
+// earlier emit that waits for approval.
+#[tokio::test]
+async fn emits_keep_the_program_call_order_while_one_awaits_approval() {
+    let f = MiddlewareFixture::new("user:emit-order").await;
+    f.enable("review", OPERATION, REVIEW).await;
+    let run = f
+        .start(
+            r#"
+                coral.emit({ review: true, n: 1 });
+                coral.emit({ n: 2 });
+                await coral.emit({ n: 3 });
+                return "done";
+            "#,
+        )
+        .await;
+    let id = f.pending_approval(&run).await;
+    assert!(
+        f.emissions(&run).await.is_empty(),
+        "later emits wait behind the first"
+    );
+    f.decide(&id, crate::approval::ApprovalDecision::Approve)
+        .await;
+    let terminal = f.terminal(&run).await;
+    assert_eq!(final_json(&terminal), serde_json::json!("done"));
+    assert_eq!(
+        f.emissions(&run).await,
+        [
+            serde_json::json!({"review": true, "n": 1, "reviewed": "final"}),
+            serde_json::json!({"n": 2}),
+            serde_json::json!({"n": 3}),
         ]
     );
 }

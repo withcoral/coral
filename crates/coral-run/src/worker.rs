@@ -77,6 +77,15 @@ impl RunModule {
             self.clock.clone(),
             accepted.value_limits,
         );
+        let emission_approvals = crate::emission_approval::EmissionApprovals::new(
+            self.database.clone(),
+            accepted.workspace_id.clone(),
+            accepted.id.clone(),
+            claim_id.clone(),
+            self.clock.clone(),
+            stop.clone(),
+            accepted.value_limits,
+        );
         let invoker = OperationInvoker::new(
             self.accounts.clone(),
             self.database.clone(),
@@ -121,6 +130,7 @@ impl RunModule {
                 invoker,
                 output,
                 middleware,
+                emission_approvals,
             },
             accepted.value_limits,
             stop,

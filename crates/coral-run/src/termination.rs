@@ -343,6 +343,8 @@ impl RunModule {
     ) -> Result<(), Error> {
         invocation_lifecycle::end_nonterminal_for_run(transaction, run, terminal_at_unix_nanos)
             .await?;
+        crate::emission_approval::close_pending_for_run(transaction, run, terminal_at_unix_nanos)
+            .await?;
         let run =
             run_repository::find_exact_in_transaction(transaction, &run.workspace_id, &run.id)
                 .await?

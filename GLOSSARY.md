@@ -451,12 +451,14 @@ later answer to an obsolete prompt decides nothing. The prompt keeps no durable 
 authenticated User's own. Agent bearer sessions, other Users, and Owners observing Agent Runs are never prompted.
 _Avoid_: one prompt per Run, form connection prompt
 
-**Approval Request**: A durable host-owned request for a human decision on one pending Operation Invocation. Reef is
+**Approval Request**: A durable host-owned request for a human decision on one pending Operation Invocation, or on
+one Program Emission that Operation Middleware held for approval. Reef is
 the v1 human resolution interface that every Request can use, in local and remote deployments; a deployment without its
 local or hosted Reef interface is not ready. Coral creates a Request whenever an Invocation requires approval. It records the exact logical
 Operation arguments for review on the Run Status Page independently of the agent transport. Its deadline settles the
-Invocation with `approval_expired`; denial settles it with `approval_declined`. The first durable terminal decision
-wins. A later decision returns that result without changing it. The Invocation keeps the Operation Access State it
+Invocation with `approval_expired`; denial settles it with `approval_declined`. A held Emission records its exact final
+value for review instead of Operation arguments, and nothing is emitted unless the Request is approved. The first durable
+terminal decision wins. A later decision returns that result without changing it. The Invocation keeps the Operation Access State it
 was admitted with, so a later Workspace policy change affects only later Program Runs. A later Invocation can create a
 new request. The invoking User can also decide it through an Action Prompt in
 their MCP client; Reef remains available for every Request. An active browser is not required, and existing Requests
@@ -467,7 +469,9 @@ Operation Invocation. It is bound to the Workspace, Provider and account-setting
 Provider Generation, Operation, Credential Route, Provider Account and authorization version when present, and arguments. A User approves their own
 Invocation; any Workspace Owner can approve an Agent Invocation. An Agent never approves, and credential provisioning alone grants no approval authority. Coral retains the
 approver Principal, decision, timestamp, and optional short comment. The approval remains historical evidence and
-cannot authorize a later Invocation or change policy. _Avoid_:
+cannot authorize a later Invocation or change policy. An intercepted Program Emission is an Operation-level invocation:
+when Operation Middleware leaves its current policy at `approval_required`, its Invocation Approval binds the Run,
+Invoking Principal and exact final emitted value, and has no Provider or Account. _Avoid_:
 Always enable, policy rule, reusable approval token
 
 **Upstream Job**: An asynchronous process owned by an Upstream Service and started or observed through separate

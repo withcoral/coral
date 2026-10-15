@@ -1,6 +1,7 @@
 import { Code, ConnectError } from '@connectrpc/connect'
 import { redirect } from 'react-router'
 import {
+  ActivityApprovalSubject,
   ActivityRunState,
   ActivityInvocationState,
   ActivityInvocationOutcome,
@@ -827,6 +828,9 @@ async function selectedDetail(
             throw new ConnectError('unavailable', Code.NotFound)
           const review: Extract<RequestDetail, { kind: 'approval' }> = {
             kind: 'approval',
+            ...(request.subject === ActivityApprovalSubject.EMISSION && {
+              subject: 'emission' as const,
+            }),
             actionable: request.actionable,
             name: request.name,
             run: request.run,
@@ -845,7 +849,10 @@ async function selectedDetail(
                 : timestamp(request.decidedAtUnixNanos),
             comment: request.comment ?? null,
           }
-          if (detail.kind === 'run') {
+          if (detail.kind === 'run' && review.subject === 'emission') {
+            // An Emission request has no operation: its Run is the record to review it on.
+            detail.request = review
+          } else if (detail.kind === 'run') {
             // Approval belongs to this exact operation, not its containing Run.
             // Resolve it in this response rather than redirecting and rereading history.
             const value = await api.activity.inspectInvocation(
@@ -891,7 +898,11 @@ async function selectedDetail(
           // Approval review shows why the Task started. The Run names its Task only when the
           // caller can see it; an unavailable Task leaves the intent out, not the review.
           const owner =
-            page.detail?.kind === 'invocation' ? page.detail.context?.run.task : undefined
+            page.detail?.kind === 'invocation'
+              ? page.detail.context?.run.task
+              : page.detail?.kind === 'run'
+                ? page.detail.run.task
+                : undefined
           if (owner) {
             try {
               const value = await api.activity.inspectTask({ name: owner, pageSize: 1 }, { signal })

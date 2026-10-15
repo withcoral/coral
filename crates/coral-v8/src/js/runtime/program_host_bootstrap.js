@@ -6,6 +6,7 @@
   const appendLog = globalThis.__coralProgramLog;
   const operationPolicy = globalThis.__coralOperationPolicy;
   const callLocation = globalThis.__coralCallLocation;
+  const appendEmissionWithPolicy = globalThis.__coralProgramEmitWithPolicy;
   const middlewareStarted = globalThis.__coralMiddlewareStarted;
   const middlewareContinued = globalThis.__coralMiddlewareContinued;
   const middlewareEnded = globalThis.__coralMiddlewareEnded;
@@ -18,6 +19,7 @@
     "__coralProgramLog",
     "__coralOperationPolicy",
     "__coralCallLocation",
+    "__coralProgramEmitWithPolicy",
     "__coralMiddlewareStarted",
     "__coralMiddlewareContinued",
     "__coralMiddlewareEnded",
@@ -432,11 +434,17 @@
   };
 
   // `coral.emit` is an Operation for Middleware: Operation Middleware wraps it
-  // with `ctx.path === "coral.emit"` and the emitted value as `ctx.args`. It
-  // has no policy fields, and it always resolves to undefined.
+  // with `ctx.path === "coral.emit"` and the emitted value as `ctx.args`. Its
+  // original policy is always `enabled`; Middleware may change the current
+  // one, and the center applies the final policy to the final value. The
+  // Program's Promise always resolves to undefined.
   const interceptEmit = (encoded, invocationFrame, location) => {
     const operationScope = { contexts: create(null) };
-    const state = { args: nativeParse(encoded) };
+    const state = {
+      args: nativeParse(encoded),
+      originalPolicy: POLICIES[0],
+      currentPolicy: POLICIES[0],
+    };
     return runChain(
       middleware.operation,
       "operation",
@@ -450,7 +458,13 @@
         invocationFrame.call,
         operationScope,
       ),
-      () => append(encodeEmission(state.args), undefined, location),
+      () => {
+        const final = encodeEmission(state.args);
+        if (final === undefined || state.currentPolicy === POLICIES[0]) {
+          return append(final, undefined, location);
+        }
+        return appendEmissionWithPolicy(final, state.currentPolicy, location);
+      },
     );
   };
 

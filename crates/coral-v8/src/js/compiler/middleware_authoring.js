@@ -61,12 +61,16 @@ declare namespace CoralMiddleware {
     currentPolicy: OperationPolicy;
     readonly contexts: OperationContexts;
   }
-  /** A Program or Saved Function call to coral.emit. It has no policy. */
+  /** A Program or Saved Function call to coral.emit. */
   interface EmitInvocation {
     readonly kind: "operation";
     readonly path: "coral.emit";
     /** The emitted value. Later Middleware and the Emission see edits. */
     args: unknown;
+    /** Workspace policy never gates an Emission, so it starts enabled. */
+    readonly originalPolicy: "enabled";
+    /** The policy applied to the final value immediately before it is emitted. */
+    currentPolicy: OperationPolicy;
     readonly contexts: OperationContexts;
   }
   type Invocation = RunInvocation | FunctionInvocation | OperationInvocation | EmitInvocation;

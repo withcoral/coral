@@ -208,6 +208,27 @@ impl ProgramHost for RecordingHost {
         Ok(())
     }
 
+    fn emit_with_policy(
+        self: Arc<Self>,
+        value_json: String,
+        policy: OperationPolicy,
+        _location: Option<AuthoredLocation>,
+    ) -> OperationFuture {
+        self.record(format!("emit {value_json} needs {}", policy.as_str()));
+        Box::pin(async move {
+            if policy == OperationPolicy::Disabled {
+                return Err(OperationHostError::Rejected {
+                    code: "operation_disabled",
+                    message: "Operation is disabled",
+                    trace_id: None,
+                });
+            }
+            // A human approves when the host polls the wait.
+            self.record(format!("emit {value_json} approved"));
+            Ok("null".to_string())
+        })
+    }
+
     fn middleware_emit(
         &self,
         value_json: &str,
@@ -808,7 +829,7 @@ fn emit_is_an_operation_that_middleware_can_edit_block_or_replace() {
     let redact = r#"
         export default async function redact(ctx: any, next: CoralMiddleware.Next) {
             if (ctx.path !== "coral.emit") return next();
-            console.log(`emit ${ctx.kind} ${"originalPolicy" in ctx} ${"currentPolicy" in ctx}`);
+            console.log(`emit ${ctx.kind} ${ctx.originalPolicy} ${ctx.currentPolicy}`);
             if (ctx.args.block) return "replacement";
             ctx.args = { ...ctx.args, secret: "[redacted]" };
             return next();
@@ -832,9 +853,9 @@ fn emit_is_an_operation_that_middleware_can_edit_block_or_replace() {
     assert_eq!(
         emitted,
         [
-            "log emit operation false false",
+            "log emit operation enabled enabled",
             r#"emit {"secret":"[redacted]","note":"kept"}"#,
-            "log emit operation false false",
+            "log emit operation enabled enabled",
         ]
     );
     assert!(
@@ -987,5 +1008,127 @@ fn intercepted_calls_keep_the_program_call_site_and_helper_calls_have_none() {
             .collect::<Vec<_>>(),
         ["coral.providers.audit.log @ -"; 2],
         "Middleware source is not the Run's authored source"
+    );
+}
+
+#[test]
+fn emit_policy_starts_enabled_and_later_middleware_composes_the_final_policy() {
+    let outer = r#"
+        export default async function outer(ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next) {
+            if (ctx.kind !== "operation" || ctx.path !== "coral.emit") return next();
+            console.log(`outer sees ${ctx.originalPolicy} ${ctx.currentPolicy}`);
+            ctx.currentPolicy = "disabled";
+            ctx.args = { ...ctx.args, by: "outer" };
+            return next();
+        }
+    "#;
+    let inner = r#"
+        export default async function inner(ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next) {
+            if (ctx.kind !== "operation" || ctx.path !== "coral.emit") return next();
+            console.log(`inner sees ${ctx.originalPolicy} ${ctx.currentPolicy}`);
+            const args = ctx.args as { review?: boolean };
+            if (args.review) ctx.currentPolicy = "approval_required";
+            return next();
+        }
+    "#;
+    let (result, facts) = run(
+        r#"
+            const reviewed = await coral.emit({ review: true });
+            let blocked = "emitted";
+            try {
+                await coral.emit({ review: false });
+            } catch (error: any) {
+                blocked = `${error.name} ${error.code}`;
+            }
+            return [reviewed === undefined, blocked];
+        "#,
+        &[],
+        &[
+            middleware("outer", OPERATION, outer),
+            middleware("inner", OPERATION, inner),
+        ],
+    );
+    assert_eq!(
+        result.expect("run").as_deref(),
+        Some(r#"[true,"OperationError operation_disabled"]"#)
+    );
+    let center: Vec<_> = facts
+        .iter()
+        .filter(|fact| fact.starts_with("emit ") || fact.starts_with("log "))
+        .cloned()
+        .collect();
+    assert_eq!(
+        center,
+        [
+            "log outer sees enabled enabled",
+            "log inner sees enabled disabled",
+            r#"emit {"review":true,"by":"outer"} needs approval_required"#,
+            r#"emit {"review":true,"by":"outer"} approved"#,
+            "log outer sees enabled enabled",
+            "log inner sees enabled disabled",
+            r#"emit {"review":false,"by":"outer"} needs disabled"#,
+        ]
+    );
+}
+
+#[test]
+fn emits_keep_the_program_call_order_while_one_waits_for_approval() {
+    let review_first = r#"
+        export default async function review(ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next) {
+            if (ctx.kind !== "operation" || ctx.path !== "coral.emit") return next();
+            if (ctx.args === 1) ctx.currentPolicy = "approval_required";
+            return next();
+        }
+    "#;
+    let (result, facts) = run(
+        r#"
+            coral.emit(1);
+            coral.emit(2);
+            await coral.emit(3);
+            return "done";
+        "#,
+        &[],
+        &[middleware("review", OPERATION, review_first)],
+    );
+    assert_eq!(result.expect("run").as_deref(), Some(r#""done""#));
+    let emitted: Vec<_> = facts
+        .iter()
+        .filter(|fact| fact.starts_with("emit "))
+        .cloned()
+        .collect();
+    assert_eq!(
+        emitted,
+        [
+            "emit 1 needs approval_required",
+            "emit 1 approved",
+            "emit 2",
+            "emit 3"
+        ]
+    );
+}
+
+#[test]
+fn a_middleware_emit_keeps_its_bypass_whatever_the_policy_it_sets() {
+    let audit = r#"
+        export default async function audit(ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next) {
+            if (ctx.kind !== "operation" || ctx.path !== "coral.emit") return next();
+            ctx.currentPolicy = "disabled";
+            await coral.emit({ audited: true });
+            return next().catch(() => "blocked");
+        }
+    "#;
+    let (result, facts) = run(
+        r#"await coral.emit("program"); return "done";"#,
+        &[],
+        &[middleware("audit", OPERATION, audit)],
+    );
+    assert_eq!(result.expect("run").as_deref(), Some(r#""done""#));
+    assert!(
+        facts.contains(&r#"emit {"audited":true} by m1"#.to_string()),
+        "{facts:?}"
+    );
+    assert!(
+        facts.contains(&r#"emit "program" needs disabled"#.to_string()),
+        "{facts:?}"
     );
 }

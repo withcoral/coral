@@ -182,7 +182,7 @@ enum PendingWait {
     Approval,
 }
 
-async fn next_change(
+pub(crate) async fn next_change(
     changes: &mut Option<coral_db::ChangeSubscription>,
 ) -> Result<(), coral_db::Error> {
     match changes {

@@ -48,7 +48,10 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
     )
     .await;
     assert_eq!(request.state, ApprovalState::Pending);
-    assert_eq!(request.provider_id, operation.provider_id);
+    assert_eq!(
+        invocation_subject(&request).provider_id,
+        &operation.provider_id
+    );
     assert_eq!(request.invoking_principal, *operation.principal.principal());
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
     let decided = approvals
@@ -1202,9 +1205,12 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
             run.run_id(),
         )
         .await;
-        assert_eq!(request.provider_account_id, Some(account_id));
         assert_eq!(
-            request.credential_route,
+            invocation_subject(&request).provider_account_id,
+            Some(&account_id)
+        );
+        assert_eq!(
+            invocation_subject(&request).credential_route,
             if fixed {
                 CredentialRoute::Fixed
             } else {
@@ -1249,7 +1255,10 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
         )
         .await;
         assert_ne!(new_request.id, request.id);
-        assert_ne!(new_request.invocation_id, request.invocation_id);
+        assert_ne!(
+            invocation_subject(&new_request).invocation_id,
+            invocation_subject(&request).invocation_id
+        );
         assert_eq!(new_request.state, ApprovalState::Pending);
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
         fixture

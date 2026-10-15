@@ -25,6 +25,8 @@ pub(crate) async fn retention_activity(
     for (table, column) in [
         ("invocation_approvals", "created_at_unix_nanos"),
         ("invocation_approvals", "decided_at_unix_nanos"),
+        ("emission_approvals", "created_at_unix_nanos"),
+        ("emission_approvals", "decided_at_unix_nanos"),
         ("operation_invocations", "dispatch_started_at_unix_nanos"),
         (
             "operation_invocations",
@@ -58,6 +60,7 @@ pub(crate) async fn delete_retained_history(
     for table in [
         "program_run_events",
         "invocation_approvals",
+        "emission_approvals",
         "operation_invocations",
         "middleware_executions",
         "program_run_middleware_snapshots",
