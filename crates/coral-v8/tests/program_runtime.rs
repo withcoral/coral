@@ -1235,6 +1235,10 @@ impl ProgramHost for FatalOperationHost {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of every authored frame shape"
+)]
 fn failure_stacks_name_only_authored_locations() {
     let compiler = ProgramCompiler::new(IsolateLimits::default()).expect("compiler");
     let fail = linked_source(
@@ -1254,7 +1258,7 @@ fn failure_stacks_name_only_authored_locations() {
         "export default async function fetch() {\n    await coral.providers.weather.getForecast();\n}",
     );
     // (Program, its Saved Functions, the failure's message, its authored frames)
-    let cases: [(&str, Vec<LinkedSavedFunctionSource>, &str, &[&str]); 8] = [
+    let cases: [(&str, Vec<LinkedSavedFunctionSource>, &str, &[&str]); 9] = [
         (
             "const meaning: number = 42;\nvoid meaning;\nthrow new Error(\"private rejection canary\");",
             vec![],
@@ -1293,6 +1297,19 @@ fn failure_stacks_name_only_authored_locations() {
             vec![],
             "",
             &["at Program:2:"],
+        ),
+        // Saved Function source without semicolons keeps its frames.
+        (
+            "return coral.functions.debug.asi();",
+            vec![linked_source(
+                &["debug", "asi"],
+                "export default () => {\n  const reason = 'asi canary'\n  throw new Error(reason)\n}",
+            )],
+            "Error: asi canary\n",
+            &[
+                "at Saved Function coral.functions.debug.asi:3:",
+                "at Program:1:",
+            ],
         ),
         // Frames count ECMAScript line terminators, not only LF.
         (
@@ -1989,6 +2006,76 @@ fn host_calls_carry_the_authored_location_of_each_call() {
             "\n[1].forEach(console.log);",
             vec![],
             vec![("log", at(2, 5))],
+        ),
+        // Calls inside Saved Function source without semicolons keep their
+        // lines, though the linker reprints that source with semicolons.
+        (
+            "await coral.functions.locations.notify()",
+            vec![linked_source(
+                &["locations", "notify"],
+                "export default async () => {\n  await coral.providers.locationFixture.lookup({})\n  console.warn('accepted-snapshot-notice')\n  return 1\n}",
+            )],
+            vec![
+                ("invoke", in_saved_function("locations.notify", 2, 41)),
+                ("log", in_saved_function("locations.notify", 3, 11)),
+            ],
+        ),
+        (
+            "coral.functions.locations.named()",
+            vec![linked_source(
+                &["locations", "named"],
+                "const prefix = 'n'\nexport default function named() {\n  console.info(prefix)\n  coral.emit(prefix);;\n}",
+            )],
+            vec![
+                ("log", in_saved_function("locations.named", 3, 11)),
+                ("emit", in_saved_function("locations.named", 4, 9)),
+            ],
+        ),
+        (
+            "coral.functions.locations.implicit(); coral.functions.locations.guarded(true); coral.functions.locations.boxed()",
+            vec![
+                linked_source(
+                    &["locations", "implicit"],
+                    "export default () => console.log('implicit')",
+                ),
+                linked_source(
+                    &["locations", "guarded"],
+                    "export default function guarded(flag: boolean) {\n  // a comment\n  if (!flag) return\n  /* block */ console.debug('after')\n}",
+                ),
+                linked_source(
+                    &["locations", "boxed"],
+                    "class Box {\n  value = 1\n  read() { return this.value }\n}\nexport default () => { console.log(new Box().read()) }",
+                ),
+            ],
+            vec![
+                ("log", in_saved_function("locations.implicit", 1, 30)),
+                ("log", in_saved_function("locations.guarded", 4, 23)),
+                ("log", in_saved_function("locations.boxed", 5, 32)),
+            ],
+        ),
+        // A template or regular expression earlier on the line cannot shift a
+        // later call's column, and a statement the linker reprints differently
+        // stops only its own mapping, not the next statement's.
+        (
+            "coral.functions.locations.lexical()",
+            vec![linked_source(
+                &["locations", "lexical"],
+                "type Pair = { a: string, b: number }\nexport default () => {\n  foo(`${1}`,   coral.emit(1))\n  foo(/'/,   coral.emit(2))\n  ;[1].forEach(() => coral.emit(3))\n  console.log('after')\n}\nfunction foo(..._values: unknown[]) {}",
+            )],
+            vec![
+                ("emit", in_saved_function("locations.lexical", 3, 23)),
+                ("emit", in_saved_function("locations.lexical", 4, 20)),
+                ("emit", in_saved_function("locations.lexical", 5, 28)),
+                ("log", in_saved_function("locations.lexical", 6, 11)),
+            ],
+        ),
+        (
+            "coral.functions.locations.documented(`${1}`)",
+            vec![linked_source(
+                &["locations", "documented"],
+                "/** Logs one value. */\nexport default function documented(value: string) {\n  console.log(`value ${value}`, /x/g.test(value))\n}",
+            )],
+            vec![("log", in_saved_function("locations.documented", 3, 11))],
         ),
         // A binding called with no authored frame on the stack has no location.
         (
