@@ -391,7 +391,8 @@ fn resolved_decision(
 /// An Operation runs without approval when it declares it changes nothing or
 /// its HTTP method is safe. An undeclared hint is not evidence, so any other
 /// Operation takes the cautious default.
-pub(crate) fn default_access_state(
+#[must_use]
+pub fn default_access_state(
     hints: OperationHints,
     http_method: Option<HttpMethod>,
 ) -> OperationAccessState {

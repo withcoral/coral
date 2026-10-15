@@ -36,6 +36,9 @@ enum OperationInvocations {
     ResultBytes,
     FailureCode,
     FailureMessage,
+    AccessState,
+    PolicySource,
+    MiddlewareExecutionId,
 }
 
 impl InvocationState {
@@ -84,6 +87,9 @@ pub(super) async fn insert_admission(
                 OperationInvocations::ArgumentsJson,
                 OperationInvocations::State,
                 OperationInvocations::AdmittedAtUnixNanos,
+                OperationInvocations::AccessState,
+                OperationInvocations::PolicySource,
+                OperationInvocations::MiddlewareExecutionId,
             ]
             .into_iter()
             .map(IntoIden::into_iden)
@@ -109,6 +115,9 @@ pub(super) async fn insert_admission(
                 Expr::val(&admitted.arguments_json),
                 Expr::val(InvocationState::Pending.as_storage_str()),
                 Expr::val(admitted.admitted_at_unix_nanos),
+                Expr::val(admitted.access_state.as_storage_str()),
+                Expr::val(admitted.policy_source.as_storage_str()),
+                Expr::val(admitted.middleware_execution_id.as_deref()),
             ]
             .into_iter()
             .chain(location_values),
@@ -414,6 +423,8 @@ pub(super) struct ApprovalTarget {
     pub provider_account_id: Option<coral_provider::account::ProviderAccountId>,
     pub call_path: String,
     pub arguments: serde_json::Value,
+    /// Retained effective policy; absent for Invocations admitted before it was kept.
+    pub access_state: Option<coral_policy::OperationAccessState>,
 }
 
 pub(super) async fn approval_target(
@@ -432,6 +443,7 @@ pub(super) async fn approval_target(
         provider_account_id: Option<String>,
         call_path: String,
         arguments_json: String,
+        access_state: Option<String>,
     }
     let row: Row = tx
         .fetch_optional(
@@ -445,6 +457,7 @@ pub(super) async fn approval_target(
                     OperationInvocations::ProviderAccountId,
                     OperationInvocations::CallPath,
                     OperationInvocations::ArgumentsJson,
+                    OperationInvocations::AccessState,
                 ])
                 .from(OperationInvocations::Table)
                 .and_where(Expr::col(OperationInvocations::WorkspaceId).eq(workspace.to_string()))
@@ -472,6 +485,11 @@ pub(super) async fn approval_target(
         arguments: serde_json::from_str(&row.arguments_json).map_err(|error| {
             Error::CorruptData(format!("Invocation has invalid arguments JSON: {error}"))
         })?,
+        access_state: row
+            .access_state
+            .as_deref()
+            .map(coral_policy::OperationAccessState::from_storage_str)
+            .transpose()?,
     })
 }
 

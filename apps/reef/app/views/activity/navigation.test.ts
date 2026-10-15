@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activityPage, invocationRow, runRow, taskRow, toolRow } from './fixtures'
+import { activityPage, invocationRow, middlewareRow, runRow, taskRow, toolRow } from './fixtures'
 import {
   activityNavigation,
   activityStops,
@@ -321,6 +321,11 @@ describe('keyboard traversal', () => {
     expect(recordParents(b)).toEqual([a.name])
   })
 
+  it('names the Run and Task that enclose a middleware execution', () => {
+    const execution = middlewareRow(b.name, 'm1', { task: a.name })
+    expect(recordParents(execution)).toEqual([b.name, a.name])
+  })
+
   it('follows a submission to the Run it was accepted as', () => {
     const submission = toolRow(a.name, 'submitted', { position: 1, acceptedRun: b.name })
     const accepted = { ...b, submission: { ...submission, position: undefined } } as ActivityRow
@@ -352,6 +357,11 @@ describe('live mode', () => {
       'a log follows its Run',
       output(owner.name, 'events/2', 1),
       { run: owner.name, chain: [owner.name] },
+    ],
+    [
+      'a middleware execution follows the Run it wrapped',
+      middlewareRow(owner.name, 'm1', { task: owner.task }),
+      { run: owner.name, chain: [owner.task, owner.name] },
     ],
     ['a Task has no Run to follow', taskRow('t'), null],
     ['a tool call has no Run to follow', toolRow('t', 'i'), null],

@@ -63,6 +63,8 @@ pub struct InvocationSummary {
     pub operation: String,
     /// Retained Program call path.
     pub call_path: String,
+    /// Middleware execution that made this helper call; absent for Program work.
+    pub middleware_execution: Option<String>,
     /// Native lifecycle state.
     pub state: InvocationStatus,
     /// Native ended outcome kind.

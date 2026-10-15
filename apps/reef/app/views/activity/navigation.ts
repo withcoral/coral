@@ -253,7 +253,7 @@ export function liveRun(row: ActivityRow | null): { run: string; chain: string[]
   const run =
     row?.kind === 'run'
       ? row.name
-      : row?.kind === 'invocation' || row?.kind === 'output'
+      : row?.kind === 'invocation' || row?.kind === 'output' || row?.kind === 'middleware'
         ? row.run
         : null
   if (!row || !run) return null
@@ -332,7 +332,8 @@ export const stopPosition = (stop: RecordStop): StopPosition => ({
 /** The Tasks and Runs that enclose a record, nearest first. `shown` names a final value. */
 export function recordParents(row: ActivityRow, shown = row.name): string[] {
   const own = shown === finalValue(row.name) ? [row.name] : []
-  const run = row.kind === 'invocation' || row.kind === 'output' ? row.run : ''
+  const run =
+    row.kind === 'invocation' || row.kind === 'output' || row.kind === 'middleware' ? row.run : ''
   const task = row.kind === 'task' ? '' : (row.task ?? '')
   return [...own, run, task].filter(Boolean)
 }

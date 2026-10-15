@@ -9,8 +9,9 @@ use crate::source_map::{AuthoredSourceMapping, normalize as normalize_source_map
 use crate::v8_support::{format_thrown_value, read_global_string, run_script};
 use crate::{
     CompiledProgram, CompilerDiagnostic, DiagnosticCategory, Error, IsolateLimits,
-    LinkedSavedFunctionSource, ProgramExecutionControl, SavedFunctionCompilation,
-    SavedFunctionDeclarationField, SavedFunctionReference,
+    LinkedMiddlewareSource, LinkedSavedFunctionSource, MiddlewareCompilation,
+    ProgramExecutionControl, SavedFunctionCompilation, SavedFunctionDeclarationField,
+    SavedFunctionReference,
 };
 
 const TYPESCRIPT_SOURCE: &str = include_str!("../vendor/typescript.js");
@@ -28,6 +29,8 @@ const COMPILER_BRIDGE: &str = concat!(
     "\n",
     include_str!("js/compiler/saved_function_authoring.js"),
     "\n",
+    include_str!("js/compiler/middleware_authoring.js"),
+    "\n",
     include_str!("js/compiler/saved_function_linking.js"),
     "\n",
     include_str!("js/compiler/program_compilation.js"),
@@ -37,6 +40,7 @@ const COMPILER_BRIDGE: &str = concat!(
 );
 const PROGRAM_FILE_NAME: &str = "program.ts";
 const SAVED_FUNCTION_FILE_NAME: &str = "saved_function.ts";
+const MIDDLEWARE_FILE_NAME: &str = "middleware.ts";
 
 /// Maximum elapsed time for one compiler request, including queueing.
 pub const COMPILATION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -198,11 +202,59 @@ impl ProgramCompiler {
         source: &str,
         saved_functions: &[LinkedSavedFunctionSource],
     ) -> Result<CompiledProgram, Error> {
+        self.compile_linked(deadline, source, saved_functions, &[])
+    }
+
+    /// Lowers one Program body with its Saved Function closure and the pinned
+    /// Middleware chain, outermost first.
+    ///
+    /// A package with Middleware evaluates to a function that the executor
+    /// starts with its private Middleware runtime. Middleware modules
+    /// initialize first, then Run Middleware wraps linked-module
+    /// initialization and the submitted body.
+    ///
+    /// # Errors
+    ///
+    /// Returns blocking compiler diagnostics, invalid linked source or
+    /// Middleware, or a compiler-isolate failure.
+    pub fn compile_linked(
+        &self,
+        deadline: Instant,
+        source: &str,
+        saved_functions: &[LinkedSavedFunctionSource],
+        middleware: &[LinkedMiddlewareSource],
+    ) -> Result<CompiledProgram, Error> {
+        if middleware.is_empty() && saved_functions.is_empty() {
+            return self.compile(deadline, source);
+        }
         let saved_functions_json = serde_json::to_string(saved_functions)
+            .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
+        let middleware_json = serde_json::to_string(middleware)
             .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
         let source = source.to_string();
         self.request(deadline, move |compiler| {
-            compiler.compile_with_saved_functions(&source, &saved_functions_json)
+            compiler.compile_with_saved_functions(&source, &saved_functions_json, &middleware_json)
+        })
+    }
+
+    /// Validates one Middleware module without executing it.
+    ///
+    /// Middleware is one import-free module with exactly one default callable.
+    /// It cannot reference Saved Functions or Program Emissions, and its
+    /// top-level code cannot have effects. Strict semantic diagnostics are
+    /// advisory authoring evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a blocking syntax, capability, or shape failure.
+    pub fn prepare_middleware(
+        &self,
+        deadline: Instant,
+        source: &str,
+    ) -> Result<MiddlewareCompilation, Error> {
+        let source = source.to_string();
+        self.request(deadline, move |compiler| {
+            compiler.prepare_middleware(&source)
         })
     }
 
@@ -298,6 +350,14 @@ struct SavedFunctionOutput {
     blocking_diagnostics: Vec<CompilerDiagnostic>,
     diagnostics: Vec<CompilerDiagnostic>,
     references: Vec<SavedFunctionReference>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MiddlewareOutput {
+    validation_error: Option<String>,
+    blocking_diagnostics: Vec<CompilerDiagnostic>,
+    diagnostics: Vec<CompilerDiagnostic>,
 }
 
 #[derive(Deserialize)]
@@ -453,16 +513,40 @@ impl CompilerIsolate {
         }
     }
 
+    fn prepare_middleware(&mut self, source: &str) -> Result<MiddlewareCompilation, Error> {
+        let json = self.call(
+            "__coralPrepareMiddleware",
+            &[
+                source,
+                MIDDLEWARE_FILE_NAME,
+                TYPESCRIPT_PROFILE.javascript_target(),
+            ],
+        )?;
+        let output: MiddlewareOutput = serde_json::from_str(&json)
+            .map_err(|error| Error::CompilerProtocol(error.to_string()))?;
+        if !output.blocking_diagnostics.is_empty() {
+            return Err(Error::Compilation {
+                diagnostics: output.blocking_diagnostics,
+            });
+        }
+        if let Some(message) = output.validation_error {
+            return Err(Error::InvalidMiddleware(message));
+        }
+        Ok(MiddlewareCompilation::new(output.diagnostics))
+    }
+
     fn compile_with_saved_functions(
         &mut self,
         source: &str,
         saved_functions_json: &str,
+        middleware_json: &str,
     ) -> Result<CompiledProgram, Error> {
         let json = self.call(
             "__coralCompileLinkedProgram",
             &[
                 source,
                 saved_functions_json,
+                middleware_json,
                 PROGRAM_FILE_NAME,
                 TYPESCRIPT_PROFILE.javascript_target(),
             ],

@@ -40,6 +40,7 @@ import {
   useActivityNavigation,
   type StopPosition,
 } from './navigation'
+import { middlewareLabel } from './middleware-label'
 import { ActivityDetail, runContextOf } from './detail'
 import { ExecutionSourceSplit } from './execution-source-split'
 import { PanelClose } from './panel'
@@ -64,9 +65,38 @@ export function rowLabel(row: ActivityRow): string {
       return row.submission?.intent || row.actor || 'exec'
     case 'invocation':
       return row.callPath || row.operation
+    case 'middleware':
+      return middlewareLabel(row)
     case 'output':
       return row.label
   }
+}
+const middlewarePhases = {
+  enter: { name: 'LogIn', label: 'enter phase' },
+  exit: { name: 'LogOut', label: 'exit phase' },
+  unknown: { name: 'CircleQuestionMark', label: 'unknown phase' },
+} satisfies Record<string, { name: IconName; label: string }>
+const middlewareStates = {
+  running: { name: 'CircleDashed', label: 'running', tone: 'neutral' },
+  succeeded: { name: 'CircleCheck', label: 'succeeded', tone: 'success' },
+  failed: { name: 'CircleX', label: 'failed', tone: 'error' },
+  run_terminated: { name: 'CircleStop', label: 'execution ended first', tone: 'warning' },
+  unknown: { name: 'CircleQuestionMark', label: 'unknown', tone: 'warning' },
+} satisfies Record<string, { name: IconName; label: string; tone: RowStatus['tone'] }>
+/** The phase and state of one Middleware execution, each as an icon with a text label. */
+function MiddlewareIcons({ row }: { row: Extract<ActivityRow, { kind: 'middleware' }> }) {
+  const phase = middlewarePhases[row.phase]
+  const state = middlewareStates[row.state]
+  return (
+    <>
+      <Pill color="graySubtle" role="img" aria-label={phase.label} title={phase.label}>
+        <Icon name={phase.name} size="14" />
+      </Pill>
+      <Pill color="graySubtle" role="img" aria-label={state.label} title={state.label}>
+        <Icon name={state.name} size="14" />
+      </Pill>
+    </>
+  )
 }
 const toolIcons = new Map<string, IconName>([
   ['search', 'Search'],
@@ -85,6 +115,8 @@ function rowIcon(row: ActivityRow): { name: IconName; label: string } {
       return { name: 'Play', label: 'exec' }
     case 'invocation':
       return { name: 'Zap', label: 'operation' }
+    case 'middleware':
+      return { name: 'Layers', label: 'middleware' }
     case 'output':
       return row.eventKind === 'program.logged'
         ? { name: 'Terminal', label: 'log' }
@@ -142,6 +174,10 @@ function rowStatus(row: ActivityRow): RowStatus {
               : 'neutral',
         label: row.outcome.replaceAll('_', ' '),
       }
+    case 'middleware': {
+      const state = middlewareStates[row.state]
+      return { tone: state.tone, label: `${middlewarePhases[row.phase].label}, ${state.label}` }
+    }
     case 'output':
       return {
         tone: 'neutral',
@@ -365,18 +401,28 @@ const RecordRow = memo(function RecordRow({
           expanded={expanded}
           disabled={!expanded && scope.full}
           onToggle={expandable ? () => actions.toggle(row.name) : undefined}
-          marker={row.kind === 'invocation' && row.requiresAction ? 'needs action' : undefined}
+          marker={
+            row.kind === 'invocation' && row.requiresAction
+              ? 'needs action'
+              : row.kind === 'invocation' && row.middlewareExecution
+                ? 'by middleware'
+                : undefined
+          }
           metadata={
-            row.kind === 'run' &&
-            (row.hasFinalValue || scope.finalValueRun === row.name) && (
-              <Pill
-                color="graySubtle"
-                role="img"
-                aria-label="final value"
-                title="Open this execution to inspect its final value"
-              >
-                <Icon name="FileOutput" size="14" />
-              </Pill>
+            row.kind === 'middleware' ? (
+              <MiddlewareIcons row={row} />
+            ) : (
+              row.kind === 'run' &&
+              (row.hasFinalValue || scope.finalValueRun === row.name) && (
+                <Pill
+                  color="graySubtle"
+                  role="img"
+                  aria-label="final value"
+                  title="Open this execution to inspect its final value"
+                >
+                  <Icon name="FileOutput" size="14" />
+                </Pill>
+              )
             )
           }
         >

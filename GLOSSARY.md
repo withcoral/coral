@@ -6,6 +6,10 @@ Services.
 
 ## Language
 
+**Middleware**: Workspace-owned trusted code that wraps a Program Run, Saved Function call, or Operation Invocation in an ordered around-invocation interceptor chain. Its internal calls are privileged infrastructure work, distinct from the original invocation it wraps. _Avoid_: Principal-owned Saved Function, Provider Operation, human Invocation Approval
+
+**Middleware Context**: Mutable information private to one Middleware, scoped to a Program Run, one Saved Function call, or one Operation Invocation, and shared between that Middleware's enter and exit phases. The Saved Function scope denotes the current or nearest enclosing call, not all ancestor calls. _Avoid_: Cross-Middleware shared state, Workspace-global state, automatic ancestor context, authorization grant
+
 **Organization**: The administrative owner above Workspaces. Each Coral deployment contains exactly one Organization.
 Isolating multiple Organizations means running separate deployments, so the cross-Organization boundary is physical
 rather than an in-query filter within one deployment. An Organization Owner governs Workspaces without authority inside
@@ -375,8 +379,10 @@ Provider Generation, and Operation Key that it resolved. The Program Run remains
 a generation for later Invocations. Workspaces and callers cannot list, select, restore, or pin Provider generations.
 The Invocation references the higher-level Program Run and its stored Program context instead of copying the Program
 source. Immediately before dispatch, Coral rechecks current Organization Membership and Workspace Membership, the Invoking Principal, Agent Registration, Workspace, Provider lifecycle and account-setting version,
-Operation, exact Provider policy, retained Credential Route, Provider Account and authorization version, approval,
-and current token material. Coral checks authority, Provider, Operation, and policy before it resolves `none`, `fixed`,
+Operation, retained Operation Access State, retained Credential Route, Provider Account and authorization version, approval,
+and current token material. The Invocation retains its Operation Access State at admission: the Program Run's frozen
+Workspace policy, or the current policy that Operation Middleware selected for this one Invocation. A Middleware helper
+call bypasses Workspace policy and Middleware, but not authority, Provider, or Account checks. Coral checks authority, Provider, Operation, and policy before it resolves `none`, `fixed`,
 or `caller`. It resolves a required User caller Account before creating any required Approval Request, because approval
 binds the exact Account authorization. It then rechecks all
 authority and configuration, refreshes or resolves credentials, and dispatches. Approval bypasses none of these checks.
@@ -450,9 +456,9 @@ the v1 human resolution interface that every Request can use, in local and remot
 local or hosted Reef interface is not ready. Coral creates a Request whenever an Invocation requires approval. It records the exact logical
 Operation arguments for review on the Run Status Page independently of the agent transport. Its deadline settles the
 Invocation with `approval_expired`; denial settles it with `approval_declined`. The first durable terminal decision
-wins. A later decision returns that result without changing it. If policy becomes `disabled`, Coral settles the
-Invocation with `operation_disabled`; if it becomes `enabled`, Coral closes the Request and continues after its other
-checks. A later Invocation can create a new request. The invoking User can also decide it through an Action Prompt in
+wins. A later decision returns that result without changing it. The Invocation keeps the Operation Access State it
+was admitted with, so a later Workspace policy change affects only later Program Runs. A later Invocation can create a
+new request. The invoking User can also decide it through an Action Prompt in
 their MCP client; Reef remains available for every Request. An active browser is not required, and existing Requests
 survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program pause payload
 
@@ -460,8 +466,8 @@ survive a temporary Reef outage. _Avoid_: per-Invocation approval URL, Program p
 Operation Invocation. It is bound to the Workspace, Provider and account-setting version, Invoking Principal, private
 Provider Generation, Operation, Credential Route, Provider Account and authorization version when present, and arguments. A User approves their own
 Invocation; any Workspace Owner can approve an Agent Invocation. An Agent never approves, and credential provisioning alone grants no approval authority. Coral retains the
-approver Principal, decision, timestamp, and optional short comment. A later restrictive policy change still applies at
-dispatch; the approval remains historical evidence and cannot authorize a later Invocation or change policy. _Avoid_:
+approver Principal, decision, timestamp, and optional short comment. The approval remains historical evidence and
+cannot authorize a later Invocation or change policy. _Avoid_:
 Always enable, policy rule, reusable approval token
 
 **Upstream Job**: An asynchronous process owned by an Upstream Service and started or observed through separate
@@ -671,7 +677,9 @@ control-plane, authoring, or approval decisions recorded as Administrative Lifec
 checkpoints. _Avoid_: Administrative Lifecycle Event, stream chunk, workflow checkpoint
 
 **Program Emission**: A bounded, structured value that a Coral Program explicitly publishes during its Run. An Emission
-is durable caller-facing output, does not suspend execution, and remains observable if the Run later fails. _Avoid_:
+is durable caller-facing output, does not suspend execution, and remains observable if the Run later fails. Operation
+Middleware wraps each Program `coral.emit` and can edit or block it; Emissions keep the Program's call order. A
+Middleware's own Emission bypasses Middleware and names the Middleware execution that published it. _Avoid_:
 Yield, console output
 
 **Program Log**: A diagnostic message produced through a Coral Program's console during its Run. A Program Log aids

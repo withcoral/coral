@@ -10,6 +10,9 @@ import type { ActivityPage } from '@/views/activity/types'
 import {
   ActivityRunState,
   ActivityInvocationState,
+  ActivityMiddlewarePhase,
+  ActivityMiddlewareScope,
+  ActivityMiddlewareStatus,
   ActivityInvocationOutcome,
 } from '@/generated/coral/management/v1/activity_pb'
 import { AccountConnectionState } from '@/generated/coral/management/v1/account_pb'
@@ -615,6 +618,67 @@ function revealLink(page: ActivityPage, location: string): URL {
 }
 
 describe('hierarchical activity through the private server interface', () => {
+  // Catches: Middleware executions dropped from a Run's children, shown as two phase
+  // rows, or a selected one without its final value or its Run's source context.
+  it('lists one row per Middleware execution and opens its final value', async () => {
+    const executionName = `${run}/middlewareExecutions/execution-1`
+    const middlewareRun: Handlers = {
+      activity: {
+        browseRunEntries: () => ({
+          run: { ...execution, task },
+          entries: [
+            {
+              record: {
+                case: 'middleware',
+                value: {
+                  id: 'execution-1',
+                  run,
+                  middlewareName: 'audit',
+                  position: 0,
+                  scope: ActivityMiddlewareScope.OPERATION,
+                  target: 'coral.providers.mail.send',
+                  phase: ActivityMiddlewarePhase.EXIT,
+                  status: ActivityMiddlewareStatus.SUCCEEDED,
+                  startedAtUnixNanos: 2_000_000_000n,
+                  endedAtUnixNanos: 2_500_000_000n,
+                  durationNanos: 500_000_000n,
+                  previewJson: '{"redacted":true}',
+                },
+              },
+            },
+            {
+              record: {
+                case: 'invocation',
+                value: { ...operation, middlewareExecution: 'execution-1' },
+              },
+            },
+          ],
+          nextAfter: 3n,
+          hasMore: false,
+        }),
+      },
+    }
+    const { api } = coral(list(), taskDetail(), middlewareRun, runDetail())
+    const expanded = await loadActivity(request({ expand: [task, run] }), api, { scope })
+    expect(expanded.branches[run].rows).toMatchObject([
+      {
+        kind: 'middleware',
+        name: executionName,
+        middlewareName: 'audit',
+        scope: 'operation',
+        target: 'coral.providers.mail.send',
+        phase: 'exit',
+        state: 'succeeded',
+      },
+      { kind: 'invocation', middlewareExecution: 'execution-1' },
+    ])
+    const selected = await loadActivity(request({ record: executionName }), api, { scope })
+    expect(selected.detail).toMatchObject({
+      kind: 'middleware',
+      execution: { name: executionName, previewJson: '{"redacted":true}' },
+      context: { kind: 'run', source: 'return secretSource;' },
+    })
+  })
   it('selects and loads the exact operation approval once, but never chooses another action during observation', async () => {
     const { api, calls } = coral(list(), ...reviewReads())
     const input = request({ record: invocation })

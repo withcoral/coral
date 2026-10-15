@@ -217,6 +217,13 @@ async fn finish_terminal_run(
     if transaction.execute(statement).await? != 1 {
         return Ok(false);
     }
+    crate::middleware_repository::settle_running(
+        transaction,
+        &run.workspace_id,
+        &run.id,
+        terminal_at_unix_nanos,
+    )
+    .await?;
     insert_event(
         transaction,
         &run.workspace_id,

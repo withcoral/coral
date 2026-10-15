@@ -735,6 +735,56 @@ pub async fn resolve_invocation_operation_in_transaction(
     )))
 }
 
+/// Reads the policy address of one active Call Path without holding rows.
+///
+/// Operation Middleware uses it to show the Run's original policy before an
+/// Invocation exists. Admission still resolves and holds the target itself.
+/// `Ok(None)` means the Call Path is not currently callable.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-package failure.
+pub async fn invocation_policy_address_in_snapshot(
+    transaction: &mut coral_db::Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    namespace: &access::ProviderNamespace,
+    relative_path: &str,
+) -> Result<
+    Option<(
+        ProviderId,
+        coral_catalog::OperationKey,
+        coral_catalog::OperationHints,
+        Option<coral_catalog::HttpMethod>,
+    )>,
+    Error,
+> {
+    let Some(provider) =
+        crate::access::by_namespace_in_transaction(transaction, workspace_id, namespace).await?
+    else {
+        return Ok(None);
+    };
+    let Some(generation_id) =
+        crate::runtime::active_generation_in_transaction(transaction, workspace_id, provider.id())
+            .await?
+    else {
+        return Ok(None);
+    };
+    Ok(coral_catalog::operation_by_relative_path_in_transaction(
+        transaction,
+        &generation_id,
+        relative_path,
+    )
+    .await?
+    .map(|operation| {
+        (
+            provider.id().clone(),
+            operation.key().clone(),
+            operation.hints(),
+            operation.http_method(),
+        )
+    }))
+}
+
 /// Rechecks and holds exact retained Provider dispatch evidence.
 ///
 /// Provider active-Generation selection may change after admission; this facet

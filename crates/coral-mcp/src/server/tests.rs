@@ -19,6 +19,7 @@ async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
         coral_provider::migrator(),
         coral_policy::migrator(),
         coral_run::migrator(),
+        coral_middleware::migrator(),
         coral_functions::migrator(),
         coral_search::migrator(),
     ]);

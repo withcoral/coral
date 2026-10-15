@@ -13,6 +13,7 @@ mod invocations;
 mod locations;
 mod mcp;
 mod memory;
+mod middleware;
 mod observation;
 mod output;
 mod refresh;

@@ -17,6 +17,7 @@
 
 mod compiler;
 mod memory;
+mod preview;
 mod profile;
 mod program_error;
 mod runtime;
@@ -121,6 +122,107 @@ impl ProgramExecutionControl {
 pub type OperationFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, OperationHostError>> + Send>>;
 
+/// Workspace Operation Access State as seen by Operation Middleware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationPolicy {
+    /// Dispatch without an Invocation Approval.
+    Enabled,
+    /// Dispatch only after an exact Invocation Approval.
+    ApprovalRequired,
+    /// Reject without dispatch.
+    Disabled,
+}
+
+impl OperationPolicy {
+    /// Returns the stable authoring and wire name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::ApprovalRequired => "approval_required",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Parses the stable authoring name.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "enabled" => Some(Self::Enabled),
+            "approval_required" => Some(Self::ApprovalRequired),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+/// Who asked the host to invoke one Operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvocationOrigin {
+    /// Ordinary Program or Saved Function work. A present policy is the current
+    /// policy that Operation Middleware selected for this one Invocation; absent
+    /// means the host applies the Run's own policy.
+    Program {
+        /// Middleware-selected policy, applied at the center of the onion.
+        policy: Option<OperationPolicy>,
+    },
+    /// A helper call made by one Middleware execution. It bypasses Workspace
+    /// policy and Middleware but no live authority or Provider check.
+    Middleware {
+        /// Host identity returned by [`ProgramHost::middleware_started`].
+        execution_id: String,
+    },
+}
+
+/// Invocation level wrapped by one Middleware execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MiddlewareScope {
+    /// The Program Run, including linked-module initialization.
+    Run,
+    /// One exported Saved Function call.
+    Function,
+    /// One Operation Invocation.
+    Operation,
+}
+
+impl MiddlewareScope {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "run" => Some(Self::Run),
+            "function" => Some(Self::Function),
+            "operation" => Some(Self::Operation),
+            _ => None,
+        }
+    }
+}
+
+/// Start of one Middleware execution, before its enter phase runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MiddlewareExecutionStart {
+    /// Position of the Middleware in the package chain, outermost first.
+    pub position: usize,
+    /// Wrapped invocation level.
+    pub scope: MiddlewareScope,
+    /// Wrapped Call Path; absent for the Run.
+    pub target: Option<String>,
+}
+
+/// Final state of one Middleware execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MiddlewareExecutionOutcome {
+    /// The Middleware returned. The bounded non-executing preview is JSON;
+    /// absent means it returned `undefined`.
+    Succeeded {
+        /// Bounded preview of the returned value.
+        preview_json: Option<String>,
+    },
+    /// The Middleware threw, rejected, or finished before its continuation.
+    Failed {
+        /// Bounded safe summary of the thrown value.
+        summary: String,
+    },
+}
+
 /// Host seam used by one fresh execution isolate.
 ///
 /// Operations start without blocking JavaScript and their Promises settle only
@@ -149,6 +251,100 @@ pub trait ProgramHost: Send + Sync {
         arguments_json: String,
         location: Option<AuthoredLocation>,
     ) -> OperationFuture;
+
+    /// Invokes one Operation for an explicit origin, made at `location`.
+    ///
+    /// The default supports only ordinary calls without a Middleware policy, so
+    /// a host that does not implement Middleware fails closed.
+    fn invoke_with_origin(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        origin: InvocationOrigin,
+        location: Option<AuthoredLocation>,
+    ) -> OperationFuture {
+        match origin {
+            InvocationOrigin::Program { policy: None } => {
+                self.invoke(call_path, arguments_json, location)
+            }
+            _ => Box::pin(async {
+                Err(OperationHostError::Rejected {
+                    code: "middleware_unavailable",
+                    message: "Middleware is not available for this Run",
+                    trace_id: None,
+                })
+            }),
+        }
+    }
+
+    /// Resolves the Run's original policy for one Call Path, as a JSON string.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unknown Call Path the same way an Invocation would.
+    fn operation_policy(self: Arc<Self>, _call_path: String) -> OperationFuture {
+        Box::pin(async {
+            Err(OperationHostError::Rejected {
+                code: "middleware_unavailable",
+                message: "Middleware is not available for this Run",
+                trace_id: None,
+            })
+        })
+    }
+
+    /// Opaque, non-authorizing Run identity shown to Run Middleware.
+    fn run_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Durably records the start of one Middleware execution.
+    ///
+    /// # Errors
+    ///
+    /// A fatal host failure terminates execution.
+    fn middleware_started(
+        &self,
+        _start: &MiddlewareExecutionStart,
+    ) -> Result<String, ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+
+    /// Durably records that the execution's continuation settled (exit phase).
+    ///
+    /// # Errors
+    ///
+    /// A fatal host failure terminates execution.
+    fn middleware_continued(&self, _execution_id: &str) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+
+    /// Durably records the final outcome of one Middleware execution.
+    ///
+    /// # Errors
+    ///
+    /// A fatal host failure terminates execution.
+    fn middleware_ended(
+        &self,
+        _execution_id: &str,
+        _outcome: MiddlewareExecutionOutcome,
+    ) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+
+    /// Durably appends one Emission made by a running Middleware execution.
+    /// It bypasses Middleware interception but stays attributed to the execution.
+    ///
+    /// # Errors
+    ///
+    /// Behaves like [`Self::emit`]. The default fails closed for a host
+    /// without Middleware.
+    fn middleware_emit(
+        &self,
+        _value_json: &str,
+        _execution_id: &str,
+    ) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
 
     /// Durably appends one native-JSON Program Emission made at `location`.
     ///
@@ -449,6 +645,54 @@ impl LinkedSavedFunctionSource {
     }
 }
 
+/// One pinned Middleware source and its enabled scopes for linked compilation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LinkedMiddlewareSource {
+    name: String,
+    source: String,
+    run: bool,
+    function: bool,
+    operation: bool,
+}
+
+impl LinkedMiddlewareSource {
+    /// Builds one chain entry. Its position in the chain is its order.
+    #[must_use]
+    pub const fn new(
+        name: String,
+        source: String,
+        run: bool,
+        function: bool,
+        operation: bool,
+    ) -> Self {
+        Self {
+            name,
+            source,
+            run,
+            function,
+            operation,
+        }
+    }
+}
+
+/// Advisory authoring evidence for one accepted Middleware source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MiddlewareCompilation {
+    diagnostics: Vec<CompilerDiagnostic>,
+}
+
+impl MiddlewareCompilation {
+    pub(crate) const fn new(diagnostics: Vec<CompilerDiagnostic>) -> Self {
+        Self { diagnostics }
+    }
+
+    /// Returns strict semantic diagnostics that do not block authoring.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[CompilerDiagnostic] {
+        &self.diagnostics
+    }
+}
+
 /// TypeScript compiler diagnostic category.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -535,6 +779,9 @@ pub enum Error {
     /// Saved Function source did not define one import-free default callable.
     #[error("Saved Function authoring failed: {0}")]
     InvalidSavedFunction(String),
+    /// Middleware source broke a Middleware authoring rule.
+    #[error("Middleware authoring failed: {0}")]
+    InvalidMiddleware(String),
     /// Program or Saved Function source requested a forbidden authoring capability.
     #[error("TypeScript source uses a forbidden capability: {0}")]
     ForbiddenCapability(String),

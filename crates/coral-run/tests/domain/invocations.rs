@@ -142,7 +142,7 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
             matches!(retained_events(&fixture.runs, &operation.principal, &operation.workspace_id, terminal.run_id()).await.as_slice(), [_, started, ended, emission, _]
                 if matches!(started.kind(), RunEventKind::InvocationStarted { .. })
                 && matches!(ended.kind(), RunEventKind::InvocationEnded { result_kind: crate::InvocationResultKind::CoralFailure, .. })
-                && matches!(emission.kind(), RunEventKind::ProgramEmitted { value } if value.as_json() == &serde_json::json!({
+                && matches!(emission.kind(), RunEventKind::ProgramEmitted { value, .. } if value.as_json() == &serde_json::json!({
                     "code": "invalid_input", "message": "Operation arguments are invalid"
                 }))
             ),
@@ -698,7 +698,7 @@ async fn blocked_destination_is_a_durable_catchable_operation_error() {
         ))
     );
     assert!(terminal.events().iter().any(|event| matches!(event.kind(),
-    RunEventKind::ProgramEmitted { value } if value.as_json() == &serde_json::json!({
+    RunEventKind::ProgramEmitted { value, .. } if value.as_json() == &serde_json::json!({
         "code": "outbound_destination_rejected", "message": "Provider destination is not permitted"
     }))));
     assert!(sink.received_requests().await.unwrap().is_empty());

@@ -698,14 +698,13 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
     clippy::too_many_lines,
     reason = "one deterministic matrix exercises every current pre-fence authority race"
 )]
-async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
+async fn losing_run_workspace_or_provider_access_blocks_dispatch() {
     for race in [
         FenceRace::Run,
         FenceRace::Workspace,
         FenceRace::Provider,
         FenceRace::ProviderRemoval,
         FenceRace::CredentialRoute,
-        FenceRace::Policy,
     ] {
         let upstream = Arc::new(ScriptedUpstream::json(
             200,
@@ -790,17 +789,6 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                     )
                     .await
                     .expect("change the credential route before fence");
-            }
-            FenceRace::Policy => {
-                fixture
-                    .policies
-                    .set_access_state(
-                        &change(operation.user.clone(), 100, 'b'),
-                        operation.policy_target.clone(),
-                        OperationAccessState::Disabled,
-                    )
-                    .await
-                    .expect("disable before fence");
             }
         }
         release_fence.send(()).expect("release dispatch fence");
@@ -943,5 +931,4 @@ enum FenceRace {
     Provider,
     ProviderRemoval,
     CredentialRoute,
-    Policy,
 }

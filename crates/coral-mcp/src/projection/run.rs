@@ -88,6 +88,10 @@ enum Event<'a> {
         #[schemars(schema_with = "timestamp_schema")]
         occurred_at: String,
         value: OutputValue<'a>,
+        /// The Workspace Middleware execution that emitted this value. Absent
+        /// when the Program emitted it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        middleware_execution: Option<&'a str>,
     },
     #[serde(rename = "program.logged")]
     Logged {
@@ -342,9 +346,13 @@ fn run_event<'a>(
     let sequence = event.sequence().to_string();
     let occurred_at = timestamp(event.occurred_at_unix_nanos());
     Ok(match event.kind() {
-        RunEventKind::ProgramEmitted { value } => Event::Emitted {
+        RunEventKind::ProgramEmitted {
+            value,
+            middleware_execution,
+        } => Event::Emitted {
             sequence,
             occurred_at,
+            middleware_execution: middleware_execution.as_deref(),
             value: output_value(
                 value.as_json(),
                 &format!("urn:coral:output:{}:{}", update.run_id(), event.sequence()),

@@ -381,7 +381,7 @@ async fn emissions_before_a_failure_stay_readable_and_exact_events_stay_private(
         .await
         .unwrap();
     assert!(
-        matches!(exact.event.kind(), RunEventKind::ProgramEmitted { value } if value.as_json() == &serde_json::json!({"kept": 24}))
+        matches!(exact.event.kind(), RunEventKind::ProgramEmitted { value, .. } if value.as_json() == &serde_json::json!({"kept": 24}))
     );
     assert_eq!(
         usize::try_from(exact.context_impact_bytes).unwrap(),

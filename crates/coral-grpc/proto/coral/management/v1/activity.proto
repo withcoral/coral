@@ -262,6 +262,9 @@ message ActivityInvocation {
   string agent = 16;
   // Where the Run's accepted source made the call. Absent if not recorded.
   ActivitySourceLocation source_location = 18;
+  // Middleware execution identity when Middleware made this helper call; empty for
+  // Program work. Helper calls bypass Workspace policy and Middleware.
+  string middleware_execution = 19;
 }
 // Selects one Run. List filters do not apply.
 message InspectRunRequest {
@@ -426,6 +429,8 @@ message ActivityInvocationEnded {
 message ActivityProgramEmitted {
   // The value as JSON. null is a real value.
   string value_json = 1;
+  // Middleware execution that emitted the value; empty when the Program emitted it.
+  string middleware_execution = 2;
 }
 // The Program logged a message.
 message ActivityProgramLogged {
@@ -755,6 +760,8 @@ message InspectTaskInteractionResponse {
     string run = 3;
     // Saved Function the call saved or deleted. It may have changed or been deleted since.
     string saved_function = 5;
+    // workspaces/{workspace}/middleware/{middleware} the call saved. It may have changed since.
+    string middleware = 7;
     // Why the call was rejected.
     ActivityRejection rejection = 6;
   }
@@ -810,8 +817,9 @@ message BrowseRunEntriesRequest {
   uint32 page_size = 3;
   // Optional list scope the Run must belong to. Leave empty to select the Run on its own.
   ActivityScope scope = 4;
-  // Start the page at this Operation call, Event ({run}/events/{sequence}) or Final
-  // Value ({run}/final). Cannot be combined with after.
+  // Start the page at this Operation call, Event ({run}/events/{sequence}), Middleware
+  // execution ({run}/middlewareExecutions/{id}) or Final Value ({run}/final). Cannot be
+  // combined with after.
   string anchor = 5;
   // Return the rows around a scroll position. Cannot be combined with after or anchor.
   ActivityViewport viewport = 6;
@@ -830,14 +838,83 @@ message ActivityEventSummary {
   // kinds, or if not recorded.
   ActivitySourceLocation source_location = 5;
 }
+// Invocation level one Middleware execution wraps.
+enum ActivityMiddlewareScope {
+  // Unknown to this client.
+  ACTIVITY_MIDDLEWARE_SCOPE_UNSPECIFIED = 0;
+  // The Program Run.
+  ACTIVITY_MIDDLEWARE_SCOPE_RUN = 1;
+  // One Saved Function call.
+  ACTIVITY_MIDDLEWARE_SCOPE_FUNCTION = 2;
+  // One Operation Invocation.
+  ACTIVITY_MIDDLEWARE_SCOPE_OPERATION = 3;
+}
+
+// Which side of next() one Middleware execution has reached.
+enum ActivityMiddlewarePhase {
+  // Unknown to this client.
+  ACTIVITY_MIDDLEWARE_PHASE_UNSPECIFIED = 0;
+  // Before its continuation settled, including when it never called it.
+  ACTIVITY_MIDDLEWARE_PHASE_ENTER = 1;
+  // After its continuation settled.
+  ACTIVITY_MIDDLEWARE_PHASE_EXIT = 2;
+}
+
+// State of one Middleware execution.
+enum ActivityMiddlewareStatus {
+  // Unknown to this client.
+  ACTIVITY_MIDDLEWARE_STATUS_UNSPECIFIED = 0;
+  // Still running.
+  ACTIVITY_MIDDLEWARE_STATUS_RUNNING = 1;
+  // Returned a value.
+  ACTIVITY_MIDDLEWARE_STATUS_SUCCEEDED = 2;
+  // Threw, rejected, or finished before its continuation settled.
+  ACTIVITY_MIDDLEWARE_STATUS_FAILED = 3;
+  // The Run ended while it was running.
+  ACTIVITY_MIDDLEWARE_STATUS_RUN_TERMINATED = 4;
+}
+
+// One Middleware execution: a single row with its phase and status.
+message ActivityMiddlewareExecution {
+  // Execution identity within the Run.
+  string id = 1;
+  // workspaces/{workspace}/runs/{run} that the execution belongs to.
+  string run = 2;
+  // Pinned Middleware name.
+  string middleware_name = 3;
+  // Pinned chain position, outermost first.
+  uint32 position = 4;
+  // Wrapped invocation level.
+  ActivityMiddlewareScope scope = 5;
+  // Wrapped Call Path; empty for the Run.
+  string target = 6;
+  // Enter or exit phase.
+  ActivityMiddlewarePhase phase = 7;
+  // Current status.
+  ActivityMiddlewareStatus status = 8;
+  // When the execution started.
+  int64 started_at_unix_nanos = 9;
+  // When it ended. Absent while running.
+  optional int64 ended_at_unix_nanos = 10;
+  // Time elapsed so far, measured once per read.
+  int64 duration_nanos = 11;
+  // Bounded preview of the returned value, as JSON. Never executes Program code.
+  optional string preview_json = 12;
+  // Bounded summary of the failure.
+  optional string failure_summary = 13;
+}
+
 // One child row of a Run, in order.
 message ActivityRunEntry {
-  // Exactly one is set. An Operation call appears once, not again at its end Event.
+  // Exactly one is set. An Operation call or Middleware execution appears once,
+  // not again at its end Event.
   oneof record {
     // An Operation call.
     ActivityInvocation invocation = 1;
     // An Event, without its payload.
     ActivityEventSummary event = 2;
+    // A Middleware execution.
+    ActivityMiddlewareExecution middleware = 3;
   }
 }
 // A page of one Run's children.

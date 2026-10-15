@@ -35,6 +35,7 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::ProgramHostTerminated
         | coral_run::Error::Provider(_)
         | coral_run::Error::Policy(_)
+        | coral_run::Error::Middleware(_)
         | coral_run::Error::Upstream(_)
         | coral_run::Error::Workspace(_)
         | coral_run::Error::CorruptData(_)
@@ -180,6 +181,7 @@ pub(super) fn invocation(value: &coral_run::InvocationSummary) -> wire::Activity
             .source_location
             .as_ref()
             .map(|location| source_location(&value.workspace, location)),
+        middleware_execution: value.middleware_execution.clone().unwrap_or_default(),
     }
 }
 /// Names a snapshot exactly as `InspectRunResponse.linked_functions` does.
@@ -200,6 +202,42 @@ pub(super) fn source_location(
         }),
         line: value.line,
         column: value.column,
+    }
+}
+pub(super) fn middleware(
+    workspace: &coral_workspace::WorkspaceId,
+    value: &coral_run::MiddlewareExecutionSummary,
+) -> wire::ActivityMiddlewareExecution {
+    use coral_run::{MiddlewareExecutionStatus as S, MiddlewarePhase as P, MiddlewareScope as M};
+    wire::ActivityMiddlewareExecution {
+        id: value.id.clone(),
+        run: format!("workspaces/{workspace}/runs/{}", value.run),
+        middleware_name: value.name.clone(),
+        position: u32::try_from(value.position).unwrap_or(u32::MAX),
+        scope: match value.scope {
+            M::Run => wire::ActivityMiddlewareScope::Run,
+            M::Function => wire::ActivityMiddlewareScope::Function,
+            M::Operation => wire::ActivityMiddlewareScope::Operation,
+        }
+        .into(),
+        target: value.target.clone().unwrap_or_default(),
+        phase: match value.phase {
+            P::Enter => wire::ActivityMiddlewarePhase::Enter,
+            P::Exit => wire::ActivityMiddlewarePhase::Exit,
+        }
+        .into(),
+        status: match value.status {
+            S::Running => wire::ActivityMiddlewareStatus::Running,
+            S::Succeeded => wire::ActivityMiddlewareStatus::Succeeded,
+            S::Failed => wire::ActivityMiddlewareStatus::Failed,
+            S::RunTerminated => wire::ActivityMiddlewareStatus::RunTerminated,
+        }
+        .into(),
+        started_at_unix_nanos: value.started_at,
+        ended_at_unix_nanos: value.ended_at,
+        duration_nanos: value.duration,
+        preview_json: value.preview_json.clone(),
+        failure_summary: value.failure_summary.clone(),
     }
 }
 fn program_error(value: &coral_run::ProgramError) -> wire::ActivityProgramError {
@@ -254,8 +292,12 @@ pub(super) fn event(
             invocation: format!("workspaces/{workspace}/invocations/{invocation_id}"),
             outcome: outcome(*result_kind),
         })),
-        K::ProgramEmitted { value } => Some(P::ProgramEmitted(wire::ActivityProgramEmitted {
+        K::ProgramEmitted {
+            value,
+            middleware_execution,
+        } => Some(P::ProgramEmitted(wire::ActivityProgramEmitted {
             value_json: value.as_json().to_string(),
+            middleware_execution: middleware_execution.clone().unwrap_or_default(),
         })),
         K::ProgramLogged { level, message } => {
             Some(P::ProgramLogged(wire::ActivityProgramLogged {

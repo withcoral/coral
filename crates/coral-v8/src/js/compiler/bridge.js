@@ -55,13 +55,22 @@ globalThis.__coralAnalyzeSavedFunctionDependencies =
 globalThis.__coralCompileLinkedProgram = function compileVirtualLinkedProgram(
   body,
   savedFunctionsJson,
+  middlewareJson,
   fileName,
   targetName,
 ) {
   return compilerResultJson(compileLinkedProgram(
     body,
     JSON.parse(savedFunctionsJson),
+    JSON.parse(middlewareJson),
     fileName,
     targetName,
   ));
+};
+globalThis.__coralPrepareMiddleware = function prepareVirtualMiddleware(
+  source,
+  fileName,
+  targetName,
+) {
+  return compilerResultJson(prepareMiddleware(source, fileName, targetName));
 };

@@ -18,8 +18,8 @@ use uuid::Uuid;
 use crate::McpRuntime;
 use crate::arguments::{
     self, CancelArguments, DeleteFunctionArguments, DescribeArguments, EndTaskArguments,
-    ExecArguments, SaveFunctionArguments, SearchArguments, StartTaskArguments, TaskOutcomeArgument,
-    ToolArguments, WaitArguments,
+    ExecArguments, SaveFunctionArguments, SaveMiddlewareArguments, SearchArguments,
+    StartTaskArguments, TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
 use crate::projection::{self, ToolFailure};
 use crate::prompts::{Asked, Channel, Prompting};
@@ -97,6 +97,10 @@ impl McpServer {
             SaveFunctionArguments::NAME => {
                 let arguments = arguments::parse::<SaveFunctionArguments>(request.arguments)?;
                 self.save_function(arguments).await
+            }
+            SaveMiddlewareArguments::NAME => {
+                let arguments = arguments::parse::<SaveMiddlewareArguments>(request.arguments)?;
+                self.save_middleware(arguments).await
             }
             DeleteFunctionArguments::NAME => {
                 let arguments = arguments::parse::<DeleteFunctionArguments>(request.arguments)?;
@@ -220,6 +224,28 @@ impl McpServer {
             .await
             .map_err(task_failure)?;
         projection::saved_function(&function)
+            .and_then(projection::success)
+            .map_err(DispatchError::Tool)
+    }
+
+    async fn save_middleware(
+        &self,
+        arguments: SaveMiddlewareArguments,
+    ) -> Result<CallToolResult, DispatchError> {
+        let call = self.attributed_command(&arguments.task_id, &arguments.intent)?;
+        let middleware = self
+            .runtime
+            .modules
+            .commands
+            .save_middleware(
+                &call,
+                &arguments.name,
+                &arguments.description,
+                &arguments.source,
+            )
+            .await
+            .map_err(task_failure)?;
+        projection::saved_middleware(&middleware)
             .and_then(projection::success)
             .map_err(DispatchError::Tool)
     }
@@ -661,6 +687,7 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
         coral_task::Error::Workspace(error) => workspace_tool_failure(error),
         coral_task::Error::Search(error) => return search_failure(error),
         coral_task::Error::Functions(error) => return functions_failure(error),
+        coral_task::Error::Middleware(error) => return middleware_failure(&error),
         coral_task::Error::Run(error) => return run_failure(error),
         coral_task::Error::TaskClosed => {
             ToolFailure::stable("task_closed", "Task is closed to new attempts")
@@ -705,6 +732,13 @@ fn functions_failure(error: coral_functions::Error) -> DispatchError {
         _ => ToolFailure::internal(),
     };
     DispatchError::Tool(failure)
+}
+
+fn middleware_failure(error: &coral_middleware::Error) -> DispatchError {
+    if let Some((code, message)) = error.safe_rejection() {
+        return DispatchError::Tool(ToolFailure::safe(code, message));
+    }
+    DispatchError::Tool(ToolFailure::internal())
 }
 
 fn run_failure(error: coral_run::Error) -> DispatchError {

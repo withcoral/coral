@@ -231,6 +231,7 @@ fn validate_authored_source_name(source: &str) -> Result<(), Error> {
     let valid = source == PROGRAM_SOURCE_NAME
         || source
             .strip_prefix(SAVED_FUNCTION_SOURCE_PREFIX)
+            .or_else(|| source.strip_prefix("Middleware "))
             .is_some_and(|path| {
                 !path.is_empty()
                     && path.len() <= 256

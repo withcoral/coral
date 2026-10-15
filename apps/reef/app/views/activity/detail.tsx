@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useId, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { Typography } from '@/wax/components'
 import { Disclosure } from '@/wax/components/disclosure'
@@ -11,6 +11,7 @@ import type {
   InvocationDetail,
   InteractionEvidence,
   InteractionRow,
+  MiddlewareRow,
   ProgramError,
   RunEvent,
   RunTerminal,
@@ -25,15 +26,18 @@ import { ValueCard } from './value-card'
 import { Panel } from './panel'
 import { useActivityConnected } from './live'
 import { useActivityNavigation } from './navigation'
+import { middlewareLabel } from './middleware-label'
 import * as styles from './task-activity.css'
 
 const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(3)} s`
 
 /** The Run whose accepted source a selected record shows beside its own detail, if any.
- * An operation or an output carries it as context; it never replaces the record's detail. */
+ * An operation, an output or a middleware execution carries it as context; it never
+ * replaces the record's detail. */
 export function runContextOf(detail: ActivityPage['detail']): RunDetail | undefined {
   if (detail?.kind === 'run') return detail
-  if (detail?.kind === 'invocation' || detail?.kind === 'output') return detail.context
+  if (detail?.kind === 'invocation' || detail?.kind === 'output' || detail?.kind === 'middleware')
+    return detail.context
   return undefined
 }
 
@@ -346,16 +350,25 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
       ? { title: detail.task.intent, kind: 'task' }
       : detail.kind === 'tool'
         ? toolHeading(detail.interaction, detail.evidence)
-        : eventHeading(detail.event)
+        : detail.kind === 'middleware'
+          ? { title: middlewareLabel(detail.execution), kind: 'middleware execution' }
+          : eventHeading(detail.event)
   const status =
     detail.kind === 'task'
       ? detail.task.outcome
       : detail.kind === 'tool'
         ? detail.interaction.outcome
-        : detail.event.kind === 'program.logged'
-          ? 'diagnostic'
-          : 'retained'
-  const label = detail.kind === 'tool' && status === 'unknown' ? 'unknown / incomplete' : undefined
+        : detail.kind === 'middleware'
+          ? detail.execution.state
+          : detail.event.kind === 'program.logged'
+            ? 'diagnostic'
+            : 'retained'
+  const label =
+    detail.kind === 'tool' && status === 'unknown'
+      ? 'unknown / incomplete'
+      : detail.kind === 'middleware' && status === 'run_terminated'
+        ? 'execution ended first'
+        : undefined
   // A log or an emission states its time here; its title names it and a card holds its content.
   const payload = detail.kind === 'output' && hasPayload(detail.event) ? detail.event : null
   const started = row?.startedAt ?? payload?.occurredAt
@@ -451,6 +464,19 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
       {detail.kind === 'output' && (
         <>
           <EventEvidence event={detail.event} recordHref={recordHref} />
+          {detail.event.kind === 'program.emitted' && detail.event.middlewareExecution && (
+            <Typography.BodySmall>
+              Middleware emitted this value.{' '}
+              <Link
+                to={recordHref(
+                  `${detail.run}/middlewareExecutions/${detail.event.middlewareExecution}`,
+                )}
+                preventScrollReset
+              >
+                Open the middleware execution
+              </Link>
+            </Typography.BodySmall>
+          )}
           {/* Inside its Run's split, an output leads back to history itself, as an operation does. */}
           {sourceShown && row && (
             <Link to={revealHref(row, { select: false })} preventScrollReset>
@@ -465,7 +491,77 @@ function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: 
           )}
         </>
       )}
+      {detail.kind === 'middleware' && (
+        <MiddlewareEvidence
+          execution={detail.execution}
+          parent={
+            // Inside its Run's split, the execution leads back to history, as an output does.
+            sourceShown && row ? (
+              <Link to={revealHref(row, { select: false })} preventScrollReset>
+                View in history
+              </Link>
+            ) : (
+              <Link to={recordHref(detail.execution.run)} preventScrollReset>
+                Open parent execution
+              </Link>
+            )
+          }
+        />
+      )}
     </Panel>
+  )
+}
+const middlewarePhaseText = {
+  enter: 'Enter. The wrapped call has not returned to this middleware.',
+  exit: 'Exit. The wrapped call returned to this middleware.',
+  unknown: 'Unknown.',
+} as const
+const middlewareStateText = {
+  running: 'Running.',
+  succeeded: 'Returned a value.',
+  failed: 'Failed with this error.',
+  run_terminated: 'The execution ended before this middleware finished.',
+  unknown: 'Unknown.',
+} as const
+/** A Middleware execution is one row: its phase, state, chain position and final value. */
+function MiddlewareEvidence({
+  execution,
+  parent,
+}: {
+  execution: MiddlewareRow
+  parent: ReactNode
+}) {
+  return (
+    <>
+      <DescriptionList.List title="Middleware">
+        <DescriptionList.Row label="Phase">
+          {middlewarePhaseText[execution.phase]}
+        </DescriptionList.Row>
+        <DescriptionList.Row label="State">
+          {middlewareStateText[execution.state]}
+        </DescriptionList.Row>
+        <DescriptionList.Row label="Position">
+          {`${execution.position + 1} from the outside`}
+        </DescriptionList.Row>
+      </DescriptionList.List>
+      {parent}
+      {execution.state === 'succeeded' &&
+        (execution.previewJson === null ? (
+          <Typography.BodySmall>The middleware returned no value.</Typography.BodySmall>
+        ) : (
+          <>
+            <Typography.BodySmall>
+              This is a bounded preview of the final value.
+            </Typography.BodySmall>
+            <ValueCard value={execution.previewJson} format="json" label="Final value" />
+          </>
+        ))}
+      {execution.failureSummary !== null && (
+        <Disclosure title="Error" open>
+          <Native value={execution.failureSummary} format="text" />
+        </Disclosure>
+      )}
+    </>
   )
 }
 const toolKinds: Record<string, string> = {

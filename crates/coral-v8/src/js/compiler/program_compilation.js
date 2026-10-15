@@ -4,6 +4,7 @@ function compileProgramSource(
   compilerOptions,
   authoredMappings,
   validationError,
+  middlewarePackage = false,
 ) {
   const parsed = ts.createSourceFile(
     fileName,
@@ -12,7 +13,9 @@ function compileProgramSource(
     true,
     ts.ScriptKind.TS,
   );
-  const wrapperValid = hasExpectedProgramShape(parsed);
+  // A Middleware package is a runtime-started function. Its submitted body was
+  // already checked against the ordinary private wrapper before linking.
+  const wrapperValid = middlewarePackage || hasExpectedProgramShape(parsed);
   const result = ts.transpileModule(source, {
     fileName,
     reportDiagnostics: true,
@@ -55,10 +58,13 @@ function compileProgram(body, fileName, targetName) {
   );
 }
 
-function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
+function compileLinkedProgram(body, savedFunctions, middleware, fileName, targetName) {
   const target = resolveTypeScriptTarget(targetName);
   if (!Array.isArray(savedFunctions)) {
     throw new Error("Saved Function closure must be an array");
+  }
+  if (!Array.isArray(middleware)) {
+    throw new Error("Middleware chain must be an array");
   }
   const wrapped = wrapProgramBody(body);
   const compilerOptions = {...PROGRAM_COMPILER_OPTIONS, target};
@@ -110,12 +116,37 @@ function compileLinkedProgram(body, savedFunctions, fileName, targetName) {
       savedFunctionProgram,
     );
   }
-  const linked = linkedProgramSource(body, savedFunctions, target);
+  for (
+    let index = 0;
+    validationError === undefined && index < middleware.length;
+    index += 1
+  ) {
+    const entry = middleware[index];
+    if (typeof entry?.source !== "string" || typeof entry?.name !== "string") {
+      throw new Error("Middleware chain contains an invalid source entry");
+    }
+    const {program: middlewareFile, sourceFile} = middlewareProgram(
+      entry.source,
+      `middleware_${index}.ts`,
+      targetName,
+    );
+    if (!sourceFile) throw new Error("Middleware virtual source is missing");
+    if (sourceFile.parseDiagnostics.some((diagnostic) =>
+      diagnostic.category === ts.DiagnosticCategory.Error
+    )) {
+      validationError = `Middleware ${entry.name} has syntax errors under the current TypeScript Profile`;
+      break;
+    }
+    const error = middlewareValidationError(sourceFile, middlewareFile);
+    if (error !== undefined) validationError = `Middleware ${entry.name}: ${error}`;
+  }
+  const linked = linkedProgramSource(body, savedFunctions, target, middleware);
   return compileProgramSource(
     linked.source,
     fileName,
     compilerOptions,
     linked.authoredMappings,
     validationError,
+    middleware.length > 0,
   );
 }

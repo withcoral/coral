@@ -637,6 +637,7 @@ dependencies = [
  "coral-functions",
  "coral-grpc",
  "coral-mcp",
+ "coral-middleware",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
@@ -776,6 +777,7 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-functions",
+ "coral-middleware",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
@@ -814,6 +816,7 @@ dependencies = [
  "chrono",
  "coral-catalog",
  "coral-functions",
+ "coral-middleware",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
@@ -837,6 +840,23 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "coral-middleware"
+version = "1.0.0"
+dependencies = [
+ "coral-db",
+ "coral-test-support",
+ "coral-v8",
+ "coral-workspace",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
  "uuid",
 ]
 
@@ -916,6 +936,7 @@ dependencies = [
  "coral-credentials",
  "coral-db",
  "coral-functions",
+ "coral-middleware",
  "coral-outbound",
  "coral-policy",
  "coral-provider",
@@ -978,6 +999,7 @@ dependencies = [
  "coral-catalog",
  "coral-db",
  "coral-functions",
+ "coral-middleware",
  "coral-outbound",
  "coral-policy",
  "coral-provider",

@@ -495,6 +495,7 @@ pub(crate) async fn test_modules() -> (TestDatabase, WorkspaceModule, TaskModule
         coral_workspace::migrator(),
         crate::migrator(),
         coral_run::migrator(),
+        coral_middleware::migrator(),
     ]);
     let fixture = TestDatabase::new(&migrator)
         .await

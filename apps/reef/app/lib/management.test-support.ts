@@ -15,6 +15,7 @@ import { OrganizationWorkspaceService } from '@/generated/coral/management/v1/or
 import { OperationPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { ProviderService, ProviderSetupService } from '@/generated/coral/management/v1/provider_pb'
 import { SavedFunctionService } from '@/generated/coral/management/v1/saved_function_pb'
+import { MiddlewareService } from '@/generated/coral/management/v1/middleware_pb'
 import { WorkspaceService } from '@/generated/coral/management/v1/workspace_pb'
 
 import type { ManagementApi } from './management.server'
@@ -33,6 +34,7 @@ const services = {
   accounts: ProviderAccountService,
   policies: OperationPolicyService,
   savedFunctions: SavedFunctionService,
+  middleware: MiddlewareService,
 } satisfies Record<keyof ManagementApi, DescService>
 
 type Services = typeof services

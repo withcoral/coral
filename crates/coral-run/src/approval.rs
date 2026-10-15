@@ -480,32 +480,39 @@ async fn decision_gate(
             .await
             .map_err(coral_provider::Error::from)?
             .ok_or(Error::ApprovalNotFound)?;
-    let policy_target = coral_policy::OperationPolicyTarget::new(
-        run.workspace_id.clone(),
-        target.provider_id.clone(),
-        target.operation.clone(),
-    );
-    let policy = match policy_read {
-        PolicyRead::Hold => {
-            coral_policy::invocation_decision_in_transaction(
-                tx,
-                &policy_target,
-                operation.hints(),
-                operation.http_method(),
-            )
-            .await?
+    // An Invocation keeps the policy it was admitted with. Only Invocations
+    // admitted before policy was retained still read the live rule.
+    let policy = if let Some(retained) = target.access_state {
+        retained
+    } else {
+        let policy_target = coral_policy::OperationPolicyTarget::new(
+            run.workspace_id.clone(),
+            target.provider_id.clone(),
+            target.operation.clone(),
+        );
+        match policy_read {
+            PolicyRead::Hold => {
+                coral_policy::invocation_decision_in_transaction(
+                    tx,
+                    &policy_target,
+                    operation.hints(),
+                    operation.http_method(),
+                )
+                .await?
+            }
+            PolicyRead::Inspect => {
+                coral_policy::discovery_decision_in_transaction(
+                    tx,
+                    &policy_target,
+                    operation.hints(),
+                    operation.http_method(),
+                )
+                .await?
+            }
         }
-        PolicyRead::Inspect => {
-            coral_policy::discovery_decision_in_transaction(
-                tx,
-                &policy_target,
-                operation.hints(),
-                operation.http_method(),
-            )
-            .await?
-        }
+        .access_state()
     };
-    Ok(match policy.access_state() {
+    Ok(match policy {
         coral_policy::OperationAccessState::ApprovalRequired => DecisionGate::Required,
         coral_policy::OperationAccessState::Enabled => DecisionGate::NotRequired,
         coral_policy::OperationAccessState::Disabled => {

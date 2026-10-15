@@ -228,6 +228,11 @@ pub(crate) async fn entry_start(
                 .and_where(Expr::col(Alias::new("invocation_id")).eq(id.to_string()))
                 .and_where(Expr::col(Alias::new("event_type")).eq("invocation.started"));
         }
+        W::Middleware(id) => {
+            query
+                .and_where(Expr::col(Alias::new("middleware_execution_id")).eq(id.clone()))
+                .and_where(Expr::col(Alias::new("event_type")).eq("middleware.started"));
+        }
         W::Final => {
             query.and_where(Expr::col(Alias::new("event_type")).eq("run.ended"));
         }
@@ -256,6 +261,7 @@ pub(crate) struct EntrySummary {
     pub kind: String,
     pub occurred_at: i64,
     pub invocation: Option<InvocationId>,
+    pub middleware: Option<String>,
     pub context_impact_bytes: i64,
     pub source_location: Option<crate::SourceLocation>,
 }
@@ -266,6 +272,7 @@ struct EntryRow {
     occurred_at_unix_nanos: i64,
     invocation_id: Option<String>,
     output_bytes: i64,
+    middleware_execution_id: Option<String>,
     #[sqlx(flatten)]
     source_location: crate::source_location_repository::StoredSourceLocation,
 }
@@ -276,10 +283,18 @@ fn entry_view(row: EntryRow, exact_event: Option<i64>) -> Result<EntrySummary, E
         occurred_at_unix_nanos: occurred_at,
         invocation_id: invocation,
         output_bytes: context_impact_bytes,
+        middleware_execution_id: middleware,
         source_location,
     } = row;
     Ok(EntrySummary {
         source_location: source_location.decode()?,
+        middleware: if kind == "middleware.started" && exact_event != Some(sequence) {
+            Some(middleware.ok_or_else(|| {
+                Error::CorruptData("missing Middleware execution reference".into())
+            })?)
+        } else {
+            None
+        },
         sequence: u64::try_from(sequence)
             .map_err(|_overflow| Error::CorruptData("invalid Event sequence".into()))?,
         invocation: if kind == "invocation.started" && exact_event != Some(sequence) {
@@ -294,6 +309,13 @@ fn entry_view(row: EntryRow, exact_event: Option<i64>) -> Result<EntrySummary, E
         context_impact_bytes,
     })
 }
+/// End Events repeat their start rows, and the Run's own Events head the page.
+const HIDDEN_ENTRY_EVENTS: [&str; 4] = [
+    "invocation.ended",
+    "middleware.ended",
+    "run.started",
+    "run.ended",
+];
 pub(crate) struct EntryPage {
     pub rows: Vec<EntrySummary>,
     pub total: i64,
@@ -337,11 +359,12 @@ pub(crate) async fn entry_summaries(
             Alias::new("occurred_at_unix_nanos"),
             Alias::new("invocation_id"),
             Alias::new("output_bytes"),
+            Alias::new("middleware_execution_id"),
         ])
         .columns(crate::source_location_repository::COLUMNS.map(Alias::new))
         .and_where(
             Expr::col(Alias::new("event_type"))
-                .is_not_in(["invocation.ended", "run.started", "run.ended"])
+                .is_not_in(HIDDEN_ENTRY_EVENTS)
                 .or(Expr::col(Alias::new("event_type"))
                     .eq("run.ended")
                     .and(Expr::col(Alias::new("output_bytes")).gt(0_i64)))

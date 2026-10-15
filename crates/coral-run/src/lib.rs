@@ -112,10 +112,15 @@ mod inspection_repository;
 pub use inspection::{
     InvocationDetail, InvocationOutcome, RunDetail, RunEventDetail, RunInspection, SourceSnapshot,
 };
+pub use middleware::{
+    MiddlewareExecutionStatus, MiddlewareExecutionSummary, MiddlewarePhase, MiddlewareScope,
+};
 mod invocation;
 mod invocation_lifecycle;
 mod invocation_repository;
 mod lifecycle;
+mod middleware;
+mod middleware_repository;
 mod observation;
 mod program_output;
 mod required_actions;

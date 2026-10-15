@@ -23,18 +23,18 @@ function hasTypeOnlyDefaultExport(sourceFile) {
   );
 }
 
-function validateDefaultCallable(program, sourceFile) {
+function validateDefaultCallable(program, sourceFile, label = "Saved Function") {
   if (hasTypeOnlyDefaultExport(sourceFile)) {
-    return "Saved Function default export must be a runtime value";
+    return `${label} default export must be a runtime value`;
   }
   const checker = program.getTypeChecker();
   const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
   if (!moduleSymbol) {
-    return "Saved Function source must be a TypeScript module with one default export";
+    return `${label} source must be a TypeScript module with one default export`;
   }
   const exports = checker.getExportsOfModule(moduleSymbol);
   if (exports.length !== 1 || exports[0].escapedName !== "default") {
-    return "Saved Function source must export exactly one default callable";
+    return `${label} source must export exactly one default callable`;
   }
   let defaultExport = exports[0];
   if (defaultExport.flags & ts.SymbolFlags.Alias) {
@@ -54,11 +54,11 @@ function validateDefaultCallable(program, sourceFile) {
     )
     || (ts.isFunctionDeclaration(declaration) && !declaration.body)
   ) {
-    return "Saved Function default export must have a runtime implementation";
+    return `${label} default export must have a runtime implementation`;
   }
   const type = checker.getTypeOfSymbolAtLocation(defaultExport, declaration);
   if (checker.getSignaturesOfType(type, ts.SignatureKind.Call).length === 0) {
-    return "Saved Function default export must be callable";
+    return `${label} default export must be callable`;
   }
   return undefined;
 }

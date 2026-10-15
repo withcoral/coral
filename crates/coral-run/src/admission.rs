@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use coral_db::Transaction;
 use coral_functions::{SavedFunctionPath, SavedFunctionSelection};
+use coral_middleware::MiddlewareSelection;
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout;
 
@@ -34,6 +35,7 @@ pub struct PreparedRun {
     submission: RunSubmission,
     package: ProgramPackage,
     linked: Vec<SavedFunctionSelection>,
+    middleware: Vec<MiddlewareSelection>,
 }
 
 /// Scope-bound evidence of staged acceptance, not proof that its transaction committed.
@@ -103,7 +105,7 @@ impl RunModule {
         self.workspaces
             .check_run_admission(actor, workspace_id, self.now()?)
             .await?;
-        let (package, linked) = self
+        let (package, linked, middleware) = self
             .compile_submission(actor, workspace_id, submission.source())
             .await?;
 
@@ -113,6 +115,7 @@ impl RunModule {
             submission,
             package,
             linked,
+            middleware,
         })
     }
 
@@ -131,6 +134,7 @@ impl RunModule {
             submission,
             package,
             linked,
+            middleware,
         } = prepared;
         let actor = &actor;
         let workspace_id = &workspace_id;
@@ -154,6 +158,17 @@ impl RunModule {
                 ));
             }
         }
+        // Admission authority holds the Workspace, as every Middleware change
+        // does, so the chain and frozen policy below stay exactly as compiled.
+        if !coral_middleware::hold_chain_in_transaction(transaction, workspace_id, &middleware)
+            .await?
+        {
+            return Err(Error::ProgramAdmission(
+                "Workspace Middleware changed during Program admission".to_string(),
+            ));
+        }
+        let rules =
+            coral_policy::exact_operation_rules_in_transaction(transaction, workspace_id).await?;
         let accepted_at_unix_nanos = self.now()?;
         authority.require_current_at(accepted_at_unix_nanos)?;
         let deadline_at_unix_nanos = accepted_at_unix_nanos
@@ -176,6 +191,13 @@ impl RunModule {
             submission.source(),
             &package,
             &linked,
+        )
+        .await?;
+        crate::middleware_repository::insert_admission_snapshots(
+            transaction,
+            &run,
+            &middleware,
+            &rules,
         )
         .await?;
         Ok(StagedRun {
@@ -210,7 +232,14 @@ impl RunModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         submitted_source: &ProgramSource,
-    ) -> Result<(ProgramPackage, Vec<SavedFunctionSelection>), Error> {
+    ) -> Result<
+        (
+            ProgramPackage,
+            Vec<SavedFunctionSelection>,
+            Vec<MiddlewareSelection>,
+        ),
+        Error,
+    > {
         let source = submitted_source.as_str().to_string();
         let compilation_started = Instant::now();
         let roots = self
@@ -224,17 +253,31 @@ impl RunModule {
             .read_source_closure(actor, workspace_id, roots, compilation_started)
             .await?;
 
+        let middleware = {
+            let mut transaction = self.database.begin_read_snapshot().await?;
+            let chain = coral_middleware::select_enabled_chain_in_transaction(
+                &mut transaction,
+                workspace_id,
+            )
+            .await?;
+            transaction.commit().await?;
+            chain
+        };
+        // Workspace Middleware has its own bounds; it does not spend the
+        // submitted Program's source budget.
         validate_source_closure(
             &source,
             linked.iter().map(|snapshot| snapshot.source().as_str()),
         )?;
         let engine = self.engine.clone();
         let compile_linked = linked.clone();
+        let compile_middleware = middleware.clone();
         let compile = tokio::task::spawn_blocking(move || {
             engine.compile_with_saved_functions(
                 compilation_started + COMPILATION_TIMEOUT,
                 &source,
                 &compile_linked,
+                &compile_middleware,
             )
         });
         let remaining_compilation_time = COMPILATION_TIMEOUT
@@ -247,7 +290,7 @@ impl RunModule {
             Ok(Ok(Ok(package))) => package,
         };
         package.validate()?;
-        Ok((package, linked))
+        Ok((package, linked, middleware))
     }
 
     async fn read_source_closure(

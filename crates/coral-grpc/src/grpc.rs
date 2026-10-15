@@ -3,6 +3,7 @@ mod accounts;
 mod activity;
 mod agents;
 mod memberships;
+mod middleware;
 mod organization_memberships;
 mod organization_workspaces;
 mod policies;
@@ -43,6 +44,8 @@ pub struct Dependencies {
     pub saved_functions: coral_functions::SavedFunctionInspection,
     /// The caller's own current Saved Function deletion.
     pub saved_function_deletion: coral_functions::SavedFunctionDeletion,
+    /// Owner-only Workspace Middleware management.
+    pub middleware: coral_middleware::MiddlewareModule,
     /// Atomic membership and Agent removal, retaining execution history.
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
 }
@@ -78,6 +81,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
         tasks: dependencies.tasks,
         saved_functions: dependencies.saved_functions,
         saved_function_deletion: dependencies.saved_function_deletion,
+        middleware: dependencies.middleware,
         runs: dependencies.runs,
         access_lifecycle: dependencies.access_lifecycle,
     };
@@ -128,6 +132,9 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
                 services.clone(),
             ),
         )
+        .add_service(management::middleware_service_server::MiddlewareServiceServer::new(
+            services.clone(),
+        ))
         .add_service(tonic_health::pb::health_server::HealthServer::new(
             crate::health::AggregateHealthService::new(context.readiness),
         ))
@@ -183,6 +190,7 @@ struct GrpcServices {
     tasks: coral_task::TaskModule,
     saved_functions: coral_functions::SavedFunctionInspection,
     saved_function_deletion: coral_functions::SavedFunctionDeletion,
+    middleware: coral_middleware::MiddlewareModule,
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
 }
@@ -218,6 +226,7 @@ impl GrpcServices {
                     coral_task::Error::SnapshotTooLarge
                     | coral_task::Error::Search(_)
                     | coral_task::Error::Functions(_)
+                    | coral_task::Error::Middleware(_)
                     | coral_task::Error::Run(_)
                     | coral_task::Error::Clock
                     | coral_task::Error::Workspace(_)

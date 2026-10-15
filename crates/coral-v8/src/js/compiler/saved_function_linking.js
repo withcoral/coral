@@ -261,7 +261,7 @@ function savedFunctionRuntimeBody(source, target) {
   return {text: blocks.join("\n"), mappings};
 }
 
-function linkedProgramSource(body, savedFunctions, target) {
+function linkedProgramSource(body, savedFunctions, target, middleware = []) {
   const pathKeys = new Set();
   for (const savedFunction of savedFunctions) {
     if (
@@ -304,7 +304,43 @@ function linkedProgramSource(body, savedFunctions, target) {
     generatedLine += sourceLineCount(text) - 1 - (joinsCrLf ? 1 : 0);
   }
 
-  append(`(async () => {
+  const intercepted = middleware.length > 0;
+  if (intercepted) {
+    const configuration = JSON.stringify({
+      linkedFunctions: savedFunctions.map((savedFunction) =>
+        `coral.functions.${savedFunction.pathSegments.join(".")}`
+      ),
+      middleware: middleware.map((entry) => ({
+        run: entry.run === true,
+        function: entry.function === true,
+        operation: entry.operation === true,
+      })),
+    });
+    append(`((__coralMiddlewareRuntime) => __coralMiddlewareRuntime.start(
+    ${configuration},
+    [
+`);
+    for (const entry of middleware) {
+      append(`    (coral) => {\n`);
+      const middlewareStart = generatedLine;
+      const middlewareBody = savedFunctionRuntimeBody(entry.source, target);
+      append(middlewareBody.text);
+      for (const mapping of middlewareBody.mappings) {
+        authoredMappings.push({
+          ...mapping,
+          generatedLine: middlewareStart + mapping.generatedLine,
+          source: `Middleware ${entry.name}`,
+        });
+      }
+      append(`
+    },
+`);
+    }
+    append(`    ],
+    async (__coralWrapFunction) => {
+`);
+  }
+  append(`${intercepted ? "" : "(async () => {"}
     let __coralFunctions = Object.freeze(Object.create(null));
     const __coralHostDescriptors = Object.getOwnPropertyDescriptors(
       globalThis.coral ?? Object.create(null),
@@ -334,6 +370,7 @@ function linkedProgramSource(body, savedFunctions, target) {
     const __coralFunctionNamespaces = [__coralFunctionRoot];
     for (let __coralIndex = 0; __coralIndex < __coralLinkedPaths.length; __coralIndex += 1) {
       const __coralPath = __coralLinkedPaths[__coralIndex];
+      const __coralPathName = __coralPath.join(".");
       let __coralFunctionParent = __coralFunctionRoot;
       for (const __coralSegment of __coralPath.slice(0, -1)) {
         if (!Object.hasOwn(__coralFunctionParent, __coralSegment)) {
@@ -354,7 +391,11 @@ function linkedProgramSource(body, savedFunctions, target) {
         {
           get() {
             const __coralDefault = __coralSavedFunctionDefaults[__coralIndex];
-            return __coralDefault === undefined ? undefined : __coralDefault();
+            return __coralDefault === undefined
+              ? undefined
+              : ${intercepted
+                ? "__coralWrapFunction(__coralIndex, __coralPathName, __coralDefault())"
+                : "__coralDefault()"};
           },
           enumerable: true,
           configurable: false,
@@ -393,7 +434,12 @@ function linkedProgramSource(body, savedFunctions, target) {
   const programStart = generatedLine;
   append(body);
   authoredMappings.push(...programAuthoredMappings(body, programStart));
-  append(`
+  append(intercepted
+    ? `
+    })();
+  }));
+`
+    : `
     })();
   })();
 `);

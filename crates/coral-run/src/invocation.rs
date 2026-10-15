@@ -15,7 +15,7 @@ use crate::lifecycle::RunRecord;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use coral_policy::{OperationAccessState, OperationPolicyTarget};
+use coral_policy::OperationAccessState;
 use coral_provider::access::ProviderNamespace;
 use coral_provider::{InvocationOperationVerification, ResolvedInvocationOperation};
 use coral_upstream::{McpResources, ReadyDispatch, UpstreamOutcome};
@@ -236,6 +236,7 @@ impl OperationInvoker {
         &self,
         call_path: &str,
         arguments: serde_json::Value,
+        origin: coral_v8::InvocationOrigin,
         source_location: Option<crate::SourceLocation>,
     ) -> Result<String, InvocationHostError> {
         let arguments_json = serde_json::to_string(&arguments).map_err(Error::ProgramValueJson)?;
@@ -249,7 +250,7 @@ impl OperationInvoker {
             })?;
         let address = CallPath::parse(call_path)?;
         let (mut admitted, policy) = self
-            .admit(call_path, &address, arguments_json, source_location)
+            .admit(call_path, &address, arguments_json, origin, source_location)
             .await?;
         if policy == OperationAccessState::Disabled {
             return Err(self
@@ -403,11 +404,72 @@ impl OperationInvoker {
         )
     }
 
+    pub(crate) const fn run_id(&self) -> &RunId {
+        &self.run_id
+    }
+
+    /// Returns the Run's frozen policy for one Call Path: the exact rule the
+    /// Run pinned at admission, else the default its declared hints give.
+    pub(crate) async fn original_policy(
+        &self,
+        call_path: &str,
+    ) -> Result<OperationAccessState, InvocationHostError> {
+        self.read_original_policy(call_path)
+            .await
+            .map_err(InvocationHostError::from)
+    }
+
+    async fn read_original_policy(&self, call_path: &str) -> Result<OperationAccessState, Error> {
+        let address = CallPath::parse(call_path)?;
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let (provider_id, operation_key, hints, http_method) =
+            coral_provider::invocation_policy_address_in_snapshot(
+                &mut transaction,
+                &self.workspace_id,
+                &address.namespace,
+                &address.relative_path,
+            )
+            .await?
+            .ok_or(Error::InvocationRejected(CoralFailure::OperationNotFound))?;
+        let rule = crate::middleware_repository::frozen_rule(
+            &mut transaction,
+            &self.workspace_id,
+            &self.run_id,
+            &provider_id,
+            &operation_key,
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(rule.unwrap_or_else(|| coral_policy::default_access_state(hints, http_method)))
+    }
+
+    async fn frozen_policy(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        target: &ResolvedInvocationOperation,
+    ) -> Result<OperationAccessState, Error> {
+        let rule = crate::middleware_repository::frozen_rule(
+            transaction,
+            &self.workspace_id,
+            &self.run_id,
+            target.provider_access().id(),
+            target.operation().key(),
+        )
+        .await?;
+        Ok(rule.unwrap_or_else(|| {
+            coral_policy::default_access_state(
+                target.operation().hints(),
+                target.operation().http_method(),
+            )
+        }))
+    }
+
     async fn admit(
         &self,
         call_path: &str,
         address: &CallPath,
         arguments_json: String,
+        origin: coral_v8::InvocationOrigin,
         source_location: Option<crate::SourceLocation>,
     ) -> Result<(AdmittedInvocation, OperationAccessState), Error> {
         let mut transaction = self.database.begin().await?;
@@ -436,15 +498,40 @@ impl OperationInvoker {
             transaction.rollback().await?;
             return Err(Error::InvocationRejected(CoralFailure::OperationNotFound));
         };
-        let policy_target = policy_target(&self.workspace_id, &target);
-        let policy = coral_policy::invocation_decision_in_transaction(
-            &mut transaction,
-            &policy_target,
-            target.operation().hints(),
-            target.operation().http_method(),
-        )
-        .await?
-        .access_state();
+        // Workspace policy is frozen for the Run. Middleware may select the
+        // current policy of one Invocation; its own helper calls bypass policy.
+        let (policy, policy_source, middleware_execution_id) = match origin {
+            coral_v8::InvocationOrigin::Middleware { execution_id } => {
+                // The runtime grants helper privilege only inside a running
+                // execution; the host refuses any other origin claim.
+                if !crate::middleware_repository::is_running(
+                    &mut transaction,
+                    &self.workspace_id,
+                    &self.run_id,
+                    &execution_id,
+                )
+                .await?
+                {
+                    transaction.rollback().await?;
+                    return Err(Error::InvocationPersistence(
+                        "Middleware helper call has no running execution".to_string(),
+                    ));
+                }
+                (
+                    OperationAccessState::Enabled,
+                    PolicySource::MiddlewareHelper,
+                    Some(execution_id),
+                )
+            }
+            coral_v8::InvocationOrigin::Program {
+                policy: Some(policy),
+            } => (access_state(policy), PolicySource::Middleware, None),
+            coral_v8::InvocationOrigin::Program { policy: None } => (
+                self.frozen_policy(&mut transaction, &target).await?,
+                PolicySource::RunSnapshot,
+                None,
+            ),
+        };
         let admitted_at = self.now()?.max(run.accepted_at_unix_nanos);
         if !self.run_is_current(&run, admitted_at) {
             transaction.rollback().await?;
@@ -465,6 +552,9 @@ impl OperationInvoker {
             dispatch_started: false,
             credential_evidence: None,
             connection_request: None,
+            access_state: policy,
+            policy_source,
+            middleware_execution_id,
         };
         invocation_repository::insert_admission(&mut transaction, &admitted, &run).await?;
         transaction.commit().await?;
@@ -621,15 +711,7 @@ impl OperationInvoker {
             .map_or(self.deadline_at_unix_nanos, |expiry| {
                 expiry.min(self.deadline_at_unix_nanos)
             });
-        Ok(coral_policy::invocation_decision_in_snapshot(
-            tx,
-            &policy_target(&self.workspace_id, &admitted.target),
-            admitted.target.operation().hints(),
-            admitted.target.operation().http_method(),
-        )
-        .await
-        .ok()
-        .map(|decision| (decision.access_state(), until)))
+        Ok(Some((admitted.access_state, until)))
     }
 
     /// Waits for a committed change, the expiry `until`, the fallback poll, or a
@@ -954,20 +1036,9 @@ impl OperationInvoker {
                 return Err(Error::InvocationRejected(CoralFailure::AuthorityLost));
             }
         }
-        let policy = coral_policy::invocation_decision_in_transaction(
-            tx,
-            &policy_target(&self.workspace_id, &admitted.target),
-            admitted.target.operation().hints(),
-            admitted.target.operation().http_method(),
-        )
-        .await
-        .map_err(|error| match error {
-            coral_policy::Error::OperationNotFound => {
-                Error::InvocationRejected(CoralFailure::AuthorityLost)
-            }
-            error => error.into(),
-        })?;
-        Ok((authority, policy.access_state()))
+        // The Invocation keeps the policy it was admitted with; a later
+        // Workspace policy change affects only later Runs.
+        Ok((authority, admitted.access_state))
     }
 
     async fn workspace_dispatch_authority(
@@ -1120,17 +1191,6 @@ fn account_error(error: coral_provider::Error) -> Error {
     Error::InvocationRejected(failure)
 }
 
-fn policy_target(
-    workspace_id: &WorkspaceId,
-    target: &ResolvedInvocationOperation,
-) -> OperationPolicyTarget {
-    OperationPolicyTarget::new(
-        workspace_id.clone(),
-        target.provider_access().id().clone(),
-        target.operation().key().clone(),
-    )
-}
-
 struct CallPath {
     namespace: ProviderNamespace,
     relative_path: String,
@@ -1159,6 +1219,43 @@ impl CallPath {
     }
 }
 
+/// Where an Invocation's retained policy came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PolicySource {
+    /// The Run's frozen Workspace policy.
+    RunSnapshot,
+    /// Operation Middleware selected it for this Invocation.
+    Middleware,
+    /// A Middleware helper call, which bypasses Workspace policy.
+    MiddlewareHelper,
+}
+
+impl PolicySource {
+    pub(crate) const fn as_storage_str(self) -> &'static str {
+        match self {
+            Self::RunSnapshot => "run_snapshot",
+            Self::Middleware => "middleware",
+            Self::MiddlewareHelper => "middleware_helper",
+        }
+    }
+}
+
+const fn access_state(policy: coral_v8::OperationPolicy) -> OperationAccessState {
+    match policy {
+        coral_v8::OperationPolicy::Enabled => OperationAccessState::Enabled,
+        coral_v8::OperationPolicy::ApprovalRequired => OperationAccessState::ApprovalRequired,
+        coral_v8::OperationPolicy::Disabled => OperationAccessState::Disabled,
+    }
+}
+
+pub(crate) const fn operation_policy(state: OperationAccessState) -> coral_v8::OperationPolicy {
+    match state {
+        OperationAccessState::Enabled => coral_v8::OperationPolicy::Enabled,
+        OperationAccessState::ApprovalRequired => coral_v8::OperationPolicy::ApprovalRequired,
+        OperationAccessState::Disabled => coral_v8::OperationPolicy::Disabled,
+    }
+}
+
 pub(super) struct AdmittedInvocation {
     pub(super) connection_request: Option<coral_provider::account::ConnectionRequestId>,
     pub(super) credential_evidence: Option<coral_provider::account::CredentialEvidence>,
@@ -1172,6 +1269,9 @@ pub(super) struct AdmittedInvocation {
     pub(super) source_location: Option<crate::SourceLocation>,
     pub(super) admitted_at_unix_nanos: i64,
     pub(super) dispatch_started: bool,
+    pub(super) access_state: OperationAccessState,
+    pub(super) policy_source: PolicySource,
+    pub(super) middleware_execution_id: Option<String>,
 }
 
 pub(super) enum InvocationCompletion {

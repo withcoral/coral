@@ -7,6 +7,9 @@ import {
   ActivityLogLevel,
   ActivityPrincipalKind,
   ActivityRunFailureCode,
+  ActivityMiddlewarePhase,
+  ActivityMiddlewareScope,
+  ActivityMiddlewareStatus,
 } from '@/generated/coral/management/v1/activity_pb'
 import type {
   ActivityTask,
@@ -15,6 +18,7 @@ import type {
   InspectTaskInteractionResponse,
   ActivityRun,
   ActivityInvocation,
+  ActivityMiddlewareExecution,
   ActivityProgramError,
   ActivityDiscovery,
   InspectInvocationResponse,
@@ -34,6 +38,10 @@ import type {
   ActivityBranch,
   ExecutionRow,
   InvocationRow,
+  MiddlewarePhase,
+  MiddlewareRow,
+  MiddlewareScope,
+  MiddlewareState,
   ProgramError,
   InvocationResult,
   DiscoveryContext,
@@ -95,6 +103,21 @@ const invocationOutcomes = {
   run_terminated: ActivityInvocationOutcome.RUN_TERMINATED,
   indeterminate: ActivityInvocationOutcome.INDETERMINATE,
 } satisfies Record<Exclude<InvocationOutcome, 'unknown'>, ActivityInvocationOutcome>
+const middlewareScopes = {
+  run: ActivityMiddlewareScope.RUN,
+  function: ActivityMiddlewareScope.FUNCTION,
+  operation: ActivityMiddlewareScope.OPERATION,
+} satisfies Record<Exclude<MiddlewareScope, 'unknown'>, ActivityMiddlewareScope>
+const middlewarePhases = {
+  enter: ActivityMiddlewarePhase.ENTER,
+  exit: ActivityMiddlewarePhase.EXIT,
+} satisfies Record<Exclude<MiddlewarePhase, 'unknown'>, ActivityMiddlewarePhase>
+const middlewareStates = {
+  running: ActivityMiddlewareStatus.RUNNING,
+  succeeded: ActivityMiddlewareStatus.SUCCEEDED,
+  failed: ActivityMiddlewareStatus.FAILED,
+  run_terminated: ActivityMiddlewareStatus.RUN_TERMINATED,
+} satisfies Record<Exclude<MiddlewareState, 'unknown'>, ActivityMiddlewareStatus>
 function enumLabel<T extends string>(values: Record<T, number>, value: number): T | 'unknown' {
   return (Object.keys(values) as T[]).find((key) => values[key] === value) ?? 'unknown'
 }
@@ -332,6 +355,7 @@ function invocationView(value: ActivityInvocation): InvocationRow {
     callPath: value.callPath,
     outcome: enumLabel(invocationOutcomes, value.outcome),
     sourceLocation: sourceLocationView(value.sourceLocation),
+    middlewareExecution: value.middlewareExecution,
   }
 }
 /** A stored location in a document this client knows; anything else is unavailable. */
@@ -347,6 +371,29 @@ function sourceLocationView(
       return { document: { kind: 'saved_function', savedFunction: document.value }, line, column }
     default:
       return undefined
+  }
+}
+/** One Middleware execution row. Its name addresses the execution within its Run. */
+export function middlewareView(
+  value: ActivityMiddlewareExecution,
+  context: { task: string; actor: string; agent: string },
+): MiddlewareRow {
+  return {
+    name: `${value.run}/middlewareExecutions/${value.id}`,
+    workspace: workspaceOf(value.run),
+    run: value.run,
+    middlewareName: value.middlewareName,
+    position: value.position,
+    scope: enumLabel(middlewareScopes, value.scope),
+    target: value.target,
+    phase: enumLabel(middlewarePhases, value.phase),
+    state: enumLabel(middlewareStates, value.status),
+    startedAt: timestamp(value.startedAtUnixNanos),
+    endedAt: value.endedAtUnixNanos === undefined ? null : timestamp(value.endedAtUnixNanos),
+    durationNanos: value.durationNanos.toString(),
+    previewJson: value.previewJson ?? null,
+    failureSummary: value.failureSummary ?? null,
+    ...context,
   }
 }
 function errorView(value: ActivityProgramError): ProgramError {
@@ -395,6 +442,7 @@ function runEventView(event: ActivityRunEvent): RunEvent {
         ...facts,
         kind: 'program.emitted',
         value: payload.value.valueJson,
+        middlewareExecution: payload.value.middlewareExecution,
       }
     case 'programLogged':
       return {
@@ -523,6 +571,8 @@ function workspaceOf(name: string) {
 function recordKind(name: string) {
   if (/^workspaces\/[^/]+\/tasks\/[^/]+\/interactions\/[^/]+$/.test(name)) return 'tool'
   if (/^workspaces\/[^/]+\/runs\/[^/]+\/events\/\d+$/.test(name)) return 'output'
+  if (/^workspaces\/[^/]+\/runs\/[^/]+\/middlewareExecutions\/[^/]+$/.test(name))
+    return 'middleware'
   if (/^workspaces\/[^/]+\/runs\/[^/]+\/final$/.test(name)) return 'final'
   if (/^workspaces\/[^/]+\/tasks\/[^/]+$/.test(name)) return 'task'
   if (/^workspaces\/[^/]+\/runs\/[^/]+$/.test(name)) return 'run'
@@ -638,6 +688,29 @@ async function selectedDetail(
           value.run?.task,
           value.run?.agent,
         )
+        const context = await runSourceContext(run, page, query, api, signal)
+        if (context) detail.context = context
+        break
+      }
+      case 'middleware': {
+        const run = name.split('/middlewareExecutions/')[0]
+        const value = await api.activity.browseRunEntries(
+          { name: run, anchor: name, pageSize: 1 },
+          { signal },
+        )
+        const record = value.entries[0]?.record
+        if (record?.case !== 'middleware') throw new ConnectError('unavailable', Code.NotFound)
+        const execution = middlewareView(record.value, {
+          task: value.run?.task ?? '',
+          actor: value.run?.actor ?? '',
+          agent: value.run?.agent ?? '',
+        })
+        const detail: NonNullable<ActivityPage['detail']> & { kind: 'middleware' } = {
+          kind: 'middleware',
+          execution,
+        }
+        page.detail = detail
+        page.selectedRow = { ...execution, kind: 'middleware' }
         const context = await runSourceContext(run, page, query, api, signal)
         if (context) detail.context = context
         break
@@ -1224,7 +1297,8 @@ export async function loadActivity(
   if (!query.has('tree') && !query.has('expand') && page.selectedRow) {
     const row = page.selectedRow
     const task = 'task' in row ? (row.task ?? '') : ''
-    const run = row.kind === 'invocation' || row.kind === 'output' ? row.run : ''
+    const run =
+      row.kind === 'invocation' || row.kind === 'output' || row.kind === 'middleware' ? row.run : ''
     if (task) automaticAnchors.set(task, run || row.name)
     if (run) automaticAnchors.set(run, row.name)
     for (const name of [task, run])
@@ -1304,6 +1378,18 @@ export async function loadActivity(
               task: row.task,
               actor: row.actor,
               kind: 'invocation',
+              position,
+            },
+          ]
+        if (record.case === 'middleware')
+          return [
+            {
+              ...middlewareView(record.value, {
+                task: row.task,
+                actor: row.actor,
+                agent: row.agent,
+              }),
+              kind: 'middleware',
               position,
             },
           ]

@@ -30,6 +30,8 @@ enum ProgramRunEvents {
     LogLevel,
     LogMessage,
     OutputBytes,
+    MiddlewareExecutionId,
+    MiddlewareStatus,
 }
 
 #[derive(Debug, FromRow)]
@@ -45,6 +47,8 @@ struct EventRow {
     program_value_json: Option<String>,
     log_level: Option<String>,
     log_message: Option<String>,
+    middleware_execution_id: Option<String>,
+    middleware_status: Option<String>,
     #[sqlx(flatten)]
     source_location: StoredSourceLocation,
 }
@@ -113,12 +117,18 @@ impl EventRow {
                     }
                 }
             }
+            "middleware.started" | "middleware.ended" => middleware_kind(
+                &self.event_type,
+                self.middleware_execution_id,
+                self.middleware_status.as_deref(),
+            )?,
             "program.emitted" => {
                 let encoded = self
                     .program_value_json
                     .ok_or_else(|| missing("Program Value"))?;
                 RunEventKind::ProgramEmitted {
                     value: ProgramValue::from_persisted_json(encoded, limits)?,
+                    middleware_execution: self.middleware_execution_id,
                 }
             }
             "program.logged" => {
@@ -147,14 +157,39 @@ impl EventRow {
     }
 }
 
+fn middleware_kind(
+    event_type: &str,
+    execution_id: Option<String>,
+    status: Option<&str>,
+) -> Result<RunEventKind, Error> {
+    let execution_id = execution_id
+        .ok_or_else(|| Error::CorruptData(format!("{event_type} Event has no execution")))?;
+    if event_type == "middleware.started" {
+        return Ok(RunEventKind::MiddlewareStarted { execution_id });
+    }
+    let status = status
+        .ok_or_else(|| Error::CorruptData(format!("{event_type} Event has no status")))
+        .and_then(crate::MiddlewareExecutionStatus::from_storage_str)?;
+    Ok(RunEventKind::MiddlewareEnded {
+        execution_id,
+        status,
+    })
+}
+
 pub(crate) enum NewEvent<'a> {
     Started,
     CancellationRequested(&'a Principal),
     Ended(RunState, usize),
     InvocationStarted(&'a InvocationId),
     InvocationEnded(&'a InvocationId, InvocationResultKind),
-    Emitted(&'a ProgramValue, Option<&'a SourceLocation>),
+    Emitted(
+        &'a ProgramValue,
+        Option<&'a SourceLocation>,
+        Option<&'a str>,
+    ),
     Logged(ProgramLogLevel, &'a str, Option<&'a SourceLocation>),
+    MiddlewareStarted(&'a str),
+    MiddlewareEnded(&'a str, crate::MiddlewareExecutionStatus),
 }
 
 pub(crate) async fn insert_event(
@@ -168,7 +203,7 @@ pub(crate) async fn insert_event(
     use ProgramRunEvents as Events;
 
     let output_bytes = match &event {
-        NewEvent::Emitted(value, _) => value.encoded_json().len(),
+        NewEvent::Emitted(value, _, _) => value.encoded_json().len(),
         NewEvent::Logged(_, message, _) => message.len(),
         NewEvent::Ended(_, bytes) => *bytes,
         _ => 0,
@@ -176,7 +211,7 @@ pub(crate) async fn insert_event(
     let output_bytes = i64::try_from(output_bytes)
         .map_err(|_overflow| Error::CorruptData("Event byte count overflow".into()))?;
     let source_location = match &event {
-        NewEvent::Emitted(_, location) | NewEvent::Logged(_, _, location) => *location,
+        NewEvent::Emitted(_, location, _) | NewEvent::Logged(_, _, location) => *location,
         _ => None,
     };
     let (event_type, mut fields) = match event {
@@ -206,15 +241,32 @@ pub(crate) async fn insert_event(
                 (Events::ResultKind, Expr::val(kind.as_storage_str())),
             ],
         ),
-        NewEvent::Emitted(value, _) => (
+        NewEvent::Emitted(value, _, middleware_execution) => (
             "program.emitted",
-            vec![(Events::ProgramValueJson, Expr::val(value.encoded_json()))],
+            vec![
+                (Events::ProgramValueJson, Expr::val(value.encoded_json())),
+                (
+                    Events::MiddlewareExecutionId,
+                    Expr::val(middleware_execution),
+                ),
+            ],
         ),
         NewEvent::Logged(level, message, _) => (
             "program.logged",
             vec![
                 (Events::LogLevel, Expr::val(level.as_storage_str())),
                 (Events::LogMessage, Expr::val(message)),
+            ],
+        ),
+        NewEvent::MiddlewareStarted(id) => (
+            "middleware.started",
+            vec![(Events::MiddlewareExecutionId, Expr::val(id))],
+        ),
+        NewEvent::MiddlewareEnded(id, status) => (
+            "middleware.ended",
+            vec![
+                (Events::MiddlewareExecutionId, Expr::val(id)),
+                (Events::MiddlewareStatus, Expr::val(status.as_storage_str())),
             ],
         ),
     };
@@ -461,6 +513,8 @@ async fn event_page(
             ProgramRunEvents::ProgramValueJson,
             ProgramRunEvents::LogLevel,
             ProgramRunEvents::LogMessage,
+            ProgramRunEvents::MiddlewareExecutionId,
+            ProgramRunEvents::MiddlewareStatus,
         ])
         .columns(source_location_repository::COLUMNS.map(Alias::new))
         .from(ProgramRunEvents::Table)

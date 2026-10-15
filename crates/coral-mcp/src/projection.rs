@@ -19,6 +19,44 @@ pub(crate) use discovery::{
 };
 pub(crate) use run::{RunUpdateResult, run_update};
 
+/// One saved Middleware. It is always disabled until an Owner enables it.
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SavedMiddlewareResult<'a> {
+    name: &'a str,
+    description: &'a str,
+    /// Always false after a save; an Owner enables reviewed Middleware.
+    enabled: bool,
+    /// Scopes the Owner selected earlier; a new Middleware has none.
+    scopes: MiddlewareScopes,
+    diagnostics: Vec<diagnostics::Diagnostic>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MiddlewareScopes {
+    run: bool,
+    function: bool,
+    operation: bool,
+}
+
+pub(crate) fn saved_middleware(
+    middleware: &coral_middleware::Middleware,
+) -> Result<SavedMiddlewareResult<'_>, ToolFailure> {
+    let scopes = middleware.scopes();
+    Ok(SavedMiddlewareResult {
+        name: middleware.name().as_str(),
+        description: middleware.description().as_str(),
+        enabled: middleware.enabled(),
+        scopes: MiddlewareScopes {
+            run: scopes.run,
+            function: scopes.function,
+            operation: scopes.operation,
+        },
+        diagnostics: diagnostics::middleware_diagnostics(middleware.diagnostics())?,
+    })
+}
+
 /// Every Coral-owned result keeps the SDK's compact JSON text of
 /// `structuredContent` as `content[0]`, as both served MCP versions advise.
 /// Content-only clients, and clients that show tool errors from `content`,

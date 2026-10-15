@@ -1358,6 +1358,9 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
                     assert_eq!(summary.source_location, None, "{summary:?}");
                 }
             }
+            Some(wire::activity_run_entry::Record::Middleware(execution)) => {
+                panic!("this Run has no Middleware: {execution:?}")
+            }
             None => panic!("unknown entry"),
         }
     }

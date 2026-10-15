@@ -47,6 +47,7 @@ impl Fixture {
                 coral_provider::migrator(),
                 coral_policy::migrator(),
                 coral_run::migrator(),
+                coral_middleware::migrator(),
                 coral_search::migrator(),
             ],
             [sqlx::migrate::Migration::new(

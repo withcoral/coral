@@ -74,12 +74,13 @@ impl CancellationCaller {
 }
 
 /// Every domain migration plan a Run test database installs.
-pub(crate) const MIGRATION_PLANS: [&sqlx::migrate::Migrator; 7] = [
+pub(crate) const MIGRATION_PLANS: [&sqlx::migrate::Migrator; 8] = [
     coral_workspace::migrator(),
     coral_catalog::migrator(),
     coral_provider::migrator(),
     coral_policy::migrator(),
     crate::migrator(),
+    coral_middleware::migrator(),
     coral_functions::migrator(),
     coral_search::migrator(),
 ];
@@ -819,6 +820,7 @@ pub(crate) async fn run_history_text(
         match entry {
             crate::RunEntry::Invocation(summary) => write!(text, "{summary:?}").unwrap(),
             crate::RunEntry::Event { kind, .. } => text.push_str(&kind),
+            crate::RunEntry::Middleware(summary) => write!(text, "{summary:?}").unwrap(),
         }
     }
     text

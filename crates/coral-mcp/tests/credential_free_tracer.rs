@@ -86,12 +86,13 @@ const RUN_UPDATE_PAGE_BYTES: usize = 4096;
 /// The Program runtime's own bound on one encoded Program error.
 const PROGRAM_ERROR_MAX_BYTES: usize = 8 * 1024;
 
-const TOOL_NAMES: [&str; 9] = [
+const TOOL_NAMES: [&str; 10] = [
     "start_task",
     "search",
     "describe",
     "save_function",
     "delete_function",
+    "save_middleware",
     "exec",
     "wait",
     "cancel",
@@ -298,6 +299,14 @@ impl Tracer {
             search,
             index.clone(),
             runs.clone(),
+        )
+        .with_middleware(
+            coral_middleware::MiddlewareModule::new(
+                db.clone(),
+                workspaces.clone(),
+                coral_run::IsolateLimits::default(),
+            )
+            .expect("start Middleware compiler"),
         );
         let modules = McpModules::new(
             workspaces.clone(),
@@ -1260,6 +1269,106 @@ async fn discovery_authoring_and_task_closure_report_wire_codes() {
         structured(&invalid_function)["code"],
         "saved_function_admission_failed"
     );
+    let middleware = call(&client_a, "save_middleware", json!({
+        "task_id": task_id, "intent": "Save an Operation audit", "name": "audit",
+        "description": "Count Operations in each Run",
+        "source": "export default async (ctx: CoralMiddleware.Invocation, next: CoralMiddleware.Next) => next();"
+    })).await;
+    assert_eq!(
+        *structured(&middleware),
+        json!({
+            "name": "audit",
+            "description": "Count Operations in each Run",
+            "enabled": false,
+            "scopes": {"run": false, "function": false, "operation": false},
+            "diagnostics": []
+        })
+    );
+    let invalid_middleware = call(&client_a, "save_middleware", json!({
+        "task_id": task_id, "intent": "Record rejected Middleware authoring", "name": "audit",
+        "description": "Must not replace the accepted source",
+        "source": "const started = Date.now();\nexport default async (ctx: any, next: any) => next();"
+    })).await;
+    assert_eq!(
+        structured(&invalid_middleware)["code"],
+        "middleware_admission_failed"
+    );
+    // coral.emit is an Operation for Middleware. The Owner enables Middleware
+    // whose own Emission bypasses interception and names its execution.
+    let witness = call(&client_a, "save_middleware", json!({
+        "task_id": task_id, "intent": "Witness Program output", "name": "witness",
+        "description": "Add a reviewed marker after each Program emission",
+        "source": "export default async (ctx: any, next: CoralMiddleware.Next) => { if (ctx.path !== 'coral.emit') return next(); await next(); await coral.emit({ witness: ctx.args }); };"
+    })).await;
+    assert_eq!(structured(&witness)["enabled"], false);
+    let management = coral_middleware::MiddlewareModule::without_authoring(
+        tracer.database.database(),
+        tracer.workspaces.clone(),
+    );
+    let owner = coral_middleware::MiddlewareChangeContext::new(
+        coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone()),
+        70,
+        TraceId::current_or_new(),
+    );
+    let chain = management
+        .list(&tracer.local_user, &tracer.workspace_a)
+        .await
+        .expect("list Middleware");
+    let witness_id = chain
+        .iter()
+        .find(|item| item.name().as_str() == "witness")
+        .expect("saved witness")
+        .id()
+        .clone();
+    management
+        .set_scopes(
+            &owner,
+            &tracer.workspace_a,
+            &witness_id,
+            coral_middleware::MiddlewareScopes {
+                run: false,
+                function: false,
+                operation: true,
+            },
+        )
+        .await
+        .expect("choose the Operation scope");
+    management
+        .set_enabled(&owner, &tracer.workspace_a, &witness_id, true)
+        .await
+        .expect("enable witness");
+    let witnessed = call(
+        &client_a,
+        "exec",
+        json!({
+            "task_id": task_id, "intent": "Emit through output Middleware", "wait_ms": 5000,
+            "program": "await coral.emit('plain'); return null;"
+        }),
+    )
+    .await;
+    let events = &structured(&witnessed)["events"];
+    assert_eq!(
+        events.pointer("/0/value"),
+        Some(&json!({"kind": "value", "value": "plain"}))
+    );
+    assert!(
+        events.pointer("/0/middleware_execution").is_none(),
+        "{events}"
+    );
+    assert_eq!(
+        events.pointer("/1/value"),
+        Some(&json!({"kind": "value", "value": {"witness": "plain"}}))
+    );
+    assert!(
+        events
+            .pointer("/1/middleware_execution")
+            .is_some_and(serde_json::Value::is_string),
+        "{events}"
+    );
+    management
+        .set_enabled(&owner, &tracer.workspace_a, &witness_id, false)
+        .await
+        .expect("disable witness");
     for invalid in [" ".to_string(), "bad\0text".to_string(), "🪸".repeat(4097)] {
         let rejected = call(
             &client_a,
@@ -2743,6 +2852,7 @@ fn test_migrator() -> sqlx::migrate::Migrator {
         coral_provider::migrator(),
         coral_policy::migrator(),
         coral_run::migrator(),
+        coral_middleware::migrator(),
         coral_functions::migrator(),
         coral_search::migrator(),
     ])

@@ -38,6 +38,7 @@ fn error(error: coral_task::Error) -> Status {
         coral_task::Error::SnapshotTooLarge
         | coral_task::Error::Search(_)
         | coral_task::Error::Functions(_)
+        | coral_task::Error::Middleware(_)
         | coral_task::Error::Clock
         | coral_task::Error::Workspace(_)
         | coral_task::Error::CorruptData(_)
@@ -585,6 +586,9 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
                 "workspaces/{}/savedFunctions/{id}",
                 identity.workspace
             )),
+            AttemptEvidence::Middleware(id) => {
+                Evidence::Middleware(format!("workspaces/{}/middleware/{id}", identity.workspace))
+            }
             AttemptEvidence::Rejected(failure) => Evidence::Rejection(wire::ActivityRejection {
                 code: failure.code,
                 message: failure.message,

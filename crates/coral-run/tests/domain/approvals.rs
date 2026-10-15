@@ -931,7 +931,7 @@ async fn expired_approval_cannot_be_approved_and_settles_with_a_safe_failure() {
     clippy::too_many_lines,
     reason = "one wait lifecycle matrix verifies closure, policy relaxation and cancellation without touching required-action projections"
 )]
-async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
+async fn pending_approval_rechecks_authority_and_run_termination_but_not_later_policy() {
     for action in ["enable", "disable", "revoke", "archive", "cancel"] {
         let upstream = Arc::new(ScriptedUpstream::json(
             200,
@@ -1010,6 +1010,28 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
             }
             _ => unreachable!(),
         }
+        // The Run froze its policy at admission, so a policy change leaves the
+        // request pending; only a human decision moves it.
+        let policy_change = matches!(action, "enable" | "disable");
+        if policy_change {
+            let pending = approvals
+                .get(&operation.principal, &operation.workspace_id, &request.id)
+                .await
+                .unwrap();
+            assert_eq!(pending.state, ApprovalState::Pending, "{action}");
+            assert!(pending.actionable, "{action}");
+            approvals
+                .decide(
+                    &operation.principal,
+                    &operation.workspace_id,
+                    &request.id,
+                    ApprovalDecision::Approve,
+                    None,
+                    &TraceId::parse(&"b".repeat(32)).unwrap(),
+                )
+                .await
+                .unwrap();
+        }
         let terminal = wait_for_terminal(
             &fixture.runs,
             &operation.principal,
@@ -1022,16 +1044,16 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
         } else {
             assert_final_code(
                 &terminal,
-                match action {
-                    "enable" => "sent",
-                    "disable" => "operation_disabled",
-                    _ => "dispatch_authority_lost",
+                if policy_change {
+                    "sent"
+                } else {
+                    "dispatch_authority_lost"
                 },
             );
         }
         assert_eq!(
             upstream.sends.load(Ordering::SeqCst),
-            usize::from(action == "enable")
+            usize::from(policy_change)
         );
         assert_eq!(
             approvals
@@ -1039,7 +1061,11 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
                 .await
                 .unwrap()
                 .state,
-            ApprovalState::Closed
+            if policy_change {
+                ApprovalState::Approved
+            } else {
+                ApprovalState::Closed
+            }
         );
         assert_eq!(
             approvals
@@ -1239,8 +1265,11 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
     }
 }
 
+/// A Run freezes Workspace policy at admission: a policy change while an
+/// approved Invocation waits at the fence does not stop it, and only later
+/// Runs see the change.
 #[tokio::test]
-async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
+async fn a_policy_change_during_a_run_applies_only_to_later_runs() {
     let upstream = Arc::new(ScriptedUpstream::json(
         200,
         serde_json::json!({"temperature":21}),
@@ -1253,11 +1282,20 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
     )
     .await;
     let operation = fixture
-        .user_operation("user:approved-policy", "Approved but disabled")
+        .user_operation("user:approved-policy", "Approved then disabled")
         .await;
     fixture.require_approval(&operation).await;
     let approvals = fixture.approvals();
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
+    let program = "try { await coral.providers.weather.getForecast({}); return 'sent'; } catch (e) { return e.code; }";
+    let run = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(program),
+        )
+        .await
+        .unwrap();
     let request = wait_for_approval(
         &approvals,
         &operation.principal,
@@ -1294,16 +1332,27 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_fence() {
         run.run_id(),
     )
     .await;
+    assert_final_code(&terminal, "sent");
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
+
+    let later = fixture
+        .runs
+        .start(
+            &operation.principal,
+            &operation.workspace_id,
+            submission(program),
+        )
+        .await
+        .unwrap();
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &operation.principal,
+        &operation.workspace_id,
+        later.run_id(),
+    )
+    .await;
     assert_final_code(&terminal, "operation_disabled");
-    assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        approvals
-            .get(&operation.principal, &operation.workspace_id, &request.id)
-            .await
-            .unwrap()
-            .state,
-        ApprovalState::Approved
-    );
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -1613,7 +1662,7 @@ impl InvocationObserver for ApprovalFailureGate {
 }
 
 #[tokio::test]
-async fn stale_decline_cannot_replace_a_detected_policy_failure_before_worker_commit() {
+async fn stale_decline_cannot_replace_a_detected_authority_failure_before_worker_commit() {
     let (gate, release) = FenceGate::blocking();
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
@@ -1624,9 +1673,15 @@ async fn stale_decline_cannot_replace_a_detected_policy_failure_before_worker_co
     let operation = fixture
         .user_operation("user:decline-completion-race", "Recover winning rejection")
         .await;
+    let agent = registered_agent(
+        &fixture.workspaces,
+        &operation.principal,
+        &operation.workspace_id,
+    )
+    .await;
     fixture.require_approval(&operation).await;
     let approvals = fixture.approvals();
-    let run = fixture.runs.start(&operation.principal, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
+    let run = fixture.runs.start(&agent, &operation.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }")).await.unwrap();
     let request = wait_for_approval(
         &approvals,
         &operation.principal,
@@ -1635,11 +1690,12 @@ async fn stale_decline_cannot_replace_a_detected_policy_failure_before_worker_co
     )
     .await;
     fixture
-        .policies
-        .set_access_state(
+        .workspaces
+        .set_agent_state(
             &change(operation.user.clone(), 50, '5'),
-            operation.policy_target.clone(),
-            OperationAccessState::Disabled,
+            &operation.workspace_id,
+            agent.principal().id(),
+            coral_workspace::AgentState::Disabled,
         )
         .await
         .unwrap();
@@ -1663,7 +1719,7 @@ async fn stale_decline_cannot_replace_a_detected_policy_failure_before_worker_co
         run.run_id(),
     )
     .await;
-    assert_final_code(&terminal, "operation_disabled");
+    assert_final_code(&terminal, "dispatch_authority_lost");
     assert_eq!(
         retained_events(
             &fixture.runs,
@@ -1682,10 +1738,12 @@ async fn stale_decline_cannot_replace_a_detected_policy_failure_before_worker_co
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one deterministic blocked-worker matrix checks both decision orders for policy changes and invoking Agent disablement"
+    reason = "one deterministic blocked-worker matrix checks both decision orders for invoking Agent disablement"
 )]
-async fn first_durable_decision_wins_against_policy_changes_before_the_worker_observes_them() {
-    for (policy_first, agent_case) in [(false, false), (true, false), (false, true), (true, true)] {
+async fn first_durable_decision_wins_against_authority_loss_before_the_worker_observes_it() {
+    // Workspace policy is frozen per Run, so invoking Agent disablement is the
+    // live rejection that races a human decision here.
+    for (policy_first, agent_case) in [(false, true), (true, true)] {
         let (gate, release) = FenceGate::blocking();
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
@@ -1814,11 +1872,7 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
         assert_final_code(
             &terminal,
             if policy_first {
-                if agent_case {
-                    "dispatch_authority_lost"
-                } else {
-                    "operation_disabled"
-                }
+                "dispatch_authority_lost"
             } else {
                 "approval_declined"
             },

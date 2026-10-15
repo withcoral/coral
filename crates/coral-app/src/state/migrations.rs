@@ -48,6 +48,7 @@ fn current_migrations() -> Vec<&'static sqlx::migrate::Migration> {
         .chain(coral_policy::migrator().migrations.iter())
         .chain(coral_run::migrator().migrations.iter())
         .chain(coral_functions::migrator().migrations.iter())
+        .chain(coral_middleware::migrator().migrations.iter())
         .chain(coral_search::migrator().migrations.iter())
         .collect::<Vec<_>>();
     migrations.sort_by_key(|migration| migration.version);

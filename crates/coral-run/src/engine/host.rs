@@ -5,20 +5,32 @@ use std::sync::Arc;
 
 use crate::execution::ExecutionStop;
 use crate::invocation::{InvocationHostError, OperationInvoker};
+use crate::middleware::MiddlewareRecorder;
 use crate::program_output::{ProgramOutputWriteError, ProgramOutputWriter};
 use crate::{CoralFailure, ProgramLogLevel, SourceDocument, SourceLocation, ValueLimits};
 
 use super::{ExecutionCompletion, ProgramEngine, ProgramPackage};
 
+/// The Run-scoped writers through which one execution's host records evidence.
+pub(crate) struct RunEvidence {
+    pub(crate) invoker: OperationInvoker,
+    pub(crate) output: ProgramOutputWriter,
+    pub(crate) middleware: MiddlewareRecorder,
+}
+
 pub(crate) async fn execute(
     engine: Arc<dyn ProgramEngine>,
     package: ProgramPackage,
     linked_snapshots: HashMap<String, String>,
-    invoker: OperationInvoker,
-    output: ProgramOutputWriter,
+    evidence: RunEvidence,
     value_limits: ValueLimits,
     stop: Arc<ExecutionStop>,
 ) -> ExecutionCompletion {
+    let RunEvidence {
+        invoker,
+        output,
+        middleware,
+    } = evidence;
     let host = Arc::new(RunProgramHost {
         runtime: tokio::runtime::Handle::current(),
         value_limits,
@@ -26,6 +38,7 @@ pub(crate) async fn execute(
         linked_snapshots,
         invoker,
         output,
+        middleware,
     });
     tokio::task::spawn_blocking(move || engine.execute(package, host, stop))
         .await
@@ -40,6 +53,35 @@ struct RunProgramHost {
     linked_snapshots: HashMap<String, String>,
     invoker: OperationInvoker,
     output: ProgramOutputWriter,
+    middleware: MiddlewareRecorder,
+}
+
+impl RunProgramHost {
+    fn host_rejection(&self, error: InvocationHostError) -> coral_v8::OperationHostError {
+        match error {
+            InvocationHostError::Rejected(failure) => coral_v8::OperationHostError::Rejected {
+                code: failure.code(),
+                message: failure.message(),
+                trace_id: None,
+            },
+            InvocationHostError::Fatal(_private_error) => {
+                // V8 may still be running noncooperative JavaScript, rather
+                // than polling this Operation's completion.
+                self.stop.request();
+                coral_v8::OperationHostError::Fatal
+            }
+        }
+    }
+
+    fn middleware_evidence<T>(
+        &self,
+        result: Result<T, crate::Error>,
+    ) -> Result<T, coral_v8::ProgramOutputHostError> {
+        result.map_err(|_private_error| {
+            self.stop.request();
+            coral_v8::ProgramOutputHostError::Fatal
+        })
+    }
 }
 
 impl RunProgramHost {
@@ -87,6 +129,21 @@ impl coral_v8::ProgramHost for RunProgramHost {
         arguments_json: String,
         location: Option<coral_v8::AuthoredLocation>,
     ) -> coral_v8::OperationFuture {
+        self.invoke_with_origin(
+            call_path,
+            arguments_json,
+            coral_v8::InvocationOrigin::Program { policy: None },
+            location,
+        )
+    }
+
+    fn invoke_with_origin(
+        self: Arc<Self>,
+        call_path: String,
+        arguments_json: String,
+        origin: coral_v8::InvocationOrigin,
+        location: Option<coral_v8::AuthoredLocation>,
+    ) -> coral_v8::OperationFuture {
         let source_location = self.source_location(location);
         let runtime = self.runtime.clone();
         // Start independently of V8 polling. Run termination owns cancellation
@@ -101,23 +158,9 @@ impl coral_v8::ProgramHost for RunProgramHost {
                 }
             })?;
             self.invoker
-                .invoke(&call_path, arguments, source_location)
+                .invoke(&call_path, arguments, origin, source_location)
                 .await
-                .map_err(|error| match error {
-                    InvocationHostError::Rejected(failure) => {
-                        coral_v8::OperationHostError::Rejected {
-                            code: failure.code(),
-                            message: failure.message(),
-                            trace_id: None,
-                        }
-                    }
-                    InvocationHostError::Fatal(_private_error) => {
-                        // V8 may still be running noncooperative JavaScript,
-                        // rather than polling this Operation's completion.
-                        self.stop.request();
-                        coral_v8::OperationHostError::Fatal
-                    }
-                })
+                .map_err(|error| self.host_rejection(error))
         });
         Box::pin(async move {
             invocation
@@ -126,13 +169,79 @@ impl coral_v8::ProgramHost for RunProgramHost {
         })
     }
 
+    fn operation_policy(self: Arc<Self>, call_path: String) -> coral_v8::OperationFuture {
+        let runtime = self.runtime.clone();
+        let lookup = runtime.spawn(async move {
+            let _panic_guard = StopPanickingInvocation(self.stop.clone());
+            let policy = self
+                .invoker
+                .original_policy(&call_path)
+                .await
+                .map_err(|error| self.host_rejection(error))?;
+            Ok(format!(
+                "\"{}\"",
+                crate::invocation::operation_policy(policy).as_str()
+            ))
+        });
+        Box::pin(async move {
+            lookup
+                .await
+                .unwrap_or(Err(coral_v8::OperationHostError::Fatal))
+        })
+    }
+
+    fn run_id(&self) -> Option<String> {
+        Some(self.invoker.run_id().to_string())
+    }
+
+    fn middleware_started(
+        &self,
+        start: &coral_v8::MiddlewareExecutionStart,
+    ) -> Result<String, coral_v8::ProgramOutputHostError> {
+        self.middleware_evidence(self.runtime.block_on(self.middleware.started(start)))
+    }
+
+    fn middleware_continued(
+        &self,
+        execution_id: &str,
+    ) -> Result<(), coral_v8::ProgramOutputHostError> {
+        self.middleware_evidence(
+            self.runtime
+                .block_on(self.middleware.continued(execution_id)),
+        )
+    }
+
+    fn middleware_ended(
+        &self,
+        execution_id: &str,
+        outcome: coral_v8::MiddlewareExecutionOutcome,
+    ) -> Result<(), coral_v8::ProgramOutputHostError> {
+        self.middleware_evidence(
+            self.runtime
+                .block_on(self.middleware.ended(execution_id, &outcome)),
+        )
+    }
+
     fn emit(
         &self,
         value_json: &str,
         location: Option<coral_v8::AuthoredLocation>,
     ) -> Result<(), coral_v8::ProgramOutputHostError> {
         self.runtime
-            .block_on(self.output.emit(value_json, self.source_location(location)))
+            .block_on(
+                self.output
+                    .emit(value_json, self.source_location(location), None),
+            )
+            .map_err(map_program_output_error)
+    }
+
+    fn middleware_emit(
+        &self,
+        value_json: &str,
+        execution_id: &str,
+    ) -> Result<(), coral_v8::ProgramOutputHostError> {
+        self.runtime
+            .block_on(self.output.emit(value_json, None, Some(execution_id)))
             .map_err(map_program_output_error)
     }
 

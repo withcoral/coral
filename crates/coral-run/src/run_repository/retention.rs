@@ -59,6 +59,9 @@ pub(crate) async fn delete_retained_history(
         "program_run_events",
         "invocation_approvals",
         "operation_invocations",
+        "middleware_executions",
+        "program_run_middleware_snapshots",
+        "program_run_operation_access_rules",
         "program_run_saved_function_snapshots",
         "program_run_packages",
     ] {

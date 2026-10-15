@@ -526,11 +526,11 @@ async fn saved_function_initialization_uses_the_run_surface_once_before_the_prog
     assert!(matches!(
         terminal.events(),
         [initialized, initialization_log, body, body_log]
-            if matches!(initialized.kind(), RunEventKind::ProgramEmitted { value }
+            if matches!(initialized.kind(), RunEventKind::ProgramEmitted { value, .. }
                     if value.as_json() == &serde_json::json!({"phase": "initialization", "temperature": 21}))
                 && matches!(initialization_log.kind(), RunEventKind::ProgramLogged { level: ProgramLogLevel::Info, message }
                     if message == "Saved Function initialized")
-                && matches!(body.kind(), RunEventKind::ProgramEmitted { value }
+                && matches!(body.kind(), RunEventKind::ProgramEmitted { value, .. }
                     if value.as_json() == &serde_json::json!({"phase": "body"}))
                 && matches!(body_log.kind(), RunEventKind::ProgramLogged { level: ProgramLogLevel::Info, message }
                     if message == "Program body")

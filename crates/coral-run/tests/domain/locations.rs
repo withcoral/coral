@@ -164,6 +164,9 @@ async fn read_locations(
                     assert_eq!(source_location, &None, "{kind}");
                 }
             }
+            RunEntry::Middleware(execution) => {
+                panic!("this Run has no Middleware: {}", execution.id)
+            }
         }
     }
     ReadLocations {

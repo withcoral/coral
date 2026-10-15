@@ -131,6 +131,8 @@ pub enum AttemptEvidence {
     Run(coral_run::RunId),
     /// Saved Function identity. Current definition and lifecycle evidence remain independent.
     SavedFunction(coral_functions::SavedFunctionId),
+    /// Saved Middleware identity. Current definition and lifecycle evidence remain independent.
+    Middleware(coral_middleware::MiddlewareId),
     /// Known rejection without an accepted owning mutation.
     Rejected(AttemptFailure),
 }
@@ -139,9 +141,10 @@ impl AttemptEvidence {
     pub(crate) const fn outcome(&self) -> AttemptOutcome {
         match self {
             Self::Rejected(_) => AttemptOutcome::Rejected,
-            Self::Discovery { .. } | Self::Run(_) | Self::SavedFunction(_) => {
-                AttemptOutcome::Succeeded
-            }
+            Self::Discovery { .. }
+            | Self::Run(_)
+            | Self::SavedFunction(_)
+            | Self::Middleware(_) => AttemptOutcome::Succeeded,
         }
     }
 }
