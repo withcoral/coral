@@ -1130,7 +1130,7 @@ export function Activity({
                     context={runContext}
                     locatable={detailPage.detail?.kind === 'run'}
                     selectedRow={detailPage.selectedRow}
-                    close={<Dialog.Close ariaLabel="Close details" inline />}
+                    close={railControls}
                   >
                     <ActivityDetail key={detail.record} page={detailPage} sourceShown />
                   </ExecutionSourceSplit>
