@@ -31,21 +31,35 @@ function countStream() {
 }
 
 const w = '/workspaces/w'
+const x = '/workspaces/x'
+// Each event either changes another Workspace's count or ends the connection, so the test
+// waits until the hook has read it. Without that, an unchanged count passes at once.
 it.each([
-  ['a streamed count', { kind: 'count', counts: { [w]: '3' } }, { [w]: '3' }],
-  ['a streamed zero', { kind: 'count', counts: { [w]: '0' } }, { [w]: '0' }],
-  ['an unavailable workspace count', { kind: 'count', counts: { [w]: null } }, { [w]: null }],
-  ['nothing for a count that is not a digit string', { kind: 'count', counts: { [w]: 3 } }, null],
-  ['nothing for counts that are not a map', { kind: 'count', counts: ['3'] }, null],
-  ['nothing when the count is unavailable', { kind: 'unavailable' }, null],
+  ['a streamed count', { kind: 'count', counts: { [w]: '3', [x]: '4' } }, { [w]: '3', [x]: '4' }],
+  ['a streamed zero', { kind: 'count', counts: { [w]: '0', [x]: '4' } }, { [w]: '0', [x]: '4' }],
+  [
+    'no count for an unavailable workspace count',
+    { kind: 'count', counts: { [w]: null, [x]: '4' } },
+    { [w]: null, [x]: '4' },
+  ],
+  [
+    'the last counts for a count that is not a digit string',
+    { kind: 'count', counts: { [w]: 3 } },
+    { [w]: '1' },
+  ],
+  ['the last counts for counts that are not a map', { kind: 'count', counts: ['3'] }, { [w]: '1' }],
+  ['the last counts while the stream is unavailable', { kind: 'unavailable' }, { [w]: '1' }],
   ['nothing when the session expires', { kind: 'sessionExpired' }, null],
 ])('shows %s', async (_, event, expected) => {
   const { fetch, emit } = countStream()
   const { result, unmount } = renderHook(() => useActionCounts({ [w]: '1' }))
   expect(result.current).toEqual({ [w]: '1' })
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/activity/count', expect.anything()))
+  const signal = fetch.mock.calls[0][1].signal!
   act(() => emit(event))
-  await waitFor(() => expect(result.current).toEqual(expected))
+  // A connection that ends aborts before it reports, so the report has run once it aborts.
+  await waitFor(() => expect(signal.aborted || x in (result.current ?? {})).toBe(true))
+  expect(result.current).toEqual(expected)
   unmount()
-  expect(fetch.mock.calls[0][1].signal!.aborted).toBe(true)
+  expect(signal.aborted).toBe(true)
 })

@@ -80,10 +80,6 @@ export const CollapsedActionCount: Story = {
   ...ActionCount,
   args: { ...ActionCount.args, initialIsMinimized: true },
 }
-export const UnavailableActionCount: Story = {
-  ...Activity,
-  args: { actionCounts: null },
-}
 export const Collapsed: Story = { args: { initialIsMinimized: true } }
 // Collapsed, Slack and GitHub fold into one help menu above the account.
 export const CollapsedHelpMenu: Story = {

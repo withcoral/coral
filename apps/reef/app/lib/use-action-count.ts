@@ -11,9 +11,10 @@ function actionCounts(value: unknown): ActionCounts {
   return value as ActionCounts
 }
 
-/** One shell-owned subscription for every Workspace's count. Failures conceal the counts
- * (null); reconnect starts from fresh counts, never from a cached authority grant or a
- * replay cursor.
+/** One shell-owned subscription for every Workspace's count. A dropped stream keeps the
+ * last counts until a reconnect replaces them all with fresh ones. An expired session
+ * conceals them (null). Reconnect never starts from a cached authority grant or a replay
+ * cursor, so no count carries over from an earlier connection.
  */
 export function useActionCounts(initial: ActionCounts | null) {
   const [counts] = useState(() => {
@@ -21,7 +22,7 @@ export function useActionCounts(initial: ActionCounts | null) {
     value.onMount = (set) => {
       const stream = subscribeActivityStream('/activity/count', {
         onValue: (event) => set(actionCounts(event.counts)),
-        onUnavailable: () => set(null),
+        onUnavailable: () => {},
         onSessionExpired: () => set(null),
       })
       return () => stream.close()
