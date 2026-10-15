@@ -10,6 +10,10 @@ import * as styles from './panel.css'
 /** The drawer's close control. A panel's sticky header places it beside the status. */
 export const PanelClose = createContext<ReactNode>(null)
 
+/** True inside a pane that scrolls on its own: sticky edges meet that pane, not the
+ * drawer's padded edge, so they do not offset the drawer's padding. */
+export const PanelInset = createContext(false)
+
 const FooterSlot = createContext<HTMLElement | null>(null)
 const PanelLabel = createContext<string | undefined>(undefined)
 
@@ -25,6 +29,7 @@ export function usePanelLabel() {
 export function Panel({ label, children }: { label?: string; children: ReactNode }) {
   const [slot, setSlot] = useState<HTMLElement | null>(null)
   const close = useContext(PanelClose)
+  const inset = useContext(PanelInset)
   return (
     <section className={styles.panel} aria-label={label}>
       <FooterSlot value={slot}>
@@ -33,7 +38,10 @@ export function Panel({ label, children }: { label?: string; children: ReactNode
       <Card.Footer
         ref={setSlot}
         sticky
-        className={classNames(styles.footerSlot, Boolean(close) && Dialog.pinnedBottomClassName)}
+        className={classNames(
+          styles.footerSlot,
+          Boolean(close) && !inset && Dialog.pinnedBottomClassName,
+        )}
       />
     </section>
   )
@@ -61,10 +69,14 @@ export function PanelHeader({
   sticky?: boolean
 }) {
   const close = useContext(PanelClose)
+  const inset = useContext(PanelInset)
   return (
     <Card.Header
       sticky={sticky}
-      className={classNames(styles.header, sticky && Boolean(close) && Dialog.pinnedClassName)}
+      className={classNames(
+        styles.header,
+        sticky && Boolean(close) && !inset && Dialog.pinnedClassName,
+      )}
     >
       <IconPlate name={icon} tone={tone} />
       <div className={styles.summary}>
@@ -86,9 +98,10 @@ export function PanelHeader({
 export function PanelFooter({ children }: { children: ReactNode }) {
   const slot = useContext(FooterSlot)
   const close = useContext(PanelClose)
+  const inset = useContext(PanelInset)
   if (slot) return createPortal(children, slot)
   return (
-    <Card.Footer sticky className={close ? Dialog.pinnedBottomClassName : undefined}>
+    <Card.Footer sticky className={close && !inset ? Dialog.pinnedBottomClassName : undefined}>
       {children}
     </Card.Footer>
   )

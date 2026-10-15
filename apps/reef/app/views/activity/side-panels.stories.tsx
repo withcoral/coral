@@ -1446,9 +1446,12 @@ export const FinalValue: Story = {
     await expect(within(dialog).queryByText('Final value', { selector: 'summary' })).toBeNull()
     for (const token of ['"reminded"', '24', '"owners"', '9', '18450.70', '"INV-4180"'])
       await expect(value).toHaveTextContent(token)
-    // A returned value is not an emission: no emitted-output card or title.
+    // A returned value is not an emission: no emitted-output card or title. The Run's
+    // accepted source below may call coral.emit; the selected record's own pane does not.
     await expect(within(dialog).queryByRole('region', { name: 'Emitted value' })).toBeNull()
-    await expect(dialog).not.toHaveTextContent('coral.emit')
+    await expect(
+      within(dialog).getByRole('region', { name: 'Selected record' }),
+    ).not.toHaveTextContent('coral.emit')
   },
 }
 /** A Run that returned nothing shows no card and no sentence about it. */
@@ -2263,14 +2266,14 @@ function connectionStory(
         await expect(footer.querySelector('time')).toBeNull()
         // The panel's own footer, pinned to the drawer's bottom as an approval's is.
         await expect(getComputedStyle(footer).position).toBe('sticky')
-        await expect(footer.closest('section')!.parentElement).toBe(
-          dialog.querySelector('section')!.parentElement,
-        )
+        await expect(footer.closest('section')).toContainElement(headers[0]!)
         // While the live view reconnects, neither choice is offered.
         await expect(decline).toHaveProperty('disabled', Boolean(options.reconnecting))
         await expect(connect).toHaveProperty('disabled', Boolean(options.reconnecting))
       } else {
-        await expect(opened.getByRole('status')).toBeVisible()
+        // The Run's source pane keeps its own status; the record states one outcome.
+        const record = opened.queryByRole('region', { name: 'Selected record' }) ?? dialog
+        await expect(within(record).getByRole('status')).toBeVisible()
         await expect(opened.queryByRole('button', { name: /Decline|Connect/ })).toBeNull()
       }
       if (options.fits) await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)

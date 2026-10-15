@@ -36,12 +36,27 @@ import * as styles from './task-activity.css'
 /** An elapsed time in whole seconds, as the Activity table shows it. */
 const seconds = (milliseconds: number) => duration(milliseconds * 1_000_000)
 
-export function ActivityDetail({ page }: { page: ActivityPage }) {
+/** The Run whose accepted source a selected record shows beside its own detail, if any.
+ * An operation or an output carries it as context; it never replaces the record's detail. */
+export function runContextOf(detail: ActivityPage['detail']): RunDetail | undefined {
+  if (detail?.kind === 'run') return detail
+  if (detail?.kind === 'invocation' || detail?.kind === 'output') return detail.context
+  return undefined
+}
+
+export function ActivityDetail({
+  page,
+  sourceShown = false,
+}: {
+  page: ActivityPage
+  /** The caller shows the Run's accepted source beside this detail, so it does not repeat it. */
+  sourceShown?: boolean
+}) {
   const detail = page.detail
   if (!detail) return null
   // An approval is always reviewed inside its Run; any other selected call leads with itself.
   if (detail.kind === 'invocation' && detail.request?.kind !== 'approval') {
-    return <InvocationDetailView page={page} detail={detail} />
+    return <InvocationDetailView page={page} detail={detail} sourceShown={sourceShown} />
   }
   const context =
     detail.kind === 'run' ? detail : detail.kind === 'invocation' ? detail.context : undefined
@@ -49,7 +64,7 @@ export function ActivityDetail({ page }: { page: ActivityPage }) {
     const operation = detail.kind === 'invocation' ? detail : null
     return <ExecutionDetail page={page} detail={context} operation={operation} />
   }
-  return <RecordDetail page={page} />
+  return <RecordDetail page={page} sourceShown={sourceShown} />
 }
 
 function ExecutionDetail({
@@ -181,9 +196,17 @@ function AcceptedSource({ detail }: { detail: RunDetail }) {
 }
 
 /** One exact call, leading with its own identity. Its Run, when retained, is context: the Run's
- * intent and outcome, its accepted source in Details, and its whole-run controls. Raw IDs and
- * the Run's own times stay out: the Run's panel holds them. */
-function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: InvocationDetail }) {
+ * intent and outcome, its accepted source in Details unless the split already shows it, and its
+ * whole-run controls. Raw IDs and the Run's own times stay out: the Run's panel holds them. */
+function InvocationDetailView({
+  page,
+  detail,
+  sourceShown,
+}: {
+  page: ActivityPage
+  detail: InvocationDetail
+  sourceShown: boolean
+}) {
   const { recordHref, revealHref, href } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const context = detail.context
@@ -317,14 +340,17 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
       )}
       {context && (
         <>
-          <Disclosure title="Details">
-            {context.submission && (
-              <Link to={recordHref(context.submission.name)} preventScrollReset>
-                Inspect original exec submission
-              </Link>
-            )}
-            <AcceptedSource detail={context} />
-          </Disclosure>
+          {/* Beside the split, the Run's source shows once, in its own pane. */}
+          {(context.submission || !sourceShown) && (
+            <Disclosure title="Details">
+              {context.submission && (
+                <Link to={recordHref(context.submission.name)} preventScrollReset>
+                  Inspect original exec submission
+                </Link>
+              )}
+              {!sourceShown && <AcceptedSource detail={context} />}
+            </Disclosure>
+          )}
           <div className={styles.endActions}>
             <Link
               to={revealHref({ ...detail.invocation, kind: 'invocation' }, { select: false })}
@@ -342,8 +368,8 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
 
 /** Records without a Run context. An approval always has one, so none is reviewed here.
  * A selected operation invocation leads with itself, so none is reviewed here either. */
-function RecordDetail({ page }: { page: ActivityPage }) {
-  const { recordHref } = useActivityNavigation(page)
+function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: boolean }) {
+  const { recordHref, revealHref } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const detail = page.detail
   const row = page.selectedRow
@@ -534,6 +560,12 @@ function RecordDetail({ page }: { page: ActivityPage }) {
       {detail.kind === 'output' && (
         <>
           <EventEvidence event={detail.event} recordHref={recordHref} />
+          {/* Inside its Run's split, an output leads back to history itself, as an operation does. */}
+          {sourceShown && row && (
+            <Link to={revealHref(row, { select: false })} preventScrollReset>
+              View in history
+            </Link>
+          )}
         </>
       )}
     </Panel>

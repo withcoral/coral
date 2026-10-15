@@ -91,6 +91,18 @@ export interface InvocationRow extends Omit<ExecutionRow, 'state'> {
   outcome: InvocationOutcome
   dispatchedAt: string | null
   waitingNanos: string
+  /** Where the author's code made this call; absent when Coral stored none. */
+  sourceLocation?: RecordSourceLocation
+}
+/**
+ * Where in its Run's accepted source the author's code made a record. Line and
+ * column start at 1; the column counts UTF-16 code units.
+ */
+export interface RecordSourceLocation {
+  /** The accepted program, or the linked snapshot of this Saved Function resource. */
+  document: { kind: 'program' } | { kind: 'saved_function'; savedFunction: string }
+  line: number
+  column: number
 }
 export interface ProgramError {
   name: string
@@ -235,6 +247,8 @@ export type ActivityRow = { position?: number } & (
       eventKind: string
       agent: string
       task?: string
+      /** Where the author's code emitted or logged it; absent when Coral stored none. */
+      sourceLocation?: RecordSourceLocation
     }
 )
 export interface ActivityBranch {
@@ -273,7 +287,13 @@ export interface ActivityPage {
         interaction: InteractionRow
         evidence: InteractionEvidence
       }
-    | { kind: 'output'; run: string; event: RunEvent }
+    | {
+        kind: 'output'
+        run: string
+        event: RunEvent
+        /** The containing Run's authorized source context, when the loader retained it. */
+        context?: RunDetail
+      }
     | RunDetail
     | InvocationDetail
     | null

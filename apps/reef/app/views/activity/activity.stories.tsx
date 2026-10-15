@@ -49,11 +49,20 @@ async function expectAlignedHeaders(dialog: HTMLElement) {
   }
 }
 
-/** Reading the evidence never scrolls the decision out of the drawer. The pinned header and
- * footer sit flush on the drawer's edges, whichever stylesheet loads first. */
-async function expectPinnedFooter(dialog: HTMLElement, names: string[]) {
-  const controls = names.map((name) => within(dialog).getByRole('button', { name }))
-  const header = dialog.querySelector('header')!
+/** The element that scrolls `pane`'s content: the drawer itself, or a split pane's viewport. */
+function scrollerIn(pane: HTMLElement) {
+  if (/auto|scroll/.test(getComputedStyle(pane).overflowY)) return pane
+  return [...pane.querySelectorAll<HTMLElement>('*')].find((element) =>
+    /auto|scroll/.test(getComputedStyle(element).overflowY),
+  )!
+}
+
+/** Reading the evidence never scrolls the decision out of its pane. The pinned header and
+ * footer stay flush with that pane's edges, whichever stylesheet loads first. */
+async function expectPinnedFooter(pane: HTMLElement, names: string[]) {
+  const dialog = scrollerIn(pane)
+  const controls = names.map((name) => within(pane).getByRole('button', { name }))
+  const header = pane.querySelector('header')!
   const footer = controls[0]!.closest('footer')!
   await waitFor(() => expect(dialog.scrollHeight).toBeGreaterThan(dialog.clientHeight * 2))
   const shown = () => {
@@ -1514,7 +1523,17 @@ export const PendingApproval: Story = {
     // The comment and the decision stay.
     await userEvent.click(within(dialog).getByText('Add a comment', { selector: 'summary' }))
     await expect(within(dialog).getByLabelText('Comment (optional)')).toBeVisible()
-    await expectPinnedFooter(dialog, ['Deny this call', 'Approve this call'])
+    // The Run's source shares the drawer, so the decision pins to the selected record's pane.
+    const selected = within(dialog).getByRole('region', { name: 'Selected record' })
+    await expectPinnedFooter(selected, ['Deny this call', 'Approve this call'])
+    await expect(within(dialog).getByRole('region', { name: 'Accepted source' })).toBeVisible()
+    // The review's own header holds the drawer's one close control; no Run header sits above it.
+    const close = within(dialog).getByRole('button', { name: 'Close details' })
+    await expect(within(selected).getAllByRole('button', { name: 'Close details' })).toEqual([
+      close,
+    ])
+    const header = within(selected).getByRole('heading', { name: 'mail.send' }).closest('header')
+    await expect(header).toContainElement(close)
   },
 }
 export const ResolvedApproval: Story = {
@@ -1654,10 +1673,10 @@ export const InvocationWithRunEvidence: Story = {
     await expect(failure).toHaveTextContent('program_execution_failed')
     await expect(drawer.getByRole('region', { name: 'Provider response' })).toBeVisible()
     await expect(drawer.getByText('program run: failed')).toBeVisible()
-    // The accepted source waits in a closed Details.
-    await expect(
-      drawer.getByText('Accepted program source', { selector: 'summary' }),
-    ).not.toBeVisible()
+    // The call leads; the Run's source shows in its own pane below, not repeated in Details.
+    await expect(drawer.queryByText('Accepted program source', { selector: 'summary' })).toBeNull()
+    const source = drawer.getByRole('region', { name: 'Accepted source' })
+    await expect(within(source).getByText('Accepted program source')).toBeVisible()
     await expect(drawer.getByText('Details', { selector: 'summary' })).toBeVisible()
   },
 }
