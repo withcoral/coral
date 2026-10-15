@@ -93,7 +93,7 @@ const MIXED_MCP: &str = r#"{
 }"#;
 
 #[tokio::test]
-async fn entries_and_hits_rebuilt_from_the_stored_generation_equal_the_catalogs_entries() {
+async fn hits_hydrate_the_fields_the_stored_generations_entries_index() {
     let (fixture, workspaces, providers) = test_modules().await;
     let owner =
         organization_user(fixture.database(), "user:entries", OrganizationRole::Owner).await;
@@ -141,7 +141,6 @@ async fn entries_and_hits_rebuilt_from_the_stored_generation_equal_the_catalogs_
     let loaded = crate::LoadedGenerations::default();
     let mut entries = Vec::new();
     for provider in [&cities, &mixed] {
-        let generation_id = active_generation(&providers, workspace.id(), provider).await;
         let mut transaction = providers.database.begin().await.unwrap();
         let stored = crate::prepare_active_generation_entries_in_transaction(
             &mut transaction,
@@ -151,27 +150,8 @@ async fn entries_and_hits_rebuilt_from_the_stored_generation_equal_the_catalogs_
         .await
         .expect("rebuild entries from the stored Generation")
         .expect("the Provider exists");
-        let input = coral_catalog::setup_input_in_transaction(&mut transaction, &generation_id)
-            .await
-            .unwrap();
         transaction.rollback().await.unwrap();
-        let coral_catalog::MaterializationOutcome::Ready(catalog) =
-            coral_catalog::materialize(providers.outbound_policy, &input, &[])
-        else {
-            panic!("the pinned input materializes again");
-        };
-        let prepared = crate::GenerationEntries::new(
-            provider,
-            generation_id,
-            crate::prepare_operation_entries(&catalog).expect("prepare from the catalog"),
-        );
-        assert_eq!(
-            prepared,
-            stored,
-            "both prepare paths agree for {}",
-            provider.access().namespace().as_str()
-        );
-        assert_hits_hydrate_their_indexed_fields(&providers, &prepared, &loaded).await;
+        assert_hits_hydrate_their_indexed_fields(&providers, &stored, &loaded).await;
         entries.push(stored);
     }
 
@@ -183,7 +163,7 @@ async fn entries_and_hits_rebuilt_from_the_stored_generation_equal_the_catalogs_
             .operations()
             .iter()
             .all(|operation| !operation.declaration_fields().is_empty()),
-        "the compared entries carry declaration fields"
+        "the entries carry declaration fields"
     );
     assert_eq!(
         mixed

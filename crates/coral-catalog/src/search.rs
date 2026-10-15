@@ -41,8 +41,9 @@ impl DeclarationIndexEntry {
 }
 
 /// A stored Generation's schema graph, ready to rebuild the declaration
-/// fields of any of its Operations by the current materialization rules: the
-/// same TypeScript projection and the same breadth-first walk.
+/// fields of any of its Operations by the current rules: the TypeScript
+/// projection materialization uses, then the breadth-first walk. Only Universal
+/// Search runs the walk, after the Generation is stored (ADR 0017).
 ///
 /// Loading and naming a large graph costs far more than one Operation's walk,
 /// so a caller that needs several Operations of one Generation keeps one of
@@ -65,7 +66,7 @@ impl StoredDeclarationFields {
     }
 
     /// Rebuilds the declaration fields of every structurally available
-    /// Operation.
+    /// Operation, each with the warnings its walk left.
     ///
     /// # Errors
     ///
@@ -75,7 +76,7 @@ impl StoredDeclarationFields {
     pub fn all(
         &self,
         operations: &[MaterializedOperation],
-    ) -> Result<BTreeMap<OperationKey, Vec<DeclarationIndexEntry>>, crate::Error> {
+    ) -> Result<BTreeMap<OperationKey, PreparedDeclarationFields>, crate::Error> {
         operations
             .iter()
             .filter(|operation| operation.availability() == crate::OperationAvailability::Available)
@@ -83,7 +84,8 @@ impl StoredDeclarationFields {
             .collect()
     }
 
-    /// Rebuilds one structurally available Operation's declaration fields.
+    /// Rebuilds one structurally available Operation's declaration fields and
+    /// the warnings its walk left.
     ///
     /// # Errors
     ///
@@ -92,7 +94,7 @@ impl StoredDeclarationFields {
     pub fn operation(
         &self,
         operation: &MaterializedOperation,
-    ) -> Result<Vec<DeclarationIndexEntry>, crate::Error> {
+    ) -> Result<PreparedDeclarationFields, crate::Error> {
         let graph = &self.graph;
         let input_declared = match operation.execution_binding() {
             ExecutionBinding::Http(binding) => crate::openapi::declares_input(
@@ -114,15 +116,12 @@ impl StoredDeclarationFields {
         };
         input_declared
             .map(|input_declared| {
-                // Any warning is already on the stored Operation; only the
-                // entries matter here.
                 prepare_operation_declaration_fields(
                     operation.execution_binding(),
                     operation.input_schema(),
                     input_declared,
                     graph,
                 )
-                .entries
             })
             .map_err(|_diagnostic| {
                 crate::Error::CorruptData(
@@ -140,9 +139,31 @@ struct EvidenceProjection {
 
 /// Declaration fields for one Operation, and the warnings the walk left:
 /// at most one for a schema it could not read and one for the field bound.
-pub(crate) struct PreparedDeclarationFields {
+/// The warnings concern search only; they never reach the Operation (ADR 0017).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedDeclarationFields {
     pub(crate) entries: Vec<DeclarationIndexEntry>,
-    pub(crate) diagnostics: Vec<CatalogDiagnostic>,
+    pub(crate) warnings: Vec<CatalogDiagnostic>,
+}
+
+impl PreparedDeclarationFields {
+    /// Returns the readable declaration paths with the values the schema lists.
+    #[must_use]
+    pub fn entries(&self) -> &[DeclarationIndexEntry] {
+        &self.entries
+    }
+
+    /// Returns the warnings the walk left.
+    #[must_use]
+    pub fn warnings(&self) -> &[CatalogDiagnostic] {
+        &self.warnings
+    }
+
+    /// Returns the fields without the warnings.
+    #[must_use]
+    pub fn into_entries(self) -> Vec<DeclarationIndexEntry> {
+        self.entries
+    }
 }
 
 /// Indexes an Operation's input and output declarations breadth-first.
@@ -159,12 +180,12 @@ pub(crate) fn prepare_operation_declaration_fields(
     graph: &SchemaGraph,
 ) -> PreparedDeclarationFields {
     let mut walk = DeclarationWalk::new(graph);
-    let mut diagnostics = Vec::new();
+    let mut warnings = Vec::new();
     if let Err(unreadable) = walk_declarations(&mut walk, binding, input_schema, input_declared) {
-        diagnostics.push(unreadable);
+        warnings.push(unreadable);
     }
     if walk.omitted {
-        diagnostics.push(truncation_warning());
+        warnings.push(truncation_warning());
     }
     let entries = walk
         .fields
@@ -174,10 +195,7 @@ pub(crate) fn prepare_operation_declaration_fields(
             DeclarationIndexEntry::new(path, text)
         })
         .collect();
-    PreparedDeclarationFields {
-        entries,
-        diagnostics,
-    }
+    PreparedDeclarationFields { entries, warnings }
 }
 
 /// Walks every root of the Operation. `Err` carries the warning for a schema
@@ -708,8 +726,8 @@ mod tests {
         assert_eq!(paths.len(), MAX_SEARCH_FIELDS);
         assert!(paths.contains("input.deep"));
         assert!(paths.contains("input.shallow"));
-        assert_eq!(prepared.diagnostics.len(), 1);
-        let warning = prepared.diagnostics.first().expect("one warning");
+        assert_eq!(prepared.warnings.len(), 1);
+        let warning = prepared.warnings.first().expect("one warning");
         assert_eq!(warning.code(), "operation_search_material_truncated");
         assert_eq!(
             warning.severity(),
@@ -744,7 +762,7 @@ mod tests {
         );
 
         assert!(indexed_paths(&prepared.entries).contains("result.data.structuredContent.name"));
-        assert!(!prepared.diagnostics.is_empty());
+        assert!(!prepared.warnings.is_empty());
     }
 
     #[test]
@@ -800,7 +818,7 @@ mod tests {
 
         // The root, its ten properties, and its open index signature.
         assert_eq!(prepared.entries.len(), 12);
-        assert!(prepared.diagnostics.is_empty());
+        assert!(prepared.warnings.is_empty());
     }
 
     #[test]
@@ -826,6 +844,6 @@ mod tests {
             .find(|field| field.path().as_str() == "input")
             .expect("the root field is indexed");
         assert!(field.text().len() > 256 * 1024);
-        assert!(prepared.diagnostics.is_empty());
+        assert!(prepared.warnings.is_empty());
     }
 }

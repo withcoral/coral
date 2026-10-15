@@ -3063,8 +3063,17 @@ fn summaries_bearing_nonwhitespace_control_characters_fall_back_to_the_method_an
 }
 
 #[test]
-fn oversized_search_material_warns_without_blocking_the_catalog() {
-    let properties = (0..8_300)
+fn search_material_never_reaches_the_catalog() {
+    // Universal Search prepares its own material after the commit (ADR 0017):
+    // an Operation past the field bound, or with one field over the former
+    // 256 KiB bound, is Available and carries no search diagnostic.
+    let ok = |schema: Value| {
+        serde_json::json!({"200": {
+            "description": "ok",
+            "content": {"application/json": {"schema": schema}},
+        }})
+    };
+    let wide = (0..8_300)
         .map(|index| {
             (
                 format!("f{index:04}"),
@@ -3072,95 +3081,48 @@ fn oversized_search_material_warns_without_blocking_the_catalog() {
             )
         })
         .collect::<serde_json::Map<_, _>>();
-    let ok = |schema: Value| {
-        serde_json::json!({"200": {
-            "description": "ok",
-            "content": {"application/json": {"schema": schema}},
-        }})
-    };
-    let document = serde_json::json!({
-        "openapi": "3.1.0",
-        "info": {"title": "Oversized search material", "version": "1"},
-        "servers": [{"url": "https://api.example.test"}],
-        "security": [],
-        "paths": {
-            "/wide": {"get": {
-                "operationId": "wide",
-                "responses": ok(serde_json::json!({"type": "object", "properties": properties})),
-            }},
-            "/small": {"get": {
-                "operationId": "small",
-                "responses": ok(serde_json::json!({"type": "string"})),
-            }},
-        },
-    })
-    .to_string();
+    // The examples stay out of the TypeScript declaration, so only the search
+    // material is large.
+    let long = "x".repeat(300 * 1024);
+    for (case, schema) in [
+        (
+            "over the field bound",
+            serde_json::json!({"type": "object", "properties": wide}),
+        ),
+        (
+            "one field over 256 KiB",
+            serde_json::json!({"type": "string", "examples": [long]}),
+        ),
+    ] {
+        let document = serde_json::json!({
+            "openapi": "3.1.0",
+            "info": {"title": "Large search material", "version": "1"},
+            "servers": [{"url": "https://api.example.test"}],
+            "security": [],
+            "paths": {"/large": {"get": {"operationId": "large", "responses": ok(schema)}}},
+        })
+        .to_string();
 
-    let prepared = ready(&document);
+        let prepared = ready(&document);
 
-    assert_eq!(prepared.operations().len(), 2);
-    assert!(
-        prepared
-            .operations()
-            .iter()
-            .all(|operation| operation.availability() == OperationAvailability::Available)
-    );
-    let wide = prepared
-        .operations()
-        .iter()
-        .find(|operation| operation.key().as_str() == "wide")
-        .expect("oversized Operation");
-    assert_eq!(
-        wide.diagnostics()
-            .iter()
-            .map(coral_catalog::CatalogDiagnostic::code)
-            .collect::<Vec<_>>(),
-        ["operation_search_material_truncated"]
-    );
-}
-
-#[test]
-fn oversized_search_field_keeps_the_operation_available() {
-    // One field over the former 256 KiB search bound. The examples stay out
-    // of the TypeScript declaration, so only the search material is large.
-    let example = "x".repeat(300 * 1024);
-    let document = serde_json::json!({
-        "openapi": "3.1.0",
-        "info": {"title": "Oversized search field", "version": "1"},
-        "servers": [{"url": "https://api.example.test"}],
-        "security": [],
-        "paths": {
-            "/long": {"get": {
-                "operationId": "long",
-                "responses": {"200": {
-                    "description": "ok",
-                    "content": {"application/json": {"schema": {
-                        "type": "string",
-                        "examples": [example],
-                    }}},
-                }},
-            }},
-        },
-    })
-    .to_string();
-
-    let prepared = ready(&document);
-
-    let long = prepared
-        .operations()
-        .iter()
-        .find(|operation| operation.key().as_str() == "long")
-        .expect("the Operation is cataloged");
-    assert_eq!(long.availability(), OperationAvailability::Available);
-    assert!(long.diagnostics().is_empty());
-    let fields = prepared
-        .declaration_fields()
-        .get(long.key())
-        .expect("the Operation has declaration fields");
-    assert!(
-        fields.iter().any(|field| field.text().len() > 256 * 1024),
-        "the oversized field is indexed whole"
-    );
+        let [operation] = prepared.operations() else {
+            panic!("{case}: one Operation");
+        };
+        assert_eq!(
+            operation.availability(),
+            OperationAvailability::Available,
+            "{case}"
+        );
+        assert_eq!(
+            operation
+                .diagnostics()
+                .iter()
+                .map(coral_catalog::CatalogDiagnostic::code)
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new(),
+            "{case}"
+        );
+    }
 }
 
 #[test]

@@ -83,16 +83,23 @@ impl SearchIndex {
         }
     }
 
-    /// A Generation became its Provider's active Generation: writes the
-    /// Generation's rows and its `complete` state row in one transaction.
-    /// Writing an indexed Generation again rewrites its rows. A failed
-    /// attempt rolls back and leaves a `failed` state row.
-    pub fn index_generation(&self, entries: Arc<GenerationEntries>) {
-        let index = self.clone();
-        self.spawn(async move {
-            let _write = index.writes.lock().await;
-            index.write_generation(&entries).await;
-        });
+    /// A Generation became its Provider's active Generation: prepares its
+    /// entries from what the catalog stores, then writes the Generation's rows
+    /// and its `complete` state row in one transaction. The committing
+    /// workflow sends ids alone and never waits for the preparation (ADR
+    /// 0017). Writing an indexed Generation again rewrites its rows. A failed
+    /// write rolls back and leaves a `failed` state row; a failed preparation
+    /// is logged, and the reconcile task indexes the Generation instead.
+    ///
+    /// A Generation that another publication replaced before the write runs
+    /// is skipped: the replacing publication's notification indexes its own.
+    pub fn index_generation(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: ProviderId,
+        generation_id: ProviderGenerationId,
+    ) {
+        self.index_stored_generation(workspace_id, provider_id, Some(generation_id));
     }
 
     /// A Provider was renamed: prepares its active Generation's entries from
@@ -101,6 +108,17 @@ impl SearchIndex {
     /// failed rebuild is logged, and the reconcile task re-indexes a Provider
     /// whose name differs from the indexed one.
     pub fn index_active_generation(&self, workspace_id: WorkspaceId, provider_id: ProviderId) {
+        self.index_stored_generation(workspace_id, provider_id, None);
+    }
+
+    /// Prepares the Provider's active Generation from what the catalog stores
+    /// and writes it, when it is still `expected`, if one is named.
+    fn index_stored_generation(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: ProviderId,
+        expected: Option<ProviderGenerationId>,
+    ) {
         let index = self.clone();
         self.spawn(async move {
             let _write = index.writes.lock().await;
@@ -108,17 +126,24 @@ impl SearchIndex {
                 .prepare_stored_generation(&workspace_id, &provider_id)
                 .await
             {
-                Ok(Some(entries)) => index.write_generation(&entries).await,
-                // The Provider was deleted after the rename; its removal
-                // notification removes its rows.
-                Ok(None) => {}
+                Ok(Some(entries))
+                    if expected
+                        .as_ref()
+                        .is_none_or(|expected| expected == entries.generation_id()) =>
+                {
+                    index.write_generation(&entries).await;
+                }
+                // The Provider was deleted, or a later publication replaced
+                // the Generation; that change's own notification follows.
+                Ok(_) => {}
                 Err(error) => {
                     // TODO: an error monitor for failed index writes is still to be set up.
                     tracing::error!(
                         workspace_id = %workspace_id,
                         provider_id = %provider_id,
+                        generation_id = expected.as_ref().map(tracing::field::display),
                         error = %error,
-                        "failed to prepare a renamed Provider's Generation for the search index"
+                        "failed to prepare a Provider Generation for the search index"
                     );
                 }
             }
@@ -231,11 +256,26 @@ impl SearchIndex {
         self
     }
 
-    /// Writes one Generation's entries. A failure is logged and recorded.
-    /// The caller holds the mutex.
-    async fn write_generation(&self, entries: &GenerationEntries) {
+    /// Writes one Generation's entries, then logs each search warning their
+    /// preparation left. A failure is logged and recorded. The caller holds
+    /// the mutex.
+    pub(crate) async fn write_generation(&self, entries: &GenerationEntries) {
         if let Err(error) = self.write(&OperationIndexer, entries).await {
             self.fail_generation(entries.into(), &error).await;
+            return;
+        }
+        for operation in entries.operations() {
+            for warning in operation.search_warnings() {
+                tracing::warn!(
+                    workspace_id = %entries.workspace_id(),
+                    provider_id = %entries.provider_id(),
+                    generation_id = %entries.generation_id(),
+                    operation_key = %operation.key().as_str(),
+                    code = %warning.code(),
+                    "{}",
+                    warning.message()
+                );
+            }
         }
     }
 

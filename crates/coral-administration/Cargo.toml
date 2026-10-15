@@ -16,7 +16,6 @@ coral-provider.workspace = true
 coral-functions.workspace = true
 coral-search.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 coral-policy.workspace = true

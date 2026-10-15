@@ -6,7 +6,6 @@ use serde_json::{Map, Value};
 use crate::mcp::projection::{fallback_typescript, project_mcp_typescript, typescript_names};
 use crate::paths::assign_operation_paths;
 use crate::schema::{SchemaGraphAccumulator, canonicalize};
-use crate::search::prepare_operation_declaration_fields;
 use crate::{
     CatalogDiagnostic, MaterializationOutcome, MaterializedOperation, McpDiscoverySnapshot,
     McpExecutionBinding, McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
@@ -170,7 +169,6 @@ fn build_mcp(
         )
     })?;
     let mut operations = Vec::with_capacity(builds.len());
-    let mut declaration_fields = BTreeMap::new();
     let type_names = typescript_names(&schema_graph);
     for mut build in builds {
         if let Some(configuration) = input.configuration() {
@@ -182,7 +180,7 @@ fn build_mcp(
             .binding
             .set_credential_contract(credential_contract.clone());
         let reads_resource = build.binding.invocation_method() == McpInvocationMethod::ReadResource;
-        let (declaration, input_declared) = match project_mcp_typescript(
+        let declaration = match project_mcp_typescript(
             &build.relative_path,
             &build.input_schema,
             build.output_schema.as_ref(),
@@ -192,11 +190,11 @@ fn build_mcp(
         ) {
             Ok(projection) => {
                 build.diagnostics.extend(projection.diagnostics);
-                (projection.declaration, projection.input_declared)
+                projection.declaration
             }
             Err(diagnostic) => {
                 build.diagnostics.push(diagnostic);
-                (fallback_typescript(&build.relative_path)?, true)
+                fallback_typescript(&build.relative_path)?
             }
         };
         if !crate::types::operation_description_fits(
@@ -209,20 +207,6 @@ fn build_mcp(
                 "operation_authoring_description_too_large",
                 "the complete Operation Authoring Description exceeds the discovery limit",
             ));
-        }
-        if !build
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity() == crate::CatalogDiagnosticSeverity::Error)
-        {
-            let prepared = prepare_operation_declaration_fields(
-                &crate::ExecutionBinding::Mcp(build.binding.clone()),
-                &build.input_schema,
-                input_declared,
-                &schema_graph,
-            );
-            build.diagnostics.extend(prepared.diagnostics);
-            declaration_fields.insert(build.key.clone(), prepared.entries);
         }
         let binding_json = build.binding.to_storage_json().map_err(|_error| {
             diagnostic(
@@ -253,13 +237,8 @@ fn build_mcp(
         ));
     }
     operations.sort_by(|left, right| left.key().cmp(right.key()));
-    let catalog = PreparedProviderCatalog::new(
-        display_name,
-        schema_graph,
-        schema_graph_json,
-        operations,
-        declaration_fields,
-    );
+    let catalog =
+        PreparedProviderCatalog::new(display_name, schema_graph, schema_graph_json, operations);
     let Some(configuration) = input.configuration() else {
         return Ok(catalog);
     };

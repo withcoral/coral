@@ -1276,7 +1276,6 @@ pub struct PreparedProviderCatalog {
     schema_graph_json: String,
     typescript_view: String,
     operations: Vec<MaterializedOperation>,
-    declaration_fields: BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>>,
     configuration_json: Option<String>,
 }
 
@@ -1292,7 +1291,6 @@ impl PreparedProviderCatalog {
         schema_graph: SchemaGraph,
         schema_graph_json: String,
         operations: Vec<MaterializedOperation>,
-        declaration_fields: BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>>,
     ) -> Self {
         let typescript_view = operations
             .iter()
@@ -1308,7 +1306,6 @@ impl PreparedProviderCatalog {
             schema_graph_json,
             typescript_view,
             operations,
-            declaration_fields,
             configuration_json: None,
         }
     }
@@ -1406,15 +1403,6 @@ impl PreparedProviderCatalog {
     #[must_use]
     pub fn operations(&self) -> &[MaterializedOperation] {
         &self.operations
-    }
-
-    /// Returns the declaration fields prepared for each structurally available
-    /// Operation: its readable declaration paths with the values the schema lists.
-    #[must_use]
-    pub const fn declaration_fields(
-        &self,
-    ) -> &BTreeMap<OperationKey, Vec<crate::DeclarationIndexEntry>> {
-        &self.declaration_fields
     }
 
     /// Returns current path assignments for regeneration carry-forward.

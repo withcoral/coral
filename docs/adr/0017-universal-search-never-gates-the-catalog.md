@@ -32,9 +32,10 @@ for it, and the preview drops the result. On Microsoft Graph that is about 13 s 
 
 - Done with this record: `prepare_operation_declaration_fields` cannot fail. It truncates breadth-first at the field
   bound and warns, and a schema it cannot read stops it with a warning.
-- #2463 carries out the rest: the walk leaves `materialize`, search prepares its entries from the stored Generation
-  after the commit, and bounds on search material move to coral-search, where they bound the index and never the
-  catalog. Until then the field and depth bounds stay in coral-catalog as warnings.
+- Done in #2463: the walk leaves `materialize`, and search prepares its entries from the stored Generation after the
+  commit. The walk and its field and depth bounds stay in coral-catalog, which owns the schema projection, but only
+  search runs them, so they bound the index and never the catalog. Their warnings leave the Operation; the index logs
+  them when it writes the Generation, and #2440 decides how Reef shows them.
 - The Setup preview then shows availability from structural diagnostics only. Search coverage is reported after
   indexing.
 - Rejected: keeping the walk in Publication so the index activates atomically with the Generation. The reconcile task
