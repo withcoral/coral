@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use coral_db::Database;
 use coral_provider::{
-    ActivatedGeneration, Error, MaterializedPublication, PreparedPublication, Provider,
-    ProviderDisplayName, ProviderId, ProviderModule, ProviderPublication,
-    ProviderRegenerationPublication, ProviderRegenerationRequest, PublicationEvidence, Published,
+    Error, MaterializedPublication, PreparedPublication, Provider, ProviderDisplayName, ProviderId,
+    ProviderModule, ProviderPublication, ProviderRegenerationPublication,
+    ProviderRegenerationRequest, PublicationEvidence, Published,
     WorkspaceProviderPublicationRequest,
 };
 use coral_search::SearchIndex;
@@ -147,21 +147,17 @@ impl ProviderWorkflow {
         // A replay, a reuse of the active Generation, or a failed outcome
         // changed nothing to index.
         if let PublicationEvidence::Activated(activated) = evidence {
-            self.index_activated(&activated);
+            // Search prepares the Generation's entries from storage, so
+            // publication never waits for them (ADR 0017).
+            self.search.index_generation(
+                activated.workspace().clone(),
+                activated.provider().clone(),
+                activated.generation().clone(),
+            );
+            if let Some(replaced) = activated.replaced() {
+                self.search.remove_generation(replaced.clone());
+            }
         }
         Ok(publication)
-    }
-
-    /// Tells search after the commit. Search prepares the Generation's entries
-    /// from storage, so publication never waits for them (ADR 0017).
-    fn index_activated(&self, activated: &ActivatedGeneration) {
-        self.search.index_generation(
-            activated.workspace().clone(),
-            activated.provider().clone(),
-            activated.generation().clone(),
-        );
-        if let Some(replaced) = activated.replaced() {
-            self.search.remove_generation(replaced.clone());
-        }
     }
 }

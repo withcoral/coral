@@ -321,21 +321,9 @@ async fn postgres_step_two_splits_indexed_names_and_restates_lengths_and_statist
 
     // Index the Generation again: the indexer writes lengths and statistics
     // for the new vectors by its own rules.
-    let mut transaction = database.begin_read_snapshot().await.unwrap();
-    let entries = coral_provider::prepare_active_generation_entries_in_transaction(
-        &mut transaction,
-        &workspace,
-        &provider,
-    )
-    .await
-    .unwrap()
-    .expect("active Generation");
-    transaction.rollback().await.unwrap();
-    modules.index.index_generation(
-        workspace.clone(),
-        provider.clone(),
-        entries.generation_id().clone(),
-    );
+    modules
+        .index
+        .index_active_generation(workspace.clone(), provider.clone());
     modules.index.settled().await;
     assert_eq!(
         Statistics::read(&database, &workspace).await,
