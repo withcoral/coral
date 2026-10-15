@@ -587,7 +587,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "coral"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "coral-administration"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "coral-catalog",
  "coral-credentials",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "coral-catalog"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "coral-db",
  "coral-outbound",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "coral-credentials"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64 0.23.1",
  "ring",
@@ -734,7 +734,7 @@ dependencies = [
 
 [[package]]
 name = "coral-db"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "coral-test-support",
  "sea-query",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "coral-functions"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "coral-catalog",
  "coral-db",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "coral-grpc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -842,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "coral-outbound"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "reqwest",
  "tokio",
@@ -853,7 +853,7 @@ dependencies = [
 
 [[package]]
 name = "coral-policy"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "coral-catalog",
  "coral-db",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "coral-provider"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -906,7 +906,7 @@ dependencies = [
 
 [[package]]
 name = "coral-run"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "coral-search"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "coral-task"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "coral-administration",
  "coral-catalog",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "coral-telemetry"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "coral-test-support"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "coral-credentials",
  "coral-db",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "coral-upstream"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64 0.23.1",
  "coral-catalog",
@@ -1050,7 +1050,7 @@ dependencies = [
 
 [[package]]
 name = "coral-v8"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "coral-value",
  "deno_core_icudata",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "coral-value"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64 0.23.1",
  "mime",
@@ -1074,7 +1074,7 @@ dependencies = [
 
 [[package]]
 name = "coral-workspace"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64 0.23.1",
  "coral-db",
@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
