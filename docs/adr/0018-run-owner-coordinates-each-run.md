@@ -71,13 +71,24 @@ lock without a write fence is the shape the evidence rejects.
   subscribes only while an Invocation is parked on a connection request and, per coalesced wake after a 1 s gap, reads
   just its own pending requests. A 15 s periodic snapshot precheck per owner with parked Invocations is the ceiling for
   everything else and replaces the 5 s poll and the 30 s held recheck. A wake-up is a hint, never evidence.
-- **Recovery**. At boot, before any listener binds, Coral
-  recreates one owner per `running` Run with passed timers queued in deadline order, then "finish the recorded
-  termination" or "interrupt"; it takes over every claim because every holder is known dead; each owner writes one chunk
-  and retires. Coral never resumes a Run. An owner task that ends without retiring while the process lives (a panic
-  unwinds; nothing aborts the process) is caught by its supervisor through the task's join handle, which takes over the
-  claim and writes the same one-chunk interruption, so a Run never waits for a restart to end. Graceful shutdown sends
-  interrupt to every live owner and waits a bounded grace. No sweeper.
+- **Recovery**. The worker lease is ownership: a Run belongs to the process whose owner holds its live lease, and no
+  process touches a Run with a live lease it does not hold. An expired-lease sweep recovers the rest: every `running`
+  Run whose lease has lapsed or was never taken and that has no local owner gets an owner with passed timers queued in
+  deadline order, then "finish the recorded termination" or "interrupt"; that owner writes one chunk and retires. The
+  sweep runs first at boot, before any listener binds, and then every half lease for the life of the process, so a Run
+  whose process died ends within one lease and one sweep. Coral never resumes a Run. A local owner whose lease lapsed
+  is not swept: it continues when its next commit shows a matching claim, and a takeover by another process reaches it
+  as a claim mismatch. An owner task that ends without retiring while the process lives (a panic unwinds; nothing
+  aborts the process) is caught by its supervisor through the task's join handle, which takes over the claim and writes
+  the same one-chunk interruption.
+- **Rollout**. A deploy may run one hot process and one cold process until the routing flip, with no routing drain.
+  The cold process's boot sweep leaves the hot process's Runs alone. On shutdown the hot process reports not ready,
+  refuses new Runs, and waits the **Shutdown Drain** (bootstrap-configured) for its live Runs to finish on their own;
+  at the end of the drain it sends interrupt to every owner still live and waits a bounded grace for their commits.
+  Whatever does not commit keeps its lease and the cold process's sweep ends it after expiry. A Run Request that
+  reaches a process with no local owner for a nonterminal Run is answered `OwnedElsewhere`, a retryable answer, until
+  the Run is terminal; then it is answered from the durable record. Reads are unaffected: they read Recorded state.
+  Concurrent processes in regular operation are out of scope.
 - **Pool**. One pool, no connection classes, no reserved
   capacity. A Run holds at most one connection at a time, for one chunk commit.
 
@@ -105,7 +116,9 @@ lock without a write fence is the shape the evidence rejects.
   under READ COMMITTED, so the write predicate was the blocker, not version coverage. No new version columns.
 - A separate fence transaction, an overlap fence beside the chunk commit, and decryption inside the fence.
 - Lazy admission and an admitted-count cap. Approximate output accounting with bounded overshoot.
-- Resuming a Run after restart, a lazy on-read recovery rule, waiting for lease expiry before takeover.
+- Resuming a Run after restart; a lazy on-read recovery rule; taking over a live lease at boot (the cold process
+  would interrupt the hot process's Runs); stop-before-start as a deployment requirement; takeover on demand, where
+  the process that receives a request steals the Run's claim (a decision would interrupt instead of decide).
 - A scope-keyed change subscription demultiplexed in `coral-db`: the upgrade path if the harness shows the
   content-free signal ringing too often; the owner's contract would not change.
 - Connection classes, a second pool, or reserved permits.
@@ -127,12 +140,16 @@ lock without a write fence is the shape the evidence rejects.
 - **Measurement before and after.** The load harness (PR #2392) is the comparison tool: the admission burst, `begin`
   and readiness during the burst, admit p95 and the lock-wait ceiling should move; the emit-to-visible numbers from
   the cadence spike must hold behind `RunModule` with V8, the fence and the probes.
-- **Stop-before-start deployment is required.** Boot takeover treats every claim as dead, so one Coral process runs
-  against a database at a time: a rollout stops the old process, waits for its shutdown grace, then starts the new one.
-  An overlapping rollout would interrupt the old process's Runs at the new process's boot and leave the Runs it
-  accepted after that boot with no owner until the next restart. The hosted deployment and the self-host guides must
-  say so before boot recovery ships. Multi-process Coral lifts the rule with the holder-instance column of contract
-  line 8.
+- **Rolling updates are supported; scale-out is not.** A rollout must not crash or lose information; it may degrade.
+  What degrades: a Run that does not finish within the Shutdown Drain ends `interrupted` at the hot process's
+  shutdown; a cancel or decision for such a Run that reaches the cold process answers retry until the Run is terminal,
+  so a Run waiting on a human during the drain ends interrupted unless the decision reaches the hot process; a Run
+  whose process crashed takes up to one lease and one sweep to end. The orchestrator's termination grace must exceed
+  the Shutdown Drain plus the commit grace, and the hosted deployment and the self-host guides say so.
+- **Migrations are expand-only across one release.** The cold process migrates at boot while the hot process still
+  serves, so a migration must keep the previous release's queries valid: add columns and tables, keep constraints the
+  old code satisfies, and drop in a later release. The Run Ledger head is added beside `next_event_sequence`, which
+  stays written at acceptance until the release after the one that stops reading it.
 - **Every observable commit notifies.** On Postgres each chunk commit calls `pg_notify` and holds the notify lock
   through commit, as every Event write does today; chunking reduces the count, and the fence slice measures what
   remains beside the `FOR SHARE` delta.

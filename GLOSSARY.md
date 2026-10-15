@@ -685,9 +685,9 @@ alone appends Program Run Events and the Run-scoped records they describe. It de
 record durable; it does not call upstream or handle credential material, which the Operation Invocations it starts do
 outside it. A requester outside the Run acts on an outcome only once its Run Request is Recorded; the Program may
 continue on an Applied one. A repeat of the same Run Request receives the recorded answer. Workspace- and
-Provider-scoped changes reach it only as wake-ups. After a restart Coral recreates the Run Owner of every Run that is
-not terminal; it records any deadline that passed, then the interruption or the termination already decided, and
-retires. Coral never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
+Provider-scoped changes reach it only as wake-ups. When a Run's worker lease lapses and no process owns it, Coral
+recreates its Run Owner; it records any deadline that passed, then the interruption or the termination already decided,
+and retires. Coral never resumes a Run. _Avoid_: Run actor, claim holder, lock holder, sweeper, external writer
 
 **Run Ledger**: The durable record of one Coral Program Run that its Run Owner appends to in chunks: the Program Run
 Events, the Run-scoped records they describe, and the Run's head. Every chunk advances the head by one and commits only
