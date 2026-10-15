@@ -334,6 +334,20 @@ pub(crate) async fn join_as_owner(
         .expect("assign the Organization Owner as a designated Owner");
 }
 
+/// Reads a Setup as stored, for a test that checks what a refusal or a removal
+/// left behind. A Setup answers only the User who started it, and these tests
+/// look at one after that User lost authority.
+pub(crate) async fn stored_setup(
+    database: &Database,
+    workspace: &WorkspaceId,
+    setup: &crate::ProviderSetupId,
+) -> crate::repository::LoadedSetup {
+    crate::repository::setup(database, workspace, setup)
+        .await
+        .expect("read the Setup")
+        .expect("the Setup exists")
+}
+
 /// Holds the first Publication that reaches `point` for good. The test then
 /// cancels it, as a crash or a lost connection would.
 pub(crate) struct HoldForever {

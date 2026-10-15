@@ -525,10 +525,9 @@ async fn creation_rechecks_owner_demotion_after_materialization() {
         Err(Error::ProviderPublicationNotFound)
     ));
     assert_eq!(
-        providers
-            .get_setup(&administrator, workspace.id(), setup.id())
+        crate::tests::stored_setup(&providers.database, workspace.id(), setup.id())
             .await
-            .unwrap()
+            .setup
             .state(),
         ProviderSetupState::Ready
     );

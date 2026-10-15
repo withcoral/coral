@@ -183,10 +183,9 @@ async fn rejected_regeneration(change: InterveningChange) {
         Err(Error::ProviderPublicationNotFound)
     ));
     assert_eq!(
-        providers
-            .get_setup(&inspector, &fixture.workspace_id, setup.id())
+        crate::tests::stored_setup(&providers.database, &fixture.workspace_id, setup.id())
             .await
-            .unwrap()
+            .setup
             .state(),
         ProviderSetupState::Ready
     );

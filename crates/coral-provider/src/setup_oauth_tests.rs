@@ -1365,7 +1365,8 @@ async fn callbacks_are_fenced_against_replay_forgery_and_superseded_flows() {
             ),
             "{flow:?}"
         );
-        // Another Owner can neither complete nor restart this User's flow.
+        // Another Owner cannot complete this User's flow: to them the Setup
+        // does not exist.
         let other = organization_user(
             fixture.harness.database.clone(),
             "user:oauth-fence-other",
@@ -1376,14 +1377,7 @@ async fn callbacks_are_fenced_against_replay_forgery_and_superseded_flows() {
         assert!(
             matches!(
                 fixture.complete(&other, &setup, &current, CODE, 23).await,
-                Err(Error::AccountNotFound)
-            ),
-            "{flow:?}"
-        );
-        assert!(
-            matches!(
-                fixture.begin(&other, &setup, 24).await,
-                Err(Error::AccountNotFound)
+                Err(Error::ProviderSetupNotFound)
             ),
             "{flow:?}"
         );

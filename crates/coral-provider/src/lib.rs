@@ -362,8 +362,9 @@ impl ProviderModule {
     ///
     /// # Errors
     ///
-    /// Requires current Workspace Owner authority. An absent Setup or a
-    /// Setup from another Workspace returns [`Error::ProviderSetupNotFound`].
+    /// Requires current Workspace Owner authority. An absent Setup, a Setup
+    /// from another Workspace, or one another User started returns
+    /// [`Error::ProviderSetupNotFound`].
     pub async fn get_setup(
         &self,
         actor: &AuthenticatedUser,
@@ -371,10 +372,9 @@ impl ProviderModule {
         setup_id: &ProviderSetupId,
     ) -> Result<ProviderSetup, Error> {
         self.require_owner_inspection(actor, workspace_id).await?;
-        repository::setup(self.database.as_ref(), &workspace_id.clone(), setup_id)
-            .await?
+        started_setup(self.database.as_ref(), actor, workspace_id, setup_id)
+            .await
             .map(|loaded| loaded.setup)
-            .ok_or(Error::ProviderSetupNotFound)
     }
 
     /// Inspects one Operation in a Provider's current Materialized Catalog.
@@ -582,6 +582,22 @@ impl ProviderModule {
         require_owner(&evidence)?;
         Ok(evidence)
     }
+}
+
+/// Loads a Setup for the User acting on it. Only the User who started a Setup
+/// acts on it, so its id, which a Reef link may carry, authorizes nobody else.
+/// To anyone else the Setup does not exist. Coral's own clean-ups, which end
+/// Setups on their starters' behalf, read the Setup directly.
+pub(crate) async fn started_setup(
+    executor: impl coral_db::QueryExecutor,
+    actor: &AuthenticatedUser,
+    owner: &WorkspaceId,
+    id: &ProviderSetupId,
+) -> Result<repository::LoadedSetup, Error> {
+    repository::setup(executor, owner, id)
+        .await?
+        .filter(|loaded| loaded.actor_user_id.as_ref() == Some(actor.user_id()))
+        .ok_or(Error::ProviderSetupNotFound)
 }
 
 /// A Setup feeds Publication only while it is ready; consumption and every
