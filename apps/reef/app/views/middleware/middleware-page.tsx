@@ -5,7 +5,8 @@ import { Switch } from '@/wax/components/inputs/switch/switch'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import { EmptyPage } from '@/components/empty-page'
 import { ConfirmAction } from '@/views/management/forms'
-import { ArchivedBanner, ManagementLayout, PageIntro, trail } from '@/views/management/layout'
+import { ArchivedBanner, PageIntro, trail } from '@/views/management/layout'
+import { PageLayout } from '@/wax/components/page-layout'
 import type { ActionResult, FormContext, WorkspaceView } from '@/views/management/types'
 import type { MiddlewareScopesView, MiddlewareView } from './types'
 import * as styles from './middleware.css'
@@ -62,7 +63,9 @@ export function MiddlewarePage({
     )
   }
   return (
-    <ManagementLayout breadcrumbs={trail([], 'Middleware')}>
+    // The table takes the full content width: its scope and control columns stay
+    // readable beside long descriptions.
+    <PageLayout variant="wide" breadcrumbs={trail([], 'Middleware')}>
       <PageIntro>
         <Typography.Body as="p">
           Choose what each middleware wraps: executions, function calls, or operations. The top row
@@ -170,6 +173,6 @@ export function MiddlewarePage({
         </Table.Container>
       )}
       {children}
-    </ManagementLayout>
+    </PageLayout>
   )
 }
