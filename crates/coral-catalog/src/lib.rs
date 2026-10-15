@@ -15,7 +15,8 @@
 mod binding;
 mod builtin;
 pub use builtin::{
-    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinCatalog, BuiltinExecutionBinding, BuiltinOperation,
+    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinExecutionBinding,
+    BuiltinOperation,
 };
 mod configuration;
 pub use configuration::{
@@ -257,7 +258,7 @@ pub async fn publish_builtin_generation_in_transaction(
     repository::publish_generation(
         transaction,
         repository::GenerationInput::Builtin(identity),
-        &ProviderSetupInputDigest::of_bytes(identity.as_bytes()),
+        &ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes()),
         catalog.prepared(),
         builtin::MATERIALIZER_VERSION,
         created_at_unix_nanos,
@@ -277,7 +278,7 @@ pub async fn builtin_generation_pins_in_transaction(
     catalog: &BuiltinCatalog,
     generation_id: &ProviderGenerationId,
 ) -> Result<bool, Error> {
-    Ok(repository::load_builtin_identity(transaction, generation_id).await? == catalog.identity())
+    Ok(&repository::load_builtin_identity(transaction, generation_id).await? == catalog.identity())
 }
 
 /// Reads confirmed secret-free OpenAPI configuration for Update review.

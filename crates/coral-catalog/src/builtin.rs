@@ -6,6 +6,7 @@
 //! so each Workspace's Generation records which definition it materialized.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -28,22 +29,40 @@ pub const BUILTIN_PROVIDER_DISPLAY_NAME: &str = "Coral";
 const CATALOG_IDENTITY_PREFIX: &str = "coral-admin-catalog:";
 pub(crate) const MATERIALIZER_VERSION: &str = "coral-admin-catalog-v1";
 
-/// Returns the identity a Generation of `catalog` pins: the prefix and the
-/// catalog's fingerprint. A Coral version that changes the catalog pins a
-/// different identity.
-fn catalog_identity(catalog: &PreparedProviderCatalog) -> String {
-    format!(
-        "{CATALOG_IDENTITY_PREFIX}{}",
-        catalog.fingerprint().as_str()
-    )
+/// The identity a built-in Generation pins: the prefix and the catalog's
+/// fingerprint. A Coral version that changes the catalog pins a different
+/// identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinCatalogIdentity(String);
+
+impl BuiltinCatalogIdentity {
+    fn of(catalog: &PreparedProviderCatalog) -> Self {
+        Self(format!(
+            "{CATALOG_IDENTITY_PREFIX}{}",
+            catalog.fingerprint().as_str()
+        ))
+    }
+
+    /// Reads a pinned identity; `None` for a malformed one. It accepts any
+    /// fingerprint, because another Coral version pins its own catalog's identity.
+    pub(crate) fn parse(pinned: &str) -> Option<Self> {
+        pinned
+            .strip_prefix(CATALOG_IDENTITY_PREFIX)
+            .is_some_and(crate::types::is_lowercase_sha256)
+            .then(|| Self(pinned.to_owned()))
+    }
+
+    /// Returns the identity as a Generation stores it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-/// Reports whether `pinned` is a well-formed catalog identity. It accepts any
-/// fingerprint, because another Coral version pins its own catalog's identity.
-pub(crate) fn is_catalog_identity(pinned: &str) -> bool {
-    pinned
-        .strip_prefix(CATALOG_IDENTITY_PREFIX)
-        .is_some_and(crate::types::is_lowercase_sha256)
+impl fmt::Display for BuiltinCatalogIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 /// One Coral-owned Operation that this Coral version performs itself.
@@ -85,7 +104,7 @@ pub struct BuiltinCatalog(Arc<PreparedBuiltinCatalog>);
 
 struct PreparedBuiltinCatalog {
     prepared: PreparedProviderCatalog,
-    identity: String,
+    identity: BuiltinCatalogIdentity,
 }
 
 impl BuiltinCatalog {
@@ -131,7 +150,7 @@ impl BuiltinCatalog {
     fn from_definitions(definitions: Vec<Definition>) -> Result<Self, Error> {
         let prepared = prepare(definitions)
             .map_err(|diagnostic| Error::InvalidInput(diagnostic.message().to_string()))?;
-        let identity = catalog_identity(&prepared);
+        let identity = BuiltinCatalogIdentity::of(&prepared);
         Ok(Self(Arc::new(PreparedBuiltinCatalog {
             prepared,
             identity,
@@ -140,7 +159,7 @@ impl BuiltinCatalog {
 
     /// Returns the identity a Generation of this catalog pins.
     #[must_use]
-    pub fn identity(&self) -> &str {
+    pub fn identity(&self) -> &BuiltinCatalogIdentity {
         &self.0.identity
     }
 
@@ -155,7 +174,7 @@ impl BuiltinCatalog {
 pub struct BuiltinExecutionBinding {
     /// The Operation Key. Another Coral version may name an Operation that
     /// this version does not perform.
-    operation: String,
+    operation: OperationKey,
     input_schema: SchemaId,
     output_schema: SchemaId,
 }
@@ -166,10 +185,10 @@ impl BuiltinExecutionBinding {
     /// perform.
     #[must_use]
     pub fn operation(&self) -> Option<BuiltinOperation> {
-        BuiltinOperation::from_key(&self.operation)
+        BuiltinOperation::from_key(self.operation.as_str())
     }
 
-    pub(crate) fn operation_key(&self) -> &str {
+    pub(crate) const fn operation_key(&self) -> &OperationKey {
         &self.operation
     }
 
@@ -641,7 +660,8 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
         let output_schema = schemas
             .add_embedded_schema(&schema_source(definition.key, "output"), &definition.output)?;
         let binding = BuiltinExecutionBinding {
-            operation: definition.key.to_string(),
+            operation: OperationKey::parse(definition.key)
+                .map_err(|_error| invalid("a built-in Operation Key is invalid"))?,
             input_schema,
             output_schema,
         };
@@ -655,8 +675,7 @@ fn prepare(definitions: Vec<Definition>) -> Result<PreparedProviderCatalog, Cata
     let mut operations = Vec::with_capacity(drafts.len());
     let mut declaration_fields = BTreeMap::new();
     for (definition, binding) in drafts {
-        let key = OperationKey::parse(definition.key)
-            .map_err(|_error| invalid("a built-in Operation Key is invalid"))?;
+        let key = binding.operation_key().clone();
         let relative_path = definition.key.to_string();
         let declaration = project(&relative_path, &binding, &schema_graph, &type_names)?;
         if !crate::types::operation_description_fits(
