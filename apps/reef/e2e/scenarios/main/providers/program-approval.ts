@@ -1,0 +1,147 @@
+import type { Page } from 'playwright'
+import { expect, type TestContext } from 'vitest'
+import { managementClients } from '../../../support/management.ts'
+import { openApiDocument } from '../../../support/provider-fixtures.ts'
+import {
+  addedProviders,
+  connectSharedAccount,
+  observeRun,
+  programRunner,
+  type RunUpdate,
+  waitForPublication,
+} from '../../../support/providers.ts'
+import { withOwner } from '../../../support/topology.ts'
+
+/**
+ * Starts createProvider with a shared bearer account in a new workspace, which
+ * keeps the default policy: the User who runs a Program approves each call.
+ * Returns the call, the runner and the paused Run Update.
+ */
+async function pauseForApproval(
+  page: Page,
+  target: Parameters<typeof programRunner>[1],
+  accessToken: string | undefined,
+  displayName: string,
+) {
+  const workspace = await managementClients(accessToken).workspaces.createWorkspace({
+    displayName,
+    requestId: crypto.randomUUID(),
+  })
+  const id = workspace.name.split('/')[1]
+  const document = openApiDocument(
+    'Weather',
+    { getForecast: { summary: 'Get the forecast' } },
+    { security: 'bearer' },
+  ).toString()
+  const call = {
+    namespace: 'weather',
+    source: { kind: 'openapi_document', document },
+    credentialRoute: 'fixed',
+  }
+  const runner = programRunner(page, target, id, { taskIntent: 'Add the weather provider' })
+  const started = await runner.exec(
+    `try { return await coral.admin.createProvider(${JSON.stringify(call)}); } catch (error) { return error.code; }`,
+  )
+  expect(started.isError).not.toBe(true)
+  let paused = started.structuredContent
+  for (let pages = 0; pages < 10 && !paused.required_actions.length; pages++)
+    paused = (await runner.wait(paused)).structuredContent
+  expect(paused.required_actions).toEqual([
+    expect.objectContaining({ kind: 'invocation_approval', required_actor: 'invoking_user' }),
+  ])
+  return { workspace, id, call, runner, paused }
+}
+
+/** Opens the paused call's review from the link the Program got. */
+async function openReview(page: Page, paused: RunUpdate) {
+  await page.goto(paused.required_actions[0].run_status_url)
+  await page.getByRole('link', { name: 'Review coral.admin.createProvider', exact: true }).click()
+  const review = page.getByRole('region', {
+    name: 'Review coral.admin.createProvider',
+    exact: true,
+  })
+  await review.getByRole('button', { name: 'Approve this call', exact: true }).waitFor()
+  return review
+}
+
+/**
+ * The default path for a Program's new provider: the owner approves the call
+ * in Reef, then follows the returned link to sign in and add it. The link names
+ * the Reef origin of the deployment the Program ran in.
+ */
+export async function approvedProgramProvider(context: TestContext) {
+  await withOwner(context, async ({ page, target, accessToken, step }) => {
+    const api = managementClients(accessToken)
+    let started!: Awaited<ReturnType<typeof pauseForApproval>>
+    await step('The Run waits for the owner to approve createProvider', async () => {
+      started = await pauseForApproval(page, target, accessToken, 'Approved provider')
+    })
+    const { workspace, id, call, runner, paused } = started
+    await step('Review the namespace, route and source, with the document collapsed', async () => {
+      const review = await openReview(page, paused)
+      const shown = JSON.parse((await review.locator('pre').first().textContent())!)
+      expect(shown).toEqual({
+        ...call,
+        source: { ...call.source, document: '(OpenAPI document, shown below)' },
+      })
+      const inline = review.locator('details', {
+        has: page.locator('summary', { hasText: 'OpenAPI document' }),
+      })
+      expect(await inline.getAttribute('open')).toBeNull()
+      expect(await inline.textContent()).toContain(call.source.document)
+    })
+    let link = ''
+    await step('Approve the call, and the Program gets a link where you sign in', async () => {
+      await page.getByRole('button', { name: 'Approve this call', exact: true }).click()
+      await page.getByText('Approved', { exact: true }).waitFor()
+      const { update } = await observeRun(runner, await runner.wait(paused))
+      const { data } = (update.final_value as { value: { data: { status: string; url: string } } })
+        .value
+      expect(data.status).toBe('needs_sign_in')
+      link = data.url
+      expect(new URL(link).origin).toBe(new URL(target.baseURL).origin)
+      expect(new URL(link).pathname).toBe(`/workspaces/${id}/providers/new`)
+    })
+    await step('Enter the shared credential and add the provider', async () => {
+      await page.goto(link)
+      await connectSharedAccount(page, 'weather-token')
+      const add = page.getByRole('button', { name: 'Add provider', exact: true })
+      await add.waitFor()
+      await add.click()
+      await waitForPublication(page)
+    })
+    await step('Show the provider in the workspace', async () => {
+      const providers = addedProviders(
+        (await api.providers.listProviders({ parent: workspace.name })).providers,
+      )
+      expect(providers.map((provider) => provider.callRoot)).toEqual(['coral.providers.weather'])
+    })
+  })
+}
+
+/** A denied call is a failure the Program catches, and it adds nothing. */
+export async function deniedProgramProvider(context: TestContext) {
+  await withOwner(context, async ({ page, target, accessToken, step }) => {
+    const api = managementClients(accessToken)
+    let started!: Awaited<ReturnType<typeof pauseForApproval>>
+    await step('The Run waits for the owner to approve createProvider', async () => {
+      started = await pauseForApproval(page, target, accessToken, 'Denied provider')
+    })
+    const { workspace, runner, paused } = started
+    await step('Deny the call, and the Program catches the failure', async () => {
+      const review = await openReview(page, paused)
+      await review.getByRole('button', { name: 'Deny this call', exact: true }).click()
+      await page.getByText('Denied', { exact: true }).waitFor()
+      const { update } = await observeRun(runner, await runner.wait(paused))
+      expect(update.final_value).toEqual({ kind: 'value', value: 'approval_declined' })
+    })
+    await step('Add no provider and leave nothing to review', async () => {
+      const providers = addedProviders(
+        (await api.providers.listProviders({ parent: workspace.name })).providers,
+      )
+      expect(providers).toEqual([])
+      const pending = await api.activity.browseRequiredActions({ workspace: workspace.name })
+      expect(pending.actionCount).toBe(0n)
+    })
+  })
+}
