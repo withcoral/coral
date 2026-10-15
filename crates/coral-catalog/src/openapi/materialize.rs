@@ -1255,28 +1255,114 @@ pub(super) fn validate_credential_contract(
             operation.object.get("security").or(root.get("security")),
             security_schemes,
         )?;
-        match &selected {
-            Some(previous) if !same_contracts(previous, &slots) => {
-                return Err(diagnostic(
-                    "credentials_not_supported",
-                    "the Provider's Operations require different credential contracts",
-                )
-                .at_location(&format!(
-                    "{}: {} differs from {}",
-                    operation.pointer,
-                    scheme_names(&slots),
-                    scheme_names(previous)
-                )));
-            }
-            Some(_) => {}
-            None => selected = Some(slots.clone()),
-        }
+        selected = Some(match selected {
+            None => slots.clone(),
+            Some(previous) => shared_contracts(&previous, &slots).map_err(|conflict| {
+                let (message, detail) = match conflict {
+                    ContractConflict::Different => (
+                        "the Provider's Operations require different credential contracts",
+                        format!(
+                            "{} differs from {}",
+                            scheme_names(&slots),
+                            scheme_names(&previous)
+                        ),
+                    ),
+                    ContractConflict::ScopeLimit => (
+                        "the Provider's Operations together request more OAuth scopes than \
+                         one grant can hold",
+                        format!(
+                            "{} and {} together exceed the scope limit",
+                            scheme_names(&slots),
+                            scheme_names(&previous)
+                        ),
+                    ),
+                };
+                diagnostic("credentials_not_supported", message)
+                    .at_location(&format!("{}: {detail}", operation.pointer))
+            })?,
+        });
         by_operation.insert(operation.key, slots);
     }
+    let shared = selected.unwrap_or_default();
+    // Every Operation retains the shared contract under its own scheme name,
+    // so one account grant covers every scope the Operations ask for.
+    for slots in by_operation.values_mut() {
+        for (slot, shared) in slots.iter_mut().zip(&shared) {
+            *slot = crate::HttpCredentialSlot::new(
+                slot.scheme_name().to_owned(),
+                shared.contract().clone(),
+            );
+        }
+    }
     Ok(CredentialSelection {
-        shared: selected.unwrap_or_default(),
+        shared,
         by_operation,
     })
+}
+
+/// Why an Operation cannot join the credential contract its predecessors share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractConflict {
+    /// The contracts differ in more than their OAuth scopes.
+    Different,
+    /// The contracts agree, but one grant cannot request every scope they ask for.
+    ScopeLimit,
+}
+
+/// The one contract the Operations so far and the next one can share: their
+/// common contract, or one OAuth contract requesting every scope when they
+/// differ only in scopes.
+fn shared_contracts(
+    previous: &[crate::HttpCredentialSlot],
+    next: &[crate::HttpCredentialSlot],
+) -> Result<Vec<crate::HttpCredentialSlot>, ContractConflict> {
+    if same_contracts(previous, next) {
+        return Ok(previous.to_vec());
+    }
+    let ([previous], [next]) = (previous, next) else {
+        return Err(ContractConflict::Different);
+    };
+    let merged = union_oauth_scopes(
+        previous.contract().authentication(),
+        next.contract().authentication(),
+    )?;
+    Ok(vec![crate::HttpCredentialSlot::new(
+        previous.scheme_name().to_owned(),
+        merged.into(),
+    )])
+}
+
+/// One authorization-code contract requesting both scope sets, when the two
+/// agree on everything but the scopes.
+fn union_oauth_scopes(
+    left: &AuthenticationConfiguration,
+    right: &AuthenticationConfiguration,
+) -> Result<AuthenticationConfiguration, ContractConflict> {
+    let mut merged = left.clone();
+    let mut other = right.clone();
+    let (
+        AuthenticationConfiguration::OAuthAuthorizationCode { scopes, .. },
+        AuthenticationConfiguration::OAuthAuthorizationCode {
+            scopes: other_scopes,
+            ..
+        },
+    ) = (&mut merged, &mut other)
+    else {
+        return Err(ContractConflict::Different);
+    };
+    scopes.append(other_scopes);
+    // Each list is already normalized, so only the union counts against the
+    // scope limit, and the limit is the only check the union can fail.
+    scopes.sort();
+    scopes.dedup();
+    *scopes = super::authentication::scopes(scopes)
+        .map_err(|_over_limit| ContractConflict::ScopeLimit)?;
+    other_scopes.clone_from(scopes);
+    if merged == other {
+        Ok(merged)
+    } else {
+        Err(ContractConflict::Different)
+    }
 }
 
 fn same_contracts(left: &[crate::HttpCredentialSlot], right: &[crate::HttpCredentialSlot]) -> bool {
@@ -1975,7 +2061,7 @@ fn schema_value_is_text_serializable(
     let Some(schema) = schema.as_object() else {
         return false;
     };
-    if schema.get("nullable").and_then(Value::as_bool) == Some(true) {
+    if schemas.semantics().nullable_applies() && crate::schema::declares_nullable(schema) {
         return false;
     }
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {

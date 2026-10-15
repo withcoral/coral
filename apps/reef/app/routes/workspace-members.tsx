@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { data, redirect, useLocation, useNavigation } from 'react-router'
 import type { Route } from './+types/workspace-members'
@@ -15,6 +14,7 @@ import {
   mutationForm,
   privateHeaders,
   workspaceName,
+  requestIdFor,
 } from '@/lib/management.server'
 import { membershipView, ownerView } from '@/lib/management-views.server'
 import { enabledOrganizationPeople } from '@/lib/organization.server'
@@ -225,17 +225,6 @@ async function organizationPeople(api: ManagementApi) {
     if (error instanceof ConnectError && error.code === Code.PermissionDenied) return null
     throw error
   }
-}
-
-/**
- * One add per person, each with its own idempotency key. Deriving it from the
- * form's key keeps a resubmitted form from adding anyone twice.
- */
-function requestIdFor(requestId: string, email: string) {
-  const hex = createHash('sha256').update(`${requestId}\0${email}`).digest('hex')
-  // UUIDv8: custom bits, with the version and RFC 9562 variant set.
-  const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
 
 export default function WorkspaceMembersRoute({ loaderData, actionData }: Route.ComponentProps) {

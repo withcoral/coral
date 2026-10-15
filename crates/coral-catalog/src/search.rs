@@ -41,61 +41,98 @@ impl DeclarationIndexEntry {
     }
 }
 
-/// Rebuilds the declaration fields of every structurally available Operation
-/// of a stored Generation from its schema graph, by the current materialization
-/// rules: the same TypeScript projection and the same breadth-first walk.
+/// A stored Generation's schema graph, ready to rebuild the declaration
+/// fields of any of its Operations by the current materialization rules: the
+/// same TypeScript projection and the same breadth-first walk.
 ///
-/// # Errors
-///
-/// Returns [`crate::Error::CorruptData`] when a stored Operation can no longer
-/// be prepared; materialization prepared it once, so the package is inconsistent.
-pub fn stored_declaration_fields(
-    graph: &SchemaGraph,
-    operations: &[MaterializedOperation],
-) -> Result<BTreeMap<OperationKey, Vec<DeclarationIndexEntry>>, crate::Error> {
-    let openapi_names = OnceCell::new();
-    let mcp_names = OnceCell::new();
-    operations
-        .iter()
-        .filter(|operation| operation.availability() == crate::OperationAvailability::Available)
-        .map(|operation| {
-            let input_declared = match operation.execution_binding() {
-                ExecutionBinding::Http(binding) => crate::openapi::declares_input(
-                    operation.relative_path(),
+/// Loading and naming a large graph costs far more than one Operation's walk,
+/// so a caller that needs several Operations of one Generation keeps one of
+/// these. The names are built on first use.
+pub struct StoredDeclarationFields {
+    graph: SchemaGraph,
+    openapi_names: OnceCell<crate::schema::TypeScriptNames>,
+    mcp_names: OnceCell<crate::schema::TypeScriptNames>,
+}
+
+impl StoredDeclarationFields {
+    /// Prepares fields from one stored Generation's schema graph.
+    #[must_use]
+    pub const fn new(graph: SchemaGraph) -> Self {
+        Self {
+            graph,
+            openapi_names: OnceCell::new(),
+            mcp_names: OnceCell::new(),
+        }
+    }
+
+    /// Rebuilds the declaration fields of every structurally available
+    /// Operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::CorruptData`] when a stored Operation can no
+    /// longer be prepared; materialization prepared it once, so the package
+    /// is inconsistent.
+    pub fn all(
+        &self,
+        operations: &[MaterializedOperation],
+    ) -> Result<BTreeMap<OperationKey, Vec<DeclarationIndexEntry>>, crate::Error> {
+        operations
+            .iter()
+            .filter(|operation| operation.availability() == crate::OperationAvailability::Available)
+            .map(|operation| Ok((operation.key().clone(), self.operation(operation)?)))
+            .collect()
+    }
+
+    /// Rebuilds one structurally available Operation's declaration fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::CorruptData`] when the stored Operation can no
+    /// longer be prepared.
+    pub fn operation(
+        &self,
+        operation: &MaterializedOperation,
+    ) -> Result<Vec<DeclarationIndexEntry>, crate::Error> {
+        let graph = &self.graph;
+        let input_declared = match operation.execution_binding() {
+            ExecutionBinding::Http(binding) => crate::openapi::declares_input(
+                operation.relative_path(),
+                operation.input_schema(),
+                binding,
+                graph,
+                self.openapi_names
+                    .get_or_init(|| crate::openapi::typescript_names(graph)),
+            ),
+            ExecutionBinding::Mcp(binding) => crate::mcp::declares_input(
+                operation.relative_path(),
+                operation.input_schema(),
+                binding,
+                graph,
+                self.mcp_names
+                    .get_or_init(|| crate::mcp::typescript_names(graph)),
+            ),
+            // Every built-in Operation takes one `input` object.
+            ExecutionBinding::Builtin(_) => Ok(true),
+        };
+        input_declared
+            .and_then(|input_declared| {
+                prepare_operation_declaration_fields(
+                    operation.execution_binding(),
                     operation.input_schema(),
-                    binding,
+                    input_declared,
                     graph,
-                    openapi_names.get_or_init(|| crate::openapi::typescript_names(graph)),
-                ),
-                ExecutionBinding::Mcp(binding) => crate::mcp::declares_input(
-                    operation.relative_path(),
-                    operation.input_schema(),
-                    binding,
-                    graph,
-                    mcp_names.get_or_init(|| crate::mcp::typescript_names(graph)),
-                ),
-                // Every built-in Operation takes one `input` object.
-                ExecutionBinding::Builtin(_) => Ok(true),
-            };
-            let prepared = input_declared
-                .and_then(|input_declared| {
-                    prepare_operation_declaration_fields(
-                        operation.execution_binding(),
-                        operation.input_schema(),
-                        input_declared,
-                        graph,
-                    )
-                })
-                .map_err(|_diagnostic| {
-                    crate::Error::CorruptData(
-                        "a stored Operation cannot be prepared for Universal Search".to_string(),
-                    )
-                })?;
+                )
+            })
             // A truncation warning is already on the stored Operation; only
             // the entries matter here.
-            Ok((operation.key().clone(), prepared.entries))
-        })
-        .collect()
+            .map(|prepared| prepared.entries)
+            .map_err(|_diagnostic| {
+                crate::Error::CorruptData(
+                    "a stored Operation cannot be prepared for Universal Search".to_string(),
+                )
+            })
+    }
 }
 
 #[derive(Clone, Copy)]

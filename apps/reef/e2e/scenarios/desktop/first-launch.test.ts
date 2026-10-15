@@ -57,7 +57,7 @@ test('A fresh Desktop runs its first Program over the workspace MCP endpoint', a
         workspace,
         openApiDocument(
           'Desktop ledger',
-          { listEntries: { summary: 'List entries' } },
+          { listEntries: { summary: 'List entries', method: 'post' } },
           {
             server: upstream.origin,
           },

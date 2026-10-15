@@ -48,7 +48,8 @@ function op(
     callPath: base ? `coral.providers.${base}.${relativePath}` : relativePath,
     summary,
     description: '',
-    // Mirrors the domain default: read-only is enabled, anything else needs approval.
+    // Mirrors the domain default for these fixtures, which carry no HTTP method:
+    // read-only is enabled, anything else needs approval.
     hints: {},
     policy: readOnly ? 'enabled' : 'approval_required',
     available: true,
@@ -1530,6 +1531,49 @@ export const StepExpired: Story = {
     <StepperPage {...stepperWorkspace} setup={{ ...setupAwaiting, state: 'expired' }} />
   ),
   parameters: workspaceEntry,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    // A typed URL starts again from the URL its Setup read.
+    await expect(canvas.getByText('This setup has expired')).toBeVisible()
+    await expect(canvas.getByRole('button', { name: 'Start again' })).toBeEnabled()
+    await expect(canvas.getByRole('link', { name: 'Back to providers' })).toHaveAttribute(
+      'href',
+      '/workspaces/demo/providers',
+    )
+  },
+}
+export const StepExpiredRecipe: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      recipe={githubRecipe}
+      attempt={{ ...stepperWorkspace.attempt, recipe: githubRecipe.id }}
+      setup={{ ...setupReady, state: 'expired' }}
+    />
+  ),
+  parameters: workspaceEntry,
+}
+export const StepExpiredUploadedDocument: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={{ ...setupReady, state: 'expired', sourceLabel: 'Uploaded document', sourceHost: '' }}
+    />
+  ),
+  parameters: workspaceEntry,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    // Reef does not keep an uploaded document, so you choose it again.
+    await expect(canvas.getByText('Upload the document again to continue.')).toBeVisible()
+    await expect(canvas.queryByRole('button', { name: 'Start again' })).toBeNull()
+    await expect(canvas.getByRole('link', { name: 'Choose a source' })).toBeVisible()
+  },
+}
+export const StepCanceled: Story = {
+  render: () => (
+    <StepperPage {...stepperWorkspace} setup={{ ...setupAwaiting, state: 'canceled' }} />
+  ),
+  parameters: workspaceEntry,
 }
 export const RefreshUploadedDocument: Story = {
   render: () => (
@@ -1775,6 +1819,16 @@ const updateStory = {
     allowIncompatibleConfiguration: false,
   } as UpdateAttempt,
   form,
+}
+export const UpdateExpired: Story = {
+  render: () => (
+    <EditConfigurationPage
+      {...updateStory}
+      attempt={{ ...updateStory.attempt, task: 'configuration' }}
+      setup={{ ...setupReady, state: 'expired' }}
+    />
+  ),
+  parameters: { initialEntry: '/workspaces/demo/providers/records/update' },
 }
 export const UpdateRemovedDeclaration: Story = {
   render: () => (

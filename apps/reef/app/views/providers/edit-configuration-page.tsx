@@ -18,6 +18,7 @@ import { usePublication } from './publication-form'
 import { StepFrame, StepPage } from './step-frame'
 import { UpdateAuthorization } from './update-authorization'
 import { accountLabels, useAccountAudience } from './account-labels'
+import { AttemptEnded } from './attempt-ended'
 import type { AccountChoice, SetupView, UpdatePageProps } from './types'
 import * as styles from './providers.css'
 
@@ -42,6 +43,7 @@ export function EditConfigurationPage({
   providersPath,
   currentOperations,
   source,
+  etag,
   setup,
   attempt,
   form,
@@ -74,11 +76,7 @@ export function EditConfigurationPage({
   const setting: AccountChoice = plan === 'caller' ? 'caller' : 'fixed'
   const audience = useAccountAudience()
   const frozen = attempt.state === 'frozen'
-  const { stage, terminal, requiresInterruptionAcceptance } = attemptProgress(
-    attempt,
-    setup,
-    result,
-  )
+  const { stage, ended, requiresInterruptionAcceptance } = attemptProgress(attempt, setup, result)
   const route = frozen
     ? (attempt.account ?? currentAccount)
     : setup.credentialMethod === 'none'
@@ -109,8 +107,8 @@ export function EditConfigurationPage({
     !frozen && currentAccount !== 'none' && setup.configuration?.interruptsAccess === null
   const needsConsent =
     settingChanged || requiresInterruptionAcceptance || Boolean(grant) || accessUnknown
-  const view = terminal
-    ? 'terminal'
+  const view = ended
+    ? 'ended'
     : frozen || result?.failed
       ? 'outcome'
       : stage === 'discovery'
@@ -123,7 +121,7 @@ export function EditConfigurationPage({
   // A confirmed configuration is a change too, until Save publishes it. Change
   // account setting confirms the saved one before the page opens.
   const unsaved =
-    !terminal &&
+    !ended &&
     !result?.failed &&
     (accounts
       ? settingChanged || Boolean(setup.authorized || setup.authorization)
@@ -165,6 +163,31 @@ export function EditConfigurationPage({
       </Button.TextButton>
     </Form>
   )
+  // Start again opens a new Setup for the same task, as settings does. A refresh
+  // reads the URL this Setup read, not the saved one: Replace source reads a new
+  // URL. An uploaded document needs a new upload in settings.
+  const rereads = refresh && setup.sourceHost ? setup.sourceLabel : ''
+  const restart =
+    refresh && !rereads ? (
+      <Button.InternalLink to={settingsPath}>Choose a source</Button.InternalLink>
+    ) : (
+      <Form method="post">
+        <Fields form={form} intent="prepare" />
+        <input type="hidden" name="etag" value={etag ?? attempt.etag} />
+        <input type="hidden" name="task" value={attempt.task ?? 'refresh'} />
+        {rereads ? (
+          <>
+            <input type="hidden" name="source" value={setup.kind === 'mcp' ? 'mcp' : 'url'} />
+            <input type="hidden" name="sourceUrl" value={rereads} />
+          </>
+        ) : (
+          <input type="hidden" name="source" value="current" />
+        )}
+        <Button.TextButton type="submit" disabled={pending}>
+          {pending ? 'Starting…' : 'Start again'}
+        </Button.TextButton>
+      </Form>
+    )
   const configurationPath = attemptPath(basePath, reviseAttempt(attempt, 'configuration'))
   const back = (
     <Button.InternalLink size="small" variant="secondary" to={configurationPath}>
@@ -228,17 +251,13 @@ export function EditConfigurationPage({
     </Dialog.Root>
   )
   const content =
-    view === 'terminal' ? (
-      <Banner
-        variant="warning"
-        action={
-          <Button.InternalLink to={settingsPath} size="small">
-            Start over
-          </Button.InternalLink>
-        }
-      >
-        {terminal}
-      </Banner>
+    view === 'ended' ? (
+      <AttemptEnded ended={ended!} error={result?.error}>
+        <Button.InternalLink to={settingsPath} variant="secondary">
+          Back to settings
+        </Button.InternalLink>
+        {restart}
+      </AttemptEnded>
     ) : view === 'outcome' ? (
       <StepFrame title={title} actions={publication.actions}>
         {publication.body}

@@ -374,14 +374,18 @@ Function save hands to Universal Search to index. An Operation whose declaration
 keeps only its shallower paths and carries a warning. Universal Search returns a Search Hit for it, and describe its
 Authoring Description, never the Entity's private material. _Avoid_: Authoring Kind, search document
 
-**Search Hit**: One item of a search page: a Search Entity's kind and Call Path, its Provider display name, title,
-signature line, Description Snippet, Operation Hints, approval requirement, deprecation flag, and the evidence for why it
-matched; a Guidance Snippet and matched tags only where a query term matched them. Never the declaration.
+**Search Hit**: One item of a search page, cut to what an agent needs to choose and call a Search Entity: its Call
+Path, signature line, and Description Snippet; a Guidance Snippet and matched tags only where a query term matched
+them, and the matched arguments that its cut signature line does not show; for an Operation, its declared Operation
+Hints, and its approval requirement and deprecation flag only when set.
+The Call Path names the kind and the Provider, the rank reflects why the hit matched, and describe gives the rest.
+Never the declaration.
 
 **Search Coverage**: What one search page states, per kind of Search Entity, about how much of the Principal's Search
 Entities it examined and why results may be missing: how many Providers or Saved Functions were eligible, searched, and
 failed, how many results the kind returned, and whether more remain. A kind that the Provider filter leaves out is
-skipped, not incomplete. Coverage describes one page at the time of the search, not the current catalog.
+skipped, not incomplete. A page states coverage only for a kind whose results may be missing. Coverage describes one
+page at the time of the search, not the current catalog.
 
 **Description Snippet**: The bounded window of an Entity's description that a Search Hit shows: around the first
 matched query term when the description matched, otherwise its beginning.
@@ -428,9 +432,10 @@ read-only (see Operation Hints) as possibly effectful. _Avoid_: Write operation,
 **Operation Hints**: The effect hints an Operation's provider source declares: read-only, destructive, idempotent, and
 open-world. Coral takes each hint at catalog materialization only when the source declares it, from an MCP tool's
 annotations in v1, and never assumes a protocol default, so an undeclared hint says nothing. OpenAPI/HTTP-sourced
-Operations declare none in v1; Coral's MCP resource read is read-only by protocol definition. Coral declares the hints
-of each Built-in Provider Operation in its catalog. Hints are provider claims, not caller-configurable, and only a
-declared read-only hint affects policy. _Avoid_: Effect classification, `unknown` effect, tool annotations
+Operations declare none in v1, and their HTTP method is not a hint; Coral's MCP resource read is read-only by protocol
+definition. Coral declares the hints of each Built-in Provider Operation in its catalog. Hints are provider claims, not
+caller-configurable, and only a declared read-only hint affects policy among them. _Avoid_: Effect classification,
+`unknown` effect, tool annotations
 _In Reef_: one label per hint declared true: "Read-only", "Destructive", "Idempotent", "Open world"; none when undeclared
 
 **Operation Access State**: The Workspace decision that one Operation is `enabled`, `approval_required`, or `disabled`.
@@ -439,10 +444,11 @@ Organization policy does not set Operation access in v1, and there are no Princi
 Credential Route-specific rules, patterns, ordered rules, or globs. A reusable Program in one Workspace therefore has
 one Operation policy for one Provider regardless of its Invoking Principal. A Principal can still have different
 discoverability and readiness because Credential Route, Provider Accounts, and Agent state are not policy (see
-Discoverable Operation); a stale Invocation fails safely. If no exact rule matches, the Operation's Operation Hints supply
-the default: an Operation that declares itself read-only defaults to `enabled`; every other Operation defaults to
-`approval_required`. Because v1 OpenAPI/HTTP-sourced Operations declare no hints, those Operations require approval
-until a Workspace rule enables them. Provider signature and execution-binding changes do not
+Discoverable Operation); a stale Invocation fails safely. If no exact rule matches, a default applies: an Operation that
+declares itself read-only, or an OpenAPI/HTTP-sourced Operation with a safe HTTP method (GET, HEAD, OPTIONS, or TRACE),
+defaults to `enabled`; every other Operation defaults to `approval_required`. The default applies to every Operation
+without an exact rule, including those of existing Providers, and a Workspace Owner overrides it with an exact rule, for
+example for an upstream that changes state on GET. Provider signature and execution-binding changes do not
 stale an exact rule in v1. A changed Operation Key does. Policy for one Provider does not affect another Provider.
 A Principal that needs a different Operation set belongs in a different Workspace.
 _Avoid_: Principal policy, Agent policy, Account-specific policy, Credential Route policy, Provider permission,

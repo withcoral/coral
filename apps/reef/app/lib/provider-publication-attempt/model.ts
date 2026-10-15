@@ -300,6 +300,10 @@ export function freezeAttempt(
   return frozen
 }
 
+/** The Setup states that end an attempt. Starting again needs a new Setup. */
+export type AttemptEnd = 'expired' | 'canceled' | 'consumed'
+const ATTEMPT_ENDS: readonly AttemptEnd[] = ['expired', 'canceled', 'consumed']
+
 /** One presentation decision from Coral progress plus explicit local choices. No lifecycle validation. */
 export function attemptProgress(
   attempt: PublicationAttempt,
@@ -322,17 +326,14 @@ export function attemptProgress(
             : attempt.account !== 'fixed' || (setup?.authorized && attempt.accountGrant)
               ? attempt.account
               : null
-  const terminal =
-    !setup || replaying
-      ? ''
-      : ({
-          consumed: 'This attempt is complete. Start over to read the document or server again.',
-          expired: 'This attempt expired. Start over to try again.',
-          canceled: 'Attempt canceled. Start over to try again.',
-        }[setup.state as 'consumed' | 'expired' | 'canceled'] ?? '')
+  // Why this Setup can go no further. A replay still reaches its publication.
+  const ended: AttemptEnd | null =
+    setup && !replaying && ATTEMPT_ENDS.includes(setup.state as AttemptEnd)
+      ? (setup.state as AttemptEnd)
+      : null
   const stage = !setup
     ? 'source'
-    : terminal
+    : ended
       ? 'terminal'
       : result?.failed
         ? 'publish'
@@ -355,7 +356,7 @@ export function attemptProgress(
   return {
     stage,
     account,
-    terminal,
+    ended,
     replaying,
     credentialFree,
     canRevise: !replaying && !result?.failed,

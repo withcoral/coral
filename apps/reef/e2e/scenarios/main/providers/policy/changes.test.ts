@@ -18,13 +18,14 @@ test('Select exact operations and apply one bounded policy change', async (conte
         workspace,
         openApiDocument('Policy', {
           listEntries: { summary: 'List entries' },
-          createEntry: { summary: 'Create entry' },
-          deleteEntry: { summary: 'Delete entry' },
+          createEntry: { summary: 'Create entry', method: 'post' },
+          deleteEntry: { summary: 'Delete entry', method: 'post' },
         }),
         'ledger',
       )
       await openProviderPolicy(page, providerPath)
-      expect(await page.getByText('Needs approval · Default', { exact: true }).count()).toBe(3)
+      expect(await page.getByText('Always allow · Default', { exact: true }).count()).toBe(1)
+      expect(await page.getByText('Needs approval · Default', { exact: true }).count()).toBe(2)
     })
     await step(
       'An atomic selection changes two exact operations, not the whole provider',

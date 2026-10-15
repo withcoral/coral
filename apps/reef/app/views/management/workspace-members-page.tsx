@@ -82,7 +82,12 @@ export function WorkspaceMembersPage({
       breadcrumbs={trail([], 'Members')}
       actions={
         owner ? (
-          <AddMembersDialog candidates={candidates} disabled={!active} form={form} />
+          <AddMembersDialog
+            candidates={candidates}
+            currentUser={w.currentUser}
+            disabled={!active}
+            form={form}
+          />
         ) : undefined
       }
     >

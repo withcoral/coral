@@ -130,17 +130,15 @@ test('OpenAPI OAuth with one shared account: consent, resume, forged callbacks, 
         .waitFor()
     })
     await step('A Program run resolves the shared account', async () => {
-      // Every OpenAPI Operation needs approval by default, so the run reaches
-      // the approval gate with the shared account resolved; nothing calls upstream.
-      const run = programRunner(page, target, workspace, { waitMs: 1000 })
+      // A GET Operation runs without approval, so the call reaches upstream
+      // with the shared account's token.
+      const run = programRunner(page, target, workspace)
       const result = await run('return await coral.providers.records.listRecords({});')
-      expect(result).toContain('"state":"running"')
-      expect(result).toContain('invocation_approval')
-      expect(result).not.toContain('invocation.started')
-      expect(result).not.toContain('invocation.ended')
+      expect(result).toContain('"state":"succeeded"')
+      expect(result).toContain('Hello from the OAuth API')
       expect(result).not.toContain('account_required')
       expect(result).not.toContain(access)
-      expect(upstream.counts.calls).toBe(0)
+      expect(upstream.counts.calls).toBe(1)
       expect(upstream.counts.tokens).toBe(1)
     })
     for (const body of await responses()) {
@@ -152,7 +150,7 @@ test('OpenAPI OAuth with one shared account: consent, resume, forged callbacks, 
   })
 })
 
-test('OpenAPI OAuth with each person’s own account signs nobody in', async (context) => {
+test('OpenAPI OAuth with each person’s own account signs nobody in until they connect from settings', async (context) => {
   const upstream = await oauthApiServer(context, `fixture-access-${crypto.randomUUID()}`)
   await withOwnerSession(context, async ({ page, step, actor }) => {
     let workspace = ''
@@ -195,6 +193,20 @@ test('OpenAPI OAuth with each person’s own account signs nobody in', async (co
         .getByText('Not connected', { exact: true })
         .waitFor()
       expect(upstream.counts.consents).toBe(0)
+    })
+    await step('Connect your own account from settings and come back to them', async () => {
+      const settings = new URL(page.url()).pathname
+      const card = page.getByRole('region', { name: 'Individual accounts', exact: true })
+      // The connection starts in a dialog on this page, as an agent's does.
+      await card.getByRole('button', { name: 'Connect your account', exact: true }).click()
+      await page
+        .getByRole('dialog', { name: 'Connect Records', exact: true })
+        .getByRole('button', { name: 'Continue to sign in', exact: true })
+        .click()
+      await page.getByRole('link', { name: 'Approve fixture access', exact: true }).click()
+      await page.waitForURL((url) => url.pathname === settings)
+      await card.getByText('Connected', { exact: true }).waitFor()
+      expect(upstream.counts.consents).toBe(1)
     })
   })
 })

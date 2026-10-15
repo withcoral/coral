@@ -5,7 +5,7 @@ import { useShellCsrf } from '@/lib/use-shell-csrf'
 import type { action as resolve } from '@/routes/activity-resolve'
 import { ConnectButton } from '../accounts/connect-button'
 import { ApprovalReview } from './review'
-import { useActivityConnected } from '../activity/live'
+import { useActivityArchived, useActivityConnected, restoreFirst } from '../activity/live'
 import type { ActionPage, RequestDetail } from '../activity/types'
 import type { ConnectionState } from '../accounts/types'
 import * as styles from './actions.css'
@@ -109,8 +109,15 @@ function ConnectionAction({
   const csrf = useShellCsrf()
   const decline = useFetcher<typeof resolve>({ key: request.name })
   const provider = providerLabel || 'provider'
+  const archived = useActivityArchived()
   if (request.state !== 'pending')
     return <Typography.Body role="status">{settled[request.state]}</Typography.Body>
+  if (archived)
+    return (
+      <Typography.Body role="status">
+        {restoreFirst(archived, `connect your ${provider} account`)}
+      </Typography.Body>
+    )
   return (
     <div className={styles.stack}>
       <Typography.BodySmall>

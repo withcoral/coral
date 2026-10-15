@@ -66,6 +66,9 @@ test('Large OpenAPI documents work by upload and URL; oversized documents explai
     }),
   )
   await withOwnerSession(context, async ({ page, step, actor }) => {
+    // Each step moves tens of MiB, which can outlast the harness's action timeout.
+    page.setDefaultTimeout(20_000)
+    page.setDefaultNavigationTimeout(20_000)
     let workspace = ''
     await step('Upload a document larger than the previous 32 MiB limit', async () => {
       workspace = await createWorkspace(actor.accessToken, `Large OpenAPI ${crypto.randomUUID()}`)
@@ -109,4 +112,4 @@ test('Large OpenAPI documents work by upload and URL; oversized documents explai
       expect(new URL(page.url()).searchParams.has('setup')).toBe(false)
     })
   })
-})
+}, 120_000)

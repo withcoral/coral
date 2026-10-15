@@ -130,7 +130,7 @@ impl OutputContracts {
         } else {
             match name {
                 "start_task" => &["task_id", "providers"],
-                "search" => &["hits", "next_cursor", "has_more", "retriever_statuses"],
+                "search" => &["hits", "has_more"],
                 // A Saved Function's source and diagnostics are absent from a
                 // description cut to `types`.
                 "describe" => &["kind", "call_path", "description", "typescript_declaration"],
@@ -163,7 +163,7 @@ impl OutputContracts {
             assert!(!validator.is_valid(&malformed), "{name} must require {key}");
         }
         for pointer in [
-            "/hits/0/evidence",
+            "/hits/0/call_path",
             "/hits/0/signature_line",
             "/events/0/occurred_at",
             "/events/0/sequence",
@@ -203,8 +203,6 @@ impl OutputContracts {
             ("/state", json!("unknown_state")),
             ("/outcome", json!("running")),
             ("/kind", json!("provider_schema")),
-            ("/hits/0/kind", json!("provider_schema")),
-            ("/hits/0/evidence/fields", json!(false)),
             ("/hits/0/signature_line", json!({})),
             ("/events/0/kind", json!("invocation.started")),
             (

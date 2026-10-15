@@ -170,8 +170,20 @@ describe('attemptProgress', () => {
       account: 'fixed',
       replaying: true,
       canRevise: false,
+      ended: null,
     })
   })
+
+  it.each(['expired', 'canceled', 'consumed'] as const)(
+    'ends a draft attempt whose Setup is %s',
+    (state) => {
+      const attempt = parseAttempt('workspace', new URLSearchParams({ setup: setup.id }))
+      expect(attemptProgress(attempt, { ...setup, state })).toMatchObject({
+        stage: 'terminal',
+        ended: state,
+      })
+    },
+  )
 })
 
 describe('accepting the listed operations', () => {
