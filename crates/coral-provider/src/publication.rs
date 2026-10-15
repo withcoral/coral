@@ -133,6 +133,7 @@ struct RegenerationBaseline {
 }
 
 struct PinnedPublication {
+    setup: crate::ProviderSetup,
     setup_input: ProviderSetupInput,
     command: Command<RegenerationBaseline>,
 }
@@ -216,12 +217,22 @@ impl ProviderModule {
             Command::Regenerate { regeneration, .. } => regeneration.operation_paths.as_slice(),
             Command::Workspace(_) => &[],
         };
-        // No transaction survives preflight. Cancellation here accepts no Publication.
-        let materialized = self
-            .materializer
-            .materialize(&pinned.setup_input, paths)
-            .await
-            .map_err(|error| Error::OperationalPublication(error.message().to_string()))?;
+        let kept = self.preparation.take_materialized(
+            &pinned.setup,
+            &pinned.setup_input,
+            paths,
+            self.outbound_policy,
+            context.occurred_at_unix_nanos(),
+        );
+        let materialized = if let Some(outcome) = kept {
+            outcome
+        } else {
+            // No transaction survives preflight. Cancellation here accepts no Publication.
+            self.materializer
+                .materialize(&pinned.setup_input, paths)
+                .await
+                .map_err(|error| Error::OperationalPublication(error.message().to_string()))?
+        };
         Ok(PreparedPublication::Materialized(Box::new(
             MaterializedPublication {
                 pinned,
@@ -337,6 +348,7 @@ impl ProviderModule {
         let setup_input = loaded.pinned_input()?.clone();
         transaction.rollback().await?;
         Ok(Preflight::Materialize(PinnedPublication {
+            setup: loaded.setup,
             setup_input,
             command,
         }))
@@ -384,6 +396,7 @@ impl ProviderModule {
         let PinnedPublication {
             setup_input,
             command,
+            ..
         } = pinned;
         let owner = command.owner();
         let setup_id = command.setup_id().clone();

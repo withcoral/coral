@@ -134,6 +134,16 @@ pub fn materialize(
         ProviderSetupInput::OpenApi(document) => openapi::materialize(document, previous_paths),
         ProviderSetupInput::Mcp(snapshot) => mcp::materialize(snapshot, previous_paths),
     };
+    screen_destinations(policy, outcome)
+}
+
+/// Rejects a Ready catalog whose destinations `policy` forbids, as [`materialize`] does.
+/// A catalog materialized earlier under another policy then meets this one.
+#[must_use]
+pub fn screen_destinations(
+    policy: coral_outbound::DestinationPolicy,
+    outcome: MaterializationOutcome,
+) -> MaterializationOutcome {
     if let MaterializationOutcome::Ready(catalog) = &outcome {
         let destinations = catalog.operations().iter().filter_map(|operation| {
             match operation.execution_binding() {

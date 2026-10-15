@@ -200,6 +200,13 @@ pub(crate) async fn operation_authoring_paths(
         .collect()
 }
 
+/// The same Module without the catalogs its previews kept, as after a restart.
+/// Its next Publication materializes, so a test can hold it there.
+pub(crate) fn forgetting_previews(mut providers: ProviderModule) -> ProviderModule {
+    providers.preparation = crate::configuration::preparation::Preparation::new();
+    providers
+}
+
 pub(crate) fn publication_request(
     workspace_id: &coral_workspace::WorkspaceId,
     setup_id: &crate::ProviderSetupId,

@@ -1,17 +1,19 @@
 //! Durable, secret-free results of expensive Setup work. Reads never rebuild them.
+//! A preview's catalog is kept only in memory, for the Setup's Publication.
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_catalog::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, MaterializationOutcome, OperationAvailability,
-    ProviderConfigurationReview, ProviderCredentialContract, ProviderSetupInput,
-    ProviderSetupInputDigest,
+    OperationPathAssignment, ProviderConfigurationReview, ProviderCredentialContract,
+    ProviderSetupInput, ProviderSetupInputDigest,
 };
 use coral_outbound::DestinationPolicy;
 use serde::{Deserialize, Serialize};
 
+use super::kept_catalogs::KeptCatalogs;
 use crate::publication::materialization::{CatalogMaterializer, Materializer};
-use crate::{Error, repository::LoadedSetup};
+use crate::{Error, ProviderSetup, repository::LoadedSetup};
 
 // Advance when source analysis, validation, or preview semantics change. Never reuse
 // a preparation produced by a different algorithm, even for identical source bytes.
@@ -119,6 +121,7 @@ fn check_digest(digest: &str, loaded: &LoadedSetup) -> Result<(), Error> {
 #[derive(Clone)]
 pub(crate) struct Preparation {
     materializer: Arc<dyn Materializer>,
+    kept: Arc<KeptCatalogs>,
 }
 
 impl Preparation {
@@ -129,6 +132,7 @@ impl Preparation {
                     .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps)
                     .with_private_networks(coral_outbound::NetworkAccess::HttpAndHttps),
             )),
+            kept: Arc::default(),
         }
     }
 
@@ -152,23 +156,39 @@ impl Preparation {
             .map_err(|_worker| Error::SetupPreparationUnavailable)
     }
 
+    /// What Publication would materialize from `input`, if [`Self::preview`]
+    /// kept the catalog. `None` means materialize.
+    pub(crate) fn take_materialized(
+        &self,
+        setup: &ProviderSetup,
+        input: &ProviderSetupInput,
+        previous_paths: &[OperationPathAssignment],
+        policy: DestinationPolicy,
+        now_unix_nanos: i64,
+    ) -> Option<MaterializationOutcome> {
+        self.kept
+            .take(setup, input, previous_paths, policy, now_unix_nanos)
+    }
+
+    /// Materializes `input` for review, and keeps a Ready catalog for `setup`'s Publication.
     pub(crate) async fn preview(
         &self,
+        setup: &ProviderSetup,
         input: Option<&ProviderSetupInput>,
         revision: i64,
     ) -> Result<Option<Box<PreparedReview>>, Error> {
+        self.kept.forget(setup);
         let Some(input) = input else { return Ok(None) };
         let outcome = self
             .materializer
             .materialize(input, &[])
             .await
             .map_err(|_worker| Error::SetupPreparationUnavailable)?;
+        let input_digest = ProviderSetupInputDigest::of_setup_input(input);
         let mut review = PreparedReview {
             version: VERSION,
             materializer_version: coral_catalog::materializer_version(input.kind()).into(),
-            input_digest: ProviderSetupInputDigest::of_setup_input(input)
-                .as_str()
-                .into(),
+            input_digest: input_digest.as_str().into(),
             revision,
             // Structural failures still belong to Publication. Preserve the selected
             // OpenAPI authentication method without inventing executable destinations.
@@ -219,6 +239,7 @@ impl Preparation {
                             .insert(operation.key().as_str().into(), url.into());
                     }
                 }
+                self.kept.keep(setup, input_digest, input, catalog);
             }
             MaterializationOutcome::Rejected(diagnostic) => {
                 review.diagnostic = Some(diagnostic.code().into());

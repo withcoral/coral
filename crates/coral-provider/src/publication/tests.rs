@@ -1957,6 +1957,8 @@ async fn final_commit_refreshes_the_publishers_organization_membership() {
         )
         .await
         .expect("designated Owner creates Setup");
+    // Publish from a Module without the kept catalog, so it materializes.
+    let providers = crate::tests::forgetting_previews(providers);
     let request = publication_request(
         workspace.id(),
         setup.id(),

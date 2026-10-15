@@ -1,6 +1,7 @@
 //! Setup configuration owns validation, preview, concurrency and credential invalidation.
 use coral_workspace::WorkspaceId;
 mod differences;
+mod kept_catalogs;
 mod mcp;
 pub(crate) mod preparation;
 #[cfg(test)]
@@ -290,7 +291,7 @@ impl ProviderModule {
         };
         let preview = self
             .preparation
-            .preview(new_input.as_ref(), revision)
+            .preview(&loaded.setup, new_input.as_ref(), revision)
             .await?;
         let new_contract = if loaded.setup.input_kind() == ProviderSetupInputKind::Mcp {
             mcp_contract(&loaded, Some(&accepted))

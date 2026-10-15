@@ -4,10 +4,11 @@ use std::time::Duration;
 use coral_catalog::{AuthenticationConfiguration, OpenApiDocument};
 use coral_outbound::DestinationPolicy;
 
+use crate::access::CredentialRoute;
 use crate::publication::materialization::TestMaterializer;
 use crate::setup_tests::{harness, workspace_owner};
-use crate::tests::change_context;
-use crate::{Error, ProviderModule};
+use crate::tests::{change_context, publication_request};
+use crate::{Error, ProviderModule, ProviderPublication, ProviderPublicationOutcome};
 
 fn document() -> OpenApiDocument {
     OpenApiDocument::parse(
@@ -452,4 +453,125 @@ async fn a_different_host_policy_cannot_reuse_prepared_authority() {
         local
     );
     assert_eq!((count.analyses(), count.calls()), (0, 0));
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Publisher {
+    /// The Module that confirmed the preview.
+    Same,
+    /// The same Module after later previews of other Setups.
+    AfterOtherPreviews,
+    /// A Module that never saw the preview, such as after a restart.
+    Restarted,
+    /// The same Module after another process confirmed new settings.
+    ReconfiguredElsewhere,
+}
+
+async fn confirm_and_publish(
+    publisher: Publisher,
+    policy: DestinationPolicy,
+    server: Option<&str>,
+) -> (usize, ProviderPublication) {
+    let h = harness().await;
+    let (actor, workspace) = workspace_owner(&h, "user:preview-reuse").await;
+    let context = change_context(actor.clone(), 10, '1');
+    let owner = workspace.id().clone();
+    let count = TestMaterializer::counting();
+    let mut providers = h.providers.clone();
+    providers.outbound_policy = policy;
+    providers.materializer = count.clone();
+    let confirm = async |providers: &ProviderModule| {
+        let setup = providers
+            .create_openapi_setup(&context, &owner, document())
+            .await
+            .unwrap();
+        let mut values = providers
+            .review_setup_configuration(&actor, &owner, setup.id())
+            .await
+            .unwrap()
+            .document
+            .unwrap()
+            .suggested;
+        if let Some(url) = server {
+            values.servers.insert(
+                "#/servers".into(),
+                coral_catalog::ServerSelection::Custom { url: url.into() },
+            );
+        }
+        providers
+            .confirm_setup_configuration(&context, &owner, setup.id(), 0, values.clone())
+            .await
+            .unwrap();
+        (setup, values)
+    };
+    let (setup, values) = confirm(&providers).await;
+    match publisher {
+        Publisher::Same => {}
+        Publisher::AfterOtherPreviews => {
+            for _ in 0..4 {
+                confirm(&providers).await;
+            }
+        }
+        Publisher::Restarted => providers = crate::tests::forgetting_previews(providers),
+        Publisher::ReconfiguredElsewhere => {
+            let mut renamed = values;
+            renamed.display_name = "Renamed".into();
+            crate::tests::forgetting_previews(providers.clone())
+                .confirm_setup_configuration(&context, &owner, setup.id(), 1, renamed)
+                .await
+                .unwrap();
+        }
+    }
+    let publication = providers
+        .publish_workspace_provider(
+            &context,
+            publication_request(
+                &owner,
+                setup.id(),
+                "reused",
+                CredentialRoute::None,
+                &coral_test_support::fixture_request_id(),
+            ),
+        )
+        .await
+        .unwrap();
+    (count.calls(), publication)
+}
+
+#[tokio::test]
+async fn publication_reuses_only_a_kept_preview_catalog() {
+    let loopback =
+        DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps);
+    for (publisher, materializations) in [
+        (Publisher::Same, 0),
+        (Publisher::AfterOtherPreviews, 1),
+        (Publisher::Restarted, 1),
+        (Publisher::ReconfiguredElsewhere, 1),
+    ] {
+        let (calls, publication) = confirm_and_publish(publisher, loopback, None).await;
+        assert_eq!(calls, materializations, "{publisher:?}");
+        let published = publication.published_provider().expect("{publisher:?}");
+        let expected = match publisher {
+            Publisher::ReconfiguredElsewhere => "Renamed",
+            _ => "Preparation",
+        };
+        assert_eq!(published.display_name(), expected, "{publisher:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_kept_preview_catalog_meets_the_host_policy() {
+    // The preview permits loopback; this host does not.
+    let (calls, publication) = confirm_and_publish(
+        Publisher::Same,
+        DestinationPolicy::default(),
+        Some("http://127.0.0.1:12345"),
+    )
+    .await;
+    assert_eq!(calls, 0);
+    assert_eq!(publication.outcome(), ProviderPublicationOutcome::Failed);
+    assert_eq!(
+        publication.diagnostic().unwrap().code(),
+        "outbound_destination_rejected"
+    );
 }

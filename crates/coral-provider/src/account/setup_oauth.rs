@@ -808,7 +808,7 @@ impl AccountModule {
             )?;
             self.providers
                 .preparation
-                .preview(input.as_ref(), configuration_revision)
+                .preview(&loaded.setup, input.as_ref(), configuration_revision)
                 .await?
         } else {
             None

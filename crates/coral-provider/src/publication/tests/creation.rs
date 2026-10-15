@@ -355,6 +355,8 @@ async fn creation_configuration_change_during_materialization_leaves_setup_reusa
         )
         .await
         .unwrap();
+    // Publish from a Module without the kept catalog, so it materializes.
+    let providers = crate::tests::forgetting_previews(providers);
     let request = retention_request(&setup, CredentialRoute::None);
     let publishing = {
         let providers = providers.clone();
@@ -483,6 +485,8 @@ async fn creation_rechecks_owner_demotion_after_materialization() {
         )
         .await
         .unwrap();
+    // Publish from a Module without the kept catalog, so it materializes.
+    let providers = crate::tests::forgetting_previews(providers);
     let request = retention_request(&setup, CredentialRoute::None);
     let publishing = {
         let providers = providers.clone();

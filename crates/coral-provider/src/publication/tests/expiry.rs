@@ -38,6 +38,8 @@ async fn account_grant_expiring_during_materialization_is_not_promoted() {
         )
         .await
         .unwrap();
+    // Publish from a Module without the kept catalog, so it materializes.
+    let providers = crate::tests::forgetting_previews(providers);
     let grant = accounts
         .authorize_setup(
             &context,
