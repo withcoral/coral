@@ -1797,7 +1797,7 @@ impl Configured {
 
 // Catches: callers each deciding for themselves whether a Setup needs a person,
 // a route that does not suit the source getting through to Publication, or
-// Coral publishing an application whose secret only a person can give.
+// Coral publishing a Provider that needs an Account before anyone signs in.
 #[tokio::test]
 async fn publishability_says_who_can_publish_a_setup_under_a_route() {
     use crate::{PublishabilityRejection as R, SetupPublishability as P};
@@ -1836,11 +1836,12 @@ async fn publishability_says_who_can_publish_a_setup_under_a_route() {
             CredentialRoute::Fixed,
             P::Person,
         ),
+        // Each person's own Account still needs someone to sign in first.
         (
             &bearer,
             Configured::AsSuggested,
             CredentialRoute::Caller,
-            P::Coral,
+            P::Person,
         ),
         (
             &oauth,
