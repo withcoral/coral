@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { Info } from 'lucide-react'
 import { useState } from 'react'
+import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 
 import { IconButton } from '@/wax/components/button/icon-button'
 import { Icon } from '@/wax/components/icon'
@@ -77,6 +78,24 @@ export const LongContent: Story = {
     content:
       'This is a longer tooltip that contains more information. It will wrap to multiple lines when the content exceeds the maximum width.',
     side: 'top',
+  },
+}
+
+// Catches: a URL, which has no spaces, running past the tooltip's edge.
+export const LongUnbrokenContent: Story = {
+  args: {
+    children: <button style={{ padding: '8px 16px' }}>Hover for the scope</button>,
+    content: 'https://graph.microsoft.com/TeamSettings.ReadWrite.All',
+    maxWidth: 200,
+    side: 'top',
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.hover(within(canvasElement).getByRole('button'))
+    const popup = await waitFor(() => {
+      const text = screen.getByText('https://graph.microsoft.com/TeamSettings.ReadWrite.All')
+      return text.closest('[data-open]') ?? text
+    })
+    await expect(popup.scrollWidth).toBeLessThanOrEqual(popup.clientWidth)
   },
 }
 

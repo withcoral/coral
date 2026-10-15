@@ -37,6 +37,8 @@ export const popup = style({
   paddingBlock: '4px',
   paddingInline: '8px',
   ...theme.typography.bodySmall,
+  // A URL or identifier has no spaces; break it rather than cross the edge.
+  overflowWrap: 'anywhere',
   selectors: {
     '&[data-closed]': {
       animation: `${fadeOut} 0.1s ease-in`,

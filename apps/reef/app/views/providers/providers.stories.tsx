@@ -534,6 +534,52 @@ export const ConfigurationOAuthFieldErrors: Story = {
   ),
 }
 
+// Microsoft Graph requests many scopes that share one URL prefix.
+export const ConfigurationOAuthManyScopes: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={{
+        ...configurationSetup,
+        configuration: {
+          ...configurationSetup.configuration!,
+          values: {
+            ...configurationSetup.configuration!.values,
+            authentication: 'oauth',
+            authorizationUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+            tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+            scopes: [
+              'offline_access',
+              ...[
+                'User.Read',
+                'User.ReadBasic.All',
+                'People.Read',
+                'Mail.ReadWrite',
+                'Mail.ReadWrite.Shared',
+                'Mail.Send',
+                'Mail.Send.Shared',
+                'MailboxSettings.ReadWrite',
+                'Calendars.ReadWrite',
+                'Calendars.ReadWrite.Shared',
+                'Contacts.ReadWrite',
+                'Files.ReadWrite.All',
+                'Sites.ReadWrite.All',
+                'Sites.Manage.All',
+                'Tasks.ReadWrite',
+                'Chat.Create',
+                'Chat.ReadWrite',
+                'ChatMessage.Send',
+                'Team.ReadBasic.All',
+                'Channel.ReadBasic.All',
+              ].map((scope) => `https://graph.microsoft.com/${scope}`),
+            ],
+          },
+        },
+      }}
+    />
+  ),
+}
+
 export const ConfigurationRejectedOAuthDraft: Story = {
   render: () => (
     <StepperPage
