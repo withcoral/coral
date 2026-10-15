@@ -104,6 +104,91 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
     );
 }
 
+/// An agent that omits the cursor gets the earlier output back, but only later output ends its wait.
+#[tokio::test(flavor = "multi_thread")]
+async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() {
+    let upstream = Arc::new(SteppedUpstream {
+        entered: tokio::sync::Semaphore::new(0),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+    )
+    .await;
+    let operation = fixture
+        .user_operation("user:cursorless-wait", "Cursorless waits")
+        .await;
+    let actor = &operation.principal;
+    let workspace = &operation.workspace_id;
+    let accepted = fixture.runs.start(actor, workspace, submission(
+        "console.log('first'); await coral.providers.weather.getForecast({}); console.log('second'); await coral.providers.weather.getForecast({}); return 7;"
+    )).await.unwrap();
+    upstream.entered.acquire().await.unwrap().forget();
+    let logged = |update: &crate::RunUpdate| {
+        update
+            .events()
+            .iter()
+            .map(|event| match event.kind() {
+                RunEventKind::ProgramLogged { message, .. } => message.clone(),
+                other => panic!("only Logs were authored: {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = fixture
+        .runs
+        .observe(
+            actor,
+            workspace,
+            accepted.run_id(),
+            &immediate(Some(accepted.next_cursor().clone()), 100)
+                .with_wait(Duration::from_secs(2))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logged(&first), ["first"]);
+
+    let started = tokio::time::Instant::now();
+    let replayed = fixture
+        .runs
+        .observe(
+            actor,
+            workspace,
+            accepted.run_id(),
+            &immediate(None, 100)
+                .with_wait(Duration::from_millis(100))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(100),
+        "earlier output does not end the wait"
+    );
+    assert_eq!(replayed.state(), RunState::Running);
+    assert_eq!(replayed.events(), first.events());
+
+    let cursorless = immediate(None, 100)
+        .with_wait(Duration::from_secs(2))
+        .unwrap();
+    let pending = fixture
+        .runs
+        .observe(actor, workspace, accepted.run_id(), &cursorless);
+    tokio::pin!(pending);
+    tokio::time::timeout(Duration::from_millis(50), &mut pending)
+        .await
+        .expect_err("nothing new was authored yet");
+    upstream.release.add_permits(1);
+    let later = tokio::time::timeout(Duration::from_secs(1), pending)
+        .await
+        .expect("later output ends the wait long before its deadline")
+        .unwrap();
+    assert_eq!(later.state(), RunState::Running);
+    assert_eq!(logged(&later), ["first", "second"]);
+    upstream.release.add_permits(1);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn authored_pages_skip_internal_records_without_losing_order_or_replay() {
     let fixture = TestModules::with_upstream(

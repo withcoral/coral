@@ -107,9 +107,15 @@ export const popupSize = styleVariants({
   xl: { width: '700px' },
 })
 
+/** At this width or less a long-form popup fills the screen, and a rail is modal. */
+export const mobile = '(max-width: 640px)'
+
 export const fullWidthOnMobile = style({
-  '@media': { '(max-width: 640px)': { width: '100vw', maxWidth: '100vw' } },
+  '@media': { [mobile]: { width: '100vw', maxWidth: '100vw' } },
 })
+
+// Beside the page, the rail sits under page menus, dialogs and tooltips.
+export const besidePage = style({ zIndex: zIndex.rail })
 
 export const header = style({
   position: 'sticky',

@@ -107,11 +107,8 @@ test('Unverified email prevents grants, not eligible login or existing access', 
         await breadcrumb(page, 'Unverified profile').waitFor()
         // The Overview's compact member row carries the email as its hover title.
         await page.getByTitle(actor.email, { exact: true }).waitFor()
-        await page.getByRole('link', { name: 'Unverified profile settings', exact: true }).click()
-        await page
-          .getByRole('dialog', { name: 'Workspace settings', exact: true })
-          .getByRole('button', { name: 'Save name', exact: true })
-          .waitFor()
+        await page.getByRole('button', { name: 'Edit workspace name', exact: true }).click()
+        await page.getByRole('textbox', { name: 'Workspace name', exact: true }).waitFor()
       })
     },
     { actor: actor.label, storageState: actor.storageState },

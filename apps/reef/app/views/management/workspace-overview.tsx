@@ -7,7 +7,8 @@ import type { RecipeIcons, SourceChoice } from '@/lib/provider-recipes/choice'
 import { AddProviderLauncher } from '@/views/providers/add-provider'
 import { AgentKeyDialog } from './agent-key-dialog'
 import { ActionDialog, NameInput } from './forms'
-import { ArchivedBanner, ManagementLayout } from './layout'
+import { ManagementLayout } from './layout'
+import { NameHeading } from './name-heading'
 import { Person } from './person'
 import { WorkspaceQuickStart } from './quick-start'
 import type {
@@ -97,12 +98,15 @@ export function WorkspaceOverview({
         endpoint={w.mcpEndpoint}
         onClose={() => setCreated(undefined)}
       />
-      {!active && (
-        <ArchivedBanner workspace={w}>
-          Coral blocks new runs, unsent operation calls and settings changes. Coral keeps the
-          history.
-        </ArchivedBanner>
-      )}
+      <NameHeading
+        name={w.displayName}
+        noun="workspace"
+        canRename={canChange}
+        form={form}
+        intent="rename"
+        etag={w.etag}
+        action={w.path}
+      />
       {active && w.mcpEndpoint && <WorkspaceQuickStart endpoint={w.mcpEndpoint} />}
       <div className={styles.cards}>
         <Card.Container className={styles.panel}>

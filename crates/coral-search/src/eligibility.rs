@@ -2,7 +2,7 @@
 //! Policy owns the exact access decision; an Operation it disables is neither
 //! listed, ranked, described, nor counted toward readiness.
 
-use coral_catalog::{OperationHints, OperationKey};
+use coral_catalog::{HttpMethod, OperationHints, OperationKey};
 use coral_policy::{ExactOperationRules, OperationAccessState};
 
 use crate::{ApprovalRequirement, ProviderId};
@@ -13,8 +13,9 @@ pub(super) fn operation_approval(
     provider_id: &ProviderId,
     operation_key: &OperationKey,
     hints: OperationHints,
+    http_method: Option<HttpMethod>,
 ) -> Option<ApprovalRequirement> {
-    match rules.access_state(provider_id, operation_key, hints) {
+    match rules.access_state(provider_id, operation_key, hints, http_method) {
         OperationAccessState::Disabled => None,
         OperationAccessState::Enabled => Some(ApprovalRequirement::NotRequired),
         OperationAccessState::ApprovalRequired => Some(ApprovalRequirement::Required),

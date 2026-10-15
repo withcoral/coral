@@ -17,6 +17,7 @@ import {
   type Provider,
 } from '@/generated/coral/management/v1/provider_pb'
 import {
+  actionFailure,
   agentName,
   field,
   formContext,
@@ -599,18 +600,14 @@ export async function userAccountAction(
     !(current.canConnect || current.canReconnect)
   )
     return redirect(here, { headers: accountHeaders })
-  const authorization = await api.accounts.startProviderAccountAuthorization({
-    parent: workspace.name,
-    requestId: (form.has('requestId') && field(form, 'requestId')) || randomUUID(),
-    redirectUri: callbackRedirectUri(request, context),
-    target:
-      current.canReconnect && current.account
-        ? {
-            case: 'reconnect',
-            value: { provider: provider.name, account: current.account.id },
-          }
-        : { case: 'provider', value: provider.name },
-  })
+  const authorization = await startYourAuthorization(
+    api,
+    workspace.name,
+    provider.name,
+    current,
+    (form.has('requestId') && field(form, 'requestId')) || randomUUID(),
+    callbackRedirectUri(request, context),
+  )
   // Without a Run to return to, this page shows the connection.
   const progress = authorizationPath(authorization.name, returnTo ?? path)
   if (intent === 'secret') {
@@ -629,6 +626,63 @@ export async function userAccountAction(
   const consent = Boolean(authorization.consentNavigation)
   if (!consent) return redirect(progress, { headers: accountHeaders })
   return await consentRedirect(api, context, authorization.name, progress)
+}
+
+/** Starts your own account's connection: a reconnect when Coral allows one, else a new one. */
+function startYourAuthorization(
+  api: ReturnType<typeof management>,
+  parent: string,
+  provider: string,
+  current: Awaited<ReturnType<typeof userAccountContext>>['current'],
+  requestId: string,
+  redirectUri: string,
+) {
+  return api.accounts.startProviderAccountAuthorization({
+    parent,
+    requestId,
+    redirectUri,
+    target:
+      current.canReconnect && current.account
+        ? { case: 'reconnect', value: { provider, account: current.account.id } }
+        : { case: 'provider', value: provider },
+  })
+}
+
+/**
+ * Connects your own account from a provider's settings without leaving them.
+ * The settings dialog follows the returned progress; a sign-in returns to settings.
+ */
+export async function connectYourAccountAction(
+  request: Request,
+  context: Readonly<RouterContextProvider>,
+  params: { workspace: string; provider: string },
+  form: FormData,
+) {
+  try {
+    const { api, workspace, provider, current } = await userAccountContext(request, context, params)
+    if (!(current.canConnect || current.canReconnect))
+      return data(
+        { error: 'You cannot connect this account now.', credential: null },
+        { headers: accountHeaders },
+      )
+    const authorization = await startYourAuthorization(
+      api,
+      workspace.name,
+      provider.name,
+      current,
+      field(form, 'requestId'),
+      callbackRedirectUri(request, context),
+    )
+    // Not from the request URL: a fetcher posts to the route's `.data` URL.
+    const settings = `${workspace.path}/providers/${uuidOr404(params.provider)}/settings`
+    return data(
+      { error: null, progress: authorizationProgressPath(authorization.name, settings) },
+      { headers: accountHeaders },
+    )
+  } catch (error) {
+    if (error instanceof Response) throw error
+    return actionFailure(error, 'Coral could not connect your account. ')
+  }
 }
 
 /** Disconnects your own account for this provider. */

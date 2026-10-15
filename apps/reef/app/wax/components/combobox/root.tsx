@@ -20,6 +20,8 @@ export interface RootProps {
    * the combobox otherwise replaces it with the selected item when it closes.
    */
   inputValue?: string
+  /** The text an item shows and matches the query on. Omit it when each item is its own text. */
+  itemToStringLabel?: (item: string) => string
   items?: string[]
   multiple?: boolean
   onInputValueChange?: (value: string) => void
@@ -34,6 +36,7 @@ export function Root({
   disabled,
   hideWhenEmpty = false,
   inputValue,
+  itemToStringLabel,
   items,
   multiple,
   onInputValueChange,
@@ -47,7 +50,7 @@ export function Root({
   // keeps Base UI from clearing it on its own; see onInputValueChange.
   const [typed, setTyped] = useState('')
   const query = inputValue ?? typed
-  const matches = (items ?? []).some((item) => filter.contains(item, query))
+  const matches = (items ?? []).some((item) => filter.contains(item, query, itemToStringLabel))
 
   return (
     <AnchorContext.Provider value={{ inputGroupAnchor, setInputGroupAnchor }}>
@@ -57,6 +60,7 @@ export function Root({
         disabled={disabled}
         filter={filter.contains}
         inputValue={query}
+        itemToStringLabel={itemToStringLabel}
         items={items}
         multiple={multiple}
         open={hideWhenEmpty ? open && matches : undefined}

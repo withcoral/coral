@@ -47,6 +47,20 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
     };
     let nested_mcp = "type McpSafeMeta = Record<string, unknown>;\n\
          function forecast(input: ({ \"city\": string; \"options\"?: ({ \"units\"?: \"c\" | \"f\" } & Record<string, unknown>); \"days\"?: Array<number> } & Record<string, unknown>)): Promise<{ data: { content: Array<McpContentBlock>; structuredContent?: unknown; isError?: boolean }; metadata: { kind: \"mcp\"; _meta?: McpSafeMeta } }>;";
+    let status_ranges = {
+        let (aliases, result) = http_result(&[
+            ("Array<Name>", "HttpStatus2xx"),
+            ("Problem", "HttpStatus4xx"),
+            ("Outage", "HttpStatus5xx"),
+        ]);
+        format!(
+            "{aliases}const HttpStatusRangeBrand: unique symbol;\n\
+             type HttpStatus2xx = number & {{ readonly [HttpStatusRangeBrand]: \"2xx\" }};\n\
+             type HttpStatus4xx = number & {{ readonly [HttpStatusRangeBrand]: \"4xx\" }};\n\
+             type HttpStatus5xx = number & {{ readonly [HttpStatusRangeBrand]: \"5xx\" }};\n\
+             function names(): {result};"
+        )
+    };
     let argumentless = {
         let (aliases, result) = http_result(&[("string", "200")]);
         format!("{aliases}function ping(): {result};")
@@ -82,6 +96,11 @@ fn signature_lines_inline_the_input_one_level_and_name_the_rest() {
             nested_mcp,
             Callable::Operation { leaf: "forecast" },
             "forecast(input: { city: string; options?: {…}; days?: Array<number> }): Promise<{ data: object }>",
+        ),
+        (
+            status_ranges.as_str(),
+            Callable::Operation { leaf: "names" },
+            "names(): Promise<{ data: Array<Name> }>",
         ),
         (
             argumentless.as_str(),

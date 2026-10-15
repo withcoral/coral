@@ -297,6 +297,13 @@ const cursor = {
   boxShadow: `inset 0 0 0 2px ${theme.stroke.focused}`,
 }
 export const activeRow = style(cursor)
+// A table that takes focus shows it, unless a cursor row already shows where the keys act.
+export const focusableTable = style({
+  selectors: {
+    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
+    '&:focus-visible:has([data-active])': { outline: 'none' },
+  },
+})
 
 // The marker overlays the existing edge without moving columns or replacing selection.
 export const markedRow = style({

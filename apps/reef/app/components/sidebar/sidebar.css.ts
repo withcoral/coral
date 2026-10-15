@@ -128,6 +128,15 @@ export const workspaceActions = style({
     },
   },
 })
+// Archived Workspaces sit below the active ones, set apart by a rule.
+export const archived = style({
+  borderTop: `1px solid ${theme.stroke.secondary}`,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  marginTop: 8,
+  paddingTop: 8,
+})
 // Child icons line up under the Workspace name: the header's 18px chevron plus
 // SidebarButton's 10px gap.
 export const workspaceChildren = style({

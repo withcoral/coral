@@ -3,7 +3,7 @@ import { loader as oauthCallback } from '@/routes/provider-setup-oauth-callback'
 import { commitCallbackReturn } from './provider-publication-attempt/setup.server'
 import { fakeManagement, fakeManagementTransport } from './management.test-support'
 import { Code, ConnectError } from '@connectrpc/connect'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AccountConnectionState,
   ProviderAccountState,
@@ -19,6 +19,7 @@ import {
   loadAuthorization,
   loadUserAccount,
   userAccountAction,
+  connectYourAccountAction,
   loadUserAccounts,
 } from './accounts.server'
 
@@ -732,3 +733,55 @@ it.each(['bind', 'unbind', 'fixed', 'route', 'reconnect'])(
     expect(mocks.startProviderAccountAuthorization).not.toHaveBeenCalled()
   },
 )
+
+// Catches: connecting your own account from a provider's settings starting a
+// second account in place of a reconnect, a sign-in that does not return to
+// settings, or a start for a provider whose calls use the shared account.
+describe('connecting your account from settings', () => {
+  const settings = `${base}/providers/${providerId}/settings`
+  const connect = () =>
+    connectYourAccountAction(
+      new Request(`http://localhost${settings}.data`, { method: 'POST' }),
+      context,
+      { workspace, provider: providerId },
+      connectForm('connectAccount'),
+    )
+  const progressOf = async () => {
+    const result = (await connect()) as unknown as { data: { progress?: string } }
+    return new URL(result.data.progress!, 'http://localhost')
+  }
+
+  it.each([
+    ['a new account', { canConnect: true }, { case: 'provider', value: provider }],
+    [
+      'a reconnect',
+      {
+        account: { id: 'account', state: ProviderAccountState.RECONNECT_REQUIRED, canManage: true },
+        canReconnect: true,
+      },
+      { case: 'reconnect', value: expect.objectContaining({ provider, account: 'account' }) },
+    ],
+  ])('starts %s and returns to settings', async (_, account, target) => {
+    separateAccounts({ ...account, credentialMethod: CredentialMethod.OAUTH_AUTHORIZATION_CODE })
+    mocks.startProviderAccountAuthorization.mockResolvedValue({ name: authorizationResource })
+    const progress = await progressOf()
+    expect(mocks.startProviderAccountAuthorization).toHaveBeenCalledWith(
+      expect.objectContaining({ target }),
+      expect.anything(),
+    )
+    expect(progress.pathname).toBe(`${base}/account-authorizations/${authorizationId}/progress`)
+    expect(progress.searchParams.get('returnTo')).toBe(settings)
+  })
+
+  it('starts nothing when Coral refuses the connection', async () => {
+    separateAccounts({ canConnect: false, canReconnect: false })
+    const result = (await connect()) as unknown as { data: { error: string } }
+    expect(result.data.error).toBe('You cannot connect this account now.')
+    expect(mocks.startProviderAccountAuthorization).not.toHaveBeenCalled()
+  })
+
+  it('has no account of yours to connect when calls use the shared account', async () => {
+    await expect(connect()).rejects.toMatchObject({ status: 404 })
+    expect(mocks.startProviderAccountAuthorization).not.toHaveBeenCalled()
+  })
+})

@@ -28,7 +28,11 @@ export function UserAccountPage({
 }) {
   const connected = v.state === 'connected'
   const verb = v.state === 'needs_reconnect' ? 'Reconnect' : 'Connect'
-  const returnsToRun = v.returnTo && v.returnTo !== v.accountsPath
+  const returns = v.returnTo && v.returnTo !== v.accountsPath
+  // A provider's settings and a run both open this page; the button names which.
+  const returnLabel = v.returnTo?.split('?')[0].endsWith('/settings')
+    ? 'Return to settings'
+    : 'Return to run'
   const blocked = !v.canConnect && !connected
   const stored = v.account && v.account.state !== 'disconnected' ? v.account : undefined
   const permissions = permissionRows(v.scopes)
@@ -106,10 +110,10 @@ export function UserAccountPage({
             {permissions.length > 0 && <PermissionsTable rows={permissions} />}
           </Section>
         )}
-        {returnsToRun && (
+        {returns && (
           <div className={styles.actions}>
             <Button.InternalLink to={v.returnTo!} variant="secondary">
-              Return to run
+              {returnLabel}
             </Button.InternalLink>
           </div>
         )}
@@ -124,7 +128,7 @@ function guidance(v: UserAccountView): string | undefined {
   const lead = v.state === 'needs_reconnect' ? 'Coral cannot use this account. ' : ''
   return v.oauth
     ? `${lead}Sign in to ${v.providerName} to ${v.state === 'needs_reconnect' ? 'reconnect' : 'connect'} it.`
-    : `${lead}Enter the credentials from ${v.providerName}. Coral does not show them again.`
+    : `${lead}Enter the credentials from ${v.providerName}.`
 }
 
 /** What Coral knows about your stored account, beside the permissions. */
