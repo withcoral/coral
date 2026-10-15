@@ -166,9 +166,10 @@ async fn evaluate(
         "publication failed: {:?}",
         publication.outcome()
     );
-    let published = started.elapsed();
+    // Publication starts the index write before it returns, so time the two
+    // together.
     f.index.settled().await;
-    let indexed = started.elapsed().saturating_sub(published);
+    let indexed = started.elapsed();
     let states = f
         .generations()
         .await
@@ -236,7 +237,7 @@ async fn evaluate(
     let searched = started.elapsed();
     let scores = Scores::of(&ranks);
     report(&format!(
-        "\nsearch eval: {document_path}\n{} Operations, {} queries; publish {published:.1?}, index {indexed:.1?}, search {searched:.1?} in all\n\nrank  query\n{lines}\n{scores}\n",
+        "\nsearch eval: {document_path}\n{} Operations, {} queries; publish and index {indexed:.1?}, search {searched:.1?} in all\n\nrank  query\n{lines}\n{scores}\n",
         operations.len(),
         cases.len(),
     ));
