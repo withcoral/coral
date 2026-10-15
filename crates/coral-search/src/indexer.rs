@@ -98,7 +98,7 @@ pub(crate) struct StatisticsCheck {
 
 /// Compares each Workspace's statistics watermark with its rows. Each
 /// change of a Workspace's rows changes its row count or its newest stamp: an
-/// index write stamps the rows it writes with the time it took the
+/// index write stamps each row it changes with the time it took the
 /// Workspace's lock, later than each stamp before it while the clock moves
 /// forward, and a delete lowers the count. `SQLite` keeps no statistics, so
 /// it has none to check.

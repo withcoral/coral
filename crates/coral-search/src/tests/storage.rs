@@ -340,8 +340,13 @@ async fn postgres_step_two_splits_indexed_names_and_restates_lengths_and_statist
         indexed.length(&doc("create"))
     );
 
-    // Index the Generation again: the indexer writes lengths and statistics
-    // for the new vectors by its own rules.
+    // Index the Generation again from nothing: the indexer writes lengths
+    // and statistics for the new vectors by its own rules. A rewrite over
+    // the kept rows would change no row, so it would prove nothing.
+    modules
+        .index
+        .remove_generation(coral_catalog::ProviderGenerationId::parse(&generation).unwrap());
+    modules.index.settled().await;
     modules
         .index
         .index_active_generation(workspace.clone(), provider.clone());

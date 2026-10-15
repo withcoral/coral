@@ -53,7 +53,7 @@ impl EntityIndexer for OperationIndexer {
         // A Generation keeps its Operations, but the reconcile task prepares
         // entries under the current rules, which may leave one out; a rewrite
         // then removes that row.
-        repository::delete_rows_not_written(transaction, workspace_id, generation_id, attempted_at)
+        repository::delete_rows_not_written(transaction, workspace_id, generation_id, &rows)
             .await?;
         repository::write_generation_state(
             transaction,

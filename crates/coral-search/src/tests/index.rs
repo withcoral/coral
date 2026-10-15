@@ -287,6 +287,7 @@ async fn a_pass_reindexes_a_renamed_provider_under_its_new_name() {
             "Storm Watch"
         )]
     );
+    world.assert_exact_statistics().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -317,6 +318,7 @@ async fn two_concurrent_passes_converge_on_the_rows_one_pass_leaves() {
         stamps,
         "the concurrent passes left nothing for a later pass"
     );
+    world.assert_exact_statistics().await;
 }
 
 #[tokio::test]
@@ -775,6 +777,7 @@ async fn a_renamed_provider_rewrites_its_generation_under_the_new_name() {
             "Storm Watch"
         )]
     );
+    world.assert_exact_statistics().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -880,23 +883,33 @@ async fn postgres_statistics_follow_each_write_and_removal_of_the_workspace() {
 }
 
 #[tokio::test]
-async fn a_write_that_changes_no_term_rewrites_no_term_row() {
-    coral_test_support::database_only!(Postgres);
+async fn a_rewrite_of_an_unchanged_generation_writes_no_search_row() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     world
         .index
         .index_active_generation(world.workspace.clone(), world.tracer.clone());
     world.index.settled().await;
-    let terms = world.row_versions_of("search_terms").await;
-    assert!(!terms.is_empty(), "the write counted the terms");
+    let stamps = world.row_stamps().await;
+    let versions = world.search_row_versions().await;
+    if world.modules.search.database.system() == DatabaseSystem::Postgres {
+        assert!(
+            versions.iter().any(|(table, ..)| table == "search_terms"),
+            "the write counted the terms"
+        );
+    }
 
     world
         .index
         .index_active_generation(world.workspace.clone(), world.tracer.clone());
     world.index.settled().await;
 
-    assert_eq!(world.row_versions_of("search_terms").await, terms);
+    assert_eq!(world.row_stamps().await, stamps, "no row changed");
+    assert_eq!(
+        world.search_row_versions().await,
+        versions,
+        "no row, term, or totals row was written"
+    );
     world.assert_exact_statistics().await;
 }
 
@@ -1184,19 +1197,42 @@ impl World {
         versions
     }
 
-    /// The versions of the Workspace's rows in one search-owned table, as
-    /// [`Self::row_versions`] reads them.
-    async fn row_versions_of(&self, table: &str) -> Vec<(String, String, String)> {
+    /// The versions of the Workspace's Search Entity rows and statistics
+    /// rows, as [`Self::row_versions`] reads them: every row but the state
+    /// rows, whose attempt time each write changes.
+    async fn search_row_versions(&self) -> Vec<(String, String, String)> {
         self.row_versions()
             .await
             .into_iter()
-            .filter(|(row_table, ..)| row_table == table)
+            .filter(|(table, ..)| table != "search_index_states")
             .collect()
     }
 
-    /// Asserts that the Workspace's stored Postgres statistics equal those
-    /// counted again from its rows.
+    /// When each of the Workspace's Search Entity rows last changed, by
+    /// document id.
+    async fn row_stamps(&self) -> Vec<(String, i64)> {
+        self.modules
+            .search
+            .database
+            .fetch_all(
+                Query::select()
+                    .columns(["doc_id", "indexed_at_unix_nanos"].map(Alias::new))
+                    .from(Alias::new("search_entities"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .order_by(Alias::new("doc_id"), Order::Asc)
+                    .to_owned(),
+            )
+            .await
+            .expect("read the row stamps")
+    }
+
+    /// On Postgres, asserts that the Workspace's stored statistics equal
+    /// those counted again from its rows. `SQLite`'s FTS5 keeps its own
+    /// statistics, so there is nothing to compare.
     async fn assert_exact_statistics(&self) {
+        if self.modules.search.database.system() != DatabaseSystem::Postgres {
+            return;
+        }
         assert_eq!(
             self.stored_statistics().await,
             self.recounted_statistics().await,
@@ -1225,9 +1261,10 @@ impl World {
         (terms, self.statistics().await)
     }
 
-    /// The Workspace's Postgres statistics counted again from its rows, by
-    /// the rules the indexer follows: what [`Self::stored_statistics`] holds
-    /// when the statistics are exact.
+    /// The Workspace's Postgres statistics counted again from its rows' vectors,
+    /// by the rules the indexer follows: what [`Self::stored_statistics`]
+    /// holds when the statistics are exact. The mean length counts each
+    /// vector's lexeme positions again, so a stale `doc_len` shows.
     async fn recounted_statistics(&self) -> Statistics {
         let mut transaction = self
             .modules
@@ -1248,8 +1285,11 @@ impl World {
             .expect("count the terms");
         let totals: Vec<(i64, f64)> = transaction
             .fetch_all_sql(
-                "SELECT count(*), coalesce(avg(doc_len), 1.0)::float8 \
-                 FROM search_entities WHERE workspace_id = $1",
+                "SELECT count(*), coalesce(avg(coalesce(( \
+                     SELECT sum(coalesce(array_length(u.positions, 1), 1)) \
+                     FROM unnest(d.tsv) AS u(lexeme, positions, weights) \
+                 ), 0)), 1.0)::float8 \
+                 FROM search_entities AS d WHERE d.workspace_id = $1",
                 workspace(),
             )
             .await
@@ -1371,21 +1411,15 @@ impl World {
         rows.into_iter().map(OperationRow::from).collect()
     }
 
-    /// When each of the Workspace's rows and state rows was last written, by
-    /// document or target id.
+    /// When each of the Workspace's rows last changed and each of its state
+    /// rows was last attempted, by document or target id. A write that
+    /// changes no row still records its attempt in the state row.
     async fn write_stamps(&self) -> Vec<(String, i64)> {
-        let database = &self.modules.search.database;
-        let mut stamps: Vec<(String, i64)> = database
-            .fetch_all(
-                Query::select()
-                    .columns(["doc_id", "indexed_at_unix_nanos"].map(Alias::new))
-                    .from(Alias::new("search_entities"))
-                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
-                    .to_owned(),
-            )
-            .await
-            .expect("read the row stamps");
-        let states: Vec<(String, i64)> = database
+        let mut stamps = self.row_stamps().await;
+        let states: Vec<(String, i64)> = self
+            .modules
+            .search
+            .database
             .fetch_all(
                 Query::select()
                     .columns(["target_id", "attempted_at_unix_nanos"].map(Alias::new))

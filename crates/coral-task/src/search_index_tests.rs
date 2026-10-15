@@ -44,7 +44,7 @@ async fn one_reconcile_pass_indexes_a_function_a_notification_missed_and_a_secon
     assert_eq!(
         indexed_at(&fixture).await,
         stamps,
-        "a second pass rewrites nothing"
+        "a second pass changes nothing"
     );
 }
 
