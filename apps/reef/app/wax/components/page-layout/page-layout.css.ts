@@ -6,6 +6,9 @@ import { breakpoints } from '@/styles/breakpoints'
 
 import { TOP_BAR_HEIGHT_PX } from './constants'
 
+// A breadcrumb link's height: the one row the bar holds.
+const LINK_HEIGHT_PX = 36
+
 export const container = style({
   display: 'flex',
   flexDirection: 'column',
@@ -25,7 +28,7 @@ export const topBar = style({
   // brand, with the same room under them as above. The bar stays one row of
   // links tall, so single-segment and linked breadcrumbs match.
   minHeight: TOP_BAR_HEIGHT_PX,
-  paddingBlock: 12,
+  paddingBlock: (TOP_BAR_HEIGHT_PX - LINK_HEIGHT_PX) / 2,
   paddingInline: 24,
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {

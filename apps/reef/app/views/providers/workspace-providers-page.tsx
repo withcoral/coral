@@ -775,7 +775,6 @@ function ProvidersTableScreen({
                 </>
               }
               name={providerLabel(provider)}
-              count={provider.totalCount}
               trailing={
                 <>
                   <Tooltip content={`Show only ${providerLabel(provider)}`}>
@@ -811,8 +810,6 @@ function ProvidersTableScreen({
           id: OPERATION_FILTER_ID,
           label: 'Filter operations',
           shortcut: '$mod+f',
-          // The filter spans the table's width, so the toolbar hangs from the same left edge.
-          fill: true,
           value: tableFilterInput,
           onChange: setTableFilterInput,
         }}

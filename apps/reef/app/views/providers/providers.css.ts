@@ -140,10 +140,6 @@ export const helpIcon = style({ alignItems: 'center', display: 'inline-flex' })
 // The table scrolls, so the browser can focus it. While a keyboard cursor row
 // shows where the keys act, the table draws no focus outline of its own.
 export const providersTable = style({
-  // The rail's divider and the page's rules already frame the table, so it
-  // draws no border of its own.
-  border: 0,
-  borderRadius: 0,
   minHeight: 0,
   selectors: { '&:focus:has([data-active])': { outline: 'none' } },
 })

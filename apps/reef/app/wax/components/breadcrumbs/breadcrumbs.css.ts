@@ -10,7 +10,6 @@ export const breadcrumbList = style({
   flexWrap: 'wrap',
   gap: 4,
   minWidth: 0,
-  padding: '6px 0',
 })
 
 export const breadcrumbItem = style({

@@ -8,9 +8,9 @@ export const brand = style({
   color: theme.content.primary,
   display: 'inline-flex',
   flexShrink: 0,
-  gap: 8,
+  gap: 9,
 })
 
-export const mark = style({ display: 'block', flexShrink: 0, height: 28, width: 'auto' })
+export const mark = style({ display: 'block', flexShrink: 0, height: 22, width: 'auto' })
 
-export const wordmark = style({ display: 'block', flexShrink: 0, height: 18, width: 'auto' })
+export const wordmark = style({ display: 'block', flexShrink: 0, height: 15, width: 'auto' })

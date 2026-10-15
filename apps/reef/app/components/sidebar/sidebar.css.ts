@@ -5,7 +5,8 @@ import { TOP_BAR_HEIGHT_PX } from '@/wax/components/page-layout/constants'
 const SIDEBAR_PADDING_PX = 12
 // The masthead centres the brand on the page's top bar beside it.
 const MASTHEAD_HEIGHT_PX = TOP_BAR_HEIGHT_PX - 2 * SIDEBAR_PADDING_PX
-const IDENTITY_HEIGHT_PX = 36
+// As tall as the collapse toggle beside the brand.
+const IDENTITY_HEIGHT_PX = 32
 export const sidebar = style({
   backgroundColor: theme.surface.main,
   display: 'flex',
