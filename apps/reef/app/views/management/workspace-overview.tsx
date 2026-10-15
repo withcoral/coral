@@ -9,6 +9,7 @@ import { AgentKeyDialog } from './agent-key-dialog'
 import { ActionDialog, NameInput } from './forms'
 import { ManagementLayout, trail } from './layout'
 import { NameHeading } from './name-heading'
+import { OnboardingDialog } from './onboarding-dialog'
 import { Person } from './person'
 import { WorkspaceQuickStart } from './quick-start'
 import type {
@@ -44,6 +45,8 @@ export interface WorkspaceOverviewProps {
   recipes: readonly SourceChoice[]
   /** Recent activity totals, supplied by the route. */
   summary?: ReactNode
+  /** Whether this visit follows the workspace's creation, so onboarding opens. */
+  onboarding?: boolean
 }
 
 /**
@@ -59,6 +62,7 @@ export function WorkspaceOverview({
   form,
   recipes,
   summary,
+  onboarding = false,
 }: WorkspaceOverviewProps) {
   const owner = w.effectiveRole === 'owner'
   const active = w.state === 'active'
@@ -68,6 +72,8 @@ export function WorkspaceOverview({
   const [created, setCreated] = useState<ActionResult>()
   const [createOpen, setCreateOpen] = useState(false)
   const createTrigger = useRef<HTMLButtonElement>(null)
+  // Revalidation reports no onboarding after the first load, so it must not close it.
+  const [onboardingOpen, setOnboardingOpen] = useState(onboarding)
   const members = owners?.map((o) => ({ profile: o.profile, user: o.user, enabled: o.enabled }))
   if (members && ownMembership && !members.some((m) => m.user === ownMembership.user))
     members.unshift({
@@ -108,6 +114,15 @@ export function WorkspaceOverview({
         endpoint={w.connectEndpoint}
         onClose={() => setCreated(undefined)}
       />
+      {/* Without an MCP URL there is no prompt to give, so onboarding does not open. */}
+      {w.mcpEndpoint && (
+        <OnboardingDialog
+          displayName={w.displayName}
+          endpoint={w.mcpEndpoint}
+          open={onboardingOpen}
+          onClose={() => setOnboardingOpen(false)}
+        />
+      )}
       {active && w.connectEndpoint && <WorkspaceQuickStart endpoint={w.connectEndpoint} />}
       <div className={styles.cards}>
         <Card.Container className={styles.panel}>
