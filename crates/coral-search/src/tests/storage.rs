@@ -294,18 +294,39 @@ async fn postgres_step_two_splits_indexed_names_and_restates_lengths_and_statist
     crate::storage::prepare_storage_through(&database, 1)
         .await
         .expect("boot at stream version 1");
+    // This binary's statistics count also writes the watermark that step 3
+    // adds. The columns exist only while it indexes, so the database then
+    // has the shape a version 1 binary left.
+    modules
+        .fixture
+        .execute_fixture_sql(
+            "ALTER TABLE search_stats \
+             ADD COLUMN counted_rows BIGINT, ADD COLUMN counted_max_indexed_at BIGINT",
+        )
+        .await
+        .expect("add the watermark columns");
     let user = organization_user(database.clone(), USER).await;
     let workspace = modules.create_workspace(&user).await;
     let provider = modules
         .publish_openapi(&user, &workspace, NAMES, "tracker", 20)
         .await;
     modules.converge().await;
+    modules
+        .fixture
+        .execute_fixture_sql(
+            "ALTER TABLE search_stats \
+             DROP COLUMN counted_rows, DROP COLUMN counted_max_indexed_at",
+        )
+        .await
+        .expect("drop the watermark columns");
     let generation = active_generation(&database, &provider).await;
     let doc = |key: &str| format!("{generation}:{key}");
     assert!(!vector_matches(&database, &doc("listComments"), "comments:A").await);
     let indexed = Statistics::read(&database, &workspace).await;
 
-    prepare_storage(&database).await.expect("apply step 2");
+    prepare_storage(&database)
+        .await
+        .expect("apply steps 2 and 3");
 
     assert!(vector_matches(&database, &doc("listComments"), "comments:A").await);
     let upgraded = Statistics::read(&database, &workspace).await;
@@ -639,7 +660,7 @@ async fn vector_matches(database: &Database, doc: &str, query: &str) -> bool {
 fn supported_version(database: &Database) -> i64 {
     match database.system() {
         DatabaseSystem::Sqlite => 1,
-        DatabaseSystem::Postgres => 2,
+        DatabaseSystem::Postgres => 3,
     }
 }
 

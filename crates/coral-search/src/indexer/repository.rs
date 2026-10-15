@@ -8,9 +8,7 @@ use coral_db::{DatabaseSystem, Error, Transaction};
 use coral_functions::SavedFunctionId;
 use coral_provider::ProviderId;
 use coral_workspace::{Principal, WorkspaceId};
-use sea_query::{
-    DeleteStatement, Expr, ExprTrait as _, Iden, OnConflict, Query, SimpleExpr, UnionType,
-};
+use sea_query::{DeleteStatement, Expr, ExprTrait as _, Iden, OnConflict, Query, SimpleExpr};
 
 use super::IndexError;
 use crate::CallPath;
@@ -60,14 +58,6 @@ enum SearchIndexStates {
     Error,
 }
 
-/// The Postgres `search_stats` table and the column the reconcile pass
-/// reads, for sea-query. Each row holds one Workspace's ranking totals.
-#[derive(Iden)]
-enum SearchStats {
-    Table,
-    WorkspaceId,
-}
-
 const OPERATION: &str = "operation";
 const SAVED_FUNCTION: &str = "saved_function";
 const COMPLETE: &str = "complete";
@@ -75,6 +65,40 @@ const FAILED: &str = "failed";
 
 /// Rows per upsert statement, well under each backend's bind limit.
 const UPSERT_CHUNK_ROWS: usize = 500;
+
+/// The class of the Postgres advisory lock on one Workspace's search index
+/// writes, ASCII `srch`. The second key is the hash of the Workspace id. The
+/// two-key form never conflicts with the one-key lock of the stream steps.
+const WORKSPACE_LOCK_CLASS: i32 = 0x7372_6368;
+
+/// On Postgres, takes the transaction-scoped lock on the Workspace's search
+/// index writes, so two processes that write one Workspace take turns.
+/// `Database::begin` runs at the server's default isolation, read committed,
+/// so each later statement of the transaction sees what the previous holder
+/// committed, and its statistics count includes those rows. `SQLite`
+/// serializes every write already.
+pub(super) async fn lock_workspace(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<(), Error> {
+    lock_workspace_id(transaction, &workspace_id.to_string()).await
+}
+
+async fn lock_workspace_id(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &str,
+) -> Result<(), Error> {
+    if transaction.system() != DatabaseSystem::Postgres {
+        return Ok(());
+    }
+    transaction
+        .execute_sql(
+            "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+            sea_query::Values(vec![WORKSPACE_LOCK_CLASS.into(), workspace_id.into()]),
+        )
+        .await?;
+    Ok(())
+}
 
 /// The columns an Operation row sets, in [`OperationRow::values`] order. The
 /// first two are the key.
@@ -275,8 +299,9 @@ pub(super) async fn write_generation_state(
 }
 
 /// Deletes one Generation's Operation rows and state row, then refreshes the
-/// statistics of the Workspace its state row named. Nothing is refreshed when
-/// the index held no state for the Generation.
+/// statistics of the Workspace its state row named, under that Workspace's
+/// lock. Nothing is locked or refreshed when the index held no state for the
+/// Generation: the next reconcile pass sees the changed rows.
 pub(super) async fn delete_generation(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
@@ -292,6 +317,9 @@ pub(super) async fn delete_generation(
                 .to_owned(),
         )
         .await?;
+    if let Some((workspace_id,)) = &workspace {
+        lock_workspace_id(transaction, workspace_id).await?;
+    }
     transaction
         .execute(
             Query::delete()
@@ -758,32 +786,67 @@ pub(super) async fn failed_functions(
         .collect()
 }
 
-/// On Postgres, reads every Workspace that has rows or statistics, each once:
-/// a Workspace whose last row went still has statistics to rewrite. `SQLite`
-/// keeps no statistics of its own, so it has none.
-pub(super) async fn workspaces_with_statistics(
+/// What a statistics count saw of one Workspace's rows: how many, and the
+/// newest `indexed_at_unix_nanos`, `None` when there were none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Watermark {
+    rows: i64,
+    max_indexed_at_unix_nanos: Option<i64>,
+}
+
+/// A Workspace id, its stored watermark's row count and newest stamp, and
+/// its rows' count and newest stamp now.
+type WatermarkColumns = (String, Option<i64>, Option<i64>, i64, Option<i64>);
+
+/// One Workspace's statistics watermark beside its rows now.
+pub(super) struct WorkspaceWatermarks {
+    pub(super) workspace_id: WorkspaceId,
+    /// The watermark the last count stored; `None` when no count stored one.
+    pub(super) counted: Option<Watermark>,
+    /// The watermark of the Workspace's rows now.
+    pub(super) current: Watermark,
+}
+
+/// On Postgres, reads the watermarks of every Workspace that has rows or
+/// statistics, each once: a Workspace whose last row went still has
+/// statistics to rewrite. `SQLite` keeps no statistics of its own, so it has
+/// none.
+pub(super) async fn statistics_watermarks(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<WorkspaceId>, IndexError> {
+) -> Result<Vec<WorkspaceWatermarks>, IndexError> {
     if transaction.system() != DatabaseSystem::Postgres {
         return Ok(Vec::new());
     }
-    let rows: Vec<(String,)> = transaction
-        .fetch_all(
-            Query::select()
-                .column(SearchEntities::WorkspaceId)
-                .from(SearchEntities::Table)
-                .union(
-                    UnionType::Distinct,
-                    Query::select()
-                        .column(SearchStats::WorkspaceId)
-                        .from(SearchStats::Table)
-                        .to_owned(),
-                )
-                .to_owned(),
+    let rows: Vec<WatermarkColumns> = transaction
+        .fetch_all_sql(
+            "SELECT coalesce(e.workspace_id, s.workspace_id), \
+                 s.counted_rows, s.counted_max_indexed_at, \
+                 coalesce(e.row_count, 0), e.max_indexed_at \
+             FROM ( \
+                 SELECT workspace_id, count(*) AS row_count, \
+                     max(indexed_at_unix_nanos) AS max_indexed_at \
+                 FROM search_entities GROUP BY workspace_id \
+             ) AS e \
+             FULL JOIN search_stats AS s ON s.workspace_id = e.workspace_id",
+            sea_query::Values(Vec::new()),
         )
         .await?;
-    rows.iter()
-        .map(|(workspace_id,)| parse_workspace_id(workspace_id))
+    rows.into_iter()
+        .map(
+            |(workspace_id, counted_rows, counted_max, rows, max_indexed_at_unix_nanos)| {
+                Ok(WorkspaceWatermarks {
+                    workspace_id: parse_workspace_id(&workspace_id)?,
+                    counted: counted_rows.map(|rows| Watermark {
+                        rows,
+                        max_indexed_at_unix_nanos: counted_max,
+                    }),
+                    current: Watermark {
+                        rows,
+                        max_indexed_at_unix_nanos,
+                    },
+                })
+            },
+        )
         .collect()
 }
 
@@ -872,10 +935,12 @@ pub(super) async fn refresh_function_length(
 
 /// On Postgres, rewrites a Workspace's ranking statistics from its rows: the
 /// document frequency of every lexeme, the document count, and the mean
-/// document length. `SQLite`'s FTS5 keeps its own statistics.
+/// document length. `SQLite`'s FTS5 keeps its own statistics. The caller
+/// holds the Workspace's lock.
 ///
-/// The term rows are upserts, so two processes that refresh one Workspace at
-/// once do not collide on a term. Returns the rows written or deleted.
+/// One statement counts and writes, so the counts and the watermark beside
+/// them come from one snapshot: `ts_stat` reads its query with the snapshot
+/// of the statement that calls it. Returns the rows written or deleted.
 pub(super) async fn refresh_workspace_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -890,33 +955,51 @@ async fn refresh_statistics(
     if transaction.system() != DatabaseSystem::Postgres {
         return Ok(0);
     }
-    let workspace = || sea_query::Values(vec![workspace_id.into()]);
-    let deleted = transaction
-        .execute_sql(
-            "DELETE FROM search_terms WHERE workspace_id = $1",
-            workspace(),
-        )
-        .await?;
     // `ts_stat` takes query text, so the Workspace id enters it quoted as a
     // literal by `format('%L')`; the value itself still travels as a bind.
-    let terms = transaction
-        .execute_sql(
-            "INSERT INTO search_terms (workspace_id, term, ndoc) \
-             SELECT $1::text, word, ndoc \
-             FROM ts_stat(format('SELECT tsv FROM search_entities WHERE workspace_id = %L', $1::text)) \
-             ON CONFLICT (workspace_id, term) DO UPDATE SET ndoc = excluded.ndoc",
-            workspace(),
+    // The sub-statements of one statement must not write one row twice, so
+    // the delete takes only the terms the count no longer holds.
+    let (written,): (i64,) = transaction
+        .fetch_all_sql(
+            "WITH counted AS MATERIALIZED ( \
+                 SELECT word AS term, ndoc \
+                 FROM ts_stat(format( \
+                     'SELECT tsv FROM search_entities WHERE workspace_id = %L', $1::text \
+                 )) \
+             ), \
+             gone AS ( \
+                 DELETE FROM search_terms AS t \
+                 WHERE t.workspace_id = $1::text \
+                   AND NOT EXISTS (SELECT 1 FROM counted AS c WHERE c.term = t.term) \
+                 RETURNING 1 \
+             ), \
+             terms AS ( \
+                 INSERT INTO search_terms (workspace_id, term, ndoc) \
+                 SELECT $1::text, term, ndoc FROM counted \
+                 ON CONFLICT (workspace_id, term) DO UPDATE SET ndoc = excluded.ndoc \
+                 RETURNING 1 \
+             ), \
+             totals AS ( \
+                 INSERT INTO search_stats ( \
+                     workspace_id, total_docs, avgdl, counted_rows, counted_max_indexed_at \
+                 ) \
+                 SELECT $1::text, count(*), coalesce(avg(doc_len), 1.0), \
+                     count(*), max(indexed_at_unix_nanos) \
+                 FROM search_entities WHERE workspace_id = $1::text \
+                 ON CONFLICT (workspace_id) DO UPDATE \
+                 SET total_docs = excluded.total_docs, avgdl = excluded.avgdl, \
+                     counted_rows = excluded.counted_rows, \
+                     counted_max_indexed_at = excluded.counted_max_indexed_at \
+                 RETURNING 1 \
+             ) \
+             SELECT (SELECT count(*) FROM gone) + (SELECT count(*) FROM terms) \
+                 + (SELECT count(*) FROM totals)",
+            sea_query::Values(vec![workspace_id.into()]),
         )
-        .await?;
-    let totals = transaction
-        .execute_sql(
-            "INSERT INTO search_stats (workspace_id, total_docs, avgdl) \
-             SELECT $1::text, count(*), coalesce(avg(doc_len), 1.0) \
-             FROM search_entities WHERE workspace_id = $1::text \
-             ON CONFLICT (workspace_id) DO UPDATE \
-             SET total_docs = excluded.total_docs, avgdl = excluded.avgdl",
-            workspace(),
-        )
-        .await?;
-    Ok(deleted + terms + totals)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(sqlx::Error::RowNotFound)?;
+    // A sum of counts is never negative.
+    Ok(written.unsigned_abs())
 }

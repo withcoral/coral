@@ -29,6 +29,7 @@ impl EntityIndexer for SavedFunctionIndexer {
         transaction: &mut Transaction<'_>,
         entry: &SavedFunctionEntry,
     ) -> Result<(), IndexError> {
+        repository::lock_workspace(transaction, entry.workspace_id()).await?;
         let row = function_row(entry, now_unix_nanos()?)?;
         repository::upsert_function_row(transaction, &row).await?;
         repository::delete_function_state(transaction, entry.workspace_id(), entry.id()).await?;
@@ -91,6 +92,7 @@ pub(crate) async fn record_failed_attempt(
     entry: &SavedFunctionEntry,
     error: &IndexError,
 ) -> Result<(), IndexError> {
+    repository::lock_workspace(transaction, entry.workspace_id()).await?;
     repository::delete_function_row(transaction, entry.workspace_id(), entry.id()).await?;
     repository::write_failed_function_state(
         transaction,

@@ -53,7 +53,9 @@ pub(crate) trait EntityIndexer: Send + Sync {
     type Expected: Send + Sync;
 
     /// Writes the entry's rows and state, all or nothing within the
-    /// transaction. Writing the same entry again leaves the same rows.
+    /// transaction. Writing the same entry again leaves the same rows. The
+    /// first statement takes the Workspace's lock, so the write's
+    /// statistics count sees every write of that Workspace before it.
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
@@ -84,20 +86,45 @@ pub(crate) trait EntityIndexer: Send + Sync {
     ) -> Result<Vec<&'e Self::Expected>, IndexError>;
 }
 
-/// Reads every Workspace whose Postgres statistics a reconcile pass
-/// rewrites: each that has rows or statistics. `SQLite` has none.
-pub(crate) async fn workspaces_with_statistics(
-    transaction: &mut Transaction<'_>,
-) -> Result<Vec<WorkspaceId>, IndexError> {
-    repository::workspaces_with_statistics(transaction).await
+/// The Workspaces a reconcile pass compared, and those among them whose
+/// Postgres statistics it must count again.
+pub(crate) struct StatisticsCheck {
+    /// The number of Workspaces that have rows or statistics.
+    pub(crate) workspaces_checked: usize,
+    /// The Workspaces whose rows changed after their last count, or whose
+    /// statistics no count with a watermark wrote.
+    pub(crate) stale: Vec<WorkspaceId>,
 }
 
-/// On Postgres, rewrites one Workspace's ranking statistics from its rows.
-/// Returns the statistics rows written or deleted.
+/// Compares each Workspace's statistics watermark with its rows. Each
+/// change of a Workspace's rows changes its row count or its newest stamp: an
+/// index write stamps the rows it writes with the time it took the
+/// Workspace's lock, later than each stamp before it while the clock moves
+/// forward, and a delete lowers the count. `SQLite` keeps no statistics, so
+/// it has none to check.
+pub(crate) async fn check_statistics(
+    transaction: &mut Transaction<'_>,
+) -> Result<StatisticsCheck, IndexError> {
+    let watermarks = repository::statistics_watermarks(transaction).await?;
+    let workspaces_checked = watermarks.len();
+    let stale = watermarks
+        .into_iter()
+        .filter(|workspace| workspace.counted != Some(workspace.current))
+        .map(|workspace| workspace.workspace_id)
+        .collect();
+    Ok(StatisticsCheck {
+        workspaces_checked,
+        stale,
+    })
+}
+
+/// On Postgres, takes the Workspace's lock and rewrites its ranking
+/// statistics from its rows. Returns the statistics rows written or deleted.
 pub(crate) async fn refresh_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
 ) -> Result<u64, IndexError> {
+    repository::lock_workspace(transaction, workspace_id).await?;
     Ok(repository::refresh_workspace_statistics(transaction, workspace_id).await?)
 }
 

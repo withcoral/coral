@@ -55,10 +55,10 @@ impl SearchIndex {
     /// 3. Removes the rows and state rows of every Generation that is no
     ///    Provider's active Generation. Best effort. Saved Function rows never
     ///    outlive their function.
-    /// 4. On Postgres, rewrites the statistics of every Workspace, not only
-    ///    those this pass wrote: two processes that write one Workspace at
-    ///    once can each count without the other's rows, and nothing else
-    ///    corrects that until the Workspace's next write.
+    /// 4. On Postgres, recounts the statistics of every Workspace whose rows
+    ///    changed after its last count, not only those this pass wrote: a
+    ///    Saved Function delete cascades to its row without an index write,
+    ///    and step 3 removes rows without a count.
     ///
     /// Removal runs first, in a transaction of its own that reads the active
     /// Generations again; a failed removal is logged and the pass goes on.
@@ -69,7 +69,8 @@ impl SearchIndex {
     /// The pass runs in a root span, `coral.search.reconcile`, and each step
     /// in a child span. Each span records its `duration_ms`. The statistics
     /// step and the pass also record the Workspaces the step checked and
-    /// recounted, and the statistics rows it wrote.
+    /// recounted, and the statistics rows it wrote. A pass that finds no
+    /// change writes no row.
     pub async fn reconcile(&self) {
         let _write = self.writes.lock().await;
         let pass = tracing::info_span!(
@@ -88,8 +89,8 @@ impl SearchIndex {
     }
 
     /// Runs the steps of one pass, each in its own span. `None` when the pass
-    /// cannot start or cannot list the Workspaces: no span then records
-    /// counts the pass did not take.
+    /// cannot start or cannot read the statistics watermarks: no span then
+    /// records counts the pass did not take.
     async fn run_pass(&self) -> Option<StatisticsWork> {
         let Some(now) = crate::unix_now_nanos() else {
             // TODO: an error monitor for failed index writes is still to be set up.
@@ -123,7 +124,7 @@ impl SearchIndex {
             workspaces_recounted = Empty,
             rows_written = Empty,
         );
-        let statistics = step(span.clone(), self.refresh_every_workspace()).await?;
+        let statistics = step(span.clone(), self.refresh_stale_workspaces()).await?;
         statistics.record(&span);
         Some(statistics)
     }
@@ -246,31 +247,31 @@ impl SearchIndex {
         }
     }
 
-    /// Step 4 of a pass: on Postgres, rewrites every Workspace's statistics,
-    /// one Workspace per transaction. `None` when the Workspaces cannot be
-    /// listed.
-    async fn refresh_every_workspace(&self) -> Option<StatisticsWork> {
-        let workspaces = self
+    /// Step 4 of a pass: on Postgres, recounts the statistics of each
+    /// Workspace whose watermark no longer matches its rows, one Workspace per
+    /// transaction under its lock. `None` when the watermarks cannot be read.
+    async fn refresh_stale_workspaces(&self) -> Option<StatisticsWork> {
+        let check = self
             .within_limit(async {
                 let mut transaction = self.database.begin_read_snapshot().await?;
-                let workspaces = indexer::workspaces_with_statistics(&mut transaction).await?;
+                let check = indexer::check_statistics(&mut transaction).await?;
                 transaction.rollback().await?;
-                Ok(workspaces)
+                Ok(check)
             })
             .await;
-        let workspaces = match workspaces {
-            Ok(workspaces) => workspaces,
+        let check = match check {
+            Ok(check) => check,
             Err(error) => {
                 // TODO: an error monitor for failed index writes is still to be set up.
-                tracing::error!(error = %error, "failed to list the Workspaces to refresh search statistics for");
+                tracing::error!(error = %error, "failed to check the Workspaces' search statistics");
                 return None;
             }
         };
         let mut work = StatisticsWork {
-            workspaces_checked: u64::try_from(workspaces.len()).unwrap_or(u64::MAX),
+            workspaces_checked: u64::try_from(check.workspaces_checked).unwrap_or(u64::MAX),
             ..StatisticsWork::default()
         };
-        for workspace_id in &workspaces {
+        for workspace_id in &check.stale {
             let refreshed = self
                 .within_limit(async {
                     let mut transaction = self.database.begin().await?;
@@ -301,9 +302,9 @@ impl SearchIndex {
 /// What the statistics step of a pass did.
 #[derive(Debug, Default, Clone, Copy)]
 struct StatisticsWork {
-    /// The Workspaces the step listed.
+    /// The Workspaces whose watermark the step compared.
     workspaces_checked: u64,
-    /// The Workspaces whose statistics the step rewrote.
+    /// The Workspaces whose statistics the step counted again.
     workspaces_recounted: u64,
     /// The `search_terms` and `search_stats` rows the step wrote or deleted.
     rows_written: u64,

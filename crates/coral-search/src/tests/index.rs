@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use coral_db::DatabaseSystem;
 use coral_provider::GenerationEntries;
-use coral_workspace::{AuthenticatedUser, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
@@ -53,11 +53,17 @@ async fn one_reconcile_pass_indexes_a_published_generation_and_a_second_changes_
         )]
     );
     let stamps = world.write_stamps().await;
+    let versions = world.row_versions().await;
     world.index.reconcile().await;
     assert_eq!(
         world.write_stamps().await,
         stamps,
         "a second pass rewrites nothing"
+    );
+    assert_eq!(
+        world.row_versions().await,
+        versions,
+        "a second pass writes no row"
     );
 }
 
@@ -314,43 +320,57 @@ async fn two_concurrent_passes_converge_on_the_rows_one_pass_leaves() {
 }
 
 #[tokio::test]
-async fn a_pass_rewrites_the_statistics_of_a_workspace_it_did_not_write() {
+async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
     coral_test_support::database_only!(Postgres);
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
-    world.index.reconcile().await;
-    let statistics = world.statistics().await;
-    assert!(world.has_term("forecast").await);
-
-    // What a concurrent write in another process can leave behind.
+    let principal = AuthenticatedPrincipal::user(world.user.clone());
     world
         .modules
-        .fixture
-        .execute_fixture_sql(
-            "DELETE FROM search_terms; UPDATE search_stats SET total_docs = total_docs + 7;",
+        .save_function(
+            &principal,
+            &world.workspace,
+            "internal.summarizeTides",
+            "Summarize the tides",
+            60,
         )
-        .await
-        .expect("skew the statistics");
+        .await;
+    world.index.reconcile().await;
+    assert!(world.has_term("tides").await);
+
+    // The function's row cascades with it, and no index write follows.
+    world
+        .modules
+        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .await;
+    assert!(world.has_term("tides").await, "nothing recounted yet");
     world.index.reconcile().await;
 
-    assert_eq!(world.statistics().await, statistics);
-    assert!(world.has_term("forecast").await);
+    assert!(!world.has_term("tides").await);
+    assert_eq!(
+        world.stored_statistics().await,
+        world.recounted_statistics().await
+    );
 }
 
 #[tokio::test]
 async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
-
+    let principal = AuthenticatedPrincipal::user(world.user.clone());
+    world
+        .modules
+        .save_function(
+            &principal,
+            &world.workspace,
+            "internal.summarizeTides",
+            "Summarize the tides",
+            60,
+        )
+        .await;
     let spans = CapturedSpans::default();
-    {
-        let _subscriber = tracing::subscriber::set_default(
-            tracing_subscriber::Registry::default().with(spans.clone()),
-        );
-        world.index.reconcile().await;
-    }
 
-    let recorded = spans.recorded();
+    let recorded = world.traced_pass(&spans).await;
     assert_eq!(
         recorded.iter().map(|span| span.name).collect::<Vec<_>>(),
         [
@@ -368,27 +388,48 @@ async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
             span.name
         );
     }
-    let [pass, .., statistics] = recorded.as_slice() else {
+    // Only Postgres keeps statistics of its own. Each index write counts its
+    // Workspace, so the statistics step finds nothing to count after them.
+    let checked = match world.modules.search.database.system() {
+        DatabaseSystem::Postgres => 1,
+        DatabaseSystem::Sqlite => 0,
+    };
+    assert_eq!(statistics_work(&recorded), (checked, 0, false));
+
+    world
+        .modules
+        .delete_function(&principal, &world.workspace, "internal.summarizeTides", 70)
+        .await;
+    assert_eq!(
+        statistics_work(&world.traced_pass(&spans).await),
+        (checked, checked, checked > 0),
+        "the pass after a cascade counts the Workspace again"
+    );
+    assert_eq!(
+        statistics_work(&world.traced_pass(&spans).await),
+        (checked, 0, false),
+        "a pass with no changes counts nothing"
+    );
+}
+
+/// The statistics work a pass's spans record: the Workspaces checked and
+/// recounted, and whether any row was written. The pass's span and its
+/// statistics step's span record the same work.
+fn statistics_work(recorded: &[CapturedSpan]) -> (u64, u64, bool) {
+    let [pass, .., statistics] = recorded else {
         panic!("a pass and its steps");
     };
-    // Only Postgres keeps statistics of its own; the pass reports its last
-    // step's work.
-    let expected = match world.modules.search.database.system() {
-        DatabaseSystem::Postgres => (Some(1), Some(1), true),
-        DatabaseSystem::Sqlite => (Some(0), Some(0), false),
+    let work = |span: &CapturedSpan| {
+        (
+            span.u64_field("workspaces_checked")
+                .expect("Workspaces checked"),
+            span.u64_field("workspaces_recounted")
+                .expect("Workspaces recounted"),
+            span.u64_field("rows_written").expect("rows written") > 0,
+        )
     };
-    for span in [statistics, pass] {
-        assert_eq!(
-            (
-                span.u64_field("workspaces_checked"),
-                span.u64_field("workspaces_recounted"),
-                span.u64_field("rows_written").is_some_and(|rows| rows > 0),
-            ),
-            expected,
-            "{}",
-            span.name
-        );
-    }
+    assert_eq!(work(pass), work(statistics));
+    work(pass)
 }
 
 #[tokio::test]
@@ -1081,6 +1122,99 @@ impl World {
         row.is_some()
     }
 
+    /// Runs one reconcile pass and returns the spans it recorded.
+    async fn traced_pass(&self, spans: &CapturedSpans) -> Vec<CapturedSpan> {
+        {
+            let _subscriber = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(spans.clone()),
+            );
+            self.index.reconcile().await;
+        }
+        spans.recorded()
+    }
+
+    /// The version of each of the Workspace's rows in the search-owned tables,
+    /// by table and key: Postgres's `xmin`, which every write of a row
+    /// changes. `SQLite` keeps no row version, so it has none.
+    async fn row_versions(&self) -> Vec<(String, String, String)> {
+        let database = &self.modules.search.database;
+        if database.system() != DatabaseSystem::Postgres {
+            return Vec::new();
+        }
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        let versions = transaction
+            .fetch_all_sql(
+                "SELECT 'search_entities'::text, doc_id, xmin::text \
+                 FROM search_entities WHERE workspace_id = $1 \
+                 UNION ALL SELECT 'search_index_states', target_id, xmin::text \
+                 FROM search_index_states WHERE workspace_id = $1 \
+                 UNION ALL SELECT 'search_terms', term, xmin::text \
+                 FROM search_terms WHERE workspace_id = $1 \
+                 UNION ALL SELECT 'search_stats', workspace_id, xmin::text \
+                 FROM search_stats WHERE workspace_id = $1 \
+                 ORDER BY 1, 2",
+                sea_query::Values(vec![self.workspace.to_string().into()]),
+            )
+            .await
+            .expect("read the row versions");
+        transaction.rollback().await.unwrap();
+        versions
+    }
+
+    /// The Workspace's Postgres statistics as stored: each term's document
+    /// count, then the statistics row's document count and mean length.
+    async fn stored_statistics(&self) -> Statistics {
+        let mut transaction = self
+            .modules
+            .search
+            .database
+            .begin_read_snapshot()
+            .await
+            .unwrap();
+        let terms = transaction
+            .fetch_all_sql(
+                "SELECT term, ndoc FROM search_terms WHERE workspace_id = $1 ORDER BY term",
+                sea_query::Values(vec![self.workspace.to_string().into()]),
+            )
+            .await
+            .expect("read the term statistics");
+        transaction.rollback().await.unwrap();
+        (terms, self.statistics().await)
+    }
+
+    /// The Workspace's Postgres statistics counted again from its rows, by
+    /// the rules the indexer follows: what [`Self::stored_statistics`] holds
+    /// when the statistics are exact.
+    async fn recounted_statistics(&self) -> Statistics {
+        let mut transaction = self
+            .modules
+            .search
+            .database
+            .begin_read_snapshot()
+            .await
+            .unwrap();
+        let workspace = || sea_query::Values(vec![self.workspace.to_string().into()]);
+        let terms = transaction
+            .fetch_all_sql(
+                "SELECT word, ndoc FROM ts_stat(format( \
+                     'SELECT tsv FROM search_entities WHERE workspace_id = %L', $1::text \
+                 )) ORDER BY word",
+                workspace(),
+            )
+            .await
+            .expect("count the terms");
+        let totals: Vec<(i64, f64)> = transaction
+            .fetch_all_sql(
+                "SELECT count(*), coalesce(avg(doc_len), 1.0)::float8 \
+                 FROM search_entities WHERE workspace_id = $1",
+                workspace(),
+            )
+            .await
+            .expect("count the rows");
+        transaction.rollback().await.unwrap();
+        (terms, totals.into_iter().next())
+    }
+
     /// Makes every `complete` state row fail to insert, so an attempt fails
     /// after it wrote its Operation rows.
     async fn reject_complete_states(&self) {
@@ -1264,6 +1398,10 @@ impl World {
 }
 
 type StateColumns = (String, String, String, Option<String>, Option<String>);
+
+/// A Workspace's Postgres statistics: each term with its document count, in
+/// term order, and the statistics row's document count and mean length.
+type Statistics = (Vec<(String, i32)>, Option<(i64, f64)>);
 
 type OperationColumns = (
     String,
