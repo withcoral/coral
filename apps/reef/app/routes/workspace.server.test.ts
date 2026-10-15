@@ -52,5 +52,6 @@ it('leaves the Built-in Provider out of the overview, so a new workspace offers 
   const result = await loader(
     authRouteTestArgs(new Request(`http://reef/${parent}`), { workspace }, null),
   )
+  if (result instanceof Response) throw new Error('The workspace page renders')
   expect(result.data.providers.map((provider) => provider.displayName)).toEqual(['Weather'])
 })
