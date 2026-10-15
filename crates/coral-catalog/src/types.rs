@@ -1090,7 +1090,7 @@ impl MaterializedOperation {
     pub const fn http_method(&self) -> Option<crate::HttpMethod> {
         match &self.execution_binding {
             ExecutionBinding::Http(binding) => Some(binding.method()),
-            ExecutionBinding::Mcp(_) => None,
+            ExecutionBinding::Mcp(_) | ExecutionBinding::Builtin(_) => None,
         }
     }
 
