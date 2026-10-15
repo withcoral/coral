@@ -38,6 +38,10 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
       expect(await page.getByText('Second local goal', { exact: true }).count()).toBe(1)
       await page.getByRole('button', { name: 'Close details', exact: true }).click()
       await page.waitForURL((url) => url.pathname === `/${workspace.name}/activity`)
+      // The address changes first; the detail keeps its record while it exits.
+      await page
+        .getByRole('dialog', { name: 'Activity details', exact: true })
+        .waitFor({ state: 'detached' })
       expect(await page.getByRole('button', { name: 'Load new', exact: true }).count()).toBe(0)
       await page.getByRole('link', { name: 'Second local goal', exact: true }).waitFor()
       expect(await page.content()).not.toContain('Local completion')
@@ -46,7 +50,7 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
       await addProviderFromFile(
         page,
         id,
-        openApiDocument('Local actions', { read: { summary: 'Read a value' } }, {}),
+        openApiDocument('Local actions', { read: { summary: 'Read a value', method: 'post' } }, {}),
         'localActions',
       )
       const runner = programRunner(page, target, id, { waitMs: 1000 })
@@ -108,9 +112,11 @@ test('Local activity streams new records without a sign-in ceremony or a load bu
       )
       await page.getByText('Local completion 🪸', { exact: true }).waitFor()
       await page.getByText('Goal outcome: success', { exact: true }).waitFor()
-      await page.getByRole('button', { name: 'Close details', exact: true }).click()
+      // The open detail leaves the list usable: another goal replaces it in place.
       await page.getByRole('link', { name: 'Second local goal', exact: true }).click()
-      await page.getByRole('dialog', { name: 'Activity details' }).waitFor()
+      const detail = page.getByRole('dialog', { name: 'Activity details' })
+      await detail.getByRole('heading', { name: 'Second local goal', exact: true }).waitFor()
+      expect(await page.getByRole('dialog').count()).toBe(1)
       expect(await page.getByText('Completion feedback', { exact: true }).count()).toBe(0)
     })
   })

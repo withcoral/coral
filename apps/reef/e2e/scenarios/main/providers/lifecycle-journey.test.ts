@@ -34,7 +34,7 @@ test('Workspace Provider Add, MCP execution, policy, Update and lifecycle use on
   const document = (title: string) =>
     openApiDocument(
       title,
-      { getForecast: { summary: 'Read the forecast' } },
+      { getForecast: { summary: 'Read the forecast', method: 'post' } },
       { server: upstream.origin },
     )
   const api = managementClients(actor.accessToken)

@@ -36,8 +36,9 @@ mod repository;
 mod search;
 pub use search::{
     ActiveGeneration, ActiveProvider, EntryMaterial, GenerationEntries, HydratedOperation,
-    OperationEntry, active_generations_in_transaction, active_providers_in_transaction,
-    hydrate_operation_in_transaction, operation_material_by_relative_path_in_transaction,
+    LoadedGenerations, OperationEntry, active_generations_in_transaction,
+    active_providers_in_transaction, hydrate_operation_in_transaction,
+    operation_material_by_relative_path_in_transaction,
     prepare_active_generation_entries_in_transaction, prepare_operation_entries,
 };
 mod program_setup;
@@ -623,10 +624,11 @@ pub async fn provider_search_catalogs_in_transaction(
     Ok(catalogs)
 }
 
-/// Resolves the declared effect hints for an exact current Provider Operation.
+/// Resolves the declared effect hints and HTTP method for an exact current
+/// Provider Operation.
 ///
 /// This narrow transaction-compatible facet lets the Operation Policy Module
-/// validate its target and derive the hint-based default without reading
+/// validate its target and derive its default without reading
 /// Provider or Catalog persistence itself. The caller owns commit or rollback.
 ///
 /// # Errors
@@ -634,13 +636,19 @@ pub async fn provider_search_catalogs_in_transaction(
 /// Returns a persistence or corrupt Provider-package failure. `Ok(None)` means
 /// either the Provider is outside the exact Workspace or its current
 /// catalog has no matching Operation Key.
-pub async fn operation_policy_hints_in_transaction(
+pub async fn operation_hints_and_method_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
     operation_key: &OperationKey,
-) -> Result<Option<coral_catalog::OperationHints>, Error> {
-    Ok(operation_policy_hints_batch_in_transaction(
+) -> Result<
+    Option<(
+        coral_catalog::OperationHints,
+        Option<coral_catalog::HttpMethod>,
+    )>,
+    Error,
+> {
+    Ok(operation_hints_and_methods_batch_in_transaction(
         transaction,
         workspace_id,
         provider_id,
@@ -650,17 +658,26 @@ pub async fn operation_policy_hints_in_transaction(
     .remove(operation_key))
 }
 
-/// Resolves hints for a bounded selection in one Provider's current catalog.
+/// Resolves hints and HTTP methods for a bounded selection in one Provider's current catalog.
 /// Missing Providers or keys are omitted. Definitions and schemas stay lazy.
 /// The caller owns authority and the coherent read transaction.
 /// # Errors
 /// Returns invalid-size, persistence or corrupt Provider-package failures.
-pub async fn operation_policy_hints_batch_in_transaction(
+pub async fn operation_hints_and_methods_batch_in_transaction(
     transaction: &mut coral_db::Transaction<'_>,
     workspace_id: &WorkspaceId,
     provider_id: &ProviderId,
     operation_keys: &[OperationKey],
-) -> Result<std::collections::BTreeMap<OperationKey, coral_catalog::OperationHints>, Error> {
+) -> Result<
+    std::collections::BTreeMap<
+        OperationKey,
+        (
+            coral_catalog::OperationHints,
+            Option<coral_catalog::HttpMethod>,
+        ),
+    >,
+    Error,
+> {
     let Some(provider_id) =
         crate::access::provider_id_in_transaction(transaction, workspace_id, provider_id).await?
     else {
@@ -673,10 +690,12 @@ pub async fn operation_policy_hints_batch_in_transaction(
     )
     .await?
     .ok_or_else(|| Error::CorruptData("Provider has no current Provider Generation".to_string()))?;
-    Ok(
-        coral_catalog::operation_hints_in_transaction(transaction, &generation_id, operation_keys)
-            .await?,
+    Ok(coral_catalog::operation_hints_and_methods_in_transaction(
+        transaction,
+        &generation_id,
+        operation_keys,
     )
+    .await?)
 }
 
 /// The Principal that asks Invocation admission to call an Operation.

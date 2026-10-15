@@ -681,16 +681,30 @@ impl RunObservation {
         Ok(observation)
     }
 
-    pub(crate) fn is_ready(&self, update: &RunUpdate) -> bool {
+    /// The last Event a wait has seen before it starts: its cursor's, or without
+    /// one, the last output its first read returned. Replayed output is not new.
+    pub(crate) fn seen_sequence(&self, first: &RunUpdate) -> u64 {
+        self.cursor().map_or_else(
+            || first.events().last().map_or(0, RunEvent::sequence),
+            RunCursor::event_sequence,
+        )
+    }
+
+    pub(crate) fn is_ready(&self, update: &RunUpdate, seen_sequence: u64) -> bool {
         update.state().is_terminal()
-            || (!self.batch_output && !update.events().is_empty())
+            || (!self.batch_output
+                && update
+                    .events()
+                    .last()
+                    .is_some_and(|event| event.sequence() > seen_sequence))
             || update.next_cursor().required_action_revision()
                 != self
                     .cursor()
                     .map_or([0; 32], RunCursor::required_action_revision)
     }
 
-    /// Waits until authored Emissions/Logs, changed actions, or terminal data are available.
+    /// Waits until new authored Emissions/Logs, changed actions, or terminal data are available.
+    /// Without a cursor, output that exists when the wait begins is replayed, not new.
     /// A zero duration keeps the observation immediate.
     /// # Errors
     /// Rejects waits longer than 30 seconds.

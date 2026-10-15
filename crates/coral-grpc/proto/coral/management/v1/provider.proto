@@ -218,7 +218,8 @@ message ProviderOperation {
   repeated string tags = 7;
   // Safe complete upstream-authored description.
   string description = 8;
-  // Declared effect hints; a declared read-only hint sets the policy default.
+  // Declared effect hints. A declared read-only hint, like a safe HTTP method,
+  // makes the policy default `enabled`.
   OperationHints hints = 9;
 }
 

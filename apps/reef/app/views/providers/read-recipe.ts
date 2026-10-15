@@ -47,7 +47,8 @@ export function useReadRecipe(form: FormContext, basePath: string) {
       setChosen(recipe)
       void submit(body, {
         method: 'post',
-        action: `${basePath}?${sourceSearch(recipe)}`,
+        // A typed URL can hold a token, so it stays out of the address and its logs.
+        action: recipe.id ? `${basePath}?${sourceSearch(recipe)}` : basePath,
         encType: 'multipart/form-data',
       })
     },
@@ -55,5 +56,6 @@ export function useReadRecipe(form: FormContext, basePath: string) {
   )
   // The redirect that follows a successful read keeps the fetcher busy until
   // Configuration loads, so the chosen recipe shows as reading until then.
-  return { read, reading: fetcher.state === 'idle' ? null : chosen }
+  const idle = fetcher.state === 'idle'
+  return { read, reading: idle ? null : chosen, failed: idle && Boolean(fetcher.data?.error) }
 }

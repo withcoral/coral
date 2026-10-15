@@ -27,6 +27,23 @@ use coral_db::{Database, DatabaseOptions};
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the private listener.
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 
+/// How often bootstrap sweeps `provider_device_jobs` for leases whose worker
+/// has gone away. The provider sets how often a flow polls it, anywhere from
+/// one second to an hour, so a lost flow resumes up to this long after its
+/// lease ends on top of that poll interval; the person is already waiting on
+/// a flow that lasts minutes. A one-second sweep cost a transaction per second
+/// per replica against a table that is empty whenever no flow is mid-flight.
+const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The sweep schedule: a fixed cadence anchored at startup, so a slow pass does
+/// not push every later sweep back, and ticks a slow pass ran through are
+/// skipped rather than replayed back to back.
+fn device_recovery_sweeps() -> tokio::time::Interval {
+    let mut sweeps = tokio::time::interval(DEVICE_RECOVERY_INTERVAL);
+    sweeps.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    sweeps
+}
+
 #[derive(Clone)]
 enum ServerModeSelection {
     Explicit(ServerMode),
@@ -743,7 +760,9 @@ pub(crate) async fn start_server(
 
     let device_recovery = accounts.clone().map(|accounts| {
         tokio::spawn(async move {
+            let mut sweeps = device_recovery_sweeps();
             loop {
+                sweeps.tick().await;
                 if let Ok(elapsed) =
                     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                     && let Ok(now) = i64::try_from(elapsed.as_nanos())
@@ -751,7 +770,6 @@ pub(crate) async fn start_server(
                 {
                     tracing::warn!(%error, "device authorization recovery failed");
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         })
     });
@@ -800,7 +818,33 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::ServerBuilder;
+    use super::{DEVICE_RECOVERY_INTERVAL, ServerBuilder, device_recovery_sweeps};
+
+    #[tokio::test(start_paused = true)]
+    async fn device_recovery_sweeps_keep_a_fixed_cadence() {
+        let start = tokio::time::Instant::now();
+        let mut sweeps = device_recovery_sweeps();
+        sweeps.tick().await;
+        assert_eq!(
+            start.elapsed(),
+            Duration::ZERO,
+            "the first sweep runs at once"
+        );
+        sweeps.tick().await;
+        assert_eq!(start.elapsed(), DEVICE_RECOVERY_INTERVAL);
+
+        // A pass that runs through two boundaries gets one sweep as soon as it
+        // ends, then the schedule resumes on the original grid rather than a
+        // full interval after the late pass.
+        tokio::time::sleep(DEVICE_RECOVERY_INTERVAL * 2 + Duration::from_secs(1)).await;
+        sweeps.tick().await;
+        assert_eq!(
+            start.elapsed(),
+            DEVICE_RECOVERY_INTERVAL * 3 + Duration::from_secs(1)
+        );
+        sweeps.tick().await;
+        assert_eq!(start.elapsed(), DEVICE_RECOVERY_INTERVAL * 4);
+    }
 
     #[tokio::test]
     async fn the_search_reconcile_task_runs_beside_the_server_until_shutdown() {
