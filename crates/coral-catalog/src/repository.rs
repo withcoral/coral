@@ -6,9 +6,10 @@ use sqlx::FromRow;
 mod tests;
 
 use crate::{
-    CatalogDiagnostic, Error, ExecutionBinding, HttpMethod, MaterializedOperation,
-    OperationAvailability, OperationKey, PreparedProviderCatalog, ProviderGenerationId,
-    ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind, SchemaGraph, SchemaId,
+    BuiltinCatalogIdentity, CatalogDiagnostic, Error, ExecutionBinding, HttpMethod,
+    MaterializedOperation, OperationAvailability, OperationKey, PreparedProviderCatalog,
+    ProviderGenerationId, ProviderSetupInput, ProviderSetupInputDigest, ProviderSetupInputKind,
+    SchemaGraph, SchemaId,
 };
 
 #[derive(Iden)]
@@ -64,7 +65,7 @@ const BUILTIN_INPUT_KIND: &str = "builtin";
 #[derive(Clone, Copy)]
 pub(super) enum GenerationInput<'a> {
     Setup(&'a ProviderSetupInput),
-    Builtin(&'a str),
+    Builtin(&'a BuiltinCatalogIdentity),
 }
 
 impl<'a> GenerationInput<'a> {
@@ -78,7 +79,7 @@ impl<'a> GenerationInput<'a> {
     fn pinned(self) -> &'a str {
         match self {
             Self::Setup(input) => input.as_str(),
-            Self::Builtin(identity) => identity,
+            Self::Builtin(identity) => identity.as_str(),
         }
     }
 
@@ -93,19 +94,19 @@ impl<'a> GenerationInput<'a> {
 /// A stored Generation's decoded pinned input.
 enum StoredGenerationInput {
     Setup(ProviderSetupInput),
-    Builtin(String),
+    Builtin(BuiltinCatalogIdentity),
 }
 
 impl StoredGenerationInput {
     fn from_storage(kind: &str, pinned: &str) -> Result<Self, Error> {
         if kind == BUILTIN_INPUT_KIND {
-            return if crate::builtin::is_catalog_identity(pinned) {
-                Ok(Self::Builtin(pinned.to_owned()))
-            } else {
-                Err(Error::CorruptData(
-                    "built-in Generation pins a malformed catalog identity".to_string(),
-                ))
-            };
+            return BuiltinCatalogIdentity::parse(pinned)
+                .map(Self::Builtin)
+                .ok_or_else(|| {
+                    Error::CorruptData(
+                        "built-in Generation pins a malformed catalog identity".to_string(),
+                    )
+                });
         }
         ProviderSetupInput::from_storage(ProviderSetupInputKind::from_storage(kind)?, pinned)
             .map(Self::Setup)
@@ -114,7 +115,9 @@ impl StoredGenerationInput {
     fn digest(&self) -> ProviderSetupInputDigest {
         match self {
             Self::Setup(input) => ProviderSetupInputDigest::of_setup_input(input),
-            Self::Builtin(identity) => ProviderSetupInputDigest::of_bytes(identity.as_bytes()),
+            Self::Builtin(identity) => {
+                ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes())
+            }
         }
     }
 }
@@ -421,9 +424,7 @@ impl OperationRow {
                         "built-in Operation has an HTTP index".to_string(),
                     ));
                 }
-                if binding.input_schema() != &input_schema
-                    || binding.operation_key() != key.as_str()
-                {
+                if binding.input_schema() != &input_schema || binding.operation_key() != &key {
                     return Err(Error::CorruptData(
                         "built-in Operation binding disagrees with its index".to_string(),
                     ));
@@ -655,7 +656,7 @@ pub(super) async fn load_setup_input(
 pub(super) async fn load_builtin_identity(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-) -> Result<String, Error> {
+) -> Result<BuiltinCatalogIdentity, Error> {
     let row: Option<(String, String)> = transaction
         .fetch_optional(
             Query::select()

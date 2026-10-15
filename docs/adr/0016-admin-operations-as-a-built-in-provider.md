@@ -31,7 +31,7 @@ The Built-in Provider is immutable apart from its access state. The server rejec
 regeneration, account work and removal for it, and an Owner can only disable or enable it and set its Operations'
 policy.
 
-Amended by [ADR 0017](0017-coral-updates-the-builtin-catalog-at-boot.md): Coral updates the Built-in Provider to the
+Amended by [ADR 0019](0019-coral-updates-the-builtin-catalog-at-boot.md): Coral updates the Built-in Provider to the
 catalog it serves when it boots. An Owner still cannot regenerate or update it.
 
 Rejected: a separate admin surface, which duplicates catalog, policy and approval; a reserved `admin` namespace under

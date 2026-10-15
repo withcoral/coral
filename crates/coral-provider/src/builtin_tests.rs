@@ -480,28 +480,38 @@ impl BuiltinWorkspace {
             .unwrap()
     }
 
-    /// A process that serves `served` boots at `at`: it updates each outdated
-    /// Built-in Provider in its own transaction.
-    async fn boot(&self, served: &BuiltinCatalog, at: i64) -> Vec<crate::ActivatedGeneration> {
-        let process = serving(&self.providers, served.clone());
+    /// A process that serves `served` boots at `at`. Returns the Providers
+    /// whose Generation it replaced; no update fails.
+    async fn boot(&self, served: &BuiltinCatalog, at: i64) -> Vec<crate::ProviderId> {
+        let updates = serving(&self.providers, served.clone())
+            .update_builtin_catalogs(at)
+            .await
+            .unwrap();
+        assert!(updates.failed.is_empty(), "{:?}", updates.failed);
+        updates
+            .replaced
+            .iter()
+            .map(|replaced| replaced.provider_id().clone())
+            .collect()
+    }
+
+    /// Another Workspace with its Built-in Provider, in the same database.
+    async fn another(&self, name: &str) -> (coral_workspace::Workspace, crate::Provider) {
+        let context = change_context(self.owner.clone(), 12, '3');
+        let workspace = self
+            .workspaces
+            .create(&context, WorkspaceDisplayName::parse(name).unwrap())
+            .await
+            .unwrap();
         let database = self.fixture.database();
-        let mut activated = Vec::new();
-        for (workspace, provider) in process.outdated_builtin_providers().await.unwrap() {
-            let mut transaction = database.begin().await.unwrap();
-            activated.extend(
-                process
-                    .update_builtin_catalog_in_transaction(
-                        &mut transaction,
-                        &workspace,
-                        &provider,
-                        at,
-                    )
-                    .await
-                    .unwrap(),
-            );
-            transaction.commit().await.unwrap();
-        }
-        activated
+        let mut transaction = database.begin().await.unwrap();
+        let builtin = self
+            .providers
+            .install_builtin_in_transaction(&mut transaction, &context, workspace.id())
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        (workspace, builtin)
     }
 
     /// The Operation Keys the Built-in Provider serves.
@@ -589,13 +599,9 @@ async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
             (catalog_b(), 30, with_list_things(&running_keys)),
             (running(), 40, running_keys.clone()),
         ] {
-            let activated = arranged.boot(&served, at).await;
             assert_eq!(
-                activated
-                    .iter()
-                    .map(crate::ActivatedGeneration::provider)
-                    .collect::<Vec<_>>(),
-                [arranged.builtin.id()],
+                arranged.boot(&served, at).await,
+                [arranged.builtin.id().clone()],
                 "{arranged_as:?}"
             );
             assert_eq!(arranged.keys().await, keys, "{arranged_as:?}");
@@ -622,47 +628,35 @@ async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
     }
 }
 
-/// Two processes that boot together each try the update; one activates the
-/// served catalog, and the other then finds it pinned.
+/// Two processes that boot together each try the update; one replaces the
+/// Generation, and the other then finds another one active.
 #[tokio::test]
 async fn two_processes_that_boot_together_activate_one_generation() {
     let arranged = BuiltinWorkspace::new().await;
     let before = arranged.events().await.len();
+    let keys = with_list_things(&arranged.keys().await);
     let first = serving(&arranged.providers, catalog_b());
     let peer = std::sync::Arc::new(arranged.fixture.connect_peer().await.unwrap());
     let second = ProviderModule::new(
         coral_outbound::DestinationPolicy::default(),
         peer.clone(),
-        coral_workspace::WorkspaceModule::new(peer.clone()),
+        coral_workspace::WorkspaceModule::new(peer),
         catalog_b(),
     );
-    let update = |process: &ProviderModule, database: std::sync::Arc<coral_db::Database>, at| {
-        let process = process.clone();
-        let workspace = arranged.workspace.id().clone();
-        let provider = arranged.builtin.id().clone();
-        async move {
-            let mut transaction = database.begin().await.unwrap();
-            let updated = process
-                .update_builtin_catalog_in_transaction(&mut transaction, &workspace, &provider, at)
-                .await
-                .unwrap();
-            transaction.commit().await.unwrap();
-            updated
-        }
-    };
 
-    let keys = with_list_things(&arranged.keys().await);
     let (left, right) = tokio::join!(
-        update(&first, arranged.fixture.database(), 20),
-        update(&second, peer, 21),
+        first.update_builtin_catalogs(20),
+        second.update_builtin_catalogs(21),
     );
 
+    let (left, right) = (left.unwrap(), right.unwrap());
     assert_eq!(
-        [&left, &right]
-            .iter()
-            .filter(|outcome| outcome.is_some())
-            .count(),
+        left.replaced.len() + right.replaced.len(),
         1,
+        "{left:?} {right:?}"
+    );
+    assert!(
+        left.failed.is_empty() && right.failed.is_empty(),
         "{left:?} {right:?}"
     );
     assert_eq!(arranged.keys().await, keys);
@@ -746,5 +740,65 @@ async fn published_providers_lists_every_provider_in_creation_order() {
                 true,
             ),
         ]
+    );
+}
+
+// Catches: one Built-in Provider whose update fails stopping the others at
+// boot, or leaving part of its update behind instead of waiting for the next boot.
+#[tokio::test]
+async fn a_failed_update_waits_for_the_next_boot_and_the_others_still_update() {
+    let arranged = BuiltinWorkspace::new().await;
+    let (broken_workspace, broken) = arranged.another("Broken").await;
+    let broken_events = || async {
+        arranged
+            .providers
+            .list_lifecycle_events(&arranged.owner, broken_workspace.id())
+            .await
+            .unwrap()
+            .len()
+    };
+    let before = broken_events().await;
+    let keys = with_list_things(&arranged.keys().await);
+    // A display name longer than 256 bytes fails to load, so its update fails.
+    let fixture = &arranged.fixture;
+    let set_name = |name: String| {
+        let sql = format!(
+            "UPDATE provider_records SET display_name = '{name}' WHERE id = '{}'",
+            broken.id()
+        );
+        async move { fixture.execute_fixture_sql(&sql).await }
+    };
+    set_name("x".repeat(300)).await.unwrap();
+
+    let updates = serving(&arranged.providers, catalog_b())
+        .update_builtin_catalogs(30)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        updates
+            .replaced
+            .iter()
+            .map(crate::ActiveGeneration::provider_id)
+            .collect::<Vec<_>>(),
+        [arranged.builtin.id()]
+    );
+    let [(failed, error)] = updates.failed.as_slice() else {
+        panic!("one update fails: {:?}", updates.failed);
+    };
+    assert_eq!(failed.provider_id(), broken.id());
+    assert!(matches!(error, Error::CorruptData(_)), "{error:?}");
+    assert_eq!(arranged.keys().await, keys);
+    assert_eq!(
+        broken_events().await,
+        before,
+        "the failed update wrote nothing"
+    );
+
+    set_name("Coral".to_string()).await.unwrap();
+    assert_eq!(
+        arranged.boot(&catalog_b(), 40).await,
+        [broken.id().clone()],
+        "the next boot updates the repaired Workspace"
     );
 }
