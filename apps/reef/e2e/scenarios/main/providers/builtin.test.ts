@@ -115,6 +115,12 @@ test('Coral leads the providers page for owners, offers nothing to change, stops
         await rail(page).getByRole('link', { name: 'Alpha settings', exact: true }).waitFor()
         expect(await rail(page).locator(`a[href="/${coral.name}"]`).count()).toBe(0)
       })
+      await step("A member finds nothing at Coral's links", async () => {
+        for (const path of [`/${coral.name}`, `/${coral.name}/settings`]) {
+          await page.goto(path)
+          await page.getByText('This page does not exist.', { exact: true }).waitFor()
+        }
+      })
     },
     { actor: bob.label, storageState: bob.storageState },
   )

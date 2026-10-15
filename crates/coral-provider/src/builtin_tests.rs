@@ -1,7 +1,8 @@
 //! The Built-in Provider: one per Workspace at `coral.admin`, discoverable and
 //! callable only by Users with effective Workspace Owner authority.
 use coral_workspace::{
-    AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceDisplayName, WorkspaceRole,
+    AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceAction,
+    WorkspaceDisplayName, WorkspaceRole,
 };
 
 use coral_catalog::{AuthenticationKind, BuiltinCatalog, OperationHints};
@@ -914,4 +915,88 @@ async fn published_providers_lists_every_provider_in_creation_order() {
             ),
         ]
     );
+}
+
+// Catches: a management read showing a Member the Built-in Provider, which
+// discovery keeps from them: in the list, by its ID, or through its Operations.
+#[tokio::test]
+async fn only_an_owner_inspects_the_builtin_provider() {
+    let arranged = BuiltinWorkspace::new().await;
+    let workspace = arranged.workspace.id();
+    publish_provider(
+        &arranged.providers,
+        &change_context(arranged.owner.clone(), 15, '2'),
+        workspace,
+        CREDENTIAL_FREE_OPENAPI,
+        "added",
+        CredentialRoute::None,
+    )
+    .await;
+    let member = arranged.member("user:member").await;
+    let roots = |providers: Vec<&crate::Provider>| {
+        providers
+            .into_iter()
+            .map(|provider| provider.call_root().as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    for (actor, listed) in [
+        (
+            &arranged.owner,
+            &["coral.admin", "coral.providers.added"][..],
+        ),
+        (&member, &["coral.providers.added"][..]),
+    ] {
+        let providers = &arranged.providers;
+        let inspected = providers.inspect_providers(actor, workspace).await.unwrap();
+        assert_eq!(roots(inspected.iter().collect()), listed, "{actor:?}");
+        let published = providers
+            .published_providers(actor, workspace)
+            .await
+            .unwrap();
+        assert_eq!(
+            roots(
+                published
+                    .iter()
+                    .map(|published| &published.provider)
+                    .collect()
+            ),
+            listed,
+            "{actor:?}"
+        );
+        let database = arranged.fixture.database();
+        let mut tx = database.begin_read_snapshot().await.unwrap();
+        let evidence = arranged
+            .workspaces
+            .check_in_transaction(&mut tx, actor, workspace, WorkspaceAction::Inspect)
+            .await
+            .unwrap();
+        let readiness = crate::access::inspect_provider_readiness_in_transaction(
+            &mut tx, actor, &evidence, None,
+        )
+        .await
+        .unwrap();
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            roots(readiness.iter().map(|ready| &ready.provider).collect()),
+            listed,
+            "{actor:?}"
+        );
+
+        let builtin = arranged.builtin.id();
+        let one = providers.inspect_provider(actor, workspace, builtin).await;
+        let operations = providers
+            .inspect_catalog_page(actor, workspace, builtin, None, 100)
+            .await;
+        if listed.contains(&"coral.admin") {
+            assert_eq!(one.unwrap().id(), builtin);
+            assert!(!operations.unwrap().is_empty());
+        } else {
+            assert!(matches!(one, Err(Error::ProviderNotFound)), "{one:?}");
+            assert!(
+                matches!(operations, Err(Error::ProviderNotFound)),
+                "{operations:?}"
+            );
+        }
+    }
 }

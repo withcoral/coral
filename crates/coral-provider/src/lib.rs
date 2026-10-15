@@ -1013,5 +1013,14 @@ fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
     }
 }
 
+/// Whether inspection under `evidence` shows `provider`. As in discovery, the
+/// Built-in Provider is absent to anyone without Workspace Owner authority.
+fn inspects(evidence: &WorkspaceEvidence, provider: &Provider) -> bool {
+    match provider.call_root() {
+        ProviderCallRoot::Owner(_) => true,
+        ProviderCallRoot::Builtin => evidence.effective_role() == WorkspaceRole::Owner,
+    }
+}
+
 #[cfg(test)]
 mod tests;
