@@ -337,6 +337,7 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
         .await;
     world.index.reconcile().await;
     assert!(world.has_term("tides").await);
+    world.assert_exact_statistics().await;
 
     // The function's row cascades with it, and no index write follows.
     world
@@ -347,10 +348,7 @@ async fn a_pass_corrects_the_statistics_a_saved_function_delete_leaves() {
     world.index.reconcile().await;
 
     assert!(!world.has_term("tides").await);
-    assert_eq!(
-        world.stored_statistics().await,
-        world.recounted_statistics().await
-    );
+    world.assert_exact_statistics().await;
 }
 
 #[tokio::test]
@@ -856,6 +854,7 @@ async fn postgres_statistics_follow_each_write_and_removal_of_the_workspace() {
     let after_tracer = world.statistics().await.expect("statistics after a write");
     assert!(world.has_term("forecast").await);
     assert!(!world.has_term("ledger").await);
+    world.assert_exact_statistics().await;
 
     notify(&world.index, &world.stored_entries(&ledger).await);
     world.index.settled().await;
@@ -863,6 +862,7 @@ async fn postgres_statistics_follow_each_write_and_removal_of_the_workspace() {
     assert_ne!(after_ledger, after_tracer);
     assert!(world.has_term("forecast").await);
     assert!(world.has_term("ledger").await);
+    world.assert_exact_statistics().await;
 
     world
         .index
@@ -871,10 +871,33 @@ async fn postgres_statistics_follow_each_write_and_removal_of_the_workspace() {
     assert_eq!(world.statistics().await, Some(after_tracer));
     assert!(world.has_term("forecast").await);
     assert!(!world.has_term("ledger").await);
+    world.assert_exact_statistics().await;
 
     world.index.remove_generation(tracer_generation);
     world.index.settled().await;
     assert!(!world.has_term("forecast").await);
+    world.assert_exact_statistics().await;
+}
+
+#[tokio::test]
+async fn a_write_that_changes_no_term_rewrites_no_term_row() {
+    coral_test_support::database_only!(Postgres);
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    world
+        .index
+        .index_active_generation(world.workspace.clone(), world.tracer.clone());
+    world.index.settled().await;
+    let terms = world.row_versions_of("search_terms").await;
+    assert!(!terms.is_empty(), "the write counted the terms");
+
+    world
+        .index
+        .index_active_generation(world.workspace.clone(), world.tracer.clone());
+    world.index.settled().await;
+
+    assert_eq!(world.row_versions_of("search_terms").await, terms);
+    world.assert_exact_statistics().await;
 }
 
 #[tokio::test]
@@ -1159,6 +1182,26 @@ impl World {
             .expect("read the row versions");
         transaction.rollback().await.unwrap();
         versions
+    }
+
+    /// The versions of the Workspace's rows in one search-owned table, as
+    /// [`Self::row_versions`] reads them.
+    async fn row_versions_of(&self, table: &str) -> Vec<(String, String, String)> {
+        self.row_versions()
+            .await
+            .into_iter()
+            .filter(|(row_table, ..)| row_table == table)
+            .collect()
+    }
+
+    /// Asserts that the Workspace's stored Postgres statistics equal those
+    /// counted again from its rows.
+    async fn assert_exact_statistics(&self) {
+        assert_eq!(
+            self.stored_statistics().await,
+            self.recounted_statistics().await,
+            "the stored statistics match the rows"
+        );
     }
 
     /// The Workspace's Postgres statistics as stored: each term's document

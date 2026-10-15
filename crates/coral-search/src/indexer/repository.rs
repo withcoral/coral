@@ -979,7 +979,10 @@ pub(super) async fn refresh_function_length(
 ///
 /// One statement counts and writes, so the counts and the watermark beside
 /// them come from one snapshot: `ts_stat` reads its query with the snapshot
-/// of the statement that calls it. Returns the rows written or deleted.
+/// of the statement that calls it. The statement writes only what changed:
+/// it updates the terms whose count changed, inserts the new terms, deletes
+/// the terms that are gone, and updates the totals row only when a value in
+/// it changed. Returns the rows written or deleted.
 pub(super) async fn refresh_workspace_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -996,8 +999,13 @@ async fn refresh_statistics(
     }
     // `ts_stat` takes query text, so the Workspace id enters it quoted as a
     // literal by `format('%L')`; the value itself still travels as a bind.
-    // The sub-statements of one statement must not write one row twice, so
-    // the delete takes only the terms the count no longer holds.
+    //
+    // The three term sub-statements touch disjoint rows: one statement must
+    // not write one row twice. The terms are not an upsert with a `WHERE`
+    // on its update: that locks each term row it matches and logs it, also
+    // when the count did not change. Under the Workspace's lock no other
+    // process inserts a term of this Workspace, so the insert meets no
+    // conflict. The totals row is one row, so its upsert may skip by `WHERE`.
     let (written,): (i64,) = transaction
         .fetch_all_sql(
             "WITH counted AS MATERIALIZED ( \
@@ -1006,20 +1014,29 @@ async fn refresh_statistics(
                      'SELECT tsv FROM search_entities WHERE workspace_id = %L', $1::text \
                  )) \
              ), \
+             changed AS ( \
+                 UPDATE search_terms AS t SET ndoc = c.ndoc \
+                 FROM counted AS c \
+                 WHERE t.workspace_id = $1::text AND t.term = c.term AND t.ndoc <> c.ndoc \
+                 RETURNING 1 \
+             ), \
+             added AS ( \
+                 INSERT INTO search_terms (workspace_id, term, ndoc) \
+                 SELECT $1::text, c.term, c.ndoc FROM counted AS c \
+                 WHERE NOT EXISTS ( \
+                     SELECT 1 FROM search_terms AS t \
+                     WHERE t.workspace_id = $1::text AND t.term = c.term \
+                 ) \
+                 RETURNING 1 \
+             ), \
              gone AS ( \
                  DELETE FROM search_terms AS t \
                  WHERE t.workspace_id = $1::text \
                    AND NOT EXISTS (SELECT 1 FROM counted AS c WHERE c.term = t.term) \
                  RETURNING 1 \
              ), \
-             terms AS ( \
-                 INSERT INTO search_terms (workspace_id, term, ndoc) \
-                 SELECT $1::text, term, ndoc FROM counted \
-                 ON CONFLICT (workspace_id, term) DO UPDATE SET ndoc = excluded.ndoc \
-                 RETURNING 1 \
-             ), \
              totals AS ( \
-                 INSERT INTO search_stats ( \
+                 INSERT INTO search_stats AS s ( \
                      workspace_id, total_docs, avgdl, counted_rows, counted_max_indexed_at \
                  ) \
                  SELECT $1::text, count(*), coalesce(avg(doc_len), 1.0), \
@@ -1029,10 +1046,13 @@ async fn refresh_statistics(
                  SET total_docs = excluded.total_docs, avgdl = excluded.avgdl, \
                      counted_rows = excluded.counted_rows, \
                      counted_max_indexed_at = excluded.counted_max_indexed_at \
+                 WHERE (s.total_docs, s.avgdl, s.counted_rows, s.counted_max_indexed_at) \
+                     IS DISTINCT FROM (excluded.total_docs, excluded.avgdl, \
+                         excluded.counted_rows, excluded.counted_max_indexed_at) \
                  RETURNING 1 \
              ) \
-             SELECT (SELECT count(*) FROM gone) + (SELECT count(*) FROM terms) \
-                 + (SELECT count(*) FROM totals)",
+             SELECT (SELECT count(*) FROM changed) + (SELECT count(*) FROM added) \
+                 + (SELECT count(*) FROM gone) + (SELECT count(*) FROM totals)",
             sea_query::Values(vec![workspace_id.into()]),
         )
         .await?
