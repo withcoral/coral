@@ -487,12 +487,22 @@ async fn decision_gate(
     );
     let policy = match policy_read {
         PolicyRead::Hold => {
-            coral_policy::invocation_decision_in_transaction(tx, &policy_target, operation.hints())
-                .await?
+            coral_policy::invocation_decision_in_transaction(
+                tx,
+                &policy_target,
+                operation.hints(),
+                operation.http_method(),
+            )
+            .await?
         }
         PolicyRead::Inspect => {
-            coral_policy::discovery_decision_in_transaction(tx, &policy_target, operation.hints())
-                .await?
+            coral_policy::discovery_decision_in_transaction(
+                tx,
+                &policy_target,
+                operation.hints(),
+                operation.http_method(),
+            )
+            .await?
         }
     };
     Ok(match policy.access_state() {

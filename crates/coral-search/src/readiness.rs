@@ -132,6 +132,7 @@ async fn operation_ready_providers(
                     catalog.provider_id(),
                     operation.key(),
                     operation.hints(),
+                    operation.http_method(),
                 )
                 .is_some()
             })

@@ -1,3 +1,5 @@
+import { ArchiveIcon } from '@/wax/components/icon/custom-icons/archive'
+import { ArchiveRestoreIcon } from '@/wax/components/icon/custom-icons/archive-restore'
 import { ArrowDownIcon } from '@/wax/components/icon/custom-icons/arrow-down'
 import { ArrowRightIcon } from '@/wax/components/icon/custom-icons/arrow-right'
 import { ArrowUpIcon } from '@/wax/components/icon/custom-icons/arrow-up'
@@ -102,6 +104,8 @@ import type { IconName } from '@/wax/components/icon/icon'
  * - If misaligned, you can ask Claude to fix it.
  */
 export const customIcons = {
+  Archive: ArchiveIcon,
+  ArchiveRestore: ArchiveRestoreIcon,
   ArrowDown: ArrowDownIcon,
   ArrowRight: ArrowRightIcon,
   ArrowUp: ArrowUpIcon,

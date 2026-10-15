@@ -5,16 +5,24 @@ import {
   reviseAttempt,
   type CreationAttempt,
 } from '@/lib/provider-publication-attempt/model'
-import { Banner, Button, Typography } from '@/wax/components'
+import { Button, Typography } from '@/wax/components'
 import { PageLayout } from '@/wax/components/page-layout'
-import { AddProviderEntry } from './add-provider'
-import { recipeNamespace } from '@/lib/provider-recipes/choice'
+import { AddProviderEntry, needsSourceDetails } from './add-provider'
+import {
+  adHocSource,
+  recipeNamespace,
+  sourceSearch,
+  type SourceChoice,
+} from '@/lib/provider-recipes/choice'
+import type { AttemptEnd } from '@/lib/provider-publication-attempt/model'
+import { AttemptEnded } from './attempt-ended'
+import { useReadRecipe } from './read-recipe'
 import { NAMESPACE, suggestedNamespace } from './fields'
 import { ConfigurationStep } from './configuration-step'
 import { OperationsStep } from './operations-step'
 import { AccountStep } from './account-step'
 import { StepPage } from './step-frame'
-import type { StepperPageProps } from './types'
+import type { FormContext, SetupView, StepperPageProps } from './types'
 import * as styles from './providers.css'
 
 /** Remount the steps whenever the attempt or its source changes. */
@@ -67,7 +75,7 @@ function StepperAttemptPage({
   })
   const local: CreationAttempt =
     attempt.state === 'frozen' ? attempt : { ...attempt, namespace: answers.namespace }
-  const { stage, terminal } = attemptProgress(local, setup, result)
+  const { stage, ended } = attemptProgress(local, setup, result)
   const configurationPath = attemptPath(basePath, reviseAttempt(local, 'configuration'))
   // Back from the account question returns to the operations, the step before
   // it. Withdrawing the acceptance is what sends the attempt back there.
@@ -142,18 +150,16 @@ function StepperAttemptPage({
       {body}
     </PageLayout>
   )
-  if (terminal)
+  if (ended && setup)
     return page(
-      <Banner
-        variant="warning"
-        action={
-          <Button.InternalLink to={basePath} size="small">
-            Start over
-          </Button.InternalLink>
-        }
-      >
-        {terminal}
-      </Banner>,
+      <AddEnded
+        ended={ended}
+        setup={setup}
+        recipe={recipe}
+        form={form}
+        basePath={basePath}
+        cancelPath={cancelPath}
+      />,
     )
   if (content)
     return page(
@@ -177,5 +183,66 @@ function StepperAttemptPage({
         </section>
       )}
     </div>,
+  )
+}
+
+/**
+ * A Setup that ended. Start again reads the same source into a new Setup, as
+ * the catalog does. A source that needs details or an upload opens the source
+ * form instead, and so does Choose a source after a read fails.
+ */
+function AddEnded({
+  ended,
+  setup,
+  recipe,
+  form,
+  basePath,
+  cancelPath,
+}: {
+  ended: AttemptEnd
+  setup: SetupView
+  recipe: SourceChoice | null
+  form: FormContext
+  basePath: string
+  cancelPath: string
+}) {
+  const { read, reading, failed } = useReadRecipe(form, basePath)
+  // A typed URL keeps no source choice in the address, but its Setup names the URL.
+  const source =
+    recipe ??
+    (setup.sourceHost
+      ? adHocSource(setup.kind === 'mcp' ? 'mcp' : 'openapi', setup.sourceLabel)
+      : null)
+  const leave = (
+    <Button.InternalLink to={cancelPath} variant="secondary">
+      Back to providers
+    </Button.InternalLink>
+  )
+  if (!source)
+    return (
+      <AttemptEnded ended={ended} description="Upload the document again to continue.">
+        {leave}
+        <Button.InternalLink to={basePath}>Choose a source</Button.InternalLink>
+      </AttemptEnded>
+    )
+  // A read that fails says why in a toast. The source form lets you correct the source.
+  return (
+    <AttemptEnded ended={ended}>
+      {leave}
+      {failed && (
+        <Button.InternalLink to={basePath} variant="secondary">
+          Choose a source
+        </Button.InternalLink>
+      )}
+      {needsSourceDetails(source) ? (
+        <Button.InternalLink to={`${basePath}?${sourceSearch(source)}`}>
+          Start again
+        </Button.InternalLink>
+      ) : (
+        <Button.TextButton type="button" disabled={Boolean(reading)} onClick={() => read(source)}>
+          {reading ? 'Starting…' : 'Start again'}
+        </Button.TextButton>
+      )}
+    </AttemptEnded>
   )
 }

@@ -9,63 +9,96 @@ use serde_json::{Map, Value, json};
 #[cfg(test)]
 mod tests;
 
-/// Projects every ordered hit, continuation metadata, and one status per
-/// retriever, without truncation.
+/// Projects every ordered hit, and only what the agent acts on besides: the
+/// cursor while more remain, and the status of each retriever whose results
+/// may be missing.
 #[must_use]
 pub fn search(page: &SearchPage) -> Value {
-    json!({
-        "hits": page.hits().iter().map(hit).collect::<Vec<_>>(),
-        "next_cursor": page.next_cursor().map(ToString::to_string),
-        "has_more": page.has_more(),
-        "retriever_statuses": page
-            .retriever_statuses()
-            .iter()
-            .map(retriever_status)
-            .collect::<Vec<_>>(),
-    })
+    let mut fields = Map::from_iter([
+        (
+            "hits".to_string(),
+            json!(page.hits().iter().map(hit).collect::<Vec<_>>()),
+        ),
+        ("has_more".to_string(), json!(page.has_more())),
+    ]);
+    if let Some(cursor) = page.next_cursor() {
+        fields.insert("next_cursor".to_string(), json!(cursor.to_string()));
+    }
+    let incomplete = page
+        .retriever_statuses()
+        .iter()
+        .filter(|status| {
+            matches!(
+                status.state(),
+                RetrieverState::Partial | RetrieverState::Error
+            )
+        })
+        .map(retriever_status)
+        .collect::<Vec<_>>();
+    if !incomplete.is_empty() {
+        fields.insert("retriever_statuses".to_string(), json!(incomplete));
+    }
+    Value::Object(fields)
 }
 
-/// One Search Hit. Keys absent for a Saved Function do not apply to it; the
-/// Guidance Snippet and matched tags appear only on a match.
+/// One Search Hit, cut to what the agent needs to choose and call it. The Call
+/// Path already names the kind and the Provider, the rank already reflects the
+/// evidence, and `describe` gives the rest. A flag appears only when set, a
+/// hint only when declared, and a match only where a query term matched.
 fn hit(hit: &SearchHit) -> Value {
     let mut fields = Map::from_iter([
-        ("kind".to_string(), json!(entity_kind(hit.kind()))),
         ("call_path".to_string(), json!(hit.call_path().as_str())),
         ("signature_line".to_string(), json!(hit.signature_line())),
         (
             "description_snippet".to_string(),
             json!(hit.description_snippet()),
         ),
-        (
-            "evidence".to_string(),
-            json!({
-                "fields": hit.evidence().fields(),
-                "paths": hit.evidence().paths(),
-            }),
-        ),
     ]);
-    if let Some(operation) = hit.operation() {
-        fields.extend([
-            (
-                "provider_display_name".to_string(),
-                json!(operation.provider_display_name()),
-            ),
-            ("title".to_string(), json!(operation.title())),
-            ("hints".to_string(), hints(operation.hints())),
-            (
-                "approval_required".to_string(),
-                json!(operation.approval_requirement() == ApprovalRequirement::Required),
-            ),
-            ("deprecated".to_string(), json!(operation.deprecated())),
-        ]);
-    }
     if let Some(guidance) = hit.guidance_snippet() {
         fields.insert("guidance_snippet".to_string(), json!(guidance));
     }
     if !hit.matched_tags().is_empty() {
         fields.insert("matched_tags".to_string(), json!(hit.matched_tags()));
     }
+    let hidden = matched_inputs(hit);
+    if !hidden.is_empty() {
+        fields.insert("matched_inputs".to_string(), json!(hidden));
+    }
+    if let Some(operation) = hit.operation() {
+        if operation.hints() != OperationHints::default() {
+            fields.insert("hints".to_string(), hints(operation.hints()));
+        }
+        if operation.approval_requirement() == ApprovalRequirement::Required {
+            fields.insert("approval_required".to_string(), json!(true));
+        }
+        if operation.deprecated() {
+            fields.insert("deprecated".to_string(), json!(true));
+        }
+    }
     Value::Object(fields)
+}
+
+/// The top-level arguments a query term matched that the cut signature line
+/// does not show, in name order: a long argument can push the one the agent
+/// needs past the cut.
+fn matched_inputs(hit: &SearchHit) -> Vec<&str> {
+    let line = hit.signature_line();
+    let mut names = hit
+        .evidence()
+        .paths()
+        .iter()
+        .filter_map(|path| path.strip_prefix("input."))
+        .filter_map(|rest| rest.split(['.', '[']).next())
+        .filter(|name| {
+            !["{ ", "; "].iter().any(|before| {
+                line.contains(&format!("{before}{name}:"))
+                    || line.contains(&format!("{before}{name}?:"))
+            })
+        })
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 fn retriever_status(status: &RetrieverStatus) -> Value {

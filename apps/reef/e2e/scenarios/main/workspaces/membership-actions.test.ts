@@ -56,7 +56,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
           name: `${workspace.name}/memberships/${owner.userId}`,
         })
       await step('The last Owner cannot change their role to Member', async () => {
-        expect(await page.getByText(`${owner.label} · You`, { exact: true }).count()).toBe(1)
+        expect(await page.getByText(`${owner.label} (You)`, { exact: true }).count()).toBe(1)
         await page.getByRole('button', { name: `Actions for ${owner.label}`, exact: true }).click()
         await page.getByRole('menuitem', { name: 'Change role', exact: true }).click()
         await page.getByRole('button', { name: `Role for ${owner.label}`, exact: true }).click()
@@ -66,7 +66,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
         await page.getByRole('button', { name: 'Cancel', exact: true }).click()
         await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
         expect(
-          await page.getByRole('link', { name: 'Row actions settings', exact: true }).count(),
+          await page.getByRole('button', { name: 'Archive Row actions', exact: true }).count(),
         ).toBe(1)
         expect((await ownMembership()).role).toBe(WorkspaceRole.OWNER)
       })
@@ -100,7 +100,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
           await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
           expect(new URL(page.url()).pathname).toBe(path)
           expect(
-            await page.getByRole('link', { name: 'Row actions settings', exact: true }).count(),
+            await page.getByRole('button', { name: 'Archive Row actions', exact: true }).count(),
           ).toBe(1)
           const { memberships } = await api.memberships.listWorkspaceMemberships({
             parent: workspace.name,
@@ -108,7 +108,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
           expect(memberships.map((m) => [m.user, m.role])).toEqual([
             [`users/${owner.userId}`, WorkspaceRole.OWNER],
           ])
-          expect(await page.getByText(`${owner.label} · You`, { exact: true }).count()).toBe(1)
+          expect(await page.getByText(`${owner.label} (You)`, { exact: true }).count()).toBe(1)
         },
       )
     },

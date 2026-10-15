@@ -5,7 +5,7 @@ import * as SettingRow from '@/wax/components/setting-row'
 import * as ScrollArea from '@/wax/components/scroll-area'
 import type { ActivityPage, PendingAction } from './types'
 import { QuickDecision } from '../actions/review'
-import { useActivityConnected } from './live'
+import { useActivityArchived, useActivityConnected } from './live'
 import { useActivityNavigation } from './navigation'
 import * as styles from './task-activity.css'
 
@@ -21,6 +21,7 @@ export function pendingQuestion({ action, run }: PendingAction) {
 export function PendingActions({ page }: { page: ActivityPage }) {
   const nav = useActivityNavigation(page)
   const connected = useActivityConnected()
+  const archived = useActivityArchived()
   const pending = page.pending
   if (!pending) return null
   if (pending.unavailable)
@@ -62,7 +63,7 @@ export function PendingActions({ page }: { page: ActivityPage }) {
                 }
                 action={
                   <>
-                    {action.kind === 'approval' && (
+                    {action.kind === 'approval' && !archived && (
                       <QuickDecision name={action.name} label={question} />
                     )}
                     <Button.InternalLink

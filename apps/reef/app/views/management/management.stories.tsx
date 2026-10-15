@@ -8,7 +8,6 @@ import { ManagementError } from './management-error'
 import { OrganizationMembersPage } from './organization-members-page'
 import { OrganizationWorkspacesPage } from './organization-workspaces-page'
 import { WorkspaceMembersPage, type WorkspaceMembersPageProps } from './workspace-members-page'
-import { SettingsDialog } from './settings-dialog'
 import { Activity } from '@/views/activity/activity'
 import type { ActivityRow } from '@/views/activity/types'
 import { WorkspaceOverview, type WorkspaceOverviewProps } from './workspace-overview'
@@ -258,9 +257,6 @@ export const DisabledOwnerOverview: Story = {
     ).toBeVisible()
     await expect(card.getAllByText('Disabled')).toHaveLength(1)
   },
-}
-export const ArchivedOverview: Story = {
-  render: () => <WorkspaceOverview {...overview} workspace={archived} />,
 }
 export const NoEndpointOverview: Story = {
   render: () => <WorkspaceOverview {...overview} workspace={{ ...workspace, mcpEndpoint: '' }} />,
@@ -653,7 +649,7 @@ export const OrganizationMembers: Story = {
   render: () => <OrganizationMembersPage {...organizationMembers} />,
   parameters: { chromatic: { viewports: [390, 1280] } },
   play: async ({ canvas }) => {
-    await expect(canvas.getByText('Jordan Lee · You')).toBeVisible()
+    await expect(canvas.getByText('Jordan Lee (You)')).toBeVisible()
     await expect(canvas.getByTitle(alice.email)).toBeVisible()
     await expect(canvas.queryByText(alice.email)).not.toBeInTheDocument()
     await expect(canvas.getByText('Disabled')).toBeVisible()
@@ -664,25 +660,16 @@ export const FilterOrganizationMembers: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const page = within(canvasElement.ownerDocument.body)
-    // The filters apply through a deferred value, so the rows can lag a render.
-    const shown = (expected: string[]) =>
-      waitFor(() =>
-        expect(
-          canvas
-            .getAllByRole('button', { name: /^Actions for / })
-            .map((button) => button.getAttribute('aria-label')),
-        ).toEqual(expected),
-      )
 
     await userEvent.click(canvas.getByRole('button', { name: 'Filter members by role: All roles' }))
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'Member' }))
-    await shown(['Actions for Alice Chen'])
+    await shownRows(canvas, ['Actions for Alice Chen'])
 
     await userEvent.click(canvas.getByRole('button', { name: 'Filter members by role: Member' }))
     await userEvent.click(await page.findByRole('menuitemradio', { name: 'All roles' }))
     // The filter matches an email as well as a name.
     await userEvent.type(canvas.getByRole('searchbox', { name: 'Filter members' }), 'jordan@')
-    await shown(['Actions for Jordan Lee'])
+    await shownRows(canvas, ['Actions for Jordan Lee'])
   },
 }
 export const OrganizationMembersEmpty: Story = {
@@ -794,16 +781,69 @@ export const OrganizationWorkspaces: Story = {
   play: async ({ canvas }) => {
     const active = within(canvas.getByRole('row', { name: /Operations team/ }))
     await expect(active.getByText('Active')).toBeVisible()
-    const listed = within(active.getByRole('list', { name: 'Owners of Operations team' }))
-    await expect(
-      listed.getAllByRole('listitem').map((item) => /Disabled/.test(item.textContent ?? '')),
-    ).toEqual([false, true])
+    // Each owner is one pill. The text marks you and a disabled owner.
+    await expect(active.getByText('Jordan Lee (You)')).toBeVisible()
+    await expect(active.getByText('Alice Chen · Disabled')).toBeVisible()
     await expect(
       within(canvas.getByRole('row', { name: /Research/ })).getByText('Archived'),
     ).toBeVisible()
-    await expect(
-      canvas.getByText('Restore an archived workspace before you assign an owner.'),
-    ).toBeVisible()
+  },
+}
+export const FilterOrganizationWorkspaces: Story = {
+  render: OrganizationWorkspaces.render,
+  parameters: { initialEntry: '/organization/workspaces' },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const page = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'Filter workspaces by state: All states' }),
+    )
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'Archived' }))
+    await shownRows(canvas, ['Actions for Research'])
+
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'Filter workspaces by state: Archived' }),
+    )
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'All states' }))
+    // The filter matches an owner's email as well as the workspace name.
+    const filter = canvas.getByRole('searchbox', { name: 'Filter workspaces' })
+    await userEvent.type(filter, sam.email)
+    await shownRows(canvas, ['Actions for Research'])
+
+    await userEvent.clear(filter)
+    await userEvent.type(filter, 'nothing')
+    await shownRows(canvas, [])
+    await expect(canvas.getByText('No workspaces match “nothing”.')).toBeVisible()
+  },
+}
+// Owners that do not fit on one line fold into a "+N" pill.
+export const ManyWorkspaceOwners: Story = {
+  render: () => (
+    <OrganizationWorkspacesPage
+      {...organizationWorkspaces}
+      workspaces={[
+        {
+          ...organizationWorkspaces.workspaces[0],
+          owners: Array.from({ length: 12 }, (_, i) => ({
+            user: `users/owner-${i}`,
+            profile: {
+              user: `users/owner-${i}`,
+              name: `Owner number ${i}`,
+              email: `owner-${i}@example.com`,
+              local: false,
+            },
+            enabled: true,
+          })),
+        },
+      ]}
+    />
+  ),
+  parameters: { chromatic: { viewports: [390, 1280] }, initialEntry: '/organization/workspaces' },
+  play: async ({ canvas }) => {
+    const row = within(canvas.getByRole('row', { name: /Operations team/ }))
+    await expect(await row.findByRole('button', { name: /^\d+ more owners$/ })).toBeVisible()
+    await expect(row.queryByText('Owner number 11')).not.toBeInTheDocument()
   },
 }
 export const OrganizationWorkspacesEmpty: Story = {
@@ -820,29 +860,56 @@ export const ArchivedWorkspaceActions: Story = {
     ])
   },
 }
-// You can assign any enabled organization member, yourself included.
-export const AssignWorkspaceOwner: Story = {
-  ...OrganizationWorkspaces,
+const riley = {
+  user: 'users/riley',
+  name: 'Riley Park',
+  email: 'riley@example.com',
+  local: false,
+}
+// Catches: a current owner offered again, or a batch that sends anything but
+// the organization membership names of the people you pick.
+export const AssignWorkspaceOwners: Story = {
+  render: () => (
+    <OrganizationWorkspacesPage
+      {...organizationWorkspaces}
+      candidates={[
+        ...organizationPeople,
+        { name: 'organizationMemberships/riley', profile: riley },
+      ]}
+    />
+  ),
+  parameters: { initialEntry: '/organization/workspaces' },
   play: async ({ canvas, canvasElement }) => {
     const body = await openWorkspaceActions(canvas, canvasElement, 'Operations team')
     await expect(body.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
-      'Assign owner',
+      'Assign owners',
       'Archive workspace',
     ])
-    await userEvent.click(body.getByRole('menuitem', { name: 'Assign owner' }))
-    const dialog = within(await body.findByRole('dialog', { name: 'Assign owner' }))
-    const submit = dialog.getByRole('button', { name: 'Assign owner' }) as HTMLButtonElement
-    await expect(submit).toBeDisabled()
-    await userEvent.click(dialog.getByRole('button', { name: 'Owner' }))
-    await expect(
-      (await body.findAllByRole('menuitemradio')).map((item) => item.textContent),
-    ).toEqual(['Jordan Lee · You', 'Sam Rivera'])
-    await userEvent.click(body.getByRole('menuitemradio', { name: 'Jordan Lee · You' }))
+    await userEvent.click(body.getByRole('menuitem', { name: 'Assign owners' }))
+    const dialog = within(await body.findByRole('dialog', { name: 'Assign owners' }))
+    await expect(dialog.getByRole('button', { name: 'Assign owner' })).toBeDisabled()
+    await userEvent.click(dialog.getByRole('combobox', { name: 'People' }))
+    // Jordan already owns the workspace.
+    await expect((await body.findAllByRole('option')).map((option) => option.textContent)).toEqual([
+      'Sam Rivera (sam@example.com)',
+      'Riley Park (riley@example.com)',
+    ])
+    // Only organization members can own a workspace, so a typed email is not offered.
+    await userEvent.keyboard('new@example.com')
+    await expect(body.queryByRole('option', { name: /new@example\.com/ })).not.toBeInTheDocument()
+    await userEvent.clear(dialog.getByRole('combobox', { name: 'People' }))
+    await userEvent.keyboard('{Escape}')
+    await pickPerson(dialog, canvasElement, /Sam Rivera/)
+    await pickPerson(dialog, canvasElement, /Riley Park/)
+    const submit = dialog.getByRole('button', { name: 'Assign 2 owners' }) as HTMLButtonElement
     await waitFor(() => expect(submit).toBeEnabled())
     const fields = new FormData(submit.form!)
     await expect(fields.get('intent')).toBe('assignOwner')
     await expect(fields.get('name')).toBe('workspaces/demo')
-    await expect(fields.get('owner')).toBe('organizationMemberships/jordan')
+    await expect(fields.getAll('owner')).toEqual([
+      'organizationMemberships/sam',
+      'organizationMemberships/riley',
+    ])
   },
 }
 
@@ -912,9 +979,40 @@ export const StaleConfiguration: Story = {
     />
   ),
 }
+// Two people share an email, and two share a name. Each is a choice of its own.
+export const AddMembersLookalikes: Story = {
+  render: () => (
+    <WorkspaceMembersPage
+      {...members}
+      candidates={[
+        { user: 'users/sam', name: 'Sam Rivera', email: 'sam@example.com', local: false },
+        { user: 'users/sam2', name: 'Sam Rivera', email: 'sam@other.com', local: false },
+        { user: 'users/priya', name: 'Priya Natarajan', email: 'priya@example.com', local: false },
+        { user: 'users/pat', name: 'Pat Natarajan', email: 'priya@example.com', local: false },
+      ]}
+    />
+  ),
+  play: async ({ canvas, canvasElement }) => {
+    const dialog = await openAddMembers(canvas, canvasElement)
+    await userEvent.click(dialog.getByRole('combobox', { name: 'People' }))
+  },
+}
 async function openAddMembers(canvas: ReturnType<typeof within>, root: HTMLElement) {
   await userEvent.click(canvas.getByRole('button', { name: 'Add members' }))
   return within(await within(root.ownerDocument.body).findByRole('dialog', { name: 'Add members' }))
+}
+/**
+ * Waits for the rows a filter shows. The filter applies through a deferred
+ * value, so the rows can lag a render.
+ */
+function shownRows(canvas: ReturnType<typeof within>, expected: string[]) {
+  return waitFor(() =>
+    expect(
+      canvas
+        .queryAllByRole('button', { name: /^Actions for / })
+        .map((button: HTMLElement) => button.getAttribute('aria-label')),
+    ).toEqual(expected),
+  )
 }
 /** Picks one person, then closes the list, which hides the rest of the dialog while open. */
 async function pickPerson(dialog: ReturnType<typeof within>, root: HTMLElement, name: RegExp) {
@@ -927,7 +1025,8 @@ async function pickPerson(dialog: ReturnType<typeof within>, root: HTMLElement, 
 export const AddMemberDialog: Story = {
   ...OwnerMembers,
   play: async ({ canvas, canvasElement }) => {
-    await openAddMembers(canvas, canvasElement)
+    const dialog = await openAddMembers(canvas, canvasElement)
+    await userEvent.click(dialog.getByRole('combobox', { name: 'People' }))
   },
 }
 // Catches: the picker sending names instead of emails, or a label that does
@@ -1144,33 +1243,6 @@ export const LocalUser: Story = {
       owners={null}
     />
   ),
-}
-
-// Settings
-export const WorkspaceSettings: Story = {
-  render: () => <SettingsDialog workspace={workspace} form={form} />,
-  parameters: { initialEntry: '/workspaces/demo/settings' },
-}
-export const ArchivedSettings: Story = {
-  render: () => <SettingsDialog workspace={archived} form={form} />,
-  parameters: { initialEntry: '/workspaces/demo/settings' },
-}
-export const SubmissionPending: Story = {
-  render: () => <SettingsDialog workspace={workspace} form={form} pending />,
-  parameters: { initialEntry: '/workspaces/demo/settings' },
-}
-export const ArchiveConfirmation: Story = {
-  ...WorkspaceSettings,
-  play: async ({ canvasElement }) => {
-    const body = within(canvasElement.ownerDocument.body)
-    await userEvent.click(await body.findByRole('button', { name: 'Archive workspace' }))
-    const dialog = await body.findByRole('dialog', {
-      name: 'Archive workspace',
-    })
-    await waitFor(() =>
-      expect(within(dialog).getByRole('button', { name: 'Archive workspace' })).toBeVisible(),
-    )
-  },
 }
 
 // Themes and widths
