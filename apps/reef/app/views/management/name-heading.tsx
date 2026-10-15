@@ -1,7 +1,9 @@
+import classNames from 'classnames'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useFetcher } from 'react-router'
 import { Button, Inputs, Typography } from '@/wax/components'
 import { ErrorMessage } from '@/wax/components/error-message/error-message'
+import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import { Fields } from './forms'
 import type { ActionResult, FormContext } from './types'
 import * as styles from './management.css'
@@ -23,6 +25,7 @@ export function NameHeading({
   action,
   fields,
   children,
+  pageTitle = false,
 }: {
   name: string
   /** What the name belongs to, in lowercase: "provider", "workspace". */
@@ -37,6 +40,8 @@ export function NameHeading({
   fields?: ReactNode
   /** Status beside the name, such as pills. */
   children?: ReactNode
+  /** Titles the page from the top bar, as its h1, in place of a breadcrumb. */
+  pageTitle?: boolean
 }) {
   const fetcher = useFetcher<ActionResult>()
   const [open, setOpen] = useState(false)
@@ -61,7 +66,11 @@ export function NameHeading({
   if (!editing)
     return (
       <div className={styles.nameHeading}>
-        <Typography.HeadingLarge as="h2">{name}</Typography.HeadingLarge>
+        {pageTitle ? (
+          <Typography.BodyLargeStrong as="h1">{name}</Typography.BodyLargeStrong>
+        ) : (
+          <Typography.HeadingLarge as="h2">{name}</Typography.HeadingLarge>
+        )}
         {canRename && (
           <Button.IconButton
             ref={pencil}
@@ -89,10 +98,12 @@ export function NameHeading({
       className={styles.nameForm}
       aria-busy={saving}
     >
+      {/* The editor replaces the page's title, so the page keeps its h1 for assistive technology. */}
+      {pageTitle && <h1 className={visuallyHidden}>{name}</h1>}
       <Fields form={form} intent={intent} etag={openedAt} />
       {fields}
-      <div className={styles.nameRow}>
-        <div className={styles.nameInput}>
+      <div className={classNames(styles.nameRow, pageTitle && styles.titleNameRow)}>
+        <div className={classNames(styles.nameInput, pageTitle && styles.titleNameInput)}>
           <Inputs.TextInput
             ariaLabel={label}
             name="displayName"

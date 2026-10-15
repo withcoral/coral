@@ -4,6 +4,8 @@ import { theme } from '@/wax/theme/theme.css'
 
 import { breakpoints } from '@/styles/breakpoints'
 
+import { TOP_BAR_HEIGHT_PX } from './constants'
+
 export const container = style({
   display: 'flex',
   flexDirection: 'column',
@@ -19,11 +21,19 @@ export const topBar = style({
   flexShrink: 0,
   gap: 24,
   justifyContent: 'space-between',
-  // Keep single-segment and linked breadcrumbs at the same height: one row of links.
-  minHeight: 44,
+  // Level with the sidebar's masthead beside it: the breadcrumbs centre on the
+  // brand, with the same room under them as above. The bar stays one row of
+  // links tall, so single-segment and linked breadcrumbs match.
+  minHeight: TOP_BAR_HEIGHT_PX,
+  paddingBlock: 12,
   paddingInline: 24,
   '@media': {
-    [`screen and (max-width: ${breakpoints.mobile})`]: { gap: 12, paddingInline: 16 },
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      gap: 12,
+      minHeight: 44,
+      paddingBlock: 0,
+      paddingInline: 16,
+    },
   },
 })
 

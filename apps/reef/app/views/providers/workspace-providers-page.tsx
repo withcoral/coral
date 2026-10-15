@@ -1,8 +1,9 @@
+import classNames from 'classnames'
 import type { MouseEvent, ReactNode, Ref, RefObject } from 'react'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 
-import { Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
+import { ActionBar, Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
 import { animations } from '@/wax/animations'
 import { CodeChip } from '@/wax/components/code-chip'
 import { Icon, type IconName } from '@/wax/components/icon'
@@ -281,9 +282,9 @@ function HighlightedName({ name, query }: { name: string; query: string }) {
     if (at > from) parts.push(name.slice(from, at))
     from = at + needle.length
     parts.push(
-      <Typography.BodySmallXStrong key={at} as="strong">
+      <Typography.BodySmallStrong key={at} as="strong">
         {name.slice(at, from)}
-      </Typography.BodySmallXStrong>,
+      </Typography.BodySmallStrong>,
     )
   }
   if (from < name.length) parts.push(name.slice(from))
@@ -382,7 +383,7 @@ type ProviderSection = {
 // Every heading mounts, so Wax's sticky groups work as they do without a
 // virtualizer; only the operation rows inside a group come and go. Each visible
 // operation costs a policy form, which is what made the full table slow.
-const DENSITY = 'compact'
+const DENSITY = 'comfortable'
 // Provider and group headings are prominent: they stand taller than the operation rows.
 const GROUP_HEADINGS = 'prominent'
 const HEADING_HEIGHT = groupHeadingHeightPx(DENSITY, GROUP_HEADINGS)
@@ -774,11 +775,11 @@ function ProvidersTableScreen({
                 </>
               }
               name={providerLabel(provider)}
+              count={provider.totalCount}
               trailing={
                 <>
                   <Tooltip content={`Show only ${providerLabel(provider)}`}>
                     <Button.Container
-                      className={styles.providerRailAction}
                       variant="bare"
                       size="22"
                       ariaLabel={`Show only ${providerLabel(provider)}`}
@@ -789,7 +790,6 @@ function ProvidersTableScreen({
                   </Tooltip>
                   <Button.Container
                     as={Link}
-                    className={styles.providerRailAction}
                     id={providerSettingsDomId(provider.id)}
                     to={`${provider.path}/settings`}
                     preventScrollReset
@@ -811,6 +811,8 @@ function ProvidersTableScreen({
           id: OPERATION_FILTER_ID,
           label: 'Filter operations',
           shortcut: '$mod+f',
+          // The filter spans the table's width, so the toolbar hangs from the same left edge.
+          fill: true,
           value: tableFilterInput,
           onChange: setTableFilterInput,
         }}
@@ -828,76 +830,80 @@ function ProvidersTableScreen({
       {!canChange && (
         <Banner variant="info">Only owners can change policy in an active workspace.</Banner>
       )}
-      <Table.Container
-        ariaLabel="Operations"
-        density={DENSITY}
-        groupHeadings={GROUP_HEADINGS}
-        layout="scroll"
-        ref={tableRef}
-        onPinnedGroupChange={onPinnedGroupChange}
-        className={styles.providersTable}
-        columns={[{ width: 44 }, { width: 'minmax(340px, 1fr)' }, { width: 'max-content' }]}
-      >
-        <Table.Head>
-          <Table.Row>
-            <span role="columnheader" aria-label="Select" className={styles.policyCell}>
-              <Inputs.Checkbox
-                checked={allVisibleSelected}
-                indeterminate={visibleSelectedCount > 0 && !allVisibleSelected}
-                disabled={!canChange || mutations.bulkPending || visibleOperations.length === 0}
-                onCheckedChange={(checked) => toggleOperations(visibleOperations, checked)}
-              >
-                <span className={visuallyHidden}>Select all matching operations</span>
-              </Inputs.Checkbox>
-            </span>
-            <span role="columnheader">Operation name</span>
-            <span role="columnheader">Policy</span>
-          </Table.Row>
-        </Table.Head>
-        {sections.length === 0 && <Table.Status>No providers match.</Table.Status>}
-        <TableSections
-          activeKey={activeKey}
-          bulkPending={mutations.bulkPending}
-          canChange={canChange}
-          drawerOpen={drawerKey !== null}
-          filterByPolicy={filterByPolicy}
-          form={form}
-          policyFilter={policyFilter?.value ?? null}
-          query={tableFilter}
-          virtual={virtual}
-          providerIcons={providerIcons}
-          sections={sections}
-          selected={selected}
-          showSelected={showSelected}
-          toggleOperations={toggleOperations}
-        />
-        {/* The rail can bring even a short last provider up under the head. */}
-        {sections.length > 0 && (
-          <Table.VirtualTail from={sections.at(-1)!.index} virtual={virtual} />
-        )}
-      </Table.Container>
-      <div className={styles.bulkPolicyFooter}>
-        {selected.size > 0 && (
-          <BulkPolicyForm
+      <ActionBar.Frame>
+        <Table.Container
+          ariaLabel="Operations"
+          density={DENSITY}
+          groupHeadings={GROUP_HEADINGS}
+          layout="scroll"
+          ref={tableRef}
+          onPinnedGroupChange={onPinnedGroupChange}
+          className={styles.providersTable}
+          columns={[{ width: 44 }, { width: 'minmax(340px, 1fr)' }, { width: 'max-content' }]}
+        >
+          <Table.Head>
+            <Table.Row>
+              <span role="columnheader" aria-label="Select" className={styles.policyCell}>
+                <Inputs.Checkbox
+                  checked={allVisibleSelected}
+                  indeterminate={visibleSelectedCount > 0 && !allVisibleSelected}
+                  disabled={!canChange || mutations.bulkPending || visibleOperations.length === 0}
+                  onCheckedChange={(checked) => toggleOperations(visibleOperations, checked)}
+                >
+                  <span className={visuallyHidden}>Select all matching operations</span>
+                </Inputs.Checkbox>
+              </span>
+              <span role="columnheader">Operation name</span>
+              <span role="columnheader" className={styles.policyHeader}>
+                Policy
+              </span>
+            </Table.Row>
+          </Table.Head>
+          {sections.length === 0 && <Table.Status>No providers match.</Table.Status>}
+          <TableSections
+            activeKey={activeKey}
+            bulkPending={mutations.bulkPending}
             canChange={canChange}
+            drawerOpen={drawerKey !== null}
+            filterByPolicy={filterByPolicy}
+            markRevealed={markRevealed}
             form={form}
-            providers={providers}
+            policyFilter={policyFilter?.value ?? null}
+            query={tableFilter}
+            virtual={virtual}
+            providerIcons={providerIcons}
+            sections={sections}
             selected={selected}
-            onShowSelected={showSelected}
-            onClear={() => {
-              setSelected(new Set())
-              setSelectedView(null)
-            }}
-            onConfirmed={(confirmed) =>
-              setSelected((current) => {
-                const next = new Set(current)
-                for (const key of confirmed) next.delete(key)
-                return next
-              })
-            }
+            showSelected={showSelected}
+            toggleOperations={toggleOperations}
           />
+          {/* The rail can bring even a short last provider up under the head. */}
+          {sections.length > 0 && (
+            <Table.VirtualTail from={sections.at(-1)!.index} virtual={virtual} />
+          )}
+        </Table.Container>
+        {selected.size > 0 && (
+          <ActionBar.Bar>
+            <BulkPolicyForm
+              canChange={canChange}
+              form={form}
+              providers={providers}
+              selected={selected}
+              onClear={() => {
+                setSelected(new Set())
+                setSelectedView(null)
+              }}
+              onConfirmed={(confirmed) =>
+                setSelected((current) => {
+                  const next = new Set(current)
+                  for (const key of confirmed) next.delete(key)
+                  return next
+                })
+              }
+            />
+          </ActionBar.Bar>
         )}
-      </div>
+      </ActionBar.Frame>
       {/* `cursorKeyApplies` decides which fields keep a key, so fields don't skip it here. */}
       <KeyboardShortcut shortcut="ArrowDown" handler={moveCursor(1)} ignore={never} />
       <KeyboardShortcut shortcut="ArrowUp" handler={moveCursor(-1)} ignore={never} />
@@ -1034,6 +1040,7 @@ const TableSections = memo(function TableSections({
   drawerOpen,
   filterByPolicy,
   form,
+  markRevealed,
   policyFilter,
   providerIcons,
   query,
@@ -1050,6 +1057,8 @@ const TableSections = memo(function TableSections({
   drawerOpen: boolean
   filterByPolicy: FilterByPolicy
   form: FormContext
+  /** Records an operation the reader opened in place, so its route does not scroll the table. */
+  markRevealed: (provider: string, operation: string) => void
   policyFilter: PolicyFilter['value'] | null
   providerIcons: Map<string, RecipeIcons>
   /** The operation filter, bolded where it matches a name. */
@@ -1087,9 +1096,9 @@ const TableSections = memo(function TableSections({
                 icons={providerIcons.get(section.provider.namespace)}
                 size="20"
               />
-              <Typography.BodySmallStrong as="span">
+              <Typography.BodyStrong as="span">
                 {providerLabel(section.provider)}
-              </Typography.BodySmallStrong>
+              </Typography.BodyStrong>
             </>
           }
           members={section.operations}
@@ -1157,6 +1166,7 @@ const TableSections = memo(function TableSections({
                 measure={virtual.measureRow}
                 operation={operation}
                 query={query}
+                onOpen={markRevealed}
                 onCheck={(checked) =>
                   toggleOperations([{ provider: section.provider, operation }], checked)
                 }
@@ -1241,7 +1251,7 @@ function GroupHeading({
       </span>
       <span role="cell" className={cell.className}>
         {label}
-        <Typography.BodySmall as="span">
+        <Typography.BodySmall as="span" variant="tertiary">
           {count === total
             ? countLabel(count, 'operation')
             : `${count.toLocaleString('en-US')} of ${countLabel(total, 'operation')}`}
@@ -1257,14 +1267,12 @@ function BulkPolicyForm({
   form,
   onClear,
   onConfirmed,
-  onShowSelected,
   providers,
   selected,
 }: {
   canChange: boolean
   form: FormContext
   onClear: () => void
-  onShowSelected: () => void
   onConfirmed: (confirmed: SelectionKey[]) => void
   providers: ProviderView[]
   selected: Set<SelectionKey>
@@ -1302,7 +1310,7 @@ function BulkPolicyForm({
     >
       <Fields form={form} intent="policy" />
       <input type="hidden" name="access" value={access} />
-      <Typography.Body as="span">Update to</Typography.Body>
+      <Typography.BodyStrong as="span">{`${selected.size.toLocaleString('en-US')} selected`}</Typography.BodyStrong>
       <Picker
         label="Bulk policy"
         options={bulkPolicyOptions}
@@ -1318,14 +1326,11 @@ function BulkPolicyForm({
       >
         <span tabIndex={saving ? 0 : undefined}>
           <Button.TextButton type="submit" disabled={disabled}>
-            {`Apply to ${selected.size}`}
+            Apply
           </Button.TextButton>
         </span>
       </Tooltip>
-      <Button.TextButton type="button" variant="secondary" onClick={onShowSelected}>
-        See selected operations
-      </Button.TextButton>
-      <Button.TextButton type="button" variant="secondary" onClick={onClear} disabled={saving}>
+      <Button.TextButton type="button" variant="bare" onClick={onClear} disabled={saving}>
         Clear selection
       </Button.TextButton>
     </form>
@@ -1345,6 +1350,7 @@ const OperationRow = memo(function OperationRow({
   operation,
   query,
   onCheck,
+  onOpen,
 }: {
   /** The keyboard cursor rests here, or the drawer shows this operation. */
   active: boolean
@@ -1360,6 +1366,8 @@ const OperationRow = memo(function OperationRow({
   operation: OperationView
   query: string
   onCheck: (checked: boolean) => void
+  /** Runs before a click opens the operation, which the reader can already see. */
+  onOpen: (provider: string, operation: string) => void
 }) {
   const unavailableReason = operation.reasons.join(' ') || 'Coral did not provide a reason.'
   const { pending } = usePolicyMutations().state(provider.id, operation.name)
@@ -1369,11 +1377,12 @@ const OperationRow = memo(function OperationRow({
   const open = (event: MouseEvent<HTMLDivElement>) => {
     const control = (event.target as Element).closest(ROW_CONTROLS + ', a')
     if (control && event.currentTarget.contains(control)) return
+    onOpen(provider.id, operation.name)
     navigate(operation.path, { preventScrollReset: true })
   }
   return (
     <Table.Row
-      className={pending ? animations.pulseAnimation : undefined}
+      className={classNames(pending && animations.pulseAnimation, checked && styles.checkedRow)}
       aria-busy={pending}
       data-index={index}
       ref={measure}
@@ -1397,6 +1406,7 @@ const OperationRow = memo(function OperationRow({
             to={operation.path}
             prefetch="intent"
             preventScrollReset
+            onClick={() => onOpen(provider.id, operation.name)}
             className={styles.operationName}
           >
             <HighlightedName name={operation.relativePath} query={query} />

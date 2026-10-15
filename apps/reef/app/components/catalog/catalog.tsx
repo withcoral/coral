@@ -115,12 +115,20 @@ export function CatalogRailItem({
   onSelect: () => void
   leading?: ReactNode
   name: string
-  /** A count beside the name; omit it when `trailing` shows something in its place. */
+  /** A count beside the name. With `trailing`, the two share the entry's end. */
   count?: number
+  /**
+   * Controls at the entry's end. Beside a count, they take its place while the
+   * entry has the pointer or keyboard focus.
+   */
   trailing?: ReactNode
 }) {
   return (
-    <div className={styles.railItem} data-current={current ? 'page' : undefined}>
+    <div
+      className={styles.railItem}
+      data-current={current ? 'page' : undefined}
+      data-count={count !== undefined && trailing ? '' : undefined}
+    >
       <Button.Container
         as={Link}
         aria-current={current ? 'page' : undefined}
@@ -139,7 +147,7 @@ export function CatalogRailItem({
         <span className={styles.railName}>{name}</span>
         {count !== undefined && <span className={styles.railCount}>{count}</span>}
       </Button.Container>
-      {trailing}
+      {trailing && <span className={styles.railTrailing}>{trailing}</span>}
     </div>
   )
 }
@@ -156,7 +164,7 @@ export function CatalogToolbar({
   filter: FilterFieldProps & {
     /** A shortcut, such as "$mod+f", that focuses the filter from anywhere on the page. */
     shortcut?: string
-    /** Takes the rest of the row, for a toolbar in a narrow column such as a card. */
+    /** Takes the rest of the row, so the toolbar spans its table, or fits a narrow column such as a card. */
     fill?: boolean
   }
   /** Controls at the start of the row, such as actions on the selection. */

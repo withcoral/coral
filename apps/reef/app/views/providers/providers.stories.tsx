@@ -676,7 +676,7 @@ export const TreeBulkPending: Story = {
     // The menu renders in a portal outside the canvas.
     const body = within(canvasElement.ownerDocument.body)
     await userEvent.click(await body.findByRole('menuitemradio', { name: 'Disabled' }))
-    await userEvent.click(within(bulk).getByRole('button', { name: /^Apply to/ }))
+    await userEvent.click(within(bulk).getByRole('button', { name: 'Apply' }))
     await expect(canvas.getByRole('checkbox', { name: 'Select GitHub operations' })).toBeDisabled()
   },
 }

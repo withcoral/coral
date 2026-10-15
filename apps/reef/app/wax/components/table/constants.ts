@@ -4,16 +4,19 @@
 // the content renders, so height comes from here and not from cell measurement.
 export const CELL_HEIGHT_PX = {
   compact: 32,
+  comfortable: 36,
   default: 44,
 } as const
 
 export const HEADING_HEIGHT_PX = {
   compact: 32,
+  comfortable: 36,
   default: 44,
 } as const
 
 export const GROUP_HEADING_HEIGHT_PX = {
   compact: 32,
+  comfortable: 36,
   default: 44,
 } as const
 

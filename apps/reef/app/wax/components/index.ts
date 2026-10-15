@@ -1,5 +1,7 @@
 import * as Card from './card'
 
+export * as ActionBar from './action-bar'
+
 export { Banner } from './banner'
 export type { BannerProps, BannerVariant } from './banner'
 export * as Button from './button'

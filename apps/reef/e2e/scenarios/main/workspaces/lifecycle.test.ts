@@ -46,7 +46,7 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the sidebar an
       const input = page.getByRole('textbox', { name: 'Workspace name', exact: true })
       await input.fill(renamed)
       await input.press('Enter')
-      await page.getByRole('heading', { name: renamed, exact: true, level: 2 }).waitFor()
+      await page.getByRole('heading', { name: renamed, exact: true, level: 1 }).waitFor()
       await breadcrumb(page, renamed).waitFor()
       await nav.getByRole('button', { name: renamed, exact: true, expanded: true }).waitFor()
       expect(page.url()).toBe(overview)

@@ -114,6 +114,19 @@ export const container = recipe({
           [tableVars.scrollRowPaddingBlock.ref]: '4px',
         },
       },
+      // One line of small text with room around it, for a list read row by row.
+      comfortable: {
+        vars: {
+          [tableVars.cellHeight.ref]: `${CELL_HEIGHT_PX.comfortable}px`,
+          [tableVars.cellPaddingBlock.ref]: '8px',
+          [tableVars.cellPaddingInline.ref]: '12px',
+          [tableVars.groupHeadingHeight.ref]:
+            `var(${GROUP_HEADING_HEIGHT_PROPERTY}, ${GROUP_HEADING_HEIGHT_PX.comfortable}px)`,
+          [tableVars.headingHeight.ref]: `${HEADING_HEIGHT_PX.comfortable}px`,
+          [tableVars.rowHoverBackground.ref]: theme.surface.onMainContentSubtle,
+          [tableVars.scrollRowPaddingBlock.ref]: '5px',
+        },
+      },
       default: {
         vars: {
           [tableVars.cellHeight.ref]: `${CELL_HEIGHT_PX.default}px`,
