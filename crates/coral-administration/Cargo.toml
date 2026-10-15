@@ -24,6 +24,8 @@ coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-test-support.workspace = true
 coral-catalog.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 coral-credentials.workspace = true

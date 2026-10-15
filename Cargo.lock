@@ -614,6 +614,8 @@ dependencies = [
  "coral-search",
  "coral-test-support",
  "coral-workspace",
+ "serde",
+ "serde_yaml",
  "sqlx",
  "tempfile",
  "thiserror",
