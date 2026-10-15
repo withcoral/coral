@@ -3,9 +3,10 @@ import type { ReactNode } from 'react'
 import * as styles from './action-bar.css'
 
 /**
- * Holds a list and the bar of actions on its selection. Put the list's scroll
- * port first: while a `Bar` shows, the port gains room at its end, so its last
- * rows scroll clear of the bar.
+ * Holds a list and the bar of actions on its selection. While a `Bar` shows, a
+ * Wax scroll table in the frame gains room after its last row, so those rows
+ * scroll clear of the bar. Another scroller can read the same room from
+ * `SCROLL_END_ROOM_PROPERTY`.
  */
 export function Frame({ children }: { children: ReactNode }) {
   return <div className={styles.frame}>{children}</div>

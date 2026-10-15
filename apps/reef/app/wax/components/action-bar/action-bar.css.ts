@@ -1,6 +1,7 @@
 import { globalStyle, style } from '@/wax/css'
 
 import { theme } from '@/wax/theme/theme.css'
+import { SCROLL_END_ROOM_PROPERTY } from '@/wax/components/table/constants'
 
 // How far the bar floats above the list's foot.
 const BAR_INSET_PX = 16
@@ -28,7 +29,7 @@ export const bar = style({
   zIndex: 3,
 })
 
-// The list's scroll port comes first; the bar, while it shows, floats over it.
+// The bar floats over the list it frames.
 export const frame = style({
   display: 'flex',
   flex: '1 1 auto',
@@ -37,4 +38,6 @@ export const frame = style({
   minWidth: 0,
   position: 'relative',
 })
-globalStyle(`${frame}:has(> ${bar}) > :first-child`, { paddingBlockEnd: ROOM_PX })
+// While the bar shows, a scroll table in the frame leaves room after its last
+// row, inside its own scroll port, so those rows scroll clear of the bar.
+globalStyle(`${frame}:has(> ${bar})`, { vars: { [SCROLL_END_ROOM_PROPERTY]: `${ROOM_PX}px` } })

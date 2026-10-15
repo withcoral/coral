@@ -15,6 +15,7 @@ import {
   justifyProperty,
   MAX_ALIGNED_COLUMNS,
   ROWS_MAX_HEIGHT_PROPERTY,
+  SCROLL_END_ROOM_PROPERTY,
 } from './constants'
 
 // The fallback keeps a cell rendered outside a Container styled as the default
@@ -75,10 +76,13 @@ export const scrollTable = style({
   minBlockSize: 0,
   minWidth: 0,
   overscrollBehavior: 'contain',
+  paddingBlockEnd: `var(${SCROLL_END_ROOM_PROPERTY}, 0px)`,
   selectors: {
     // The horizontal scrollbar's 20px hit area overlays the port's foot, so
     // the last row ends above it and keeps its clicks.
-    '&[data-has-overflow-x]': { paddingBlockEnd: 20 },
+    '&[data-has-overflow-x]': {
+      paddingBlockEnd: `max(20px, var(${SCROLL_END_ROOM_PROPERTY}, 0px))`,
+    },
   },
 })
 

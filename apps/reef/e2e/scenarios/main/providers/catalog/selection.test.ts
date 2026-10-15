@@ -99,7 +99,7 @@ test('A large catalog scrolls inside its table with aligned sticky rows', async 
       )
       expect(await page.evaluate(() => window.scrollY)).toBe(initialDocumentScroll)
     })
-    await step('Show the bulk form under the table without moving the table', async () => {
+    await step('Float the bulk form over the table without moving the table', async () => {
       const bulkForm = page.getByRole('form', { name: 'Bulk policy', exact: true })
       const before = (await table.boundingBox())!
       await all.check()
@@ -107,7 +107,9 @@ test('A large catalog scrolls inside its table with aligned sticky rows', async 
       const after = (await table.boundingBox())!
       expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1)
       expect(Math.abs(after.height - before.height)).toBeLessThanOrEqual(1)
-      expect((await bulkForm.boundingBox())!.y).toBeGreaterThanOrEqual(after.y + after.height)
+      const form = (await bulkForm.boundingBox())!
+      expect(form.y).toBeGreaterThanOrEqual(after.y)
+      expect(form.y + form.height).toBeLessThanOrEqual(after.y + after.height)
       await all.uncheck()
       await bulkForm.waitFor({ state: 'detached' })
     })
@@ -136,8 +138,12 @@ test('Opening an operation drawer preserves the table selection', async (context
         .filter({ has: page.locator('input[type="checkbox"]:checked') })
         .filter({ has: page.locator('a[href*="/ops/"]') })
         .count()
+    // The bulk form's Apply, while it counts this many selected operations.
     const bulkAction = (count: number) =>
-      page.locator('button').filter({ hasText: new RegExp(`^Apply to ${count}$`) })
+      page
+        .locator('form[aria-label="Bulk policy"]')
+        .filter({ hasText: new RegExp(`(^|\\D)${count} selected`) })
+        .locator('button', { hasText: /^Apply$/ })
     let provider = ''
     await step('Select operations in a provider catalog', async () => {
       const workspace = await createWorkspace(
@@ -176,7 +182,7 @@ test('Opening an operation drawer preserves the table selection', async (context
       expect(await checked()).toBe(2)
       expect(await checkbox('first').isChecked()).toBe(true)
       expect(await checkbox('second').isChecked()).toBe(true)
-      await page.getByRole('button', { name: 'Apply to 2', exact: true }).waitFor()
+      await bulkAction(2).waitFor()
     })
     await step('Keep the selection when a selected row opens and closes its drawer', async () => {
       await details('first').click()

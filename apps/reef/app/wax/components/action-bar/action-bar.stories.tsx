@@ -3,6 +3,8 @@ import { useState } from 'react'
 
 import { Button, Inputs, Typography } from '@/wax/components'
 
+import { SCROLL_END_ROOM_PROPERTY } from '@/wax/components/table/constants'
+
 import { Bar, Frame } from './action-bar'
 
 const meta = {
@@ -20,7 +22,14 @@ function Example({ initial = [] }: { initial?: string[] }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 360 }}>
       <Frame>
-        <div style={{ overflowY: 'auto', flex: '1 1 auto', minHeight: 0 }}>
+        <div
+          style={{
+            flex: '1 1 auto',
+            minHeight: 0,
+            overflowY: 'auto',
+            paddingBlockEnd: `var(${SCROLL_END_ROOM_PROPERTY}, 0px)`,
+          }}
+        >
           {ROWS.map((row) => (
             <div key={row} style={{ padding: '6px 12px' }}>
               <Inputs.Checkbox

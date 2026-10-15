@@ -54,6 +54,8 @@ export const frame = recipe({
     width: '100%',
     '@media': {
       [`screen and (max-width: ${breakpoints.mobile})`]: { padding: '24px 16px', gap: 24 },
+      // A short window keeps its height for the content under the tall top bar.
+      'screen and (max-height: 480px)': { gap: 16, paddingBlock: 16 },
     },
   },
   variants: {

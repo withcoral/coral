@@ -22,6 +22,10 @@ export const GROUP_HEADING_HEIGHT_PX = {
 
 export const GROUP_DEPTH_PROPERTY = '--wax-table-group-depth'
 
+// Room a scroll table leaves after its last row, inside its own scroll port, so
+// an overlay at its foot, such as `ActionBar.Bar`, never hides the last rows.
+export const SCROLL_END_ROOM_PROPERTY = '--wax-scroll-end-room'
+
 // `Table.Container` sets its group heading height here. Sticky offsets read it,
 // and so does the virtualizer, from the table it scrolls.
 export const GROUP_HEADING_HEIGHT_PROPERTY = '--wax-table-group-heading-height'
