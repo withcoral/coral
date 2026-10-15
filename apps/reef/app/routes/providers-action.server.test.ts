@@ -8,7 +8,6 @@ import { action } from './providers'
 
 const mocks = vi.hoisted(() => ({
   updateOperationPolicies: vi.fn(),
-  updateBuiltinCatalog: vi.fn(),
   workspace: vi.fn(),
 }))
 
@@ -23,7 +22,6 @@ beforeEach(() => {
   mocks.workspace.mockResolvedValue({
     api: fakeManagement({
       policies: { updateOperationPolicies: mocks.updateOperationPolicies },
-      providers: { updateBuiltinCatalog: mocks.updateBuiltinCatalog },
     }),
     workspace: { name: `workspaces/${workspaceId}`, path: `/workspaces/${workspaceId}` },
   })
@@ -150,26 +148,4 @@ it('rejects a selection with a malformed or repeated operation', async () => {
   const target = { provider: providerA, operation: `providers/${providerA}/operations/a` }
   await expect(post(policyForm([target, target]))).rejects.toMatchObject({ status: 400 })
   expect(mocks.updateOperationPolicies).not.toHaveBeenCalled()
-})
-
-// Catches: Update sending the update for another provider, without the etag
-// that keeps two owners from updating at once, or without the catalog that
-// keeps another Coral version from applying changes the owner did not review.
-it('updates the Coral provider it names with its etag and reviewed catalog', async () => {
-  mocks.updateBuiltinCatalog.mockResolvedValue({})
-  const form = new FormData()
-  form.set('intent', 'updateBuiltinCatalog')
-  form.set('provider', providerA)
-  form.set('etag', 'coral-etag')
-  form.set('catalog', 'coral-admin-catalog:reviewed')
-
-  const result = (await post(form)) as unknown as { data: { error: null; message: string } }
-
-  expect(mocks.updateBuiltinCatalog).toHaveBeenCalledOnce()
-  expect(mocks.updateBuiltinCatalog.mock.calls[0]![0]).toMatchObject({
-    name: `workspaces/${workspaceId}/providers/${providerA}`,
-    etag: 'coral-etag',
-    catalog: 'coral-admin-catalog:reviewed',
-  })
-  expect(result.data).toMatchObject({ error: null, message: 'Coral provider updated.' })
 })

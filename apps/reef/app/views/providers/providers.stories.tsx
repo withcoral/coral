@@ -249,27 +249,6 @@ export const TreeNothingSelected: Story = {
 export const TreeWithBuiltinProvider: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} providers={[github, coral, weather]} />,
 }
-// The Coral provider has an update: its page lists what the update adds and changes.
-export const TreeBuiltinUpdateAvailable: Story = {
-  render: () => (
-    <WorkspaceProvidersPage
-      {...treeProps}
-      providers={[github, coral, weather]}
-      selectedProvider="prov-coral"
-      builtinUpdate={{
-        catalog: 'coral-admin-catalog:story',
-        added: [{ relativePath: 'listProviders', summary: 'List the providers in this workspace' }],
-        removed: [],
-        changed: [
-          {
-            relativePath: 'createProvider',
-            summary: 'Create a Provider from an OpenAPI document or URL, or an MCP server URL',
-          },
-        ],
-      }}
-    />
-  ),
-}
 export const TreeProviderSelected: Story = {
   render: () => <WorkspaceProvidersPage {...treeProps} selectedProvider="prov-weather" />,
 }

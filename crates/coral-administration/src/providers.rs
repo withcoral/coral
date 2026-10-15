@@ -131,31 +131,46 @@ impl ProviderWorkflow {
         Ok(provider)
     }
 
-    /// Updates the Workspace's Built-in Provider to the catalog this process
-    /// serves, which `catalog_identity` names, as the acting Owner, then
-    /// tells Universal Search.
+    /// Updates every Workspace's Built-in Provider that pins another catalog
+    /// to the one this process serves, then tells Universal Search. Bootstrap
+    /// runs it before the process takes requests. Each Workspace updates in
+    /// its own transaction; one that fails keeps its catalog until the next
+    /// boot, and the others still update.
     ///
     /// # Errors
     ///
-    /// Returns the errors of
-    /// [`ProviderModule::update_builtin_catalog_in_transaction`]. Failure
-    /// writes nothing.
-    pub async fn update_builtin_catalog(
+    /// Returns the errors of [`ProviderModule::outdated_builtin_providers`].
+    pub async fn update_builtin_catalogs(&self, occurred_at_unix_nanos: i64) -> Result<(), Error> {
+        for (workspace, id) in self.providers.outdated_builtin_providers().await? {
+            if let Err(error) = self
+                .update_builtin_catalog(&workspace, &id, occurred_at_unix_nanos)
+                .await
+            {
+                tracing::warn!(
+                    workspace_id = %workspace,
+                    provider_id = %id,
+                    error = %error,
+                    "failed to update a Built-in Provider's catalog"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn update_builtin_catalog(
         &self,
-        context: &ChangeContext,
         workspace: &WorkspaceId,
         id: &ProviderId,
-        catalog_identity: &str,
+        occurred_at_unix_nanos: i64,
     ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let activated = self
             .providers
             .update_builtin_catalog_in_transaction(
                 &mut transaction,
-                context,
                 workspace,
                 id,
-                catalog_identity,
+                occurred_at_unix_nanos,
             )
             .await?;
         transaction.commit().await?;

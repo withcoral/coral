@@ -995,7 +995,7 @@ async fn invalid_input_fails_before_storage_approval_fetch_or_setup() {
 
 // Catches: an older Coral that a rolling deploy runs beside a newer one
 // failing an Invocation as corrupt data, or asking an Owner to approve an
-// Operation it cannot perform, after an Owner updated through the newer Coral.
+// Operation it cannot perform, after the newer Coral updated at boot.
 #[tokio::test]
 async fn an_operation_this_version_does_not_perform_fails_before_approval() {
     let scope = AdminScope::new("user:unknown-operation").await;
@@ -1008,27 +1008,18 @@ async fn an_operation_this_version_does_not_perform_fails_before_approval() {
         coral_outbound::DestinationPolicy::default(),
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
-        newer_catalog.clone(),
+        newer_catalog,
     );
-    // An Owner updates the Workspace through a process of the newer Coral.
-    let builtin = newer
-        .inspect_providers(&scope.owner_user(), &scope.workspace_id)
+    // A process of the newer Coral boots and updates the Workspace.
+    let [(workspace, builtin)] = newer
+        .outdated_builtin_providers()
         .await
         .unwrap()
-        .into_iter()
-        .find(|provider| provider.call_root().as_str() == "coral.admin")
-        .expect("the Workspace has its Built-in Provider");
+        .try_into()
+        .expect("the Workspace's Built-in Provider pins the older catalog");
     let mut transaction = scope.fixture.database.begin().await.unwrap();
     newer
-        .update_builtin_catalog_in_transaction(
-            &mut transaction,
-            &change(scope.owner_user(), 20, '4')
-                .with_etag(&builtin.etag())
-                .unwrap(),
-            &scope.workspace_id,
-            builtin.id(),
-            newer_catalog.identity(),
-        )
+        .update_builtin_catalog_in_transaction(&mut transaction, &workspace, &builtin, 20)
         .await
         .unwrap()
         .expect("the newer Coral publishes its catalog");
