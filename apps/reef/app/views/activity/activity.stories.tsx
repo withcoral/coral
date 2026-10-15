@@ -586,7 +586,7 @@ export const MiddlewareFailure: Story = {
   },
   play: async ({ canvasElement }) => {
     const drawer = within(await within(canvasElement.ownerDocument.body).findByRole('dialog'))
-    await expect(drawer.getByText(/Failed\. The wrapped call failed/)).toBeVisible()
+    await expect(drawer.getByText('Failed with this error.')).toBeVisible()
     await expect(drawer.getByText(/Enter\. The wrapped call has not returned/)).toBeVisible()
     await expect(drawer.getByText('Error: JEV rejected the input')).toBeVisible()
   },

@@ -48,8 +48,11 @@ test('An owner reviews saved middleware, enables it, and sees it wrap the next e
       await dialog.waitFor({ state: 'detached' })
     })
     await step('Choose executions, then enable the middleware', async () => {
-      await page.getByRole('checkbox', { name: 'Executions for wrap', exact: true }).check()
+      // The checkbox shows saved scopes, so it changes once the save returns.
+      const executions = page.getByRole('checkbox', { name: 'Executions for wrap', exact: true })
+      await executions.click()
       await page.getByText('Scopes saved.', { exact: false }).waitFor()
+      await expect.poll(() => executions.isChecked()).toBe(true)
       const enable = page.getByRole('switch', { name: 'Enable wrap', exact: true })
       expect(await enable.getAttribute('aria-checked')).toBe('false')
       await enable.click()
