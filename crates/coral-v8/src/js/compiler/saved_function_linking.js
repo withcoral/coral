@@ -6,24 +6,30 @@ function modifiersWithoutExport(modifiers) {
   );
 }
 
-function scannedTokens(sourceFile, start = 0, end = sourceFile.text.length) {
-  const scanner = ts.createScanner(
-    sourceFile.languageVersion,
-    true,
-    ts.LanguageVariant.Standard,
-    sourceFile.text,
-  );
-  scanner.setTextPos(start);
+// The parser's leaf tokens of `node`, in source order. A context-free scanner
+// cannot tell a template continuation or a regular expression from other
+// tokens, so it would pair the wrong spans; the parse tree already has.
+function syntaxTokens(sourceFile, node) {
   const tokens = [];
-  while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken) {
-    const position = scanner.getTokenPos();
-    if (position >= end) break;
-    tokens.push({
-      kind: scanner.getToken(),
-      text: scanner.getTokenText(),
-      position,
-    });
-  }
+  const visit = (current) => {
+    if (
+      current.kind >= ts.SyntaxKind.FirstJSDocNode &&
+      current.kind <= ts.SyntaxKind.LastJSDocNode
+    ) {
+      return;
+    }
+    const children = current.getChildren(sourceFile);
+    if (children.length > 0) {
+      children.forEach(visit);
+    } else if (current.kind !== ts.SyntaxKind.EndOfFileToken && current.getWidth(sourceFile) > 0) {
+      tokens.push({
+        kind: current.kind,
+        text: current.getText(sourceFile),
+        position: current.getStart(sourceFile),
+      });
+    }
+  };
+  visit(node);
   return tokens;
 }
 
@@ -35,6 +41,10 @@ function equivalentPrintedToken(left, right) {
 // Saved Function linking changes only each retained statement's export prefix.
 // Align the unchanged token suffix so printer whitespace and blank-line removal
 // cannot move runtime frames away from the original authored token positions.
+// The printer also ends every statement it prints with a semicolon, including
+// ones the author left to automatic semicolon insertion; only such an inserted
+// semicolon is skipped. Any other difference stops the alignment, so earlier
+// tokens stay unmapped rather than guessed.
 function printedStatementMappings(block, sourceFile, authored) {
   const printedFile = ts.createSourceFile(
     'printed_saved_function.ts',
@@ -43,29 +53,20 @@ function printedStatementMappings(block, sourceFile, authored) {
     true,
     ts.ScriptKind.TS,
   );
-  const printedTokens = scannedTokens(printedFile);
-  const authoredTokens = scannedTokens(
-    sourceFile,
-    authored.getStart(sourceFile),
-    authored.getEnd(),
-  );
+  const printedTokens = syntaxTokens(printedFile, printedFile);
+  const authoredTokens = syntaxTokens(sourceFile, authored);
   let printedIndex = printedTokens.length - 1;
   let authoredIndex = authoredTokens.length - 1;
-  if (authoredIndex >= 0) {
-    while (
-      printedIndex >= 0 &&
-      printedTokens[printedIndex].kind === ts.SyntaxKind.SemicolonToken &&
-      !equivalentPrintedToken(printedTokens[printedIndex], authoredTokens[authoredIndex])
-    ) {
-      printedIndex -= 1;
-    }
-  }
 
   const mappings = [];
   while (printedIndex >= 0 && authoredIndex >= 0) {
     const printed = printedTokens[printedIndex];
     const original = authoredTokens[authoredIndex];
-    if (!equivalentPrintedToken(printed, original)) break;
+    if (!equivalentPrintedToken(printed, original)) {
+      if (printed.kind !== ts.SyntaxKind.SemicolonToken) break;
+      printedIndex -= 1;
+      continue;
+    }
     const generated = printedFile.getLineAndCharacterOfPosition(printed.position);
     const authoredPosition = sourceFile.getLineAndCharacterOfPosition(original.position);
     mappings.push({
