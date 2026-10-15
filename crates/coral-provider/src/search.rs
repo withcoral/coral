@@ -447,6 +447,13 @@ impl HydratedOperation {
 pub struct LoadedGenerations(Mutex<HashMap<ProviderGenerationId, StoredDeclarationFields>>);
 
 impl LoadedGenerations {
+    fn has(&self, generation_id: &ProviderGenerationId) -> bool {
+        self.0
+            .lock()
+            .expect("loaded generations mutex poisoned")
+            .contains_key(generation_id)
+    }
+
     fn operation_fields(
         &self,
         generation_id: &ProviderGenerationId,
@@ -495,17 +502,18 @@ pub async fn hydrate_operation_in_transaction(
         return Ok(None);
     };
     let generation_id = provider.generation_id();
-    let declaration_fields = if let Some(fields) =
-        loaded.operation_fields(generation_id, &operation)
-    {
-        fields?
-    } else {
+    if !loaded.has(generation_id) {
         let graph = coral_catalog::schema_graph_in_transaction(transaction, generation_id).await?;
-        let fields = StoredDeclarationFields::new(graph);
-        let declaration_fields = fields.operation(&operation)?;
-        loaded.keep(generation_id.clone(), fields);
-        declaration_fields
-    };
+        // Keep it before reading this Operation, so one corrupt Operation does
+        // not make every later hit of the Generation load the graph again.
+        loaded.keep(generation_id.clone(), StoredDeclarationFields::new(graph));
+    }
+    let declaration_fields =
+        loaded
+            .operation_fields(generation_id, &operation)
+            .ok_or(Error::CorruptData(
+                "a loaded Generation is missing from the request".into(),
+            ))??;
     Ok(Some(HydratedOperation {
         material: OperationAuthoringMaterial::new(
             provider.provider().access(),
