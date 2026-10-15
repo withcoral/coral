@@ -387,6 +387,7 @@ test('an unreadable account says so and still links to it', async () => {
   const card = byLabel('Individual accounts')!
   expect(card.textContent).not.toMatch(/Connected|Not connected|Needs reconnect/)
   expect(text()).toContain('Cannot read your account')
+  expect(text()).toContain('Open it to see its state.')
   expect(named('link', 'Manage your account')?.getAttribute('href')).toBe(yourAccountPath)
 })
 

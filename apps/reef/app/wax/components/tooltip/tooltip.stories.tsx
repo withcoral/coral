@@ -55,8 +55,10 @@ export const WithInfoTip: Story = {
       <InfoTip>Shows an icon alone when there is no label.</InfoTip>
     </div>
   ),
-  // Catches: an explanation that a tap does not open. Touch devices never hover.
-  play: async ({ canvas, userEvent }) => {
+  // Checks that a touch press opens the explanation. A simulated tap also
+  // focuses the trigger, and focus opens a Tooltip too, so this does not
+  // catch a Tooltip-based InfoTip. Only real touch input does.
+  play: async ({ canvas }) => {
     const target = canvas.getByRole('button', { name: 'Workspace members' })
     await userEvent.pointer({ keys: '[TouchA]', target })
     const text = await within(document.body).findByText(/Owners see all members\./)
