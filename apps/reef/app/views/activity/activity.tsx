@@ -38,7 +38,8 @@ import {
   useActivityNavigation,
   type StopPosition,
 } from './navigation'
-import { ActivityDetail } from './detail'
+import { ActivityDetail, runContextOf } from './detail'
+import { ExecutionSourceSplit } from './execution-source-split'
 import { PanelClose } from './panel'
 import { ActivityConnectedContext, restoreFirst, useActivityArchived } from './live'
 import { PendingActions } from './pending'
@@ -501,6 +502,8 @@ export function Activity({
       Boolean(detailPage.detail.context)) ||
       (detailPage.detail?.kind === 'run' &&
         detailPage.detail.request?.kind === 'account_connection'))
+  // A record inside a Run shows that Run's accepted source beside its own detail.
+  const runContext = detailPage.unavailable ? undefined : runContextOf(detailPage.detail)
   const unsent = useUnsentComment()
   // The token of the rail's latest pick or close. A pending navigation with this
   // token is the rail's own and has no history entry yet.
@@ -981,6 +984,18 @@ export function Activity({
                 )}
                 {detailPage.unavailable ? (
                   <Typography.Body>This history is unavailable.</Typography.Body>
+                ) : runContext ? (
+                  // Records of one Run share one split, so it keeps its sizes, source
+                  // scroll position and Follow selection while the selection moves.
+                  <ExecutionSourceSplit
+                    key={runContext.run.name}
+                    context={runContext}
+                    locatable={detailPage.detail?.kind === 'run'}
+                    selectedRow={detailPage.selectedRow}
+                    close={<Dialog.Close ariaLabel="Close details" inline />}
+                  >
+                    <ActivityDetail key={detail.record} page={detailPage} sourceShown />
+                  </ExecutionSourceSplit>
                 ) : (
                   <PanelClose
                     value={ownHeader ? <Dialog.Close ariaLabel="Close details" inline /> : null}
@@ -988,18 +1003,17 @@ export function Activity({
                     <ActivityDetail key={detail.record} page={detailPage} />
                   </PanelClose>
                 )}
-                {outside &&
-                  page.detail?.kind !== 'run' &&
-                  !(page.detail?.kind === 'invocation' && page.detail.context) && (
-                    <Button.InternalLink
-                      size="small"
-                      variant="bare"
-                      to={nav.revealHref(outside)}
-                      preventScrollReset
-                    >
-                      Reveal record
-                    </Button.InternalLink>
-                  )}
+                {/* A record inside the split leads back to history from its own detail. */}
+                {outside && page.detail?.kind !== 'run' && !runContext && (
+                  <Button.InternalLink
+                    size="small"
+                    variant="bare"
+                    to={nav.revealHref(outside)}
+                    preventScrollReset
+                  >
+                    Reveal record
+                  </Button.InternalLink>
+                )}
               </Dialog.Popup>
             </Dialog.Portal>
           </Dialog.Rail>

@@ -20,6 +20,7 @@ import type {
   InspectInvocationResponse,
   ActivityRequestReference,
   ActivityRunEvent,
+  ActivitySourceLocation,
   InspectRunResponse,
 } from '@/generated/coral/management/v1/activity_pb'
 import type {
@@ -44,6 +45,8 @@ import type {
   RunEvent,
   RunTerminal,
   RunFailureCode,
+  RunDetail,
+  RecordSourceLocation,
 } from '@/views/activity/types'
 import {
   privateHeaders,
@@ -326,6 +329,22 @@ function invocationView(value: ActivityInvocation): InvocationRow {
     operation: value.operation,
     callPath: value.callPath,
     outcome: enumLabel(invocationOutcomes, value.outcome),
+    sourceLocation: sourceLocationView(value.sourceLocation),
+  }
+}
+/** A stored location in a document this client knows; anything else is unavailable. */
+function sourceLocationView(
+  value: ActivitySourceLocation | undefined,
+): RecordSourceLocation | undefined {
+  if (!value) return undefined
+  const { document, line, column } = value
+  switch (document.case) {
+    case 'program':
+      return { document: { kind: 'program' }, line, column }
+    case 'savedFunction':
+      return { document: { kind: 'saved_function', savedFunction: document.value }, line, column }
+    default:
+      return undefined
   }
 }
 function errorView(value: ActivityProgramError): ProgramError {
@@ -532,7 +551,13 @@ function eventLabel(kind: string, sequence: string) {
 }
 function outputRow(
   run: string,
-  event: { sequence: string; occurredAt: string; kind: string; contextImpactBytes?: bigint },
+  event: {
+    sequence: string
+    occurredAt: string
+    kind: string
+    contextImpactBytes?: bigint
+    sourceLocation?: ActivitySourceLocation
+  },
   task = '',
   agent = '',
 ): Extract<ActivityRow, { kind: 'output' }> {
@@ -547,6 +572,7 @@ function outputRow(
     eventKind: event.kind,
     task,
     agent,
+    sourceLocation: sourceLocationView(event.sourceLocation),
   }
 }
 
@@ -594,13 +620,24 @@ async function selectedDetail(
         )
         if (!value.event) throw new ConnectError('unavailable', Code.NotFound)
         const event = runEventView(value.event)
-        page.detail = { kind: 'output', run, event }
+        const detail: NonNullable<ActivityPage['detail']> & { kind: 'output' } = {
+          kind: 'output',
+          run,
+          event,
+        }
+        page.detail = detail
         page.selectedRow = outputRow(
           run,
-          { ...event, contextImpactBytes: value.contextImpactBytes },
+          {
+            ...event,
+            contextImpactBytes: value.contextImpactBytes,
+            sourceLocation: value.event.sourceLocation,
+          },
           value.run?.task,
           value.run?.agent,
         )
+        const context = await runSourceContext(run, page, query, api, signal)
+        if (context) detail.context = context
         break
       }
       case 'run':
@@ -683,6 +720,11 @@ async function selectedDetail(
         }
         page.detail = detail
         page.selectedRow = { ...row, kind: 'invocation' }
+        // An approval review reads this Run itself below; reading it here too would repeat it.
+        if (!selectedRequest) {
+          const context = await runSourceContext(row.run, page, query, api, signal)
+          if (context) detail.context = context
+        }
       }
     }
     const detail = page.detail
@@ -809,6 +851,12 @@ async function selectedDetail(
         if (unavailable(error)) detail.requestUnavailable = true
         else throw error
       }
+      // Only a successful approval review reads the Run above. Any other request, or one
+      // that is unavailable, leaves the operation with the Run's own authorized source.
+      if (detail.kind === 'invocation' && !detail.context) {
+        const context = await runSourceContext(run, page, query, api, signal)
+        if (context) detail.context = context
+      }
     }
   } catch (error) {
     if (!unavailable(error)) throw error
@@ -816,6 +864,27 @@ async function selectedDetail(
     page.selectedRow = null
     page.unavailable = true
   }
+}
+
+/**
+ * The containing Run's accepted source and terminal evidence, for Activity's source pane.
+ * It reads through the same `inspectRun` the Run's own detail uses, so the caller's access
+ * to the Run authorizes it independently of the selected record. An unavailable Run
+ * resolves to no context and leaves the record's own detail in place; any other failure
+ * propagates like every other read here.
+ */
+async function runSourceContext(
+  run: string,
+  page: ActivityPage,
+  query: URLSearchParams,
+  api: ActivityApi,
+  signal: AbortSignal,
+): Promise<RunDetail | undefined> {
+  const context: ActivityPage = { ...page, selected: run, detail: null, selectedRow: null }
+  const contextQuery = new URLSearchParams(query)
+  contextQuery.set('request', '')
+  await selectedDetail(context, contextQuery, api, signal, false)
+  return context.detail?.kind === 'run' ? context.detail : undefined
 }
 
 const missingBranch = (): ActivityBranch => ({ rows: [], next: '', unavailable: true })
@@ -1063,6 +1132,7 @@ export async function loadActivity(
               kind: record.value.kind,
               contextImpactBytes: record.value.contextImpactBytes,
               occurredAt: timestamp(record.value.occurredAtUnixNanos),
+              sourceLocation: record.value.sourceLocation,
             },
             row.task,
             row.agent,

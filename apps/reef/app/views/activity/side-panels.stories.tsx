@@ -463,9 +463,12 @@ export const FinalValue: Story = {
     await expect(within(dialog).queryByText('Final value', { selector: 'summary' })).toBeNull()
     for (const token of ['"reminded"', '24', '"owners"', '9', '18450.70', '"INV-4180"'])
       await expect(value).toHaveTextContent(token)
-    // A returned value is not an emission: no emitted-output card or title.
+    // A returned value is not an emission: no emitted-output card or title. The Run's
+    // accepted source below may call coral.emit; the selected record's own pane does not.
     await expect(within(dialog).queryByRole('region', { name: 'Emitted value' })).toBeNull()
-    await expect(dialog).not.toHaveTextContent('coral.emit')
+    await expect(
+      within(dialog).getByRole('region', { name: 'Selected record' }),
+    ).not.toHaveTextContent('coral.emit')
   },
 }
 export const RunSucceededWithoutFinalValue = panel(

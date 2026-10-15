@@ -71,6 +71,11 @@ function api(contextError?: Code, selectionError?: Code) {
           },
         }
       },
+      inspectRun: () => {
+        // Parent-source context is independently authorized. An unavailable
+        // parent must not conceal the selected personal invocation's own evidence.
+        throw new ConnectError('parent run unavailable', Code.NotFound)
+      },
       inspectInvocation: ({ name }) => {
         if (selectionError) throw new ConnectError('selection unavailable', selectionError)
         return {

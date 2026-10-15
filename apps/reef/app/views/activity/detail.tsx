@@ -29,12 +29,27 @@ import * as styles from './task-activity.css'
 
 const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(3)} s`
 
-export function ActivityDetail({ page }: { page: ActivityPage }) {
+/** The Run whose accepted source a selected record shows beside its own detail, if any.
+ * An operation or an output carries it as context; it never replaces the record's detail. */
+export function runContextOf(detail: ActivityPage['detail']): RunDetail | undefined {
+  if (detail?.kind === 'run') return detail
+  if (detail?.kind === 'invocation' || detail?.kind === 'output') return detail.context
+  return undefined
+}
+
+export function ActivityDetail({
+  page,
+  sourceShown = false,
+}: {
+  page: ActivityPage
+  /** The caller shows the Run's accepted source beside this detail, so it does not repeat it. */
+  sourceShown?: boolean
+}) {
   const detail = page.detail
   if (!detail) return null
   // An approval is always reviewed inside its Run; any other selected call leads with itself.
   if (detail.kind === 'invocation' && detail.request?.kind !== 'approval') {
-    return <InvocationDetailView page={page} detail={detail} />
+    return <InvocationDetailView page={page} detail={detail} sourceShown={sourceShown} />
   }
   const context =
     detail.kind === 'run' ? detail : detail.kind === 'invocation' ? detail.context : undefined
@@ -42,7 +57,7 @@ export function ActivityDetail({ page }: { page: ActivityPage }) {
     const operation = detail.kind === 'invocation' ? detail : null
     return <ExecutionDetail page={page} detail={context} operation={operation} />
   }
-  return <RecordDetail page={page} />
+  return <RecordDetail page={page} sourceShown={sourceShown} />
 }
 
 function ExecutionDetail({
@@ -160,7 +175,15 @@ function AcceptedSource({ detail }: { detail: RunDetail }) {
 
 /** One exact call, leading with its own identity. Its Run, when retained, is context:
  * the Run's intent, evidence, source and whole-run controls, never the call's identity or outcome. */
-function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: InvocationDetail }) {
+function InvocationDetailView({
+  page,
+  detail,
+  sourceShown,
+}: {
+  page: ActivityPage
+  detail: InvocationDetail
+  sourceShown: boolean
+}) {
   const { recordHref, revealHref, href } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const context = detail.context
@@ -294,7 +317,7 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
                 Inspect original exec submission
               </Link>
             )}
-            <AcceptedSource detail={context} />
+            {!sourceShown && <AcceptedSource detail={context} />}
             <Typography.BodySmallStrong>Whole-run controls</Typography.BodySmallStrong>
             <Link
               to={revealHref({ ...detail.invocation, kind: 'invocation' }, { select: false })}
@@ -312,8 +335,8 @@ function InvocationDetailView({ page, detail }: { page: ActivityPage; detail: In
 
 /** Records without a Run context. An approval always has one, so none is reviewed here.
  * A selected operation invocation leads with itself, so none is reviewed here either. */
-function RecordDetail({ page }: { page: ActivityPage }) {
-  const { recordHref } = useActivityNavigation(page)
+function RecordDetail({ page, sourceShown }: { page: ActivityPage; sourceShown: boolean }) {
+  const { recordHref, revealHref } = useActivityNavigation(page)
   const connected = useActivityConnected()
   const detail = page.detail
   const row = page.selectedRow
@@ -428,6 +451,12 @@ function RecordDetail({ page }: { page: ActivityPage }) {
       {detail.kind === 'output' && (
         <>
           <EventEvidence event={detail.event} recordHref={recordHref} />
+          {/* Inside its Run's split, an output leads back to history itself, as an operation does. */}
+          {sourceShown && row && (
+            <Link to={revealHref(row, { select: false })} preventScrollReset>
+              View in history
+            </Link>
+          )}
           {/* A log or an emission is its content; it keeps no technical details. */}
           {!payload && (
             <Disclosure title="Technical details">

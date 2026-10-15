@@ -6,6 +6,7 @@ import { expect, it, onTestFinished, vi } from 'vitest'
 import { markupRoute, renderRoute } from '@/test-support/route'
 import { Activity } from './activity'
 import { ActivityArchivedContext } from './live'
+import { revealHref } from './navigation'
 import { ActionReviewSession } from '../actions/review'
 import { activityPage, approval, approvalRequest, run as waiting, workspace } from './fixtures'
 import type { ActivityPage, ActivityRow, ActivityViewProps } from './types'
@@ -82,7 +83,12 @@ it.each<[string, ActivityRow, string]>([
   ],
   [
     'operation that needs action',
-    { ...operation, state: 'pending', outcome: 'unknown', requiresAction: true },
+    {
+      ...operation,
+      state: 'pending',
+      outcome: 'unknown',
+      requiresAction: true,
+    },
     'pending',
   ],
   ['native upstream outcome, not inferred success', operation, 'upstream outcome'],
@@ -175,8 +181,12 @@ it.each<[string, ActivityViewProps['connect'], boolean, string]>([
   // The Overview's own setup card shows how to connect.
   ['overview activity', undefined, false, 'Your calls show here.'],
 ])('empty %s says what fills it', (kind, connect, offered, description) => {
-  const page = activityPage({ agent: kind === 'agent history' ? `${workspace}/agents/a` : null })
-  renderRoute(<Activity page={page} connect={connect} />, { entry: '/activity' })
+  const page = activityPage({
+    agent: kind === 'agent history' ? `${workspace}/agents/a` : null,
+  })
+  renderRoute(<Activity page={page} connect={connect} />, {
+    entry: '/activity',
+  })
   expect(screen.getByText('No activity yet')).toBeInTheDocument()
   expect(screen.getByText(description)).toBeInTheDocument()
   expect(screen.queryAllByRole('button', { name: 'Copy MCP URL' })).toHaveLength(offered ? 1 : 0)
@@ -234,7 +244,9 @@ it.each<[string, ActivityViewProps['more'], string[]]>([
       page={activityPage({
         rows: [goal],
         expanded: [goal.name],
-        branches: { [goal.name]: { rows: [tool], next: '', unavailable: false } },
+        branches: {
+          [goal.name]: { rows: [tool], next: '', unavailable: false },
+        },
       })}
       more={more}
     />,
@@ -247,7 +259,12 @@ it.each<[string, ActivityViewProps['more'], string[]]>([
 
 // Catches: a glimpse loading older records, or keeping newer ones a live update merged in.
 it('a glimpse lists only its latest roots and never loads more', () => {
-  const control = { load: vi.fn(), loading: false, failed: false, automatic: false }
+  const control = {
+    load: vi.fn(),
+    loading: false,
+    failed: false,
+    automatic: false,
+  }
   renderRoute(
     <Activity
       page={activityPage({ rows: [goal, run], hasAfter: false })}
@@ -409,7 +426,9 @@ it('keeps a child that started after midnight under its parent and its day', () 
       page={activityPage({
         rows: [parent],
         expanded: [parent.name],
-        branches: { [parent.name]: { rows: [child], next: '', unavailable: false } },
+        branches: {
+          [parent.name]: { rows: [child], next: '', unavailable: false },
+        },
       })}
     />,
     { entry: '/activity' },
@@ -418,4 +437,194 @@ it('keeps a child that started after midnight under its parent and its day', () 
   expect(dayRecords('Mon 28 Sep 2026')).toEqual([goal.intent, 'you'])
   expect(headingLevel(goal.intent)).toBe('2')
   expect(screen.getByText('00:04:00')).toHaveAttribute('title', '2026-09-29 00:04:00 UTC')
+})
+
+const line = (number: number) => document.querySelector(`[data-line="${number}"]`)
+// Catches: stepping to another record of the same Run remounting the drawer, which reset
+// the source pane's Follow selection, its split and its scroll, or a call highlighted by
+// its order instead of the location Coral stored for it.
+it('keeps one accepted-source split while the selection moves within its Run', async () => {
+  const user = userEvent.setup()
+  const source = [
+    'export default async function program() {',
+    '  await coral.providers.linear.listIssues({})',
+    '  await coral.linear.listIssues({ page: 2 })',
+    '}',
+  ].join('\n')
+  // Coral stored where each call ran; the later record ran the earlier line.
+  const second = {
+    ...operation,
+    name: `${workspace}/invocations/two`,
+    position: 1,
+    sourceLocation: { document: { kind: 'program' as const }, line: 2, column: 38 },
+  }
+  const first = {
+    ...operation,
+    position: 0,
+    sourceLocation: { document: { kind: 'program' as const }, line: 3, column: 22 },
+  }
+  const context = {
+    kind: 'run' as const,
+    run,
+    source,
+    linkedFunctions: [],
+    terminal: { kind: 'unavailable' as const },
+    request: null,
+    requestUnavailable: false,
+  }
+  const { router } = renderRoute(
+    (location) => {
+      const selected = new URLSearchParams(location.search).get('record')
+      const row = [first, second].find((candidate) => candidate.name === selected) ?? null
+      return (
+        <Activity
+          page={activityPage({
+            rows: [run],
+            expanded: [run.name],
+            branches: {
+              [run.name]: {
+                rows: [first, second],
+                next: '',
+                unavailable: false,
+              },
+            },
+            selected: row?.name ?? null,
+            selectedRow: row,
+            detail: row && {
+              kind: 'invocation',
+              invocation: row,
+              arguments: '{}',
+              result: { kind: 'upstream_outcome', value: '{}' },
+              requests: [],
+              request: null,
+              requestUnavailable: false,
+              context,
+            },
+          })}
+        />
+      )
+    },
+    { entry: `/activity?record=${encodeURIComponent(first.name)}` },
+  )
+  await vi.waitFor(() => expect(line(3)).toHaveAttribute('data-highlighted', 'true'))
+  const code = line(1)!.closest('pre')
+  await user.click(screen.getByRole('switch', { name: 'Follow selection' }))
+
+  await act(() => router.navigate(`/activity?record=${encodeURIComponent(second.name)}`))
+  await vi.waitFor(() => expect(line(2)).toHaveAttribute('data-highlighted', 'true'))
+  expect(line(3)).not.toHaveAttribute('data-highlighted')
+  expect(line(1)!.closest('pre')).toBe(code)
+  expect(screen.getByRole('switch', { name: 'Follow selection' })).not.toBeChecked()
+})
+
+const splitContext = {
+  kind: 'run' as const,
+  run: { ...run, intent: 'Send invoice reminders' },
+  source: 'coral.emit(1)',
+  linkedFunctions: [],
+  terminal: { kind: 'unavailable' as const },
+  request: null,
+  requestUnavailable: false,
+}
+// Catches: a fixed Run header kept above the split, so a Run's header showed twice and an
+// operation showed its parent Run's header above its own, or the close control left the
+// selected record's own header.
+it.each([
+  [
+    'a Run',
+    { ...run, intent: 'Send invoice reminders' },
+    splitContext,
+    'Send invoice reminders',
+    'program run',
+  ],
+  [
+    'an operation',
+    operation,
+    {
+      kind: 'invocation',
+      invocation: operation,
+      arguments: '{}',
+      result: { kind: 'upstream_outcome', value: '{}' },
+      requests: [],
+      request: null,
+      requestUnavailable: false,
+      context: splitContext,
+    },
+    'coral.providers.linear.listIssues',
+    'operation',
+  ],
+] satisfies [string, ActivityRow, ActivityPage['detail'], string, string][])(
+  'heads %s selection in the split with its own header alone',
+  (_, selectedRow, detail, title, kind) => {
+    renderRoute(
+      <Activity
+        page={activityPage({
+          rows: [goal],
+          selected: selectedRow.name,
+          selectedRow,
+          detail,
+        })}
+      />,
+      { entry: '/activity?record=one' },
+    )
+    const drawer = screen.getByRole('dialog', { name: 'Activity details' })
+    expect(within(drawer).getByRole('region', { name: 'Accepted source' })).toBeInTheDocument()
+    const selected = within(drawer).getByRole('region', {
+      name: 'Selected record',
+    })
+    const [heading, ...others] = within(selected).getAllByRole('heading', {
+      level: 2,
+    })
+    expect(others).toHaveLength(0)
+    expect(heading).toHaveTextContent(title)
+    const header = heading!.closest('header')!
+    expect(header).toHaveTextContent(kind)
+    expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toEqual([
+      within(header).getByRole('button', { name: 'Close details' }),
+    ])
+  },
+)
+
+// Catches: an output inside the split offering a "Reveal record" link below it, or an
+// output outside the loaded list losing its only way back to its place in history.
+it('leads an output outside the list back to history from its own detail, not below the split', () => {
+  const emitted = {
+    kind: 'output' as const,
+    name: `${run.name}/events/1`,
+    workspace,
+    run: run.name,
+    label: 'emission #1',
+    startedAt,
+    eventKind: 'program.emitted',
+    agent: '',
+  }
+  renderRoute(
+    <Activity
+      page={activityPage({
+        rows: [goal],
+        selected: emitted.name,
+        selectedRow: emitted,
+        detail: {
+          kind: 'output',
+          run: run.name,
+          event: {
+            kind: 'program.emitted',
+            sequence: '1',
+            occurredAt: startedAt,
+            value: '1',
+          },
+          context: splitContext,
+        },
+      })}
+    />,
+    { entry: '/activity?record=two' },
+  )
+  const drawer = screen.getByRole('dialog')
+  expect(within(drawer).queryByRole('link', { name: 'Reveal record' })).toBeNull()
+  expect(within(drawer).getAllByRole('button', { name: 'Close details' })).toHaveLength(1)
+  const selected = within(drawer).getByRole('region', { name: 'Selected record' })
+  expect(within(selected).getByRole('link', { name: 'View in history' })).toHaveAttribute(
+    'href',
+    revealHref(emitted, { select: false }),
+  )
 })
