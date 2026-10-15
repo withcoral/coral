@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Link, useLocation, useNavigate, useNavigation } from 'react-router'
+import { Link, useFetcher, useLocation, useNavigate, useNavigation } from 'react-router'
 import { CopyMcpEndpoint } from '@/components/copy-mcp-endpoint'
 import { EmptyPage } from '@/components/empty-page'
 import { Button, Typography } from '@/wax/components'
@@ -46,6 +46,7 @@ import { PanelClose } from './panel'
 import { ActivityConnectedContext, restoreFirst, useActivityArchived } from './live'
 import { PendingActions } from './pending'
 import { useUnsentComment } from '../actions/review'
+import type { action as resolve } from '@/routes/activity-resolve'
 import { ContextImpact } from './context-impact'
 import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-types'
 import { activityDays, utcDay } from '@/lib/activity-list'
@@ -267,6 +268,11 @@ const RowActionsContext = createContext<RowActions>({
 /** The rail token a navigation's state carries, if any. */
 const railToken = (state: unknown) =>
   typeof state === 'object' && state && 'activityRail' in state ? state.activityRail : undefined
+/** The advance a navigation's state says it read for, if any. */
+const advanceMark = (state: unknown) =>
+  typeof state === 'object' && state && 'activityAdvance' in state
+    ? state.activityAdvance
+    : undefined
 /**
  * Tells whether a pending navigation is the rail's own and history has not moved
  * under it, so replacing the address adds no entry and loses none.
@@ -823,36 +829,81 @@ export function Activity({
     const frame = requestAnimationFrame(() => setGuarded(false))
     return () => cancelAnimationFrame(frame)
   }, [unsent, guarded])
-  // The step live mode takes next, if any. An unsent comment, a pending navigation,
-  // or a lost connection holds the record.
-  const follow = (() => {
-    if (!liveOn || !open || !followed || guarded || !connected || page.unavailable) return null
-    if (transition.state !== 'idle') return null
-    const step = liveStep(page, followed.run)
+  // The request the rail reviews, and the decision its approval review submits.
+  const reviewed =
+    page.detail?.kind === 'invocation' || page.detail?.kind === 'run' ? page.detail.request : null
+  const reviewedApproval = reviewed?.kind === 'approval' ? reviewed.name : undefined
+  const decision = useFetcher<typeof resolve>({ key: reviewedApproval ?? 'activity:no-review' })
+  // A decision you make in the review advances it once, when your decision wins and the
+  // read after it lands. A decision already shown, another review's, or one that another
+  // reviewer's opposite decision beat, never does.
+  const [seen, setSeen] = useState<{ key?: string; data: unknown; intent?: string }>({
+    key: reviewedApproval,
+    data: decision.data,
+  })
+  // The location where the advance started, which also marks the reads it takes first.
+  const [advance, setAdvance] = useState<string | null>(null)
+  const submitted = decision.formData?.get('intent')
+  if (seen.key !== reviewedApproval) setSeen({ key: reviewedApproval, data: decision.data })
+  else if (typeof submitted === 'string' && submitted !== seen.intent)
+    setSeen({ ...seen, intent: submitted })
+  else if (decision.state === 'idle' && seen.data !== decision.data) {
+    setSeen({ key: reviewedApproval, data: decision.data })
+    const state = decision.data && 'state' in decision.data ? decision.data.state : undefined
+    const won = { approve: 'approved', decline: 'declined' }[seen.intent ?? '']
+    if (state !== undefined && state === won) setAdvance(locationKey)
+  }
+  // It holds through the reads it takes first, and ends with its selection. Any other
+  // navigation ends it, and Back or Forward to one of its reads never resumes it.
+  const advancing =
+    advance !== null && (advance === locationKey || advanceMark(locationState) === advance)
+  if (advance !== null && !advancing) setAdvance(null)
+  const following = liveOn || advancing
+  // The step live mode, or an advance, takes next: the Run's oldest action, else its
+  // newest record. Null holds the record: an unsent comment, a pending navigation or
+  // decision, or a lost connection. 'done' rests on the record shown.
+  const follow = ((): { key: string; href: string; last?: boolean } | 'done' | null => {
+    if (!following || !open || !followed || guarded || !connected || page.unavailable) return null
+    if (transition.state !== 'idle' || decision.state !== 'idle') return null
+    // In an archived workspace you cannot act, so only the newest record counts.
+    const step = liveStep(page, followed.run, !archived)
     if (step.kind === 'wait') return null
-    if (step.kind === 'select')
-      return step.record === shownRecord
-        ? null
-        : { key: `select ${step.record}`, href: nav.followHref(step.record) }
+    if (step.kind === 'select') {
+      if (step.record === shownRecord && (!step.request || step.request === reviewed?.name))
+        return 'done'
+      const action = step.request ? page.liveAction : undefined
+      return {
+        key: `select ${step.record} ${step.request ?? ''}`,
+        // An advance keeps live mode as it was, and ends here.
+        href: nav.followHref(step.record, action, liveOn),
+        last: true,
+      }
+    }
     if (step.kind === 'load')
       return {
         key: `load ${followed.run} ${step.total}`,
-        href: nav.followEndHref(followed.run, step.total),
+        href: nav.followEndHref(followed.run, step.total, liveOn),
       }
     return liveBlocked
-      ? null
-      : { key: `expand ${followed.run}`, href: nav.liveHref(true, liveExpand) }
+      ? 'done'
+      : { key: `expand ${followed.run}`, href: nav.liveHref(liveOn, liveExpand) }
   })()
-  const followKey = follow?.key
-  const followTo = follow?.href
+  if (advancing && follow === 'done') setAdvance(null)
+  const followKey = follow && follow !== 'done' ? follow.key : undefined
+  const followTo = follow && follow !== 'done' ? follow.href : undefined
+  // A read an advance takes first carries its mark, so the advance holds through it.
+  const followMark = advancing && follow && follow !== 'done' && !follow.last ? advance : undefined
   // In the commit itself, so a pick or close that starts after this render always
   // starts after the step and wins.
   useLayoutEffect(() => {
     const last = followStep.current
-    if (!liveOn || (last && last.from !== locationKey && railToken(locationState) !== last.token))
+    if (
+      !following ||
+      (last && last.from !== locationKey && railToken(locationState) !== last.token)
+    )
       followStep.current = null
     if (!followKey || !followTo || followStep.current?.step === followKey) return
-    const state = tokens.next()
+    const state = { ...tokens.next(), ...(followMark && { activityAdvance: followMark }) }
     followStep.current = { step: followKey, token: state.activityRail, from: locationKey }
     const rail = popupRef.current
     const active = document.activeElement
@@ -865,7 +916,17 @@ export function Activity({
         : null
     // Following adds no history entry.
     void navigate(followTo, { replace: true, preventScrollReset: true, state })
-  }, [liveOn, locationKey, locationState, followKey, followTo, shownRecord, navigate, tokens])
+  }, [
+    following,
+    locationKey,
+    locationState,
+    followKey,
+    followTo,
+    followMark,
+    shownRecord,
+    navigate,
+    tokens,
+  ])
   const toggleLive = () =>
     void navigate(liveOn ? nav.liveHref(false) : nav.liveHref(true, liveExpand), {
       preventScrollReset: true,

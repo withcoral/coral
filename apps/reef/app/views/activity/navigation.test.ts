@@ -446,6 +446,54 @@ describe('live mode', () => {
     expect(liveStep(current, owner.name)).toEqual(expected)
   })
 
+  // The loader names the Run's oldest action; it may be outside the loaded window.
+  const waiting = invocationRow(owner.name, 'waiting', { position: 0, requiresAction: true })
+  const action = { run: owner.name, record: waiting.name, request: 'workspaces/w/approvals/a' }
+  const withAction = (current: ActivityPage, value = action): ActivityPage => ({
+    ...current,
+    liveAction: value,
+  })
+  it.each<[string, ActivityPage, ReturnType<typeof liveStep>]>([
+    [
+      'selects the oldest action over newer output',
+      withAction(branchPage([waiting, log, emission], 3)),
+      { kind: 'select', record: waiting.name, request: action.request },
+    ],
+    [
+      'selects an action outside the loaded window',
+      withAction(branchPage([emission], 3, 2)),
+      { kind: 'select', record: waiting.name, request: action.request },
+    ],
+    [
+      'selects an action before the Run expands',
+      withAction(activityPage()),
+      { kind: 'select', record: waiting.name, request: action.request },
+    ],
+    [
+      'selects an account connection on the Run',
+      withAction(branchPage([log], 1), { ...action, record: owner.name }),
+      { kind: 'select', record: owner.name, request: action.request },
+    ],
+    [
+      'waits while a live update says the action no longer waits',
+      withAction(branchPage([{ ...waiting, requiresAction: false }, log], 2)),
+      { kind: 'wait' },
+    ],
+    [
+      "never selects another Run's action",
+      withAction(branchPage([log, emission], 2), { ...action, run: other.name }),
+      { kind: 'select', record: emission.name },
+    ],
+  ])('%s', (_, current, expected) => {
+    expect(liveStep(current, owner.name)).toEqual(expected)
+  })
+  it('follows the newest record when you cannot act, such as in an archived workspace', () => {
+    expect(liveStep(withAction(branchPage([log, emission], 2)), owner.name, false)).toEqual({
+      kind: 'select',
+      record: emission.name,
+    })
+  })
+
   const search = `?tree=1&expand=${task}&expand=${run}&record=${run}&live=1&filter=kept`
   const nav = activityNavigation(page, '/activity', search, reading)
   it('turns off when you pick a record, collapse the shown one, or close the detail', () => {
@@ -463,6 +511,40 @@ describe('live mode', () => {
     expect(query.get('live')).toBe('1')
     expect(query.get('filter')).toBe('kept')
     expect(query.get(`offset.${task}`)).toBe('125')
+  })
+  it('opens an action with its request, at the action when the window does not hold it', () => {
+    const outside = {
+      run,
+      record: 'workspaces/w/invocations/old',
+      request: 'workspaces/w/approvals/a',
+    }
+    const query = target(nav.followHref(outside.record, outside))
+    expect(query.get('record')).toBe(outside.record)
+    expect(query.get('request')).toBe(outside.request)
+    expect(query.get('live')).toBe('1')
+    expect(query.get(`anchor.${run}`)).toBe(outside.record)
+    expect(query.has(`offset.${run}`)).toBe(false)
+    expect(query.has(`preceding.${run}`)).toBe(false)
+    expect(query.get(`offset.${task}`)).toBe('125')
+  })
+  it('keeps the reading window for an action it holds, and keeps live mode off after a decision', () => {
+    const loaded = invocationRow(run, 'loaded', { position: 310, requiresAction: true })
+    const current = activityPage({
+      ...page,
+      branches: { [run]: { ...childPage([loaded], 400), offset: 300 } },
+    })
+    const off = activityNavigation(
+      current,
+      '/activity',
+      `?tree=1&expand=${task}&expand=${run}`,
+      reading,
+    )
+    const held = { run, record: loaded.name, request: 'workspaces/w/approvals/b' }
+    const query = target(off.followHref(held.record, held, false))
+    expect(query.get('record')).toBe(loaded.name)
+    expect(query.get('request')).toBe(held.request)
+    expect(query.has('live')).toBe(false)
+    expect(query.get(`offset.${run}`)).toBe('300')
   })
   it('asks for the end of the Run without moving the selection', () => {
     const query = target(nav.followEndHref(run, 400))
