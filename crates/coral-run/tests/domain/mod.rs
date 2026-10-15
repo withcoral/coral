@@ -12,6 +12,7 @@ mod fence;
 mod history;
 mod invocations;
 mod ledger;
+mod locations;
 mod mcp;
 mod memory;
 mod observation;

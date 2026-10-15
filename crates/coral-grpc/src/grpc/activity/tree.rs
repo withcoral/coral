@@ -179,11 +179,15 @@ pub(super) async fn entries(
                         kind,
                         occurred_at,
                         context_impact_bytes,
+                        source_location,
                     } => wire::activity_run_entry::Record::Event(wire::ActivityEventSummary {
                         context_impact_bytes: Some(*context_impact_bytes),
                         sequence: *sequence,
                         kind: kind.clone(),
                         occurred_at_unix_nanos: *occurred_at,
+                        source_location: source_location
+                            .as_ref()
+                            .map(|location| execution::source_location(&workspace, location)),
                     }),
                 }),
             })

@@ -11,7 +11,7 @@ use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::ExecutionStop;
 use crate::invocation::FenceRequest;
 use crate::termination::ShutdownAction;
-use crate::{Error, ProgramLogLevel, ProgramValue, RunId};
+use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
 
 use super::chunk::ChunkWork;
 
@@ -28,11 +28,13 @@ pub(crate) enum Message {
     Started(Result<Option<ProgramPackage>, Error>),
     Emit {
         value: ProgramValue,
+        location: Option<SourceLocation>,
         reply: Reply,
     },
     Log {
         level: ProgramLogLevel,
         message: String,
+        location: Option<SourceLocation>,
         reply: Reply,
     },
     /// Admit one Invocation: its row and `invocation.started` ride the next chunk.
@@ -281,14 +283,29 @@ impl OwnerHandle {
         let _retired = self.shared.sender.send(message);
     }
 
-    pub(crate) async fn emit(&self, value: ProgramValue) -> Result<(), Error> {
-        self.ask(|reply| Message::Emit { value, reply }).await
+    pub(crate) async fn emit(
+        &self,
+        value: ProgramValue,
+        location: Option<SourceLocation>,
+    ) -> Result<(), Error> {
+        self.ask(|reply| Message::Emit {
+            value,
+            location,
+            reply,
+        })
+        .await
     }
 
-    pub(crate) async fn log(&self, level: ProgramLogLevel, message: String) -> Result<(), Error> {
+    pub(crate) async fn log(
+        &self,
+        level: ProgramLogLevel,
+        message: String,
+        location: Option<SourceLocation>,
+    ) -> Result<(), Error> {
         self.ask(|reply| Message::Log {
             level,
             message,
+            location,
             reply,
         })
         .await

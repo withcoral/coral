@@ -257,13 +257,29 @@ pub(crate) struct EntrySummary {
     pub occurred_at: i64,
     pub invocation: Option<InvocationId>,
     pub context_impact_bytes: i64,
+    pub source_location: Option<crate::SourceLocation>,
 }
-type EntryRow = (i64, String, i64, Option<String>, i64);
-fn entry_view(
-    (sequence, kind, occurred_at, invocation, context_impact_bytes): EntryRow,
-    exact_event: Option<i64>,
-) -> Result<EntrySummary, Error> {
+#[derive(sqlx::FromRow)]
+struct EntryRow {
+    sequence: i64,
+    event_type: String,
+    occurred_at_unix_nanos: i64,
+    invocation_id: Option<String>,
+    output_bytes: i64,
+    #[sqlx(flatten)]
+    source_location: crate::source_location_repository::StoredSourceLocation,
+}
+fn entry_view(row: EntryRow, exact_event: Option<i64>) -> Result<EntrySummary, Error> {
+    let EntryRow {
+        sequence,
+        event_type: kind,
+        occurred_at_unix_nanos: occurred_at,
+        invocation_id: invocation,
+        output_bytes: context_impact_bytes,
+        source_location,
+    } = row;
     Ok(EntrySummary {
+        source_location: source_location.decode()?,
         sequence: u64::try_from(sequence)
             .map_err(|_overflow| Error::CorruptData("invalid Event sequence".into()))?,
         invocation: if kind == "invocation.started" && exact_event != Some(sequence) {
@@ -322,6 +338,7 @@ pub(crate) async fn entry_summaries(
             Alias::new("invocation_id"),
             Alias::new("output_bytes"),
         ])
+        .columns(crate::source_location_repository::COLUMNS.map(Alias::new))
         .and_where(
             Expr::col(Alias::new("event_type"))
                 .is_not_in(["invocation.ended", "run.started", "run.ended"])

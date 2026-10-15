@@ -311,7 +311,12 @@ fn emit(state: &mut OwnerState, bytes: usize, now: i64) -> (Vec<Effect>, Answer)
     let (reply, receiver) = reply();
     let value = ProgramValue::from_encoded_json(format!("\"{}\"", "x".repeat(bytes - 2)))
         .expect("a string value");
-    (apply(state, Message::Emit { value, reply }, now), receiver)
+    let message = Message::Emit {
+        value,
+        location: None,
+        reply,
+    };
+    (apply(state, message, now), receiver)
 }
 
 type Answer = tokio::sync::oneshot::Receiver<Result<(), Error>>;

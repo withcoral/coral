@@ -189,12 +189,21 @@ fn run_effect(
             );
             let output = ProgramOutputWriter::new(handle.clone(), accepted.value_limits);
             let engine = module.engine.clone();
+            let linked_snapshots = accepted.linked_snapshots.clone();
             let limits = accepted.value_limits;
             let stop = handle.stop();
             let handle = handle.clone();
             tokio::spawn(async move {
-                let completion =
-                    engine::execute(engine, package, invoker, output, limits, stop).await;
+                let completion = engine::execute(
+                    engine,
+                    package,
+                    linked_snapshots,
+                    invoker,
+                    output,
+                    limits,
+                    stop,
+                )
+                .await;
                 handle.send(Message::ProgramEnded(completion));
             });
         }

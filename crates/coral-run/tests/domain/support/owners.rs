@@ -67,7 +67,7 @@ impl ProgramEngine for BurstEngine {
             return ExecutionCompletion::ProgramHostTerminated;
         }
         for value in &self.values {
-            match host.emit(value) {
+            match host.emit(value, None) {
                 Ok(()) => self.acknowledged.fetch_add(1, Ordering::SeqCst),
                 Err(_rejected) => self.rejected.fetch_add(1, Ordering::SeqCst),
             };

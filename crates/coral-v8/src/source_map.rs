@@ -124,19 +124,15 @@ pub(crate) fn authored_frames(
         let Some((generated_line, generated_column)) = generated_location(line) else {
             continue;
         };
-        let Some(token) = source_map.lookup_token(generated_line, generated_column) else {
-            continue;
-        };
-        if token.get_dst_line() != generated_line {
-            continue;
-        }
-        let Some(source) = token.get_source() else {
+        let Some((source, line, column)) =
+            authored_position(source_map, generated_line, generated_column)
+        else {
             continue;
         };
         let frame = crate::ProgramErrorFrame {
             source: source.to_string(),
-            line: token.get_src_line().saturating_add(1),
-            column: token.get_src_col().saturating_add(1),
+            line,
+            column,
         };
         if frames.last() != Some(&frame) {
             frames.push(frame);
@@ -147,6 +143,52 @@ pub(crate) fn authored_frames(
     }
 
     frames
+}
+
+/// Maps one one-based emitted position to the authored location it came from.
+///
+/// Returns `None` for a private wrapper position, which has no authored source.
+pub(crate) fn authored_location(
+    source_map: &SourceMap,
+    generated_line: u32,
+    generated_column: u32,
+) -> Option<crate::AuthoredLocation> {
+    let (source, line, column) = authored_position(
+        source_map,
+        generated_line.checked_sub(1)?,
+        generated_column.checked_sub(1)?,
+    )?;
+    let source = if source == PROGRAM_SOURCE_NAME {
+        crate::AuthoredSource::Program
+    } else {
+        crate::AuthoredSource::SavedFunction {
+            path: source
+                .strip_prefix(SAVED_FUNCTION_SOURCE_PREFIX)?
+                .to_string(),
+        }
+    };
+    Some(crate::AuthoredLocation {
+        source,
+        line,
+        column,
+    })
+}
+
+// Zero-based emitted position to its authored source and one-based position.
+fn authored_position(
+    source_map: &SourceMap,
+    generated_line: u32,
+    generated_column: u32,
+) -> Option<(&str, u32, u32)> {
+    let token = source_map.lookup_token(generated_line, generated_column)?;
+    if token.get_dst_line() != generated_line {
+        return None;
+    }
+    Some((
+        token.get_source()?,
+        token.get_src_line().saturating_add(1),
+        token.get_src_col().saturating_add(1),
+    ))
 }
 
 fn validate_compiler_map(source_map: &SourceMap) -> Result<(), Error> {

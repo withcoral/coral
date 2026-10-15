@@ -140,6 +140,7 @@ mod required_actions;
 mod required_actions_repository;
 pub mod retention;
 mod run_repository;
+mod source_location_repository;
 mod termination;
 mod types;
 mod worker;
@@ -174,7 +175,7 @@ pub use types::{
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
     RUN_TIMEOUT_MAX_MS, RunCursor, RunEvent, RunEventKind, RunFailure, RunFailureCode, RunId,
     RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout, RunUpdate,
-    RuntimeLimits, SOURCE_MAP_MAX_BYTES,
+    RuntimeLimits, SOURCE_MAP_MAX_BYTES, SourceDocument, SourceLocation,
 };
 
 #[cfg(test)]

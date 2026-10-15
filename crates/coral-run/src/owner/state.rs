@@ -748,17 +748,22 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
                 state.retire()
             }
         }
-        Message::Emit { value, reply } => state.output(
-            OwnedEventKind::Emitted(value.into_encoded_json()),
+        Message::Emit {
+            value,
+            location,
+            reply,
+        } => state.output(
+            OwnedEventKind::Emitted(value.into_encoded_json(), location),
             reply,
             now_unix_nanos,
         ),
         Message::Log {
             level,
             message,
+            location,
             reply,
         } => state.output(
-            OwnedEventKind::Logged(level, message),
+            OwnedEventKind::Logged(level, message, location),
             reply,
             now_unix_nanos,
         ),

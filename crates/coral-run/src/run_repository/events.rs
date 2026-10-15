@@ -2,13 +2,14 @@
 
 use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalId, WorkspaceId};
-use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
+use sea_query::{Alias, Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
 
 use super::principal_kind_from_storage;
+use crate::source_location_repository::{self, StoredSourceLocation};
 use crate::{
     Error, InvocationId, InvocationResultKind, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel,
-    ProgramValue, RunEvent, RunEventKind, RunId, RunState,
+    ProgramValue, RunEvent, RunEventKind, RunId, RunState, SourceLocation,
 };
 
 #[derive(Iden, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,10 @@ enum ProgramRunEvents {
     LogLevel,
     LogMessage,
     OutputBytes,
+    SourceDocument,
+    SourceSavedFunctionId,
+    SourceLine,
+    SourceColumn,
 }
 
 #[derive(Debug, FromRow)]
@@ -43,6 +48,8 @@ struct EventRow {
     program_value_json: Option<String>,
     log_level: Option<String>,
     log_message: Option<String>,
+    #[sqlx(flatten)]
+    source_location: StoredSourceLocation,
 }
 
 impl EventRow {
@@ -53,8 +60,9 @@ impl EventRow {
             .ok_or_else(|| Error::CorruptData("Run Event has invalid sequence".to_string()))?;
         let missing =
             |field| Error::CorruptData(format!("{} Event has no {field}", self.event_type));
-        // The table CHECK constrains unrelated columns to NULL. Decode and
+        // The table CHECKs constrain unrelated columns to NULL. Decode and
         // validate only the payload owned by this Event kind.
+        let source_location = self.source_location.decode()?;
         let kind = match self.event_type.as_str() {
             "run.started" => RunEventKind::Started,
             "cancellation.requested" => {
@@ -137,7 +145,8 @@ impl EventRow {
                 )));
             }
         };
-        Ok(RunEvent::new(sequence, kind, self.occurred_at_unix_nanos))
+        Ok(RunEvent::new(sequence, kind, self.occurred_at_unix_nanos)
+            .with_source_location(source_location))
     }
 }
 
@@ -148,16 +157,16 @@ pub(crate) enum NewEvent<'a> {
     InvocationStarted(&'a InvocationId),
     InvocationEnded(&'a InvocationId, InvocationResultKind),
     /// A Program Emission as its encoded JSON.
-    Emitted(&'a str),
-    Logged(ProgramLogLevel, &'a str),
+    Emitted(&'a str, Option<&'a SourceLocation>),
+    Logged(ProgramLogLevel, &'a str, Option<&'a SourceLocation>),
 }
 
 impl NewEvent<'_> {
     /// The Run Output Budget bytes this Event carries.
     pub(crate) fn output_bytes(&self) -> usize {
         match self {
-            Self::Emitted(value) => value.len(),
-            Self::Logged(_, message) => message.len(),
+            Self::Emitted(value, _) => value.len(),
+            Self::Logged(_, message, _) => message.len(),
             Self::Ended(_, bytes) => *bytes,
             Self::Started
             | Self::CancellationRequested(_)
@@ -182,8 +191,8 @@ pub(crate) enum OwnedEventKind {
     InvocationEnded(InvocationId, InvocationResultKind),
     /// A Program Emission as its encoded JSON: what the row stores, and all
     /// the owner keeps in memory until the chunk commits.
-    Emitted(String),
-    Logged(ProgramLogLevel, String),
+    Emitted(String, Option<SourceLocation>),
+    Logged(ProgramLogLevel, String, Option<SourceLocation>),
 }
 
 impl OwnedEvent {
@@ -198,8 +207,10 @@ impl OwnedEvent {
         match &self.kind {
             OwnedEventKind::InvocationStarted(id) => NewEvent::InvocationStarted(id),
             OwnedEventKind::InvocationEnded(id, kind) => NewEvent::InvocationEnded(id, *kind),
-            OwnedEventKind::Emitted(value) => NewEvent::Emitted(value),
-            OwnedEventKind::Logged(level, message) => NewEvent::Logged(*level, message),
+            OwnedEventKind::Emitted(value, location) => NewEvent::Emitted(value, location.as_ref()),
+            OwnedEventKind::Logged(level, message, location) => {
+                NewEvent::Logged(*level, message, location.as_ref())
+            }
         }
     }
 
@@ -321,7 +332,7 @@ pub(super) fn last_event_sequence() -> Expr {
 
 /// The Event columns, in the order the insert and its value rows use. The
 /// `Sequence` entry carries the row's offset within its statement.
-const EVENT_COLUMNS: [ProgramRunEvents; 14] = [
+const EVENT_COLUMNS: [ProgramRunEvents; 18] = [
     ProgramRunEvents::WorkspaceId,
     ProgramRunEvents::RunId,
     ProgramRunEvents::Sequence,
@@ -336,6 +347,10 @@ const EVENT_COLUMNS: [ProgramRunEvents; 14] = [
     ProgramRunEvents::LogLevel,
     ProgramRunEvents::LogMessage,
     ProgramRunEvents::OutputBytes,
+    ProgramRunEvents::SourceDocument,
+    ProgramRunEvents::SourceSavedFunctionId,
+    ProgramRunEvents::SourceLine,
+    ProgramRunEvents::SourceColumn,
 ];
 
 /// The columns one Event kind owns. The table CHECK keeps the others NULL.
@@ -356,9 +371,15 @@ fn event_row(
     offset: i64,
     event: &NewEvent<'_>,
     occurred_at_unix_nanos: i64,
-) -> Result<[sea_query::Value; 14], Error> {
+) -> Result<[sea_query::Value; 18], Error> {
     let output_bytes = i64::try_from(event.output_bytes())
         .map_err(|_overflow| Error::CorruptData("Event byte count overflow".into()))?;
+    let source_location = match event {
+        NewEvent::Emitted(_, location) | NewEvent::Logged(_, _, location) => *location,
+        _ => None,
+    };
+    let [document, saved_function_id, line, column] =
+        source_location_repository::row_values(source_location);
     let (event_type, payload) = match event {
         NewEvent::Started => ("run.started", EventPayload::default()),
         NewEvent::CancellationRequested(principal) => (
@@ -390,14 +411,14 @@ fn event_row(
                 ..EventPayload::default()
             },
         ),
-        NewEvent::Emitted(value) => (
+        NewEvent::Emitted(value, _) => (
             "program.emitted",
             EventPayload {
                 value: Some(value),
                 ..EventPayload::default()
             },
         ),
-        NewEvent::Logged(level, message) => (
+        NewEvent::Logged(level, message, _) => (
             "program.logged",
             EventPayload {
                 log: Some((level.as_storage_str(), message)),
@@ -425,6 +446,10 @@ fn event_row(
         text(payload.log.map(|(level, _)| level)),
         text(payload.log.map(|(_, message)| message)),
         output_bytes.into(),
+        document,
+        saved_function_id,
+        line,
+        column,
     ])
 }
 
@@ -493,6 +518,7 @@ async fn event_page(
             ProgramRunEvents::LogLevel,
             ProgramRunEvents::LogMessage,
         ])
+        .columns(source_location_repository::COLUMNS.map(Alias::new))
         .from(ProgramRunEvents::Table)
         .and_where(Expr::col(ProgramRunEvents::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(ProgramRunEvents::RunId).eq(run_id.to_string()))

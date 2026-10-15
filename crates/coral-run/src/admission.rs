@@ -176,6 +176,15 @@ impl RunModule {
             value_limits: self.value_limits,
             claim_id: Uuid::new_v4().hyphenated().to_string(),
             worker_claim_expires_at_unix_nanos,
+            linked_snapshots: linked
+                .iter()
+                .map(|snapshot| {
+                    (
+                        snapshot.path().as_str().to_string(),
+                        snapshot.id().to_string(),
+                    )
+                })
+                .collect(),
         };
         run_repository::insert_acceptance(
             transaction,
