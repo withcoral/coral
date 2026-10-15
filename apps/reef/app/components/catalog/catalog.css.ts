@@ -87,16 +87,23 @@ export const railCount = style({
   ...theme.typography.bodySmall,
 })
 export const railTrailing = style({ alignItems: 'center', display: 'flex', flexShrink: 0 })
-// Beside a count, the controls take its place while the entry has the pointer
-// or keyboard focus. They collapse rather than leave, so Tab still reaches them.
-globalStyle(`${railItem}[data-count]:not(:hover, :has(:focus-visible)) ${railTrailing}`, {
-  opacity: 0,
-  overflow: 'hidden',
-  width: 0,
-})
-globalStyle(`${railItem}[data-count]:is(:hover, :has(:focus-visible)) ${railCount}`, {
-  display: 'none',
-})
+// Beside a count, the controls take its place on the current entry and while
+// an entry has the pointer or keyboard focus. They collapse rather than leave,
+// so Tab still reaches them.
+globalStyle(
+  `${railItem}[data-count]:not(:hover, :has(:focus-visible), [data-current]) ${railTrailing}`,
+  {
+    opacity: 0,
+    overflow: 'hidden',
+    width: 0,
+  },
+)
+globalStyle(
+  `${railItem}[data-count]:is(:hover, :has(:focus-visible), [data-current]) ${railCount}`,
+  {
+    display: 'none',
+  },
+)
 export const main = style({
   display: 'flex',
   flexDirection: 'column',

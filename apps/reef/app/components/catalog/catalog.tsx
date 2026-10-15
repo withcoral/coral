@@ -118,8 +118,8 @@ export function CatalogRailItem({
   /** A count beside the name. With `trailing`, the two share the entry's end. */
   count?: number
   /**
-   * Controls at the entry's end. Beside a count, they take its place while the
-   * entry has the pointer or keyboard focus.
+   * Controls at the entry's end. Beside a count, they take its place on the
+   * current entry and while an entry has the pointer or keyboard focus.
    */
   trailing?: ReactNode
 }) {

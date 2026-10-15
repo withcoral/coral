@@ -99,7 +99,11 @@ export function NameHeading({
       aria-busy={saving}
     >
       {/* The editor replaces the page's title, so the page keeps its h1 for assistive technology. */}
-      {pageTitle && <h1 className={visuallyHidden}>{name}</h1>}
+      {pageTitle && (
+        <Typography.BodyLargeStrong as="h1" className={visuallyHidden}>
+          {name}
+        </Typography.BodyLargeStrong>
+      )}
       <Fields form={form} intent={intent} etag={openedAt} />
       {fields}
       <div className={classNames(styles.nameRow, pageTitle && styles.titleNameRow)}>
