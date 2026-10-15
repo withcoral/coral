@@ -1004,7 +1004,7 @@ async function oldestRunAction(
       action.kind === 'account_connection' ? [action.name] : [],
     )
     if (connections.length)
-      timed.push(...(await connectionActions(connections, timed, run, api, scope, signal)))
+      timed.push(...(await connectionActions(connections, run, api, scope, signal)))
     return timed.toSorted(older)[0]?.action
   } catch (error) {
     if (!unavailable(error)) throw error
@@ -1054,14 +1054,14 @@ async function approvalAction(
 }
 
 /**
- * The pending connections among `names`, each timed by the first operation of `run` that
- * waits on it. Coral names no operation on a connection, so this reads the Run's
- * children from the first, in the order Coral admitted them, and stops once each
- * connection has its operation. The operations of `known` actions are not read again.
+ * The pending connections among `names`, each timed by its oldest waiting operation.
+ * Coral exposes neither a request time nor an operation link on a connection. Read
+ * every child page: admission order cannot break equal-time ties across pages, and
+ * several operations can share one connection. This scan runs only for pending,
+ * readable connections; approvals use exact reads instead of scanning history.
  */
 async function connectionActions(
   names: string[],
-  known: TimedAction[],
   run: string,
   api: ActivityApi,
   scope: ActivityScope,
@@ -1079,17 +1079,14 @@ async function connectionActions(
     }),
   )
   const pending = new Set(states.flat())
-  const skipped = new Set(known.map((action) => action.operation))
-  const found: TimedAction[] = []
+  const found = new Map<string, TimedAction>()
   for (let after = 0n; pending.size;) {
     const value = await api.activity.browseRunEntries(
       { name: run, after, pageSize: ACTION_SCAN_PAGE, scope },
       { signal },
     )
     const waiting = value.entries.flatMap(({ record }) =>
-      record.case === 'invocation' && record.value.requiresAction && !skipped.has(record.value.name)
-        ? [record.value]
-        : [],
+      record.case === 'invocation' && record.value.requiresAction ? [record.value] : [],
     )
     const read = await Promise.all(
       waiting.map((operation) =>
@@ -1112,14 +1109,15 @@ async function connectionActions(
           : [],
       ),
     )
-    for (const candidate of candidates.toSorted(older)) {
-      if (!pending.delete(candidate.action.request)) continue
-      found.push(candidate)
+    for (const candidate of candidates) {
+      const previous = found.get(candidate.action.request)
+      if (!previous || older(candidate, previous) < 0)
+        found.set(candidate.action.request, candidate)
     }
     if (!value.hasMore || value.nextAfter <= after) break
     after = value.nextAfter
   }
-  return found
+  return [...found.values()]
 }
 
 const missingBranch = (): ActivityBranch => ({ rows: [], next: '', unavailable: true })
