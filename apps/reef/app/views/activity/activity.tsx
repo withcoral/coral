@@ -29,6 +29,8 @@ import {
   activityStops,
   childWindow,
   finalValue,
+  liveRun,
+  liveStep,
   recordParents,
   resolveStop,
   revealHref,
@@ -49,6 +51,7 @@ import { ACTIVITY_CHILD_WINDOW, activityRowIdentity } from '@/lib/activity-live-
 import { activityDays, utcDay } from '@/lib/activity-list'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './task-activity.css'
+import * as panelStyles from './panel.css'
 
 export function rowLabel(row: ActivityRow): string {
   switch (row.kind) {
@@ -452,6 +455,45 @@ function selectionHref(listPath: string, search: string, name: string) {
   query.set('record', name)
   return `${listPath}?${query}`
 }
+/** Data that marks the live toggle, so focus can return to it when the record changes. */
+const liveToggleAttribute = 'data-activity-live'
+/**
+ * Live mode's toggle beside the drawer's close control. Pressed, the drawer follows
+ * the newest record of the shown record's Run. The icon shape shows the state too.
+ */
+function LiveToggle({
+  on,
+  blocked,
+  onToggle,
+}: {
+  on: boolean
+  /** Following needs one more expanded record than the table allows. */
+  blocked: boolean
+  onToggle: () => void
+}) {
+  return (
+    <Button.IconButton
+      name={on ? 'LocateFixed' : 'Locate'}
+      size="22"
+      variant="bare"
+      ariaLabel="Follow latest record"
+      aria-pressed={on}
+      tooltipText={
+        blocked
+          ? 'Collapse a record before you follow this execution.'
+          : on
+            ? 'Stop following the latest record.'
+            : 'Follow the latest record of this execution.'
+      }
+      tooltipSide="bottom"
+      disabled={blocked}
+      focusableWhenDisabled
+      onClick={blocked ? undefined : onToggle}
+      {...{ [liveToggleAttribute]: '' }}
+    />
+  )
+}
+
 export function Activity({
   page,
   live,
@@ -530,6 +572,14 @@ export function Activity({
   // Where ↑ and ↓ go. A glimpse takes no keys.
   const stops = useMemo(() => (glimpse ? [] : activityStops(page, roots)), [glimpse, page, roots])
   const open = selected !== null && closing === null
+  // Live mode follows the newest record of the shown record's Run. Any other
+  // selection, and closing the rail, turns it off.
+  const liveOn = nav.live
+  const followed = glimpse ? null : liveRun(page.selectedRow)
+  // Its children load only while the Run, and its Task, are expanded.
+  const liveExpand = followed?.chain ?? []
+  const unexpanded = liveExpand.filter((name) => !page.expanded.includes(name))
+  const liveBlocked = page.expanded.length + unexpanded.length > MAX_EXPANDED_RECORDS
   // With the rail open, the keys start from the record it shows, or is about to.
   const shownPosition: StopPosition | null = shownRecord
     ? {
@@ -592,6 +642,7 @@ export function Activity({
     locationKey,
     expanded: page.expanded,
     selectedRow: page.selectedRow,
+    liveOn,
     close,
   }
   const latest = useRef(now)
@@ -639,13 +690,21 @@ export function Activity({
         current.open &&
         current.expanded.includes(name) &&
         Boolean(current.shownPosition?.parents.includes(name))
+      // Collapsing the Run live mode follows, or its Task, stops following it.
+      const stopLive =
+        current.liveOn &&
+        current.expanded.includes(name) &&
+        Boolean(liveRun(current.selectedRow)?.chain.includes(name))
       setKeyStep(null)
-      void current.navigate(hides ? current.nav.collapseHref(name) : current.nav.toggleHref(name), {
-        preventScrollReset: true,
-        replace: keyboard && hides,
-        // A switch to the collapsed record is the rail's own navigation.
-        state: hides ? tokens.next() : undefined,
-      })
+      void current.navigate(
+        hides ? current.nav.collapseHref(name) : current.nav.toggleHref(name, stopLive),
+        {
+          preventScrollReset: true,
+          replace: keyboard && hides,
+          // A switch to the collapsed record is the rail's own navigation.
+          state: hides ? tokens.next() : undefined,
+        },
+      )
     },
     viewport: (parent, value) => latest.current.live?.viewport(parent, value),
   }))
@@ -736,6 +795,91 @@ export function Activity({
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [glimpse, actions, tokens])
+  // Where focus was when live mode last changed the record. The new record's panel
+  // replaces the old one, so focus that was in it returns to the same place.
+  const refocus = useRef<{ record: string | null; on: 'toggle' | 'rail' } | null>(null)
+  useLayoutEffect(() => {
+    const noted = refocus.current
+    const rail = popupRef.current
+    if (!noted || noted.record === shownRecord) return
+    refocus.current = null
+    const active = document.activeElement
+    if (!rail || (active && active !== document.body && document.contains(active))) return
+    const target =
+      noted.on === 'toggle' ? rail.querySelector<HTMLElement>(`[${liveToggleAttribute}]`) : null
+    ;(target ?? rail).focus({ preventScroll: true })
+  }, [shownRecord])
+  // The step live mode last took, and the location it left. It takes each step
+  // once, so a step that cannot land never repeats. Back, Forward or any other
+  // navigation starts afresh.
+  const followStep = useRef<{ step: string; token: unknown; from: string } | null>(null)
+  const connected = live?.connected ?? true
+  // The review guards a comment until its blocker updates, after the commit that
+  // cleared it. Until the next frame, a step would prompt you to discard it.
+  const [guarded, setGuarded] = useState(unsent)
+  if (unsent && !guarded) setGuarded(true)
+  useEffect(() => {
+    if (unsent || !guarded) return
+    const frame = requestAnimationFrame(() => setGuarded(false))
+    return () => cancelAnimationFrame(frame)
+  }, [unsent, guarded])
+  // The step live mode takes next, if any. An unsent comment, a pending navigation,
+  // or a lost connection holds the record.
+  const follow = (() => {
+    if (!liveOn || !open || !followed || guarded || !connected || page.unavailable) return null
+    if (transition.state !== 'idle') return null
+    const step = liveStep(page, followed.run)
+    if (step.kind === 'wait') return null
+    if (step.kind === 'select')
+      return step.record === shownRecord
+        ? null
+        : { key: `select ${step.record}`, href: nav.followHref(step.record) }
+    if (step.kind === 'load')
+      return {
+        key: `load ${followed.run} ${step.total}`,
+        href: nav.followEndHref(followed.run, step.total),
+      }
+    return liveBlocked
+      ? null
+      : { key: `expand ${followed.run}`, href: nav.liveHref(true, liveExpand) }
+  })()
+  const followKey = follow?.key
+  const followTo = follow?.href
+  // In the commit itself, so a pick or close that starts after this render always
+  // starts after the step and wins.
+  useLayoutEffect(() => {
+    const last = followStep.current
+    if (!liveOn || (last && last.from !== locationKey && railToken(locationState) !== last.token))
+      followStep.current = null
+    if (!followKey || !followTo || followStep.current?.step === followKey) return
+    const state = tokens.next()
+    followStep.current = { step: followKey, token: state.activityRail, from: locationKey }
+    const rail = popupRef.current
+    const active = document.activeElement
+    refocus.current =
+      rail && active && active !== rail && rail.contains(active)
+        ? {
+            record: shownRecord,
+            on: active.closest(`[${liveToggleAttribute}]`) ? 'toggle' : 'rail',
+          }
+        : null
+    // Following adds no history entry.
+    void navigate(followTo, { replace: true, preventScrollReset: true, state })
+  }, [liveOn, locationKey, locationState, followKey, followTo, shownRecord, navigate, tokens])
+  const toggleLive = () =>
+    void navigate(liveOn ? nav.liveHref(false) : nav.liveHref(true, liveExpand), {
+      preventScrollReset: true,
+      state: tokens.next(),
+    })
+  const shownRun = glimpse ? null : liveRun(detailPage.selectedRow)
+  const railControls = (
+    <span className={panelStyles.railControls}>
+      {shownRun && (
+        <LiveToggle on={liveOn} blocked={!liveOn && liveBlocked} onToggle={toggleLive} />
+      )}
+      <Dialog.Close ariaLabel="Close details" inline />
+    </span>
+  )
   // The cursor row shows while focus is in the table.
   const activeRecord = tableFocused ? (activeStop?.row.name ?? null) : null
   const expandedKey = page.expanded.join('\n')
@@ -997,9 +1141,7 @@ export function Activity({
                     <ActivityDetail key={detail.record} page={detailPage} sourceShown />
                   </ExecutionSourceSplit>
                 ) : (
-                  <PanelClose
-                    value={ownHeader ? <Dialog.Close ariaLabel="Close details" inline /> : null}
-                  >
+                  <PanelClose value={ownHeader ? railControls : null}>
                     <ActivityDetail key={detail.record} page={detailPage} />
                   </PanelClose>
                 )}

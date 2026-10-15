@@ -17,8 +17,12 @@ export function branchCoordinate(key: string): string | undefined {
   return /^(?:cursor|anchor|offset|preceding)\.(.+)$/.exec(key)?.[1]
 }
 
-/** Query keys that only select a record and its review, never the listed window. */
-export const selectionKeys = ['record', 'request', 'actionsAfter'] as const
+/**
+ * Query keys that only select a record and its review, never the listed window.
+ * `live=1` follows the newest record of the selected record's Run; any other
+ * selection turns it off.
+ */
+export const selectionKeys = ['record', 'request', 'actionsAfter', 'live'] as const
 const clearSelection = Object.fromEntries(selectionKeys.map((key) => [key, null]))
 
 /** Reveal the record's authorized history; leaving review clears only its selection. */
@@ -137,8 +141,10 @@ export function activityNavigation(
     return `${path}?${next}`
   }
   const recordHref = (name: string) => href({ ...clearSelection, record: name })
-  const toggleHref = (name: string) =>
+  /** `stopLive` also turns live mode off, for a collapse that hides the Run it follows. */
+  const toggleHref = (name: string, stopLive = false) =>
     href({
+      ...(stopLive && { live: null }),
       tree: '1',
       expand: page.expanded.includes(name)
         ? page.expanded.filter((item) => item !== name)
@@ -153,6 +159,33 @@ export function activityNavigation(
       expand: page.expanded.filter((item) => item !== name),
     })
   const backHref = href(clearSelection)
+  /** Live mode follows the newest record of the selected record's Run. */
+  const live = query.get('live') === '1'
+  /** Turns live mode on or off for the shown record. On, it expands `expand` too. */
+  const liveHref = (on: boolean, expand: string[] = []) => {
+    const open = context.getAll('expand')
+    return href({
+      live: on ? '1' : null,
+      ...(expand.some((name) => !open.includes(name)) && {
+        tree: '1',
+        expand: [...new Set([...open, ...expand])],
+      }),
+    })
+  }
+  /** Live mode's selection of `name`, the newest record of the Run it follows. */
+  const followHref = (name: string) => href({ ...clearSelection, record: name, live: '1' })
+  /**
+   * Live mode's read of the last children of `run`, which has `total` of them. An
+   * offset at the end reads the last window. The selection stays until it loads.
+   */
+  const followEndHref = (run: string, total: number) =>
+    href({
+      live: '1',
+      [`offset.${run}`]: String(total),
+      [`preceding.${run}`]: '0',
+      [`anchor.${run}`]: null,
+      [`cursor.${run}`]: null,
+    })
   return {
     query,
     href,
@@ -161,6 +194,10 @@ export function activityNavigation(
     collapseHref,
     revealHref,
     backHref,
+    live,
+    liveHref,
+    followHref,
+    followEndHref,
   }
 }
 
@@ -184,6 +221,53 @@ export function childWindow(branch: ActivityBranch) {
       ...items.map(({ index }) => index + 1),
     ),
   }
+}
+
+/**
+ * The Run live mode follows for a record: the Run itself, or the Run that made it.
+ * `chain` names the records that must be expanded for its children to load: its
+ * Task, if any, then the Run.
+ */
+export function liveRun(row: ActivityRow | null): { run: string; chain: string[] } | null {
+  const run =
+    row?.kind === 'run'
+      ? row.name
+      : row?.kind === 'invocation' || row?.kind === 'output'
+        ? row.run
+        : null
+  if (!row || !run) return null
+  const task = 'task' in row ? (row.task ?? '') : ''
+  return { run, chain: task ? [task, run] : [run] }
+}
+
+/** What live mode does next for a Run. */
+export type LiveStep =
+  /** Select the Run's newest record, or the Run itself while it has none. */
+  | { kind: 'select'; record: string }
+  /** The newest child is past the loaded window; read the Run's last `total` children. */
+  | { kind: 'load'; total: number }
+  /** Expand the Run, so its children load. */
+  | { kind: 'expand' }
+  /** The Run's children are not readable now. */
+  | { kind: 'wait' }
+
+/**
+ * The newest record of `run` on `page`. Children keep the order Coral gives them:
+ * the highest position is the newest. Only this Run's own branch counts.
+ */
+export function liveStep(page: ActivityPage, run: string): LiveStep {
+  if (!page.expanded.includes(run)) return { kind: 'expand' }
+  const branch = page.branches[run]
+  if (!branch || branch.unavailable) return { kind: 'wait' }
+  const { items, total } = childWindow(branch)
+  if (!total) return { kind: 'select', record: run }
+  // Positions are unique. Were two equal, the later in Coral's order wins.
+  const newest = items.reduce<(typeof items)[number] | undefined>(
+    (last, item) => (!last || item.index >= last.index ? item : last),
+    undefined,
+  )
+  if (!newest || newest.index + 1 < total) return { kind: 'load', total }
+  return { kind: 'select', record: newest.row.name }
 }
 
 /** Where ↑ and ↓ rest: a record the table shows, with its enclosing Tasks and Runs. */

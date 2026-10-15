@@ -144,6 +144,35 @@ export function runRow(
   }
 }
 
+/** An ended operation call that Run `owner` made, labelled by its call path. */
+export function invocationRow(
+  owner: string,
+  id: string,
+  overrides: Partial<Extract<ActivityRow, { kind: 'invocation' }>> = {},
+): Extract<ActivityRow, { kind: 'invocation' }> {
+  return {
+    kind: 'invocation',
+    name: `${workspace}/invocations/${id}`,
+    workspace,
+    agent: '',
+    run: owner,
+    task: '',
+    actor: 'you',
+    state: 'ended',
+    startedAt: at,
+    endedAt: at,
+    durationNanos: '1',
+    requiresAction: false,
+    provider: `${workspace}/providers/mail`,
+    operation: 'send',
+    callPath: 'mail.send',
+    outcome: 'upstream_outcome',
+    dispatchedAt: at,
+    waitingNanos: '0',
+    ...overrides,
+  }
+}
+
 /** A tool call in Task `parent`, labelled by its intent. */
 export function toolRow(
   parent: string,

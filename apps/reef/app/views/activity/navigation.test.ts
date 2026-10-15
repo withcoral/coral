@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { activityPage, runRow, taskRow, toolRow } from './fixtures'
+import { activityPage, invocationRow, runRow, taskRow, toolRow } from './fixtures'
 import {
   activityNavigation,
   activityStops,
+  liveRun,
+  liveStep,
   recordParents,
   resolveStop,
   stepStop,
@@ -327,5 +329,167 @@ describe('keyboard traversal', () => {
       tree.rows,
     )
     expect(restsOn(replaced, positionOf(submission))).toBe(b.name)
+  })
+})
+
+describe('live mode', () => {
+  const owner = runRow('live', taskRow('t').name, { state: 'running' })
+  const standalone = runRow('alone', '', { state: 'running' })
+  const call = invocationRow(owner.name, 'call', { task: owner.task, position: 0 })
+  it.each<[string, ActivityRow | null, ReturnType<typeof liveRun>]>([
+    ['a Run follows itself', owner, { run: owner.name, chain: [owner.task, owner.name] }],
+    [
+      'a standalone Run has no Task',
+      standalone,
+      { run: standalone.name, chain: [standalone.name] },
+    ],
+    [
+      'an operation follows the Run that called it',
+      call,
+      { run: owner.name, chain: [owner.task, owner.name] },
+    ],
+    [
+      'a log follows its Run',
+      output(owner.name, 'events/2', 1),
+      { run: owner.name, chain: [owner.name] },
+    ],
+    ['a Task has no Run to follow', taskRow('t'), null],
+    ['a tool call has no Run to follow', toolRow('t', 'i'), null],
+    ['nothing selected follows nothing', null, null],
+  ])('%s', (_, row, expected) => {
+    expect(liveRun(row)).toEqual(expected)
+  })
+
+  const branchPage = (rows: ActivityRow[], total: number, offset = 0) =>
+    activityPage({
+      expanded: [owner.name],
+      branches: { [owner.name]: { ...childPage(rows, total), offset } },
+    })
+  const log = output(owner.name, 'events/3', 1)
+  const emission = output(owner.name, 'events/4', 2)
+  const final = output(owner.name, 'final', 3)
+  const other = runRow('other', '')
+  it.each<[string, ActivityPage, ReturnType<typeof liveStep>]>([
+    [
+      'selects the newest child by its position',
+      branchPage([log, call, emission], 3),
+      {
+        kind: 'select',
+        record: emission.name,
+      },
+    ],
+    [
+      'selects the final value once the Run ends',
+      branchPage([call, log, emission, final], 4),
+      {
+        kind: 'select',
+        record: final.name,
+      },
+    ],
+    [
+      'selects the Run itself while it has no children',
+      branchPage([], 0),
+      {
+        kind: 'select',
+        record: owner.name,
+      },
+    ],
+    // The window holds positions 0–2 of 5: the newest child is not loaded yet.
+    [
+      'loads the end when the newest child is past the window',
+      branchPage([call, log, emission], 5),
+      {
+        kind: 'load',
+        total: 5,
+      },
+    ],
+    [
+      'loads the end when the window holds no children',
+      branchPage([], 7, 0),
+      {
+        kind: 'load',
+        total: 7,
+      },
+    ],
+    ['expands a collapsed Run', activityPage(), { kind: 'expand' }],
+    [
+      'waits for an expanded Run whose children are not loaded',
+      activityPage({
+        expanded: [owner.name],
+      }),
+      { kind: 'wait' },
+    ],
+    [
+      'waits on an unavailable history',
+      activityPage({
+        expanded: [owner.name],
+        branches: { [owner.name]: { rows: [], next: '', unavailable: true } },
+      }),
+      { kind: 'wait' },
+    ],
+    // Another expanded Run's newer records never count.
+    [
+      'never follows another Run',
+      activityPage({
+        expanded: [owner.name, other.name],
+        branches: {
+          [owner.name]: childPage([log], 1),
+          [other.name]: childPage(
+            [output(other.name, 'events/9', 0), output(other.name, 'events/10', 1)],
+            2,
+          ),
+        },
+      }),
+      { kind: 'select', record: log.name },
+    ],
+  ])('%s', (_, current, expected) => {
+    expect(liveStep(current, owner.name)).toEqual(expected)
+  })
+
+  const search = `?tree=1&expand=${task}&expand=${run}&record=${run}&live=1&filter=kept`
+  const nav = activityNavigation(page, '/activity', search, reading)
+  it('turns off when you pick a record, collapse the shown one, or close the detail', () => {
+    for (const href of [nav.recordHref(task), nav.collapseHref(run), nav.backHref]) {
+      expect(target(href).has('live')).toBe(false)
+      expect(target(href).get('filter')).toBe('kept')
+    }
+  })
+  it('stays on while you expand a record', () => {
+    expect(target(nav.toggleHref('workspaces/w/runs/other')).get('live')).toBe('1')
+  })
+  it('follows to a record and keeps the reading window', () => {
+    const query = target(nav.followHref(`${run}/events/321`))
+    expect(query.get('record')).toBe(`${run}/events/321`)
+    expect(query.get('live')).toBe('1')
+    expect(query.get('filter')).toBe('kept')
+    expect(query.get(`offset.${task}`)).toBe('125')
+  })
+  it('asks for the end of the Run without moving the selection', () => {
+    const query = target(nav.followEndHref(run, 400))
+    expect(query.get('record')).toBe(run)
+    expect(query.get('live')).toBe('1')
+    // An offset at or past the end reads the last window.
+    expect(query.get(`offset.${run}`)).toBe('400')
+    expect(query.get(`preceding.${run}`)).toBe('0')
+    expect(query.has(`anchor.${run}`)).toBe(false)
+    expect(query.get(`offset.${task}`)).toBe('125')
+  })
+  it('follows from a Run page to the list, which can select any record of the Run', () => {
+    const route = activityNavigation(page, `/${run}`, '?live=1', reading)
+    const next = new URL(route.followHref(`${run}/events/3`), 'http://reef')
+    expect(next.pathname).toBe(page.listPath)
+    expect(next.searchParams.get('record')).toBe(`${run}/events/3`)
+    expect(route.live).toBe(true)
+  })
+  it('turns on with the Run and its Task expanded, and turns off in place', () => {
+    const off = activityNavigation(page, '/activity', `?tree=1&record=${run}&filter=kept`, reading)
+    const on = target(off.liveHref(true, [task, run]))
+    expect(on.get('live')).toBe('1')
+    expect(on.get('record')).toBe(run)
+    expect(on.getAll('expand')).toEqual(expect.arrayContaining([task, run]))
+    expect(on.get('filter')).toBe('kept')
+    const stopped = target(nav.liveHref(false))
+    expect(stopped.has('live')).toBe(false)
+    expect(stopped.get('record')).toBe(run)
   })
 })
