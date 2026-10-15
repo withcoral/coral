@@ -15,8 +15,7 @@
 mod binding;
 mod builtin;
 pub use builtin::{
-    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinCatalog, BuiltinCatalogChanges, BuiltinExecutionBinding,
-    BuiltinOperation,
+    BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinCatalog, BuiltinExecutionBinding, BuiltinOperation,
 };
 mod configuration;
 pub use configuration::{
@@ -266,25 +265,19 @@ pub async fn publish_builtin_generation_in_transaction(
     .await
 }
 
-/// Compares `catalog` with a Workspace's Built-in Generation.
-///
-/// `None` means the Generation already holds this catalog.
+/// Reports whether a Workspace's Built-in Generation pins `catalog`, by the
+/// catalog identity it pinned when Coral published it.
 ///
 /// # Errors
 ///
-/// Returns a persistence or corrupt-package failure.
-pub async fn builtin_catalog_changes_in_transaction(
+/// Returns a persistence failure, or corrupt data for a Generation that pins
+/// no well-formed catalog identity.
+pub async fn builtin_generation_pins_in_transaction(
     transaction: &mut Transaction<'_>,
     catalog: &BuiltinCatalog,
     generation_id: &ProviderGenerationId,
-) -> Result<Option<BuiltinCatalogChanges>, Error> {
-    if &repository::generation_fingerprint(transaction, generation_id).await?
-        == catalog.fingerprint()
-    {
-        return Ok(None);
-    }
-    let stored = repository::load_catalog_operations(transaction, generation_id).await?;
-    Ok(Some(builtin::changes(catalog, &stored)))
+) -> Result<bool, Error> {
+    Ok(repository::load_builtin_identity(transaction, generation_id).await? == catalog.identity())
 }
 
 /// Reads confirmed secret-free OpenAPI configuration for Update review.

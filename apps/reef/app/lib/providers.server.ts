@@ -16,7 +16,6 @@ import {
 import type {
   AccountChoice,
   AccountLabel,
-  BuiltinUpdateView,
   OperationHintsView,
   OperationView,
   ProviderSettingsView,
@@ -37,32 +36,6 @@ export function uuidOr404(id: string) {
 export function providerName(workspace: string, id: string) {
   return `${workspace}/providers/${uuidOr404(id)}`
 }
-/** How the catalog this Coral defines differs from the Coral provider's; `null` when it does not. */
-export async function builtinCatalogUpdate(
-  api: ManagementApi,
-  name: string,
-): Promise<BuiltinUpdateView | null> {
-  let update
-  try {
-    update = await api.providers.getBuiltinCatalogUpdate({ name })
-  } catch (error) {
-    // An older Coral reports Unimplemented; it offers no update to review.
-    if (error instanceof ConnectError && error.code === Code.Unimplemented) return null
-    throw error
-  }
-  if (!update.available) return null
-  return {
-    catalog: update.catalog,
-    added: updateOperations(update.added),
-    removed: updateOperations(update.removed),
-    changed: updateOperations(update.changed),
-  }
-}
-
-function updateOperations(operations: readonly ProviderOperation[]) {
-  return operations.map(({ relativePath, summary }) => ({ relativePath, summary }))
-}
-
 export function providerPath(workspacePath: string, name: string) {
   return `${workspacePath}/providers/${name.split('/').at(-1)}`
 }

@@ -2,13 +2,11 @@
 //!
 //! Every Workspace gets one when it is created, with its own Generation of the
 //! Coral-defined catalog. It has no Setup, no Publication and no Accounts.
-//! When the Coral that serves a Workspace defines a different catalog, an
-//! Owner can update the Workspace's Built-in Provider to it.
-use coral_catalog::BuiltinCatalogChanges;
+//! When Coral boots, it updates every Workspace's Built-in Provider to the
+//! catalog it serves.
 use coral_db::Transaction;
-use coral_workspace::{AuthenticatedUser, ChangeContext, WorkspaceId};
+use coral_workspace::{ChangeContext, WorkspaceId};
 
-use crate::change::{self, ProviderChange};
 use crate::repository as provider_repository;
 use crate::{
     ActivatedGeneration, CredentialRoute, Error, LifecycleAction, LifecycleActor, LifecycleOutcome,
@@ -99,92 +97,81 @@ impl ProviderModule {
 }
 
 impl ProviderModule {
-    /// Compares the Workspace's Built-in Provider catalog with the one this
-    /// process serves. `None` means the Workspace already has it.
+    /// Lists the Built-in Providers, across Workspaces, whose Generation pins a
+    /// catalog other than the one this process serves.
     ///
     /// # Errors
     ///
-    /// Returns an authority failure unless the actor is a Workspace Owner,
-    /// [`Error::NotBuiltinProvider`] for another Provider, or a persistence
-    /// failure.
-    pub async fn inspect_builtin_catalog_update(
+    /// Returns a persistence failure, or corrupt data for a Generation that
+    /// pins no well-formed catalog identity.
+    pub async fn outdated_builtin_providers(
         &self,
-        actor: &AuthenticatedUser,
-        workspace_id: &WorkspaceId,
-        provider_id: &ProviderId,
-    ) -> Result<Option<BuiltinCatalogChanges>, Error> {
+    ) -> Result<Vec<(WorkspaceId, ProviderId)>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
-        self.check_owner_inspection_in_transaction(&mut transaction, actor, workspace_id)
-            .await?;
-        let stored = change::load_for_change(
-            &mut transaction,
-            workspace_id,
-            provider_id,
-            ProviderChange::UpdateBuiltinCatalog,
-        )
-        .await?;
-        let changes = coral_catalog::builtin_catalog_changes_in_transaction(
-            &mut transaction,
-            &self.builtin_catalog,
-            &stored.generation_id,
-        )
-        .await?;
+        let mut outdated = Vec::new();
+        for active in provider_repository::builtin_active_generations(&mut transaction).await? {
+            if !coral_catalog::builtin_generation_pins_in_transaction(
+                &mut transaction,
+                &self.builtin_catalog,
+                active.generation_id(),
+            )
+            .await?
+            {
+                outdated.push((active.workspace_id().clone(), active.provider_id().clone()));
+            }
+        }
         transaction.rollback().await?;
-        Ok(changes)
+        Ok(outdated)
     }
 
-    /// Updates the Workspace's Built-in Provider to the catalog this process
-    /// serves, in the caller's transaction, with the acting Owner recorded.
-    /// `catalog_identity` names the catalog the Owner reviewed. The Provider
-    /// keeps its state. `None` means the Workspace already has this catalog,
-    /// and nothing changes.
+    /// Updates one Workspace's Built-in Provider to the catalog this process
+    /// serves, in the caller's transaction, with Coral as the recorded actor.
+    /// The Provider keeps its state, in an active or an archived Workspace.
+    /// `None` means the Provider is gone or already pins this catalog, and
+    /// nothing changes.
     ///
     /// # Errors
     ///
-    /// Returns an authority failure unless the actor is an Owner of an active
-    /// Workspace, [`Error::EtagMismatch`] for a stale etag,
-    /// [`Error::BuiltinCatalogMismatch`] when this process serves a catalog
-    /// other than `catalog_identity`, [`Error::NotBuiltinProvider`] for
-    /// another Provider, or a persistence failure. An error may follow writes;
-    /// do not commit after one.
+    /// Returns a persistence or corrupt-data failure. An error may follow
+    /// writes; do not commit after one.
     pub async fn update_builtin_catalog_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
-        context: &ChangeContext,
         workspace_id: &WorkspaceId,
         provider_id: &ProviderId,
-        catalog_identity: &str,
+        occurred_at_unix_nanos: i64,
     ) -> Result<Option<ActivatedGeneration>, Error> {
-        let authority = self
-            .check_owner_configuration_in_transaction(transaction, context.actor(), workspace_id)
-            .await?;
-        let stored = change::hold_for_change(
+        // Processes that boot together each try; the first one to hold the
+        // row updates it, and the others then find this catalog pinned.
+        if !provider_repository::hold_provider_in_transaction(
             transaction,
             workspace_id,
             provider_id,
-            ProviderChange::UpdateBuiltinCatalog,
-        )
-        .await?;
-        stored.provider.check_etag(context)?;
-        // During a rolling deploy or after a rollback, the process that showed
-        // the Owner the update may serve another catalog than this one.
-        if catalog_identity != self.builtin_catalog.identity() {
-            return Err(Error::BuiltinCatalogMismatch);
-        }
-        if coral_catalog::builtin_catalog_changes_in_transaction(
-            transaction,
-            &self.builtin_catalog,
-            &stored.generation_id,
         )
         .await?
-        .is_none()
+        {
+            return Ok(None);
+        }
+        let Some(stored) =
+            provider_repository::provider_in_transaction(transaction, workspace_id, provider_id)
+                .await?
+        else {
+            return Ok(None);
+        };
+        if *stored.provider.call_root() != ProviderCallRoot::Builtin
+            || coral_catalog::builtin_generation_pins_in_transaction(
+                transaction,
+                &self.builtin_catalog,
+                &stored.generation_id,
+            )
+            .await?
         {
             return Ok(None);
         }
         let generation = coral_catalog::publish_builtin_generation_in_transaction(
             transaction,
             &self.builtin_catalog,
-            context.occurred_at_unix_nanos(),
+            occurred_at_unix_nanos,
         )
         .await?;
         if !provider_repository::activate_builtin_generation(
@@ -202,16 +189,13 @@ impl ProviderModule {
             transaction,
             provider_repository::NewLifecycleEvent {
                 workspace_id: Some(workspace_id),
-                actor: LifecycleActor::User {
-                    user_id: context.actor().user_id().clone(),
-                    authority_source: authority,
-                },
+                actor: LifecycleActor::Coral,
                 action: LifecycleAction::ProviderUpdated,
                 target_id: &provider_id.to_string(),
                 outcome: LifecycleOutcome::Accepted,
                 changed_field_paths: &["provider.active_generation", "catalog"],
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
-                trace_id: context.trace_id(),
+                occurred_at_unix_nanos,
+                trace_id: &coral_telemetry::TraceId::current_or_new(),
             },
         )
         .await?;

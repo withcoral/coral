@@ -1,6 +1,6 @@
 import type { MouseEvent, ReactNode, Ref, RefObject } from 'react'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { Form, Link, useLocation, useNavigate } from 'react-router'
+import { Link, useLocation, useNavigate } from 'react-router'
 
 import { Banner, Button, Dialog, Inputs, Menu, Typography } from '@/wax/components'
 import { animations } from '@/wax/animations'
@@ -39,7 +39,6 @@ import {
   type SelectionKey,
 } from './selection'
 import type {
-  BuiltinUpdateView,
   FormContext,
   OperationHintsView,
   OperationView,
@@ -146,7 +145,6 @@ export function WorkspaceProvidersPage(props: WorkspaceProvidersPageProps) {
 function WorkspaceProvidersContent({
   workspace: w,
   providers: installed,
-  builtinUpdate = null,
   recipes = [],
   selectedProvider: selectedProviderRoute,
   selectedOperation,
@@ -189,7 +187,6 @@ function WorkspaceProvidersContent({
   const selectedOperationPath =
     selectedOperation ?? (operationRoute?.[2] ? decodeURIComponent(operationRoute[2]) : null)
   const selected = sortedProviders.find((provider) => provider.id === selectedId)
-  const coral = sortedProviders.find((provider) => provider.builtin)
   const operation = selected?.operations.find((o) => o.relativePath === selectedOperationPath)
   const empty = sortedProviders.length === 0
   const addButton = canChange ? <AddProviderLauncher {...entry} /> : null
@@ -219,14 +216,6 @@ function WorkspaceProvidersContent({
             </ArchivedBanner>
           )}
           <ActionNotice result={notice} />
-          {coral && builtinUpdate && (
-            <BuiltinUpdateNotice
-              provider={coral}
-              update={builtinUpdate}
-              form={form}
-              canChange={canChange}
-            />
-          )}
         </>
       }
     >
@@ -260,63 +249,6 @@ function WorkspaceProvidersContent({
         />
       )}
     </PageLayout>
-  )
-}
-
-/** What updating Coral adds, removes, and changes, and the control that updates it. */
-function BuiltinUpdateNotice({
-  provider,
-  update,
-  form,
-  canChange,
-}: {
-  provider: ProviderView
-  update: BuiltinUpdateView
-  form: FormContext
-  canChange: boolean
-}) {
-  const parts = [
-    ['Update adds these operations:', update.added],
-    ['Update removes these operations:', update.removed],
-    ['Update changes these operations:', update.changed],
-  ] as const
-  return (
-    <Banner
-      title="An update for Coral is available."
-      action={
-        canChange ? (
-          <Form method="post" action={provider.path}>
-            <Fields form={form} intent="updateBuiltinCatalog" etag={provider.etag} />
-            <input type="hidden" name="provider" value={provider.id} />
-            <input type="hidden" name="catalog" value={update.catalog} />
-            <Button.TextButton type="submit" variant="primary" size="32">
-              Update
-            </Button.TextButton>
-          </Form>
-        ) : undefined
-      }
-    >
-      {parts.map(
-        ([label, operations]) =>
-          operations.length > 0 && (
-            <div key={label}>
-              <Typography.BodySmall as="p">{label}</Typography.BodySmall>
-              <ul aria-label={label}>
-                {operations.map((operation) => (
-                  <li key={operation.relativePath}>
-                    <CodeChip>{operation.relativePath}</CodeChip> {operation.summary}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ),
-      )}
-      {!canChange && (
-        <Typography.BodySmall as="p">
-          Restore the workspace before you update Coral.
-        </Typography.BodySmall>
-      )}
-    </Banner>
   )
 }
 

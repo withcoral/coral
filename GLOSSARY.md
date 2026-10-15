@@ -229,13 +229,13 @@ Operations Coral itself performs, with no upstream dispatch. Its Call Root is `c
 Operation Access State, Approval Requests, and Operation Invocation records with every other Provider. Only a User with
 effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals cannot. An
 Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
-has no Provider Accounts. When the serving Coral defines a different catalog, an Owner can update the Workspace's
-Built-in Provider to it. Coral itself publishes the Provider only from a ready Setup on the `none` route. A
-credential-requiring Setup, on the `fixed` or the `caller` route, always needs a person to sign in. If a person must
-finish the Setup and the Run is still current, the Operation returns the Reef page and does not wait; Coral ends a Setup
-it prepared that nobody will finish. Its Operations never return a secret or an OAuth URL to the Program, and never take
-a secret from it: a person enters a confidential OAuth application's secret in Reef. A Reef link one returns may name a
-Provider Setup; that Setup's identity grants nothing, and only the User who started the Setup can publish it.
+has no Provider Accounts. When Coral boots, it updates every Workspace's Built-in Provider to the catalog it
+serves. Coral itself publishes the Provider only from a ready Setup on the `none` route. A credential-requiring Setup,
+on the `fixed` or the `caller` route, always needs a person to sign in. If a person must finish the Setup and the Run
+is still current, the Operation returns the Reef page and does not wait; Coral ends a Setup it prepared that nobody
+will finish. Its Operations never return a secret or an OAuth URL to the Program, and never take a secret from it: a
+person enters a confidential OAuth application's secret in Reef. A Reef link one returns may name a Provider Setup;
+that Setup's identity grants nothing, and only the User who started the Setup can publish it.
 _Avoid_: admin API, administrative calls, coral.admin surface, system provider
 _In Reef_: "Coral", with the Coral logo, listed first
 

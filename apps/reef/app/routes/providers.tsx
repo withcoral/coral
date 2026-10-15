@@ -6,13 +6,7 @@ import {
   mutationForm,
   privateHeaders,
 } from '@/lib/management.server'
-import {
-  builtinCatalogUpdate,
-  providerName,
-  providerView,
-  listAllProviders,
-  uuidOr404,
-} from '@/lib/providers.server'
+import { providerView, listAllProviders, uuidOr404 } from '@/lib/providers.server'
 import { personalAccountStates } from '@/lib/accounts.server'
 import { applyProviderChange } from '@/lib/provider-changes.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
@@ -50,12 +44,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
     const providers = await Promise.all(
       listed.map((provider) => providerView(api, provider, w.path, personalAccounts)),
     )
-    // Only an owner can update Coral, so only an owner reads its update.
-    const builtin = providers.find((provider) => provider.builtin)
-    const builtinUpdate =
-      builtin && w.effectiveRole === 'owner'
-        ? await builtinCatalogUpdate(api, providerName(w.name, builtin.id))
-        : null
     const selectedProvider = params.provider ? uuidOr404(params.provider) : null
     if (selectedProvider && !providers.some((i) => i.id === selectedProvider))
       throw new Response('Not found', { status: 404, headers: privateHeaders })
@@ -71,7 +59,6 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       {
         workspace: w,
         providers,
-        builtinUpdate,
         recipes: RECIPE_CHOICES,
         selectedProvider,
         selectedOperation,

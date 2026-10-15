@@ -226,8 +226,6 @@ pub(super) fn error(value: domain::Error) -> Status {
         }
         E::ProviderCallRootConflict => (Code::AlreadyExists, "NAMESPACE_IN_USE"),
         E::BuiltinProviderManaged => (Code::FailedPrecondition, "BUILTIN_PROVIDER_MANAGED"),
-        E::NotBuiltinProvider => (Code::FailedPrecondition, "NOT_BUILTIN_PROVIDER"),
-        E::BuiltinCatalogMismatch => (Code::Aborted, "BUILTIN_CATALOG_MISMATCH"),
         E::OAuthClientConfiguration => (Code::FailedPrecondition, "OAUTH_CLIENT_CONFIGURATION"),
         E::AccountRequired => (Code::FailedPrecondition, "ACCOUNT_REQUIRED"),
         E::RequestIdConflict => (Code::AlreadyExists, "REQUEST_ID_CONFLICT"),
@@ -989,61 +987,6 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
             next_page_token,
         }))
     }
-
-    #[tracing::instrument(skip_all, name = "coral.private.get_builtin_catalog_update")]
-    async fn get_builtin_catalog_update(
-        &self,
-        request: Request<wire::GetBuiltinCatalogUpdateRequest>,
-    ) -> Result<Response<wire::BuiltinCatalogUpdate>, Status> {
-        let user = self.management_user(&request).await?;
-        let name = request.into_inner().name;
-        let (owner, id) = resource(&name, "providers")?;
-        let changes = self
-            .providers
-            .inspect_builtin_catalog_update(
-                &user,
-                &owner,
-                &domain::ProviderId::parse(id).map_err(error)?,
-            )
-            .await
-            .map_err(error)?;
-        let views = |operations: &[coral_catalog::OperationSummary]| {
-            operations
-                .iter()
-                .map(|operation| operation_view(&name, operation))
-                .collect()
-        };
-        Ok(Response::new(changes.map_or_else(
-            wire::BuiltinCatalogUpdate::default,
-            |changes| wire::BuiltinCatalogUpdate {
-                available: true,
-                added: views(&changes.added),
-                removed: views(&changes.removed),
-                changed: views(&changes.changed),
-                catalog: changes.identity,
-            },
-        )))
-    }
-
-    #[tracing::instrument(skip_all, name = "coral.private.update_builtin_catalog")]
-    async fn update_builtin_catalog(
-        &self,
-        request: Request<wire::UpdateBuiltinCatalogRequest>,
-    ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
-            .with_etag(&request.get_ref().etag)
-            .map_err(super::workspaces::error)?;
-        let req = request.into_inner();
-        let (workspace, id) = resource(&req.name, "providers")?;
-        let id = domain::ProviderId::parse(id).map_err(error)?;
-        self.provider_workflow
-            .update_builtin_catalog(&context, &workspace, &id, &req.catalog)
-            .await
-            .map_err(error)?;
-        self.provider_projection(context.actor(), &workspace, &id)
-            .await
-            .map(Response::new)
-    }
 }
 
 impl GrpcServices {
@@ -1116,16 +1059,6 @@ mod tests {
                 E::BuiltinProviderManaged,
                 Code::FailedPrecondition,
                 "BUILTIN_PROVIDER_MANAGED",
-            ),
-            (
-                E::NotBuiltinProvider,
-                Code::FailedPrecondition,
-                "NOT_BUILTIN_PROVIDER",
-            ),
-            (
-                E::BuiltinCatalogMismatch,
-                Code::Aborted,
-                "BUILTIN_CATALOG_MISMATCH",
             ),
             (
                 E::AccountRequired,

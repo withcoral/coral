@@ -225,34 +225,40 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
     }
 }
 
-// Catches: a catalog that Coral defines out of Operation Key order, which
-// storage reads back in key order. Its stored fingerprint then never matches
-// the served one, so Owners see an update forever, even right after updating.
+// Catches: a Workspace whose Generation already holds the served catalog
+// taking a new Generation at every boot, or one that holds another catalog
+// keeping it.
 #[tokio::test]
-async fn a_generation_of_the_served_catalog_has_no_update_whatever_the_definition_order() {
+async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
     let database = fixture.database();
-    // `archiveThings` follows `createProvider` in definition order and precedes it by key.
-    let catalog =
+    let running = BuiltinCatalog::running().unwrap();
+    let other =
         BuiltinCatalog::with_unknown_operations([("archiveThings", OperationHints::default())])
             .unwrap();
     let mut transaction = database.begin().await.unwrap();
     let generation =
-        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
+        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &running, 1)
             .await
             .unwrap();
     transaction.commit().await.unwrap();
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
-    let changes = coral_catalog::builtin_catalog_changes_in_transaction(
-        &mut transaction,
-        &catalog,
-        &generation,
-    )
-    .await
-    .unwrap();
+    for (catalog, pins) in [(&running, true), (&other, false)] {
+        assert_eq!(
+            coral_catalog::builtin_generation_pins_in_transaction(
+                &mut transaction,
+                catalog,
+                &generation,
+            )
+            .await
+            .unwrap(),
+            pins,
+            "{}",
+            catalog.identity()
+        );
+    }
     transaction.rollback().await.unwrap();
-    assert_eq!(changes, None);
 }
 
 async fn pinned_input(

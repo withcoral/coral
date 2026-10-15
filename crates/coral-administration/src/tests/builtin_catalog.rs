@@ -1,11 +1,11 @@
-//! An Owner's Built-in Provider catalog update notifies Universal Search.
+//! The Built-in Provider catalog update at boot notifies Universal Search.
 use crate::{ProviderWorkflow, WorkspaceWorkflow};
 use coral_catalog::{BuiltinCatalog, OperationHints};
 use coral_provider::ProviderModule;
 use coral_search::{CallPath, SearchIndex, SearchQuery, SearchRequest, UniversalSearchModule};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
+    AuthenticatedPrincipal, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
 };
 
 const ADDED: &str = "coral.admin.listThings";
@@ -65,14 +65,6 @@ async fn an_update_makes_the_added_operation_searchable_and_describable() {
     .create_workspace(&change(100), WorkspaceDisplayName::parse("Ops").unwrap())
     .await
     .unwrap();
-    let served = providers(&db, &workspaces, catalog_b());
-    let builtin = served
-        .inspect_providers(&owner, workspace.id())
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|provider| provider.call_root().as_str() == "coral.admin")
-        .expect("the Workspace has its Built-in Provider");
     let principal = AuthenticatedPrincipal::user(owner.clone());
     let finds_added = || async {
         let found = search
@@ -100,15 +92,15 @@ async fn an_update_makes_the_added_operation_searchable_and_describable() {
     index.settled().await;
     assert_eq!(finds_added().await, (false, false));
 
-    ProviderWorkflow::new(database.clone(), served, index.clone())
-        .update_builtin_catalog(
-            &ChangeContext::with_etag(change(200), &builtin.etag()).unwrap(),
-            workspace.id(),
-            builtin.id(),
-            catalog_b().identity(),
-        )
-        .await
-        .unwrap();
+    // A process that serves catalog B boots.
+    ProviderWorkflow::new(
+        database.clone(),
+        providers(&db, &workspaces, catalog_b()),
+        index.clone(),
+    )
+    .update_builtin_catalogs(200)
+    .await
+    .unwrap();
     index.settled().await;
 
     assert_eq!(finds_added().await, (true, true));
