@@ -21,7 +21,13 @@ import {
   taskRow,
   workspace,
 } from './fixtures'
-import type { ActivityPage, ActivityRow, RequestDetail, RunEvent } from './types'
+import type {
+  ActivityPage,
+  ActivityRow,
+  RecordSourceLocation,
+  RequestDetail,
+  RunEvent,
+} from './types'
 
 // Live mode in Chromium: records that arrive while the rail follows them, what the
 // rail and table select, the address, and focus. The step rule is navigation.test.ts's.
@@ -43,11 +49,27 @@ const other = runRow('other', '', {
 type Child = Extract<ActivityRow, { kind: 'invocation' | 'output' }>
 type Event = { row: Extract<ActivityRow, { kind: 'output' }>; event: RunEvent }
 
+// Every Run's accepted source. Each record carries the line Coral stored for its call.
+const source = [
+  'export default async () => {',
+  '  await coral.providers.mail.send({})',
+  "  console.info('checked')",
+  "  coral.emit('sent')",
+  '}',
+].join('\n')
+const lineOf = { invocation: 2, 'program.logged': 3, 'program.emitted': 4 } as const
+const storedAt = (line: number): RecordSourceLocation => ({
+  document: { kind: 'program' },
+  line,
+  column: 3,
+})
+
 function operation(run: string, sequence: number, callPath: string): Child {
   return invocationRow(run, `${run.split('/').at(-1)}-${sequence}`, {
     task: run === program.name ? task.name : '',
     operation: callPath,
     callPath,
+    sourceLocation: storedAt(lineOf.invocation),
   })
 }
 function output(run: string, sequence: number, kind: 'program.logged' | 'program.emitted'): Event {
@@ -66,12 +88,14 @@ function output(run: string, sequence: number, kind: 'program.logged' | 'program
       eventKind: kind,
       agent: '',
       task: run === program.name ? task.name : '',
+      sourceLocation: storedAt(lineOf[kind]),
     },
     event,
   }
 }
 const finalRow: Child = {
   ...output(program.name, 99, 'program.emitted').row,
+  sourceLocation: undefined,
   name: `${program.name}/final`,
   label: 'final value',
   eventKind: 'run.ended',
@@ -154,13 +178,15 @@ function pageFor(url: URL): ActivityPage {
     kind: 'run' as const,
     run: row,
     request: row === run ? world.request : null,
-    source: 'await coral.providers.mail.send()',
+    source,
     linkedFunctions: [],
     terminal:
       row === run && world.ended
         ? { kind: 'succeeded' as const, finalValue: '"done"' }
         : { kind: 'unavailable' as const },
   })
+  // Coral reads a child record with its Run, so the drawer shows that Run's source.
+  const contextOf = (row: Child) => runDetail(row.run === run.name ? run : other)
   return activityPage({
     rows,
     expanded,
@@ -181,9 +207,15 @@ function pageFor(url: URL): ActivityPage {
                 requests: [],
                 request: null,
                 requestUnavailable: false,
+                context: contextOf(selectedRow),
               }
             : selectedRow?.kind === 'output'
-              ? { kind: 'output', run: selectedRow.run, event: world.events.get(selectedRow.name)! }
+              ? {
+                  kind: 'output',
+                  run: selectedRow.run,
+                  event: world.events.get(selectedRow.name)!,
+                  context: contextOf(selectedRow),
+                }
               : null,
   })
 }
@@ -516,5 +548,65 @@ export const UnsentCommentHolds: Story = {
     // Once the comment is gone, live mode follows again.
     await userEvent.clear(comment)
     await selects('mail.send', 'mail.send')
+  },
+}
+
+export const FollowsInTheSourceSplit: Story = {
+  beforeEach: () => world.reset([operation(program.name, 1, 'mail.list')]),
+  play: async (context) => {
+    const { userEvent } = context
+    const { rail, toggle, address, press, selects, following } = await surface(context)
+    const drawer = () => within(rail())
+    const highlighted = () =>
+      [...rail().querySelectorAll('[data-line][data-highlighted]')].map((line) =>
+        Number(line.getAttribute('data-line')),
+      )
+    /** The selected record's own header holds the toggle beside the close control. */
+    const ownHeader = async (title: string) => {
+      const selected = drawer().getByRole('region', { name: 'Selected record' })
+      const headings = within(selected).getAllByRole('heading', { level: 2 })
+      await expect(headings.map((heading) => heading.textContent)).toEqual([title])
+      const header = headings[0]!.closest('header')!
+      await expect(header).toContainElement(toggle())
+      await expect(header).toContainElement(drawer().getByRole('button', { name: 'Close details' }))
+    }
+    /** Live mode selects `record`, and the source shows the line Coral stored for it. */
+    const shows = async (heading: string, row: string, record: string, line: number) => {
+      await selects(heading, row)
+      await waitFor(() => expect(highlighted()).toEqual([line]))
+      await expect(address().get('record')).toBe(record)
+      await following(true)
+      await ownHeader(heading)
+    }
+    await selects('Send reminders', 'Reminder run')
+    await ownHeader('Send reminders')
+    await following(false)
+
+    // Your split size and Follow selection hold while live mode replaces the record.
+    const separator = () =>
+      drawer().getByRole('separator', { name: 'Resize detail and source panes' })
+    separator().focus()
+    await userEvent.keyboard('{ArrowUp}')
+    const split = separator().getAttribute('aria-valuenow')
+    await expect(split).not.toBe('50')
+    await userEvent.click(drawer().getByRole('switch', { name: 'Follow selection' }))
+
+    await userEvent.click(toggle())
+    await shows('mail.list', 'mail.list', operation(program.name, 1, 'mail.list').name, 2)
+    await press('Add log')
+    await shows('console.info #2', 'log #2', `${program.name}/events/2`, 3)
+    await press('Add emission')
+    await shows('coral.emit #3', 'emission #3', `${program.name}/events/3`, 4)
+    await press('Add operation')
+    await shows('mail.send', 'mail.send', operation(program.name, 4, 'mail.send').name, 2)
+    await expect(drawer().getByRole('switch', { name: 'Follow selection' })).not.toBeChecked()
+    await expect(separator()).toHaveAttribute('aria-valuenow', split)
+
+    // The toggle in the record's header turns live mode off.
+    await userEvent.click(toggle())
+    await following(false)
+    await press('Add log')
+    await selects('mail.send', 'mail.send')
+    await expect(highlighted()).toEqual([2])
   },
 }
