@@ -1742,7 +1742,7 @@ const target = (wait: Wait) => ({ run, record: waitName(wait.id), request: reque
  * come in two action pages: the first holds the last wait, the second all the others.
  */
 function waitingRun(waits: Wait[]): Handlers {
-  const current = waits.filter(waiting).map(requestName)
+  const current = [...new Set(waits.filter(waiting).map(requestName))]
   const pages = Math.max(1, ...waits.map((wait) => (wait.page ?? 0) + 1))
   const byName = (name: string) => waits.find((wait) => requestName(wait) === name)
   return {
@@ -1860,6 +1860,17 @@ describe("Live's oldest action in the followed Run", () => {
     expect(loaded(calls, 'entries', 'operation')).toBe(0)
   })
   it.each([
+    { name: 'an earlier timestamp', early: 1n, approvalTime: 5n },
+    { name: 'an equal timestamp with a lower identity', early: 10n, approvalTime: 10n },
+  ])('times a shared connection across child pages by $name', async ({ early, approvalTime }) => {
+    const first = connectionWait('z', 10n)
+    const oldest = connectionWait('a', early, { page: 1, request: first.request })
+    const other = approvalWait('m', approvalTime)
+    const { api } = coral(list(), runEvent(), waitingRun([first, oldest, other]))
+    const page = await loadActivity(followed(), api, { scope })
+    expect(page.liveAction).toEqual({ ...target(oldest), record: run })
+  })
+  it.each([
     { name: 'an older connection wins', connected: 3n, approved: 4n, chosen: 'x' },
     { name: 'an older approval wins', connected: 5n, approved: 4n, chosen: 'y' },
   ])(
@@ -1870,7 +1881,7 @@ describe("Live's oldest action in the followed Run", () => {
       const { api, calls } = coral(list(), runEvent(), waitingRun([x, y]))
       const page = await loadActivity(followed(), api, { scope })
       expect(page.liveAction).toEqual(chosen === 'x' ? { ...target(x), record: run } : target(y))
-      // The history read stops at the page that holds the waiting operation.
+      // Connection ordering reads every child page, including shared requests.
       expect(loaded(calls, 'entries')).toBe(2)
     },
   )

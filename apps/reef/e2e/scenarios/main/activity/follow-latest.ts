@@ -31,7 +31,7 @@ const inProgram = (line: number, name: string) => ({
 })
 
 /** The drawer's highlighted source lines, and whether it says it has no location. */
-async function highlighted(page: Page) {
+export async function highlighted(page: Page) {
   const pane = page.getByRole('dialog').getByRole('region', { name: 'Accepted source' })
   await pane.locator('[data-line]').first().waitFor()
   return pane.evaluate((region) => ({
