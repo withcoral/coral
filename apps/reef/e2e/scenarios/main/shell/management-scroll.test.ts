@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import { withOwnerSession } from '../../../support/actors.ts'
-import { breadcrumb } from '../../../support/providers.ts'
+import { breadcrumb, dismissOnboarding } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
 
 test('Management bottom actions are reachable by wheel and keyboard in a short viewport', async (context) => {
@@ -17,6 +17,7 @@ test('Management bottom actions are reachable by wheel and keyboard in a short v
       .getByRole('dialog')
       .getByRole('button', { name: 'Create workspace', exact: true })
       .click()
+    await dismissOnboarding(page)
     await breadcrumb(page, name).waitFor()
     const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
     const confirmation = page.getByRole('dialog', { name: `Archive ${name}`, exact: true })

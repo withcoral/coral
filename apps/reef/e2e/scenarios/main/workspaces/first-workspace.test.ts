@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import { loginActor, mcpToken, newUser } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
-import { observeRun, programRunner } from '../../../support/providers.ts'
+import { dismissOnboarding, observeRun, programRunner } from '../../../support/providers.ts'
 
 test('Someone with no workspace lands on a page that creates their first one', async (context) => {
   const carol = await loginActor(context, await newUser(context, 'Carol'))
@@ -15,22 +15,27 @@ test('Someone with no workspace lands on a page that creates their first one', a
         await page.goto('/')
         await content.getByText('No workspaces yet', { exact: true }).waitFor()
       })
-      await step('Create the first workspace from the page and open it', async () => {
-        // Hydration first: a click that lands before it opens nothing.
-        await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-        await content.getByRole('button', { name: 'Create workspace', exact: true }).click()
-        await page.getByLabel('Workspace name', { exact: true }).fill(name)
-        await page
-          .getByRole('dialog')
-          .getByRole('button', { name: 'Create workspace', exact: true })
-          .click()
-        await page.waitForURL((url) => /^\/workspaces\/[0-9a-f-]{36}$/.test(url.pathname))
-        await page
-          .getByRole('navigation', { name: 'breadcrumb', exact: true })
-          .getByText(name, { exact: true })
-          .waitFor()
-        id = new URL(page.url()).pathname.split('/')[2]
-      })
+      await step(
+        'Create the first workspace from the page, open it and dismiss its onboarding',
+        async () => {
+          // Hydration first: a click that lands before it opens nothing.
+          await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
+          await content.getByRole('button', { name: 'Create workspace', exact: true }).click()
+          await page.getByLabel('Workspace name', { exact: true }).fill(name)
+          await page
+            .getByRole('dialog')
+            .getByRole('button', { name: 'Create workspace', exact: true })
+            .click()
+          await page.waitForURL((url) => /^\/workspaces\/[0-9a-f-]{36}$/.test(url.pathname))
+          // The new workspace's onboarding hides the page until it closes.
+          await dismissOnboarding(page)
+          await page
+            .getByRole('navigation', { name: 'breadcrumb', exact: true })
+            .getByText(name, { exact: true })
+            .waitFor()
+          id = new URL(page.url()).pathname.split('/')[2]
+        },
+      )
       const token = await mcpToken(page, id)
       await step('Home opens the workspace Activity once a workspace exists', async () => {
         await page.goto('/')

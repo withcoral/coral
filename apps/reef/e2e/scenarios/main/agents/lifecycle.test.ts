@@ -4,7 +4,7 @@ import { createActors } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
 import { prepareOffboardingAccount } from '../../../support/offboarding.ts'
-import { breadcrumb, programRunner } from '../../../support/providers.ts'
+import { breadcrumb, dismissOnboarding, programRunner } from '../../../support/providers.ts'
 import { SetupAuthorizationState } from '../../../generated/coral/management/v1/provider_pb.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
 import { copiedBy } from '../../../support/clipboard.ts'
@@ -56,6 +56,7 @@ test('Agent credential issuance, rotation, disablement, expiry and destructive c
           .getByRole('dialog')
           .getByRole('button', { name: 'Create workspace', exact: true })
           .click()
+        await dismissOnboarding(page)
         // Home may have opened another Workspace in the tree; use the new one.
         await nav
           .getByRole('group', { name, exact: true })
