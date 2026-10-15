@@ -142,28 +142,10 @@ export interface ProviderSettingsPageProps {
   pending?: boolean
 }
 
-/** One operation that updating Coral adds, removes, or changes. */
-export interface BuiltinUpdateOperationView {
-  relativePath: string
-  summary: string
-}
-
-/** How the catalog this Coral defines differs from the Coral provider's catalog in the workspace. */
-export interface BuiltinUpdateView {
-  /** The catalog this update applies. Update sends it, so Coral applies only what you reviewed. */
-  catalog: string
-  added: BuiltinUpdateOperationView[]
-  removed: BuiltinUpdateOperationView[]
-  /** Each as the update makes it. */
-  changed: BuiltinUpdateOperationView[]
-}
-
 export interface WorkspaceProvidersPageProps {
   workspace: WorkspaceView
   recipes?: readonly SourceChoice[]
   providers: ProviderView[]
-  /** The Coral provider's update, for an owner; `null` when there is none. */
-  builtinUpdate?: BuiltinUpdateView | null
   selectedProvider: string | null
   selectedOperation: string | null
   form: FormContext

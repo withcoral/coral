@@ -6,7 +6,7 @@ import { expect, test } from 'vitest'
 import { renderRoute } from '@/test-support/route'
 
 import { builtinProvider, provider, workspaceView } from './fixtures'
-import type { BuiltinUpdateView, OperationView, ProviderView } from './types'
+import type { OperationView, ProviderView } from './types'
 import { WorkspaceProvidersPage } from './workspace-providers-page'
 
 // happy-dom lays nothing out, so the virtualizer would mount no operation
@@ -38,19 +38,16 @@ function renderPage({
   entry = '/workspaces/demo/providers',
   providers = [github, weather],
   selectedOperation = null,
-  builtinUpdate = null,
 }: {
   action?: Action
   entry?: string
   providers?: ProviderView[]
   selectedOperation?: OperationView | null
-  builtinUpdate?: BuiltinUpdateView | null
 } = {}) {
   const page = (selected: OperationView | null, owner = providerOf(selected)) => (
     <WorkspaceProvidersPage
       workspace={workspaceView}
       providers={providers}
-      builtinUpdate={builtinUpdate}
       selectedProvider={owner}
       selectedOperation={selected?.relativePath ?? null}
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
@@ -201,50 +198,6 @@ test('the built-in provider leads the providers you add', () => {
     'Weather settings',
   ])
   expect(providerGroups()).toEqual(['Coral', 'Arcade', 'GitHub', 'Weather'])
-})
-
-const notice = () => screen.queryByText('An update for Coral is available.')
-const listed = (label: string) =>
-  within(screen.getByRole('list', { name: label }))
-    .getAllByRole('listitem')
-    .map((item) => item.textContent)
-
-// Catches: an update Coral offers that the providers page does not show, or
-// that the Update button does not send.
-test('the providers page shows what the Coral update changes, and Update sends it', async () => {
-  const requests: FormData[] = []
-  const coral = builtinProvider('00000000-0000-4000-8000-000000000003')
-  const { show } = renderPage({
-    action: async (request) => {
-      requests.push(await request.formData())
-      return null
-    },
-    providers: [coral, github],
-    builtinUpdate: {
-      catalog: 'coral-admin-catalog:reviewed',
-      added: [{ relativePath: 'listThings', summary: 'List things' }],
-      removed: [],
-      changed: [{ relativePath: 'createProvider', summary: 'Create a provider' }],
-    },
-  })
-  expect(notice()).toBeInTheDocument()
-  await show(null, github.id)
-  expect(notice()).toBeInTheDocument()
-
-  expect(listed('Update adds these operations:')).toEqual(['listThings List things'])
-  expect(listed('Update changes these operations:')).toEqual(['createProvider Create a provider'])
-  expect(screen.queryByRole('list', { name: 'Update removes these operations:' })).toBeNull()
-  await user.click(screen.getByRole('button', { name: 'Update' }))
-  await settle()
-  expect(requests.map((form) => Object.fromEntries(form))).toEqual([
-    expect.objectContaining({
-      intent: 'updateBuiltinCatalog',
-      provider: coral.id,
-      etag: coral.etag,
-      catalog: 'coral-admin-catalog:reviewed',
-      csrf: 'test-csrf',
-    }),
-  ])
 })
 
 // Catches: a policy form naming the provider's installation instead of its

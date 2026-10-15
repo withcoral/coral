@@ -59,17 +59,6 @@ export async function applyProviderChange(
           { headers: privateHeaders },
         )
       }
-      case 'updateBuiltinCatalog': {
-        await api.providers.updateBuiltinCatalog({
-          name: providerName(w.name, field(form, 'provider')),
-          etag: field(form, 'etag'),
-          catalog: field(form, 'catalog'),
-        })
-        return data(
-          { error: null, credential: null, message: 'Coral provider updated.' },
-          { headers: privateHeaders },
-        )
-      }
       case 'removeProvider': {
         await api.providers.deleteProvider({
           name: `${w.name}/providers/${uuidOr404(field(form, 'provider'))}`,
@@ -132,7 +121,6 @@ export async function applyProviderChange(
       disableProvider: 'Coral could not disable the provider. ',
       enableProvider: 'Coral could not enable the provider. ',
       removeProvider: 'Coral could not remove the provider. ',
-      updateBuiltinCatalog: 'Coral could not update the Coral provider. ',
       policy: 'Coral could not save operation policy. ',
     }
     return providerFailure(error, failures[intent])

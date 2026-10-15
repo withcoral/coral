@@ -406,12 +406,11 @@ async fn only_a_provider_an_owner_adds_has_a_source_to_inspect() {
 /// Catalog B: this Coral version's Operations plus a read-only one it does
 /// not perform, as a later Coral version could define.
 fn catalog_b() -> BuiltinCatalog {
-    with_list_things(OperationHints::new(Some(true), None, None, None))
-}
-
-/// This Coral version's Operations plus `listThings` with `hints`.
-fn with_list_things(hints: OperationHints) -> BuiltinCatalog {
-    BuiltinCatalog::with_unknown_operations([("listThings", hints)]).unwrap()
+    BuiltinCatalog::with_unknown_operations([(
+        "listThings",
+        OperationHints::new(Some(true), None, None, None),
+    )])
+    .unwrap()
 }
 
 fn running() -> BuiltinCatalog {
@@ -473,58 +472,28 @@ impl BuiltinWorkspace {
             .unwrap()
     }
 
-    /// `actor` reviews `served` and updates the Built-in Provider to it
-    /// through a process that serves it, in its own transaction, with the
-    /// Provider's current etag.
-    async fn update(
-        &self,
-        served: &BuiltinCatalog,
-        actor: &coral_workspace::AuthenticatedUser,
-        at: i64,
-    ) -> Result<Option<crate::ActivatedGeneration>, Error> {
-        let etag = self.current().await.etag();
-        self.update_with(
-            served,
-            actor,
-            at,
-            &etag,
-            self.builtin.id(),
-            served.identity(),
-        )
-        .await
-    }
-
-    /// `actor` updates `provider` with `etag` through a process that serves
-    /// `served`, naming the `reviewed` catalog.
-    async fn update_with(
-        &self,
-        served: &BuiltinCatalog,
-        actor: &coral_workspace::AuthenticatedUser,
-        at: i64,
-        etag: &str,
-        provider: &crate::ProviderId,
-        reviewed: &str,
-    ) -> Result<Option<crate::ActivatedGeneration>, Error> {
-        let context = change_context(actor.clone(), at, '2')
-            .with_etag(etag)
-            .unwrap();
+    /// A process that serves `served` boots at `at`: it updates each outdated
+    /// Built-in Provider in its own transaction.
+    async fn boot(&self, served: &BuiltinCatalog, at: i64) -> Vec<crate::ActivatedGeneration> {
+        let process = serving(&self.providers, served.clone());
         let database = self.fixture.database();
-        let mut transaction = database.begin().await.unwrap();
-        let updated = serving(&self.providers, served.clone())
-            .update_builtin_catalog_in_transaction(
-                &mut transaction,
-                &context,
-                self.workspace.id(),
-                provider,
-                reviewed,
-            )
-            .await;
-        if updated.is_ok() {
+        let mut activated = Vec::new();
+        for (workspace, provider) in process.outdated_builtin_providers().await.unwrap() {
+            let mut transaction = database.begin().await.unwrap();
+            activated.extend(
+                process
+                    .update_builtin_catalog_in_transaction(
+                        &mut transaction,
+                        &workspace,
+                        &provider,
+                        at,
+                    )
+                    .await
+                    .unwrap(),
+            );
             transaction.commit().await.unwrap();
-        } else {
-            transaction.rollback().await.unwrap();
         }
-        updated
+        activated
     }
 
     /// The Operation Keys the Built-in Provider serves.
@@ -550,227 +519,104 @@ impl BuiltinWorkspace {
             .await
             .unwrap()
     }
-
-    async fn member(&self, name: &str) -> coral_workspace::AuthenticatedUser {
-        let member =
-            organization_user(self.fixture.database(), name, OrganizationRole::Member).await;
-        self.workspaces
-            .set_membership(
-                &change_context(self.owner.clone(), 11, '1'),
-                self.workspace.id(),
-                &member,
-                WorkspaceRole::Member,
-            )
-            .await
-            .unwrap();
-        member
-    }
-}
-
-/// The keys in each part of an offered update: added, removed, changed.
-fn offered(changes: &coral_catalog::BuiltinCatalogChanges) -> [Vec<&str>; 3] {
-    fn keys(operations: &[coral_catalog::OperationSummary]) -> Vec<&str> {
-        operations
-            .iter()
-            .map(|operation| operation.key.as_str())
-            .collect()
-    }
-    [
-        keys(&changes.added),
-        keys(&changes.removed),
-        keys(&changes.changed),
-    ]
-}
-
-/// An Owner sees an update only when the served catalog differs, and exactly
-/// which Operations it adds, removes or changes. A Member sees none.
-#[tokio::test]
-async fn an_owner_sees_how_the_served_catalog_differs() {
-    let arranged = BuiltinWorkspace::new().await;
-    let workspace = arranged.workspace.id();
-    let builtin = arranged.builtin.id();
-    let inspect = |served: BuiltinCatalog| async {
-        serving(&arranged.providers, served)
-            .inspect_builtin_catalog_update(&arranged.owner, workspace, builtin)
-            .await
-            .unwrap()
-    };
-
-    assert_eq!(inspect(running()).await, None, "the same catalog");
-    let to_b = inspect(catalog_b()).await.expect("B adds listThings");
-    assert_eq!(offered(&to_b), [vec!["listThings"], vec![], vec![]]);
-    assert_eq!(to_b.identity, catalog_b().identity(), "an update names B");
-
-    arranged
-        .update(&catalog_b(), &arranged.owner, 20)
-        .await
-        .unwrap();
-    let to_a = inspect(running()).await.expect("A removes listThings");
-    assert_eq!(offered(&to_a), [vec![], vec!["listThings"], vec![]]);
-    let to_c = inspect(with_list_things(OperationHints::default()))
-        .await
-        .expect("C changes listThings");
-    assert_eq!(offered(&to_c), [vec![], vec![], vec!["listThings"]]);
-
-    let member = arranged.member("user:member").await;
-    let denied = serving(&arranged.providers, running())
-        .inspect_builtin_catalog_update(&member, workspace, builtin)
-        .await;
-    assert!(
-        matches!(
-            denied,
-            Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
-                _
-            )))
-        ),
-        "{denied:?}"
-    );
-}
-
-/// An Owner's update moves the Built-in Provider to the served catalog once,
-/// in its current state, and records one `provider.updated` event with the
-/// Owner as actor. An update to the catalog it already has changes nothing.
-#[tokio::test]
-async fn an_owner_updates_the_builtin_provider_to_the_served_catalog_once() {
-    for state in [ProviderState::Active, ProviderState::Disabled] {
-        let arranged = BuiltinWorkspace::new().await;
-        if state == ProviderState::Disabled {
-            arranged
-                .providers
-                .disable_provider(
-                    &change_context(arranged.owner.clone(), 15, '2')
-                        .with_etag(&arranged.builtin.etag())
-                        .unwrap(),
-                    arranged.workspace.id(),
-                    arranged.builtin.id(),
-                )
-                .await
-                .unwrap();
-        }
-        let before = arranged.events().await.len();
-        let served = catalog_b();
-
-        let activated = arranged
-            .update(&served, &arranged.owner, 20)
-            .await
-            .unwrap()
-            .expect("the update activates catalog B");
-
-        assert_eq!(activated.provider(), arranged.builtin.id(), "{state:?}");
-        assert_eq!(arranged.keys().await, ["createProvider", "listThings"]);
-        assert_eq!(arranged.current().await.state(), state);
-        let events = arranged.events().await;
-        let Some([event]) = events.get(before..) else {
-            panic!("{state:?}: the update records one event: {events:?}");
-        };
-        assert_eq!(event.action(), LifecycleAction::ProviderUpdated);
-        assert!(
-            matches!(event.actor(), LifecycleActor::User { user_id, .. } if user_id == arranged.owner.user_id()),
-            "{event:?}"
-        );
-        assert_eq!(event.target_id(), arranged.builtin.id().to_string());
-        assert_eq!(
-            event.changed_field_paths(),
-            ["provider.active_generation", "catalog"]
-        );
-
-        assert_eq!(
-            arranged.update(&served, &arranged.owner, 30).await.unwrap(),
-            None,
-            "the Workspace already has catalog B"
-        );
-        assert_eq!(arranged.events().await.len(), before + 1, "{state:?}");
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Refusal {
-    Member,
-    StaleEtag,
+enum Arranged {
+    Active,
+    Disabled,
     Archived,
-    OwnerProvider,
-    OtherCatalog,
 }
 
-/// An update by a Member, with a stale etag, in an archived Workspace, of an
-/// Owner-added Provider, or that names a catalog other than the one the
-/// serving Coral defines is refused and changes nothing.
+/// Each boot moves the Built-in Provider to the booting Coral's catalog once,
+/// forward or back, in any Provider or Workspace state, and records one
+/// `provider.updated` event with Coral as actor. A boot with the catalog the
+/// Workspace already pins changes nothing, and an Owner-added Provider never
+/// updates.
 #[tokio::test]
-async fn a_refused_update_changes_nothing() {
-    for refusal in [
-        Refusal::Member,
-        Refusal::StaleEtag,
-        Refusal::Archived,
-        Refusal::OwnerProvider,
-        Refusal::OtherCatalog,
-    ] {
+async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
+    for arranged_as in [Arranged::Active, Arranged::Disabled, Arranged::Archived] {
         let arranged = BuiltinWorkspace::new().await;
-        let served = catalog_b();
-        let owner = arranged.owner.clone();
-        let mut provider = arranged.builtin.id().clone();
-        let mut etag = arranged.current().await.etag();
-        let mut actor = owner.clone();
-        let mut reviewed = served.identity().to_string();
-        match refusal {
-            Refusal::Member => actor = arranged.member("user:member").await,
-            Refusal::StaleEtag => etag = uuid::Uuid::new_v4().to_string(),
-            Refusal::Archived => {
+        let context = change_context(arranged.owner.clone(), 15, '2');
+        publish_provider(
+            &arranged.providers,
+            &context,
+            arranged.workspace.id(),
+            CREDENTIAL_FREE_OPENAPI,
+            "weather",
+            CredentialRoute::None,
+        )
+        .await;
+        match arranged_as {
+            Arranged::Active => {}
+            Arranged::Disabled => {
                 arranged
-                    .workspaces
-                    .archive(
-                        &change_context(owner.clone(), 15, '2'),
+                    .providers
+                    .disable_provider(
+                        &context.clone().with_etag(&arranged.builtin.etag()).unwrap(),
                         arranged.workspace.id(),
+                        arranged.builtin.id(),
                     )
                     .await
                     .unwrap();
             }
-            Refusal::OwnerProvider => {
-                let added = publish_provider(
-                    &arranged.providers,
-                    &change_context(owner.clone(), 15, '2'),
-                    arranged.workspace.id(),
-                    CREDENTIAL_FREE_OPENAPI,
-                    "weather",
-                    CredentialRoute::None,
-                )
-                .await;
-                etag = added.etag();
-                provider = added.id().clone();
+            Arranged::Archived => {
+                arranged
+                    .workspaces
+                    .archive(&context, arranged.workspace.id())
+                    .await
+                    .unwrap();
             }
-            // The Owner reviewed the update another Coral version offered.
-            Refusal::OtherCatalog => reviewed = running().identity().to_string(),
         }
+        let state = arranged.current().await.state();
         let before = arranged.events().await.len();
+        assert!(
+            arranged.boot(&running(), 20).await.is_empty(),
+            "{arranged_as:?}: the Workspace already pins this catalog"
+        );
 
-        let refused = arranged
-            .update_with(&served, &actor, 20, &etag, &provider, &reviewed)
-            .await;
+        // A newer Coral boots, then a rollback boots this one again.
+        for (served, at, keys) in [
+            (catalog_b(), 30, vec!["createProvider", "listThings"]),
+            (running(), 40, vec!["createProvider"]),
+        ] {
+            let activated = arranged.boot(&served, at).await;
+            assert_eq!(
+                activated
+                    .iter()
+                    .map(crate::ActivatedGeneration::provider)
+                    .collect::<Vec<_>>(),
+                [arranged.builtin.id()],
+                "{arranged_as:?}"
+            );
+            assert_eq!(arranged.keys().await, keys, "{arranged_as:?}");
+            assert!(
+                arranged.boot(&served, at + 1).await.is_empty(),
+                "{arranged_as:?}: the next boot finds the catalog pinned"
+            );
+        }
 
-        let expected = match refusal {
-            Refusal::Member => matches!(
-                refused,
-                Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
-                    _
-                )))
-            ),
-            Refusal::StaleEtag => matches!(refused, Err(Error::EtagMismatch)),
-            Refusal::Archived => matches!(
-                refused,
-                Err(Error::Workspace(coral_workspace::Error::WorkspaceArchived))
-            ),
-            Refusal::OwnerProvider => matches!(refused, Err(Error::NotBuiltinProvider)),
-            Refusal::OtherCatalog => matches!(refused, Err(Error::BuiltinCatalogMismatch)),
+        assert_eq!(arranged.current().await.state(), state, "{arranged_as:?}");
+        let events = arranged.events().await;
+        let Some(updates @ [_, _]) = events.get(before..) else {
+            panic!("{arranged_as:?}: each move records one event: {events:?}");
         };
-        assert!(expected, "{refusal:?}: {refused:?}");
-        assert_eq!(arranged.keys().await, ["createProvider"], "{refusal:?}");
-        assert_eq!(arranged.events().await.len(), before, "{refusal:?}");
+        for event in updates {
+            assert_eq!(event.action(), LifecycleAction::ProviderUpdated);
+            assert!(matches!(event.actor(), LifecycleActor::Coral), "{event:?}");
+            assert_eq!(event.target_id(), arranged.builtin.id().to_string());
+            assert_eq!(
+                event.changed_field_paths(),
+                ["provider.active_generation", "catalog"]
+            );
+        }
     }
 }
 
-/// Two Owners who update with the same etag at once activate one Generation;
-/// the other update fails on its stale etag.
+/// Two processes that boot together each try the update; one activates the
+/// served catalog, and the other then finds it pinned.
 #[tokio::test]
-async fn two_concurrent_updates_activate_one_generation() {
+async fn two_processes_that_boot_together_activate_one_generation() {
     let arranged = BuiltinWorkspace::new().await;
     let before = arranged.events().await.len();
     let first = serving(&arranged.providers, catalog_b());
@@ -781,30 +627,17 @@ async fn two_concurrent_updates_activate_one_generation() {
         coral_workspace::WorkspaceModule::new(peer.clone()),
         catalog_b(),
     );
-    let etag = arranged.current().await.etag();
-    let reviewed = catalog_b().identity().to_string();
-    let update = |served: &ProviderModule, database: std::sync::Arc<coral_db::Database>, at| {
-        let context = change_context(arranged.owner.clone(), at, '2')
-            .with_etag(&etag)
-            .unwrap();
-        let served = served.clone();
-        let reviewed = reviewed.clone();
+    let update = |process: &ProviderModule, database: std::sync::Arc<coral_db::Database>, at| {
+        let process = process.clone();
         let workspace = arranged.workspace.id().clone();
         let provider = arranged.builtin.id().clone();
         async move {
             let mut transaction = database.begin().await.unwrap();
-            let updated = served
-                .update_builtin_catalog_in_transaction(
-                    &mut transaction,
-                    &context,
-                    &workspace,
-                    &provider,
-                    &reviewed,
-                )
-                .await;
-            if updated.is_ok() {
-                transaction.commit().await.unwrap();
-            }
+            let updated = process
+                .update_builtin_catalog_in_transaction(&mut transaction, &workspace, &provider, at)
+                .await
+                .unwrap();
+            transaction.commit().await.unwrap();
             updated
         }
     };
@@ -814,20 +647,14 @@ async fn two_concurrent_updates_activate_one_generation() {
         update(&second, peer, 21),
     );
 
-    let outcomes = [left, right];
     assert_eq!(
-        outcomes
+        [&left, &right]
             .iter()
-            .filter(|outcome| matches!(outcome, Ok(Some(_))))
+            .filter(|outcome| outcome.is_some())
             .count(),
         1,
-        "{outcomes:?}"
+        "{left:?} {right:?}"
     );
-    assert!(
-        outcomes
-            .iter()
-            .any(|outcome| matches!(outcome, Err(Error::EtagMismatch))),
-        "{outcomes:?}"
-    );
+    assert_eq!(arranged.keys().await, ["createProvider", "listThings"]);
     assert_eq!(arranged.events().await.len(), before + 1);
 }

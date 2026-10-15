@@ -18,8 +18,8 @@ use crate::schema::{
 use crate::search::prepare_operation_declaration_fields;
 use crate::{
     CatalogDiagnostic, Error, ExecutionBinding, MaterializedOperation, OperationHints,
-    OperationKey, OperationPresentation, OperationSummary, PreparedProviderCatalog,
-    ProviderGenerationFingerprint, SchemaGraph, SchemaId, SchemaSemantics,
+    OperationKey, OperationPresentation, PreparedProviderCatalog, SchemaGraph, SchemaId,
+    SchemaSemantics,
 };
 
 /// Safe display name of the Built-in Provider.
@@ -75,13 +75,12 @@ impl BuiltinOperation {
 
 /// The Built-in Provider's catalog that a Coral process serves, and the
 /// identity each Generation of it pins. Bootstrap prepares it once. Workspace
-/// creation and an Owner's update publish it.
+/// creation and the update at boot publish it.
 #[derive(Clone)]
 pub struct BuiltinCatalog(Arc<PreparedBuiltinCatalog>);
 
 struct PreparedBuiltinCatalog {
     prepared: PreparedProviderCatalog,
-    fingerprint: ProviderGenerationFingerprint,
     identity: String,
 }
 
@@ -130,7 +129,6 @@ impl BuiltinCatalog {
             .map_err(|diagnostic| Error::InvalidInput(diagnostic.message().to_string()))?;
         let identity = catalog_identity(&prepared);
         Ok(Self(Arc::new(PreparedBuiltinCatalog {
-            fingerprint: prepared.fingerprint(),
             prepared,
             identity,
         })))
@@ -142,66 +140,8 @@ impl BuiltinCatalog {
         &self.0.identity
     }
 
-    pub(crate) fn fingerprint(&self) -> &ProviderGenerationFingerprint {
-        &self.0.fingerprint
-    }
-
-    pub(crate) fn operations(&self) -> &[MaterializedOperation] {
-        self.0.prepared.operations()
-    }
-
     pub(crate) fn prepared(&self) -> PreparedProviderCatalog {
         self.0.prepared.clone()
-    }
-}
-
-/// How the catalog a Coral process serves differs from a Workspace's
-/// Built-in Generation, in Operation Key order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuiltinCatalogChanges {
-    /// The served catalog's identity. An update names it, so it applies the
-    /// catalog these changes describe.
-    pub identity: String,
-    /// Operations that only the served catalog has.
-    pub added: Vec<OperationSummary>,
-    /// Operations that only the Workspace's Generation has.
-    pub removed: Vec<OperationSummary>,
-    /// Operations both have, with a different definition. Each is the served one.
-    pub changed: Vec<OperationSummary>,
-}
-
-/// Compares the served catalog's Operations with a Generation's, by key.
-pub(crate) fn changes(
-    served: &BuiltinCatalog,
-    stored: &[MaterializedOperation],
-) -> BuiltinCatalogChanges {
-    let identity = served.identity().to_string();
-    let served: BTreeMap<_, _> = served
-        .operations()
-        .iter()
-        .map(|operation| (operation.key(), operation))
-        .collect();
-    let stored: BTreeMap<_, _> = stored
-        .iter()
-        .map(|operation| (operation.key(), operation))
-        .collect();
-    BuiltinCatalogChanges {
-        identity,
-        added: served
-            .iter()
-            .filter(|(key, _)| !stored.contains_key(*key))
-            .map(|(_, operation)| OperationSummary::of(operation))
-            .collect(),
-        removed: stored
-            .iter()
-            .filter(|(key, _)| !served.contains_key(*key))
-            .map(|(_, operation)| OperationSummary::of(operation))
-            .collect(),
-        changed: served
-            .iter()
-            .filter(|(key, operation)| stored.get(*key).is_some_and(|stored| stored != *operation))
-            .map(|(_, operation)| OperationSummary::of(operation))
-            .collect(),
     }
 }
 

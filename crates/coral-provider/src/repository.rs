@@ -867,21 +867,40 @@ pub(super) async fn management_providers(
 pub(super) async fn active_generations(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<crate::ActiveGeneration>, Error> {
-    let rows: Vec<(Option<String>, String, String, String)> = transaction
-        .fetch_all(
-            Query::select()
-                .columns([
-                    ProviderRecords::WorkspaceId,
-                    ProviderRecords::Id,
-                    ProviderRecords::ActiveGenerationId,
-                    ProviderRecords::DisplayName,
-                ])
-                .from(ProviderRecords::Table)
-                .order_by(ProviderRecords::WorkspaceId, Order::Asc)
-                .order_by(ProviderRecords::Id, Order::Asc)
-                .to_owned(),
-        )
-        .await?;
+    fetch_active_generations(transaction, active_generation_query()).await
+}
+
+/// Reads every Workspace's Built-in Provider's active Generation, in any
+/// state and in any Workspace state.
+pub(super) async fn builtin_active_generations(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<crate::ActiveGeneration>, Error> {
+    let mut query = active_generation_query();
+    query.and_where(
+        Expr::col(ProviderRecords::Namespace).eq(crate::ProviderCallRoot::Builtin.as_str()),
+    );
+    fetch_active_generations(transaction, query).await
+}
+
+fn active_generation_query() -> sea_query::SelectStatement {
+    Query::select()
+        .columns([
+            ProviderRecords::WorkspaceId,
+            ProviderRecords::Id,
+            ProviderRecords::ActiveGenerationId,
+            ProviderRecords::DisplayName,
+        ])
+        .from(ProviderRecords::Table)
+        .order_by(ProviderRecords::WorkspaceId, Order::Asc)
+        .order_by(ProviderRecords::Id, Order::Asc)
+        .to_owned()
+}
+
+async fn fetch_active_generations(
+    transaction: &mut Transaction<'_>,
+    query: sea_query::SelectStatement,
+) -> Result<Vec<crate::ActiveGeneration>, Error> {
+    let rows: Vec<(Option<String>, String, String, String)> = transaction.fetch_all(query).await?;
     rows.into_iter()
         .map(|(workspace_id, provider_id, generation_id, display_name)| {
             Ok(crate::ActiveGeneration::new(

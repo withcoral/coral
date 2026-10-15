@@ -167,48 +167,6 @@ pub struct ProviderOperation {
     #[prost(message, optional, tag = "9")]
     pub hints: ::core::option::Option<OperationHints>,
 }
-/// Names the Workspace's Built-in Provider.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GetBuiltinCatalogUpdateRequest {
-    /// Canonical name of the Built-in Provider.
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-}
-/// How the serving Coral's catalog differs from the Built-in Provider's.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct BuiltinCatalogUpdate {
-    /// Whether the catalogs differ, so an Owner can update.
-    #[prost(bool, tag = "1")]
-    pub available: bool,
-    /// Operations the update adds.
-    #[prost(message, repeated, tag = "2")]
-    pub added: ::prost::alloc::vec::Vec<ProviderOperation>,
-    /// Operations the update removes.
-    #[prost(message, repeated, tag = "3")]
-    pub removed: ::prost::alloc::vec::Vec<ProviderOperation>,
-    /// Operations the update changes, as they will be.
-    #[prost(message, repeated, tag = "4")]
-    pub changed: ::prost::alloc::vec::Vec<ProviderOperation>,
-    /// Identity of the catalog these changes describe, when available. Pass it
-    /// to UpdateBuiltinCatalog.
-    #[prost(string, tag = "5")]
-    pub catalog: ::prost::alloc::string::String,
-}
-/// Applies the serving Coral's catalog to the Built-in Provider.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct UpdateBuiltinCatalogRequest {
-    /// Canonical name of the Built-in Provider.
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    /// Required current Provider concurrency token.
-    #[prost(string, tag = "2")]
-    pub etag: ::prost::alloc::string::String,
-    /// Required identity of the catalog the Owner reviewed, from
-    /// GetBuiltinCatalogUpdate. The update fails when the serving Coral defines
-    /// another catalog.
-    #[prost(string, tag = "3")]
-    pub catalog: ::prost::alloc::string::String,
-}
 /// One page of administrative Operation metadata.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListOperationsResponse {
@@ -2717,65 +2675,6 @@ pub mod provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Compares the Built-in Provider's catalog with the one the serving Coral
-        /// defines. Requires Owner authority.
-        pub async fn get_builtin_catalog_update(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetBuiltinCatalogUpdateRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::BuiltinCatalogUpdate>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.ProviderService/GetBuiltinCatalogUpdate",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.ProviderService",
-                        "GetBuiltinCatalogUpdate",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        /// Updates the Built-in Provider to the catalog the serving Coral defines, as
-        /// the calling Owner. The Provider keeps its state.
-        pub async fn update_builtin_catalog(
-            &mut self,
-            request: impl tonic::IntoRequest<super::UpdateBuiltinCatalogRequest>,
-        ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/coral.management.v1.ProviderService/UpdateBuiltinCatalog",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "coral.management.v1.ProviderService",
-                        "UpdateBuiltinCatalog",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -2860,21 +2759,6 @@ pub(crate) mod provider_service_server {
             tonic::Response<super::ListOperationsResponse>,
             tonic::Status,
         >;
-        /// Compares the Built-in Provider's catalog with the one the serving Coral
-        /// defines. Requires Owner authority.
-        async fn get_builtin_catalog_update(
-            &self,
-            request: tonic::Request<super::GetBuiltinCatalogUpdateRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::BuiltinCatalogUpdate>,
-            tonic::Status,
-        >;
-        /// Updates the Built-in Provider to the catalog the serving Coral defines, as
-        /// the calling Owner. The Provider keeps its state.
-        async fn update_builtin_catalog(
-            &self,
-            request: tonic::Request<super::UpdateBuiltinCatalogRequest>,
-        ) -> std::result::Result<tonic::Response<super::Provider>, tonic::Status>;
     }
     /// Workspace-owned Providers. Every mutation requires current Owner authority.
     #[derive(Debug)]
@@ -3454,106 +3338,6 @@ pub(crate) mod provider_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ListOperationsSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.ProviderService/GetBuiltinCatalogUpdate" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetBuiltinCatalogUpdateSvc<T: ProviderService>(pub Arc<T>);
-                    impl<
-                        T: ProviderService,
-                    > tonic::server::UnaryService<super::GetBuiltinCatalogUpdateRequest>
-                    for GetBuiltinCatalogUpdateSvc<T> {
-                        type Response = super::BuiltinCatalogUpdate;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<
-                                super::GetBuiltinCatalogUpdateRequest,
-                            >,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ProviderService>::get_builtin_catalog_update(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetBuiltinCatalogUpdateSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/coral.management.v1.ProviderService/UpdateBuiltinCatalog" => {
-                    #[allow(non_camel_case_types)]
-                    struct UpdateBuiltinCatalogSvc<T: ProviderService>(pub Arc<T>);
-                    impl<
-                        T: ProviderService,
-                    > tonic::server::UnaryService<super::UpdateBuiltinCatalogRequest>
-                    for UpdateBuiltinCatalogSvc<T> {
-                        type Response = super::Provider;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::UpdateBuiltinCatalogRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ProviderService>::update_builtin_catalog(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = UpdateBuiltinCatalogSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
