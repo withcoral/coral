@@ -27,6 +27,13 @@ use coral_db::{Database, DatabaseOptions};
 /// HTTP/2 `SETTINGS_MAX_HEADER_LIST_SIZE` for the private listener.
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 
+/// How often bootstrap sweeps `provider_device_jobs` for leases whose worker
+/// has gone away. Device-code flows poll their provider every five seconds or
+/// more and expire after minutes, so a lost lease resumed within fifteen
+/// seconds is invisible to the person waiting; a one-second sweep only cost a
+/// transaction per second per replica against a usually empty table.
+const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[derive(Clone)]
 enum ServerModeSelection {
     Explicit(ServerMode),
@@ -728,7 +735,7 @@ pub(crate) async fn start_server(
                 {
                     tracing::warn!(%error, "device authorization recovery failed");
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tokio::time::sleep(DEVICE_RECOVERY_INTERVAL).await;
             }
         })
     });
