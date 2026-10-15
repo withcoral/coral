@@ -10,7 +10,7 @@ export type RowProps = PropsWithChildren<{
   'aria-level'?: number
   /** Indicates the row whose exact detail is open. */
   selected?: boolean
-  /** Marks the row the keyboard cursor rests on, where no detail is open. */
+  /** Marks the row the keyboard cursor rests on. It reads apart from `selected`. */
   active?: boolean
   /** Stable identity for reading-position preservation, never an authority grant. */
   recordKey?: string

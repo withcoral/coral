@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router'
 
 import type { Route } from './+types/root'
@@ -60,6 +61,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 function ThemedBody({ children }: { children: React.ReactNode }) {
   const { theme, themeClass } = useTheme()
+  // A server-rendered page shows before React attaches its handlers. React runs
+  // this effect after every route's effects, so the marker means input works.
+  // Reel's waitForHydration reads it.
+  useEffect(() => {
+    document.documentElement.dataset.hydrated = ''
+  }, [])
 
   return (
     <body className={themeClass} style={{ colorScheme: theme }} suppressHydrationWarning>

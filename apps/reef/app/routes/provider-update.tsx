@@ -77,6 +77,7 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
       {
         workspace,
         displayName: provider.displayName,
+        etag: provider.etag,
         replacingSource: new URL(request.url).searchParams.get('replaceSource') === '1',
         source: {
           url: source.url,

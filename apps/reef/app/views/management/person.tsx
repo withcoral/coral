@@ -7,6 +7,10 @@ import * as styles from './management.css'
 export function personLabel(person: PersonView) {
   return person.local ? 'Local user' : person.name || person.email || 'Unnamed user'
 }
+/** A person's label, marked "(You)" for the signed-in user. */
+export function personName(person: PersonView, currentUser: string) {
+  return `${personLabel(person)}${person.user === currentUser ? ' (You)' : ''}`
+}
 export function Person({
   person,
   currentUser,
@@ -21,7 +25,7 @@ export function Person({
   disabled?: boolean
 }) {
   const label = personLabel(person)
-  const name = `${label}${person.user === currentUser ? ' · You' : ''}`
+  const name = personName(person, currentUser)
   const showEmail = Boolean(person.name && person.email)
   return (
     <div className={styles.row} title={compact && showEmail ? person.email : undefined}>

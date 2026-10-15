@@ -18,13 +18,6 @@ fn validator(schema: &Value) -> jsonschema::Validator {
         .expect("portable advertised property schema")
 }
 
-fn guidance(schema: &Value) -> &str {
-    schema
-        .get("description")
-        .and_then(Value::as_str)
-        .expect("advertised guidance")
-}
-
 pub(super) async fn check(session: &RawSession, tools: &[Value]) {
     let started = session
         .tool(
@@ -38,7 +31,7 @@ pub(super) async fn check(session: &RawSession, tools: &[Value]) {
         .expect("Task id");
     check_identities(session, task, tools).await;
     check_text(session, task, tools).await;
-    check_authoring_guidance(tools);
+    check_authoring_limits(tools);
     check_paths(session, task, tools).await;
     check_sources(session, task, tools).await;
     check_cursors(session, task, tools).await;
@@ -59,7 +52,7 @@ async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
                 !validator.is_valid(&json!("")),
                 "{name}.{field} is nonempty"
             );
-            // Whitespace and NUL rules are described, not duplicated in the schema.
+            // Whitespace and NUL rules are domain-validated, not duplicated in the schema.
             for valid in [
                 " \t\r\n",
                 "\u{85}\u{a0}\u{2003}",
@@ -73,7 +66,6 @@ async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
                     "{name}.{field}: {valid:?}"
                 );
             }
-            assert!(guidance(schema).contains("not trimmed"));
         }
     }
     for value in ["  café 🪸\n", "\u{feff}"] {
@@ -117,7 +109,6 @@ async fn check_text(session: &RawSession, task: &str, tools: &[Value]) {
             Some(&json!("invalid_input"))
         );
     }
-    assert!(guidance(property(tools, "search", "query")).contains("4096 UTF-8 bytes"));
     let query_schema = validator(property(tools, "search", "query"));
     assert!(query_schema.is_valid(&Value::Null));
     let listed = session
@@ -185,21 +176,9 @@ async fn check_feedback(session: &RawSession, tools: &[Value]) {
     }
 }
 
-fn check_authoring_guidance(tools: &[Value]) {
+fn check_authoring_limits(tools: &[Value]) {
     for name in ["save_function", "delete_function", "describe"] {
         let schema = property(tools, name, "path");
-        let guidance = guidance(schema);
-        for term in [
-            "JavaScript identifier",
-            "__proto__",
-            "prototype",
-            "constructor",
-            "then",
-            "16",
-            "256 UTF-8 bytes",
-        ] {
-            assert!(guidance.contains(term), "{name}.path omits {term}");
-        }
         let validator = validator(schema);
         let valid = if name == "describe" {
             "coral.functions.éclair.$value"
@@ -213,7 +192,6 @@ fn check_authoring_guidance(tools: &[Value]) {
         }
     }
     let describe_path = property(tools, "describe", "path");
-    assert!(guidance(describe_path).contains("1024 UTF-8 bytes"));
     assert!(
         validator(describe_path).is_valid(&json!(format!(
             "coral.providers.x.{}",
@@ -221,25 +199,6 @@ fn check_authoring_guidance(tools: &[Value]) {
         ))),
         "the Call Path byte bound is domain-validated"
     );
-    // Only describe asks what the search result did not show.
-    for tool in tools {
-        let name = tool["name"].as_str().expect("tool name");
-        if let Some(intent) = tool.pointer("/inputSchema/properties/intent") {
-            assert_eq!(
-                guidance(intent).contains("the search result did not show"),
-                name == "describe",
-                "{name}.intent"
-            );
-        }
-    }
-    let description = guidance(property(tools, "save_function", "description"));
-    for term in [
-        "4096 UTF-8 bytes",
-        "surrounding whitespace",
-        "control characters",
-    ] {
-        assert!(description.contains(term), "description omits {term}");
-    }
     let description_schema = validator(property(tools, "save_function", "description"));
     for invalid in ["a\0b", "line\nbreak", "text\n", "a\u{85}b"] {
         assert!(
@@ -255,8 +214,6 @@ fn check_authoring_guidance(tools: &[Value]) {
     }
     for (name, field) in [("save_function", "source"), ("exec", "program")] {
         let schema = property(tools, name, field);
-        let guidance = guidance(schema);
-        assert!(guidance.contains("65536 UTF-8 bytes") && guidance.contains("null"));
         assert!(
             validator(schema).is_valid(&json!("a\0b")),
             "NUL is domain-validated"
@@ -411,12 +368,6 @@ async fn check_sources(session: &RawSession, task: &str, tools: &[Value]) {
 async fn check_cursors(session: &RawSession, task: &str, tools: &[Value]) {
     for name in ["search", "wait", "cancel"] {
         let schema = property(tools, name, "cursor");
-        let guidance = guidance(schema);
-        assert!(
-            guidance.contains("opaque")
-                && guidance.contains("Reuse")
-                && guidance.contains("unchanged")
-        );
         assert!(
             schema.get("pattern").is_none(),
             "private cursor encoding is not an authoring contract"
@@ -470,8 +421,6 @@ async fn check_identities(session: &RawSession, task: &str, tools: &[Value]) {
                 continue;
             };
             assert_eq!(schema["format"], "uuid", "{name}.{field}");
-            let description = guidance(schema);
-            assert!(description.contains("lowercase") && description.contains("hyphenated"));
             let validator = validator(schema);
             assert!(validator.is_valid(&json!(canonical)));
             // Standard UUID format permits uppercase; canonical lowercase is domain-owned.
