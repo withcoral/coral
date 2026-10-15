@@ -48,6 +48,8 @@ import type {
   ActionPage,
   RunDetail,
   RecordSourceLocation,
+  LiveAction,
+  ActionPage,
 } from '@/views/activity/types'
 import {
   privateHeaders,
@@ -938,6 +940,188 @@ async function runSourceContext(
   return context.detail?.kind === 'run' ? context.detail : undefined
 }
 
+/** Children one scan read takes, Coral's largest page. */
+const ACTION_SCAN_PAGE = 100
+
+/**
+ * The oldest action you can take in the selected record's Run, while live mode follows
+ * it, or in the read after an approval review's decision. It reads every page of the
+ * Run's current requests from the first, and times each by the operation that waits on
+ * it: the earliest start, then the lowest operation identity, decides across every
+ * page. An approval counts only when you can decide it, and an account connection only
+ * while it is pending. A request Reef cannot read is skipped.
+ */
+async function oldestRunAction(
+  page: ActivityPage,
+  query: URLSearchParams,
+  api: ActivityApi,
+  scope: ActivityScope,
+  signal: AbortSignal,
+  snapshot: boolean,
+): Promise<LiveAction | undefined> {
+  const detail = page.detail
+  const context =
+    detail?.kind === 'run'
+      ? detail
+      : detail?.kind === 'invocation' || detail?.kind === 'output'
+        ? detail.context
+        : undefined
+  // After an approval decision, the read that follows it advances the review to the next
+  // action. A live snapshot of the review never does, so it reads nothing for it.
+  const settled =
+    !snapshot &&
+    detail?.kind === 'invocation' &&
+    detail.request?.kind === 'approval' &&
+    detail.request.state !== 'pending'
+  const actions = context?.run.actionPage
+  if (!context || !actions || actions.total === '0') return undefined
+  if (query.get('live') !== '1' && !settled) return undefined
+  const run = context.run.name
+  try {
+    // Every current request, from the first action page, whichever page the review shows.
+    const requests: ActionSummary[] = []
+    let shown: ActionPage | undefined = query.get('actionsAfter') ? undefined : actions
+    let after = ''
+    do {
+      if (!shown) {
+        const value = await api.activity.inspectRun(
+          { name: run, pageSize: 1, actionAfter: after },
+          { signal },
+        )
+        shown = value.run ? runView(value.run).actionPage : undefined
+      }
+      requests.push(...(shown?.actions ?? []))
+      after = shown?.next ?? ''
+      shown = undefined
+    } while (after)
+    const approvals = await Promise.all(
+      requests.flatMap((action) =>
+        action.kind === 'approval' ? [approvalAction(action.name, run, api, signal)] : [],
+      ),
+    )
+    const timed = approvals.filter((action) => action !== undefined)
+    const connections = requests.flatMap((action) =>
+      action.kind === 'account_connection' ? [action.name] : [],
+    )
+    if (connections.length)
+      timed.push(...(await connectionActions(connections, timed, run, api, scope, signal)))
+    return timed.toSorted(older)[0]?.action
+  } catch (error) {
+    if (!unavailable(error)) throw error
+    return undefined
+  }
+}
+
+/** An action, with when its operation started and that operation's identity. */
+interface TimedAction {
+  startedAt: bigint
+  operation: string
+  action: LiveAction
+}
+/** Earlier start first, then the lower operation identity, then the lower request. */
+const older = (a: TimedAction, b: TimedAction) =>
+  Number(a.startedAt > b.startedAt) - Number(a.startedAt < b.startedAt) ||
+  Number(a.operation > b.operation) - Number(a.operation < b.operation) ||
+  Number(a.action.request > b.action.request) - Number(a.action.request < b.action.request)
+
+/**
+ * The approval `name`, when you can decide it and its operation in `run` still waits on
+ * it. The approval names its operation, which says when it started.
+ */
+async function approvalAction(
+  name: string,
+  run: string,
+  api: ActivityApi,
+  signal: AbortSignal,
+): Promise<TimedAction | undefined> {
+  try {
+    const approval = await api.activity.inspectApproval({ name }, { signal })
+    if (!approval.actionable || approval.run !== run) return undefined
+    const { invocation } = await api.activity.inspectInvocation(
+      { name: approval.invocation },
+      { signal },
+    )
+    if (!invocation || invocation.run !== run || !invocation.requiresAction) return undefined
+    return {
+      startedAt: invocation.startedAtUnixNanos,
+      operation: invocation.name,
+      action: { run, record: invocation.name, request: name },
+    }
+  } catch (error) {
+    if (!unavailable(error)) throw error
+    return undefined
+  }
+}
+
+/**
+ * The pending connections among `names`, each timed by the first operation of `run` that
+ * waits on it. Coral names no operation on a connection, so this reads the Run's
+ * children from the first, in the order Coral admitted them, and stops once each
+ * connection has its operation. The operations of `known` actions are not read again.
+ */
+async function connectionActions(
+  names: string[],
+  known: TimedAction[],
+  run: string,
+  api: ActivityApi,
+  scope: ActivityScope,
+  signal: AbortSignal,
+): Promise<TimedAction[]> {
+  const states = await Promise.all(
+    names.map(async (name) => {
+      try {
+        const value = await api.accounts.getAccountConnectionRequest({ name }, { signal })
+        return connectionState(value.state) === 'pending' ? [name] : []
+      } catch (error) {
+        if (!unavailable(error)) throw error
+        return []
+      }
+    }),
+  )
+  const pending = new Set(states.flat())
+  const skipped = new Set(known.map((action) => action.operation))
+  const found: TimedAction[] = []
+  for (let after = 0n; pending.size;) {
+    const value = await api.activity.browseRunEntries(
+      { name: run, after, pageSize: ACTION_SCAN_PAGE, scope },
+      { signal },
+    )
+    const waiting = value.entries.flatMap(({ record }) =>
+      record.case === 'invocation' && record.value.requiresAction && !skipped.has(record.value.name)
+        ? [record.value]
+        : [],
+    )
+    const read = await Promise.all(
+      waiting.map((operation) =>
+        api.activity.inspectInvocation({ name: operation.name }, { signal }).catch((error) => {
+          if (!unavailable(error)) throw error
+          return undefined
+        }),
+      ),
+    )
+    const candidates = waiting.flatMap((operation, index) =>
+      (read[index]?.requests.map(requestReferenceView) ?? []).flatMap((reference) =>
+        reference.kind === 'account_connection' && pending.has(reference.name)
+          ? [
+              {
+                startedAt: operation.startedAtUnixNanos,
+                operation: operation.name,
+                action: { run, record: run, request: reference.name },
+              },
+            ]
+          : [],
+      ),
+    )
+    for (const candidate of candidates.toSorted(older)) {
+      if (!pending.delete(candidate.action.request)) continue
+      found.push(candidate)
+    }
+    if (!value.hasMore || value.nextAfter <= after) break
+    after = value.nextAfter
+  }
+  return found
+}
+
 const missingBranch = (): ActivityBranch => ({ rows: [], next: '', unavailable: true })
 
 /**
@@ -1085,6 +1269,8 @@ export async function loadActivity(
     if (!page.expanded.includes(run) && page.expanded.length < MAX_EXPANDED_RECORDS)
       page.expanded.push(run)
   }
+  const liveAction = await oldestRunAction(page, query, api, scope, signal, Boolean(reading))
+  if (liveAction) page.liveAction = liveAction
   // Initial direct links reveal only their bounded ancestor windows. Explicit tree/page state wins.
   if (!query.has('tree') && !query.has('expand') && page.selectedRow) {
     const row = page.selectedRow

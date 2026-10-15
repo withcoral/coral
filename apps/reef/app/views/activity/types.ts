@@ -303,8 +303,23 @@ export interface ActivityPage {
   initialRequest?: string
   /** An exact approval resolves its operation as the review selection. */
   initialRecord?: string
+  /**
+   * The oldest action you can take in the selected record's Run, read while live mode
+   * follows that Run or a request review is open. Absent when it has none.
+   */
+  liveAction?: LiveAction
   selectedRow: ActivityRow | null
   listPath: string
+}
+
+/**
+ * A current request of a Run and the record that reviews it: the waiting operation for
+ * an approval, the Run for an account connection.
+ */
+export interface LiveAction {
+  run: string
+  record: string
+  request: string
 }
 
 export interface TaskRow {

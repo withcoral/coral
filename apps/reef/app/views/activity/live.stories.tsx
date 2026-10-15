@@ -64,12 +64,18 @@ const storedAt = (line: number): RecordSourceLocation => ({
   column: 3,
 })
 
-function operation(run: string, sequence: number, callPath: string): Child {
+function operation(
+  run: string,
+  sequence: number,
+  callPath: string,
+  overrides: Partial<Extract<Child, { kind: 'invocation' }>> = {},
+): Child {
   return invocationRow(run, `${run.split('/').at(-1)}-${sequence}`, {
     task: run === program.name ? task.name : '',
     operation: callPath,
     callPath,
     sourceLocation: storedAt(lineOf.invocation),
+    ...overrides,
   })
 }
 function output(run: string, sequence: number, kind: 'program.logged' | 'program.emitted'): Event {
@@ -101,6 +107,12 @@ const finalRow: Child = {
   eventKind: 'run.ended',
 }
 
+/** An operation of the program that waits for your approval. */
+function waiting(sequence: number, callPath: string): Child {
+  return operation(program.name, sequence, callPath, { state: 'pending', requiresAction: true })
+}
+const approvalOf = (invocation: string) => `${workspace}/approvals/${invocation.split('/').at(-1)}`
+
 /** What Coral holds. A play changes it, then revalidates, as a live snapshot would. */
 const world = {
   children: [] as Child[],
@@ -110,6 +122,16 @@ const world = {
   /** How many children one branch read returns. */
   window: 100,
   request: null as RequestDetail | null,
+  /** Each waiting operation's approval state, by operation. */
+  approvals: new Map<string, string>(),
+  /**
+   * How the next decision ends: saved, refused with an error, held until released, or
+   * lost to another reviewer's opposite decision.
+   */
+  decision: 'saved' as 'saved' | 'error' | 'held' | 'lost',
+  release: () => {},
+  /** The records the address selected, in order. */
+  visited: [] as (string | null)[],
   loads: 0,
   /** Adds a record without a click, so focus stays where the play put it. */
   arrive: (() => {}) as (child: Child | Event | 'end') => void,
@@ -120,6 +142,9 @@ const world = {
     this.children = []
     this.others = []
     this.events.clear()
+    this.approvals.clear()
+    this.decision = 'saved'
+    this.visited = []
     this.ended = options.ended ?? false
     this.window = options.window ?? 100
     this.request = options.request ?? null
@@ -128,13 +153,44 @@ const world = {
   add(child: Child | Event, run = program.name) {
     const row = 'event' in child ? child.row : child
     if ('event' in child) this.events.set(row.name, child.event)
+    if (row.kind === 'invocation' && row.requiresAction) this.approvals.set(row.name, 'pending')
     ;(run === program.name ? this.children : this.others).push(row)
   },
 }
 
+/**
+ * The oldest approval you can decide in the program, as the loader names it while live
+ * mode follows the program or a review shows a decided approval. Its tests own the rule.
+ */
+function liveActionFor(url: URL, reviewed: string | undefined) {
+  const decided = reviewed !== undefined && reviewed !== 'pending'
+  if (url.searchParams.get('live') !== '1' && !decided) return undefined
+  const oldest = world.children
+    .filter((row) => world.approvals.get(row.name) === 'pending')
+    .toSorted((a, b) => a.startedAt.localeCompare(b.startedAt) || a.name.localeCompare(b.name))[0]
+  return oldest && { run: program.name, record: oldest.name, request: approvalOf(oldest.name) }
+}
+
+/** The approval route: it saves, refuses or holds the decision as `world.decision` says. */
+async function decide({ request }: { request: Request }) {
+  const form = await request.formData()
+  const name = String(form.get('name'))
+  if (world.decision === 'error') return { error: 'The decision did not save. Try again.' }
+  const call = [...world.approvals.keys()].find((row) => approvalOf(row) === name)!
+  const approve = (form.get('intent') === 'approve') !== (world.decision === 'lost')
+  const state = approve ? 'approved' : 'declined'
+  // Coral records a held decision first, so a read meanwhile already names the next action.
+  world.approvals.set(call, state)
+  if (world.decision === 'held') await new Promise<void>((resolve) => (world.release = resolve))
+  return { state }
+}
+
 function branch(rows: Child[], url: URL, run: string) {
   const total = rows.length
-  const asked = Number(url.searchParams.get(`offset.${run}`) ?? 0)
+  // Without an offset, an anchor starts the window at its record, as Coral does.
+  const offsetAsked = url.searchParams.get(`offset.${run}`)
+  const anchor = rows.findIndex((row) => row.name === url.searchParams.get(`anchor.${run}`))
+  const asked = offsetAsked === null && anchor >= 0 ? anchor : Number(offsetAsked ?? 0)
   // An offset at or past the end reads the last window, as Coral does.
   const offset = asked >= total ? Math.max(0, total - world.window) : asked
   return {
@@ -152,7 +208,18 @@ function pageFor(url: URL): ActivityPage {
   const record = url.searchParams.get('record')
   const expanded = url.searchParams.has('tree') ? url.searchParams.getAll('expand') : []
   const run = { ...program, state: world.ended ? 'succeeded' : 'running' } as typeof program
-  const children = world.ended ? [...world.children, finalRow] : world.children
+  // A decided operation no longer waits; it runs on.
+  const current = world.children.map((row): Child => {
+    const approval = world.approvals.get(row.name)
+    return approval && row.kind === 'invocation'
+      ? {
+          ...row,
+          requiresAction: approval === 'pending',
+          state: approval === 'pending' ? 'pending' : 'dispatching',
+        }
+      : row
+  })
+  const children = world.ended ? [...current, finalRow] : current
   const rows: ActivityRow[] = [task, other]
   const branches: ActivityPage['branches'] = {}
   if (expanded.includes(task.name))
@@ -187,12 +254,31 @@ function pageFor(url: URL): ActivityPage {
   })
   // Coral reads a child record with its Run, so the drawer shows that Run's source.
   const contextOf = (row: Child) => runDetail(row.run === run.name ? run : other)
+  // A waiting operation selected with its approval opens that approval's review.
+  const approval =
+    selectedRow?.kind === 'invocation' &&
+    url.searchParams.get('request') === approvalOf(selectedRow.name)
+      ? world.approvals.get(selectedRow.name)
+      : undefined
+  const review: RequestDetail | null =
+    approval && selectedRow?.kind === 'invocation'
+      ? {
+          ...approvalRequest,
+          name: approvalOf(selectedRow.name),
+          run: run.name,
+          invocation: selectedRow.name,
+          callPath: selectedRow.callPath,
+          state: approval,
+          actionable: approval === 'pending',
+        }
+      : null
   return activityPage({
     rows,
     expanded,
     branches,
     selected: selectedRow ? record : null,
     selectedRow,
+    liveAction: liveActionFor(url, approval),
     detail:
       selectedRow?.kind === 'run'
         ? runDetail(selectedRow)
@@ -204,8 +290,8 @@ function pageFor(url: URL): ActivityPage {
                 invocation: selectedRow,
                 arguments: '{}',
                 result: { kind: 'upstream_outcome', value: '{}' },
-                requests: [],
-                request: null,
+                requests: review ? [{ kind: 'approval', name: review.name }] : [],
+                request: review,
                 requestUnavailable: false,
                 context: contextOf(selectedRow),
               }
@@ -235,10 +321,18 @@ function LiveRoute() {
   useEffect(() => {
     world.arrive = arrive
   })
+  const selected = new URLSearchParams(search).get('record')
+  useEffect(() => {
+    world.visited.push(selected)
+  }, [selected])
   const next = () => world.children.length + 1
   return (
     <ActionReviewSession
-      request={page.detail?.kind === 'run' ? (page.detail.request ?? null) : null}
+      request={
+        page.detail?.kind === 'run' || page.detail?.kind === 'invocation'
+          ? (page.detail.request ?? null)
+          : null
+      }
     >
       <code aria-label="Address">{search}</code>
       <output aria-label="Navigation">{state === 'idle' ? revalidator.state : state}</output>
@@ -259,6 +353,17 @@ function LiveRoute() {
       </button>
       <button type="button" onClick={() => arrive('end')}>
         End run
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          // Another reviewer approves the oldest waiting call; the live read shows it.
+          const oldest = [...world.approvals].find(([, approval]) => approval === 'pending')
+          if (oldest) world.approvals.set(oldest[0], 'approved')
+          void revalidator.revalidate()
+        }}
+      >
+        Approve elsewhere
       </button>
       <button
         type="button"
@@ -290,6 +395,7 @@ const meta = {
   decorators: [
     (_, context) => {
       const Stub = createRoutesStub([
+        { path: '/activity/resolve', action: decide },
         {
           path: '*',
           Component: LiveRoute,
@@ -319,7 +425,8 @@ async function surface({ canvasElement, userEvent }: Play) {
   const canvas = within(canvasElement)
   const screen = within(canvasElement.ownerDocument.body)
   const table = await canvas.findByRole('table', { name: 'Activity records', hidden: true })
-  const rail = () => screen.getByRole('dialog', { name: 'Activity details' })
+  // An approval review names the drawer for its decision.
+  const rail = () => screen.getByRole('dialog', { name: /^(Activity details|Review action)$/ })
   const toggle = () => within(rail()).getByRole('button', { name: 'Follow latest record' })
   const address = () => new URLSearchParams(canvas.getByLabelText('Address').textContent ?? '')
   const idle = async () => {
@@ -608,5 +715,289 @@ export const FollowsInTheSourceSplit: Story = {
     await press('Add log')
     await selects('mail.send', 'mail.send')
     await expect(highlighted()).toEqual([2])
+  },
+}
+
+// The oldest approval in the followed program, then the program's newer records.
+const first = waiting(1, 'mail.first')
+const second = waiting(4, 'mail.second')
+const withActions = () =>
+  world.reset([
+    first,
+    output(program.name, 2, 'program.logged'),
+    output(program.name, 3, 'program.logged'),
+    second,
+    output(program.name, 5, 'program.logged'),
+  ])
+
+/** The rail reviews the approval of `call`, and the table selects that operation only. */
+async function reviews(context: Play, call: Child) {
+  const { rail, table, address } = await surface(context)
+  const label = call.kind === 'invocation' ? call.callPath : call.label
+  await waitFor(() => {
+    expect(within(rail()).getByRole('region', { name: `Review ${label}` })).toBeVisible()
+    const selected = [...table.querySelectorAll('[role="row"][aria-selected="true"]')]
+    expect(selected.map((item) => item.querySelector('a[href]')?.textContent)).toEqual([label])
+  })
+  await expect(address().get('record')).toBe(call.name)
+  await expect(address().get('request')).toBe(approvalOf(call.name))
+}
+
+export const ActionsComeFirst: Story = {
+  parameters: {
+    // The table reads the end of the program, so its oldest approval is out of the window.
+    initialEntry: `/workspaces/finance/activity?${expand}&record=${program.name}&offset.${program.name}=5`,
+  },
+  beforeEach: () => {
+    withActions()
+    world.window = 2
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { rail, toggle, address, press, selects, following, idle } = await surface(context)
+    await selects('Send reminders', 'Reminder run')
+    const drawer = () => within(rail())
+    const separator = () =>
+      drawer().getByRole('separator', { name: 'Resize detail and source panes' })
+    separator().focus()
+    await userEvent.keyboard('{ArrowUp}')
+    const split = separator().getAttribute('aria-valuenow')
+    await userEvent.click(drawer().getByRole('switch', { name: 'Follow selection' }))
+
+    // Live mode reviews the oldest approval, not the newest log, and reads its window.
+    await userEvent.click(toggle())
+    await reviews(context, first)
+    await following(true)
+    await expect(address().has(`offset.${program.name}`)).toBe(false)
+
+    // A newer record leaves the approval selected.
+    const held = address().toString()
+    await press('Add log')
+    await idle()
+    await settled()
+    await expect(address().toString()).toBe(held)
+
+    // Approving it reviews the next approval at once, with no stop at a newer record.
+    world.visited = []
+    await userEvent.click(drawer().getByRole('button', { name: 'Approve this call' }))
+    await reviews(context, second)
+    await following(true)
+    await expect(world.visited).toEqual([second.name])
+
+    // Denying the last one follows the newest record again.
+    await userEvent.click(drawer().getByRole('button', { name: 'Deny this call' }))
+    await selects('console.info #6', 'log #6')
+    await following(true)
+    await expect(address().has('request')).toBe(false)
+
+    // The split keeps your size and Follow selection through each step.
+    await expect(separator()).toHaveAttribute('aria-valuenow', split)
+    await expect(drawer().getByRole('switch', { name: 'Follow selection' })).not.toBeChecked()
+  },
+}
+
+export const ADecisionAdvancesWithLiveModeOff: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?${expand}&record=${first.name}&request=${approvalOf(first.name)}`,
+  },
+  beforeEach: () => {
+    withActions()
+    // The table holds two records at a time, so each advance reads another window.
+    world.window = 2
+  },
+  play: async (context) => {
+    const { userEvent } = context
+    const { rail, toggle, address, press, selects, idle } = await surface(context)
+    await reviews(context, first)
+    await expect(toggle()).toHaveAttribute('aria-pressed', 'false')
+
+    // Denying reviews the next approval and leaves live mode off. The review rests there.
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Deny this call' }))
+    await reviews(context, second)
+    await idle()
+    await settled()
+    await reviews(context, second)
+    await expect(address().has('live')).toBe(false)
+    await expect(toggle()).toHaveAttribute('aria-pressed', 'false')
+
+    // A record arrives past the window, and live mode stays off.
+    await press('Add log')
+    await idle()
+    await settled()
+    await reviews(context, second)
+
+    // Approving the last one reads the end of the program and selects its newest
+    // record, still with live mode off.
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
+    await selects('console.info #6', 'log #6')
+    await expect(address().has('live')).toBe(false)
+    await expect(toggle()).toHaveAttribute('aria-pressed', 'false')
+
+    // It advanced once: a new record leaves the selection where it is.
+    await press('Add log')
+    await idle()
+    await settled()
+    await selects('console.info #6', 'log #6')
+  },
+}
+
+export const AFailedOrUnfinishedDecisionHolds: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?${expand}&record=${first.name}&request=${approvalOf(first.name)}`,
+  },
+  beforeEach: withActions,
+  play: async (context) => {
+    const { userEvent } = context
+    const { rail, toggle, address, press, idle, following, selects } = await surface(context)
+    await reviews(context, first)
+    let held = address().toString()
+    const approve = () => within(rail()).getByRole('button', { name: 'Approve this call' })
+    /** The approval stays selected while a record arrives and the page reads again. */
+    const holds = async () => {
+      await press('Add log')
+      await waitFor(() => expect(world.loads).toBeGreaterThan(loads))
+      await settled()
+      await expect(address().toString()).toBe(held)
+    }
+    let loads = world.loads
+
+    // A decision that fails shows its error and keeps the approval selected.
+    world.decision = 'error'
+    await userEvent.click(approve())
+    await expect(
+      await within(rail()).findByText('The decision did not save. Try again.'),
+    ).toBeVisible()
+    await idle()
+    loads = world.loads
+    await holds()
+
+    // While a decision is under way, the approval stays selected, even once a read
+    // already names the next one.
+    world.decision = 'held'
+    await userEvent.click(approve())
+    await expect(await within(rail()).findByRole('button', { name: 'Approving…' })).toBeDisabled()
+    loads = world.loads
+    await holds()
+
+    // Once it saves, the review advances, with live mode still off.
+    world.release()
+    await reviews(context, second)
+    await expect(address().has('live')).toBe(false)
+
+    // With live mode on, a decision under way holds the review the same way.
+    await userEvent.click(toggle())
+    await following(true)
+    await idle()
+    held = address().toString()
+    await userEvent.click(approve())
+    await expect(await within(rail()).findByRole('button', { name: 'Approving…' })).toBeDisabled()
+    loads = world.loads
+    await holds()
+    world.release()
+    await selects('console.info #8', 'log #8')
+    await following(true)
+  },
+}
+
+export const AnUnsentCommentHoldsTheAction: Story = {
+  parameters: {
+    // You review the newer approval, so the older one waits outside it.
+    initialEntry: `/workspaces/finance/activity?${expand}&record=${second.name}&request=${approvalOf(second.name)}`,
+  },
+  beforeEach: withActions,
+  play: async (context) => {
+    const { userEvent } = context
+    const { rail, toggle, address, idle, following } = await surface(context)
+    await reviews(context, second)
+    const summary = within(rail()).getByText('Add a comment')
+    if (!summary.closest('details')!.open) await userEvent.click(summary)
+    const comment = within(rail()).getByRole('textbox', { name: 'Comment (optional)' })
+    await userEvent.type(comment, 'Check the amount')
+
+    // Live mode turns on, but your comment holds the review. No discard prompt opens.
+    await userEvent.click(toggle())
+    await following(true)
+    await idle()
+    await settled()
+    await expect(address().get('record')).toBe(second.name)
+    await expect(within(document.body).queryByRole('alertdialog')).toBeNull()
+    await expect(comment).toHaveValue('Check the amount')
+
+    // Once the comment is gone, live mode reviews the older approval.
+    await userEvent.clear(comment)
+    await reviews(context, first)
+  },
+}
+
+export const AnOppositeDecisionThatWonHolds: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?${expand}&record=${first.name}&request=${approvalOf(first.name)}`,
+  },
+  beforeEach: withActions,
+  play: async (context) => {
+    const { userEvent } = context
+    const { rail, address, idle } = await surface(context)
+    await reviews(context, first)
+    const held = address().toString()
+
+    // Another reviewer denied the call first. Your approval lost, so the review stays
+    // and shows the decision that won.
+    world.decision = 'lost'
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
+    await expect(await within(rail()).findByText('Denied')).toBeVisible()
+    await idle()
+    await settled()
+    await expect(address().toString()).toBe(held)
+  },
+}
+
+export const LiveModeFollowsActionsResolvedElsewhere: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?${expand}&record=${first.name}&request=${approvalOf(first.name)}&live=1`,
+  },
+  beforeEach: withActions,
+  play: async (context) => {
+    const { address, press, selects, following } = await surface(context)
+    await reviews(context, first)
+    await following(true)
+
+    // Another reviewer approves the call you review; live mode reviews the next one.
+    world.visited = []
+    await press('Approve elsewhere')
+    await reviews(context, second)
+    await following(true)
+    await expect(world.visited).toEqual([second.name])
+
+    // Once no action is left, it follows the newest record.
+    await press('Approve elsewhere')
+    await selects('console.info #5', 'log #5')
+    await following(true)
+    await expect(address().has('request')).toBe(false)
+  },
+}
+
+export const YourPickDuringADecisionStays: Story = {
+  parameters: {
+    initialEntry: `/workspaces/finance/activity?${expand}&record=${first.name}&request=${approvalOf(first.name)}`,
+  },
+  beforeEach: withActions,
+  play: async (context) => {
+    const { userEvent } = context
+    const { rail, address, link, selects, idle } = await surface(context)
+    await reviews(context, first)
+
+    // You pick a record while your decision is under way. Once it saves, the review
+    // does not take the selection back.
+    world.decision = 'held'
+    await userEvent.click(within(rail()).getByRole('button', { name: 'Approve this call' }))
+    await within(rail()).findByRole('button', { name: 'Approving…' })
+    await userEvent.click(link('log #2'))
+    await selects('console.info #2', 'log #2')
+    world.release()
+    await idle()
+    await settled()
+    await selects('console.info #2', 'log #2')
+    await expect(address().has('request')).toBe(false)
+    await expect(address().has('live')).toBe(false)
   },
 }

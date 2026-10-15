@@ -6,7 +6,7 @@ import {
   readingWindow,
   type ActivityViewport,
 } from '@/lib/activity-live-types'
-import type { ActivityBranch, ActivityPage, ActivityRow } from './types'
+import type { ActivityBranch, ActivityPage, ActivityRow, LiveAction } from './types'
 
 export const ActivityNavigationContext = createContext<ReturnType<
   typeof activityNavigation
@@ -172,15 +172,36 @@ export function activityNavigation(
       }),
     })
   }
-  /** Live mode's selection of `name`, the newest record of the Run it follows. */
-  const followHref = (name: string) => href({ ...clearSelection, record: name, live: '1' })
+  /**
+   * Live mode's selection of `name` in the Run it follows: its newest record, or the
+   * record that reviews `action`. An action the Run's window does not hold opens at
+   * that action. After a decision the review advances the same way, and `on` keeps
+   * live mode as it was.
+   */
+  const followHref = (name: string, action?: LiveAction, on = true) => {
+    const held = page.branches[action?.run ?? '']?.rows.some((row) => row.name === name)
+    const reveal = action && name !== action.run && !held
+    return href({
+      ...clearSelection,
+      record: name,
+      request: action?.request ?? null,
+      live: on ? '1' : null,
+      ...(reveal && {
+        [`anchor.${action.run}`]: name,
+        [`offset.${action.run}`]: null,
+        [`preceding.${action.run}`]: null,
+        [`cursor.${action.run}`]: null,
+      }),
+    })
+  }
   /**
    * Live mode's read of the last children of `run`, which has `total` of them. An
    * offset at the end reads the last window. The selection stays until it loads.
+   * An advance after a decision reads it with live mode as it was, which `on` keeps.
    */
-  const followEndHref = (run: string, total: number) =>
+  const followEndHref = (run: string, total: number, on = true) =>
     href({
-      live: '1',
+      live: on ? '1' : null,
       [`offset.${run}`]: String(total),
       [`preceding.${run}`]: '0',
       [`anchor.${run}`]: null,
@@ -242,8 +263,11 @@ export function liveRun(row: ActivityRow | null): { run: string; chain: string[]
 
 /** What live mode does next for a Run. */
 export type LiveStep =
-  /** Select the Run's newest record, or the Run itself while it has none. */
-  | { kind: 'select'; record: string }
+  /**
+   * Select the record that reviews the Run's oldest action, with its `request`.
+   * Without one, the Run's newest record, or the Run itself while it has none.
+   */
+  | { kind: 'select'; record: string; request?: string }
   /** The newest child is past the loaded window; read the Run's last `total` children. */
   | { kind: 'load'; total: number }
   /** Expand the Run, so its children load. */
@@ -252,10 +276,19 @@ export type LiveStep =
   | { kind: 'wait' }
 
 /**
- * The newest record of `run` on `page`. Children keep the order Coral gives them:
- * the highest position is the newest. Only this Run's own branch counts.
+ * The oldest action you can take in `run`, as the loader names it, wins over newer
+ * records. `actionable` is false where you cannot act, such as in an archived workspace.
+ * Otherwise, the newest record of `run` on `page`. Children keep the order Coral gives
+ * them: the highest position is the newest. Only this Run's own branch counts.
  */
-export function liveStep(page: ActivityPage, run: string): LiveStep {
+export function liveStep(page: ActivityPage, run: string, actionable = true): LiveStep {
+  const action = actionable && page.liveAction?.run === run ? page.liveAction : undefined
+  if (action) {
+    const row = page.branches[run]?.rows.find((item) => item.name === action.record)
+    // A live update ended the wait first. The next read names the next action, if any.
+    if (row?.kind === 'invocation' && !row.requiresAction) return { kind: 'wait' }
+    return { kind: 'select', record: action.record, request: action.request }
+  }
   if (!page.expanded.includes(run)) return { kind: 'expand' }
   const branch = page.branches[run]
   if (!branch || branch.unavailable) return { kind: 'wait' }
