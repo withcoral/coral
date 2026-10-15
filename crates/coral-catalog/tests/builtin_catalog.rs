@@ -91,7 +91,9 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let graph = coral_catalog::schema_graph_in_transaction(&mut transaction, &first)
         .await
         .unwrap();
-    let fields = coral_catalog::stored_declaration_fields(&graph, &operations).unwrap();
+    let fields = coral_catalog::StoredDeclarationFields::new(graph)
+        .all(&operations)
+        .unwrap();
     let key = OperationKey::parse("createProvider").unwrap();
     let paths = fields
         .get(&key)
