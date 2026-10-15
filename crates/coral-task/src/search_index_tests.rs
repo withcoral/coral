@@ -87,41 +87,79 @@ async fn a_pass_reindexes_a_function_whose_fingerprint_differs_from_its_revision
 }
 
 #[tokio::test]
-async fn a_pass_reindexes_a_function_with_a_failed_state_however_recent() {
-    // A failure in one process and a success in another can commit together
-    // and leave a current row beside a `failed` state row.
-    let fixture = Fixture::new().await;
-    let index = &fixture.index;
-    let goal = fixture.goal().await;
-    let call = fixture.call(&goal, "Save a function");
-    let saved = fixture
-        .commands
-        .save_function(&call, "answer", "Answer", SOURCE)
-        .await
-        .unwrap();
-    index.settled().await;
-    let attempted_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    fixture
-        .test_database
-        .execute_fixture_sql(&format!(
-            "INSERT INTO search_index_states (workspace_id, target_id, kind, saved_function_id, \
-             principal_id, principal_kind, state, attempted_at_unix_nanos, error) \
-             VALUES ('{workspace}', '{function}', 'saved_function', '{function}', '{principal}', \
-             'user', 'failed', {attempted_at}, '{INJECTED_FAULT}')",
-            workspace = fixture.workspace,
-            function = saved.id(),
-            principal = fixture.actor.principal().id(),
-        ))
-        .await
-        .expect("leave a failed state beside the row");
+async fn a_pass_retries_a_failed_function_once_the_failure_is_older_than_the_interval() {
+    // A failed attempt leaves no row. A failure in one process and a success
+    // in another can commit together and leave a current row beside a
+    // `failed` state row; the same rule applies.
+    for row_beside_failure in [false, true] {
+        let fixture = Fixture::new().await;
+        let index = &fixture.index;
+        let goal = fixture.goal().await;
+        let call = fixture.call(&goal, "Save a function");
+        if row_beside_failure {
+            let saved = fixture
+                .commands
+                .save_function(&call, "answer", "Answer", SOURCE)
+                .await
+                .unwrap();
+            index.settled().await;
+            let attempted_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            fixture
+                .test_database
+                .execute_fixture_sql(&format!(
+                    "INSERT INTO search_index_states (workspace_id, target_id, kind, \
+                     saved_function_id, principal_id, principal_kind, state, \
+                     attempted_at_unix_nanos, error) \
+                     VALUES ('{workspace}', '{function}', 'saved_function', '{function}', \
+                     '{principal}', 'user', 'failed', {attempted_at}, '{INJECTED_FAULT}')",
+                    workspace = fixture.workspace,
+                    function = saved.id(),
+                    principal = fixture.actor.principal().id(),
+                ))
+                .await
+                .expect("leave a failed state beside the row");
+        } else {
+            reject_function_rows(&fixture).await;
+            fixture
+                .commands
+                .save_function(&call, "answer", "Answer", SOURCE)
+                .await
+                .expect("a failed index write never fails the save");
+            index.settled().await;
+            allow_function_rows(&fixture).await;
+        }
+        let failed = function_states(&fixture).await;
+        assert_eq!(
+            failed
+                .iter()
+                .map(|state| state.state.as_str())
+                .collect::<Vec<_>>(),
+            ["failed"]
+        );
+        let paths = indexed_paths(&fixture).await;
 
-    index.reconcile().await;
+        index.reconcile().await;
+        assert_eq!(
+            (
+                function_states(&fixture).await,
+                indexed_paths(&fixture).await
+            ),
+            (failed, paths),
+            "a failure newer than the interval is left alone; row beside failure: \
+             {row_beside_failure}"
+        );
 
-    assert_eq!(indexed_paths(&fixture).await, ["answer"]);
-    assert!(function_states(&fixture).await.is_empty());
+        let short_interval = coral_search::SearchIndex::new(
+            fixture.tasks.database.clone(),
+            std::time::Duration::from_nanos(1),
+        );
+        short_interval.reconcile().await;
+        assert_eq!(indexed_paths(&fixture).await, ["answer"]);
+        assert!(function_states(&fixture).await.is_empty());
+    }
 }
 
 #[tokio::test]
@@ -660,7 +698,7 @@ async fn function_rows(fixture: &Fixture) -> Vec<FunctionRow> {
         .collect()
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct FunctionState {
     saved_function_id: String,
     principal_id: String,

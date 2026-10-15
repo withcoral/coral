@@ -839,24 +839,37 @@ pub(super) async fn recorded_functions(
         .collect()
 }
 
+/// One Saved Function whose last attempt failed, as a reconcile pass
+/// compares it.
+pub(super) struct FailedFunction {
+    pub(super) function: WorkspaceFunction,
+    pub(super) attempted_at_unix_nanos: i64,
+}
+
 /// Reads every Saved Function whose last attempt failed.
 pub(super) async fn failed_functions(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<WorkspaceFunction>, IndexError> {
-    let rows: Vec<(String, String)> = transaction
+) -> Result<Vec<FailedFunction>, IndexError> {
+    let rows: Vec<(String, String, i64)> = transaction
         .fetch_all(
             Query::select()
                 .columns([
                     SearchIndexStates::WorkspaceId,
                     SearchIndexStates::SavedFunctionId,
+                    SearchIndexStates::AttemptedAtUnixNanos,
                 ])
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::Kind).eq(SAVED_FUNCTION))
                 .to_owned(),
         )
         .await?;
-    rows.iter()
-        .map(|(workspace_id, function_id)| workspace_function(workspace_id, function_id))
+    rows.into_iter()
+        .map(|(workspace_id, function_id, attempted_at_unix_nanos)| {
+            Ok(FailedFunction {
+                function: workspace_function(&workspace_id, &function_id)?,
+                attempted_at_unix_nanos,
+            })
+        })
         .collect()
 }
 
