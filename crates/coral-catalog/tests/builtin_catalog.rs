@@ -205,8 +205,8 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
 }
 
 // Catches: a Workspace whose Generation already holds the served catalog
-// taking a new Generation at every boot, or one that holds another catalog
-// keeping it.
+// taking a new Generation at every boot, one that holds another catalog
+// keeping it, or a corrupt Generation passing as current.
 #[tokio::test]
 async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
     let fixture = TestDatabase::new(coral_catalog::migrator()).await.unwrap();
@@ -238,6 +238,24 @@ async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
         );
     }
     transaction.rollback().await.unwrap();
+
+    // A pinned identity that disagrees with the Generation's digest is corrupt.
+    fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_generations SET input_digest = '{}' WHERE id = '{generation}'",
+            sha256_hex("another catalog")
+        ))
+        .await
+        .unwrap();
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let corrupt = coral_catalog::builtin_generation_pins_in_transaction(
+        &mut transaction,
+        &running,
+        &generation,
+    )
+    .await;
+    transaction.rollback().await.unwrap();
+    assert!(matches!(corrupt, Err(Error::CorruptData(_))), "{corrupt:?}");
 }
 
 async fn pinned_input(

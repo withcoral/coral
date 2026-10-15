@@ -13,10 +13,11 @@ use std::sync::Arc;
 
 use coral_db::Database;
 use coral_provider::{
-    ActivatedGeneration, EntryMaterial, Error, MaterializedPublication, PreparedPublication,
-    Provider, ProviderDisplayName, ProviderId, ProviderModule, ProviderPublication,
-    ProviderRegenerationPublication, ProviderRegenerationRequest, PublicationEvidence, Published,
-    WorkspaceProviderPublicationRequest, WorkspaceProviderPublisher,
+    ActivatedGeneration, ActiveGeneration, EntryMaterial, Error, MaterializedPublication,
+    PreparedPublication, Provider, ProviderDisplayName, ProviderId, ProviderModule,
+    ProviderPublication, ProviderRegenerationPublication, ProviderRegenerationRequest,
+    PublicationEvidence, Published, WorkspaceProviderPublicationRequest,
+    WorkspaceProviderPublisher,
 };
 use coral_search::SearchIndex;
 use coral_workspace::{ChangeContext, WorkspaceId};
@@ -132,33 +133,53 @@ impl ProviderWorkflow {
     }
 
     /// Updates every Workspace's Built-in Provider that pins another catalog
-    /// to the one this process serves, then tells Universal Search. Bootstrap
-    /// runs it before the process takes requests. A Workspace whose update
-    /// fails keeps its catalog until the next boot, and the others still update.
+    /// to the one this process serves, each in its own transaction, then tells
+    /// Universal Search. Bootstrap runs it before the process takes requests.
+    /// A Workspace whose update fails keeps its catalog until the next boot,
+    /// and the others still update.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`ProviderModule::update_builtin_catalogs`].
+    /// Returns the errors of [`ProviderModule::outdated_builtin_generations`].
     pub async fn update_builtin_catalogs(&self, occurred_at_unix_nanos: i64) -> Result<(), Error> {
-        let updates = self
+        for outdated in self.providers.outdated_builtin_generations().await? {
+            if let Err(error) = self
+                .update_builtin_catalog(&outdated, occurred_at_unix_nanos)
+                .await
+            {
+                tracing::warn!(
+                    workspace_id = %outdated.workspace_id(),
+                    provider_id = %outdated.provider_id(),
+                    error = %error,
+                    "failed to update a Built-in Provider's catalog"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn update_builtin_catalog(
+        &self,
+        outdated: &ActiveGeneration,
+        occurred_at_unix_nanos: i64,
+    ) -> Result<(), Error> {
+        let mut transaction = self.database.begin().await?;
+        let replaced = self
             .providers
-            .update_builtin_catalogs(occurred_at_unix_nanos)
+            .update_builtin_catalog_in_transaction(
+                &mut transaction,
+                outdated,
+                occurred_at_unix_nanos,
+            )
             .await?;
-        for replaced in updates.replaced {
+        transaction.commit().await?;
+        if replaced {
             self.search.index_active_generation(
-                replaced.workspace_id().clone(),
-                replaced.provider_id().clone(),
+                outdated.workspace_id().clone(),
+                outdated.provider_id().clone(),
             );
             self.search
-                .remove_generation(replaced.generation_id().clone());
-        }
-        for (outdated, error) in updates.failed {
-            tracing::warn!(
-                workspace_id = %outdated.workspace_id(),
-                provider_id = %outdated.provider_id(),
-                error = %error,
-                "failed to update a Built-in Provider's catalog"
-            );
+                .remove_generation(outdated.generation_id().clone());
         }
         Ok(())
     }

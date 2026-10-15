@@ -230,7 +230,7 @@ Operation Access State, Approval Requests, and Operation Invocation records with
 effective Workspace Owner authority can discover or invoke its Operations; members and Agent Principals cannot. An
 Owner can disable and enable it and set its Operation policy, but nobody can rename, reconfigure, or remove it, and it
 has no Provider Accounts. When Coral boots, it updates every Workspace's Built-in Provider to the catalog it
-serves. Coral itself publishes the Provider from a Setup when the selected route and Setup readiness
+serves; a Workspace whose update fails keeps its catalog until the next boot. Coral itself publishes the Provider from a Setup when the selected route and Setup readiness
 allow it, including from a ready credential-requiring Setup on the `caller` route. If a person must finish the Setup
 and the Run is still current, the Operation returns the Reef page and does not wait; Coral ends a Setup it prepared
 that nobody will finish. Its Operations never return a secret or an OAuth URL to the Program, and never take a secret
