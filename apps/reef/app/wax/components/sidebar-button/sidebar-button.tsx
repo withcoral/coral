@@ -100,7 +100,7 @@ export function SidebarBadge({
   }>({ last: badge, open, arrived: false })
   if (open !== shown.open || (badge && badge !== shown.last))
     setShown({
-      last: badge ?? shown.last,
+      last: badge || shown.last,
       open,
       arrived: open ? shown.arrived || !shown.open : shown.arrived,
     })

@@ -115,7 +115,8 @@ function PendingActions() {
   const [count, setCount] = useState(0)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 200 }}>
-      <SidebarButton icon="Activity" badge={count ? String(count) : undefined}>
+      {/* An empty badge is no badge, so clearing it to '' pops it out too. */}
+      <SidebarButton icon="Activity" badge={count ? String(count) : ''}>
         Activity
       </SidebarButton>
       <Button.TextButton variant="secondary" onClick={() => setCount(count + 1)}>

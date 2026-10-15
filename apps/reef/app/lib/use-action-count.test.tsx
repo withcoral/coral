@@ -3,7 +3,10 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { useActionCounts } from './use-action-count'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 /** Serves `/activity/count` as a stream the test writes events to. */
 function countStream() {
@@ -62,4 +65,29 @@ it.each([
   expect(result.current).toEqual(expected)
   unmount()
   expect(signal.aborted).toBe(true)
+})
+
+it.each([
+  ['clears the last counts when the stream stays down', [], null],
+  [
+    'keeps a fresh snapshot that arrives in time',
+    [{ kind: 'count', counts: { [w]: '2' } }],
+    { [w]: '2' },
+  ],
+])('%s 30 s after it drops', async (_, later, expected) => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  const { fetch, emit } = countStream()
+  const { result, unmount } = renderHook(() => useActionCounts({ [w]: '1' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+  act(() => emit({ kind: 'unavailable' }))
+  await waitFor(() => expect(fetch.mock.calls[0][1].signal!.aborted).toBe(true))
+  // The retry opens a new connection; each later event arrives on it.
+  await act(() => vi.advanceTimersByTimeAsync(2000))
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+  for (const event of later) act(() => emit(event))
+  await act(() => vi.advanceTimersByTimeAsync(27_000))
+  expect(result.current).toEqual(later.length ? expected : { [w]: '1' })
+  await act(() => vi.advanceTimersByTimeAsync(1000))
+  expect(result.current).toEqual(expected)
+  unmount()
 })
