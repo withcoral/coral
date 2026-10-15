@@ -11,14 +11,15 @@ function actionCounts(value: unknown): ActionCounts {
   return value as ActionCounts
 }
 
-/** A dropped stream keeps the last counts this long. A longer outage clears them, so an
- * old count never stays on screen. */
+/** The last counts stay this long after the stream reports a drop, then clear. A silent
+ * stall reports only when its 15 s lease ends, so a count can stay about 45 s after the
+ * last sign of life. Only heartbeats show that the counts are still current. */
 const STALE_MS = 30_000
 
 /** One shell-owned subscription for every Workspace's count. A short drop keeps the last
- * counts until a reconnect replaces them all. A long drop or an expired session conceals
- * them (null). Reconnect never starts from a cached authority grant or a replay cursor,
- * so no count carries over from an earlier connection.
+ * counts until the next snapshot replaces them all. A long drop or an expired session
+ * conceals them (null). Reconnect never starts from a cached authority grant or a replay
+ * cursor: the next snapshot alone sets the counts.
  */
 export function useActionCounts(initial: ActionCounts | null) {
   const [counts] = useState(() => {
