@@ -509,6 +509,23 @@ it.each([
     'Shared prefix: https://api.example.test/auth/',
   ],
   [
+    'an unrelated host beside URL scopes',
+    [`${graph}Mail.Send`, `${graph}User.Read`, 'https://mail.example.test/IMAP'],
+    ['…/Mail.Send', '…/User.Read', 'https://mail.example.test/IMAP'],
+    `Shared prefix: ${graph}`,
+  ],
+  [
+    'two hosts that each share a prefix',
+    [
+      `${graph}User.Read`,
+      `${graph}Mail.Send`,
+      'https://mail.example.test/User.Read',
+      'https://mail.example.test/IMAP',
+    ],
+    ['…/User.Read', '…/Mail.Send', '…/User.Read', '…/IMAP'],
+    `Shared prefixes: ${graph}, https://mail.example.test/`,
+  ],
+  [
     'one scope on each host',
     ['https://a.example.test/read', 'https://b.example.test/write'],
     ['https://a.example.test/read', 'https://b.example.test/write'],

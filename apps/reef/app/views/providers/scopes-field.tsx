@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { Fragment, useId } from 'react'
 
 import { Inputs, Typography } from '@/wax/components'
 import { Picker } from '@/wax/components/picker'
@@ -7,8 +7,8 @@ import { FieldError } from './fields'
 import * as styles from './providers.css'
 
 /**
- * The scopes Coral requests, and the separator Coral sends them with. Scopes
- * that share a URL prefix show without it.
+ * The scopes Coral requests, and the separator Coral sends them with. URL
+ * scopes on one host that share a prefix show without it.
  */
 export function ScopesField({
   value,
@@ -28,7 +28,7 @@ export function ScopesField({
   formatError?: string
 }) {
   const id = useId()
-  const prefix = sharedPrefix([...value, ...suggestions])
+  const prefixes = sharedPrefixes([...value, ...suggestions])
 
   return (
     <div className={styles.scopesRow}>
@@ -36,12 +36,17 @@ export function ScopesField({
         <Typography.BodySmallStrong as="label" htmlFor={id}>
           Requested scopes
         </Typography.BodySmallStrong>
-        {prefix && (
+        {prefixes.length > 0 && (
           <Typography.BodySmall as="p" id={`${id}-prefix`} variant="secondary">
-            Shared prefix:{' '}
-            <Typography.CodeSmallInline as="span" variant="secondary">
-              {prefix}
-            </Typography.CodeSmallInline>
+            {prefixes.length === 1 ? 'Shared prefix:' : 'Shared prefixes:'}{' '}
+            {prefixes.map((prefix, index) => (
+              <Fragment key={prefix}>
+                {index > 0 && ', '}
+                <Typography.CodeSmallInline as="span" variant="secondary">
+                  {prefix}
+                </Typography.CodeSmallInline>
+              </Fragment>
+            ))}
           </Typography.BodySmall>
         )}
         <Inputs.TokenInput
@@ -49,16 +54,16 @@ export function ScopesField({
           value={value}
           onChange={onChange}
           suggestions={suggestions}
-          tokenLabel={(scope) =>
-            prefix && scope.startsWith(prefix) && scope !== prefix
-              ? `…/${scope.slice(prefix.length)}`
-              : scope
-          }
+          tokenLabel={(scope) => {
+            const prefix = prefixes.find((p) => scope.startsWith(p) && scope !== p)
+            return prefix ? `…/${scope.slice(prefix.length)}` : scope
+          }}
           placeholder="Add a scope"
           invalid={Boolean(error)}
           ariaDescribedBy={
-            [prefix && `${id}-prefix`, error && `${id}-error`].filter(Boolean).join(' ') ||
-            undefined
+            [prefixes.length > 0 && `${id}-prefix`, error && `${id}-error`]
+              .filter(Boolean)
+              .join(' ') || undefined
           }
         />
         {error && <FieldError id={`${id}-error`} message={error} />}
@@ -82,14 +87,26 @@ export function ScopesField({
   )
 }
 
-/** The longest URL prefix, up to a slash, that two or more URL scopes share. */
-function sharedPrefix(scopes: string[]): string | undefined {
-  const urls = [...new Set(scopes)].filter((scope) => scope.includes('://'))
-  if (urls.length < 2) return undefined
-  let prefix = urls[0]
-  for (const url of urls) {
-    while (!url.startsWith(prefix)) prefix = prefix.slice(0, -1)
+/**
+ * For each host with two or more URL scopes, the longest prefix, up to a
+ * slash, that its scopes share. A scope may share a name with one on another
+ * host; its tooltip tells them apart.
+ */
+function sharedPrefixes(scopes: string[]): string[] {
+  const hosts = new Map<string, string[]>()
+  for (const scope of new Set(scopes)) {
+    const scheme = scope.indexOf('://')
+    const slash = scheme < 0 ? -1 : scope.indexOf('/', scheme + 3)
+    if (slash < 0) continue
+    const host = scope.slice(0, slash + 1)
+    hosts.set(host, [...(hosts.get(host) ?? []), scope])
   }
-  prefix = prefix.slice(0, prefix.lastIndexOf('/') + 1)
-  return prefix.includes('://') && !prefix.endsWith('://') ? prefix : undefined
+  return [...hosts.values()].flatMap((urls) => {
+    if (urls.length < 2) return []
+    let prefix = urls[0]
+    for (const url of urls) {
+      while (!url.startsWith(prefix)) prefix = prefix.slice(0, -1)
+    }
+    return [prefix.slice(0, prefix.lastIndexOf('/') + 1)]
+  })
 }

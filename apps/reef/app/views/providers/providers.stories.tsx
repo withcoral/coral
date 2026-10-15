@@ -534,7 +534,7 @@ export const ConfigurationOAuthFieldErrors: Story = {
   ),
 }
 
-// Microsoft Graph requests many scopes that share one URL prefix.
+// Microsoft requests many scopes that share a URL prefix on each of two hosts.
 export const ConfigurationOAuthManyScopes: Story = {
   render: () => (
     <StepperPage
@@ -572,6 +572,8 @@ export const ConfigurationOAuthManyScopes: Story = {
                 'Team.ReadBasic.All',
                 'Channel.ReadBasic.All',
               ].map((scope) => `https://graph.microsoft.com/${scope}`),
+              'https://outlook.office.com/IMAP.AccessAsUser.All',
+              'https://outlook.office.com/SMTP.Send',
             ],
           },
         },
