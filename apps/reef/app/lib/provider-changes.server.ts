@@ -14,8 +14,7 @@ import type { OperationOutcome } from '@/views/providers/types'
 
 /**
  * One owner change to a workspace's providers, from a form the route already
- * parsed and checked: rename, enable or disable, remove, update the Built-in
- * catalog, or operation policy.
+ * parsed and checked: rename, enable or disable, remove, or operation policy.
  */
 export async function applyProviderChange(
   request: Request,

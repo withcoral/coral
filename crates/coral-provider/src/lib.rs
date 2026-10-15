@@ -18,6 +18,7 @@ mod account_tests;
 mod builtin;
 #[cfg(test)]
 mod builtin_tests;
+pub use builtin::BuiltinCatalogUpdates;
 mod change;
 #[cfg(test)]
 mod credential_lifecycle_tests;

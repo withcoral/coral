@@ -151,7 +151,7 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
         pinned,
         "one catalog pins one identity"
     );
-    assert_eq!(pinned, catalog.identity());
+    assert_eq!(pinned, catalog.identity().as_str());
     transaction.rollback().await.unwrap();
     let digest = pinned
         .strip_prefix("coral-admin-catalog:")

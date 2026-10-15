@@ -133,53 +133,32 @@ impl ProviderWorkflow {
 
     /// Updates every Workspace's Built-in Provider that pins another catalog
     /// to the one this process serves, then tells Universal Search. Bootstrap
-    /// runs it before the process takes requests. Each Workspace updates in
-    /// its own transaction; one that fails keeps its catalog until the next
-    /// boot, and the others still update.
+    /// runs it before the process takes requests. A Workspace whose update
+    /// fails keeps its catalog until the next boot, and the others still update.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`ProviderModule::outdated_builtin_providers`].
+    /// Returns the errors of [`ProviderModule::update_builtin_catalogs`].
     pub async fn update_builtin_catalogs(&self, occurred_at_unix_nanos: i64) -> Result<(), Error> {
-        for (workspace, id) in self.providers.outdated_builtin_providers().await? {
-            if let Err(error) = self
-                .update_builtin_catalog(&workspace, &id, occurred_at_unix_nanos)
-                .await
-            {
-                tracing::warn!(
-                    workspace_id = %workspace,
-                    provider_id = %id,
-                    error = %error,
-                    "failed to update a Built-in Provider's catalog"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    async fn update_builtin_catalog(
-        &self,
-        workspace: &WorkspaceId,
-        id: &ProviderId,
-        occurred_at_unix_nanos: i64,
-    ) -> Result<(), Error> {
-        let mut transaction = self.database.begin().await?;
-        let activated = self
+        let updates = self
             .providers
-            .update_builtin_catalog_in_transaction(
-                &mut transaction,
-                workspace,
-                id,
-                occurred_at_unix_nanos,
-            )
+            .update_builtin_catalogs(occurred_at_unix_nanos)
             .await?;
-        transaction.commit().await?;
-        if let Some(activated) = activated {
+        for replaced in updates.replaced {
+            self.search.index_active_generation(
+                replaced.workspace_id().clone(),
+                replaced.provider_id().clone(),
+            );
             self.search
-                .index_active_generation(workspace.clone(), id.clone());
-            if let Some(replaced) = activated.replaced() {
-                self.search.remove_generation(replaced.clone());
-            }
+                .remove_generation(replaced.generation_id().clone());
+        }
+        for (outdated, error) in updates.failed {
+            tracing::warn!(
+                workspace_id = %outdated.workspace_id(),
+                provider_id = %outdated.provider_id(),
+                error = %error,
+                "failed to update a Built-in Provider's catalog"
+            );
         }
         Ok(())
     }

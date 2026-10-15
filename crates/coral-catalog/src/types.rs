@@ -308,7 +308,8 @@ impl CatalogDiagnostic {
 }
 
 /// Provider-scoped stable key for one materialized Operation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct OperationKey(String);
 
 impl OperationKey {
@@ -330,6 +331,20 @@ impl OperationKey {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for OperationKey {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<OperationKey> for String {
+    fn from(key: OperationKey) -> Self {
+        key.0
     }
 }
 

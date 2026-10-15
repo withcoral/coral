@@ -316,8 +316,6 @@ const reasons: Record<string, string> = {
   WORKSPACE_ARCHIVED: 'This workspace is archived. Restore it before you make changes.',
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
   BUILTIN_PROVIDER_MANAGED: 'Ask your Coral administrator to make this change.',
-  BUILTIN_CATALOG_MISMATCH:
-    'This update is out of date. Reload the page. Review the update before you try again.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',
   SETUP_CONSUMED: 'This setup is complete. Start again to continue.',
