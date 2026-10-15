@@ -341,9 +341,9 @@ Program Value, Run data, or observed memory. Reef exact catalog inspection is a 
 
 **Search Entity**: One thing Universal Search can find: a Discoverable Operation of one current Provider, or one of
 the Principal's current Saved Functions. Each Search Entity has one complete Call Path, one Authoring Description,
-and one set of secret-free fields, its metadata and declaration-field paths, that Provider Publication or Saved
-Function save hands to Universal Search to index. An Operation whose declaration-field paths exceed the index bound
-keeps only its shallower paths and carries a warning. Universal Search returns a Search Hit for it, and describe its
+and one set of secret-free fields, its metadata and declaration-field paths, that Universal Search indexes for it. An
+Operation whose declaration-field paths exceed the index bound keeps only its shallower paths and carries a warning;
+no search bound makes an Operation unavailable. Universal Search returns a Search Hit for it, and describe its
 Authoring Description, never the Entity's private material. _Avoid_: Authoring Kind, search document
 
 **Search Hit**: One item of a search page, cut to what an agent needs to choose and call a Search Entity: its Call

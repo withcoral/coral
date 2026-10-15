@@ -3120,6 +3120,50 @@ fn oversized_search_material_warns_without_blocking_the_catalog() {
 }
 
 #[test]
+fn oversized_search_field_keeps_the_operation_available() {
+    // One field over the former 256 KiB search bound. The examples stay out
+    // of the TypeScript declaration, so only the search material is large.
+    let example = "x".repeat(300 * 1024);
+    let document = serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {"title": "Oversized search field", "version": "1"},
+        "servers": [{"url": "https://api.example.test"}],
+        "security": [],
+        "paths": {
+            "/long": {"get": {
+                "operationId": "long",
+                "responses": {"200": {
+                    "description": "ok",
+                    "content": {"application/json": {"schema": {
+                        "type": "string",
+                        "examples": [example],
+                    }}},
+                }},
+            }},
+        },
+    })
+    .to_string();
+
+    let prepared = ready(&document);
+
+    let long = prepared
+        .operations()
+        .iter()
+        .find(|operation| operation.key().as_str() == "long")
+        .expect("the Operation is cataloged");
+    assert_eq!(long.availability(), OperationAvailability::Available);
+    assert!(long.diagnostics().is_empty());
+    let fields = prepared
+        .declaration_fields()
+        .get(long.key())
+        .expect("the Operation has declaration fields");
+    assert!(
+        fields.iter().any(|field| field.text().len() > 256 * 1024),
+        "the oversized field is indexed whole"
+    );
+}
+
+#[test]
 fn openapi_input_is_refused_over_the_byte_budget() {
     // A comment keeps the padded document valid YAML.
     let padded = |length: usize| format!("#{}", " ".repeat(length - 1));

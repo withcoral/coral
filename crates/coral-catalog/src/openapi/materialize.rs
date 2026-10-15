@@ -186,18 +186,14 @@ fn finish_operations(
             .iter()
             .any(|diagnostic| diagnostic.severity() == crate::CatalogDiagnosticSeverity::Error)
         {
-            match prepare_operation_declaration_fields(
+            let prepared = prepare_operation_declaration_fields(
                 &crate::ExecutionBinding::Http(build.binding.clone()),
                 &build.input_schema,
                 input_declared,
                 schema_graph,
-            ) {
-                Ok(prepared) => {
-                    build.diagnostics.extend(prepared.diagnostic);
-                    declaration_fields.insert(build.key.clone(), prepared.entries);
-                }
-                Err(diagnostic) => build.diagnostics.push(diagnostic),
-            }
+            );
+            build.diagnostics.extend(prepared.diagnostics);
+            declaration_fields.insert(build.key.clone(), prepared.entries);
         }
         let binding_json = build.binding.to_storage_json().map_err(|_error| {
             diagnostic(
