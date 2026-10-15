@@ -338,6 +338,60 @@ async fn a_pass_rewrites_the_statistics_of_a_workspace_it_did_not_write() {
 }
 
 #[tokio::test]
+async fn a_pass_records_its_duration_and_its_statistics_work_on_its_spans() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+
+    let spans = CapturedSpans::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::Registry::default().with(spans.clone()),
+        );
+        world.index.reconcile().await;
+    }
+
+    let recorded = spans.recorded();
+    assert_eq!(
+        recorded.iter().map(|span| span.name).collect::<Vec<_>>(),
+        [
+            "coral.search.reconcile",
+            "coral.search.reconcile.remove_superseded",
+            "coral.search.reconcile.generations",
+            "coral.search.reconcile.functions",
+            "coral.search.reconcile.statistics",
+        ]
+    );
+    for span in &recorded {
+        assert!(
+            span.u64_field("duration_ms").is_some(),
+            "{} records its duration",
+            span.name
+        );
+    }
+    let [pass, .., statistics] = recorded.as_slice() else {
+        panic!("a pass and its steps");
+    };
+    // Only Postgres keeps statistics of its own; the pass reports its last
+    // step's work.
+    let expected = match world.modules.search.database.system() {
+        DatabaseSystem::Postgres => (Some(1), Some(1), true),
+        DatabaseSystem::Sqlite => (Some(0), Some(0), false),
+    };
+    for span in [statistics, pass] {
+        assert_eq!(
+            (
+                span.u64_field("workspaces_checked"),
+                span.u64_field("workspaces_recounted"),
+                span.u64_field("rows_written").is_some_and(|rows| rows > 0),
+            ),
+            expected,
+            "{}",
+            span.name
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_published_generation_indexes_its_operations_and_a_complete_state() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -1334,6 +1388,84 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedLogs {
             target: event.metadata().target().to_string(),
             fields: fields.0,
         });
+    }
+}
+
+/// Records every span of this crate with its name and the fields recorded on
+/// it so far, in the order the spans start. It does not wait for a span to
+/// close: a database driver may still hold a span for a moment after the
+/// work in it returns.
+#[derive(Clone, Default)]
+struct CapturedSpans(Arc<std::sync::Mutex<Vec<CapturedSpan>>>);
+
+#[derive(Debug)]
+struct CapturedSpan {
+    name: &'static str,
+    fields: BTreeMap<String, String>,
+}
+
+/// A captured span's position in [`CapturedSpans`].
+struct CapturedSpanIndex(usize);
+
+impl CapturedSpans {
+    fn recorded(&self) -> Vec<CapturedSpan> {
+        std::mem::take(&mut *self.0.lock().expect("captured spans"))
+    }
+}
+
+impl CapturedSpan {
+    fn u64_field(&self, name: &str) -> Option<u64> {
+        self.fields.get(name).and_then(|value| value.parse().ok())
+    }
+}
+
+impl<S> tracing_subscriber::Layer<S> for CapturedSpans
+where
+    S: tracing::Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+{
+    fn on_new_span(
+        &self,
+        attributes: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let Some(span) = context.span(id) else {
+            return;
+        };
+        if !span.metadata().target().starts_with("coral_search") {
+            return;
+        }
+        let mut fields = FieldRecorder::default();
+        attributes.record(&mut fields);
+        let mut spans = self.0.lock().expect("captured spans");
+        span.extensions_mut().insert(CapturedSpanIndex(spans.len()));
+        spans.push(CapturedSpan {
+            name: span.metadata().name(),
+            fields: fields.0,
+        });
+    }
+
+    fn on_record(
+        &self,
+        id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let Some(span) = context.span(id) else {
+            return;
+        };
+        let Some(index) = span
+            .extensions()
+            .get::<CapturedSpanIndex>()
+            .map(|index| index.0)
+        else {
+            return;
+        };
+        let mut fields = FieldRecorder::default();
+        values.record(&mut fields);
+        if let Some(captured) = self.0.lock().expect("captured spans").get_mut(index) {
+            captured.fields.extend(fields.0);
+        }
     }
 }
 

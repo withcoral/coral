@@ -208,7 +208,8 @@ pub(super) async fn delete_generation_rows(
     transaction
         .execute(generation_rows(workspace_id, generation_id))
         .await?;
-    refresh_statistics(transaction, &workspace_id.to_string()).await
+    refresh_statistics(transaction, &workspace_id.to_string()).await?;
+    Ok(())
 }
 
 fn generation_rows(
@@ -313,10 +314,10 @@ pub(super) async fn delete_generation(
                 .to_owned(),
         )
         .await?;
-    match workspace {
-        Some((workspace_id,)) => refresh_statistics(transaction, &workspace_id).await,
-        None => Ok(()),
+    if let Some((workspace_id,)) = workspace {
+        refresh_statistics(transaction, &workspace_id).await?;
     }
+    Ok(())
 }
 
 /// Deletes the Operation rows and state rows of every Generation of one
@@ -348,7 +349,8 @@ pub(super) async fn delete_provider(
                 .to_owned(),
         )
         .await?;
-    refresh_statistics(transaction, &workspace_id).await
+    refresh_statistics(transaction, &workspace_id).await?;
+    Ok(())
 }
 
 /// The columns a Saved Function row sets, in [`FunctionRow::values`] order.
@@ -457,7 +459,8 @@ pub(super) async fn delete_function_row(
                 .to_owned(),
         )
         .await?;
-    refresh_statistics(transaction, &workspace_id).await
+    refresh_statistics(transaction, &workspace_id).await?;
+    Ok(())
 }
 
 /// Upserts a Saved Function's `failed` state row.
@@ -872,23 +875,23 @@ pub(super) async fn refresh_function_length(
 /// document length. `SQLite`'s FTS5 keeps its own statistics.
 ///
 /// The term rows are upserts, so two processes that refresh one Workspace at
-/// once do not collide on a term.
+/// once do not collide on a term. Returns the rows written or deleted.
 pub(super) async fn refresh_workspace_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     refresh_statistics(transaction, &workspace_id.to_string()).await
 }
 
 async fn refresh_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &str,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     if transaction.system() != DatabaseSystem::Postgres {
-        return Ok(());
+        return Ok(0);
     }
     let workspace = || sea_query::Values(vec![workspace_id.into()]);
-    transaction
+    let deleted = transaction
         .execute_sql(
             "DELETE FROM search_terms WHERE workspace_id = $1",
             workspace(),
@@ -896,7 +899,7 @@ async fn refresh_statistics(
         .await?;
     // `ts_stat` takes query text, so the Workspace id enters it quoted as a
     // literal by `format('%L')`; the value itself still travels as a bind.
-    transaction
+    let terms = transaction
         .execute_sql(
             "INSERT INTO search_terms (workspace_id, term, ndoc) \
              SELECT $1::text, word, ndoc \
@@ -905,7 +908,7 @@ async fn refresh_statistics(
             workspace(),
         )
         .await?;
-    transaction
+    let totals = transaction
         .execute_sql(
             "INSERT INTO search_stats (workspace_id, total_docs, avgdl) \
              SELECT $1::text, count(*), coalesce(avg(doc_len), 1.0) \
@@ -915,5 +918,5 @@ async fn refresh_statistics(
             workspace(),
         )
         .await?;
-    Ok(())
+    Ok(deleted + terms + totals)
 }

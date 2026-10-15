@@ -93,10 +93,11 @@ pub(crate) async fn workspaces_with_statistics(
 }
 
 /// On Postgres, rewrites one Workspace's ranking statistics from its rows.
+/// Returns the statistics rows written or deleted.
 pub(crate) async fn refresh_statistics(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-) -> Result<(), IndexError> {
+) -> Result<u64, IndexError> {
     Ok(repository::refresh_workspace_statistics(transaction, workspace_id).await?)
 }
 
