@@ -2323,6 +2323,29 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
             .unwrap(),
         events_before
     );
+    // Nor did the refused publication record its request: the configuring
+    // User publishes with the same one.
+    let published = harness
+        .providers
+        .publish_workspace_provider(
+            &change_context(owner.clone(), 13 + 50 * 60_000_000_000, '5'),
+            publication_request(
+                workspace.id(),
+                setup.id(),
+                "bearer",
+                CredentialRoute::Fixed,
+                "a0000000-0000-4000-8000-000000000007",
+            )
+            .with_account_grant(grant_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        published.outcome(),
+        ProviderPublicationOutcome::Succeeded,
+        "{:?}",
+        published.diagnostic()
+    );
 }
 
 #[tokio::test]
