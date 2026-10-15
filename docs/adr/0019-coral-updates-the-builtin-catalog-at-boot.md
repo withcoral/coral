@@ -13,9 +13,10 @@ with the changed field paths `provider.active_generation` and `catalog`. The Pro
 Workspace updates too. Coral asks and tells nobody; the new Operations simply appear. A Workspace whose update fails
 keeps its catalog until the next boot, and the other Workspaces still update.
 
-Processes that boot together each try the update. The first to hold the Provider row updates it, and the others then
-find the served catalog pinned. Coral compares the pinned identity, one row per Workspace, so a boot with nothing to
-update stays cheap.
+Processes that boot together each try the update. The first to hold the Provider row replaces the Generation it listed.
+The others then find another Generation active and skip the Provider, even when that Generation pins another catalog;
+their next boot moves it to their own. Coral compares the pinned identity, one row per Workspace, so a boot with nothing
+to update stays cheap.
 
 Catalogs are not ordered. A Coral older than the one that booted last, after a rollback or when an old process restarts
 during a rolling deploy, moves Workspaces back to its own catalog, and the next newer boot moves them forward again. An

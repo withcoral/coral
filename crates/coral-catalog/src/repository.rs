@@ -652,26 +652,34 @@ pub(super) async fn load_setup_input(
     Ok(Some(input))
 }
 
-/// Reads the catalog identity a built-in Generation pins.
+/// Reads the catalog identity a built-in Generation pins, checked against
+/// the Generation's input digest.
 pub(super) async fn load_builtin_identity(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<BuiltinCatalogIdentity, Error> {
-    let row: Option<(String, String)> = transaction
+    let row: Option<(String, String, String)> = transaction
         .fetch_optional(
             Query::select()
                 .columns([
                     ProviderGenerations::InputKind,
                     ProviderGenerations::PinnedInput,
+                    ProviderGenerations::InputDigest,
                 ])
                 .from(ProviderGenerations::Table)
                 .and_where(Expr::col(ProviderGenerations::Id).eq(generation_id.to_string()))
                 .to_owned(),
         )
         .await?;
-    let (kind, pinned) =
+    let (kind, pinned, digest) =
         row.ok_or_else(|| Error::CorruptData("Provider has no active Generation".to_string()))?;
-    match StoredGenerationInput::from_storage(&kind, &pinned)? {
+    let pinned = StoredGenerationInput::from_storage(&kind, &pinned)?;
+    if pinned.digest() != ProviderSetupInputDigest::parse(digest)? {
+        return Err(Error::CorruptData(
+            "Provider Generation pinned input does not match its digest".to_string(),
+        ));
+    }
+    match pinned {
         StoredGenerationInput::Builtin(identity) => Ok(identity),
         StoredGenerationInput::Setup(_) => Err(Error::CorruptData(
             "the Built-in Provider's Generation pins a Setup input".to_string(),
