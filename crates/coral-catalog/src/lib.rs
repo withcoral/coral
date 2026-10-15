@@ -103,7 +103,7 @@ pub use openapi::{
     validate_openapi_configuration,
 };
 pub use paths::OperationPathAssignment;
-pub use search::{DeclarationIndexEntry, stored_declaration_fields};
+pub use search::{DeclarationIndexEntry, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, MaterializationOutcome,
     MaterializedOperation, OPERATION_AUTHORING_DESCRIPTION_MAX_BYTES, OperationAvailability,

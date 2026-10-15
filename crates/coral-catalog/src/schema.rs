@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
@@ -693,7 +693,7 @@ pub(crate) struct TypeScriptNames {
     /// Named schemas already projected for an earlier Operation. Projecting
     /// each Operation from scratch repeats the whole reachable type graph,
     /// which large Providers such as Microsoft Graph cannot afford.
-    renders: RefCell<HashMap<ProjectionKey, Rc<NamedRender>>>,
+    renders: RefCell<HashMap<ProjectionKey, Arc<NamedRender>>>,
 }
 
 impl TypeScriptNames {
@@ -745,12 +745,12 @@ impl TypeScriptNames {
         self.names.get(&(id.clone(), direction))
     }
 
-    fn render(&self, key: &ProjectionKey) -> Option<Rc<NamedRender>> {
+    fn render(&self, key: &ProjectionKey) -> Option<Arc<NamedRender>> {
         self.renders.borrow().get(key).cloned()
     }
 
     fn keep_render(&self, key: ProjectionKey, render: NamedRender) {
-        self.renders.borrow_mut().insert(key, Rc::new(render));
+        self.renders.borrow_mut().insert(key, Arc::new(render));
     }
 }
 

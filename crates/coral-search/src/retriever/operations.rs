@@ -195,6 +195,7 @@ impl EntityRetriever for OperationRetriever {
         };
         let hydrated = match coral_provider::hydrate_operation_in_transaction(
             transaction,
+            context.loaded,
             &operation.provider,
             &operation.operation_key,
         )

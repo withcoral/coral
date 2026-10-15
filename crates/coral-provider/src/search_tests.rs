@@ -93,7 +93,7 @@ const MIXED_MCP: &str = r#"{
 }"#;
 
 #[tokio::test]
-async fn entries_prepared_from_the_catalog_equal_entries_rebuilt_from_the_stored_generation() {
+async fn entries_and_hits_rebuilt_from_the_stored_generation_equal_the_catalogs_entries() {
     let (fixture, workspaces, providers) = test_modules().await;
     let owner =
         organization_user(fixture.database(), "user:entries", OrganizationRole::Owner).await;
@@ -137,6 +137,8 @@ async fn entries_prepared_from_the_catalog_equal_entries_rebuilt_from_the_stored
         .expect("published MCP Provider")
         .clone();
 
+    // One request's scope serves both Generations, as a search page does.
+    let loaded = crate::LoadedGenerations::default();
     let mut entries = Vec::new();
     for provider in [&cities, &mixed] {
         let generation_id = active_generation(&providers, workspace.id(), provider).await;
@@ -169,6 +171,7 @@ async fn entries_prepared_from_the_catalog_equal_entries_rebuilt_from_the_stored
             "both prepare paths agree for {}",
             provider.access().namespace().as_str()
         );
+        assert_hits_hydrate_their_indexed_fields(&providers, &prepared, &loaded).await;
         entries.push(stored);
     }
 
@@ -191,6 +194,40 @@ async fn entries_prepared_from_the_catalog_equal_entries_rebuilt_from_the_stored
         ["lookup", "resources/read"],
         "the unavailable task-only tool has no entry"
     );
+}
+
+/// Hydrates every entry of `prepared` as a search hit through `loaded` and
+/// checks each hit carries the declaration fields its entry indexed.
+async fn assert_hits_hydrate_their_indexed_fields(
+    providers: &crate::ProviderModule,
+    prepared: &crate::GenerationEntries,
+    loaded: &crate::LoadedGenerations,
+) {
+    let mut transaction = providers.database.begin_read_snapshot().await.unwrap();
+    let active = crate::active_providers_in_transaction(&mut transaction, prepared.workspace_id())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|active| active.provider().id() == prepared.provider_id())
+        .expect("the Provider is active");
+    for operation in prepared.operations() {
+        let hydrated = crate::hydrate_operation_in_transaction(
+            &mut transaction,
+            loaded,
+            &active,
+            operation.key(),
+        )
+        .await
+        .unwrap()
+        .expect("an indexed Operation hydrates");
+        assert_eq!(
+            hydrated.declaration_fields(),
+            operation.declaration_fields(),
+            "a hit hydrates the fields its entry indexed: {}",
+            operation.key().as_str()
+        );
+    }
+    transaction.rollback().await.unwrap();
 }
 
 #[tokio::test]

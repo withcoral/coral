@@ -58,6 +58,7 @@ mod types;
 use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
+use coral_provider::LoadedGenerations;
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 
@@ -193,10 +194,12 @@ impl UniversalSearchModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         self.authorize(&mut transaction, actor, workspace_id)
             .await?;
+        let loaded = LoadedGenerations::default();
         let context = RequestContext {
             actor,
             workspace_id,
             terms: normalized.as_ref().map(|query| query.terms.as_slice()),
+            loaded: &loaded,
         };
         let (ranked, statuses) = match &normalized {
             None => {
@@ -262,6 +265,7 @@ impl UniversalSearchModule {
                 actor,
                 workspace_id,
                 terms: None,
+                loaded: &LoadedGenerations::default(),
             },
         )
         .await?;
@@ -450,10 +454,12 @@ impl UniversalSearchModule {
         workspace_id: &WorkspaceId,
         call_path: &CallPath,
     ) -> Result<Option<ExactAuthoringDescription>, Error> {
+        let loaded = LoadedGenerations::default();
         let context = RequestContext {
             actor,
             workspace_id,
             terms: None,
+            loaded: &loaded,
         };
         for retriever in self.retrievers.iter() {
             if let Some(exact) = retriever.describe(transaction, context, call_path).await? {

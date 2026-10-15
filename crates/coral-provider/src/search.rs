@@ -5,11 +5,12 @@
 //! stored and ranked. The entries are secret-free and carry no visibility:
 //! Universal Search asks the owners about visibility at query time.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 
 use coral_catalog::{
     DeclarationIndexEntry, MaterializedOperation, OperationAvailability, OperationKey,
-    OperationPresentation, PreparedProviderCatalog, ProviderGenerationId,
+    OperationPresentation, PreparedProviderCatalog, ProviderGenerationId, StoredDeclarationFields,
 };
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
@@ -259,7 +260,7 @@ pub async fn prepare_active_generation_entries_in_transaction(
         coral_catalog::schema_graph_in_transaction(transaction, &stored.generation_id).await?;
     let operations =
         coral_catalog::operations_in_transaction(transaction, &stored.generation_id).await?;
-    let declaration_fields = coral_catalog::stored_declaration_fields(&graph, &operations)?;
+    let declaration_fields = StoredDeclarationFields::new(graph).all(&operations)?;
     Ok(Some(GenerationEntries::new(
         &stored.provider,
         stored.generation_id,
@@ -436,9 +437,40 @@ impl HydratedOperation {
     }
 }
 
+/// The stored Generations one search request has loaded for its hits.
+///
+/// Loading a Generation's schema graph and naming its types cost time in
+/// proportion to the whole Provider, while one hit needs a single Operation's
+/// fields. A request keeps one of these so hits of the same Generation load
+/// it once. Generations are immutable, so what it holds never goes stale.
+#[derive(Default)]
+pub struct LoadedGenerations(Mutex<HashMap<ProviderGenerationId, StoredDeclarationFields>>);
+
+impl LoadedGenerations {
+    fn operation_fields(
+        &self,
+        generation_id: &ProviderGenerationId,
+        operation: &MaterializedOperation,
+    ) -> Option<Result<Vec<DeclarationIndexEntry>, coral_catalog::Error>> {
+        self.0
+            .lock()
+            .expect("loaded generations mutex poisoned")
+            .get(generation_id)
+            .map(|fields| fields.operation(operation))
+    }
+
+    fn keep(&self, generation_id: ProviderGenerationId, fields: StoredDeclarationFields) {
+        self.0
+            .lock()
+            .expect("loaded generations mutex poisoned")
+            .insert(generation_id, fields);
+    }
+}
+
 /// Hydrates one Operation of the Provider's active Generation for a search
 /// hit, after ranking: its authoring material and its declaration fields,
-/// rebuilt from the stored schema graph.
+/// rebuilt from the stored schema graph. The graph is read once per
+/// Generation for each `loaded`.
 ///
 /// `Ok(None)` when the Generation has no structurally available Operation
 /// under the key. The caller decides visibility.
@@ -449,6 +481,7 @@ impl HydratedOperation {
 /// package can no longer be prepared.
 pub async fn hydrate_operation_in_transaction(
     transaction: &mut Transaction<'_>,
+    loaded: &LoadedGenerations,
     provider: &ActiveProvider,
     operation_key: &OperationKey,
 ) -> Result<Option<HydratedOperation>, Error> {
@@ -461,14 +494,18 @@ pub async fn hydrate_operation_in_transaction(
     .filter(|operation| operation.availability() == OperationAvailability::Available) else {
         return Ok(None);
     };
-    let graph =
-        coral_catalog::schema_graph_in_transaction(transaction, provider.generation_id()).await?;
-    let declaration_fields =
-        coral_catalog::stored_declaration_fields(&graph, std::slice::from_ref(&operation))?
-            .remove(operation_key)
-            .ok_or_else(|| {
-                Error::CorruptData("an available Operation has no declaration fields".to_string())
-            })?;
+    let generation_id = provider.generation_id();
+    let declaration_fields = if let Some(fields) =
+        loaded.operation_fields(generation_id, &operation)
+    {
+        fields?
+    } else {
+        let graph = coral_catalog::schema_graph_in_transaction(transaction, generation_id).await?;
+        let fields = StoredDeclarationFields::new(graph);
+        let declaration_fields = fields.operation(&operation)?;
+        loaded.keep(generation_id.clone(), fields);
+        declaration_fields
+    };
     Ok(Some(HydratedOperation {
         material: OperationAuthoringMaterial::new(
             provider.provider().access(),

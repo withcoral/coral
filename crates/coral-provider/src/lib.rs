@@ -32,8 +32,9 @@ mod repository;
 mod search;
 pub use search::{
     ActiveGeneration, ActiveProvider, EntryMaterial, GenerationEntries, HydratedOperation,
-    OperationEntry, active_generations_in_transaction, active_providers_in_transaction,
-    hydrate_operation_in_transaction, operation_material_by_relative_path_in_transaction,
+    LoadedGenerations, OperationEntry, active_generations_in_transaction,
+    active_providers_in_transaction, hydrate_operation_in_transaction,
+    operation_material_by_relative_path_in_transaction,
     prepare_active_generation_entries_in_transaction, prepare_operation_entries,
 };
 #[cfg(test)]
