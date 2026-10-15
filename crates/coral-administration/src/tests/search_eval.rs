@@ -141,6 +141,15 @@ async fn search_quality_eval() {
         });
         std::fs::write(dump, lines).unwrap();
     }
+    let unanswerable = cases
+        .iter()
+        .filter(|case| case.accept.is_empty())
+        .map(|case| &case.query)
+        .collect::<Vec<_>>();
+    assert!(
+        unanswerable.is_empty(),
+        "queries that accept no Operation: {unanswerable:?}"
+    );
     let unknown = cases
         .iter()
         .flat_map(|case| &case.accept)
