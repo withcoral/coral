@@ -375,6 +375,29 @@ it('accepts encoded Agent navigation and rejects encoded path separators', async
     observeActivity(request({ ...observation, path: `/${workspace}/agents/agent%2Fother` }), f.api),
   ).rejects.toMatchObject({ status: 400 })
 })
+// Catches: a reader scrolled to a Run child the validator does not name, whose observation
+// was refused, so the whole page reported Activity, pending actions and the list unavailable.
+it.each([
+  ['an emission', 'events/3'],
+  ['the final value', 'final'],
+  ['a middleware execution', 'middlewareExecutions/00000000-0000-4000-8000-000000000005'],
+])('observes a Run window anchored at %s', async (_, record) => {
+  const f = fixture()
+  const run = `${workspace}/runs/00000000-0000-4000-8000-000000000003`
+  const response = await observeActivity(
+    request({
+      ...observation,
+      search: `?tree=1&expand=${run}`,
+      window: {
+        ...observation.window,
+        branches: { [run]: { offset: 2, anchor: `${run}/${record}`, preceding: 0 } },
+      },
+    }),
+    f.api,
+  )
+  expect(response.status).toBe(200)
+  await response.body!.cancel()
+})
 it('rejects unbounded or invalid viewports before any domain query', async () => {
   const f = fixture()
   for (const body of [
