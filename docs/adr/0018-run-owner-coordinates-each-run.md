@@ -74,8 +74,10 @@ lock without a write fence is the shape the evidence rejects.
 - **Recovery**. At boot, before any listener binds, Coral
   recreates one owner per `running` Run with passed timers queued in deadline order, then "finish the recorded
   termination" or "interrupt"; it takes over every claim because every holder is known dead; each owner writes one chunk
-  and retires. Coral never resumes a Run. Graceful shutdown sends interrupt to every live owner and waits a bounded
-  grace. No sweeper.
+  and retires. Coral never resumes a Run. An owner task that ends without retiring while the process lives (a panic
+  unwinds; nothing aborts the process) is caught by its supervisor through the task's join handle, which takes over the
+  claim and writes the same one-chunk interruption, so a Run never waits for a restart to end. Graceful shutdown sends
+  interrupt to every live owner and waits a bounded grace. No sweeper.
 - **Pool**. One pool, no connection classes, no reserved
   capacity. A Run holds at most one connection at a time, for one chunk commit.
 
@@ -125,6 +127,15 @@ lock without a write fence is the shape the evidence rejects.
 - **Measurement before and after.** The load harness (PR #2392) is the comparison tool: the admission burst, `begin`
   and readiness during the burst, admit p95 and the lock-wait ceiling should move; the emit-to-visible numbers from
   the cadence spike must hold behind `RunModule` with V8, the fence and the probes.
+- **Stop-before-start deployment is required.** Boot takeover treats every claim as dead, so one Coral process runs
+  against a database at a time: a rollout stops the old process, waits for its shutdown grace, then starts the new one.
+  An overlapping rollout would interrupt the old process's Runs at the new process's boot and leave the Runs it
+  accepted after that boot with no owner until the next restart. The hosted deployment and the self-host guides must
+  say so before boot recovery ships. Multi-process Coral lifts the rule with the holder-instance column of contract
+  line 8.
+- **Every observable commit notifies.** On Postgres each chunk commit calls `pg_notify` and holds the notify lock
+  through commit, as every Event write does today; chunking reduces the count, and the fence slice measures what
+  remains beside the `FOR SHARE` delta.
 - **Out of this decision.** The first-time `operation_access_rules` row race (an absent row locks nothing);
   sign-in's own serialisation on the Organization authority guard; pool size, acquire timeout and pool metrics
   (#2391); Reef's activity stream and `wait` subscriptions.
