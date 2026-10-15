@@ -96,54 +96,15 @@ impl ProviderModule {
     }
 }
 
-/// What one boot's Built-in catalog update did, Built-in Provider by
-/// Built-in Provider.
-#[derive(Debug)]
-pub struct BuiltinCatalogUpdates {
-    /// Each Generation an update replaced, with its Workspace and Provider.
-    pub replaced: Vec<ActiveGeneration>,
-    /// Each Built-in Provider whose update failed. It keeps its catalog until
-    /// the next boot.
-    pub failed: Vec<(ActiveGeneration, Error)>,
-}
-
 impl ProviderModule {
-    /// Updates every Workspace's Built-in Provider whose Generation pins a
-    /// catalog other than the one this process serves, each in its own
-    /// transaction, with Coral as the recorded actor. The Provider keeps its
-    /// state, in an active or an archived Workspace. Bootstrap runs it before
-    /// the process takes requests. A failed update leaves the others to run.
+    /// Lists the Built-in Providers' active Generations, across Workspaces and
+    /// in any state, that pin a catalog other than the one this process serves.
     ///
     /// # Errors
     ///
     /// Returns a persistence failure, or corrupt data for a Generation that
-    /// pins no well-formed catalog identity, while it lists the Built-in
-    /// Providers. A failed update of one Provider is in
-    /// [`BuiltinCatalogUpdates::failed`] instead.
-    pub async fn update_builtin_catalogs(
-        &self,
-        occurred_at_unix_nanos: i64,
-    ) -> Result<BuiltinCatalogUpdates, Error> {
-        let mut updates = BuiltinCatalogUpdates {
-            replaced: Vec::new(),
-            failed: Vec::new(),
-        };
-        for outdated in self.outdated_builtin_generations().await? {
-            match self
-                .update_builtin_catalog(&outdated, occurred_at_unix_nanos)
-                .await
-            {
-                Ok(true) => updates.replaced.push(outdated),
-                Ok(false) => {}
-                Err(error) => updates.failed.push((outdated, error)),
-            }
-        }
-        Ok(updates)
-    }
-
-    /// Lists the Built-in Providers' active Generations, across Workspaces,
-    /// that pin a catalog other than the one this process serves.
-    async fn outdated_builtin_generations(&self) -> Result<Vec<ActiveGeneration>, Error> {
+    /// pins no well-formed catalog identity.
+    pub async fn outdated_builtin_generations(&self) -> Result<Vec<ActiveGeneration>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let mut outdated = Vec::new();
         for active in provider_repository::builtin_active_generations(&mut transaction).await? {
@@ -162,20 +123,27 @@ impl ProviderModule {
     }
 
     /// Replaces `outdated` with a Generation of the catalog this process
-    /// serves, in its own transaction. `false` means the Provider is gone or
-    /// another process replaced `outdated` first, and nothing changes.
-    async fn update_builtin_catalog(
+    /// serves, in the caller's transaction, with Coral as the recorded actor.
+    /// The Provider keeps its state, in an active or an archived Workspace.
+    /// `false` means the Provider is gone or another process replaced
+    /// `outdated` first, and nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence or corrupt-data failure. An error may follow
+    /// writes; do not commit after one.
+    pub async fn update_builtin_catalog_in_transaction(
         &self,
+        transaction: &mut Transaction<'_>,
         outdated: &ActiveGeneration,
         occurred_at_unix_nanos: i64,
     ) -> Result<bool, Error> {
         let workspace_id = outdated.workspace_id();
         let provider_id = outdated.provider_id();
-        let mut transaction = self.database.begin().await?;
         // Processes that boot together each try; the first one to hold the
-        // row updates it, and the others then find another Generation active.
+        // row replaces the Generation, and the others then find another active.
         if !provider_repository::hold_provider_in_transaction(
-            &mut transaction,
+            transaction,
             workspace_id,
             provider_id,
         )
@@ -183,12 +151,9 @@ impl ProviderModule {
         {
             return Ok(false);
         }
-        let Some(stored) = provider_repository::provider_in_transaction(
-            &mut transaction,
-            workspace_id,
-            provider_id,
-        )
-        .await?
+        let Some(stored) =
+            provider_repository::provider_in_transaction(transaction, workspace_id, provider_id)
+                .await?
         else {
             return Ok(false);
         };
@@ -196,13 +161,13 @@ impl ProviderModule {
             return Ok(false);
         }
         let generation = coral_catalog::publish_builtin_generation_in_transaction(
-            &mut transaction,
+            transaction,
             &self.builtin_catalog,
             occurred_at_unix_nanos,
         )
         .await?;
         if !provider_repository::activate_builtin_generation(
-            &mut transaction,
+            transaction,
             workspace_id,
             provider_id,
             outdated.generation_id(),
@@ -213,7 +178,7 @@ impl ProviderModule {
             return Err(Error::EtagMismatch);
         }
         provider_repository::insert_lifecycle_event(
-            &mut transaction,
+            transaction,
             provider_repository::NewLifecycleEvent {
                 workspace_id: Some(workspace_id),
                 actor: LifecycleActor::Coral,
@@ -226,7 +191,6 @@ impl ProviderModule {
             },
         )
         .await?;
-        transaction.commit().await?;
         Ok(true)
     }
 }

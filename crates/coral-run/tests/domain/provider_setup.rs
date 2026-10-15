@@ -1011,12 +1011,21 @@ async fn an_operation_this_version_does_not_perform_fails_before_approval() {
         newer_catalog,
     );
     // A process of the newer Coral boots and updates the Workspace.
-    let updates = newer.update_builtin_catalogs(20).await.unwrap();
-    assert_eq!(
-        (updates.replaced.len(), updates.failed.len()),
-        (1, 0),
+    let [outdated] = newer
+        .outdated_builtin_generations()
+        .await
+        .unwrap()
+        .try_into()
+        .expect("the Workspace's Built-in Provider pins the older catalog");
+    let mut transaction = scope.fixture.database.begin().await.unwrap();
+    assert!(
+        newer
+            .update_builtin_catalog_in_transaction(&mut transaction, &outdated, 20)
+            .await
+            .unwrap(),
         "the newer Coral publishes its catalog"
     );
+    transaction.commit().await.unwrap();
 
     let run = scope
         .start(
