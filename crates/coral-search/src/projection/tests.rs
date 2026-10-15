@@ -2,9 +2,9 @@ use coral_catalog::{OperationHints, OperationPresentation};
 use serde_json::{Value, json};
 
 use crate::{
-    ApprovalRequirement, CallPath, EntityKind, OperationAuthoringDescription, ProviderId,
-    ProviderNamespace, RetrieverCoverage, RetrieverState, RetrieverStatus, SearchCursor,
-    SearchEvidence, SearchHit, SearchPage, types::HitText,
+    ApprovalRequirement, CallPath, EntityKind, OperationAuthoringDescription, ProviderCallRoot,
+    ProviderId, RetrieverCoverage, RetrieverState, RetrieverStatus, SearchCursor, SearchEvidence,
+    SearchHit, SearchPage, types::HitText,
 };
 
 #[test]
@@ -175,7 +175,7 @@ fn operation_hit(
     approval: ApprovalRequirement,
     deprecated: bool,
 ) -> SearchHit {
-    let namespace = ProviderNamespace::parse("github").expect("namespace");
+    let call_root = ProviderCallRoot::parse("coral.providers.github").expect("call root");
     let presentation: OperationPresentation = serde_json::from_value(json!({
         "title": "List pull requests",
         "description": "Lists pull requests.",
@@ -185,9 +185,9 @@ fn operation_hit(
     }))
     .expect("presentation");
     let description = OperationAuthoringDescription::new(
-        CallPath::operation(&namespace, "pulls.list").expect("Call Path"),
+        CallPath::operation(&call_root, "pulls.list").expect("Call Path"),
         "declare function list(): void;".into(),
-        namespace,
+        call_root,
         ProviderId::parse("6f1c7e52-7d1d-4a8e-9a43-3c1d1f0b5a10").expect("Provider id"),
         "GitHub".into(),
         presentation,
