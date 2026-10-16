@@ -8,7 +8,7 @@
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{MaterializationOutcome, McpDiscoverySnapshot, ProviderSetupInput};
 use coral_outbound::DestinationPolicy;
-use coral_upstream::{McpResources, McpUpstream, ReadyMcpDispatch};
+use coral_upstream::{McpRejection, McpResources, McpUpstream, ReadyMcpDispatch};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use wiremock::matchers::{body_partial_json, method};
@@ -446,6 +446,296 @@ async fn expired_sessions_protocol_errors_and_oversized_results_never_repeat_the
             1
         );
     }
+}
+
+/// What the peer's `tools/list` says about the called tool once `tools/call`
+/// is refused with JSON-RPC `-32602`.
+#[derive(Clone, Copy, Debug)]
+enum ToolListing {
+    Lists,
+    ListsOnSecondPage,
+    Omits,
+    Fails,
+}
+
+async fn mount_tool_listing(server: &MockServer, listing: ToolListing) {
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"method": "tools/list"})))
+        .respond_with(move |request: &Request| {
+            let request: Value = request.body_json().expect("tools/list");
+            let tools = |names: &[&str]| -> Vec<Value> {
+                names
+                    .iter()
+                    .map(|name| json!({"name": name, "inputSchema": {"type": "object"}}))
+                    .collect()
+            };
+            let result = match listing {
+                ToolListing::Fails => return ResponseTemplate::new(500),
+                ToolListing::Lists => json!({"tools": tools(&["other", "mixed"])}),
+                ToolListing::ListsOnSecondPage
+                    if request["params"]["cursor"] == json!("page-2") =>
+                {
+                    json!({"tools": tools(&["mixed"])})
+                }
+                ToolListing::ListsOnSecondPage => {
+                    json!({"tools": tools(&["other"]), "nextCursor": "page-2"})
+                }
+                ToolListing::Omits => json!({"tools": tools(&["other"])}),
+            };
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+        })
+        .mount(server)
+        .await;
+}
+
+async fn requests_for(server: &MockServer, method: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("requests")
+        .iter()
+        .filter(|request| {
+            request
+                .body_json::<Value>()
+                .is_ok_and(|value| value["method"] == method)
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn json_rpc_errors_are_typed_rejections_that_never_repeat_the_call() {
+    for (code, sse, listing, expected, listings) in [
+        (
+            -32602,
+            false,
+            ToolListing::Lists,
+            McpRejection::InvalidParams,
+            1,
+        ),
+        (
+            -32602,
+            true,
+            ToolListing::Lists,
+            McpRejection::InvalidParams,
+            1,
+        ),
+        (
+            -32602,
+            false,
+            ToolListing::ListsOnSecondPage,
+            McpRejection::InvalidParams,
+            2,
+        ),
+        (
+            -32602,
+            false,
+            ToolListing::Omits,
+            McpRejection::UnknownTool,
+            1,
+        ),
+        // An unreadable listing keeps the peer's own answer.
+        (
+            -32602,
+            false,
+            ToolListing::Fails,
+            McpRejection::InvalidParams,
+            1,
+        ),
+        (
+            -32603,
+            false,
+            ToolListing::Lists,
+            McpRejection::Other(-32603),
+            0,
+        ),
+    ] {
+        let server = server_with_response(
+            move |request: &Request| {
+                let request: Value = request.body_json().expect("call");
+                let envelope = json!({"jsonrpc": "2.0", "id": request["id"], "error": {
+                    "code": code, "message": "Invalid params: message-canary",
+                    "data": {"field": "zzzUnknown", "secret": "data-canary"}
+                }});
+                if sse {
+                    ResponseTemplate::new(200)
+                        .set_body_raw(format!("data: {envelope}\n\n"), "text/event-stream")
+                } else {
+                    ResponseTemplate::new(200).set_body_json(envelope)
+                }
+            },
+            true,
+        )
+        .await;
+        mount_tool_listing(&server, listing).await;
+        let error = call_once(&server, 4096)
+            .await
+            .expect_err("a JSON-RPC error is an answer, not a result");
+        assert!(
+            matches!(error, coral_upstream::Error::McpRejected(rejection) if rejection == expected),
+            "{listing:?}: {error:?}"
+        );
+        assert!(
+            !error.to_string().contains("canary"),
+            "the peer's error payload never leaves the Adapter: {error}"
+        );
+        server.verify().await;
+        assert_eq!(
+            requests_for(&server, "tools/call").await,
+            1,
+            "{listing:?}: a rejection is never retried"
+        );
+        assert_eq!(
+            requests_for(&server, "tools/list").await,
+            listings,
+            "{listing:?}: only a -32602 on tools/call reads the listing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_json_rpc_error_on_resources_read_is_a_typed_rejection_without_a_listing_read() {
+    for (code, expected) in [
+        (-32602, McpRejection::InvalidParams),
+        (-32603, McpRejection::Other(-32603)),
+    ] {
+        let server = server(json!({"content": [
+            {"type": "resource_link", "uri": "private://bucket/report", "name": "report"}
+        ]}))
+        .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "resources/read"})))
+            .respond_with(move |request: &Request| {
+                let request: Value = request.body_json().expect("read request");
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0", "id": request["id"], "error": {
+                        "code": code, "message": "Resource not found: message-canary",
+                        "data": {"uri": "private://bucket/report", "secret": "data-canary"}
+                    }
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let catalog = catalog(&server.uri());
+        let tool = catalog
+            .operations()
+            .iter()
+            .find(|op| op.key().as_str() == "mixed")
+            .expect("tool");
+        let read = catalog
+            .operations()
+            .iter()
+            .find(|op| op.key().as_str() == "resources/read")
+            .expect("resource Operation");
+        let resources = Arc::new(McpResources::default());
+        let upstream = McpUpstream::new(
+            DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
+        )
+        .expect("client");
+        let dispatch = ReadyMcpDispatch::plan(
+            tool,
+            &json!({"page": 2}),
+            "provider-a",
+            resources.clone(),
+            coral_value::ValueLimits::default(),
+        )
+        .expect("plan");
+        let outcome = upstream.send(dispatch).await.expect("link");
+        let args =
+            json!({"reference": outcome.operation_result()["data"]["content"][0]["resource"]});
+        let dispatch = ReadyMcpDispatch::plan(
+            read,
+            &args,
+            "provider-a",
+            resources,
+            coral_value::ValueLimits::default(),
+        )
+        .expect("reference");
+        let error = upstream
+            .send(dispatch)
+            .await
+            .expect_err("a JSON-RPC error is an answer, not a result");
+        assert!(
+            matches!(error, coral_upstream::Error::McpRejected(rejection) if rejection == expected),
+            "{code}: {error:?}"
+        );
+        assert!(
+            !error.to_string().contains("canary"),
+            "the peer's error payload never leaves the Adapter: {error}"
+        );
+        server.verify().await;
+        assert_eq!(
+            requests_for(&server, "resources/read").await,
+            1,
+            "{code}: a rejection is never retried"
+        );
+        assert_eq!(
+            requests_for(&server, "tools/list").await,
+            0,
+            "{code}: only a tools/call rejection reads the listing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_malformed_json_rpc_error_is_not_a_rejection() {
+    for error in [
+        json!({"code": -32602}),
+        json!({"message": "no code"}),
+        json!({"code": "-32602", "message": "code must be an integer"}),
+    ] {
+        let server = server_with_response(
+            move |request: &Request| {
+                let request: Value = request.body_json().expect("call");
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc": "2.0", "id": request["id"], "error": error}))
+            },
+            false,
+        )
+        .await;
+        let error = call_once(&server, 4096)
+            .await
+            .expect_err("a malformed error envelope is no answer");
+        assert!(
+            matches!(error, coral_upstream::Error::McpRequest),
+            "{error:?}"
+        );
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn a_refused_initialize_is_an_incomplete_request_not_a_rejection() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &Request| {
+            let request: Value = request.body_json().expect("json-rpc");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": request["id"],
+                "error": {"code": -32602, "message": "unsupported protocol version"}
+            }))
+        })
+        .mount(&server)
+        .await;
+    let error = call_once(&server, 4096)
+        .await
+        .expect_err("no session was established");
+    assert!(
+        matches!(error, coral_upstream::Error::McpRequest),
+        "{error:?}"
+    );
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .any(|request| request
+                .body_json::<Value>()
+                .is_ok_and(|value| value["method"] == "tools/call")),
+        "the Operation request is never sent without a session"
+    );
 }
 
 #[tokio::test]

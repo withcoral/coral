@@ -291,9 +291,13 @@ fn operation_scoped_schema_names_do_not_collide_and_non_object_roots_are_unavail
         .filter(|operation| operation.availability() == OperationAvailability::Available)
         .collect::<Vec<_>>();
     assert_eq!(available.len(), 2);
-    let aliases = available
+    let declarations = available
         .iter()
-        .flat_map(|operation| operation.typescript_declaration().lines())
+        .map(|operation| prepared.authoring_declaration(operation))
+        .collect::<Vec<_>>();
+    let aliases = declarations
+        .iter()
+        .flat_map(|declaration| declaration.lines())
         .filter(|line| line.starts_with("type SharedSchema"))
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(

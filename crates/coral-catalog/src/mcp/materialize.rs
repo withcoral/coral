@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Stable version of the bounded schema-faithful MCP profile materializer.
-pub(crate) const MATERIALIZER_VERSION: &str = "mcp-schema-faithful-search-profile-v1";
+pub(crate) const MATERIALIZER_VERSION: &str = "mcp-schema-faithful-search-profile-v2";
 const RESOURCE_READ_KEY: &str = "resources/read";
 const RESOURCE_READ_PATH: &str = "resources.read";
 
@@ -170,6 +170,7 @@ fn build_mcp(
     })?;
     let mut operations = Vec::with_capacity(builds.len());
     let type_names = typescript_names(&schema_graph);
+    let mut shared_types = crate::schema::SharedTypes::default();
     for mut build in builds {
         if let Some(configuration) = input.configuration() {
             build
@@ -180,33 +181,31 @@ fn build_mcp(
             .binding
             .set_credential_contract(credential_contract.clone());
         let reads_resource = build.binding.invocation_method() == McpInvocationMethod::ReadResource;
-        let declaration = match project_mcp_typescript(
+        let (declaration, type_references) = match project_mcp_typescript(
             &build.relative_path,
             &build.input_schema,
             build.output_schema.as_ref(),
             reads_resource,
             &schema_graph,
             &type_names,
+            &mut shared_types,
         ) {
             Ok(projection) => {
                 build.diagnostics.extend(projection.diagnostics);
-                projection.declaration
+                (projection.declaration, projection.type_references)
             }
             Err(diagnostic) => {
                 build.diagnostics.push(diagnostic);
-                fallback_typescript(&build.relative_path)?
+                (fallback_typescript(&build.relative_path)?, Vec::new())
             }
         };
-        if !crate::types::operation_description_fits(
+        if let Some(diagnostic) = crate::types::operation_description_too_large(
             &build.relative_path,
             &display_name,
             &declaration,
             &build.presentation,
         ) {
-            build.diagnostics.push(CatalogDiagnostic::stable(
-                "operation_authoring_description_too_large",
-                "the complete Operation Authoring Description exceeds the discovery limit",
-            ));
+            build.diagnostics.push(diagnostic);
         }
         let binding_json = build.binding.to_storage_json().map_err(|_error| {
             diagnostic(
@@ -232,12 +231,18 @@ fn build_mcp(
             build.input_schema_json,
             build.output_schema_json,
             declaration,
+            type_references,
             build.diagnostics,
             diagnostics_json,
         ));
     }
-    let catalog =
-        PreparedProviderCatalog::new(display_name, schema_graph, schema_graph_json, operations);
+    let catalog = PreparedProviderCatalog::new(
+        display_name,
+        schema_graph,
+        schema_graph_json,
+        operations,
+        shared_types,
+    );
     let Some(configuration) = input.configuration() else {
         return Ok(catalog);
     };

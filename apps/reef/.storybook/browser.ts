@@ -39,7 +39,7 @@ export async function emulateReducedMotion(reduce: boolean) {
   const context = await browser()
   if (!context) return false
   await context.cdp().send('Emulation.setEmulatedMedia', {
-    features: [{ name: 'prefers-reduced-motion', value: reduce ? 'reduce' : '' }],
+    features: [{ name: 'prefers-reduced-motion', value: reduce ? 'reduce' : 'no-preference' }],
   })
   await confirm(
     `prefers-reduced-motion: ${reduce ? 'reduce' : 'no-preference'}`,

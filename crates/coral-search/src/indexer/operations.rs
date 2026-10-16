@@ -40,9 +40,10 @@ impl EntityIndexer for OperationIndexer {
         transaction: &mut Transaction<'_>,
         entries: &GenerationEntries,
     ) -> Result<(), IndexError> {
-        let attempted_at = now_unix_nanos()?;
         let workspace_id = entries.workspace_id();
         let generation_id = entries.generation_id();
+        repository::lock_workspace(transaction, workspace_id).await?;
+        let attempted_at = now_unix_nanos()?;
         let rows = entries
             .operations()
             .iter()
@@ -52,7 +53,7 @@ impl EntityIndexer for OperationIndexer {
         // A Generation keeps its Operations, but the reconcile task prepares
         // entries under the current rules, which may leave one out; a rewrite
         // then removes that row.
-        repository::delete_rows_not_written(transaction, workspace_id, generation_id, attempted_at)
+        repository::delete_rows_not_written(transaction, workspace_id, generation_id, &rows)
             .await?;
         repository::write_generation_state(
             transaction,
@@ -73,7 +74,10 @@ impl EntityIndexer for OperationIndexer {
             OperationRemoval::Provider {
                 workspace_id,
                 provider_id,
-            } => repository::delete_provider(transaction, workspace_id, provider_id).await?,
+            } => {
+                repository::lock_workspace(transaction, workspace_id).await?;
+                repository::delete_provider(transaction, workspace_id, provider_id).await?;
+            }
             OperationRemoval::Generation(generation_id) => {
                 repository::delete_generation(transaction, generation_id).await?;
             }
@@ -122,6 +126,10 @@ impl OperationIndexer {
     /// Best effort across processes: a Generation another process activates
     /// and indexes after `active` was read counts as superseded here. Its
     /// rows and state row go, and the next pass indexes it again.
+    ///
+    /// Takes no Workspace lock and recounts no statistics: a delete lowers
+    /// the Workspace's row count, so the statistics step of the same pass
+    /// recounts the Workspace under its lock.
     pub(crate) async fn remove_superseded(
         &self,
         transaction: &mut Transaction<'_>,
@@ -200,6 +208,7 @@ pub(crate) async fn record_failed_attempt(
     generation: AttemptedGeneration<'_>,
     error: &IndexError,
 ) -> Result<(), IndexError> {
+    repository::lock_workspace(transaction, generation.workspace_id).await?;
     repository::delete_generation_rows(
         transaction,
         generation.workspace_id,
