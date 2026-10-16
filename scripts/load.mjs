@@ -66,37 +66,52 @@ async function parseArgs(argv) {
     release: false,
     label: '',
   }
-  const list = (value) => value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v))
   for (let i = 0; i < argv.length; i += 1) {
     const [flag, inline] = argv[i].split('=', 2)
-    const next = () => (inline !== undefined ? inline : argv[++i])
+    const next = () => {
+      const value = inline !== undefined ? inline : argv[++i]
+      if (value === undefined || value === '') throw new Error(`${flag} needs a value`)
+      return value
+    }
+    /** A non-negative integer, or at least `min`. */
+    const integer = (value, min = 0) => {
+      const n = Number(value)
+      if (!Number.isInteger(n) || n < min) throw new Error(`${flag} needs an integer of at least ${min}, got ${JSON.stringify(value)}`)
+      return n
+    }
+    const list = (value, min) => {
+      const values = value.split(',').map((v) => integer(v.trim(), min))
+      if (values.length === 0) throw new Error(`${flag} needs at least one value`)
+      return values
+    }
     switch (flag) {
       case '--backend':
         options.backend = next()
         break
       case '--cells':
         options.cells = next().split(',').map((v) => v.trim()).filter(Boolean)
+        if (options.cells.length === 0) throw new Error('--cells needs at least one cell')
         break
       case '--calls':
-        options.calls = list(next())
+        options.calls = list(next(), 1)
         break
       case '--latency':
-        options.latency = list(next())
+        options.latency = list(next(), 0)
         break
       case '--mode':
         options.mode = next()
         break
       case '--hold-secs':
-        options.holdSecs = Number(next())
+        options.holdSecs = integer(next(), 0)
         break
       case '--emits':
-        options.emits = Number(next())
+        options.emits = integer(next(), 1)
         break
       case '--large-emits':
-        options.largeEmits = Number(next())
+        options.largeEmits = integer(next(), 1)
         break
       case '--runs':
-        options.runs = Number(next())
+        options.runs = integer(next(), 1)
         break
       case '--out':
         options.out = next()
@@ -166,8 +181,14 @@ class Toxiproxy {
     return response
   }
 
-  /** Start or reuse the container and point its proxy at `upstreamPort` on the host. */
-  async start(upstreamPort) {
+  /** Start or reuse the container and point its proxy at the Postgres behind `databaseUrl`. */
+  async start(databaseUrl) {
+    const upstream = new URL(databaseUrl)
+    const upstreamPort = Number(upstream.port || 5432)
+    // The container reaches a Postgres on this machine through Docker's host alias;
+    // any other host is forwarded as configured.
+    const loopback = ['localhost', '127.0.0.1', '[::1]', '::1']
+    const upstreamHost = loopback.includes(upstream.hostname) ? 'host.docker.internal' : upstream.hostname
     const { stdout } = await this.command([
       'container', 'ls', '--all', '--format', '{{.Names}}', '--filter', `name=${this.container}`,
     ], 10_000)
@@ -193,7 +214,7 @@ class Toxiproxy {
     const definition = {
       name: this.proxy,
       listen: `0.0.0.0:${this.pgPort}`,
-      upstream: `host.docker.internal:${upstreamPort}`,
+      upstream: `${upstreamHost}:${upstreamPort}`,
       enabled: true,
     }
     const created = await this.api('POST', '/proxies', definition)
@@ -204,7 +225,8 @@ class Toxiproxy {
   }
 
   async setLatency(ms) {
-    await this.api('DELETE', `/proxies/${this.proxy}/toxics/latency`)
+    const removed = await this.api('DELETE', `/proxies/${this.proxy}/toxics/latency`)
+    if (!removed.ok && removed.status !== 404) throw new Error(`toxiproxy latency toxic removal failed: ${removed.status}`)
     if (ms <= 0) return
     const response = await this.api('POST', `/proxies/${this.proxy}/toxics`, {
       name: 'latency',
@@ -224,6 +246,10 @@ class Toxiproxy {
   }
 }
 
+/** The cell running right now, so an interrupt can stop it before cleanup. */
+let currentCell = null
+let interrupted = null
+
 function runTest(test, cellEnv, release) {
   return new Promise((resolve, reject) => {
     const args = [
@@ -233,8 +259,22 @@ function runTest(test, cellEnv, release) {
     ]
     if (release) args.push('--cargo-profile', 'release')
     const child = spawn('cargo', args, { env: cellEnv, stdio: ['ignore', 'inherit', 'inherit'] })
+    currentCell = child
     child.once('error', reject)
-    child.once('exit', (code) => resolve(code ?? 1))
+    child.once('exit', (code, signal) => {
+      currentCell = null
+      resolve(signal ? 1 : (code ?? 1))
+    })
+  })
+}
+
+// An interrupted run still closes the database and clears the proxy latency:
+// stop the cell, remember the signal, and let the main flow reach `finally`.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    interrupted = signal
+    console.error(`\n${signal}: stopping the current cell and cleaning up`)
+    currentCell?.kill('SIGTERM')
   })
 }
 
@@ -284,7 +324,9 @@ const p95 = (p) => (p && p.n > 0 ? fmt(p.p95_ms) : '—')
 const p95Failed = (p) => (p && p.n > 0 ? `${fmt(p.p95_ms)} / ${failed(p)}` : '—')
 const seconds = (ms) => `${fmt(ms / 1000, 1)} s`
 const phaseOf = (r, name) => r.phases.find((p) => p.name === name) ?? {}
-const cellName = (r, detail) => `${r.backend} ${detail}${r.label ? ` ${r.label}` : ''}${r.debug_assertions ? ' (debug)' : ''}`
+const cellName = (r, detail) =>
+  `${r.backend} ${detail}${r.label ? ` ${r.label}` : ''}${r.debug_assertions ? ' (debug)' : ''}` +
+  `${r.sampler_error ? ' (sampler failed)' : ''}${r.probes_aborted_in_flight ? ` (${r.probes_aborted_in_flight} probes cut off)` : ''}`
 const byState = (counts) => Object.entries(counts ?? {}).map(([state, n]) => `${state} ${n}`).join(', ') || '—'
 const table = (header, rows) => {
   const line = (cells) => `| ${cells.join(' | ')} |`
@@ -423,7 +465,13 @@ function summarize(reports, options) {
   return parts.join('\n')
 }
 
-const options = await parseArgs(process.argv.slice(2))
+let options
+try {
+  options = await parseArgs(process.argv.slice(2))
+} catch (error) {
+  console.error(`${error.message}\nSee node scripts/load.mjs --help`)
+  process.exit(2)
+}
 const stamp = new Date().toISOString().replaceAll(/[:.]/g, '-')
 const out = resolve(options.out || `target/load/${stamp}`)
 await mkdir(out, { recursive: true })
@@ -437,8 +485,7 @@ try {
     database = await postgres.provision(env.CORAL_TEST_POSTGRES_URL)
     if (options.latency.some((ms) => ms > 0)) {
       toxiproxy = new Toxiproxy(env)
-      const upstreamPort = Number(new URL(database.url).port || 5432)
-      await toxiproxy.start(upstreamPort)
+      await toxiproxy.start(database.url)
     }
   }
   for (const latency of options.latency) {
@@ -463,6 +510,7 @@ try {
       }
       console.error(`\n### cell: ${options.backend}, ${cell.title}, +${latency} ms\n`)
       const code = await runTest(cell.test, cellEnv, options.release)
+      if (interrupted) throw new Error(`interrupted by ${interrupted} during cell ${cell.stem}`)
       if (code !== 0) throw new Error(`load cell ${cell.stem} failed with exit code ${code}`)
       reports.push(JSON.parse(await readFile(report, 'utf8')))
     }

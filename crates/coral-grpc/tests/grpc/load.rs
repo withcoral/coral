@@ -64,6 +64,11 @@ mod fan_out;
 
 const RUN_ROW_LOCK: &str = r#"UPDATE "program_run_records"%"#;
 const READINESS_BUDGET: Duration = Duration::from_millis(1500);
+/// One `pg_stat_activity` sample row: client backends, active, lock waits, Run-row
+/// waits, ungranted locks, oldest transaction age in seconds, committed transactions.
+type PgActivityRow = (i64, i64, i64, i64, i64, f64, i64);
+/// How long `Probes::finish` lets a probe finish its current operation.
+const PROBE_STOP_GRACE: Duration = Duration::from_secs(10);
 
 #[expect(
     clippy::disallowed_methods,
@@ -206,6 +211,10 @@ struct Probes {
     ready: Series,
     neighbor: Series,
     pg: Arc<Mutex<Vec<PgSample>>>,
+    /// Why the Postgres sampler stopped early, when it did; its phases then report `pg: null`.
+    sampler_error: Arc<Mutex<Option<String>>>,
+    /// Probes still inside an operation when the cell ended; their last sample is missing.
+    aborted_in_flight: usize,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -303,13 +312,21 @@ impl Probes {
             }));
         }
         let pg = Arc::new(Mutex::new(Vec::new()));
+        let sampler_error = Arc::new(Mutex::new(None));
         if let Some(url) = sampler_url {
-            let (stop, pg) = (stop.clone(), pg.clone());
+            let (stop, pg, sampler_error) = (stop.clone(), pg.clone(), sampler_error.clone());
             tasks.push(tokio::spawn(async move {
-                let mut connection = sqlx::PgConnection::connect(&url).await.unwrap();
+                let mut connection = match sqlx::PgConnection::connect(&url).await {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        eprintln!("load: pg sampler could not connect: {error}");
+                        *sampler_error.lock().unwrap() = Some(format!("connect: {error}"));
+                        return;
+                    }
+                };
                 let mut last: Option<(i64, Instant)> = None;
                 while !stop.load(Ordering::SeqCst) {
-                    let row: (i64, i64, i64, i64, i64, f64, i64) = sqlx::query_as(
+                    let sampled: Result<PgActivityRow, sqlx::Error> = sqlx::query_as(
                         "select
                            count(*) filter (where backend_type = 'client backend'),
                            count(*) filter (where state = 'active'),
@@ -323,8 +340,15 @@ impl Probes {
                     )
                     .bind(RUN_ROW_LOCK)
                     .fetch_one(&mut connection)
-                    .await
-                    .unwrap();
+                    .await;
+                    let row = match sampled {
+                        Ok(row) => row,
+                        Err(error) => {
+                            eprintln!("load: pg sampler query failed: {error}");
+                            *sampler_error.lock().unwrap() = Some(format!("query: {error}"));
+                            return;
+                        }
+                    };
                     let now = Instant::now();
                     #[expect(clippy::cast_precision_loss, reason = "transaction counter delta")]
                     let xact_per_s = last.map_or(0.0, |(x, at)| {
@@ -352,20 +376,29 @@ impl Probes {
             ready,
             neighbor: neighbor_series,
             pg,
+            sampler_error,
+            aborted_in_flight: 0,
             tasks,
         }
     }
 
-    async fn finish(self) -> Self {
+    /// Stops the probes. Each one finishes the operation it is in and records that
+    /// sample first, so slow or failing operations at the end of a cell still count;
+    /// a probe that outlives `PROBE_STOP_GRACE` is aborted and counted.
+    async fn finish(mut self) -> Self {
         self.stop.store(true, Ordering::SeqCst);
-        for task in &self.tasks {
-            task.abort();
-        }
-        for task in self.tasks {
-            let _joined = task.await;
+        let mut aborted_in_flight = 0;
+        for mut task in std::mem::take(&mut self.tasks) {
+            if tokio::time::timeout(PROBE_STOP_GRACE, &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+                aborted_in_flight += 1;
+            }
         }
         Self {
-            tasks: Vec::new(),
+            aborted_in_flight,
             ..self
         }
     }
@@ -392,7 +425,8 @@ impl Probes {
     }
 }
 
-/// A second active Workspace: one member, one no-approval Operation, one-call Runs.
+/// A second active Workspace: its Owner plus one acting Member, one no-approval
+/// Operation, one-call Runs.
 struct Neighbor {
     runs: coral_run::RunModule,
     actor: AuthenticatedPrincipal,
@@ -457,7 +491,9 @@ fn submission(source: &str, timeout_ms: u64) -> RunSubmission {
     )
 }
 
-/// Observes until terminal, each observation waiting up to 30 s on change notifications.
+/// Observes until terminal, each observation waiting on change notifications for up
+/// to 30 s and never past the budget. A Run still live at the budget is cancelled,
+/// so it cannot keep loading the fixture after its cell has moved on.
 async fn settle(
     runs: &coral_run::RunModule,
     actor: &AuthenticatedPrincipal,
@@ -467,22 +503,37 @@ async fn settle(
 ) -> Result<RunState, String> {
     let deadline = Instant::now() + Duration::from_secs(budget_secs);
     loop {
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_secs(30));
         let update = runs
             .observe(
                 actor,
                 workspace,
                 run,
-                &RunObservation::initial(Duration::from_secs(30)).unwrap(),
+                &RunObservation::initial(wait).unwrap(),
             )
             .await
             .map_err(|e| e.to_string())?;
         if update.state().is_terminal() {
             return Ok(update.state());
         }
-        if Instant::now() > deadline {
+        if Instant::now() >= deadline {
+            let state = update.state();
+            let cancelled = runs
+                .cancel(
+                    actor,
+                    workspace,
+                    run,
+                    &RunObservation::initial(Duration::from_secs(30)).unwrap(),
+                )
+                .await
+                .map_or_else(
+                    |error| format!("cancel failed: {error}"),
+                    |update| format!("{:?}", update.state()),
+                );
             return Err(format!(
-                "Run still {:?} after {budget_secs} s",
-                update.state()
+                "Run still {state:?} after {budget_secs} s; cancelled ({cancelled})"
             ));
         }
     }
@@ -762,6 +813,14 @@ impl Harness {
         if let Value::Object(fields) = body {
             report.extend(fields);
         }
+        report.insert(
+            "sampler_error".into(),
+            json!(probes.sampler_error.lock().unwrap().clone()),
+        );
+        report.insert(
+            "probes_aborted_in_flight".into(),
+            json!(probes.aborted_in_flight),
+        );
         report.insert(
             "phases".into(),
             phases.iter().map(|p| probes.report(p)).collect(),

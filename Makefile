@@ -1,5 +1,5 @@
 .PHONY: install docker-build reef-docker-build docker-test rust-checks
-.PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
+.PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests load-test
 .PHONY: license-check lint-proto reef-image-checks
 
 # Images build and test with Docker or Podman.
